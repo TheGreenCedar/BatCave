@@ -7,6 +7,11 @@ public interface ILaunchPolicyGate
     StartupGateStatus Enforce();
 }
 
+public interface IProcessCollectorFactory
+{
+    IProcessCollector Create(bool adminMode);
+}
+
 public interface IProcessCollector
 {
     IReadOnlyList<ProcessSample> CollectTick(ulong seq);

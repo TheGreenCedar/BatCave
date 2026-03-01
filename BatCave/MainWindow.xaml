@@ -25,15 +25,21 @@
 
                 <StackPanel Orientation="Horizontal" Spacing="12">
                     <ToggleSwitch
+                        x:Name="AdminModeToggle"
                         Header="Admin Mode"
-                        IsEnabled="False"
-                        IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=TwoWay}" />
+                        IsEnabled="{x:Bind ViewModel.IsLive, Mode=OneWay}"
+                        IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
+                        Toggled="AdminModeToggle_Toggled" />
                     <CheckBox
                         VerticalAlignment="Center"
                         Content="Admin-enabled only"
                         IsChecked="{x:Bind ViewModel.AdminEnabledOnlyFilter, Mode=TwoWay}"
                         IsEnabled="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}" />
                 </StackPanel>
+
+                <TextBlock
+                    Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                    Text="{x:Bind ViewModel.AdminModeError, Mode=OneWay}" />
 
                 <Border
                     Padding="20"
@@ -44,6 +50,15 @@
                         <TextBlock TextWrapping="Wrap" Text="{x:Bind ViewModel.ShellBody, Mode=OneWay}" />
                     </StackPanel>
                 </Border>
+
+                <TextBlock FontWeight="SemiBold" Text="Visible Rows" />
+                <ItemsControl ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Name}" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
 
                 <Border
                     Padding="12"

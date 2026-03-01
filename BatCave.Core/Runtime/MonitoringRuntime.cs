@@ -3,9 +3,9 @@ using BatCave.Core.Domain;
 
 namespace BatCave.Core.Runtime;
 
-public sealed class MonitoringRuntime : IMonitoringRuntime
+public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 {
-    private readonly IProcessCollector _collector;
+    private readonly IProcessCollectorFactory _collectorFactory;
     private readonly ITelemetryPipeline _pipeline;
     private readonly IStateStore _stateStore;
     private readonly ISortIndexEngine _sortIndexEngine;
@@ -13,25 +13,28 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
     private readonly ResourceBudgetGuardian _budgetGuardian = new();
     private readonly List<double> _jitterSamples = [];
 
+    private IProcessCollector _collector;
     private QueryRequest _queryRequest;
     private RuntimeHealth _health = new();
     private UserSettings _settings;
     private ulong _seq;
 
     public MonitoringRuntime(
-        IProcessCollector collector,
+        IProcessCollectorFactory collectorFactory,
         ITelemetryPipeline pipeline,
         IStateStore stateStore,
         ISortIndexEngine sortIndexEngine,
         IPersistenceStore persistenceStore)
     {
-        _collector = collector;
+        _collectorFactory = collectorFactory;
         _pipeline = pipeline;
         _stateStore = stateStore;
         _sortIndexEngine = sortIndexEngine;
         _persistenceStore = persistenceStore;
 
         _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
+        _collector = _collectorFactory.Create(_settings.AdminMode);
+
         _queryRequest = new QueryRequest
         {
             Offset = 0,
@@ -113,7 +116,17 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
         {
             AdminMode = adminMode,
         };
+
+        DisposeCollector(_collector);
+        _collector = _collectorFactory.Create(adminMode);
+
         TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, ct));
+        TryPersist(() => _persistenceStore.AppendDiagnosticAsync("runtime_restart", new
+        {
+            admin_mode = adminMode,
+            seq = _seq,
+        }, CancellationToken.None));
+
         return Task.CompletedTask;
     }
 
@@ -196,6 +209,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
             degrade_mode = _health.DegradeMode,
             jitter_p95_ms = _health.JitterP95Ms,
             dropped_ticks = _health.DroppedTicks,
+            admin_mode = _settings.AdminMode,
         }, CancellationToken.None));
 
         if (warning is not null)
@@ -247,6 +261,19 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
         catch
         {
             // keep runtime resilient if local persistence is temporarily unavailable
+        }
+    }
+
+    public void Dispose()
+    {
+        DisposeCollector(_collector);
+    }
+
+    private static void DisposeCollector(IProcessCollector collector)
+    {
+        if (collector is IDisposable disposable)
+        {
+            disposable.Dispose();
         }
     }
 }

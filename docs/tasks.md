@@ -47,11 +47,11 @@
   - [x] 7.4 Add guardrails/tests to verify local-only diagnostics posture.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
-- [ ] 8. Implement admin-mode elevated bridge parity
-  - [ ] 8.1 Add runtime admin toggle with backend restart semantics.
-  - [ ] 8.2 Implement elevated helper launch/poll/token/stop-file lifecycle.
-  - [ ] 8.3 Emit collector warnings and fault state propagation.
-  - [ ] 8.4 Implement UI access filtering rules for admin/non-admin modes.
+- [x] 8. Implement admin-mode elevated bridge parity
+  - [x] 8.1 Add runtime admin toggle with backend restart semantics.
+  - [x] 8.2 Implement elevated helper launch/poll/token/stop-file lifecycle.
+  - [x] 8.3 Emit collector warnings and fault state propagation.
+  - [x] 8.4 Implement UI access filtering rules for admin/non-admin modes.
   - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
 - [ ] 9. Implement process metadata provider and ViewModel cache

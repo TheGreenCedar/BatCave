@@ -1,8 +1,13 @@
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
+using BatCave.Core.Runtime;
+using BatCave.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace BatCave.ViewModels;
@@ -10,6 +15,11 @@ namespace BatCave.ViewModels;
 public class MonitoringShellViewModel : ObservableObject
 {
     private readonly ILaunchPolicyGate _launchPolicyGate;
+    private readonly MonitoringRuntime _runtime;
+    private readonly RuntimeLoopService _runtimeLoopService;
+    private readonly IRuntimeEventGateway _runtimeEventGateway;
+
+    private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = new();
 
     private bool _isLoading = true;
     private bool _isBlocked;
@@ -22,13 +32,28 @@ public class MonitoringShellViewModel : ObservableObject
     private string _filterText = string.Empty;
     private bool _adminModeEnabled;
     private bool _adminEnabledOnlyFilter;
+    private bool _adminModePending;
+    private string? _adminModeError;
     private string _runtimeHealthStatus = "Runtime health unavailable.";
     private StartupGateStatus _startupGateStatus = new();
 
-    public MonitoringShellViewModel(ILaunchPolicyGate launchPolicyGate)
+    public MonitoringShellViewModel(
+        ILaunchPolicyGate launchPolicyGate,
+        MonitoringRuntime runtime,
+        RuntimeLoopService runtimeLoopService,
+        IRuntimeEventGateway runtimeEventGateway)
     {
         _launchPolicyGate = launchPolicyGate;
+        _runtime = runtime;
+        _runtimeLoopService = runtimeLoopService;
+        _runtimeEventGateway = runtimeEventGateway;
+
+        _runtimeEventGateway.TelemetryDelta += OnTelemetryDelta;
+        _runtimeEventGateway.RuntimeHealthChanged += OnRuntimeHealthChanged;
+        _runtimeEventGateway.CollectorWarningRaised += OnCollectorWarningRaised;
     }
+
+    public ObservableCollection<ProcessSample> VisibleRows { get; } = [];
 
     public bool IsLoading
     {
@@ -81,19 +106,60 @@ public class MonitoringShellViewModel : ObservableObject
     public string FilterText
     {
         get => _filterText;
-        set => SetProperty(ref _filterText, value);
+        set
+        {
+            if (SetProperty(ref _filterText, value))
+            {
+                _runtime.SetFilter(value);
+                RefreshVisibleRows();
+            }
+        }
     }
 
     public bool AdminModeEnabled
     {
         get => _adminModeEnabled;
-        set => SetProperty(ref _adminModeEnabled, value);
+        private set
+        {
+            if (SetProperty(ref _adminModeEnabled, value))
+            {
+                if (!value)
+                {
+                    AdminEnabledOnlyFilter = false;
+                }
+
+                RefreshVisibleRows();
+            }
+        }
     }
 
     public bool AdminEnabledOnlyFilter
     {
         get => _adminEnabledOnlyFilter;
-        set => SetProperty(ref _adminEnabledOnlyFilter, value);
+        set
+        {
+            if (!AdminModeEnabled && value)
+            {
+                value = false;
+            }
+
+            if (SetProperty(ref _adminEnabledOnlyFilter, value))
+            {
+                RefreshVisibleRows();
+            }
+        }
+    }
+
+    public bool AdminModePending
+    {
+        get => _adminModePending;
+        private set => SetProperty(ref _adminModePending, value);
+    }
+
+    public string? AdminModeError
+    {
+        get => _adminModeError;
+        private set => SetProperty(ref _adminModeError, value);
     }
 
     public string RuntimeHealthStatus
@@ -131,11 +197,17 @@ public class MonitoringShellViewModel : ObservableObject
                 return Task.CompletedTask;
             }
 
+            AdminModeEnabled = _runtime.IsAdminMode();
+            QueryResponse snapshot = _runtime.GetSnapshot();
+            RuntimeHealth health = _runtime.GetRuntimeHealth();
+
+            LoadSnapshot(snapshot.Rows);
+            ApplyRuntimeHealth(health);
+
             IsLive = true;
             BlockedReasonMessage = string.Empty;
             ShellHeadline = "Live monitor shell ready";
-            ShellBody = "Runtime and table wiring will be completed in upcoming tasks.";
-            RuntimeHealthStatus = "Runtime startup passed. Monitoring runtime initialization will continue in the next task.";
+            ShellBody = "Runtime loop and admin restart paths are active.";
         }
         catch (Exception ex)
         {
@@ -150,6 +222,117 @@ public class MonitoringShellViewModel : ObservableObject
         }
 
         return Task.CompletedTask;
+    }
+
+    public async Task ToggleAdminModeAsync(bool nextAdminMode, CancellationToken ct)
+    {
+        if (AdminModePending || nextAdminMode == AdminModeEnabled)
+        {
+            return;
+        }
+
+        AdminModePending = true;
+        AdminModeError = null;
+
+        try
+        {
+            _runtimeLoopService.StopAndAdvanceGeneration();
+            await _runtime.RestartAsync(nextAdminMode, ct);
+            _runtimeLoopService.Start(_runtimeLoopService.CurrentGeneration);
+
+            AdminModeEnabled = _runtime.IsAdminMode();
+
+            QueryResponse snapshot = _runtime.GetSnapshot();
+            RuntimeHealth health = _runtime.GetRuntimeHealth();
+            LoadSnapshot(snapshot.Rows);
+            ApplyRuntimeHealth(health);
+        }
+        catch (Exception ex)
+        {
+            AdminModeError = ex.Message;
+            AdminModeEnabled = _runtime.IsAdminMode();
+        }
+        finally
+        {
+            AdminModePending = false;
+        }
+    }
+
+    private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
+    {
+        foreach (ProcessSample upsert in delta.Upserts)
+        {
+            _allRows[upsert.Identity()] = upsert;
+        }
+
+        foreach (ProcessIdentity exit in delta.Exits)
+        {
+            _allRows.Remove(exit);
+        }
+
+        RefreshVisibleRows();
+    }
+
+    private void OnRuntimeHealthChanged(object? sender, RuntimeHealth health)
+    {
+        ApplyRuntimeHealth(health);
+    }
+
+    private void OnCollectorWarningRaised(object? sender, CollectorWarning warning)
+    {
+        AdminModeError = warning.Message;
+    }
+
+    private void ApplyRuntimeHealth(RuntimeHealth health)
+    {
+        RuntimeHealthStatus =
+            $"seq {health.Seq}, jitter p95 {health.JitterP95Ms:F0} ms, dropped {health.DroppedTicks}, degrade {(health.DegradeMode ? "ON" : "OFF")}";
+    }
+
+    private void LoadSnapshot(IReadOnlyList<ProcessSample> rows)
+    {
+        _allRows.Clear();
+        foreach (ProcessSample row in rows)
+        {
+            _allRows[row.Identity()] = row;
+        }
+
+        RefreshVisibleRows();
+    }
+
+    private void RefreshVisibleRows()
+    {
+        IEnumerable<ProcessSample> rows = _allRows.Values;
+
+        if (!AdminModeEnabled)
+        {
+            rows = rows.Where(row => row.AccessState != AccessState.Denied);
+        }
+
+        if (AdminEnabledOnlyFilter)
+        {
+            rows = rows.Where(row => AdminModeEnabled && row.AccessState == AccessState.Full);
+        }
+
+        string needle = FilterText.Trim().ToLowerInvariant();
+        if (!string.IsNullOrWhiteSpace(needle))
+        {
+            rows = rows.Where(row =>
+                row.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                || row.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase));
+        }
+
+        List<ProcessSample> next = rows
+            .OrderByDescending(row => row.CpuPct)
+            .ThenBy(row => row.Pid)
+            .ThenBy(row => row.StartTimeMs)
+            .ToList();
+
+        VisibleRows.Clear();
+        foreach (ProcessSample row in next)
+        {
+            VisibleRows.Add(row);
+        }
     }
 
     private static string FormatBlockReason(LaunchBlockReason? reason)

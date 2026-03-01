@@ -29,4 +29,9 @@ public sealed partial class MainWindow : Window
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
     }
+
+    private async void AdminModeToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.ToggleAdminModeAsync(AdminModeToggle.IsOn, CancellationToken.None);
+    }
 }
