@@ -9,11 +9,23 @@ using BatCave.Core.Domain;
 using BatCave.Core.Runtime;
 using BatCave.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 
 namespace BatCave.ViewModels;
 
+public enum DetailMetricFocus
+{
+    Cpu,
+    Memory,
+    Io,
+    Network,
+}
+
 public class MonitoringShellViewModel : ObservableObject
 {
+    private const int FilterDebounceMs = 160;
+
     private readonly ILaunchPolicyGate _launchPolicyGate;
     private readonly MonitoringRuntime _runtime;
     private readonly RuntimeLoopService _runtimeLoopService;
@@ -22,6 +34,9 @@ public class MonitoringShellViewModel : ObservableObject
 
     private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = new();
     private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = new();
+
+    private DispatcherQueue? _dispatcherQueue;
+    private CancellationTokenSource? _filterDebounceCts;
 
     private bool _isLoading = true;
     private bool _isBlocked;
@@ -32,6 +47,8 @@ public class MonitoringShellViewModel : ObservableObject
     private string _blockedReasonMessage = string.Empty;
     private string _startupErrorMessage = string.Empty;
     private string _filterText = string.Empty;
+    private SortColumn _currentSortColumn = SortColumn.CpuPct;
+    private SortDirection _currentSortDirection = SortDirection.Desc;
     private bool _adminModeEnabled;
     private bool _adminEnabledOnlyFilter;
     private bool _adminModePending;
@@ -42,6 +59,7 @@ public class MonitoringShellViewModel : ObservableObject
     private ProcessMetadata? _selectedMetadata;
     private bool _isMetadataLoading;
     private string? _metadataError;
+    private DetailMetricFocus _metricFocus = DetailMetricFocus.Cpu;
     private long _metadataRequestVersion;
 
     public MonitoringShellViewModel(
@@ -67,25 +85,49 @@ public class MonitoringShellViewModel : ObservableObject
     public bool IsLoading
     {
         get => _isLoading;
-        private set => SetProperty(ref _isLoading, value);
+        private set
+        {
+            if (SetProperty(ref _isLoading, value))
+            {
+                RaiseStateVisibilityProperties();
+            }
+        }
     }
 
     public bool IsBlocked
     {
         get => _isBlocked;
-        private set => SetProperty(ref _isBlocked, value);
+        private set
+        {
+            if (SetProperty(ref _isBlocked, value))
+            {
+                RaiseStateVisibilityProperties();
+            }
+        }
     }
 
     public bool IsStartupError
     {
         get => _isStartupError;
-        private set => SetProperty(ref _isStartupError, value);
+        private set
+        {
+            if (SetProperty(ref _isStartupError, value))
+            {
+                RaiseStateVisibilityProperties();
+            }
+        }
     }
 
     public bool IsLive
     {
         get => _isLive;
-        private set => SetProperty(ref _isLive, value);
+        private set
+        {
+            if (SetProperty(ref _isLive, value))
+            {
+                RaiseStateVisibilityProperties();
+            }
+        }
     }
 
     public string ShellHeadline
@@ -119,8 +161,31 @@ public class MonitoringShellViewModel : ObservableObject
         {
             if (SetProperty(ref _filterText, value))
             {
-                _runtime.SetFilter(value);
-                RefreshVisibleRows();
+                ScheduleFilterApply(value);
+            }
+        }
+    }
+
+    public SortColumn CurrentSortColumn
+    {
+        get => _currentSortColumn;
+        private set
+        {
+            if (SetProperty(ref _currentSortColumn, value))
+            {
+                RaiseSortHeaderLabels();
+            }
+        }
+    }
+
+    public SortDirection CurrentSortDirection
+    {
+        get => _currentSortDirection;
+        private set
+        {
+            if (SetProperty(ref _currentSortDirection, value))
+            {
+                RaiseSortHeaderLabels();
             }
         }
     }
@@ -168,8 +233,27 @@ public class MonitoringShellViewModel : ObservableObject
     public string? AdminModeError
     {
         get => _adminModeError;
-        private set => SetProperty(ref _adminModeError, value);
+        private set
+        {
+            if (SetProperty(ref _adminModeError, value))
+            {
+                OnPropertyChanged(nameof(HasAdminModeError));
+                OnPropertyChanged(nameof(AdminErrorVisibility));
+            }
+        }
     }
+
+    public bool HasAdminModeError => !string.IsNullOrWhiteSpace(AdminModeError);
+
+    public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility BlockedVisibility => IsBlocked ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility StartupErrorVisibility => IsStartupError ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility LiveVisibility => IsLive ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility AdminErrorVisibility => HasAdminModeError ? Visibility.Visible : Visibility.Collapsed;
 
     public string RuntimeHealthStatus
     {
@@ -186,25 +270,155 @@ public class MonitoringShellViewModel : ObservableObject
     public ProcessSample? SelectedRow
     {
         get => _selectedRow;
-        private set => SetProperty(ref _selectedRow, value);
+        private set
+        {
+            if (SetProperty(ref _selectedRow, value))
+            {
+                OnPropertyChanged(nameof(HasSelection));
+                RaiseDetailProperties();
+            }
+        }
     }
 
     public ProcessMetadata? SelectedMetadata
     {
         get => _selectedMetadata;
-        private set => SetProperty(ref _selectedMetadata, value);
+        private set
+        {
+            if (SetProperty(ref _selectedMetadata, value))
+            {
+                RaiseDetailProperties();
+            }
+        }
     }
 
     public bool IsMetadataLoading
     {
         get => _isMetadataLoading;
-        private set => SetProperty(ref _isMetadataLoading, value);
+        private set
+        {
+            if (SetProperty(ref _isMetadataLoading, value))
+            {
+                RaiseDetailProperties();
+            }
+        }
     }
 
     public string? MetadataError
     {
         get => _metadataError;
-        private set => SetProperty(ref _metadataError, value);
+        private set
+        {
+            if (SetProperty(ref _metadataError, value))
+            {
+                RaiseDetailProperties();
+            }
+        }
+    }
+
+    public DetailMetricFocus MetricFocus
+    {
+        get => _metricFocus;
+        set
+        {
+            if (SetProperty(ref _metricFocus, value))
+            {
+                RaiseDetailProperties();
+            }
+        }
+    }
+
+    public bool HasSelection => SelectedRow is not null;
+
+    public string DetailTitle =>
+        SelectedRow is null
+            ? "Global Summary"
+            : $"{SelectedRow.Name} ({SelectedRow.Pid})";
+
+    public string DetailMetricValue
+    {
+        get
+        {
+            if (SelectedRow is null)
+            {
+                return $"Visible rows: {VisibleRows.Count}";
+            }
+
+            return MetricFocus switch
+            {
+                DetailMetricFocus.Cpu => $"{SelectedRow.CpuPct:F1}% CPU",
+                DetailMetricFocus.Memory => $"{FormatBytes(SelectedRow.RssBytes)} RSS",
+                DetailMetricFocus.Io => $"{FormatBytes(SelectedRow.IoReadBps)}/s read, {FormatBytes(SelectedRow.IoWriteBps)}/s write",
+                DetailMetricFocus.Network => $"{FormatBytes(SelectedRow.NetBps)}/s net",
+                _ => $"{SelectedRow.CpuPct:F1}% CPU",
+            };
+        }
+    }
+
+    public string MetadataStatus
+    {
+        get
+        {
+            if (SelectedRow is null)
+            {
+                return "Select a process to load metadata.";
+            }
+
+            if (IsMetadataLoading)
+            {
+                return "Loading metadata...";
+            }
+
+            if (!string.IsNullOrWhiteSpace(MetadataError))
+            {
+                return $"Metadata error: {MetadataError}";
+            }
+
+            if (SelectedMetadata is null)
+            {
+                return "Metadata unavailable for this process identity.";
+            }
+
+            return "Metadata loaded.";
+        }
+    }
+
+    public string MetadataParentPid =>
+        SelectedMetadata is null
+            ? "n/a"
+            : SelectedMetadata.ParentPid.ToString();
+
+    public string MetadataCommandLine =>
+        string.IsNullOrWhiteSpace(SelectedMetadata?.CommandLine)
+            ? "n/a"
+            : SelectedMetadata.CommandLine!;
+
+    public string MetadataExecutablePath =>
+        string.IsNullOrWhiteSpace(SelectedMetadata?.ExecutablePath)
+            ? "n/a"
+            : SelectedMetadata.ExecutablePath!;
+
+    public string NameSortLabel => SortLabel("Name", SortColumn.Name);
+
+    public string PidSortLabel => SortLabel("PID", SortColumn.Pid);
+
+    public string CpuSortLabel => SortLabel("CPU", SortColumn.CpuPct);
+
+    public string MemorySortLabel => SortLabel("Memory", SortColumn.RssBytes);
+
+    public string IoReadSortLabel => SortLabel("IO Read", SortColumn.IoReadBps);
+
+    public string IoWriteSortLabel => SortLabel("IO Write", SortColumn.IoWriteBps);
+
+    public string NetSortLabel => SortLabel("Net", SortColumn.NetBps);
+
+    public string ThreadsSortLabel => SortLabel("Threads", SortColumn.Threads);
+
+    public string HandlesSortLabel => SortLabel("Handles", SortColumn.Handles);
+
+    public void AttachDispatcherQueue(DispatcherQueue dispatcherQueue)
+    {
+        _dispatcherQueue = dispatcherQueue;
     }
 
     public Task BootstrapAsync(CancellationToken ct)
@@ -230,7 +444,13 @@ public class MonitoringShellViewModel : ObservableObject
                 return Task.CompletedTask;
             }
 
+            _filterText = _runtime.CurrentFilterText;
+            OnPropertyChanged(nameof(FilterText));
+
+            CurrentSortColumn = _runtime.CurrentSortColumn;
+            CurrentSortDirection = _runtime.CurrentSortDirection;
             AdminModeEnabled = _runtime.IsAdminMode();
+
             QueryResponse snapshot = _runtime.GetSnapshot();
             RuntimeHealth health = _runtime.GetRuntimeHealth();
 
@@ -255,6 +475,11 @@ public class MonitoringShellViewModel : ObservableObject
         }
 
         return Task.CompletedTask;
+    }
+
+    public Task RetryBootstrapAsync(CancellationToken ct)
+    {
+        return BootstrapAsync(ct);
     }
 
     public async Task ToggleAdminModeAsync(bool nextAdminMode, CancellationToken ct)
@@ -291,6 +516,36 @@ public class MonitoringShellViewModel : ObservableObject
         }
     }
 
+    public void ChangeSort(SortColumn column)
+    {
+        SortDirection nextDirection = CurrentSortColumn == column && CurrentSortDirection == SortDirection.Desc
+            ? SortDirection.Asc
+            : SortDirection.Desc;
+
+        CurrentSortColumn = column;
+        CurrentSortDirection = nextDirection;
+
+        _runtime.SetSort(CurrentSortColumn, CurrentSortDirection);
+        RefreshVisibleRows();
+    }
+
+    public async Task ToggleSelectionAsync(ProcessSample? row, CancellationToken ct)
+    {
+        if (row is null)
+        {
+            ClearSelection();
+            return;
+        }
+
+        if (SelectedRow?.Identity() == row.Identity())
+        {
+            ClearSelection();
+            return;
+        }
+
+        await SelectRowAsync(row, ct);
+    }
+
     public async Task SelectRowAsync(ProcessSample? row, CancellationToken ct)
     {
         if (row is null)
@@ -319,31 +574,32 @@ public class MonitoringShellViewModel : ObservableObject
         {
             ProcessMetadata? metadata = await _metadataProvider.GetAsync(row.Pid, row.StartTimeMs, ct);
 
-            if (!IsCurrentMetadataRequest(requestVersion, identity))
+            RunOnUiThread(() =>
             {
-                return;
-            }
+                if (!IsCurrentMetadataRequest(requestVersion, identity))
+                {
+                    return;
+                }
 
-            _metadataCache[identity] = metadata;
-            SelectedMetadata = metadata;
-            MetadataError = null;
+                _metadataCache[identity] = metadata;
+                SelectedMetadata = metadata;
+                MetadataError = null;
+                IsMetadataLoading = false;
+            });
         }
         catch (Exception ex)
         {
-            if (!IsCurrentMetadataRequest(requestVersion, identity))
+            RunOnUiThread(() =>
             {
-                return;
-            }
+                if (!IsCurrentMetadataRequest(requestVersion, identity))
+                {
+                    return;
+                }
 
-            MetadataError = ex.Message;
-            SelectedMetadata = null;
-        }
-        finally
-        {
-            if (IsCurrentMetadataRequest(requestVersion, identity))
-            {
+                MetadataError = ex.Message;
+                SelectedMetadata = null;
                 IsMetadataLoading = false;
-            }
+            });
         }
     }
 
@@ -358,29 +614,32 @@ public class MonitoringShellViewModel : ObservableObject
 
     private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
     {
-        foreach (ProcessSample upsert in delta.Upserts)
+        RunOnUiThread(() =>
         {
-            _allRows[upsert.Identity()] = upsert;
-        }
+            foreach (ProcessSample upsert in delta.Upserts)
+            {
+                _allRows[upsert.Identity()] = upsert;
+            }
 
-        foreach (ProcessIdentity exit in delta.Exits)
-        {
-            _allRows.Remove(exit);
-            _metadataCache.Remove(exit);
-        }
+            foreach (ProcessIdentity exit in delta.Exits)
+            {
+                _allRows.Remove(exit);
+                _metadataCache.Remove(exit);
+            }
 
-        ReconcileSelectionAfterDelta();
-        RefreshVisibleRows();
+            ReconcileSelectionAfterDelta();
+            RefreshVisibleRows();
+        });
     }
 
     private void OnRuntimeHealthChanged(object? sender, RuntimeHealth health)
     {
-        ApplyRuntimeHealth(health);
+        RunOnUiThread(() => ApplyRuntimeHealth(health));
     }
 
     private void OnCollectorWarningRaised(object? sender, CollectorWarning warning)
     {
-        AdminModeError = warning.Message;
+        RunOnUiThread(() => AdminModeError = warning.Message);
     }
 
     private void ApplyRuntimeHealth(RuntimeHealth health)
@@ -438,7 +697,7 @@ public class MonitoringShellViewModel : ObservableObject
 
         if (AdminEnabledOnlyFilter)
         {
-            rows = rows.Where(row => AdminModeEnabled && row.AccessState == AccessState.Full);
+            rows = rows.Where(row => row.AccessState == AccessState.Full);
         }
 
         string needle = FilterText.Trim().ToLowerInvariant();
@@ -449,22 +708,147 @@ public class MonitoringShellViewModel : ObservableObject
                 || row.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase));
         }
 
-        List<ProcessSample> next = rows
-            .OrderByDescending(row => row.CpuPct)
-            .ThenBy(row => row.Pid)
-            .ThenBy(row => row.StartTimeMs)
-            .ToList();
+        List<ProcessSample> next = OrderRows(rows).ToList();
 
         VisibleRows.Clear();
         foreach (ProcessSample row in next)
         {
             VisibleRows.Add(row);
         }
+
+        RaiseDetailProperties();
+    }
+
+    private IOrderedEnumerable<ProcessSample> OrderRows(IEnumerable<ProcessSample> rows)
+    {
+        return (CurrentSortColumn, CurrentSortDirection) switch
+        {
+            (SortColumn.Pid, SortDirection.Asc) => rows.OrderBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Pid, SortDirection.Desc) => rows.OrderByDescending(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Name, SortDirection.Asc) => rows.OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Name, SortDirection.Desc) => rows.OrderByDescending(row => row.Name, StringComparer.OrdinalIgnoreCase).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.CpuPct, SortDirection.Asc) => rows.OrderBy(row => row.CpuPct).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.CpuPct, SortDirection.Desc) => rows.OrderByDescending(row => row.CpuPct).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.RssBytes, SortDirection.Asc) => rows.OrderBy(row => row.RssBytes).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.RssBytes, SortDirection.Desc) => rows.OrderByDescending(row => row.RssBytes).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoReadBps, SortDirection.Asc) => rows.OrderBy(row => row.IoReadBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoReadBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoReadBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoWriteBps, SortDirection.Asc) => rows.OrderBy(row => row.IoWriteBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoWriteBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoWriteBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.NetBps, SortDirection.Asc) => rows.OrderBy(row => row.NetBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.NetBps, SortDirection.Desc) => rows.OrderByDescending(row => row.NetBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Threads, SortDirection.Asc) => rows.OrderBy(row => row.Threads).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Threads, SortDirection.Desc) => rows.OrderByDescending(row => row.Threads).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Handles, SortDirection.Asc) => rows.OrderBy(row => row.Handles).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Handles, SortDirection.Desc) => rows.OrderByDescending(row => row.Handles).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.StartTimeMs, SortDirection.Asc) => rows.OrderBy(row => row.StartTimeMs).ThenBy(row => row.Pid),
+            (SortColumn.StartTimeMs, SortDirection.Desc) => rows.OrderByDescending(row => row.StartTimeMs).ThenBy(row => row.Pid),
+            _ => rows.OrderByDescending(row => row.CpuPct).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+        };
     }
 
     private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)
     {
         return requestVersion == _metadataRequestVersion && SelectedRow?.Identity() == identity;
+    }
+
+    private void ScheduleFilterApply(string filterText)
+    {
+        _filterDebounceCts?.Cancel();
+        _filterDebounceCts?.Dispose();
+
+        CancellationTokenSource cts = new();
+        _filterDebounceCts = cts;
+        _ = ApplyFilterAfterDelayAsync(filterText, cts.Token);
+    }
+
+    private async Task ApplyFilterAfterDelayAsync(string filterText, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(FilterDebounceMs, ct);
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _runtime.SetFilter(filterText);
+            RunOnUiThread(RefreshVisibleRows);
+        }
+        catch (OperationCanceledException)
+        {
+            // no-op
+        }
+    }
+
+    private void RunOnUiThread(Action action)
+    {
+        if (_dispatcherQueue is null || _dispatcherQueue.HasThreadAccess)
+        {
+            action();
+            return;
+        }
+
+        _dispatcherQueue.TryEnqueue(() => action());
+    }
+
+    private string SortLabel(string text, SortColumn column)
+    {
+        if (CurrentSortColumn != column)
+        {
+            return text;
+        }
+
+        return CurrentSortDirection == SortDirection.Desc
+            ? $"{text} ↓"
+            : $"{text} ↑";
+    }
+
+    private void RaiseSortHeaderLabels()
+    {
+        OnPropertyChanged(nameof(NameSortLabel));
+        OnPropertyChanged(nameof(PidSortLabel));
+        OnPropertyChanged(nameof(CpuSortLabel));
+        OnPropertyChanged(nameof(MemorySortLabel));
+        OnPropertyChanged(nameof(IoReadSortLabel));
+        OnPropertyChanged(nameof(IoWriteSortLabel));
+        OnPropertyChanged(nameof(NetSortLabel));
+        OnPropertyChanged(nameof(ThreadsSortLabel));
+        OnPropertyChanged(nameof(HandlesSortLabel));
+    }
+
+    private void RaiseDetailProperties()
+    {
+        OnPropertyChanged(nameof(DetailTitle));
+        OnPropertyChanged(nameof(DetailMetricValue));
+        OnPropertyChanged(nameof(MetadataStatus));
+        OnPropertyChanged(nameof(MetadataParentPid));
+        OnPropertyChanged(nameof(MetadataCommandLine));
+        OnPropertyChanged(nameof(MetadataExecutablePath));
+    }
+
+    private static string FormatBytes(ulong value)
+    {
+        const double kb = 1024d;
+        const double mb = kb * 1024d;
+        const double gb = mb * 1024d;
+
+        if (value >= gb)
+        {
+            return $"{value / gb:F2} GB";
+        }
+
+        if (value >= mb)
+        {
+            return $"{value / mb:F1} MB";
+        }
+
+        if (value >= kb)
+        {
+            return $"{value / kb:F1} KB";
+        }
+
+        return $"{value} B";
     }
 
     private static string FormatBlockReason(LaunchBlockReason? reason)
@@ -482,5 +866,13 @@ public class MonitoringShellViewModel : ObservableObject
                 $"Windows build {reason.DetectedBuild.GetValueOrDefault()} detected. Windows 11 build 22000+ is required.",
             _ => "Startup policy failed due to an unrecognized gate condition.",
         };
+    }
+
+    private void RaiseStateVisibilityProperties()
+    {
+        OnPropertyChanged(nameof(LoadingVisibility));
+        OnPropertyChanged(nameof(BlockedVisibility));
+        OnPropertyChanged(nameof(StartupErrorVisibility));
+        OnPropertyChanged(nameof(LiveVisibility));
     }
 }

@@ -61,11 +61,11 @@
   - [x] 9.4 Implement identity-keyed metadata cache lifecycle.
   - _Requirements: 8.1, 8.2, 8.3, 8.4_
 
-- [ ] 10. Build native WinUI shell with feature parity
-  - [ ] 10.1 Implement top bar interactions (filter, admin toggle, admin-only toggle).
-  - [ ] 10.2 Implement virtualized process list with sortable columns.
-  - [ ] 10.3 Implement detail panel metric focus and clear-selection flow.
-  - [ ] 10.4 Implement runtime health footer and state-based shell rendering.
+- [x] 10. Build native WinUI shell with feature parity
+  - [x] 10.1 Implement top bar interactions (filter, admin toggle, admin-only toggle).
+  - [x] 10.2 Implement virtualized process list with sortable columns.
+  - [x] 10.3 Implement detail panel metric focus and clear-selection flow.
+  - [x] 10.4 Implement runtime health footer and state-based shell rendering.
   - _Requirements: 9.1, 9.2, 9.3, 9.4_
 
 - [ ] 11. Implement CLI operational modes and PowerShell scripts

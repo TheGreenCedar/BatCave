@@ -68,6 +68,12 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         return _sortIndexEngine.Query(_queryRequest, rows, _seq);
     }
 
+    public SortColumn CurrentSortColumn => _queryRequest.SortCol;
+
+    public SortDirection CurrentSortDirection => _queryRequest.SortDir;
+
+    public string CurrentFilterText => _queryRequest.FilterText;
+
     public RuntimeHealth GetRuntimeHealth()
     {
         return _health;

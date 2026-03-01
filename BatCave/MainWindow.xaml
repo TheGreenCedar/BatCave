@@ -13,19 +13,24 @@
     </Window.SystemBackdrop>
 
     <Grid>
-        <ScrollViewer>
-            <StackPanel Margin="16" Spacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border
+            Grid.Row="0"
+            Padding="16"
+            BorderThickness="0,0,0,1">
+            <StackPanel Spacing="10">
                 <TextBlock FontSize="24" FontWeight="SemiBold" Text="BatCave Monitor" />
-                <TextBlock Opacity="0.8" Text="Windows-native process telemetry with anti-lag table updates." />
-
-                <TextBlock Text="Filter" />
+                <TextBlock Opacity="0.8" Text="Windows-native process telemetry with runtime parity." />
                 <TextBox
-                    PlaceholderText="name or PID"
+                    PlaceholderText="Filter by name or PID"
                     Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-
                 <StackPanel Orientation="Horizontal" Spacing="12">
                     <ToggleSwitch
-                        x:Name="AdminModeToggle"
                         Header="Admin Mode"
                         IsEnabled="{x:Bind ViewModel.IsLive, Mode=OneWay}"
                         IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
@@ -36,40 +41,153 @@
                         IsChecked="{x:Bind ViewModel.AdminEnabledOnlyFilter, Mode=TwoWay}"
                         IsEnabled="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}" />
                 </StackPanel>
-
                 <TextBlock
                     Foreground="{ThemeResource SystemFillColorCriticalBrush}"
-                    Text="{x:Bind ViewModel.AdminModeError, Mode=OneWay}" />
+                    Text="{x:Bind ViewModel.AdminModeError, Mode=OneWay}"
+                    TextWrapping="Wrap"
+                    Visibility="{x:Bind ViewModel.AdminErrorVisibility, Mode=OneWay}" />
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="1" Padding="16">
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="8"
+                Visibility="{x:Bind ViewModel.LoadingVisibility, Mode=OneWay}">
+                <ProgressRing IsActive="True" />
+                <TextBlock Text="Starting monitoring runtime..." />
+            </StackPanel>
+
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="8"
+                Visibility="{x:Bind ViewModel.BlockedVisibility, Mode=OneWay}">
+                <TextBlock FontSize="20" FontWeight="SemiBold" Text="Startup Blocked" />
+                <TextBlock MaxWidth="760" Text="{x:Bind ViewModel.BlockedReasonMessage, Mode=OneWay}" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="8"
+                Visibility="{x:Bind ViewModel.StartupErrorVisibility, Mode=OneWay}">
+                <TextBlock FontSize="20" FontWeight="SemiBold" Text="Startup Error" />
+                <TextBlock MaxWidth="760" Text="{x:Bind ViewModel.StartupErrorMessage, Mode=OneWay}" TextWrapping="Wrap" />
+                <Button Click="RetryBootstrap_Click" Content="Retry" />
+            </StackPanel>
+
+            <Grid Visibility="{x:Bind ViewModel.LiveVisibility, Mode=OneWay}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
 
                 <Border
-                    Padding="20"
-                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    CornerRadius="12">
-                    <StackPanel Spacing="8">
-                        <TextBlock FontSize="26" FontWeight="SemiBold" Text="{x:Bind ViewModel.ShellHeadline, Mode=OneWay}" />
-                        <TextBlock TextWrapping="Wrap" Text="{x:Bind ViewModel.ShellBody, Mode=OneWay}" />
-                    </StackPanel>
-                </Border>
-
-                <TextBlock FontWeight="SemiBold" Text="Visible Rows" />
-                <ItemsControl ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding Name}" />
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-
-                <Border
+                    Grid.Column="0"
                     Padding="12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     CornerRadius="12">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontWeight="SemiBold" Text="Runtime Health:" />
-                        <TextBlock Text="{x:Bind ViewModel.RuntimeHealthStatus, Mode=OneWay}" TextWrapping="Wrap" />
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <ScrollViewer
+                            HorizontalScrollBarVisibility="Auto"
+                            HorizontalScrollMode="Enabled"
+                            VerticalScrollBarVisibility="Hidden"
+                            VerticalScrollMode="Disabled">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.NameSortLabel, Mode=OneWay}" Tag="Name" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.PidSortLabel, Mode=OneWay}" Tag="Pid" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.CpuSortLabel, Mode=OneWay}" Tag="CpuPct" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.MemorySortLabel, Mode=OneWay}" Tag="RssBytes" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.IoReadSortLabel, Mode=OneWay}" Tag="IoReadBps" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.IoWriteSortLabel, Mode=OneWay}" Tag="IoWriteBps" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.NetSortLabel, Mode=OneWay}" Tag="NetBps" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.ThreadsSortLabel, Mode=OneWay}" Tag="Threads" />
+                                <Button Click="SortHeader_Click" Content="{x:Bind ViewModel.HandlesSortLabel, Mode=OneWay}" Tag="Handles" />
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <ListView
+                            x:Name="ProcessListView"
+                            Grid.Row="1"
+                            ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}"
+                            SelectionChanged="ProcessListView_SelectionChanged"
+                            SelectionMode="Single">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Padding="4,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="2*" />
+                                            <ColumnDefinition Width="0.8*" />
+                                            <ColumnDefinition Width="0.8*" />
+                                            <ColumnDefinition Width="1*" />
+                                            <ColumnDefinition Width="1*" />
+                                            <ColumnDefinition Width="1*" />
+                                            <ColumnDefinition Width="0.8*" />
+                                            <ColumnDefinition Width="0.8*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Pid}" />
+                                        <TextBlock Grid.Column="2" Text="{Binding CpuPct}" />
+                                        <TextBlock Grid.Column="3" Text="{Binding RssBytes}" />
+                                        <TextBlock Grid.Column="4" Text="{Binding IoReadBps}" />
+                                        <TextBlock Grid.Column="5" Text="{Binding IoWriteBps}" />
+                                        <TextBlock Grid.Column="6" Text="{Binding Threads}" />
+                                        <TextBlock Grid.Column="7" Text="{Binding Handles}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </Grid>
+                </Border>
+
+                <Border
+                    Grid.Column="1"
+                    Margin="16,0,0,0"
+                    Padding="12"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    CornerRadius="12">
+                    <StackPanel Spacing="10">
+                        <TextBlock FontSize="20" FontWeight="SemiBold" Text="{x:Bind ViewModel.DetailTitle, Mode=OneWay}" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock VerticalAlignment="Center" Text="Metric Focus" />
+                            <ComboBox SelectionChanged="MetricFocusCombo_SelectionChanged" SelectedIndex="0">
+                                <ComboBoxItem Content="CPU" />
+                                <ComboBoxItem Content="Memory" />
+                                <ComboBoxItem Content="IO" />
+                                <ComboBoxItem Content="Network" />
+                            </ComboBox>
+                            <Button Click="ClearSelection_Click" Content="Clear Selection" IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}" />
+                        </StackPanel>
+                        <TextBlock FontWeight="SemiBold" Text="Metric Snapshot" />
+                        <TextBlock Text="{x:Bind ViewModel.DetailMetricValue, Mode=OneWay}" TextWrapping="Wrap" />
+                        <TextBlock FontWeight="SemiBold" Text="Metadata Status" />
+                        <TextBlock Text="{x:Bind ViewModel.MetadataStatus, Mode=OneWay}" TextWrapping="Wrap" />
+                        <TextBlock FontWeight="SemiBold" Text="Parent PID" />
+                        <TextBlock Text="{x:Bind ViewModel.MetadataParentPid, Mode=OneWay}" />
+                        <TextBlock FontWeight="SemiBold" Text="Executable Path" />
+                        <TextBlock Text="{x:Bind ViewModel.MetadataExecutablePath, Mode=OneWay}" TextWrapping="Wrap" />
+                        <TextBlock FontWeight="SemiBold" Text="Command Line" />
+                        <TextBlock Text="{x:Bind ViewModel.MetadataCommandLine, Mode=OneWay}" TextWrapping="Wrap" />
                     </StackPanel>
                 </Border>
+            </Grid>
+        </Grid>
+
+        <Border
+            Grid.Row="2"
+            Padding="12"
+            BorderThickness="0,1,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock FontWeight="SemiBold" Text="Runtime Health:" />
+                <TextBlock Text="{x:Bind ViewModel.RuntimeHealthStatus, Mode=OneWay}" TextWrapping="Wrap" />
             </StackPanel>
-        </ScrollViewer>
+        </Border>
     </Grid>
 </Window>
