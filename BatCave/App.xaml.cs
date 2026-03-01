@@ -2,7 +2,10 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BatCave.Core.Abstractions;
 using BatCave.Core.Operations;
+using BatCave.Core.Policy;
+using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.UI.Xaml;
@@ -19,6 +22,14 @@ public partial class App : Application
     {
         InitializeComponent();
         _host = CreateHost();
+    }
+
+    public static IServiceProvider Services
+    {
+        get
+        {
+            return ((App)Current)._host.Services;
+        }
     }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
@@ -47,6 +58,8 @@ public partial class App : Application
             .ConfigureServices(services =>
             {
                 services.AddSingleton<ICliOperationsHost, CliOperationsHost>();
+                services.AddSingleton<ILaunchPolicyGate, WindowsLaunchPolicyGate>();
+                services.AddSingleton<MonitoringShellViewModel>();
                 services.AddSingleton<MainWindow>();
             })
             .Build();

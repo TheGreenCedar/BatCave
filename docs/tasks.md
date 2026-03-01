@@ -6,10 +6,10 @@
   - [x] 1.3 Add packaged and unpackaged publish profiles and startup configuration wiring.
   - _Requirements: 10.1, 10.2, 10.3, 10.4_
 
-- [ ] 2. Implement launch policy gate and blocked-startup flow
-  - [ ] 2.1 Port Windows 11 startup gate logic and reason contract.
-  - [ ] 2.2 Wire startup gate evaluation before runtime loop activation.
-  - [ ] 2.3 Implement blocked-state projection in ViewModel and WinUI shell.
+- [x] 2. Implement launch policy gate and blocked-startup flow
+  - [x] 2.1 Port Windows 11 startup gate logic and reason contract.
+  - [x] 2.2 Wire startup gate evaluation before runtime loop activation.
+  - [x] 2.3 Implement blocked-state projection in ViewModel and WinUI shell.
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
 - [ ] 3. Port Windows process collector
