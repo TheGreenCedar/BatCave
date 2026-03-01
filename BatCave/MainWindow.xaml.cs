@@ -14,6 +14,7 @@ namespace BatCave;
 public sealed partial class MainWindow : Window
 {
     private bool _bootstrapped;
+    private bool _syncingSelectionVisual;
 
     public MainWindow()
     {
@@ -64,6 +65,76 @@ public sealed partial class MainWindow : Window
             case nameof(MonitoringShellViewModel.ExpandedMetricTrendValues):
                 RefreshMetricPlots();
                 break;
+            case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
+                SyncSelectionVisual();
+                break;
+            case nameof(MonitoringShellViewModel.CurrentSortColumn):
+            case nameof(MonitoringShellViewModel.CurrentSortDirection):
+                SyncSelectionVisual(deferSecondPass: true);
+                break;
+        }
+    }
+
+    private void SyncSelectionVisual(bool deferSecondPass = false)
+    {
+        if (_syncingSelectionVisual)
+        {
+            return;
+        }
+
+        _syncingSelectionVisual = true;
+        try
+        {
+            if (!ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
+            {
+                ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
+            }
+        }
+        finally
+        {
+            _syncingSelectionVisual = false;
+        }
+
+        if (!deferSecondPass)
+        {
+            return;
+        }
+
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_syncingSelectionVisual
+                && !ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
+            {
+                _syncingSelectionVisual = true;
+                try
+                {
+                    ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
+                }
+                finally
+                {
+                    _syncingSelectionVisual = false;
+                }
+            }
+        });
+    }
+
+    private async void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingSelectionVisual || sender is not ListView listView)
+        {
+            return;
+        }
+
+        if (listView.SelectedItem is ProcessRowViewState selected)
+        {
+            await ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
+            return;
+        }
+
+        if (ViewModel.SelectedVisibleRowBinding is not null)
+        {
+            // Ignore transient null churn from virtualization/sort transitions.
+            SyncSelectionVisual(deferSecondPass: true);
         }
     }
 

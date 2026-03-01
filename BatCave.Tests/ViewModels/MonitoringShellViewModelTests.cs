@@ -424,6 +424,43 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task ChangeSort_WithSelection_ReassertsSelectedVisibleRowBindingForColumnAndDirectionChanges()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+        int bindingNotificationCount = 0;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(MonitoringShellViewModel.SelectedVisibleRowBinding))
+            {
+                bindingNotificationCount++;
+            }
+        };
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample first = Sample(pid: 163, startTime: 16300, access: AccessState.Full) with { Name = "gamma", CpuPct = 10 };
+        ProcessSample second = Sample(pid: 164, startTime: 16400, access: AccessState.Full) with { Name = "beta", CpuPct = 80 };
+        gateway.RaiseDelta(1, [first, second], []);
+
+        ProcessRowViewState selected = VisibleRows(viewModel).Single(row => row.Pid == second.Pid);
+        viewModel.SelectedVisibleRowBinding = selected;
+        int beforeSortChanges = bindingNotificationCount;
+
+        viewModel.ChangeSort(SortColumn.Name);
+        int afterColumnChange = bindingNotificationCount;
+        viewModel.ChangeSort(SortColumn.Name);
+
+        Assert.True(afterColumnChange > beforeSortChanges);
+        Assert.True(bindingNotificationCount > afterColumnChange);
+        Assert.Same(selected, viewModel.SelectedVisibleRowBinding);
+        Assert.Equal(second.Identity(), viewModel.SelectedRow!.Identity());
+    }
+
+    [Fact]
     public async Task SelectedVisibleRowBinding_WhenRowBecomesHidden_KeepsDetailSelectionAndClearsVisibleSelection()
     {
         SequenceLaunchPolicyGate gate = new(

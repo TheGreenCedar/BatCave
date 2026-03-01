@@ -671,6 +671,7 @@ public partial class MonitoringShellViewModel : ObservableObject
 
         _runtime.SetSort(CurrentSortColumn, CurrentSortDirection);
         ApplySortDescriptions();
+        ReassertSelectionAfterSort();
     }
 
     [RelayCommand]
@@ -857,6 +858,39 @@ public partial class MonitoringShellViewModel : ObservableObject
         }
 
         SelectedVisibleRow = row;
+    }
+
+    private void ReassertSelectionAfterSort()
+    {
+        if (SelectedRow is null)
+        {
+            SelectedVisibleRow = null;
+            return;
+        }
+
+        ProcessIdentity identity = SelectedRow.Identity();
+        if (!_allRows.TryGetValue(identity, out ProcessSample? updated))
+        {
+            ClearSelection();
+            return;
+        }
+
+        SelectedRow = updated;
+        ProcessRowViewState? visibleRow = _visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? rowState)
+            && ShouldShowRow(rowState)
+            ? rowState
+            : null;
+
+        SelectedVisibleRow = visibleRow;
+        OnPropertyChanged(nameof(SelectedVisibleRowBinding));
+
+        _dispatcherQueue?.TryEnqueue(() =>
+        {
+            if (SelectedRow?.Identity() == identity)
+            {
+                OnPropertyChanged(nameof(SelectedVisibleRowBinding));
+            }
+        });
     }
 
     private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
