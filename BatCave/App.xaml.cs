@@ -3,8 +3,15 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using BatCave.Core.Abstractions;
+using BatCave.Core.Collector;
+using BatCave.Core.Domain;
 using BatCave.Core.Operations;
+using BatCave.Core.Pipeline;
 using BatCave.Core.Policy;
+using BatCave.Core.Runtime;
+using BatCave.Core.Sort;
+using BatCave.Core.State;
+using BatCave.Services;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -17,6 +24,7 @@ public partial class App : Application
     private readonly IHost _host;
     private Window? _window;
     private bool _hostStopped;
+    private bool _runtimeLoopWired;
 
     public App()
     {
@@ -47,6 +55,8 @@ public partial class App : Application
             return;
         }
 
+        StartRuntimeLoopIfAllowed();
+
         _window = _host.Services.GetRequiredService<MainWindow>();
         _window.Closed += OnWindowClosed;
         _window.Activate();
@@ -59,10 +69,42 @@ public partial class App : Application
             {
                 services.AddSingleton<ICliOperationsHost, CliOperationsHost>();
                 services.AddSingleton<ILaunchPolicyGate, WindowsLaunchPolicyGate>();
+
+                services.AddSingleton<IProcessCollector, DefaultProcessCollector>();
+                services.AddSingleton<ITelemetryPipeline, DeltaTelemetryPipeline>();
+                services.AddSingleton<IStateStore, InMemoryStateStore>();
+                services.AddSingleton<ISortIndexEngine, NoopSortIndexEngine>();
+
+                services.AddSingleton<MonitoringRuntime>();
+                services.AddSingleton<RuntimeLoopService>();
+                services.AddSingleton<IRuntimeEventGateway, RuntimeGateway>();
+
                 services.AddSingleton<MonitoringShellViewModel>();
                 services.AddSingleton<MainWindow>();
             })
             .Build();
+    }
+
+    private void StartRuntimeLoopIfAllowed()
+    {
+        if (_runtimeLoopWired)
+        {
+            return;
+        }
+
+        StartupGateStatus status = _host.Services.GetRequiredService<ILaunchPolicyGate>().Enforce();
+        if (!status.Passed)
+        {
+            return;
+        }
+
+        RuntimeLoopService runtimeLoopService = _host.Services.GetRequiredService<RuntimeLoopService>();
+        IRuntimeEventGateway runtimeEventGateway = _host.Services.GetRequiredService<IRuntimeEventGateway>();
+
+        runtimeLoopService.TickCompleted += (_, outcome) => runtimeEventGateway.Publish(outcome);
+        runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
+
+        _runtimeLoopWired = true;
     }
 
     private async void OnWindowClosed(object sender, WindowEventArgs args)
@@ -78,6 +120,10 @@ public partial class App : Application
         }
 
         _hostStopped = true;
+
+        RuntimeLoopService? runtimeLoopService = _host.Services.GetService<RuntimeLoopService>();
+        runtimeLoopService?.StopAndAdvanceGeneration();
+
         await _host.StopAsync();
         _host.Dispose();
     }

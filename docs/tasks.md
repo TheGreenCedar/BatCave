@@ -26,11 +26,11 @@
   - [x] 4.4 Implement in-memory row application and compaction hooks.
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [ ] 5. Implement runtime loop, health accounting, and event gateway
-  - [ ] 5.1 Implement 1-second scheduler with jitter and dropped-tick tracking.
-  - [ ] 5.2 Implement generation-aware restart and loop cancellation flow.
-  - [ ] 5.3 Emit telemetry, runtime health, and collector warning events.
-  - [ ] 5.4 Integrate budget/degrade policy calculations into runtime state.
+- [x] 5. Implement runtime loop, health accounting, and event gateway
+  - [x] 5.1 Implement 1-second scheduler with jitter and dropped-tick tracking.
+  - [x] 5.2 Implement generation-aware restart and loop cancellation flow.
+  - [x] 5.3 Emit telemetry, runtime health, and collector warning events.
+  - [x] 5.4 Integrate budget/degrade policy calculations into runtime state.
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
 - [ ] 6. Implement query, sorting, and filtering behavior
