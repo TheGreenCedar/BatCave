@@ -4,6 +4,8 @@ using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BatCave.Charts;
+using BatCave.Converters;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using BatCave.Core.Runtime;
@@ -18,13 +20,21 @@ public enum DetailMetricFocus
 {
     Cpu,
     Memory,
-    Io,
+    IoRead,
+    IoWrite,
     Network,
 }
 
 public class MonitoringShellViewModel : ObservableObject
 {
     private const int FilterDebounceMs = 160;
+    private const int HistoryLimit = 120;
+    private const double RowSparklineWidth = 96;
+    private const double RowSparklineHeight = 22;
+    private const double MetricChipSparklineWidth = 206;
+    private const double MetricChipSparklineHeight = 36;
+    private const double ExpandedSparklineWidth = 960;
+    private const double ExpandedSparklineHeight = 360;
 
     private readonly ILaunchPolicyGate _launchPolicyGate;
     private readonly MonitoringRuntime _runtime;
@@ -34,6 +44,9 @@ public class MonitoringShellViewModel : ObservableObject
 
     private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = new();
     private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = new();
+    private readonly Dictionary<ProcessIdentity, MetricHistoryBuffer> _metricHistory = new();
+    private readonly Dictionary<ProcessIdentity, ProcessRowViewState> _visibleRowStateByIdentity = new();
+    private readonly MetricHistoryBuffer _globalHistory = new(HistoryLimit);
 
     private DispatcherQueue? _dispatcherQueue;
     private CancellationTokenSource? _filterDebounceCts;
@@ -56,11 +69,39 @@ public class MonitoringShellViewModel : ObservableObject
     private string _runtimeHealthStatus = "Runtime health unavailable.";
     private StartupGateStatus _startupGateStatus = new();
     private ProcessSample? _selectedRow;
+    private ProcessRowViewState? _selectedVisibleRow;
     private ProcessMetadata? _selectedMetadata;
     private bool _isMetadataLoading;
     private string? _metadataError;
     private DetailMetricFocus _metricFocus = DetailMetricFocus.Cpu;
     private long _metadataRequestVersion;
+
+    private ulong _summarySeq;
+    private ulong _summaryTsMs;
+    private double _summaryCpuPct;
+    private double _summaryRssBytes;
+    private double _summaryPrivateBytes;
+    private double _summaryIoReadBps;
+    private double _summaryIoWriteBps;
+    private double _summaryNetBps;
+    private double _summaryThreads;
+    private double _summaryHandles;
+    private ProcessSample _globalSummaryRow = CreateEmptyGlobalSummary();
+
+    private string _cpuMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
+    private string _memoryMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
+    private string _ioReadMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
+    private string _ioWriteMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
+    private string _networkMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
+    private string _expandedMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
+
+    private string _cpuMetricChipValue = "0.00%";
+    private string _memoryMetricChipValue = "0 B";
+    private string _ioReadMetricChipValue = "0 B/s";
+    private string _ioWriteMetricChipValue = "0 B/s";
+    private string _networkMetricChipValue = "0 B/s";
+    private string _expandedMetricTitle = "CPU Trend";
+    private string _expandedMetricValue = "0.0% CPU";
 
     public MonitoringShellViewModel(
         ILaunchPolicyGate launchPolicyGate,
@@ -80,7 +121,7 @@ public class MonitoringShellViewModel : ObservableObject
         _runtimeEventGateway.CollectorWarningRaised += OnCollectorWarningRaised;
     }
 
-    public ObservableCollection<ProcessSample> VisibleRows { get; } = [];
+    public ObservableCollection<ProcessRowViewState> VisibleRows { get; } = [];
 
     public bool IsLoading
     {
@@ -275,9 +316,17 @@ public class MonitoringShellViewModel : ObservableObject
             if (SetProperty(ref _selectedRow, value))
             {
                 OnPropertyChanged(nameof(HasSelection));
-                RaiseDetailProperties();
+                OnPropertyChanged(nameof(DetailTitle));
+                RaiseMetadataProperties();
+                RefreshDetailMetrics();
             }
         }
+    }
+
+    public ProcessRowViewState? SelectedVisibleRow
+    {
+        get => _selectedVisibleRow;
+        private set => SetProperty(ref _selectedVisibleRow, value);
     }
 
     public ProcessMetadata? SelectedMetadata
@@ -287,7 +336,7 @@ public class MonitoringShellViewModel : ObservableObject
         {
             if (SetProperty(ref _selectedMetadata, value))
             {
-                RaiseDetailProperties();
+                RaiseMetadataProperties();
             }
         }
     }
@@ -299,7 +348,7 @@ public class MonitoringShellViewModel : ObservableObject
         {
             if (SetProperty(ref _isMetadataLoading, value))
             {
-                RaiseDetailProperties();
+                RaiseMetadataProperties();
             }
         }
     }
@@ -311,7 +360,7 @@ public class MonitoringShellViewModel : ObservableObject
         {
             if (SetProperty(ref _metadataError, value))
             {
-                RaiseDetailProperties();
+                RaiseMetadataProperties();
             }
         }
     }
@@ -323,37 +372,30 @@ public class MonitoringShellViewModel : ObservableObject
         {
             if (SetProperty(ref _metricFocus, value))
             {
-                RaiseDetailProperties();
+                RaiseMetricFocusProperties();
+                RefreshDetailMetrics();
             }
         }
     }
+
+    public bool IsCpuMetricFocused => MetricFocus == DetailMetricFocus.Cpu;
+
+    public bool IsMemoryMetricFocused => MetricFocus == DetailMetricFocus.Memory;
+
+    public bool IsIoReadMetricFocused => MetricFocus == DetailMetricFocus.IoRead;
+
+    public bool IsIoWriteMetricFocused => MetricFocus == DetailMetricFocus.IoWrite;
+
+    public bool IsNetworkMetricFocused => MetricFocus == DetailMetricFocus.Network;
 
     public bool HasSelection => SelectedRow is not null;
 
     public string DetailTitle =>
         SelectedRow is null
-            ? "Global Summary"
+            ? _globalSummaryRow.Name
             : $"{SelectedRow.Name} ({SelectedRow.Pid})";
 
-    public string DetailMetricValue
-    {
-        get
-        {
-            if (SelectedRow is null)
-            {
-                return $"Visible rows: {VisibleRows.Count}";
-            }
-
-            return MetricFocus switch
-            {
-                DetailMetricFocus.Cpu => $"{SelectedRow.CpuPct:F1}% CPU",
-                DetailMetricFocus.Memory => $"{FormatBytes(SelectedRow.RssBytes)} RSS",
-                DetailMetricFocus.Io => $"{FormatRate(SelectedRow.IoReadBps)} read, {FormatRate(SelectedRow.IoWriteBps)} write",
-                DetailMetricFocus.Network => $"{FormatRate(SelectedRow.NetBps)} net",
-                _ => $"{SelectedRow.CpuPct:F1}% CPU",
-            };
-        }
-    }
+    public string DetailMetricValue => ExpandedMetricValue;
 
     public string MetadataStatus
     {
@@ -415,6 +457,90 @@ public class MonitoringShellViewModel : ObservableObject
     public string ThreadsSortLabel => SortLabel("Threads", SortColumn.Threads);
 
     public string HandlesSortLabel => SortLabel("Handles", SortColumn.Handles);
+
+    public string CpuMetricTrendPoints
+    {
+        get => _cpuMetricTrendPoints;
+        private set => SetProperty(ref _cpuMetricTrendPoints, value);
+    }
+
+    public string MemoryMetricTrendPoints
+    {
+        get => _memoryMetricTrendPoints;
+        private set => SetProperty(ref _memoryMetricTrendPoints, value);
+    }
+
+    public string IoReadMetricTrendPoints
+    {
+        get => _ioReadMetricTrendPoints;
+        private set => SetProperty(ref _ioReadMetricTrendPoints, value);
+    }
+
+    public string IoWriteMetricTrendPoints
+    {
+        get => _ioWriteMetricTrendPoints;
+        private set => SetProperty(ref _ioWriteMetricTrendPoints, value);
+    }
+
+    public string NetworkMetricTrendPoints
+    {
+        get => _networkMetricTrendPoints;
+        private set => SetProperty(ref _networkMetricTrendPoints, value);
+    }
+
+    public string ExpandedMetricTrendPoints
+    {
+        get => _expandedMetricTrendPoints;
+        private set => SetProperty(ref _expandedMetricTrendPoints, value);
+    }
+
+    public string CpuMetricChipValue
+    {
+        get => _cpuMetricChipValue;
+        private set => SetProperty(ref _cpuMetricChipValue, value);
+    }
+
+    public string MemoryMetricChipValue
+    {
+        get => _memoryMetricChipValue;
+        private set => SetProperty(ref _memoryMetricChipValue, value);
+    }
+
+    public string IoReadMetricChipValue
+    {
+        get => _ioReadMetricChipValue;
+        private set => SetProperty(ref _ioReadMetricChipValue, value);
+    }
+
+    public string IoWriteMetricChipValue
+    {
+        get => _ioWriteMetricChipValue;
+        private set => SetProperty(ref _ioWriteMetricChipValue, value);
+    }
+
+    public string NetworkMetricChipValue
+    {
+        get => _networkMetricChipValue;
+        private set => SetProperty(ref _networkMetricChipValue, value);
+    }
+
+    public string ExpandedMetricTitle
+    {
+        get => _expandedMetricTitle;
+        private set => SetProperty(ref _expandedMetricTitle, value);
+    }
+
+    public string ExpandedMetricValue
+    {
+        get => _expandedMetricValue;
+        private set
+        {
+            if (SetProperty(ref _expandedMetricValue, value))
+            {
+                OnPropertyChanged(nameof(DetailMetricValue));
+            }
+        }
+    }
 
     public void AttachDispatcherQueue(DispatcherQueue dispatcherQueue)
     {
@@ -555,6 +681,7 @@ public class MonitoringShellViewModel : ObservableObject
 
         ProcessIdentity identity = row.Identity();
         SelectedRow = row;
+        SelectedVisibleRow = TryGetVisibleRow(identity);
         MetadataError = null;
         SelectedMetadata = null;
 
@@ -606,6 +733,7 @@ public class MonitoringShellViewModel : ObservableObject
     {
         Interlocked.Increment(ref _metadataRequestVersion);
         SelectedRow = null;
+        SelectedVisibleRow = null;
         SelectedMetadata = null;
         IsMetadataLoading = false;
         MetadataError = null;
@@ -617,15 +745,46 @@ public class MonitoringShellViewModel : ObservableObject
         {
             foreach (ProcessSample upsert in delta.Upserts)
             {
-                _allRows[upsert.Identity()] = upsert;
+                ProcessIdentity identity = upsert.Identity();
+                if (_allRows.TryGetValue(identity, out ProcessSample? previous))
+                {
+                    ApplySummaryDelta(previous, -1d);
+                }
+
+                _allRows[identity] = upsert;
+                ApplySummaryDelta(upsert, 1d);
+                _summarySeq = Math.Max(_summarySeq, upsert.Seq);
+                _summaryTsMs = Math.Max(_summaryTsMs, upsert.TsMs);
+
+                if (!_metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history))
+                {
+                    history = new MetricHistoryBuffer(HistoryLimit);
+                    _metricHistory[identity] = history;
+                }
+
+                history.Append(upsert);
             }
 
             foreach (ProcessIdentity exit in delta.Exits)
             {
-                _allRows.Remove(exit);
+                if (_allRows.Remove(exit, out ProcessSample? previous))
+                {
+                    ApplySummaryDelta(previous, -1d);
+                }
+
                 _metadataCache.Remove(exit);
+                _metricHistory.Remove(exit);
+                _visibleRowStateByIdentity.Remove(exit);
             }
 
+            _summarySeq = Math.Max(_summarySeq, delta.Seq);
+            if (delta.Upserts.Count == 0)
+            {
+                _summaryTsMs = UnixNowMs();
+            }
+
+            ClampSummary();
+            UpdateGlobalSummaryHistory();
             RefreshVisibleRows();
             ReconcileSelectionAfterDelta();
         });
@@ -650,9 +809,16 @@ public class MonitoringShellViewModel : ObservableObject
     private void LoadSnapshot(IReadOnlyList<ProcessSample> rows)
     {
         _allRows.Clear();
+        _metricHistory.Clear();
+        _visibleRowStateByIdentity.Clear();
         foreach (ProcessSample row in rows)
         {
-            _allRows[row.Identity()] = row;
+            ProcessIdentity identity = row.Identity();
+            _allRows[identity] = row;
+
+            MetricHistoryBuffer history = new(HistoryLimit);
+            history.Append(row);
+            _metricHistory[identity] = history;
         }
 
         HashSet<ProcessIdentity> validIdentities = _allRows.Keys.ToHashSet();
@@ -664,6 +830,11 @@ public class MonitoringShellViewModel : ObservableObject
             }
         }
 
+        ResetSummaryFromRows(_allRows.Values);
+        _globalHistory.Reset();
+        UpdateGlobalSummaryHistory();
+
+        VisibleRows.Clear();
         RefreshVisibleRows();
         ReconcileSelectionAfterDelta();
     }
@@ -672,6 +843,7 @@ public class MonitoringShellViewModel : ObservableObject
     {
         if (SelectedRow is null)
         {
+            SelectedVisibleRow = null;
             return;
         }
 
@@ -679,6 +851,7 @@ public class MonitoringShellViewModel : ObservableObject
         if (_allRows.TryGetValue(identity, out ProcessSample? updated))
         {
             SelectedRow = updated;
+            SelectedVisibleRow = TryGetVisibleRow(identity);
             return;
         }
 
@@ -710,7 +883,8 @@ public class MonitoringShellViewModel : ObservableObject
         List<ProcessSample> next = OrderRows(rows).ToList();
         SynchronizeVisibleRows(next);
 
-        RaiseDetailProperties();
+        SelectedVisibleRow = SelectedRow is null ? null : TryGetVisibleRow(SelectedRow.Identity());
+        RefreshDetailMetrics();
     }
 
     private void SynchronizeVisibleRows(IReadOnlyList<ProcessSample> nextRows)
@@ -720,22 +894,25 @@ public class MonitoringShellViewModel : ObservableObject
         {
             ProcessSample nextRow = nextRows[index];
             ProcessIdentity nextIdentity = nextRow.Identity();
+            ProcessRowViewState nextState = GetOrCreateVisibleRowState(nextRow);
+
+            if (ShouldReplaceVisibleRow(nextState.Sample, nextRow))
+            {
+                nextState.UpdateSample(nextRow);
+            }
+
+            nextState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(nextIdentity, nextRow));
 
             if (index >= VisibleRows.Count)
             {
-                VisibleRows.Add(nextRow);
+                VisibleRows.Add(nextState);
                 index++;
                 continue;
             }
 
-            ProcessSample currentRow = VisibleRows[index];
-            if (currentRow.Identity() == nextIdentity)
+            ProcessRowViewState currentRow = VisibleRows[index];
+            if (ReferenceEquals(currentRow, nextState))
             {
-                if (ShouldReplaceVisibleRow(currentRow, nextRow))
-                {
-                    VisibleRows[index] = nextRow;
-                }
-
                 index++;
                 continue;
             }
@@ -744,16 +921,16 @@ public class MonitoringShellViewModel : ObservableObject
             if (existingIndex >= 0)
             {
                 VisibleRows.Move(existingIndex, index);
-                if (ShouldReplaceVisibleRow(VisibleRows[index], nextRow))
+                if (!ReferenceEquals(VisibleRows[index], nextState))
                 {
-                    VisibleRows[index] = nextRow;
+                    VisibleRows[index] = nextState;
                 }
 
                 index++;
                 continue;
             }
 
-            VisibleRows.Insert(index, nextRow);
+            VisibleRows.Insert(index, nextState);
             index++;
         }
 
@@ -767,13 +944,48 @@ public class MonitoringShellViewModel : ObservableObject
     {
         for (int index = startIndex; index < VisibleRows.Count; index++)
         {
-            if (VisibleRows[index].Identity() == identity)
+            if (VisibleRows[index].Identity == identity)
             {
                 return index;
             }
         }
 
         return -1;
+    }
+
+    private ProcessRowViewState GetOrCreateVisibleRowState(ProcessSample sample)
+    {
+        ProcessIdentity identity = sample.Identity();
+        if (_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? existing))
+        {
+            return existing;
+        }
+
+        ProcessRowViewState state = new(sample, BuildRowCpuTrendPoints(identity, sample));
+        _visibleRowStateByIdentity[identity] = state;
+        return state;
+    }
+
+    private ProcessRowViewState? TryGetVisibleRow(ProcessIdentity identity)
+    {
+        foreach (ProcessRowViewState row in VisibleRows)
+        {
+            if (row.Identity == identity)
+            {
+                return row;
+            }
+        }
+
+        return null;
+    }
+
+    private string BuildRowCpuTrendPoints(ProcessIdentity identity, ProcessSample sample)
+    {
+        IReadOnlyList<double> values = _metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history)
+            ? history.Cpu
+            : MetricHistoryBuffer.Singleton(sample.CpuPct);
+
+        return SparklineMath.BuildPointString(values, RowSparklineWidth, RowSparklineHeight);
     }
 
     private static bool ShouldReplaceVisibleRow(ProcessSample current, ProcessSample next)
@@ -887,14 +1099,223 @@ public class MonitoringShellViewModel : ObservableObject
         OnPropertyChanged(nameof(HandlesSortLabel));
     }
 
-    private void RaiseDetailProperties()
+    private void RaiseMetricFocusProperties()
     {
-        OnPropertyChanged(nameof(DetailTitle));
-        OnPropertyChanged(nameof(DetailMetricValue));
+        OnPropertyChanged(nameof(IsCpuMetricFocused));
+        OnPropertyChanged(nameof(IsMemoryMetricFocused));
+        OnPropertyChanged(nameof(IsIoReadMetricFocused));
+        OnPropertyChanged(nameof(IsIoWriteMetricFocused));
+        OnPropertyChanged(nameof(IsNetworkMetricFocused));
+    }
+
+    private void RaiseMetadataProperties()
+    {
         OnPropertyChanged(nameof(MetadataStatus));
         OnPropertyChanged(nameof(MetadataParentPid));
         OnPropertyChanged(nameof(MetadataCommandLine));
         OnPropertyChanged(nameof(MetadataExecutablePath));
+    }
+
+    private void RefreshDetailMetrics()
+    {
+        ProcessSample detailSample = SelectedRow ?? _globalSummaryRow;
+        MetricHistoryBuffer history = GetDetailHistory(detailSample);
+
+        CpuMetricChipValue = $"{detailSample.CpuPct:F2}%";
+        MemoryMetricChipValue = ValueFormat.FormatBytes(detailSample.RssBytes);
+        IoReadMetricChipValue = ValueFormat.FormatRate(detailSample.IoReadBps);
+        IoWriteMetricChipValue = ValueFormat.FormatRate(detailSample.IoWriteBps);
+        NetworkMetricChipValue = ValueFormat.FormatRate(detailSample.NetBps);
+
+        CpuMetricTrendPoints = SparklineMath.BuildPointString(history.Cpu, MetricChipSparklineWidth, MetricChipSparklineHeight);
+        MemoryMetricTrendPoints = SparklineMath.BuildPointString(history.Memory, MetricChipSparklineWidth, MetricChipSparklineHeight);
+        IoReadMetricTrendPoints = SparklineMath.BuildPointString(history.IoRead, MetricChipSparklineWidth, MetricChipSparklineHeight);
+        IoWriteMetricTrendPoints = SparklineMath.BuildPointString(history.IoWrite, MetricChipSparklineWidth, MetricChipSparklineHeight);
+        NetworkMetricTrendPoints = SparklineMath.BuildPointString(history.Net, MetricChipSparklineWidth, MetricChipSparklineHeight);
+
+        switch (MetricFocus)
+        {
+            case DetailMetricFocus.Cpu:
+                ExpandedMetricTitle = "CPU Trend";
+                ExpandedMetricValue = $"{detailSample.CpuPct:F1}% CPU";
+                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Cpu, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                break;
+            case DetailMetricFocus.Memory:
+                ExpandedMetricTitle = "Memory Trend";
+                ExpandedMetricValue = $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS";
+                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Memory, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                break;
+            case DetailMetricFocus.IoRead:
+                ExpandedMetricTitle = "Disk Read Trend";
+                ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read";
+                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.IoRead, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                break;
+            case DetailMetricFocus.IoWrite:
+                ExpandedMetricTitle = "Disk Write Trend";
+                ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write";
+                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.IoWrite, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                break;
+            case DetailMetricFocus.Network:
+                ExpandedMetricTitle = "Network Trend";
+                ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.NetBps)} net";
+                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Net, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                break;
+            default:
+                ExpandedMetricTitle = "CPU Trend";
+                ExpandedMetricValue = $"{detailSample.CpuPct:F1}% CPU";
+                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Cpu, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                break;
+        }
+    }
+
+    private MetricHistoryBuffer GetDetailHistory(ProcessSample detailSample)
+    {
+        if (SelectedRow is null)
+        {
+            return _globalHistory;
+        }
+
+        if (_metricHistory.TryGetValue(detailSample.Identity(), out MetricHistoryBuffer? history))
+        {
+            return history;
+        }
+
+        MetricHistoryBuffer fallback = new(HistoryLimit);
+        fallback.Append(detailSample);
+        return fallback;
+    }
+
+    private void ResetSummaryFromRows(IEnumerable<ProcessSample> rows)
+    {
+        _summarySeq = 0;
+        _summaryTsMs = UnixNowMs();
+        _summaryCpuPct = 0;
+        _summaryRssBytes = 0;
+        _summaryPrivateBytes = 0;
+        _summaryIoReadBps = 0;
+        _summaryIoWriteBps = 0;
+        _summaryNetBps = 0;
+        _summaryThreads = 0;
+        _summaryHandles = 0;
+
+        foreach (ProcessSample row in rows)
+        {
+            ApplySummaryDelta(row, 1d);
+            _summarySeq = Math.Max(_summarySeq, row.Seq);
+            _summaryTsMs = Math.Max(_summaryTsMs, row.TsMs);
+        }
+
+        ClampSummary();
+    }
+
+    private void ApplySummaryDelta(ProcessSample sample, double multiplier)
+    {
+        _summaryCpuPct += sample.CpuPct * multiplier;
+        _summaryRssBytes += sample.RssBytes * multiplier;
+        _summaryPrivateBytes += sample.PrivateBytes * multiplier;
+        _summaryIoReadBps += sample.IoReadBps * multiplier;
+        _summaryIoWriteBps += sample.IoWriteBps * multiplier;
+        _summaryNetBps += sample.NetBps * multiplier;
+        _summaryThreads += sample.Threads * multiplier;
+        _summaryHandles += sample.Handles * multiplier;
+    }
+
+    private void ClampSummary()
+    {
+        _summaryCpuPct = Math.Max(0d, _summaryCpuPct);
+        _summaryRssBytes = Math.Max(0d, _summaryRssBytes);
+        _summaryPrivateBytes = Math.Max(0d, _summaryPrivateBytes);
+        _summaryIoReadBps = Math.Max(0d, _summaryIoReadBps);
+        _summaryIoWriteBps = Math.Max(0d, _summaryIoWriteBps);
+        _summaryNetBps = Math.Max(0d, _summaryNetBps);
+        _summaryThreads = Math.Max(0d, _summaryThreads);
+        _summaryHandles = Math.Max(0d, _summaryHandles);
+    }
+
+    private void UpdateGlobalSummaryHistory()
+    {
+        _globalSummaryRow = new ProcessSample
+        {
+            Seq = _summarySeq,
+            TsMs = _summaryTsMs,
+            Pid = 0,
+            ParentPid = 0,
+            StartTimeMs = 0,
+            Name = "Global System Values",
+            CpuPct = _summaryCpuPct,
+            RssBytes = ClampToUlong(_summaryRssBytes),
+            PrivateBytes = ClampToUlong(_summaryPrivateBytes),
+            IoReadBps = ClampToUlong(_summaryIoReadBps),
+            IoWriteBps = ClampToUlong(_summaryIoWriteBps),
+            NetBps = ClampToUlong(_summaryNetBps),
+            Threads = ClampToUInt(_summaryThreads),
+            Handles = ClampToUInt(_summaryHandles),
+            AccessState = AccessState.Full,
+        };
+
+        _globalHistory.Append(_globalSummaryRow);
+        if (SelectedRow is null)
+        {
+            OnPropertyChanged(nameof(DetailTitle));
+        }
+    }
+
+    private static ProcessSample CreateEmptyGlobalSummary()
+    {
+        return new ProcessSample
+        {
+            Seq = 0,
+            TsMs = UnixNowMs(),
+            Pid = 0,
+            ParentPid = 0,
+            StartTimeMs = 0,
+            Name = "Global System Values",
+            CpuPct = 0,
+            RssBytes = 0,
+            PrivateBytes = 0,
+            IoReadBps = 0,
+            IoWriteBps = 0,
+            NetBps = 0,
+            Threads = 0,
+            Handles = 0,
+            AccessState = AccessState.Full,
+        };
+    }
+
+    private static ulong ClampToUlong(double value)
+    {
+        if (value <= 0)
+        {
+            return 0;
+        }
+
+        if (value >= ulong.MaxValue)
+        {
+            return ulong.MaxValue;
+        }
+
+        return (ulong)Math.Round(value);
+    }
+
+    private static uint ClampToUInt(double value)
+    {
+        if (value <= 0)
+        {
+            return 0;
+        }
+
+        if (value >= uint.MaxValue)
+        {
+            return uint.MaxValue;
+        }
+
+        return (uint)Math.Round(value);
+    }
+
+    private static ulong UnixNowMs()
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return now <= 0 ? 0UL : (ulong)now;
     }
 
     private static string FormatBlockReason(LaunchBlockReason? reason)
@@ -912,35 +1333,6 @@ public class MonitoringShellViewModel : ObservableObject
                 $"Windows build {reason.DetectedBuild.GetValueOrDefault()} detected. Windows 11 build 22000+ is required.",
             _ => "Startup policy failed due to an unrecognized gate condition.",
         };
-    }
-
-    private static string FormatBytes(ulong value)
-    {
-        const double kb = 1024d;
-        const double mb = kb * 1024d;
-        const double gb = mb * 1024d;
-
-        if (value >= gb)
-        {
-            return $"{value / gb:F2} GB";
-        }
-
-        if (value >= mb)
-        {
-            return $"{value / mb:F1} MB";
-        }
-
-        if (value >= kb)
-        {
-            return $"{value / kb:F1} KB";
-        }
-
-        return $"{value} B";
-    }
-
-    private static string FormatRate(ulong value)
-    {
-        return $"{FormatBytes(value)}/s";
     }
 
     private void RaiseStateVisibilityProperties()

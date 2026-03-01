@@ -143,7 +143,7 @@ public class MonitoringShellViewModelTests
 
         Assert.False(sawReset);
         Assert.Single(viewModel.VisibleRows);
-        Assert.Equal(updatedRow.CpuPct, viewModel.VisibleRows[0].CpuPct);
+        Assert.Equal(updatedRow.CpuPct, viewModel.VisibleRows[0].Sample.CpuPct);
     }
 
     [Fact]
@@ -157,14 +157,69 @@ public class MonitoringShellViewModelTests
 
         await viewModel.BootstrapAsync(CancellationToken.None);
 
-        ProcessSample row = Sample(pid: 21, startTime: 2100, access: AccessState.Full);
+        ProcessSample row = Sample(pid: 21, startTime: 2100, access: AccessState.Full) with { CpuPct = 10 };
         gateway.RaiseDelta(1, [row], []);
-        ProcessSample firstVisible = viewModel.VisibleRows[0];
+        ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 20 };
+        gateway.RaiseDelta(2, [varied], []);
+        ProcessRowViewState firstVisible = viewModel.VisibleRows[0];
+        string beforeTrend = firstVisible.CpuTrendPoints;
 
-        ProcessSample heartbeatOnlyUpdate = row with { Seq = 2, TsMs = 2, ParentPid = row.ParentPid + 1, PrivateBytes = row.PrivateBytes + 1 };
-        gateway.RaiseDelta(2, [heartbeatOnlyUpdate], []);
+        ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
+        gateway.RaiseDelta(3, [heartbeatOnlyUpdate], []);
+        string afterTrend = firstVisible.CpuTrendPoints;
 
         Assert.Same(firstVisible, viewModel.VisibleRows[0]);
+        Assert.NotEqual(beforeTrend, afterTrend);
+    }
+
+    [Fact]
+    public async Task MetricHistory_CapsAtConfiguredLimit()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample current = Sample(pid: 22, startTime: 2200, access: AccessState.Full) with { CpuPct = 0 };
+        for (ulong seq = 1; seq <= 130; seq++)
+        {
+            current = current with
+            {
+                Seq = seq,
+                TsMs = seq,
+                CpuPct = seq,
+            };
+            gateway.RaiseDelta(seq, [current], []);
+        }
+
+        await viewModel.SelectRowAsync(current, CancellationToken.None);
+
+        Assert.Single(viewModel.VisibleRows);
+        Assert.Equal(120, CountPoints(viewModel.VisibleRows[0].CpuTrendPoints));
+        Assert.Equal(120, CountPoints(viewModel.CpuMetricTrendPoints));
+    }
+
+    [Fact]
+    public async Task NoSelection_UsesGlobalSummaryForDetailTrends()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample first = Sample(pid: 40, startTime: 4000, access: AccessState.Full) with { CpuPct = 35 };
+        gateway.RaiseDelta(1, [first], []);
+
+        Assert.Null(viewModel.SelectedRow);
+        Assert.Equal("Global System Values", viewModel.DetailTitle);
+        Assert.NotEqual("0.00%", viewModel.CpuMetricChipValue);
+        Assert.NotEmpty(viewModel.ExpandedMetricTrendPoints);
     }
 
     [Fact]
@@ -207,6 +262,16 @@ public class MonitoringShellViewModelTests
             new TestPersistenceStore());
         RuntimeLoopService loopService = new(runtime);
         return new MonitoringShellViewModel(gate, runtime, loopService, gateway, metadataProvider);
+    }
+
+    private static int CountPoints(string serializedPoints)
+    {
+        if (string.IsNullOrWhiteSpace(serializedPoints))
+        {
+            return 0;
+        }
+
+        return serializedPoints.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
     private static ProcessSample Sample(uint pid, ulong startTime, AccessState access)

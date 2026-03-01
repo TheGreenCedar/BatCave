@@ -180,7 +180,7 @@ public interface IProcessMetadataProvider
 ```
 
 #### Component: RuntimeEventGateway
-**Purpose**: Deliver runtime events to UI subscribers.
+**Purpose**: Deliver runtime events to UI subscribers with tick-synchronous telemetry delta publication (one UI delta event per runtime `seq` tick).
 **Location**: `BatCave/Services/RuntimeEventGateway.cs`
 **Interface**:
 ```csharp
@@ -194,7 +194,7 @@ public interface IRuntimeEventGateway
 ```
 
 #### Component: MonitoringShellViewModel
-**Purpose**: Orchestrate UI states, sort/filter/admin toggles, selection, metadata caching, and retry logic.
+**Purpose**: Orchestrate UI states, sort/filter/admin toggles, selection, metadata caching, retry logic, and graph-ready metric history projection (row sparklines, detail chips, and expanded trend focus with global fallback).
 **Location**: `BatCave/ViewModels/MonitoringShellViewModel.cs`
 **Interface**:
 ```csharp
@@ -210,8 +210,35 @@ public sealed partial class MonitoringShellViewModel : ObservableObject
 }
 ```
 
+#### Component: SparklineMath
+**Purpose**: Convert bounded metric value histories into WinUI polyline point payloads with deterministic scaling behavior (empty/single-value/constant/variance cases).
+**Location**: `BatCave/Charts/SparklineMath.cs`
+**Interface**:
+```csharp
+public static class SparklineMath
+{
+    public static IReadOnlyList<Point> BuildPoints(IReadOnlyList<double> values, double width, double height);
+    public static string BuildPointString(IReadOnlyList<double> values, double width, double height);
+}
+```
+
+#### Component: ProcessRowViewState
+**Purpose**: Preserve ListView item identity while exposing per-row process values and CPU trend sparkline payloads.
+**Location**: `BatCave/ViewModels/ProcessRowViewState.cs`
+**Interface**:
+```csharp
+public sealed class ProcessRowViewState : ObservableObject
+{
+    public ProcessSample Sample { get; }
+    public ProcessIdentity Identity { get; }
+    public string CpuTrendPoints { get; }
+    public void UpdateSample(ProcessSample sample);
+    public void UpdateCpuTrendPoints(string points);
+}
+```
+
 #### Component: MonitoringShellView
-**Purpose**: Render top bar, virtualized table, detail panel, and health footer.
+**Purpose**: Render top bar, virtualized table, row CPU sparklines, detail metric chips with mini trends, expanded focus graph, and health footer.
 **Location**: `BatCave/MainWindow.xaml`, `BatCave/Views/*`
 **Interface**:
 ```xaml

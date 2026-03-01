@@ -58,12 +58,13 @@ public sealed partial class MainWindow : Window
     {
         if (sender is ListView listView)
         {
-            if (listView.SelectedItem is not ProcessSample selected)
+            if (listView.SelectedItem is not ProcessRowViewState selected)
             {
+                await ViewModel.ToggleSelectionAsync(null, CancellationToken.None);
                 return;
             }
 
-            await ViewModel.ToggleSelectionAsync(selected, CancellationToken.None);
+            await ViewModel.ToggleSelectionAsync(selected.Sample, CancellationToken.None);
         }
     }
 
@@ -72,20 +73,13 @@ public sealed partial class MainWindow : Window
         ViewModel.ClearSelection();
     }
 
-    private void MetricFocusCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void MetricChip_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not ComboBox comboBox || comboBox.SelectedIndex < 0)
+        if (sender is not FrameworkElement { Tag: string tag } || !Enum.TryParse(tag, out DetailMetricFocus focus))
         {
             return;
         }
 
-        ViewModel.MetricFocus = comboBox.SelectedIndex switch
-        {
-            0 => DetailMetricFocus.Cpu,
-            1 => DetailMetricFocus.Memory,
-            2 => DetailMetricFocus.Io,
-            3 => DetailMetricFocus.Network,
-            _ => DetailMetricFocus.Cpu,
-        };
+        ViewModel.MetricFocus = focus;
     }
 }

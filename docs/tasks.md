@@ -87,3 +87,11 @@
   - [x] 13.2 Improve live-shell hierarchy with clearer table headers and panel emphasis.
   - [x] 13.3 Add a dedicated WinUI validation script for faster XAML compile feedback.
   - _Requirements: 9.4, 10.2, 10.3, 10.4_
+
+- [x] 14. Port graph parity from AlbertsCave into WinUI shell
+  - [x] 14.1 Add deterministic sparkline math and bounded 120-sample metric history buffers.
+  - [x] 14.2 Add row-level CPU trend column with identity-stable row view state updates.
+  - [x] 14.3 Add detail metric chips (CPU, Memory, Disk Read, Disk Write, Network) with mini-trend sparklines.
+  - [x] 14.4 Add expanded trend graph with global-summary fallback when no process is selected.
+  - [x] 14.5 Add/extend unit tests for sparkline math, history caps, heartbeat row identity, and global fallback detail trends.
+  - _Requirements: 9.2, 9.3, 9.4, 10.4_

@@ -63,3 +63,10 @@
 
 ## 3. Final Validation
 All 44 acceptance criteria are fully traced to implementation tasks. The plan is validated and ready for execution.
+
+## 4. Post-Port Graph Parity Validation
+
+- `dotnet test BatCave.slnx` passes with graph-specific coverage:
+  - `SparklineMathTests` validates empty/single-value/constant/variance point generation.
+  - `MonitoringShellViewModelTests` validates row identity retention, history cap at 120 samples, and global-summary graph fallback behavior.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-winui.ps1` passes (build + tests), with one environment warning from Windows SDK packaging about missing `mspdbcmf.exe` symbols tooling.

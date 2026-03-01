@@ -70,7 +70,8 @@ public sealed class ResourceBudgetGuardian
 
         return new RuntimePolicy
         {
-            EmitTelemetryDelta = seq % _emitStride == 0,
+            // UI must remain tick-synchronous with runtime seq progression.
+            EmitTelemetryDelta = true,
             WarmCacheInterval = warmCacheInterval,
             CompactMaxRows = compactMaxRows,
         };
