@@ -68,11 +68,11 @@
   - [x] 10.4 Implement runtime health footer and state-based shell rendering.
   - _Requirements: 9.1, 9.2, 9.3, 9.4_
 
-- [ ] 11. Implement CLI operational modes and PowerShell scripts
-  - [ ] 11.1 Implement `--print-gate-status` output and exit-code behavior.
-  - [ ] 11.2 Implement `--benchmark` execution and summary projection.
-  - [ ] 11.3 Implement strict benchmark gating thresholds.
-  - [ ] 11.4 Add `scripts/run-dev.ps1` and `scripts/run-benchmark.ps1` for WinUI/.NET workflows.
+- [x] 11. Implement CLI operational modes and PowerShell scripts
+  - [x] 11.1 Implement `--print-gate-status` output and exit-code behavior.
+  - [x] 11.2 Implement `--benchmark` execution and summary projection.
+  - [x] 11.3 Implement strict benchmark gating thresholds.
+  - [x] 11.4 Add `scripts/run-dev.ps1` and `scripts/run-benchmark.ps1` for WinUI/.NET workflows.
   - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
 - [ ] 12. Validate parity, performance, and deployment completeness
