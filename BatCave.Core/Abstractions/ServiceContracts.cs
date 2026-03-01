@@ -53,6 +53,8 @@ public interface IPersistenceStore
 
     Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct);
 
+    Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct);
+
     string BaseDirectory { get; }
 }
 

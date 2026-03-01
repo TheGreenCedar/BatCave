@@ -9,23 +9,54 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
     private readonly ITelemetryPipeline _pipeline;
     private readonly IStateStore _stateStore;
     private readonly ISortIndexEngine _sortIndexEngine;
+    private readonly IPersistenceStore _persistenceStore;
     private readonly ResourceBudgetGuardian _budgetGuardian = new();
     private readonly List<double> _jitterSamples = [];
 
-    private QueryRequest _queryRequest = new();
+    private QueryRequest _queryRequest;
     private RuntimeHealth _health = new();
+    private UserSettings _settings;
     private ulong _seq;
 
     public MonitoringRuntime(
         IProcessCollector collector,
         ITelemetryPipeline pipeline,
         IStateStore stateStore,
-        ISortIndexEngine sortIndexEngine)
+        ISortIndexEngine sortIndexEngine,
+        IPersistenceStore persistenceStore)
     {
         _collector = collector;
         _pipeline = pipeline;
         _stateStore = stateStore;
         _sortIndexEngine = sortIndexEngine;
+        _persistenceStore = persistenceStore;
+
+        _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
+        _queryRequest = new QueryRequest
+        {
+            Offset = 0,
+            Limit = 5000,
+            SortCol = _settings.SortCol,
+            SortDir = _settings.SortDir,
+            FilterText = _settings.FilterText,
+        };
+
+        WarmCache? warmCache = _persistenceStore.LoadWarmCache();
+        if (warmCache is not null)
+        {
+            _pipeline.SeedFromWarmCache(warmCache.Rows);
+            _stateStore.ImportWarmCache(warmCache);
+            _seq = Math.Max(_seq, warmCache.Seq);
+        }
+
+        TryPersist(() => _persistenceStore.AppendDiagnosticAsync("runtime_startup", new
+        {
+            warm_cache_rows = warmCache?.Rows.Count ?? 0,
+            sort_col = _settings.SortCol,
+            sort_dir = _settings.SortDir,
+            filter_text = _settings.FilterText,
+            admin_mode = _settings.AdminMode,
+        }, CancellationToken.None));
     }
 
     public QueryResponse GetSnapshot()
@@ -41,28 +72,48 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
 
     public void SetSort(SortColumn sortCol, SortDirection sortDir)
     {
+        _settings = _settings with
+        {
+            SortCol = sortCol,
+            SortDir = sortDir,
+        };
+
         _queryRequest = _queryRequest with
         {
             SortCol = sortCol,
             SortDir = sortDir,
         };
+
+        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
     }
 
     public void SetFilter(string filterText)
     {
+        _settings = _settings with
+        {
+            FilterText = filterText,
+        };
+
         _queryRequest = _queryRequest with
         {
             FilterText = filterText,
         };
+
+        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
     }
 
     public bool IsAdminMode()
     {
-        return false;
+        return _settings.AdminMode;
     }
 
     public Task RestartAsync(bool adminMode, CancellationToken ct)
     {
+        _settings = _settings with
+        {
+            AdminMode = adminMode,
+        };
+        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, ct));
         return Task.CompletedTask;
     }
 
@@ -131,6 +182,27 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
             DegradeMode = _budgetGuardian.IsDegraded(),
         };
 
+        if (_seq % policy.WarmCacheInterval == 0)
+        {
+            WarmCache cache = _stateStore.ExportWarmCache(_seq);
+            TryPersist(() => _persistenceStore.SaveWarmCacheAsync(cache, CancellationToken.None));
+        }
+
+        TryPersist(() => _persistenceStore.AppendDiagnosticAsync("runtime_tick", new
+        {
+            seq = _seq,
+            rows = _stateStore.RowCount(),
+            emit_delta = policy.EmitTelemetryDelta,
+            degrade_mode = _health.DegradeMode,
+            jitter_p95_ms = _health.JitterP95Ms,
+            dropped_ticks = _health.DroppedTicks,
+        }, CancellationToken.None));
+
+        if (warning is not null)
+        {
+            TryPersist(() => _persistenceStore.AppendDiagnosticAsync("collector_warning", warning, CancellationToken.None));
+        }
+
         return new TickOutcome
         {
             Delta = delta,
@@ -164,5 +236,17 @@ public sealed class MonitoringRuntime : IMonitoringRuntime
     {
         const ulong baseline = 48 * 1024 * 1024;
         return baseline + (ulong)Math.Max(0, rowCount) * 2_048;
+    }
+
+    private static void TryPersist(Func<Task> saveAction)
+    {
+        try
+        {
+            saveAction().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // keep runtime resilient if local persistence is temporarily unavailable
+        }
     }
 }

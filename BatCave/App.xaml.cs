@@ -7,6 +7,7 @@ using BatCave.Core.Collector;
 using BatCave.Core.Domain;
 using BatCave.Core.Operations;
 using BatCave.Core.Pipeline;
+using BatCave.Core.Persistence;
 using BatCave.Core.Policy;
 using BatCave.Core.Runtime;
 using BatCave.Core.Sort;
@@ -74,6 +75,7 @@ public partial class App : Application
                 services.AddSingleton<ITelemetryPipeline, DeltaTelemetryPipeline>();
                 services.AddSingleton<IStateStore, InMemoryStateStore>();
                 services.AddSingleton<ISortIndexEngine, IncrementalSortIndexEngine>();
+                services.AddSingleton<IPersistenceStore, LocalJsonPersistenceStore>();
 
                 services.AddSingleton<MonitoringRuntime>();
                 services.AddSingleton<RuntimeLoopService>();

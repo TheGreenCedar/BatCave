@@ -40,11 +40,11 @@
   - [x] 6.4 Port incremental ordering updates and rebuild threshold behavior.
   - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
-- [ ] 7. Implement local persistence and diagnostics
-  - [ ] 7.1 Port settings persistence to `%LOCALAPPDATA%\\BatCaveMonitor`.
-  - [ ] 7.2 Port warm-cache load/save and startup hydration.
-  - [ ] 7.3 Port structured local diagnostics logging and rotation behavior.
-  - [ ] 7.4 Add guardrails/tests to verify local-only diagnostics posture.
+- [x] 7. Implement local persistence and diagnostics
+  - [x] 7.1 Port settings persistence to `%LOCALAPPDATA%\\BatCaveMonitor`.
+  - [x] 7.2 Port warm-cache load/save and startup hydration.
+  - [x] 7.3 Port structured local diagnostics logging and rotation behavior.
+  - [x] 7.4 Add guardrails/tests to verify local-only diagnostics posture.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
 - [ ] 8. Implement admin-mode elevated bridge parity
