@@ -51,6 +51,7 @@ public sealed class ElevatedBridgeClient : IDisposable
 {
     private const ulong BridgeStaleTimeoutMs = 4_000;
     private const ulong BridgeStartupGraceMs = 10_000;
+    internal static Func<ulong>? NowMsOverrideForTest { get; set; }
 
     private readonly string _dataFile;
     private readonly string _stopFile;
@@ -64,13 +65,13 @@ public sealed class ElevatedBridgeClient : IDisposable
     private ulong? _lastSuccessMs;
     private string? _faultReason;
 
-    private ElevatedBridgeClient(string dataFile, string stopFile, string token, uint helperPid)
+    private ElevatedBridgeClient(string dataFile, string stopFile, string token, uint helperPid, ulong? launchedMs = null)
     {
         _dataFile = dataFile;
         _stopFile = stopFile;
         _token = token;
         _helperPid = helperPid;
-        _launchedMs = NowMs();
+        _launchedMs = launchedMs ?? NowMs();
     }
 
     public static async Task<ElevatedBridgeClient> LaunchAsync(CancellationToken ct)
@@ -88,6 +89,11 @@ public sealed class ElevatedBridgeClient : IDisposable
 
         uint helperPid = await LaunchElevatedHelperProcessAsync(dataFile, stopFile, token, ct).ConfigureAwait(false);
         return new ElevatedBridgeClient(dataFile, stopFile, token, helperPid);
+    }
+
+    internal static ElevatedBridgeClient CreateForTest(string dataFile, string stopFile, string token, ulong launchedMs)
+    {
+        return new ElevatedBridgeClient(dataFile, stopFile, token, helperPid: 0, launchedMs: launchedMs);
     }
 
     public BridgePollResult PollRows()
@@ -297,6 +303,11 @@ public sealed class ElevatedBridgeClient : IDisposable
 
     private static ulong NowMs()
     {
+        if (NowMsOverrideForTest is not null)
+        {
+            return NowMsOverrideForTest();
+        }
+
         return (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 

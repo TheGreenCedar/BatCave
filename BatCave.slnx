@@ -5,6 +5,7 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="BatCave.Core.Tests/BatCave.Core.Tests.csproj" />
+  <Project Path="BatCave.Tests/BatCave.Tests.csproj" />
   <Project Path="BatCave.Core/BatCave.Core.csproj" />
   <Project Path="BatCave/BatCave.csproj">
     <Platform Solution="*|ARM64" Project="ARM64" />

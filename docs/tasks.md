@@ -75,9 +75,9 @@
   - [x] 11.4 Add `scripts/run-dev.ps1` and `scripts/run-benchmark.ps1` for WinUI/.NET workflows.
   - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
-- [ ] 12. Validate parity, performance, and deployment completeness
-  - [ ] 12.1 Add automated unit tests for pipeline, sort engine, bridge, and policy behavior.
-  - [ ] 12.2 Add ViewModel-level tests for blocked/retry/admin/metadata scenarios.
-  - [ ] 12.3 Verify packaged and unpackaged startup/runtime parity across architectures.
-  - [ ] 12.4 Run benchmark and startup-gate CLI smoke checks from scripts.
+- [x] 12. Validate parity, performance, and deployment completeness
+  - [x] 12.1 Add automated unit tests for pipeline, sort engine, bridge, and policy behavior.
+  - [x] 12.2 Add ViewModel-level tests for blocked/retry/admin/metadata scenarios.
+  - [x] 12.3 Verify packaged and unpackaged startup/runtime parity across architectures.
+  - [x] 12.4 Run benchmark and startup-gate CLI smoke checks from scripts.
   - _Requirements: 1.4, 3.4, 4.2, 7.3, 9.1, 10.4, 11.2, 11.4_
