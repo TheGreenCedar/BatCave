@@ -539,7 +539,6 @@ public class MonitoringShellViewModel : ObservableObject
 
         if (SelectedRow?.Identity() == row.Identity())
         {
-            ClearSelection();
             return;
         }
 
@@ -627,8 +626,8 @@ public class MonitoringShellViewModel : ObservableObject
                 _metadataCache.Remove(exit);
             }
 
-            ReconcileSelectionAfterDelta();
             RefreshVisibleRows();
+            ReconcileSelectionAfterDelta();
         });
     }
 
@@ -665,8 +664,8 @@ public class MonitoringShellViewModel : ObservableObject
             }
         }
 
-        ReconcileSelectionAfterDelta();
         RefreshVisibleRows();
+        ReconcileSelectionAfterDelta();
     }
 
     private void ReconcileSelectionAfterDelta()
@@ -709,14 +708,85 @@ public class MonitoringShellViewModel : ObservableObject
         }
 
         List<ProcessSample> next = OrderRows(rows).ToList();
-
-        VisibleRows.Clear();
-        foreach (ProcessSample row in next)
-        {
-            VisibleRows.Add(row);
-        }
+        SynchronizeVisibleRows(next);
 
         RaiseDetailProperties();
+    }
+
+    private void SynchronizeVisibleRows(IReadOnlyList<ProcessSample> nextRows)
+    {
+        int index = 0;
+        while (index < nextRows.Count)
+        {
+            ProcessSample nextRow = nextRows[index];
+            ProcessIdentity nextIdentity = nextRow.Identity();
+
+            if (index >= VisibleRows.Count)
+            {
+                VisibleRows.Add(nextRow);
+                index++;
+                continue;
+            }
+
+            ProcessSample currentRow = VisibleRows[index];
+            if (currentRow.Identity() == nextIdentity)
+            {
+                if (ShouldReplaceVisibleRow(currentRow, nextRow))
+                {
+                    VisibleRows[index] = nextRow;
+                }
+
+                index++;
+                continue;
+            }
+
+            int existingIndex = IndexOfVisibleRow(nextIdentity, index + 1);
+            if (existingIndex >= 0)
+            {
+                VisibleRows.Move(existingIndex, index);
+                if (ShouldReplaceVisibleRow(VisibleRows[index], nextRow))
+                {
+                    VisibleRows[index] = nextRow;
+                }
+
+                index++;
+                continue;
+            }
+
+            VisibleRows.Insert(index, nextRow);
+            index++;
+        }
+
+        while (VisibleRows.Count > nextRows.Count)
+        {
+            VisibleRows.RemoveAt(VisibleRows.Count - 1);
+        }
+    }
+
+    private int IndexOfVisibleRow(ProcessIdentity identity, int startIndex)
+    {
+        for (int index = startIndex; index < VisibleRows.Count; index++)
+        {
+            if (VisibleRows[index].Identity() == identity)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool ShouldReplaceVisibleRow(ProcessSample current, ProcessSample next)
+    {
+        return current.Name != next.Name
+            || current.CpuPct != next.CpuPct
+            || current.RssBytes != next.RssBytes
+            || current.IoReadBps != next.IoReadBps
+            || current.IoWriteBps != next.IoWriteBps
+            || current.NetBps != next.NetBps
+            || current.Threads != next.Threads
+            || current.Handles != next.Handles
+            || current.AccessState != next.AccessState;
     }
 
     private IOrderedEnumerable<ProcessSample> OrderRows(IEnumerable<ProcessSample> rows)

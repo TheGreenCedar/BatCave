@@ -7,6 +7,7 @@ using BatCave.Core.State;
 using BatCave.Services;
 using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
+using System.Collections.Specialized;
 
 namespace BatCave.Tests.ViewModels;
 
@@ -112,6 +113,85 @@ public class MonitoringShellViewModelTests
         await viewModel.SelectRowAsync(first, CancellationToken.None);
         Assert.NotNull(viewModel.SelectedMetadata);
         Assert.Null(viewModel.MetadataError);
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_RefreshesVisibleRowsWithoutCollectionReset()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 20, startTime: 2000, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+
+        bool sawReset = false;
+        viewModel.VisibleRows.CollectionChanged += (_, args) =>
+        {
+            if (args.Action == NotifyCollectionChangedAction.Reset)
+            {
+                sawReset = true;
+            }
+        };
+
+        ProcessSample updatedRow = row with { Seq = 2, TsMs = 2, CpuPct = 67.4 };
+        gateway.RaiseDelta(2, [updatedRow], []);
+
+        Assert.False(sawReset);
+        Assert.Single(viewModel.VisibleRows);
+        Assert.Equal(updatedRow.CpuPct, viewModel.VisibleRows[0].CpuPct);
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_HeartbeatOnly_DoesNotReplaceVisibleRowInstance()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 21, startTime: 2100, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+        ProcessSample firstVisible = viewModel.VisibleRows[0];
+
+        ProcessSample heartbeatOnlyUpdate = row with { Seq = 2, TsMs = 2, ParentPid = row.ParentPid + 1, PrivateBytes = row.PrivateBytes + 1 };
+        gateway.RaiseDelta(2, [heartbeatOnlyUpdate], []);
+
+        Assert.Same(firstVisible, viewModel.VisibleRows[0]);
+    }
+
+    [Fact]
+    public async Task ToggleSelection_SameIdentity_DoesNotClearSelection()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
+        {
+            Pid = pid,
+            ParentPid = 1,
+        }));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 30, startTime: 3000, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+        await viewModel.ToggleSelectionAsync(row, CancellationToken.None);
+
+        Assert.NotNull(viewModel.SelectedRow);
+        Assert.Equal(row.Identity(), viewModel.SelectedRow!.Identity());
+        Assert.NotNull(viewModel.SelectedMetadata);
+        Assert.True(viewModel.HasSelection);
     }
 
     private static MonitoringShellViewModel CreateViewModel(

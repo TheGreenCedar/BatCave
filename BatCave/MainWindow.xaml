@@ -124,9 +124,13 @@
                             x:Name="ProcessListView"
                             Grid.Row="1"
                             ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=OneWay}"
                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                             SelectionChanged="ProcessListView_SelectionChanged"
                             SelectionMode="Single">
+                            <ListView.ItemContainerTransitions>
+                                <TransitionCollection />
+                            </ListView.ItemContainerTransitions>
                             <ListView.ItemContainerStyle>
                                 <Style TargetType="ListViewItem">
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />

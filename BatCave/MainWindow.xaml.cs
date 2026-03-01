@@ -58,7 +58,12 @@ public sealed partial class MainWindow : Window
     {
         if (sender is ListView listView)
         {
-            await ViewModel.ToggleSelectionAsync(listView.SelectedItem as ProcessSample, CancellationToken.None);
+            if (listView.SelectedItem is not ProcessSample selected)
+            {
+                return;
+            }
+
+            await ViewModel.ToggleSelectionAsync(selected, CancellationToken.None);
         }
     }
 
