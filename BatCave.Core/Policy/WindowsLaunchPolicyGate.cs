@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.InteropServices;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 
@@ -7,7 +6,7 @@ namespace BatCave.Core.Policy;
 
 public sealed class WindowsLaunchPolicyGate : ILaunchPolicyGate
 {
-    private const uint Windows11Build = 22000;
+    private const int Windows11Build = 22000;
 
     public StartupGateStatus Enforce()
     {
@@ -17,58 +16,21 @@ public sealed class WindowsLaunchPolicyGate : ILaunchPolicyGate
                 LaunchBlockReason.UnsupportedPlatform(Environment.OSVersion.Platform.ToString().ToLowerInvariant()));
         }
 
-        if (!TryGetWindowsBuild(out uint build))
+        int build = Environment.OSVersion.Version.Build;
+        if (build <= 0)
         {
             return StartupGateStatus.Blocked(LaunchBlockReason.UnsupportedPlatform("windows"));
         }
 
-        if (build < Windows11Build)
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, Windows11Build))
         {
-            return StartupGateStatus.Blocked(LaunchBlockReason.RequiresWindows11(build));
+            return StartupGateStatus.Blocked(LaunchBlockReason.RequiresWindows11((uint)build));
         }
 
         return StartupGateStatus.PassedContext(new LaunchContext
         {
             Os = "windows",
-            WindowsBuild = build,
+            WindowsBuild = (uint)build,
         });
     }
-
-    private static bool TryGetWindowsBuild(out uint build)
-    {
-        build = 0;
-        if (!OperatingSystem.IsWindows())
-        {
-            return false;
-        }
-
-        RTL_OSVERSIONINFOW info = new RTL_OSVERSIONINFOW
-        {
-            dwOSVersionInfoSize = (uint)Marshal.SizeOf<RTL_OSVERSIONINFOW>(),
-        };
-
-        int status = RtlGetVersion(ref info);
-        if (status != 0)
-        {
-            return false;
-        }
-
-        build = info.dwBuildNumber;
-        return true;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct RTL_OSVERSIONINFOW
-    {
-        public uint dwOSVersionInfoSize;
-        public uint dwMajorVersion;
-        public uint dwMinorVersion;
-        public uint dwBuildNumber;
-        public uint dwPlatformId;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string szCSDVersion;
-    }
-
-    [DllImport("ntdll.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern int RtlGetVersion(ref RTL_OSVERSIONINFOW versionInfo);
 }

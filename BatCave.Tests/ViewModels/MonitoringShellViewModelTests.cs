@@ -7,7 +7,6 @@ using BatCave.Core.State;
 using BatCave.Services;
 using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
-using System.Collections.Specialized;
 
 namespace BatCave.Tests.ViewModels;
 
@@ -65,18 +64,18 @@ public class MonitoringShellViewModelTests
         ProcessSample denied = Sample(pid: 2, startTime: 200, access: AccessState.Denied);
         gateway.RaiseDelta(1, [full, denied], []);
 
-        Assert.Single(viewModel.VisibleRows);
-        Assert.Equal(1U, viewModel.VisibleRows[0].Pid);
+        Assert.Single(VisibleRows(viewModel));
+        Assert.Equal(1U, RowAt(viewModel, 0).Pid);
 
         await viewModel.ToggleAdminModeAsync(true, CancellationToken.None);
         gateway.RaiseDelta(2, [full, denied], []);
 
         Assert.True(viewModel.AdminModeEnabled);
-        Assert.Equal(2, viewModel.VisibleRows.Count);
+        Assert.Equal(2, VisibleRows(viewModel).Count);
 
         viewModel.AdminEnabledOnlyFilter = true;
-        Assert.Single(viewModel.VisibleRows);
-        Assert.Equal(AccessState.Full, viewModel.VisibleRows[0].AccessState);
+        Assert.Single(VisibleRows(viewModel));
+        Assert.Equal(AccessState.Full, RowAt(viewModel, 0).AccessState);
     }
 
     [Fact]
@@ -128,22 +127,14 @@ public class MonitoringShellViewModelTests
 
         ProcessSample row = Sample(pid: 20, startTime: 2000, access: AccessState.Full);
         gateway.RaiseDelta(1, [row], []);
-
-        bool sawReset = false;
-        viewModel.VisibleRows.CollectionChanged += (_, args) =>
-        {
-            if (args.Action == NotifyCollectionChangedAction.Reset)
-            {
-                sawReset = true;
-            }
-        };
+        ProcessRowViewState firstVisible = RowAt(viewModel, 0);
 
         ProcessSample updatedRow = row with { Seq = 2, TsMs = 2, CpuPct = 67.4 };
         gateway.RaiseDelta(2, [updatedRow], []);
 
-        Assert.False(sawReset);
-        Assert.Single(viewModel.VisibleRows);
-        Assert.Equal(updatedRow.CpuPct, viewModel.VisibleRows[0].Sample.CpuPct);
+        Assert.Single(VisibleRows(viewModel));
+        Assert.Same(firstVisible, RowAt(viewModel, 0));
+        Assert.Equal(updatedRow.CpuPct, RowAt(viewModel, 0).Sample.CpuPct);
     }
 
     [Fact]
@@ -161,34 +152,23 @@ public class MonitoringShellViewModelTests
         ProcessSample mid = Sample(pid: 101, startTime: 1001, access: AccessState.Full) with { CpuPct = 50 };
         ProcessSample low = Sample(pid: 102, startTime: 1002, access: AccessState.Full) with { CpuPct = 10 };
         gateway.RaiseDelta(1, [high, mid, low], []);
-
-        int moveCount = 0;
-        bool sawReplace = false;
-        viewModel.VisibleRows.CollectionChanged += (_, args) =>
-        {
-            if (args.Action == NotifyCollectionChangedAction.Move)
-            {
-                moveCount++;
-            }
-
-            if (args.Action == NotifyCollectionChangedAction.Replace)
-            {
-                sawReplace = true;
-            }
-        };
+        ProcessRowViewState highState = VisibleRows(viewModel).Single(row => row.Pid == high.Pid);
+        ProcessRowViewState midState = VisibleRows(viewModel).Single(row => row.Pid == mid.Pid);
+        ProcessRowViewState lowState = VisibleRows(viewModel).Single(row => row.Pid == low.Pid);
 
         ProcessSample highNowLow = high with { Seq = 2, TsMs = 2, CpuPct = 5 };
         ProcessSample midNowHigh = mid with { Seq = 2, TsMs = 2, CpuPct = 95 };
         ProcessSample lowNowMid = low with { Seq = 2, TsMs = 2, CpuPct = 55 };
         gateway.RaiseDelta(2, [highNowLow, midNowHigh, lowNowMid], []);
 
-        Assert.True(moveCount > 0);
-        Assert.False(sawReplace);
         Assert.Collection(
-            viewModel.VisibleRows,
+            VisibleRows(viewModel),
             row => Assert.Equal(mid.Pid, row.Pid),
             row => Assert.Equal(low.Pid, row.Pid),
             row => Assert.Equal(high.Pid, row.Pid));
+        Assert.Same(midState, RowAt(viewModel, 0));
+        Assert.Same(lowState, RowAt(viewModel, 1));
+        Assert.Same(highState, RowAt(viewModel, 2));
     }
 
     [Fact]
@@ -205,31 +185,20 @@ public class MonitoringShellViewModelTests
         ProcessSample first = Sample(pid: 110, startTime: 1110, access: AccessState.Full) with { CpuPct = 1.0040 };
         ProcessSample second = Sample(pid: 111, startTime: 1111, access: AccessState.Full) with { CpuPct = 1.0030 };
         gateway.RaiseDelta(1, [first, second], []);
-        Assert.Equal(first.Pid, viewModel.VisibleRows[0].Pid);
-
-        int moveCount = 0;
-        viewModel.VisibleRows.CollectionChanged += (_, args) =>
-        {
-            if (args.Action == NotifyCollectionChangedAction.Move)
-            {
-                moveCount++;
-            }
-        };
+        Assert.Equal(first.Pid, RowAt(viewModel, 0).Pid);
 
         // Both values still render as 1.00%; hidden jitter should not churn order.
         ProcessSample firstJitter = first with { Seq = 2, TsMs = 2, CpuPct = 1.0031 };
         ProcessSample secondJitter = second with { Seq = 2, TsMs = 2, CpuPct = 1.0049 };
         gateway.RaiseDelta(2, [firstJitter, secondJitter], []);
 
-        Assert.Equal(0, moveCount);
-        Assert.Equal(first.Pid, viewModel.VisibleRows[0].Pid);
+        Assert.Equal(first.Pid, RowAt(viewModel, 0).Pid);
 
         // Meaningful displayed difference should still reorder.
         ProcessSample secondMeaningful = secondJitter with { Seq = 3, TsMs = 3, CpuPct = 1.0200 };
         gateway.RaiseDelta(3, [firstJitter with { Seq = 3, TsMs = 3 }, secondMeaningful], []);
 
-        Assert.True(moveCount > 0);
-        Assert.Equal(second.Pid, viewModel.VisibleRows[0].Pid);
+        Assert.Equal(second.Pid, RowAt(viewModel, 0).Pid);
     }
 
     [Fact]
@@ -247,14 +216,14 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [row], []);
         ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 20 };
         gateway.RaiseDelta(2, [varied], []);
-        ProcessRowViewState firstVisible = viewModel.VisibleRows[0];
+        ProcessRowViewState firstVisible = RowAt(viewModel, 0);
         string beforeTrend = firstVisible.CpuTrendPoints;
 
         ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
         gateway.RaiseDelta(3, [heartbeatOnlyUpdate], []);
         string afterTrend = firstVisible.CpuTrendPoints;
 
-        Assert.Same(firstVisible, viewModel.VisibleRows[0]);
+        Assert.Same(firstVisible, RowAt(viewModel, 0));
         Assert.NotEqual(beforeTrend, afterTrend);
     }
 
@@ -283,8 +252,8 @@ public class MonitoringShellViewModelTests
 
         await viewModel.SelectRowAsync(current, CancellationToken.None);
 
-        Assert.Single(viewModel.VisibleRows);
-        Assert.Equal(120, CountPoints(viewModel.VisibleRows[0].CpuTrendPoints));
+        Assert.Single(VisibleRows(viewModel));
+        Assert.Equal(120, CountPoints(RowAt(viewModel, 0).CpuTrendPoints));
         Assert.Equal(120, CountPoints(viewModel.CpuMetricTrendPoints));
     }
 
@@ -384,6 +353,16 @@ public class MonitoringShellViewModelTests
         }
 
         return serializedPoints.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+    }
+
+    private static IReadOnlyList<ProcessRowViewState> VisibleRows(MonitoringShellViewModel viewModel)
+    {
+        return viewModel.VisibleRows.Cast<ProcessRowViewState>().ToList();
+    }
+
+    private static ProcessRowViewState RowAt(MonitoringShellViewModel viewModel, int index)
+    {
+        return Assert.IsType<ProcessRowViewState>(viewModel.VisibleRows[index]);
     }
 
     private static ProcessSample Sample(uint pid, ulong startTime, AccessState access)

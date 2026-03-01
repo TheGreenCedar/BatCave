@@ -13,6 +13,8 @@ using BatCave.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using AdvancedCollectionView = CommunityToolkit.WinUI.Collections.AdvancedCollectionView;
+using SortDescription = CommunityToolkit.WinUI.Collections.SortDescription;
 
 namespace BatCave.ViewModels;
 
@@ -29,7 +31,6 @@ public class MonitoringShellViewModel : ObservableObject
 {
     private const int FilterDebounceMs = 160;
     private const int HistoryLimit = 120;
-    private const double CpuSortPrecision = 0.01;
     private const double RowSparklineWidth = 96;
     private const double RowSparklineHeight = 22;
     private const double MetricChipSparklineWidth = 206;
@@ -47,6 +48,7 @@ public class MonitoringShellViewModel : ObservableObject
     private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = new();
     private readonly Dictionary<ProcessIdentity, MetricHistoryBuffer> _metricHistory = new();
     private readonly Dictionary<ProcessIdentity, ProcessRowViewState> _visibleRowStateByIdentity = new();
+    private readonly ObservableCollection<ProcessRowViewState> _rowViewSource = [];
     private readonly MetricHistoryBuffer _globalHistory = new(HistoryLimit);
 
     private DispatcherQueue? _dispatcherQueue;
@@ -120,9 +122,13 @@ public class MonitoringShellViewModel : ObservableObject
         _runtimeEventGateway.TelemetryDelta += OnTelemetryDelta;
         _runtimeEventGateway.RuntimeHealthChanged += OnRuntimeHealthChanged;
         _runtimeEventGateway.CollectorWarningRaised += OnCollectorWarningRaised;
+
+        VisibleRows = new AdvancedCollectionView(_rowViewSource, true);
+        VisibleRows.Filter = ShouldShowRow;
+        ApplySortDescriptions();
     }
 
-    public ObservableCollection<ProcessRowViewState> VisibleRows { get; } = [];
+    public AdvancedCollectionView VisibleRows { get; }
 
     public bool IsLoading
     {
@@ -576,6 +582,7 @@ public class MonitoringShellViewModel : ObservableObject
 
             CurrentSortColumn = _runtime.CurrentSortColumn;
             CurrentSortDirection = _runtime.CurrentSortDirection;
+            ApplySortDescriptions();
             AdminModeEnabled = _runtime.IsAdminMode();
 
             QueryResponse snapshot = _runtime.GetSnapshot();
@@ -653,7 +660,7 @@ public class MonitoringShellViewModel : ObservableObject
         CurrentSortDirection = nextDirection;
 
         _runtime.SetSort(CurrentSortColumn, CurrentSortDirection);
-        RefreshVisibleRows();
+        ApplySortDescriptions();
     }
 
     public async Task ToggleSelectionAsync(ProcessSample? row, CancellationToken ct)
@@ -769,6 +776,14 @@ public class MonitoringShellViewModel : ObservableObject
                 }
 
                 history.Append(upsert);
+
+                ProcessRowViewState rowState = GetOrCreateVisibleRowState(upsert);
+                if (ShouldReplaceVisibleRow(rowState.Sample, upsert))
+                {
+                    rowState.UpdateSample(upsert);
+                }
+
+                rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, upsert));
             }
 
             foreach (ProcessIdentity exit in delta.Exits)
@@ -780,7 +795,10 @@ public class MonitoringShellViewModel : ObservableObject
 
                 _metadataCache.Remove(exit);
                 _metricHistory.Remove(exit);
-                _visibleRowStateByIdentity.Remove(exit);
+                if (_visibleRowStateByIdentity.Remove(exit, out ProcessRowViewState? rowState))
+                {
+                    _rowViewSource.Remove(rowState);
+                }
             }
 
             _summarySeq = Math.Max(_summarySeq, delta.Seq);
@@ -817,6 +835,7 @@ public class MonitoringShellViewModel : ObservableObject
         _allRows.Clear();
         _metricHistory.Clear();
         _visibleRowStateByIdentity.Clear();
+        _rowViewSource.Clear();
         foreach (ProcessSample row in rows)
         {
             ProcessIdentity identity = row.Identity();
@@ -825,6 +844,10 @@ public class MonitoringShellViewModel : ObservableObject
             MetricHistoryBuffer history = new(HistoryLimit);
             history.Append(row);
             _metricHistory[identity] = history;
+
+            ProcessRowViewState rowState = new(row, BuildRowCpuTrendPoints(identity, row));
+            _visibleRowStateByIdentity[identity] = rowState;
+            _rowViewSource.Add(rowState);
         }
 
         HashSet<ProcessIdentity> validIdentities = _allRows.Keys.ToHashSet();
@@ -840,7 +863,6 @@ public class MonitoringShellViewModel : ObservableObject
         _globalHistory.Reset();
         UpdateGlobalSummaryHistory();
 
-        VisibleRows.Clear();
         RefreshVisibleRows();
         ReconcileSelectionAfterDelta();
     }
@@ -866,93 +888,36 @@ public class MonitoringShellViewModel : ObservableObject
 
     private void RefreshVisibleRows()
     {
-        IEnumerable<ProcessSample> rows = _allRows.Values;
-
-        if (!AdminModeEnabled)
-        {
-            rows = rows.Where(row => row.AccessState != AccessState.Denied);
-        }
-
-        if (AdminEnabledOnlyFilter)
-        {
-            rows = rows.Where(row => row.AccessState == AccessState.Full);
-        }
-
-        string needle = FilterText.Trim().ToLowerInvariant();
-        if (!string.IsNullOrWhiteSpace(needle))
-        {
-            rows = rows.Where(row =>
-                row.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
-                || row.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase));
-        }
-
-        Dictionary<ProcessIdentity, int> previousOrder = BuildVisibleOrderIndex();
-        List<ProcessSample> next = OrderRows(rows, previousOrder).ToList();
-        SynchronizeVisibleRows(next);
-
+        VisibleRows.RefreshFilter();
         SelectedVisibleRow = SelectedRow is null ? null : TryGetVisibleRow(SelectedRow.Identity());
         RefreshDetailMetrics();
     }
 
-    private void SynchronizeVisibleRows(IReadOnlyList<ProcessSample> nextRows)
+    private bool ShouldShowRow(object item)
     {
-        int index = 0;
-        while (index < nextRows.Count)
+        if (item is not ProcessRowViewState row)
         {
-            ProcessSample nextRow = nextRows[index];
-            ProcessIdentity nextIdentity = nextRow.Identity();
-            ProcessRowViewState nextState = GetOrCreateVisibleRowState(nextRow);
-
-            if (ShouldReplaceVisibleRow(nextState.Sample, nextRow))
-            {
-                nextState.UpdateSample(nextRow);
-            }
-
-            nextState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(nextIdentity, nextRow));
-
-            if (index >= VisibleRows.Count)
-            {
-                VisibleRows.Add(nextState);
-                index++;
-                continue;
-            }
-
-            ProcessRowViewState currentRow = VisibleRows[index];
-            if (ReferenceEquals(currentRow, nextState))
-            {
-                index++;
-                continue;
-            }
-
-            int existingIndex = IndexOfVisibleRow(nextIdentity, index + 1);
-            if (existingIndex >= 0)
-            {
-                VisibleRows.Move(existingIndex, index);
-                index++;
-                continue;
-            }
-
-            VisibleRows.Insert(index, nextState);
-            index++;
+            return false;
         }
 
-        while (VisibleRows.Count > nextRows.Count)
+        if (!AdminModeEnabled && row.AccessState == AccessState.Denied)
         {
-            VisibleRows.RemoveAt(VisibleRows.Count - 1);
-        }
-    }
-
-    private int IndexOfVisibleRow(ProcessIdentity identity, int startIndex)
-    {
-        for (int index = startIndex; index < VisibleRows.Count; index++)
-        {
-            if (VisibleRows[index].Identity == identity)
-            {
-                return index;
-            }
+            return false;
         }
 
-        return -1;
+        if (AdminEnabledOnlyFilter && row.AccessState != AccessState.Full)
+        {
+            return false;
+        }
+
+        string needle = FilterText.Trim();
+        if (string.IsNullOrWhiteSpace(needle))
+        {
+            return true;
+        }
+
+        return row.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+               || row.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase);
     }
 
     private ProcessRowViewState GetOrCreateVisibleRowState(ProcessSample sample)
@@ -965,12 +930,13 @@ public class MonitoringShellViewModel : ObservableObject
 
         ProcessRowViewState state = new(sample, BuildRowCpuTrendPoints(identity, sample));
         _visibleRowStateByIdentity[identity] = state;
+        _rowViewSource.Add(state);
         return state;
     }
 
     private ProcessRowViewState? TryGetVisibleRow(ProcessIdentity identity)
     {
-        foreach (ProcessRowViewState row in VisibleRows)
+        foreach (ProcessRowViewState row in VisibleRows.OfType<ProcessRowViewState>())
         {
             if (row.Identity == identity)
             {
@@ -1003,57 +969,39 @@ public class MonitoringShellViewModel : ObservableObject
             || current.AccessState != next.AccessState;
     }
 
-    private Dictionary<ProcessIdentity, int> BuildVisibleOrderIndex()
+    private void ApplySortDescriptions()
     {
-        Dictionary<ProcessIdentity, int> order = new(VisibleRows.Count);
-        for (int index = 0; index < VisibleRows.Count; index++)
+        string primarySortKey = CurrentSortColumn switch
         {
-            order[VisibleRows[index].Identity] = index;
+            SortColumn.Pid => nameof(ProcessRowViewState.Pid),
+            SortColumn.Name => nameof(ProcessRowViewState.Name),
+            SortColumn.CpuPct => nameof(ProcessRowViewState.CpuSortBucket),
+            SortColumn.RssBytes => nameof(ProcessRowViewState.RssBytes),
+            SortColumn.IoReadBps => nameof(ProcessRowViewState.IoReadBps),
+            SortColumn.IoWriteBps => nameof(ProcessRowViewState.IoWriteBps),
+            SortColumn.NetBps => nameof(ProcessRowViewState.NetBps),
+            SortColumn.Threads => nameof(ProcessRowViewState.Threads),
+            SortColumn.Handles => nameof(ProcessRowViewState.Handles),
+            SortColumn.StartTimeMs => nameof(ProcessRowViewState.StartTimeMs),
+            _ => nameof(ProcessRowViewState.CpuSortBucket),
+        };
+
+        CommunityToolkit.WinUI.Collections.SortDirection direction = CurrentSortDirection == SortDirection.Asc
+            ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending
+            : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
+
+        VisibleRows.SortDescriptions.Clear();
+        VisibleRows.SortDescriptions.Add(new SortDescription(primarySortKey, direction));
+
+        if (!string.Equals(primarySortKey, nameof(ProcessRowViewState.Pid), StringComparison.Ordinal))
+        {
+            VisibleRows.SortDescriptions.Add(new SortDescription(nameof(ProcessRowViewState.Pid), CommunityToolkit.WinUI.Collections.SortDirection.Ascending));
         }
 
-        return order;
-    }
-
-    private IOrderedEnumerable<ProcessSample> OrderRows(
-        IEnumerable<ProcessSample> rows,
-        IReadOnlyDictionary<ProcessIdentity, int> previousOrder)
-    {
-        return (CurrentSortColumn, CurrentSortDirection) switch
+        if (!string.Equals(primarySortKey, nameof(ProcessRowViewState.StartTimeMs), StringComparison.Ordinal))
         {
-            (SortColumn.Pid, SortDirection.Asc) => rows.OrderBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Pid, SortDirection.Desc) => rows.OrderByDescending(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Name, SortDirection.Asc) => rows.OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Name, SortDirection.Desc) => rows.OrderByDescending(row => row.Name, StringComparer.OrdinalIgnoreCase).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.CpuPct, SortDirection.Asc) => rows.OrderBy(row => QuantizeCpu(row.CpuPct)).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.CpuPct, SortDirection.Desc) => rows.OrderByDescending(row => QuantizeCpu(row.CpuPct)).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.RssBytes, SortDirection.Asc) => rows.OrderBy(row => row.RssBytes).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.RssBytes, SortDirection.Desc) => rows.OrderByDescending(row => row.RssBytes).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoReadBps, SortDirection.Asc) => rows.OrderBy(row => row.IoReadBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoReadBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoReadBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoWriteBps, SortDirection.Asc) => rows.OrderBy(row => row.IoWriteBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoWriteBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoWriteBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.NetBps, SortDirection.Asc) => rows.OrderBy(row => row.NetBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.NetBps, SortDirection.Desc) => rows.OrderByDescending(row => row.NetBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Threads, SortDirection.Asc) => rows.OrderBy(row => row.Threads).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Threads, SortDirection.Desc) => rows.OrderByDescending(row => row.Threads).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Handles, SortDirection.Asc) => rows.OrderBy(row => row.Handles).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Handles, SortDirection.Desc) => rows.OrderByDescending(row => row.Handles).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.StartTimeMs, SortDirection.Asc) => rows.OrderBy(row => row.StartTimeMs).ThenBy(row => row.Pid),
-            (SortColumn.StartTimeMs, SortDirection.Desc) => rows.OrderByDescending(row => row.StartTimeMs).ThenBy(row => row.Pid),
-            _ => rows.OrderByDescending(row => QuantizeCpu(row.CpuPct)).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-        };
-    }
-
-    private static double QuantizeCpu(double cpuPct)
-    {
-        return Math.Round(cpuPct / CpuSortPrecision, MidpointRounding.AwayFromZero) * CpuSortPrecision;
-    }
-
-    private static int StableOrderIndex(ProcessSample row, IReadOnlyDictionary<ProcessIdentity, int> previousOrder)
-    {
-        return previousOrder.TryGetValue(row.Identity(), out int index)
-            ? index
-            : int.MaxValue;
+            VisibleRows.SortDescriptions.Add(new SortDescription(nameof(ProcessRowViewState.StartTimeMs), CommunityToolkit.WinUI.Collections.SortDirection.Ascending));
+        }
     }
 
     private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)

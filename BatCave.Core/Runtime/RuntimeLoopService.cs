@@ -5,15 +5,17 @@ namespace BatCave.Core.Runtime;
 public sealed class RuntimeLoopService
 {
     private readonly MonitoringRuntime _runtime;
+    private readonly TimeProvider _timeProvider;
     private readonly object _sync = new();
 
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private long _generation = 1;
 
-    public RuntimeLoopService(MonitoringRuntime runtime)
+    public RuntimeLoopService(MonitoringRuntime runtime, TimeProvider? timeProvider = null)
     {
         _runtime = runtime;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public event EventHandler<TickOutcome>? TickCompleted;
@@ -47,34 +49,24 @@ public sealed class RuntimeLoopService
     private async Task RunLoopAsync(long generation, CancellationToken ct)
     {
         TimeSpan interval = TimeSpan.FromSeconds(1);
-        DateTimeOffset nextTick = DateTimeOffset.UtcNow.Add(interval);
+        DateTimeOffset nextTick = _timeProvider.GetUtcNow().Add(interval);
+        using PeriodicTimer timer = new(interval, _timeProvider);
 
-        while (!ct.IsCancellationRequested)
+        while (!ct.IsCancellationRequested && await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
         {
             if (Interlocked.Read(ref _generation) != generation)
             {
                 break;
             }
 
-            TimeSpan untilTick = nextTick - DateTimeOffset.UtcNow;
-            if (untilTick > TimeSpan.Zero)
-            {
-                await Task.Delay(untilTick, ct).ConfigureAwait(false);
-            }
-
-            if (Interlocked.Read(ref _generation) != generation)
-            {
-                break;
-            }
-
-            DateTimeOffset tickStart = DateTimeOffset.UtcNow;
+            DateTimeOffset tickStart = _timeProvider.GetUtcNow();
             double jitterMs = Math.Abs((tickStart - nextTick).TotalMilliseconds);
 
             TickOutcome outcome = _runtime.Tick(jitterMs);
             TickCompleted?.Invoke(this, outcome);
 
             nextTick = nextTick.Add(interval);
-            DateTimeOffset loopEnd = DateTimeOffset.UtcNow;
+            DateTimeOffset loopEnd = _timeProvider.GetUtcNow();
 
             if (loopEnd > nextTick + interval)
             {

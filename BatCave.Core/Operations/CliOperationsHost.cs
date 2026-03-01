@@ -1,3 +1,5 @@
+using System.CommandLine;
+using System.CommandLine.Parsing;
 using System.Text.Json;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Collector;
@@ -9,6 +11,18 @@ namespace BatCave.Core.Operations;
 
 public sealed class CliOperationsHost : ICliOperationsHost
 {
+    private static readonly Option<bool> PrintGateStatusOption = new("--print-gate-status");
+    private static readonly Option<bool> BenchmarkOption = new("--benchmark");
+    private static readonly Option<bool> ElevatedHelperOption = new("--elevated-helper");
+    private static readonly Option<bool> StrictOption = new("--strict");
+    private static readonly Option<string?> TicksOption = new("--ticks");
+    private static readonly Option<string?> SleepMsOption = new("--sleep-ms");
+    private static readonly Option<string?> DataFileOption = new("--data-file");
+    private static readonly Option<string?> StopFileOption = new("--stop-file");
+    private static readonly Option<string?> TokenOption = new("--token");
+
+    private static readonly RootCommand CliRootCommand = CreateRootCommand();
+
     private static readonly HashSet<string> CliFlags = new(StringComparer.OrdinalIgnoreCase)
     {
         "--print-gate-status",
@@ -30,19 +44,30 @@ public sealed class CliOperationsHost : ICliOperationsHost
 
     public Task<int> ExecuteAsync(string[] args, CancellationToken ct)
     {
-        if (args.Contains("--elevated-helper", StringComparer.OrdinalIgnoreCase))
+        ParseResult parseResult = CliRootCommand.Parse(args);
+        if (parseResult.Errors.Count > 0)
         {
-            return Task.FromResult(ExecuteElevatedHelper(args, ct));
+            foreach (ParseError parseError in parseResult.Errors)
+            {
+                Console.Error.WriteLine(parseError.Message);
+            }
+
+            return Task.FromResult(2);
         }
 
-        if (args.Contains("--print-gate-status", StringComparer.OrdinalIgnoreCase))
+        if (parseResult.GetValue(ElevatedHelperOption))
+        {
+            return Task.FromResult(ExecuteElevatedHelper(parseResult, ct));
+        }
+
+        if (parseResult.GetValue(PrintGateStatusOption))
         {
             return Task.FromResult(ExecuteGateStatus());
         }
 
-        if (args.Contains("--benchmark", StringComparer.OrdinalIgnoreCase))
+        if (parseResult.GetValue(BenchmarkOption))
         {
-            return Task.FromResult(ExecuteBenchmark(args, ct));
+            return Task.FromResult(ExecuteBenchmark(parseResult, ct));
         }
 
         Console.Error.WriteLine("CLI mode is recognized but no command was selected.");
@@ -56,11 +81,26 @@ public sealed class CliOperationsHost : ICliOperationsHost
         return status.Passed ? 0 : 2;
     }
 
-    private static int ExecuteBenchmark(string[] args, CancellationToken ct)
+    private static RootCommand CreateRootCommand()
     {
-        int ticks = ParseOptionInt(args, "--ticks", 120);
-        int sleepMs = ParseOptionInt(args, "--sleep-ms", 1000);
-        bool strict = args.Contains("--strict", StringComparer.OrdinalIgnoreCase);
+        RootCommand command = new();
+        command.Add(PrintGateStatusOption);
+        command.Add(BenchmarkOption);
+        command.Add(ElevatedHelperOption);
+        command.Add(StrictOption);
+        command.Add(TicksOption);
+        command.Add(SleepMsOption);
+        command.Add(DataFileOption);
+        command.Add(StopFileOption);
+        command.Add(TokenOption);
+        return command;
+    }
+
+    private static int ExecuteBenchmark(ParseResult parseResult, CancellationToken ct)
+    {
+        int ticks = ParseOptionInt(parseResult.GetValue(TicksOption), 120);
+        int sleepMs = ParseOptionInt(parseResult.GetValue(SleepMsOption), 1000);
+        bool strict = parseResult.GetValue(StrictOption);
 
         BenchmarkSummary summary = BenchmarkRunner.Run(ticks, sleepMs, ct);
         WriteJson(summary);
@@ -73,11 +113,11 @@ public sealed class CliOperationsHost : ICliOperationsHost
         return 0;
     }
 
-    private static int ExecuteElevatedHelper(string[] args, CancellationToken ct)
+    private static int ExecuteElevatedHelper(ParseResult parseResult, CancellationToken ct)
     {
-        string? dataFile = GetOptionValue(args, "--data-file");
-        string? stopFile = GetOptionValue(args, "--stop-file");
-        string? token = GetOptionValue(args, "--token");
+        string? dataFile = parseResult.GetValue(DataFileOption);
+        string? stopFile = parseResult.GetValue(StopFileOption);
+        string? token = parseResult.GetValue(TokenOption);
 
         if (string.IsNullOrWhiteSpace(dataFile) || string.IsNullOrWhiteSpace(stopFile) || string.IsNullOrWhiteSpace(token))
         {
@@ -88,23 +128,9 @@ public sealed class CliOperationsHost : ICliOperationsHost
         return ElevatedBridgeClient.RunElevatedHelper(dataFile, stopFile, token, ct);
     }
 
-    private static int ParseOptionInt(string[] args, string optionName, int defaultValue)
+    private static int ParseOptionInt(string? value, int defaultValue)
     {
-        string? value = GetOptionValue(args, optionName);
         return int.TryParse(value, out int parsed) ? parsed : defaultValue;
-    }
-
-    private static string? GetOptionValue(string[] args, string optionName)
-    {
-        for (int i = 0; i < args.Length - 1; i++)
-        {
-            if (string.Equals(args[i], optionName, StringComparison.OrdinalIgnoreCase))
-            {
-                return args[i + 1];
-            }
-        }
-
-        return null;
     }
 
     private static void WriteJson<T>(T value)

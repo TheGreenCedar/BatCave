@@ -14,7 +14,6 @@
             <converters:CpuPercentConverter x:Key="CpuPercentConverter" />
             <converters:BytesConverter x:Key="BytesConverter" />
             <converters:BytesRateConverter x:Key="BytesRateConverter" />
-            <converters:AccessStateConverter x:Key="AccessStateConverter" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

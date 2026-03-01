@@ -1,5 +1,5 @@
 using System;
-using BatCave.Core.Domain;
+using Humanizer;
 using Microsoft.UI.Xaml.Data;
 
 namespace BatCave.Converters;
@@ -8,26 +8,24 @@ public static class ValueFormat
 {
     public static string FormatBytes(ulong value)
     {
-        const double kb = 1024d;
-        const double mb = kb * 1024d;
-        const double gb = mb * 1024d;
+        ByteSize size = ByteSize.FromBytes(value);
 
-        if (value >= gb)
+        if (value >= 1024UL * 1024UL * 1024UL)
         {
-            return $"{value / gb:F2} GB";
+            return $"{size.Gigabytes:F2} GB";
         }
 
-        if (value >= mb)
+        if (value >= 1024UL * 1024UL)
         {
-            return $"{value / mb:F1} MB";
+            return $"{size.Megabytes:F1} MB";
         }
 
-        if (value >= kb)
+        if (value >= 1024UL)
         {
-            return $"{value / kb:F1} KB";
+            return $"{size.Kilobytes:F1} KB";
         }
 
-        return $"{value} B";
+        return $"{size.Bytes:F0} B";
     }
 
     public static string FormatRate(ulong value)
@@ -104,30 +102,6 @@ public sealed class BytesRateConverter : IValueConverter
         }
 
         return "0 B/s";
-    }
-
-    public object ConvertBack(object value, Type targetType, object parameter, string language)
-    {
-        throw new NotSupportedException();
-    }
-}
-
-public sealed class AccessStateConverter : IValueConverter
-{
-    public object Convert(object value, Type targetType, object parameter, string language)
-    {
-        if (value is not AccessState state)
-        {
-            return "unknown";
-        }
-
-        return state switch
-        {
-            AccessState.Full => "full",
-            AccessState.Partial => "partial",
-            AccessState.Denied => "denied",
-            _ => "unknown",
-        };
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)

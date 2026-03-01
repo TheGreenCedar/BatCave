@@ -23,8 +23,9 @@ public sealed class ProcessRowViewStateTests
 
         state.UpdateSample(updated);
 
-        Assert.Single(changed);
-        Assert.Equal(nameof(ProcessRowViewState.CpuPct), changed[0]);
+        Assert.Equal(2, changed.Count);
+        Assert.Contains(nameof(ProcessRowViewState.CpuPct), changed);
+        Assert.Contains(nameof(ProcessRowViewState.CpuSortBucket), changed);
     }
 
     [Fact]

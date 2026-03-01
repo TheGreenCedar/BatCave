@@ -6,6 +6,8 @@ namespace BatCave.ViewModels;
 
 public sealed class ProcessRowViewState : ObservableObject
 {
+    private const double CpuSortPrecision = 0.01;
+
     private ProcessSample _sample;
     private string _cpuTrendPoints;
 
@@ -23,7 +25,11 @@ public sealed class ProcessRowViewState : ObservableObject
 
     public uint Pid => _sample.Pid;
 
+    public ulong StartTimeMs => _sample.StartTimeMs;
+
     public double CpuPct => _sample.CpuPct;
+
+    public double CpuSortBucket => QuantizeCpu(_sample.CpuPct);
 
     public ulong RssBytes => _sample.RssBytes;
 
@@ -72,6 +78,10 @@ public sealed class ProcessRowViewState : ObservableObject
         if (previous.CpuPct != current.CpuPct)
         {
             OnPropertyChanged(nameof(CpuPct));
+            if (QuantizeCpu(previous.CpuPct) != QuantizeCpu(current.CpuPct))
+            {
+                OnPropertyChanged(nameof(CpuSortBucket));
+            }
         }
 
         if (previous.RssBytes != current.RssBytes)
@@ -108,5 +118,10 @@ public sealed class ProcessRowViewState : ObservableObject
         {
             OnPropertyChanged(nameof(AccessState));
         }
+    }
+
+    private static double QuantizeCpu(double cpuPct)
+    {
+        return Math.Round(cpuPct / CpuSortPrecision, MidpointRounding.AwayFromZero) * CpuSortPrecision;
     }
 }

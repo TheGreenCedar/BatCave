@@ -80,6 +80,7 @@ public partial class App : Application
                 services.AddSingleton<IProcessMetadataProvider, ProcessMetadataProvider>();
 
                 services.AddSingleton<MonitoringRuntime>();
+                services.AddSingleton(TimeProvider.System);
                 services.AddSingleton<RuntimeLoopService>();
                 services.AddSingleton<IRuntimeEventGateway, RuntimeGateway>();
 
