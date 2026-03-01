@@ -73,7 +73,7 @@ public partial class App : Application
                 services.AddSingleton<IProcessCollector, DefaultProcessCollector>();
                 services.AddSingleton<ITelemetryPipeline, DeltaTelemetryPipeline>();
                 services.AddSingleton<IStateStore, InMemoryStateStore>();
-                services.AddSingleton<ISortIndexEngine, NoopSortIndexEngine>();
+                services.AddSingleton<ISortIndexEngine, IncrementalSortIndexEngine>();
 
                 services.AddSingleton<MonitoringRuntime>();
                 services.AddSingleton<RuntimeLoopService>();

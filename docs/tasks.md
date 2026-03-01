@@ -33,11 +33,11 @@
   - [x] 5.4 Integrate budget/degrade policy calculations into runtime state.
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
-- [ ] 6. Implement query, sorting, and filtering behavior
-  - [ ] 6.1 Port query response projection (`seq`, `total`, `rows`) with paging.
-  - [ ] 6.2 Port full sort-column and sort-direction contract.
-  - [ ] 6.3 Port filter semantics for name/PID matching.
-  - [ ] 6.4 Port incremental ordering updates and rebuild threshold behavior.
+- [x] 6. Implement query, sorting, and filtering behavior
+  - [x] 6.1 Port query response projection (`seq`, `total`, `rows`) with paging.
+  - [x] 6.2 Port full sort-column and sort-direction contract.
+  - [x] 6.3 Port filter semantics for name/PID matching.
+  - [x] 6.4 Port incremental ordering updates and rebuild threshold behavior.
   - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
 - [ ] 7. Implement local persistence and diagnostics
