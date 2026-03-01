@@ -1,5 +1,7 @@
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace BatCave.Core.Runtime;
 
@@ -10,6 +12,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private readonly IStateStore _stateStore;
     private readonly ISortIndexEngine _sortIndexEngine;
     private readonly IPersistenceStore _persistenceStore;
+    private readonly ILogger<MonitoringRuntime> _logger;
     private readonly ResourceBudgetGuardian _budgetGuardian = new();
     private readonly List<double> _jitterSamples = [];
 
@@ -24,13 +27,15 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         ITelemetryPipeline pipeline,
         IStateStore stateStore,
         ISortIndexEngine sortIndexEngine,
-        IPersistenceStore persistenceStore)
+        IPersistenceStore persistenceStore,
+        ILogger<MonitoringRuntime>? logger = null)
     {
         _collectorFactory = collectorFactory;
         _pipeline = pipeline;
         _stateStore = stateStore;
         _sortIndexEngine = sortIndexEngine;
         _persistenceStore = persistenceStore;
+        _logger = logger ?? NullLogger<MonitoringRuntime>.Instance;
 
         _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
         _collector = _collectorFactory.Create(_settings.AdminMode);
@@ -52,14 +57,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             _seq = Math.Max(_seq, warmCache.Seq);
         }
 
-        TryPersist(() => _persistenceStore.AppendDiagnosticAsync("runtime_startup", new
-        {
-            warm_cache_rows = warmCache?.Rows.Count ?? 0,
-            sort_col = _settings.SortCol,
-            sort_dir = _settings.SortDir,
-            filter_text = _settings.FilterText,
-            admin_mode = _settings.AdminMode,
-        }, CancellationToken.None));
+        _logger.LogInformation(
+            "runtime_startup warm_cache_rows={WarmCacheRows} sort_col={SortCol} sort_dir={SortDir} filter_text={FilterText} admin_mode={AdminMode}",
+            warmCache?.Rows.Count ?? 0,
+            _settings.SortCol,
+            _settings.SortDir,
+            _settings.FilterText,
+            _settings.AdminMode);
     }
 
     public QueryResponse GetSnapshot()
@@ -127,11 +131,8 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _collector = _collectorFactory.Create(adminMode);
 
         TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, ct));
-        TryPersist(() => _persistenceStore.AppendDiagnosticAsync("runtime_restart", new
-        {
-            admin_mode = adminMode,
-            seq = _seq,
-        }, CancellationToken.None));
+
+        _logger.LogInformation("runtime_restart admin_mode={AdminMode} seq={Seq}", adminMode, _seq);
 
         return Task.CompletedTask;
     }
@@ -154,6 +155,8 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             {
                 CollectorWarnings = _health.CollectorWarnings + 1,
             };
+
+            _logger.LogWarning("collector_warning seq={Seq} message={Message}", _seq, warningMessage);
         }
 
         ProcessDeltaBatch delta = _pipeline.ApplyRaw(_seq, raw);
@@ -195,21 +198,15 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             TryPersist(() => _persistenceStore.SaveWarmCacheAsync(cache, CancellationToken.None));
         }
 
-        TryPersist(() => _persistenceStore.AppendDiagnosticAsync("runtime_tick", new
-        {
-            seq = _seq,
-            rows = _stateStore.RowCount(),
-            emit_delta = policy.EmitTelemetryDelta,
-            degrade_mode = _health.DegradeMode,
-            jitter_p95_ms = _health.JitterP95Ms,
-            dropped_ticks = _health.DroppedTicks,
-            admin_mode = _settings.AdminMode,
-        }, CancellationToken.None));
-
-        if (warning is not null)
-        {
-            TryPersist(() => _persistenceStore.AppendDiagnosticAsync("collector_warning", warning, CancellationToken.None));
-        }
+        _logger.LogInformation(
+            "runtime_tick seq={Seq} rows={Rows} emit_delta={EmitDelta} degrade_mode={DegradeMode} jitter_p95_ms={JitterP95Ms} dropped_ticks={DroppedTicks} admin_mode={AdminMode}",
+            _seq,
+            _stateStore.RowCount(),
+            policy.EmitTelemetryDelta,
+            _health.DegradeMode,
+            _health.JitterP95Ms,
+            _health.DroppedTicks,
+            _settings.AdminMode);
 
         return new TickOutcome
         {
@@ -226,6 +223,8 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         {
             DroppedTicks = _health.DroppedTicks + dropped,
         };
+
+        _logger.LogWarning("runtime_dropped_ticks seq={Seq} dropped_delta={DroppedDelta} dropped_total={DroppedTotal}", _seq, dropped, _health.DroppedTicks);
     }
 
     private static double Percentile95(IReadOnlyList<double> values)

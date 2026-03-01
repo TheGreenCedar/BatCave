@@ -5,6 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:scottPlot="using:ScottPlot.WinUI"
     mc:Ignorable="d"
     Title="BatCave">
 
@@ -110,15 +111,15 @@
                                 <ColumnDefinition Width="0.8*" />
                                 <ColumnDefinition Width="1.3*" />
                             </Grid.ColumnDefinitions>
-                            <Button Grid.Column="0" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="SortHeader_Click" Content="{x:Bind ViewModel.NameSortLabel, Mode=OneWay}" Tag="Name" />
-                            <Button Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.PidSortLabel, Mode=OneWay}" Tag="Pid" />
-                            <Button Grid.Column="2" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.CpuSortLabel, Mode=OneWay}" Tag="CpuPct" />
-                            <Button Grid.Column="3" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.MemorySortLabel, Mode=OneWay}" Tag="RssBytes" />
-                            <Button Grid.Column="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.IoReadSortLabel, Mode=OneWay}" Tag="IoReadBps" />
-                            <Button Grid.Column="5" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.IoWriteSortLabel, Mode=OneWay}" Tag="IoWriteBps" />
-                            <Button Grid.Column="6" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.NetSortLabel, Mode=OneWay}" Tag="NetBps" />
-                            <Button Grid.Column="7" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.ThreadsSortLabel, Mode=OneWay}" Tag="Threads" />
-                            <Button Grid.Column="8" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Click="SortHeader_Click" Content="{x:Bind ViewModel.HandlesSortLabel, Mode=OneWay}" Tag="Handles" />
+                            <Button Grid.Column="0" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="Name" Content="{x:Bind ViewModel.NameSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="Pid" Content="{x:Bind ViewModel.PidSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="2" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="CpuPct" Content="{x:Bind ViewModel.CpuSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="3" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="RssBytes" Content="{x:Bind ViewModel.MemorySortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="IoReadBps" Content="{x:Bind ViewModel.IoReadSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="5" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="IoWriteBps" Content="{x:Bind ViewModel.IoWriteSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="6" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="NetBps" Content="{x:Bind ViewModel.NetSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="7" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="Threads" Content="{x:Bind ViewModel.ThreadsSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="8" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="Handles" Content="{x:Bind ViewModel.HandlesSortLabel, Mode=OneWay}" />
                             <TextBlock Grid.Column="9" VerticalAlignment="Center" FontWeight="SemiBold" Text="CPU Trend" />
                         </Grid>
 
@@ -130,6 +131,18 @@
                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                             SelectionChanged="ProcessListView_SelectionChanged"
                             SelectionMode="Single">
+                            <ListView.Resources>
+                                <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="AccentFillColorSecondaryBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="AccentFillColorTertiaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorBrush" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorPointerOverBrush" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorPressedBrush" ResourceKey="AccentFillColorDefaultBrush" />
+                                <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">True</x:Boolean>
+                            </ListView.Resources>
                             <ListView.ItemContainerTransitions>
                                 <TransitionCollection>
                                     <RepositionThemeTransition IsStaggeringEnabled="False" />
@@ -193,15 +206,18 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="10">
                             <TextBlock FontSize="24" FontWeight="SemiBold" Text="{x:Bind ViewModel.DetailTitle, Mode=OneWay}" />
-                            <Button Click="ClearSelection_Click" Content="Clear Selection" IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}" />
+                            <Button
+                                Command="{x:Bind ViewModel.ClearSelectionRequestedCommand}"
+                                Content="Clear Selection"
+                                IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}" />
 
                             <TextBlock FontWeight="SemiBold" Text="Metric Trends" />
 
                             <ToggleButton
                                 HorizontalContentAlignment="Stretch"
                                 IsChecked="{x:Bind ViewModel.IsCpuMetricFocused, Mode=OneWay}"
-                                Tag="Cpu"
-                                Click="MetricChip_Click">
+                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                CommandParameter="Cpu">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
@@ -211,17 +227,16 @@
                                         <TextBlock FontWeight="SemiBold" Text="CPU" />
                                         <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.CpuMetricChipValue, Mode=OneWay}" />
                                     </StackPanel>
-                                    <Canvas Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch">
-                                        <Polyline Points="{x:Bind ViewModel.CpuMetricTrendPoints, Mode=OneWay}" Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
-                                    </Canvas>
+                                    <!-- ScottPlot.WinUI uses WinUIPlot as the XAML control type. -->
+                                    <scottPlot:WinUIPlot x:Name="CpuChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
                                 </Grid>
                             </ToggleButton>
 
                             <ToggleButton
                                 HorizontalContentAlignment="Stretch"
                                 IsChecked="{x:Bind ViewModel.IsMemoryMetricFocused, Mode=OneWay}"
-                                Tag="Memory"
-                                Click="MetricChip_Click">
+                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                CommandParameter="Memory">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
@@ -231,17 +246,15 @@
                                         <TextBlock FontWeight="SemiBold" Text="Memory" />
                                         <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.MemoryMetricChipValue, Mode=OneWay}" />
                                     </StackPanel>
-                                    <Canvas Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch">
-                                        <Polyline Points="{x:Bind ViewModel.MemoryMetricTrendPoints, Mode=OneWay}" Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
-                                    </Canvas>
+                                    <scottPlot:WinUIPlot x:Name="MemoryChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
                                 </Grid>
                             </ToggleButton>
 
                             <ToggleButton
                                 HorizontalContentAlignment="Stretch"
                                 IsChecked="{x:Bind ViewModel.IsIoReadMetricFocused, Mode=OneWay}"
-                                Tag="IoRead"
-                                Click="MetricChip_Click">
+                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                CommandParameter="IoRead">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
@@ -251,17 +264,15 @@
                                         <TextBlock FontWeight="SemiBold" Text="Disk Read" />
                                         <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoReadMetricChipValue, Mode=OneWay}" />
                                     </StackPanel>
-                                    <Canvas Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch">
-                                        <Polyline Points="{x:Bind ViewModel.IoReadMetricTrendPoints, Mode=OneWay}" Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
-                                    </Canvas>
+                                    <scottPlot:WinUIPlot x:Name="IoReadChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
                                 </Grid>
                             </ToggleButton>
 
                             <ToggleButton
                                 HorizontalContentAlignment="Stretch"
                                 IsChecked="{x:Bind ViewModel.IsIoWriteMetricFocused, Mode=OneWay}"
-                                Tag="IoWrite"
-                                Click="MetricChip_Click">
+                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                CommandParameter="IoWrite">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
@@ -271,17 +282,15 @@
                                         <TextBlock FontWeight="SemiBold" Text="Disk Write" />
                                         <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoWriteMetricChipValue, Mode=OneWay}" />
                                     </StackPanel>
-                                    <Canvas Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch">
-                                        <Polyline Points="{x:Bind ViewModel.IoWriteMetricTrendPoints, Mode=OneWay}" Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
-                                    </Canvas>
+                                    <scottPlot:WinUIPlot x:Name="IoWriteChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
                                 </Grid>
                             </ToggleButton>
 
                             <ToggleButton
                                 HorizontalContentAlignment="Stretch"
                                 IsChecked="{x:Bind ViewModel.IsNetworkMetricFocused, Mode=OneWay}"
-                                Tag="Network"
-                                Click="MetricChip_Click">
+                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                CommandParameter="Network">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
@@ -291,9 +300,7 @@
                                         <TextBlock FontWeight="SemiBold" Text="Network" />
                                         <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.NetworkMetricChipValue, Mode=OneWay}" />
                                     </StackPanel>
-                                    <Canvas Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch">
-                                        <Polyline Points="{x:Bind ViewModel.NetworkMetricTrendPoints, Mode=OneWay}" Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
-                                    </Canvas>
+                                    <scottPlot:WinUIPlot x:Name="NetworkChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
                                 </Grid>
                             </ToggleButton>
 
@@ -315,17 +322,7 @@
                                         <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.ExpandedMetricTitle, Mode=OneWay}" />
                                         <TextBlock Grid.Column="1" FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.ExpandedMetricValue, Mode=OneWay}" />
                                     </Grid>
-                                    <Viewbox Grid.Row="1" Stretch="Fill" Height="220">
-                                        <Canvas Width="960" Height="360">
-                                            <Polyline
-                                                Points="{x:Bind ViewModel.ExpandedMetricTrendPoints, Mode=OneWay}"
-                                                Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                                StrokeLineJoin="Round"
-                                                StrokeStartLineCap="Round"
-                                                StrokeEndLineCap="Round"
-                                                StrokeThickness="4" />
-                                        </Canvas>
-                                    </Viewbox>
+                                    <scottPlot:WinUIPlot x:Name="ExpandedMetricPlot" Grid.Row="1" Height="220" HorizontalAlignment="Stretch" Background="Transparent" />
                                 </Grid>
                             </Border>
 

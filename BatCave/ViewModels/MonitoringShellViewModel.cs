@@ -11,6 +11,7 @@ using BatCave.Core.Domain;
 using BatCave.Core.Runtime;
 using BatCave.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using AdvancedCollectionView = CommunityToolkit.WinUI.Collections.AdvancedCollectionView;
@@ -27,16 +28,12 @@ public enum DetailMetricFocus
     Network,
 }
 
-public class MonitoringShellViewModel : ObservableObject
+public partial class MonitoringShellViewModel : ObservableObject
 {
     private const int FilterDebounceMs = 160;
     private const int HistoryLimit = 120;
     private const double RowSparklineWidth = 96;
     private const double RowSparklineHeight = 22;
-    private const double MetricChipSparklineWidth = 206;
-    private const double MetricChipSparklineHeight = 36;
-    private const double ExpandedSparklineWidth = 960;
-    private const double ExpandedSparklineHeight = 360;
 
     private readonly ILaunchPolicyGate _launchPolicyGate;
     private readonly MonitoringRuntime _runtime;
@@ -91,12 +88,12 @@ public class MonitoringShellViewModel : ObservableObject
     private double _summaryHandles;
     private ProcessSample _globalSummaryRow = CreateEmptyGlobalSummary();
 
-    private string _cpuMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
-    private string _memoryMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
-    private string _ioReadMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
-    private string _ioWriteMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
-    private string _networkMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
-    private string _expandedMetricTrendPoints = SparklineMath.FlatlineFallbackPoints;
+    private double[] _cpuMetricTrendValues = [];
+    private double[] _memoryMetricTrendValues = [];
+    private double[] _ioReadMetricTrendValues = [];
+    private double[] _ioWriteMetricTrendValues = [];
+    private double[] _networkMetricTrendValues = [];
+    private double[] _expandedMetricTrendValues = [];
 
     private string _cpuMetricChipValue = "0.00%";
     private string _memoryMetricChipValue = "0 B";
@@ -465,40 +462,40 @@ public class MonitoringShellViewModel : ObservableObject
 
     public string HandlesSortLabel => SortLabel("Handles", SortColumn.Handles);
 
-    public string CpuMetricTrendPoints
+    public double[] CpuMetricTrendValues
     {
-        get => _cpuMetricTrendPoints;
-        private set => SetProperty(ref _cpuMetricTrendPoints, value);
+        get => _cpuMetricTrendValues;
+        private set => SetProperty(ref _cpuMetricTrendValues, value);
     }
 
-    public string MemoryMetricTrendPoints
+    public double[] MemoryMetricTrendValues
     {
-        get => _memoryMetricTrendPoints;
-        private set => SetProperty(ref _memoryMetricTrendPoints, value);
+        get => _memoryMetricTrendValues;
+        private set => SetProperty(ref _memoryMetricTrendValues, value);
     }
 
-    public string IoReadMetricTrendPoints
+    public double[] IoReadMetricTrendValues
     {
-        get => _ioReadMetricTrendPoints;
-        private set => SetProperty(ref _ioReadMetricTrendPoints, value);
+        get => _ioReadMetricTrendValues;
+        private set => SetProperty(ref _ioReadMetricTrendValues, value);
     }
 
-    public string IoWriteMetricTrendPoints
+    public double[] IoWriteMetricTrendValues
     {
-        get => _ioWriteMetricTrendPoints;
-        private set => SetProperty(ref _ioWriteMetricTrendPoints, value);
+        get => _ioWriteMetricTrendValues;
+        private set => SetProperty(ref _ioWriteMetricTrendValues, value);
     }
 
-    public string NetworkMetricTrendPoints
+    public double[] NetworkMetricTrendValues
     {
-        get => _networkMetricTrendPoints;
-        private set => SetProperty(ref _networkMetricTrendPoints, value);
+        get => _networkMetricTrendValues;
+        private set => SetProperty(ref _networkMetricTrendValues, value);
     }
 
-    public string ExpandedMetricTrendPoints
+    public double[] ExpandedMetricTrendValues
     {
-        get => _expandedMetricTrendPoints;
-        private set => SetProperty(ref _expandedMetricTrendPoints, value);
+        get => _expandedMetricTrendValues;
+        private set => SetProperty(ref _expandedMetricTrendValues, value);
     }
 
     public string CpuMetricChipValue
@@ -661,6 +658,34 @@ public class MonitoringShellViewModel : ObservableObject
 
         _runtime.SetSort(CurrentSortColumn, CurrentSortDirection);
         ApplySortDescriptions();
+    }
+
+    [RelayCommand]
+    private void SortHeader(string? sortTag)
+    {
+        if (!Enum.TryParse(sortTag, out SortColumn column))
+        {
+            return;
+        }
+
+        ChangeSort(column);
+    }
+
+    [RelayCommand]
+    private void MetricFocusSelected(string? focusTag)
+    {
+        if (!Enum.TryParse(focusTag, out DetailMetricFocus focus))
+        {
+            return;
+        }
+
+        MetricFocus = focus;
+    }
+
+    [RelayCommand]
+    private void ClearSelectionRequested()
+    {
+        ClearSelection();
     }
 
     public async Task ToggleSelectionAsync(ProcessSample? row, CancellationToken ct)
@@ -1102,43 +1127,43 @@ public class MonitoringShellViewModel : ObservableObject
         IoWriteMetricChipValue = ValueFormat.FormatRate(detailSample.IoWriteBps);
         NetworkMetricChipValue = ValueFormat.FormatRate(detailSample.NetBps);
 
-        CpuMetricTrendPoints = SparklineMath.BuildPointString(history.Cpu, MetricChipSparklineWidth, MetricChipSparklineHeight);
-        MemoryMetricTrendPoints = SparklineMath.BuildPointString(history.Memory, MetricChipSparklineWidth, MetricChipSparklineHeight);
-        IoReadMetricTrendPoints = SparklineMath.BuildPointString(history.IoRead, MetricChipSparklineWidth, MetricChipSparklineHeight);
-        IoWriteMetricTrendPoints = SparklineMath.BuildPointString(history.IoWrite, MetricChipSparklineWidth, MetricChipSparklineHeight);
-        NetworkMetricTrendPoints = SparklineMath.BuildPointString(history.Net, MetricChipSparklineWidth, MetricChipSparklineHeight);
+        CpuMetricTrendValues = history.Cpu.ToArray();
+        MemoryMetricTrendValues = history.Memory.ToArray();
+        IoReadMetricTrendValues = history.IoRead.ToArray();
+        IoWriteMetricTrendValues = history.IoWrite.ToArray();
+        NetworkMetricTrendValues = history.Net.ToArray();
 
         switch (MetricFocus)
         {
             case DetailMetricFocus.Cpu:
                 ExpandedMetricTitle = "CPU Trend";
                 ExpandedMetricValue = $"{detailSample.CpuPct:F1}% CPU";
-                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Cpu, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                ExpandedMetricTrendValues = history.Cpu.ToArray();
                 break;
             case DetailMetricFocus.Memory:
                 ExpandedMetricTitle = "Memory Trend";
                 ExpandedMetricValue = $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS";
-                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Memory, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                ExpandedMetricTrendValues = history.Memory.ToArray();
                 break;
             case DetailMetricFocus.IoRead:
                 ExpandedMetricTitle = "Disk Read Trend";
                 ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read";
-                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.IoRead, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                ExpandedMetricTrendValues = history.IoRead.ToArray();
                 break;
             case DetailMetricFocus.IoWrite:
                 ExpandedMetricTitle = "Disk Write Trend";
                 ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write";
-                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.IoWrite, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                ExpandedMetricTrendValues = history.IoWrite.ToArray();
                 break;
             case DetailMetricFocus.Network:
                 ExpandedMetricTitle = "Network Trend";
                 ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.NetBps)} net";
-                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Net, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                ExpandedMetricTrendValues = history.Net.ToArray();
                 break;
             default:
                 ExpandedMetricTitle = "CPU Trend";
                 ExpandedMetricValue = $"{detailSample.CpuPct:F1}% CPU";
-                ExpandedMetricTrendPoints = SparklineMath.BuildPointString(history.Cpu, ExpandedSparklineWidth, ExpandedSparklineHeight);
+                ExpandedMetricTrendValues = history.Cpu.ToArray();
                 break;
         }
     }

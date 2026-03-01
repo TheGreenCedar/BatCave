@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using BatCave.Core.Domain;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using ScottPlot.WinUI;
 
 namespace BatCave;
 
@@ -18,7 +22,9 @@ public sealed partial class MainWindow : Window
         ViewModel = App.Services.GetRequiredService<MonitoringShellViewModel>();
         InitializeComponent();
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
+        ViewModel.PropertyChanged += ViewModel_PropertyChanged;
         Activated += OnActivated;
+        Closed += OnWindowClosed;
     }
 
     public MonitoringShellViewModel ViewModel { get; }
@@ -32,6 +38,7 @@ public sealed partial class MainWindow : Window
 
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
+        RefreshMetricPlots();
     }
 
     private async void AdminModeToggle_Toggled(object sender, RoutedEventArgs e)
@@ -45,14 +52,6 @@ public sealed partial class MainWindow : Window
     private async void RetryBootstrap_Click(object sender, RoutedEventArgs e)
     {
         await ViewModel.RetryBootstrapAsync(CancellationToken.None);
-    }
-
-    private void SortHeader_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: string tag } && Enum.TryParse(tag, out SortColumn column))
-        {
-            ViewModel.ChangeSort(column);
-        }
     }
 
     private async void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -84,18 +83,50 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ClearSelection_Click(object sender, RoutedEventArgs e)
+    private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        ViewModel.ClearSelection();
+        switch (e.PropertyName)
+        {
+            case nameof(MonitoringShellViewModel.CpuMetricTrendValues):
+            case nameof(MonitoringShellViewModel.MemoryMetricTrendValues):
+            case nameof(MonitoringShellViewModel.IoReadMetricTrendValues):
+            case nameof(MonitoringShellViewModel.IoWriteMetricTrendValues):
+            case nameof(MonitoringShellViewModel.NetworkMetricTrendValues):
+            case nameof(MonitoringShellViewModel.ExpandedMetricTrendValues):
+                RefreshMetricPlots();
+                break;
+        }
     }
 
-    private void MetricChip_Click(object sender, RoutedEventArgs e)
+    private void RefreshMetricPlots()
     {
-        if (sender is not FrameworkElement { Tag: string tag } || !Enum.TryParse(tag, out DetailMetricFocus focus))
-        {
-            return;
-        }
+        RenderMetricPlot(CpuChipPlot, ViewModel.CpuMetricTrendValues, lineWidth: 2f);
+        RenderMetricPlot(MemoryChipPlot, ViewModel.MemoryMetricTrendValues, lineWidth: 2f);
+        RenderMetricPlot(IoReadChipPlot, ViewModel.IoReadMetricTrendValues, lineWidth: 2f);
+        RenderMetricPlot(IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues, lineWidth: 2f);
+        RenderMetricPlot(NetworkChipPlot, ViewModel.NetworkMetricTrendValues, lineWidth: 2f);
+        RenderMetricPlot(ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, lineWidth: 3f);
+    }
 
-        ViewModel.MetricFocus = focus;
+    private static void RenderMetricPlot(WinUIPlot plotControl, IReadOnlyList<double> values, float lineWidth)
+    {
+        double[] series = values.Count > 0 ? values.ToArray() : [0d, 0d];
+
+        plotControl.Plot.FigureBackground.Color = ScottPlot.Colors.Transparent;
+        plotControl.Plot.DataBackground.Color = ScottPlot.Colors.Transparent;
+        plotControl.Plot.Clear();
+        var signal = plotControl.Plot.Add.Signal(series);
+        signal.LineWidth = lineWidth;
+        plotControl.Plot.Axes.Frameless();
+        plotControl.Plot.Axes.Margins(0.02, 0.05);
+        plotControl.Plot.HideGrid();
+        plotControl.Plot.HideLegend();
+        plotControl.Refresh();
+    }
+
+    private void OnWindowClosed(object sender, WindowEventArgs args)
+    {
+        ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        Closed -= OnWindowClosed;
     }
 }

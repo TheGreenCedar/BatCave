@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +19,7 @@ using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.UI.Xaml;
+using Serilog;
 
 namespace BatCave;
 
@@ -66,7 +68,21 @@ public partial class App : Application
 
     private static IHost CreateHost()
     {
+        string logDirectory = Path.Combine(LocalJsonPersistenceStore.DefaultBaseDirectory(), "logs");
+        Directory.CreateDirectory(logDirectory);
+
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .Enrich.FromLogContext()
+            .WriteTo.File(
+                path: Path.Combine(logDirectory, "monitor-.log"),
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 14,
+                shared: true)
+            .CreateLogger();
+
         return Host.CreateDefaultBuilder()
+            .UseSerilog()
             .ConfigureServices(services =>
             {
                 services.AddSingleton<ICliOperationsHost, CliOperationsHost>();
@@ -131,5 +147,6 @@ public partial class App : Application
 
         await _host.StopAsync();
         _host.Dispose();
+        Log.CloseAndFlush();
     }
 }

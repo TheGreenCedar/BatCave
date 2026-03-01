@@ -254,7 +254,7 @@ public class MonitoringShellViewModelTests
 
         Assert.Single(VisibleRows(viewModel));
         Assert.Equal(120, CountPoints(RowAt(viewModel, 0).CpuTrendPoints));
-        Assert.Equal(120, CountPoints(viewModel.CpuMetricTrendPoints));
+        Assert.Equal(120, viewModel.CpuMetricTrendValues.Length);
     }
 
     [Fact]
@@ -274,7 +274,7 @@ public class MonitoringShellViewModelTests
         Assert.Null(viewModel.SelectedRow);
         Assert.Equal("Global System Values", viewModel.DetailTitle);
         Assert.NotEqual("0.00%", viewModel.CpuMetricChipValue);
-        Assert.NotEmpty(viewModel.ExpandedMetricTrendPoints);
+        Assert.NotEmpty(viewModel.ExpandedMetricTrendValues);
     }
 
     [Fact]
