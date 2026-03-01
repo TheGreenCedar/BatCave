@@ -81,3 +81,9 @@
   - [x] 12.3 Verify packaged and unpackaged startup/runtime parity across architectures.
   - [x] 12.4 Run benchmark and startup-gate CLI smoke checks from scripts.
   - _Requirements: 1.4, 3.4, 4.2, 7.3, 9.1, 10.4, 11.2, 11.4_
+
+- [x] 13. Apply WinUI readability polish and validation hardening
+  - [x] 13.1 Improve process-list metric readability with formatted value converters.
+  - [x] 13.2 Improve live-shell hierarchy with clearer table headers and panel emphasis.
+  - [x] 13.3 Add a dedicated WinUI validation script for faster XAML compile feedback.
+  - _Requirements: 9.4, 10.2, 10.3, 10.4_

@@ -348,8 +348,8 @@ public class MonitoringShellViewModel : ObservableObject
             {
                 DetailMetricFocus.Cpu => $"{SelectedRow.CpuPct:F1}% CPU",
                 DetailMetricFocus.Memory => $"{FormatBytes(SelectedRow.RssBytes)} RSS",
-                DetailMetricFocus.Io => $"{FormatBytes(SelectedRow.IoReadBps)}/s read, {FormatBytes(SelectedRow.IoWriteBps)}/s write",
-                DetailMetricFocus.Network => $"{FormatBytes(SelectedRow.NetBps)}/s net",
+                DetailMetricFocus.Io => $"{FormatRate(SelectedRow.IoReadBps)} read, {FormatRate(SelectedRow.IoWriteBps)} write",
+                DetailMetricFocus.Network => $"{FormatRate(SelectedRow.NetBps)} net",
                 _ => $"{SelectedRow.CpuPct:F1}% CPU",
             };
         }
@@ -827,6 +827,23 @@ public class MonitoringShellViewModel : ObservableObject
         OnPropertyChanged(nameof(MetadataExecutablePath));
     }
 
+    private static string FormatBlockReason(LaunchBlockReason? reason)
+    {
+        if (reason is null)
+        {
+            return "Unknown startup policy failure.";
+        }
+
+        return reason.Kind switch
+        {
+            LaunchBlockReasonKind.UnsupportedPlatform =>
+                $"Unsupported platform: {reason.Os ?? "unknown"}. This build supports Windows 11 only.",
+            LaunchBlockReasonKind.RequiresWindows11 =>
+                $"Windows build {reason.DetectedBuild.GetValueOrDefault()} detected. Windows 11 build 22000+ is required.",
+            _ => "Startup policy failed due to an unrecognized gate condition.",
+        };
+    }
+
     private static string FormatBytes(ulong value)
     {
         const double kb = 1024d;
@@ -851,21 +868,9 @@ public class MonitoringShellViewModel : ObservableObject
         return $"{value} B";
     }
 
-    private static string FormatBlockReason(LaunchBlockReason? reason)
+    private static string FormatRate(ulong value)
     {
-        if (reason is null)
-        {
-            return "Unknown startup policy failure.";
-        }
-
-        return reason.Kind switch
-        {
-            LaunchBlockReasonKind.UnsupportedPlatform =>
-                $"Unsupported platform: {reason.Os ?? "unknown"}. This build supports Windows 11 only.",
-            LaunchBlockReasonKind.RequiresWindows11 =>
-                $"Windows build {reason.DetectedBuild.GetValueOrDefault()} detected. Windows 11 build 22000+ is required.",
-            _ => "Startup policy failed due to an unrecognized gate condition.",
-        };
+        return $"{FormatBytes(value)}/s";
     }
 
     private void RaiseStateVisibilityProperties()
