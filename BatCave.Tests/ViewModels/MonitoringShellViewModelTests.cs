@@ -330,6 +330,153 @@ public class MonitoringShellViewModelTests
         Assert.True(viewModel.HasSelection);
     }
 
+    [Fact]
+    public async Task SelectedVisibleRowBinding_WhenRowSelectedFromUi_SelectsDetailAndLoadsMetadata()
+    {
+        int metadataRequestCount = 0;
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((pid, _, _) =>
+        {
+            metadataRequestCount++;
+            return Task.FromResult<ProcessMetadata?>(new ProcessMetadata
+            {
+                Pid = pid,
+                ParentPid = 7,
+            });
+        });
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 60, startTime: 6000, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+        ProcessRowViewState rowState = RowAt(viewModel, 0);
+
+        viewModel.SelectedVisibleRowBinding = rowState;
+
+        Assert.NotNull(viewModel.SelectedRow);
+        Assert.Equal(row.Identity(), viewModel.SelectedRow!.Identity());
+        Assert.Same(rowState, viewModel.SelectedVisibleRow);
+        Assert.NotNull(viewModel.SelectedMetadata);
+        Assert.Equal(1, metadataRequestCount);
+    }
+
+    [Fact]
+    public async Task SelectedVisibleRowBinding_WhenUiSendsTransientNull_KeepsSelectionAndRestoresVisibleRow()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+        int selectedVisibleRowBindingNotifications = 0;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(MonitoringShellViewModel.SelectedVisibleRowBinding))
+            {
+                selectedVisibleRowBindingNotifications++;
+            }
+        };
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 61, startTime: 6100, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+        ProcessRowViewState rowState = RowAt(viewModel, 0);
+
+        viewModel.SelectedVisibleRowBinding = rowState;
+        int beforeTransientNull = selectedVisibleRowBindingNotifications;
+        viewModel.SelectedVisibleRowBinding = null;
+
+        Assert.NotNull(viewModel.SelectedRow);
+        Assert.Equal(row.Identity(), viewModel.SelectedRow!.Identity());
+        Assert.Same(rowState, viewModel.SelectedVisibleRow);
+        Assert.Same(rowState, viewModel.SelectedVisibleRowBinding);
+        Assert.True(selectedVisibleRowBindingNotifications > beforeTransientNull);
+    }
+
+    [Fact]
+    public async Task SelectedVisibleRowBinding_WhenSortChangesAndUiSendsNull_RestoresListSelection()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample first = Sample(pid: 161, startTime: 16100, access: AccessState.Full) with { Name = "zeta", CpuPct = 30 };
+        ProcessSample second = Sample(pid: 162, startTime: 16200, access: AccessState.Full) with { Name = "alpha", CpuPct = 90 };
+        gateway.RaiseDelta(1, [first, second], []);
+
+        ProcessRowViewState selected = VisibleRows(viewModel).Single(row => row.Pid == second.Pid);
+        viewModel.SelectedVisibleRowBinding = selected;
+
+        viewModel.ChangeSort(SortColumn.Name);
+        viewModel.SelectedVisibleRowBinding = null;
+
+        Assert.NotNull(viewModel.SelectedRow);
+        Assert.Equal(second.Identity(), viewModel.SelectedRow!.Identity());
+        Assert.Same(selected, viewModel.SelectedVisibleRowBinding);
+    }
+
+    [Fact]
+    public async Task SelectedVisibleRowBinding_WhenRowBecomesHidden_KeepsDetailSelectionAndClearsVisibleSelection()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample full = Sample(pid: 62, startTime: 6200, access: AccessState.Full);
+        ProcessSample denied = Sample(pid: 63, startTime: 6300, access: AccessState.Denied);
+        gateway.RaiseDelta(1, [full, denied], []);
+
+        await viewModel.ToggleAdminModeAsync(true, CancellationToken.None);
+        gateway.RaiseDelta(2, [full, denied], []);
+
+        ProcessRowViewState deniedState = VisibleRows(viewModel).Single(row => row.Pid == denied.Pid);
+        viewModel.SelectedVisibleRowBinding = deniedState;
+
+        viewModel.AdminEnabledOnlyFilter = true;
+
+        Assert.NotNull(viewModel.SelectedRow);
+        Assert.Equal(denied.Identity(), viewModel.SelectedRow!.Identity());
+        Assert.Null(viewModel.SelectedVisibleRow);
+        Assert.Null(viewModel.SelectedVisibleRowBinding);
+    }
+
+    [Fact]
+    public async Task SelectedVisibleRowBinding_WhenSelectedRowExits_ClearsSelectionState()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 64, startTime: 6400, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+        viewModel.SelectedVisibleRowBinding = RowAt(viewModel, 0);
+
+        gateway.RaiseDelta(2, [], [row.Identity()]);
+
+        Assert.Null(viewModel.SelectedRow);
+        Assert.Null(viewModel.SelectedVisibleRow);
+        Assert.Null(viewModel.SelectedVisibleRowBinding);
+        Assert.Null(viewModel.SelectedMetadata);
+        Assert.Null(viewModel.MetadataError);
+        Assert.False(viewModel.IsMetadataLoading);
+    }
+
     private static MonitoringShellViewModel CreateViewModel(
         SequenceLaunchPolicyGate gate,
         TestMetadataProvider metadataProvider,

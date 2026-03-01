@@ -127,9 +127,8 @@
                             x:Name="ProcessListView"
                             Grid.Row="1"
                             ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}"
-                            SelectedItem="{x:Bind ViewModel.SelectedVisibleRow, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedVisibleRowBinding, Mode=TwoWay}"
                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                            SelectionChanged="ProcessListView_SelectionChanged"
                             SelectionMode="Single">
                             <ListView.Resources>
                                 <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="AccentFillColorSecondaryBrush" />

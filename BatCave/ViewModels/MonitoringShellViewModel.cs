@@ -71,6 +71,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private ProcessSample? _selectedRow;
     private ProcessRowViewState? _selectedVisibleRow;
     private ProcessMetadata? _selectedMetadata;
+    private bool _isApplyingSelectedVisibleRowBinding;
     private bool _isMetadataLoading;
     private string? _metadataError;
     private DetailMetricFocus _metricFocus = DetailMetricFocus.Cpu;
@@ -330,7 +331,19 @@ public partial class MonitoringShellViewModel : ObservableObject
     public ProcessRowViewState? SelectedVisibleRow
     {
         get => _selectedVisibleRow;
-        private set => SetProperty(ref _selectedVisibleRow, value);
+        private set
+        {
+            if (SetProperty(ref _selectedVisibleRow, value))
+            {
+                OnPropertyChanged(nameof(SelectedVisibleRowBinding));
+            }
+        }
+    }
+
+    public ProcessRowViewState? SelectedVisibleRowBinding
+    {
+        get => SelectedVisibleRow;
+        set => ApplySelectedVisibleRowBinding(value);
     }
 
     public ProcessMetadata? SelectedMetadata
@@ -775,6 +788,75 @@ public partial class MonitoringShellViewModel : ObservableObject
         SelectedMetadata = null;
         IsMetadataLoading = false;
         MetadataError = null;
+    }
+
+    private void ApplySelectedVisibleRowBinding(ProcessRowViewState? value)
+    {
+        if (_isApplyingSelectedVisibleRowBinding)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(value, SelectedVisibleRow))
+        {
+            return;
+        }
+
+        _isApplyingSelectedVisibleRowBinding = true;
+        try
+        {
+            if (value is not null)
+            {
+                _ = SelectRowAsync(value.Sample, CancellationToken.None);
+                return;
+            }
+
+            if (SelectedRow is null)
+            {
+                return;
+            }
+
+            ProcessIdentity identity = SelectedRow.Identity();
+            if (!_allRows.ContainsKey(identity))
+            {
+                ClearSelection();
+                return;
+            }
+
+            ProcessRowViewState? restoredVisibleRow = TryGetVisibleRow(identity);
+            if (restoredVisibleRow is not null)
+            {
+                RestoreVisibleSelection(restoredVisibleRow);
+                return;
+            }
+
+            if (_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? expectedVisibleRow)
+                && ShouldShowRow(expectedVisibleRow))
+            {
+                // Sorting/virtualization can briefly detach the selected item from the view.
+                RestoreVisibleSelection(expectedVisibleRow);
+                return;
+            }
+
+            // Selected process is still tracked but hidden by filter/admin visibility; keep detail selection.
+            SelectedVisibleRow = null;
+        }
+        finally
+        {
+            _isApplyingSelectedVisibleRowBinding = false;
+        }
+    }
+
+    private void RestoreVisibleSelection(ProcessRowViewState row)
+    {
+        // If reference is unchanged we still need to notify binding so ListView re-applies selection visuals.
+        if (ReferenceEquals(SelectedVisibleRow, row))
+        {
+            OnPropertyChanged(nameof(SelectedVisibleRowBinding));
+            return;
+        }
+
+        SelectedVisibleRow = row;
     }
 
     private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
