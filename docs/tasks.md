@@ -12,11 +12,11 @@
   - [x] 2.3 Implement blocked-state projection in ViewModel and WinUI shell.
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [ ] 3. Port Windows process collector
-  - [ ] 3.1 Implement process snapshot enumeration and baseline row extraction.
-  - [ ] 3.2 Implement CPU/IO/network-rate delta calculations.
-  - [ ] 3.3 Implement access-state handling and partial metric fallback.
-  - [ ] 3.4 Implement fallback start-time identity stabilization.
+- [x] 3. Port Windows process collector
+  - [x] 3.1 Implement process snapshot enumeration and baseline row extraction.
+  - [x] 3.2 Implement CPU/IO/network-rate delta calculations.
+  - [x] 3.3 Implement access-state handling and partial metric fallback.
+  - [x] 3.4 Implement fallback start-time identity stabilization.
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
 - [ ] 4. Port telemetry pipeline and state store
