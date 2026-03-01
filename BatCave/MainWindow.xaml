@@ -131,7 +131,9 @@
                             SelectionChanged="ProcessListView_SelectionChanged"
                             SelectionMode="Single">
                             <ListView.ItemContainerTransitions>
-                                <TransitionCollection />
+                                <TransitionCollection>
+                                    <RepositionThemeTransition IsStaggeringEnabled="False" />
+                                </TransitionCollection>
                             </ListView.ItemContainerTransitions>
                             <ListView.ItemContainerStyle>
                                 <Style TargetType="ListViewItem">

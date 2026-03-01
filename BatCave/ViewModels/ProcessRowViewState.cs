@@ -1,3 +1,4 @@
+using System;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -51,8 +52,9 @@ public sealed class ProcessRowViewState : ObservableObject
             return;
         }
 
+        ProcessSample previous = _sample;
         _sample = sample;
-        RaiseSamplePropertyChanges();
+        RaiseSamplePropertyChanges(previous, sample);
     }
 
     public void UpdateCpuTrendPoints(string points)
@@ -60,19 +62,51 @@ public sealed class ProcessRowViewState : ObservableObject
         CpuTrendPoints = points;
     }
 
-    private void RaiseSamplePropertyChanges()
+    private void RaiseSamplePropertyChanges(ProcessSample previous, ProcessSample current)
     {
-        OnPropertyChanged(nameof(Sample));
-        OnPropertyChanged(nameof(Identity));
-        OnPropertyChanged(nameof(Name));
-        OnPropertyChanged(nameof(Pid));
-        OnPropertyChanged(nameof(CpuPct));
-        OnPropertyChanged(nameof(RssBytes));
-        OnPropertyChanged(nameof(IoReadBps));
-        OnPropertyChanged(nameof(IoWriteBps));
-        OnPropertyChanged(nameof(NetBps));
-        OnPropertyChanged(nameof(Threads));
-        OnPropertyChanged(nameof(Handles));
-        OnPropertyChanged(nameof(AccessState));
+        if (!string.Equals(previous.Name, current.Name, StringComparison.Ordinal))
+        {
+            OnPropertyChanged(nameof(Name));
+        }
+
+        if (previous.CpuPct != current.CpuPct)
+        {
+            OnPropertyChanged(nameof(CpuPct));
+        }
+
+        if (previous.RssBytes != current.RssBytes)
+        {
+            OnPropertyChanged(nameof(RssBytes));
+        }
+
+        if (previous.IoReadBps != current.IoReadBps)
+        {
+            OnPropertyChanged(nameof(IoReadBps));
+        }
+
+        if (previous.IoWriteBps != current.IoWriteBps)
+        {
+            OnPropertyChanged(nameof(IoWriteBps));
+        }
+
+        if (previous.NetBps != current.NetBps)
+        {
+            OnPropertyChanged(nameof(NetBps));
+        }
+
+        if (previous.Threads != current.Threads)
+        {
+            OnPropertyChanged(nameof(Threads));
+        }
+
+        if (previous.Handles != current.Handles)
+        {
+            OnPropertyChanged(nameof(Handles));
+        }
+
+        if (previous.AccessState != current.AccessState)
+        {
+            OnPropertyChanged(nameof(AccessState));
+        }
     }
 }

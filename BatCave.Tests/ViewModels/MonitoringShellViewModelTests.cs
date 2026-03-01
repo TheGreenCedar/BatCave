@@ -147,6 +147,92 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task TelemetryDelta_Reorder_UsesMoveOperationsWithoutReplace()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample high = Sample(pid: 100, startTime: 1000, access: AccessState.Full) with { CpuPct = 90 };
+        ProcessSample mid = Sample(pid: 101, startTime: 1001, access: AccessState.Full) with { CpuPct = 50 };
+        ProcessSample low = Sample(pid: 102, startTime: 1002, access: AccessState.Full) with { CpuPct = 10 };
+        gateway.RaiseDelta(1, [high, mid, low], []);
+
+        int moveCount = 0;
+        bool sawReplace = false;
+        viewModel.VisibleRows.CollectionChanged += (_, args) =>
+        {
+            if (args.Action == NotifyCollectionChangedAction.Move)
+            {
+                moveCount++;
+            }
+
+            if (args.Action == NotifyCollectionChangedAction.Replace)
+            {
+                sawReplace = true;
+            }
+        };
+
+        ProcessSample highNowLow = high with { Seq = 2, TsMs = 2, CpuPct = 5 };
+        ProcessSample midNowHigh = mid with { Seq = 2, TsMs = 2, CpuPct = 95 };
+        ProcessSample lowNowMid = low with { Seq = 2, TsMs = 2, CpuPct = 55 };
+        gateway.RaiseDelta(2, [highNowLow, midNowHigh, lowNowMid], []);
+
+        Assert.True(moveCount > 0);
+        Assert.False(sawReplace);
+        Assert.Collection(
+            viewModel.VisibleRows,
+            row => Assert.Equal(mid.Pid, row.Pid),
+            row => Assert.Equal(low.Pid, row.Pid),
+            row => Assert.Equal(high.Pid, row.Pid));
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_CpuResort_IgnoresInvisibleJitterButReordersOnMeaningfulChange()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample first = Sample(pid: 110, startTime: 1110, access: AccessState.Full) with { CpuPct = 1.0040 };
+        ProcessSample second = Sample(pid: 111, startTime: 1111, access: AccessState.Full) with { CpuPct = 1.0030 };
+        gateway.RaiseDelta(1, [first, second], []);
+        Assert.Equal(first.Pid, viewModel.VisibleRows[0].Pid);
+
+        int moveCount = 0;
+        viewModel.VisibleRows.CollectionChanged += (_, args) =>
+        {
+            if (args.Action == NotifyCollectionChangedAction.Move)
+            {
+                moveCount++;
+            }
+        };
+
+        // Both values still render as 1.00%; hidden jitter should not churn order.
+        ProcessSample firstJitter = first with { Seq = 2, TsMs = 2, CpuPct = 1.0031 };
+        ProcessSample secondJitter = second with { Seq = 2, TsMs = 2, CpuPct = 1.0049 };
+        gateway.RaiseDelta(2, [firstJitter, secondJitter], []);
+
+        Assert.Equal(0, moveCount);
+        Assert.Equal(first.Pid, viewModel.VisibleRows[0].Pid);
+
+        // Meaningful displayed difference should still reorder.
+        ProcessSample secondMeaningful = secondJitter with { Seq = 3, TsMs = 3, CpuPct = 1.0200 };
+        gateway.RaiseDelta(3, [firstJitter with { Seq = 3, TsMs = 3 }, secondMeaningful], []);
+
+        Assert.True(moveCount > 0);
+        Assert.Equal(second.Pid, viewModel.VisibleRows[0].Pid);
+    }
+
+    [Fact]
     public async Task TelemetryDelta_HeartbeatOnly_DoesNotReplaceVisibleRowInstance()
     {
         SequenceLaunchPolicyGate gate = new(
@@ -246,6 +332,32 @@ public class MonitoringShellViewModelTests
         Assert.NotNull(viewModel.SelectedRow);
         Assert.Equal(row.Identity(), viewModel.SelectedRow!.Identity());
         Assert.NotNull(viewModel.SelectedMetadata);
+        Assert.True(viewModel.HasSelection);
+    }
+
+    [Fact]
+    public async Task ToggleSelection_NullRowWhenSelectedProcessStillTracked_DoesNotClearSelection()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
+        {
+            Pid = pid,
+            ParentPid = 1,
+        }));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 31, startTime: 3100, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+        await viewModel.ToggleSelectionAsync(null, CancellationToken.None);
+
+        Assert.NotNull(viewModel.SelectedRow);
+        Assert.Equal(row.Identity(), viewModel.SelectedRow!.Identity());
         Assert.True(viewModel.HasSelection);
     }
 

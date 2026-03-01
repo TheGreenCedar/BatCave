@@ -11,6 +11,7 @@ namespace BatCave;
 public sealed partial class MainWindow : Window
 {
     private bool _bootstrapped;
+    private bool _restoringSelection;
 
     public MainWindow()
     {
@@ -56,15 +57,30 @@ public sealed partial class MainWindow : Window
 
     private async void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is ListView listView)
+        if (_restoringSelection || sender is not ListView listView)
         {
-            if (listView.SelectedItem is not ProcessRowViewState selected)
-            {
-                await ViewModel.ToggleSelectionAsync(null, CancellationToken.None);
-                return;
-            }
+            return;
+        }
 
+        if (listView.SelectedItem is ProcessRowViewState selected)
+        {
             await ViewModel.ToggleSelectionAsync(selected.Sample, CancellationToken.None);
+            return;
+        }
+
+        // Virtualization can emit a transient null selection while the selected row container is recycled.
+        // Keep list selection visuals aligned with ViewModel state when a selected row is still tracked.
+        if (ViewModel.SelectedVisibleRow is not null)
+        {
+            _restoringSelection = true;
+            try
+            {
+                listView.SelectedItem = ViewModel.SelectedVisibleRow;
+            }
+            finally
+            {
+                _restoringSelection = false;
+            }
         }
     }
 

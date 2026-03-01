@@ -29,6 +29,7 @@ public class MonitoringShellViewModel : ObservableObject
 {
     private const int FilterDebounceMs = 160;
     private const int HistoryLimit = 120;
+    private const double CpuSortPrecision = 0.01;
     private const double RowSparklineWidth = 96;
     private const double RowSparklineHeight = 22;
     private const double MetricChipSparklineWidth = 206;
@@ -659,6 +660,11 @@ public class MonitoringShellViewModel : ObservableObject
     {
         if (row is null)
         {
+            if (SelectedRow is not null && _allRows.ContainsKey(SelectedRow.Identity()))
+            {
+                return;
+            }
+
             ClearSelection();
             return;
         }
@@ -880,7 +886,8 @@ public class MonitoringShellViewModel : ObservableObject
                 || row.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase));
         }
 
-        List<ProcessSample> next = OrderRows(rows).ToList();
+        Dictionary<ProcessIdentity, int> previousOrder = BuildVisibleOrderIndex();
+        List<ProcessSample> next = OrderRows(rows, previousOrder).ToList();
         SynchronizeVisibleRows(next);
 
         SelectedVisibleRow = SelectedRow is null ? null : TryGetVisibleRow(SelectedRow.Identity());
@@ -921,11 +928,6 @@ public class MonitoringShellViewModel : ObservableObject
             if (existingIndex >= 0)
             {
                 VisibleRows.Move(existingIndex, index);
-                if (!ReferenceEquals(VisibleRows[index], nextState))
-                {
-                    VisibleRows[index] = nextState;
-                }
-
                 index++;
                 continue;
             }
@@ -1001,7 +1003,20 @@ public class MonitoringShellViewModel : ObservableObject
             || current.AccessState != next.AccessState;
     }
 
-    private IOrderedEnumerable<ProcessSample> OrderRows(IEnumerable<ProcessSample> rows)
+    private Dictionary<ProcessIdentity, int> BuildVisibleOrderIndex()
+    {
+        Dictionary<ProcessIdentity, int> order = new(VisibleRows.Count);
+        for (int index = 0; index < VisibleRows.Count; index++)
+        {
+            order[VisibleRows[index].Identity] = index;
+        }
+
+        return order;
+    }
+
+    private IOrderedEnumerable<ProcessSample> OrderRows(
+        IEnumerable<ProcessSample> rows,
+        IReadOnlyDictionary<ProcessIdentity, int> previousOrder)
     {
         return (CurrentSortColumn, CurrentSortDirection) switch
         {
@@ -1009,24 +1024,36 @@ public class MonitoringShellViewModel : ObservableObject
             (SortColumn.Pid, SortDirection.Desc) => rows.OrderByDescending(row => row.Pid).ThenBy(row => row.StartTimeMs),
             (SortColumn.Name, SortDirection.Asc) => rows.OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
             (SortColumn.Name, SortDirection.Desc) => rows.OrderByDescending(row => row.Name, StringComparer.OrdinalIgnoreCase).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.CpuPct, SortDirection.Asc) => rows.OrderBy(row => row.CpuPct).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.CpuPct, SortDirection.Desc) => rows.OrderByDescending(row => row.CpuPct).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.RssBytes, SortDirection.Asc) => rows.OrderBy(row => row.RssBytes).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.RssBytes, SortDirection.Desc) => rows.OrderByDescending(row => row.RssBytes).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoReadBps, SortDirection.Asc) => rows.OrderBy(row => row.IoReadBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoReadBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoReadBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoWriteBps, SortDirection.Asc) => rows.OrderBy(row => row.IoWriteBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.IoWriteBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoWriteBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.NetBps, SortDirection.Asc) => rows.OrderBy(row => row.NetBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.NetBps, SortDirection.Desc) => rows.OrderByDescending(row => row.NetBps).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Threads, SortDirection.Asc) => rows.OrderBy(row => row.Threads).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Threads, SortDirection.Desc) => rows.OrderByDescending(row => row.Threads).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Handles, SortDirection.Asc) => rows.OrderBy(row => row.Handles).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
-            (SortColumn.Handles, SortDirection.Desc) => rows.OrderByDescending(row => row.Handles).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.CpuPct, SortDirection.Asc) => rows.OrderBy(row => QuantizeCpu(row.CpuPct)).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.CpuPct, SortDirection.Desc) => rows.OrderByDescending(row => QuantizeCpu(row.CpuPct)).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.RssBytes, SortDirection.Asc) => rows.OrderBy(row => row.RssBytes).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.RssBytes, SortDirection.Desc) => rows.OrderByDescending(row => row.RssBytes).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoReadBps, SortDirection.Asc) => rows.OrderBy(row => row.IoReadBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoReadBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoReadBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoWriteBps, SortDirection.Asc) => rows.OrderBy(row => row.IoWriteBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.IoWriteBps, SortDirection.Desc) => rows.OrderByDescending(row => row.IoWriteBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.NetBps, SortDirection.Asc) => rows.OrderBy(row => row.NetBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.NetBps, SortDirection.Desc) => rows.OrderByDescending(row => row.NetBps).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Threads, SortDirection.Asc) => rows.OrderBy(row => row.Threads).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Threads, SortDirection.Desc) => rows.OrderByDescending(row => row.Threads).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Handles, SortDirection.Asc) => rows.OrderBy(row => row.Handles).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            (SortColumn.Handles, SortDirection.Desc) => rows.OrderByDescending(row => row.Handles).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
             (SortColumn.StartTimeMs, SortDirection.Asc) => rows.OrderBy(row => row.StartTimeMs).ThenBy(row => row.Pid),
             (SortColumn.StartTimeMs, SortDirection.Desc) => rows.OrderByDescending(row => row.StartTimeMs).ThenBy(row => row.Pid),
-            _ => rows.OrderByDescending(row => row.CpuPct).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
+            _ => rows.OrderByDescending(row => QuantizeCpu(row.CpuPct)).ThenBy(row => StableOrderIndex(row, previousOrder)).ThenBy(row => row.Pid).ThenBy(row => row.StartTimeMs),
         };
+    }
+
+    private static double QuantizeCpu(double cpuPct)
+    {
+        return Math.Round(cpuPct / CpuSortPrecision, MidpointRounding.AwayFromZero) * CpuSortPrecision;
+    }
+
+    private static int StableOrderIndex(ProcessSample row, IReadOnlyDictionary<ProcessIdentity, int> previousOrder)
+    {
+        return previousOrder.TryGetValue(row.Identity(), out int index)
+            ? index
+            : int.MaxValue;
     }
 
     private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)
