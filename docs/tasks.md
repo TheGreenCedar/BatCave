@@ -54,11 +54,11 @@
   - [x] 8.4 Implement UI access filtering rules for admin/non-admin modes.
   - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 9. Implement process metadata provider and ViewModel cache
-  - [ ] 9.1 Implement metadata query contract (`parent_pid`, `command_line`, `executable_path`).
-  - [ ] 9.2 Implement start-time validation and null-on-mismatch behavior.
-  - [ ] 9.3 Implement non-fatal UI error presentation and loading states.
-  - [ ] 9.4 Implement identity-keyed metadata cache lifecycle.
+- [x] 9. Implement process metadata provider and ViewModel cache
+  - [x] 9.1 Implement metadata query contract (`parent_pid`, `command_line`, `executable_path`).
+  - [x] 9.2 Implement start-time validation and null-on-mismatch behavior.
+  - [x] 9.3 Implement non-fatal UI error presentation and loading states.
+  - [x] 9.4 Implement identity-keyed metadata cache lifecycle.
   - _Requirements: 8.1, 8.2, 8.3, 8.4_
 
 - [ ] 10. Build native WinUI shell with feature parity

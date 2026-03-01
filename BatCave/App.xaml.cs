@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Collector;
 using BatCave.Core.Domain;
+using BatCave.Core.Metadata;
 using BatCave.Core.Operations;
 using BatCave.Core.Persistence;
 using BatCave.Core.Pipeline;
@@ -76,6 +77,7 @@ public partial class App : Application
                 services.AddSingleton<IStateStore, InMemoryStateStore>();
                 services.AddSingleton<ISortIndexEngine, IncrementalSortIndexEngine>();
                 services.AddSingleton<IPersistenceStore, LocalJsonPersistenceStore>();
+                services.AddSingleton<IProcessMetadataProvider, ProcessMetadataProvider>();
 
                 services.AddSingleton<MonitoringRuntime>();
                 services.AddSingleton<RuntimeLoopService>();

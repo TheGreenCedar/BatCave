@@ -18,8 +18,10 @@ public class MonitoringShellViewModel : ObservableObject
     private readonly MonitoringRuntime _runtime;
     private readonly RuntimeLoopService _runtimeLoopService;
     private readonly IRuntimeEventGateway _runtimeEventGateway;
+    private readonly IProcessMetadataProvider _metadataProvider;
 
     private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = new();
+    private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = new();
 
     private bool _isLoading = true;
     private bool _isBlocked;
@@ -36,17 +38,24 @@ public class MonitoringShellViewModel : ObservableObject
     private string? _adminModeError;
     private string _runtimeHealthStatus = "Runtime health unavailable.";
     private StartupGateStatus _startupGateStatus = new();
+    private ProcessSample? _selectedRow;
+    private ProcessMetadata? _selectedMetadata;
+    private bool _isMetadataLoading;
+    private string? _metadataError;
+    private long _metadataRequestVersion;
 
     public MonitoringShellViewModel(
         ILaunchPolicyGate launchPolicyGate,
         MonitoringRuntime runtime,
         RuntimeLoopService runtimeLoopService,
-        IRuntimeEventGateway runtimeEventGateway)
+        IRuntimeEventGateway runtimeEventGateway,
+        IProcessMetadataProvider metadataProvider)
     {
         _launchPolicyGate = launchPolicyGate;
         _runtime = runtime;
         _runtimeLoopService = runtimeLoopService;
         _runtimeEventGateway = runtimeEventGateway;
+        _metadataProvider = metadataProvider;
 
         _runtimeEventGateway.TelemetryDelta += OnTelemetryDelta;
         _runtimeEventGateway.RuntimeHealthChanged += OnRuntimeHealthChanged;
@@ -174,6 +183,30 @@ public class MonitoringShellViewModel : ObservableObject
         private set => SetProperty(ref _startupGateStatus, value);
     }
 
+    public ProcessSample? SelectedRow
+    {
+        get => _selectedRow;
+        private set => SetProperty(ref _selectedRow, value);
+    }
+
+    public ProcessMetadata? SelectedMetadata
+    {
+        get => _selectedMetadata;
+        private set => SetProperty(ref _selectedMetadata, value);
+    }
+
+    public bool IsMetadataLoading
+    {
+        get => _isMetadataLoading;
+        private set => SetProperty(ref _isMetadataLoading, value);
+    }
+
+    public string? MetadataError
+    {
+        get => _metadataError;
+        private set => SetProperty(ref _metadataError, value);
+    }
+
     public Task BootstrapAsync(CancellationToken ct)
     {
         IsLoading = true;
@@ -258,6 +291,71 @@ public class MonitoringShellViewModel : ObservableObject
         }
     }
 
+    public async Task SelectRowAsync(ProcessSample? row, CancellationToken ct)
+    {
+        if (row is null)
+        {
+            ClearSelection();
+            return;
+        }
+
+        ProcessIdentity identity = row.Identity();
+        SelectedRow = row;
+        MetadataError = null;
+        SelectedMetadata = null;
+
+        long requestVersion = Interlocked.Increment(ref _metadataRequestVersion);
+
+        if (_metadataCache.TryGetValue(identity, out ProcessMetadata? cached))
+        {
+            SelectedMetadata = cached;
+            IsMetadataLoading = false;
+            return;
+        }
+
+        IsMetadataLoading = true;
+
+        try
+        {
+            ProcessMetadata? metadata = await _metadataProvider.GetAsync(row.Pid, row.StartTimeMs, ct);
+
+            if (!IsCurrentMetadataRequest(requestVersion, identity))
+            {
+                return;
+            }
+
+            _metadataCache[identity] = metadata;
+            SelectedMetadata = metadata;
+            MetadataError = null;
+        }
+        catch (Exception ex)
+        {
+            if (!IsCurrentMetadataRequest(requestVersion, identity))
+            {
+                return;
+            }
+
+            MetadataError = ex.Message;
+            SelectedMetadata = null;
+        }
+        finally
+        {
+            if (IsCurrentMetadataRequest(requestVersion, identity))
+            {
+                IsMetadataLoading = false;
+            }
+        }
+    }
+
+    public void ClearSelection()
+    {
+        Interlocked.Increment(ref _metadataRequestVersion);
+        SelectedRow = null;
+        SelectedMetadata = null;
+        IsMetadataLoading = false;
+        MetadataError = null;
+    }
+
     private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
     {
         foreach (ProcessSample upsert in delta.Upserts)
@@ -268,8 +366,10 @@ public class MonitoringShellViewModel : ObservableObject
         foreach (ProcessIdentity exit in delta.Exits)
         {
             _allRows.Remove(exit);
+            _metadataCache.Remove(exit);
         }
 
+        ReconcileSelectionAfterDelta();
         RefreshVisibleRows();
     }
 
@@ -297,7 +397,34 @@ public class MonitoringShellViewModel : ObservableObject
             _allRows[row.Identity()] = row;
         }
 
+        HashSet<ProcessIdentity> validIdentities = _allRows.Keys.ToHashSet();
+        foreach (ProcessIdentity cachedIdentity in _metadataCache.Keys.ToList())
+        {
+            if (!validIdentities.Contains(cachedIdentity))
+            {
+                _metadataCache.Remove(cachedIdentity);
+            }
+        }
+
+        ReconcileSelectionAfterDelta();
         RefreshVisibleRows();
+    }
+
+    private void ReconcileSelectionAfterDelta()
+    {
+        if (SelectedRow is null)
+        {
+            return;
+        }
+
+        ProcessIdentity identity = SelectedRow.Identity();
+        if (_allRows.TryGetValue(identity, out ProcessSample? updated))
+        {
+            SelectedRow = updated;
+            return;
+        }
+
+        ClearSelection();
     }
 
     private void RefreshVisibleRows()
@@ -333,6 +460,11 @@ public class MonitoringShellViewModel : ObservableObject
         {
             VisibleRows.Add(row);
         }
+    }
+
+    private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)
+    {
+        return requestVersion == _metadataRequestVersion && SelectedRow?.Identity() == identity;
     }
 
     private static string FormatBlockReason(LaunchBlockReason? reason)
