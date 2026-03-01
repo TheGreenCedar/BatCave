@@ -14,9 +14,7 @@ public sealed class DefaultProcessCollectorFactory : IProcessCollectorFactory
 public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
 {
     private readonly WindowsProcessCollector _local;
-    private readonly ElevatedBridgeClient? _bridge;
-    private string? _bridgeFault;
-    private string? _pendingWarning;
+    private ElevatedBridgeClient? _bridge;
 
     public DefaultProcessCollector(bool adminMode)
     {
@@ -29,11 +27,6 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
 
     public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
     {
-        if (!string.IsNullOrWhiteSpace(_bridgeFault))
-        {
-            return [];
-        }
-
         if (_bridge is not null)
         {
             BridgePollResult pollResult = _bridge.PollRows();
@@ -51,9 +44,9 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
                 case BridgePollState.Pending:
                     return _local.CollectTick(seq);
                 case BridgePollState.Faulted:
-                    _bridgeFault = pollResult.Reason ?? "bridge fault";
-                    _pendingWarning = $"elevated bridge faulted: {_bridgeFault}";
-                    return [];
+                    _bridge.Dispose();
+                    _bridge = null;
+                    return _local.CollectTick(seq);
             }
         }
 
@@ -62,10 +55,7 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
 
     public string? TakeWarning()
     {
-        string? warning = _pendingWarning;
-        _pendingWarning = null;
-
-        return warning ?? _local.TakeWarning();
+        return _local.TakeWarning();
     }
 
     public void Dispose()

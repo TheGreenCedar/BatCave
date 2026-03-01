@@ -155,18 +155,6 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
                 CollectorWarnings = _health.CollectorWarnings + 1,
             };
         }
-        else if (raw.Count == 0)
-        {
-            warning = new CollectorWarning
-            {
-                Message = "collector returned zero rows",
-                Seq = _seq,
-            };
-            _health = _health with
-            {
-                CollectorWarnings = _health.CollectorWarnings + 1,
-            };
-        }
 
         ProcessDeltaBatch delta = _pipeline.ApplyRaw(_seq, raw);
         _stateStore.ApplyDelta(delta);
