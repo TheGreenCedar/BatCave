@@ -19,11 +19,11 @@
   - [x] 3.4 Implement fallback start-time identity stabilization.
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
-- [ ] 4. Port telemetry pipeline and state store
-  - [ ] 4.1 Implement identity-safe upsert/exit delta generation.
-  - [ ] 4.2 Implement heartbeat emissions for unchanged rows.
-  - [ ] 4.3 Implement warm-cache seed/reconcile flow.
-  - [ ] 4.4 Implement in-memory row application and compaction hooks.
+- [x] 4. Port telemetry pipeline and state store
+  - [x] 4.1 Implement identity-safe upsert/exit delta generation.
+  - [x] 4.2 Implement heartbeat emissions for unchanged rows.
+  - [x] 4.3 Implement warm-cache seed/reconcile flow.
+  - [x] 4.4 Implement in-memory row application and compaction hooks.
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
 - [ ] 5. Implement runtime loop, health accounting, and event gateway
