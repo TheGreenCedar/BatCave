@@ -107,16 +107,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (e.PropertyName == nameof(MonitoringShellViewModel.SelectedVisibleRowBinding))
+        switch (e.PropertyName)
         {
-            SyncSelectionVisual();
-            return;
-        }
-
-        if (e.PropertyName == nameof(MonitoringShellViewModel.CurrentSortColumn)
-            || e.PropertyName == nameof(MonitoringShellViewModel.CurrentSortDirection))
-        {
-            SyncSelectionVisual(deferSecondPass: true);
+            case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
+                SyncSelectionVisual();
+                break;
+            case nameof(MonitoringShellViewModel.CurrentSortColumn):
+            case nameof(MonitoringShellViewModel.CurrentSortDirection):
+                SyncSelectionVisual(deferSecondPass: true);
+                break;
         }
     }
 
@@ -201,15 +200,7 @@ public sealed partial class MainWindow : Window
     {
         bool isWide = windowWidth >= WideMetricTrendBreakpoint;
 
-        MetricSidebarColumn.Width = isWide
-            ? new GridLength(WideMetricSidebarWidth)
-            : new GridLength(1, GridUnitType.Star);
-        MetricMainColumn.Width = isWide
-            ? new GridLength(1, GridUnitType.Star)
-            : new GridLength(0);
-        MetricMainRow.Height = isWide
-            ? new GridLength(0)
-            : GridLength.Auto;
+        ApplyMetricTrendColumnLayout(isWide);
 
         Grid.SetRow(MetricMainHost, isWide ? 0 : 1);
         Grid.SetColumn(MetricMainHost, isWide ? 1 : 0);
@@ -260,10 +251,7 @@ public sealed partial class MainWindow : Window
         _syncingSelectionVisual = true;
         try
         {
-            if (!ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
-            {
-                ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
-            }
+            SyncProcessListSelection();
         }
         finally
         {
@@ -271,5 +259,26 @@ public sealed partial class MainWindow : Window
         }
 
         return true;
+    }
+
+    private void ApplyMetricTrendColumnLayout(bool isWide)
+    {
+        MetricSidebarColumn.Width = isWide
+            ? new GridLength(WideMetricSidebarWidth)
+            : new GridLength(1, GridUnitType.Star);
+        MetricMainColumn.Width = isWide
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        MetricMainRow.Height = isWide
+            ? new GridLength(0)
+            : GridLength.Auto;
+    }
+
+    private void SyncProcessListSelection()
+    {
+        if (!ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
+        {
+            ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
+        }
     }
 }

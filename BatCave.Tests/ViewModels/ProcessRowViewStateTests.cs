@@ -1,4 +1,5 @@
 using BatCave.Core.Domain;
+using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
 
 namespace BatCave.Tests.ViewModels;
@@ -84,23 +85,21 @@ public sealed class ProcessRowViewStateTests
         uint threads,
         uint handles)
     {
-        return new ProcessSample
-        {
-            Seq = 1,
-            TsMs = 1,
-            Pid = 500,
-            ParentPid = 1,
-            StartTimeMs = 1234,
-            Name = "proc-500",
-            CpuPct = cpuPct,
-            RssBytes = rssBytes,
-            PrivateBytes = 512,
-            IoReadBps = ioReadBps,
-            IoWriteBps = ioWriteBps,
-            OtherIoBps = netBps,
-            Threads = threads,
-            Handles = handles,
-            AccessState = AccessState.Full,
-        };
+        return TestProcessSamples.Create(
+            pid: 500,
+            seq: 1,
+            tsMs: 1,
+            parentPid: 1,
+            startTimeMs: 1234,
+            name: "proc-500",
+            cpuPct: cpuPct,
+            rssBytes: rssBytes,
+            privateBytes: 512,
+            ioReadBps: ioReadBps,
+            ioWriteBps: ioWriteBps,
+            otherIoBps: netBps,
+            threads: threads,
+            handles: handles,
+            accessState: AccessState.Full);
     }
 }

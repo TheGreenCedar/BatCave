@@ -117,8 +117,7 @@ public partial class MonitoringShellViewModel
         IsStartupError = false;
         IsBlocked = false;
         IsLive = false;
-        _latestWarningSummary = null;
-        _latestWarningSeq = 0;
+        ResetWarningState();
         StartupErrorMessage = string.Empty;
         ShellHeadline = "Initializing monitor runtime...";
         ShellBody = "Starting monitoring services.";
@@ -127,8 +126,7 @@ public partial class MonitoringShellViewModel
     private void ApplyBlockedStartupState(StartupGateStatus startupGateStatus)
     {
         IsBlocked = true;
-        _latestWarningSummary = null;
-        _latestWarningSeq = 0;
+        ResetWarningState();
         BlockedReasonMessage = FormatBlockReason(startupGateStatus.Reason);
         ShellHeadline = "Startup Blocked";
         ShellBody = BlockedReasonMessage;
@@ -138,8 +136,7 @@ public partial class MonitoringShellViewModel
     private void ApplyStartupFailureState(Exception ex)
     {
         IsStartupError = true;
-        _latestWarningSummary = null;
-        _latestWarningSeq = 0;
+        ResetWarningState();
         StartupErrorMessage = ex.Message;
         ShellHeadline = "Startup Incomplete";
         ShellBody = ex.Message;
@@ -182,8 +179,7 @@ public partial class MonitoringShellViewModel
             return;
         }
 
-        _latestWarningSummary = null;
-        _latestWarningSeq = 0;
+        ResetWarningState();
         AdminModeError = null;
     }
 
@@ -210,5 +206,11 @@ public partial class MonitoringShellViewModel
         OnPropertyChanged(nameof(BlockedVisibility));
         OnPropertyChanged(nameof(StartupErrorVisibility));
         OnPropertyChanged(nameof(LiveVisibility));
+    }
+
+    private void ResetWarningState()
+    {
+        _latestWarningSummary = null;
+        _latestWarningSeq = 0;
     }
 }

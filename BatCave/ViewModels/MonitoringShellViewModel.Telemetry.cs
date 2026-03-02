@@ -25,40 +25,10 @@ public partial class MonitoringShellViewModel
         {
             ProcessIdentity identity = upsert.Identity();
             bool hadPrevious = _allRows.TryGetValue(identity, out ProcessSample? previous);
-            if (hadPrevious && previous is not null)
-            {
-                ApplySummaryDelta(previous, -1d);
-            }
-
-            _allRows[identity] = upsert;
-            ApplySummaryDelta(upsert, 1d);
-            _summarySeq = Math.Max(_summarySeq, upsert.Seq);
-            _summaryTsMs = Math.Max(_summaryTsMs, upsert.TsMs);
-
-            if (!_metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history))
-            {
-                history = new MetricHistoryBuffer(HistoryLimit);
-                _metricHistory[identity] = history;
-            }
-
-            history.Append(upsert);
-            _metricHistoryLastSeq[identity] = upsert.Seq;
+            TrackUpsert(identity, upsert, hadPrevious ? previous : null);
 
             ProcessRowViewState rowState = GetOrCreateVisibleRowState(upsert, out bool created);
-            ProcessSample priorSample = rowState.Sample;
-            bool shouldRefreshForVisibility = created;
-            if (ShouldReplaceVisibleRow(rowState.Sample, upsert))
-            {
-                rowState.UpdateSample(upsert);
-                shouldRefreshForVisibility |= RequiresVisibleRefresh(priorSample, upsert);
-            }
-
-            if (ShouldRefreshRowSparkline(hadPrevious ? previous : null, upsert))
-            {
-                rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, upsert));
-            }
-
-            refreshFilter |= shouldRefreshForVisibility;
+            refreshFilter |= UpdateVisibleRowForUpsert(identity, rowState, upsert, hadPrevious ? previous : null, created);
         }
 
         return refreshFilter;
@@ -70,19 +40,7 @@ public partial class MonitoringShellViewModel
 
         foreach (ProcessIdentity exit in exits)
         {
-            if (_allRows.Remove(exit, out ProcessSample? previous))
-            {
-                ApplySummaryDelta(previous, -1d);
-            }
-
-            _metadataCache.Remove(exit);
-            _metricHistory.Remove(exit);
-            _metricHistoryLastSeq.Remove(exit);
-            if (_visibleRowStateByIdentity.Remove(exit, out ProcessRowViewState? rowState))
-            {
-                _rowViewSource.Remove(rowState);
-                refreshFilter = true;
-            }
+            refreshFilter |= RemoveTrackedIdentity(exit);
         }
 
         return refreshFilter;
@@ -160,7 +118,7 @@ public partial class MonitoringShellViewModel
             VisibleRows.RefreshFilter();
         }
 
-        SelectedVisibleRow = SelectedRow is null ? null : TryGetVisibleRow(SelectedRow.Identity());
+        SelectedVisibleRow = ResolveSelectedVisibleRow();
         RefreshDetailMetrics();
     }
 
@@ -269,20 +227,7 @@ public partial class MonitoringShellViewModel
 
         foreach ((ProcessIdentity identity, ProcessRowViewState rowState) in _visibleRowStateByIdentity)
         {
-            if (!_allRows.TryGetValue(identity, out ProcessSample? sample) || sample is null)
-            {
-                continue;
-            }
-
-            if (!ShouldShowSample(sample))
-            {
-                continue;
-            }
-
-            if (AppendHeartbeatForIdentity(identity, sample, seq))
-            {
-                rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, sample));
-            }
+            AppendTableHeartbeatForVisibleRow(identity, rowState, seq);
         }
     }
 
@@ -309,5 +254,99 @@ public partial class MonitoringShellViewModel
         history.Append(heartbeat);
         _metricHistoryLastSeq[identity] = seq;
         return true;
+    }
+
+    private void TrackUpsert(ProcessIdentity identity, ProcessSample upsert, ProcessSample? previous)
+    {
+        if (previous is not null)
+        {
+            ApplySummaryDelta(previous, -1d);
+        }
+
+        _allRows[identity] = upsert;
+        ApplySummaryDelta(upsert, 1d);
+        _summarySeq = Math.Max(_summarySeq, upsert.Seq);
+        _summaryTsMs = Math.Max(_summaryTsMs, upsert.TsMs);
+
+        MetricHistoryBuffer history = GetOrCreateMetricHistory(identity);
+        history.Append(upsert);
+        _metricHistoryLastSeq[identity] = upsert.Seq;
+    }
+
+    private MetricHistoryBuffer GetOrCreateMetricHistory(ProcessIdentity identity)
+    {
+        if (_metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history))
+        {
+            return history;
+        }
+
+        MetricHistoryBuffer created = new(HistoryLimit);
+        _metricHistory[identity] = created;
+        return created;
+    }
+
+    private bool UpdateVisibleRowForUpsert(
+        ProcessIdentity identity,
+        ProcessRowViewState rowState,
+        ProcessSample upsert,
+        ProcessSample? previous,
+        bool created)
+    {
+        ProcessSample priorSample = rowState.Sample;
+        bool shouldRefreshForVisibility = created;
+        if (ShouldReplaceVisibleRow(rowState.Sample, upsert))
+        {
+            rowState.UpdateSample(upsert);
+            shouldRefreshForVisibility |= RequiresVisibleRefresh(priorSample, upsert);
+        }
+
+        if (ShouldRefreshRowSparkline(previous, upsert))
+        {
+            rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, upsert));
+        }
+
+        return shouldRefreshForVisibility;
+    }
+
+    private bool RemoveTrackedIdentity(ProcessIdentity identity)
+    {
+        if (_allRows.Remove(identity, out ProcessSample? previous))
+        {
+            ApplySummaryDelta(previous, -1d);
+        }
+
+        _metadataCache.Remove(identity);
+        _metricHistory.Remove(identity);
+        _metricHistoryLastSeq.Remove(identity);
+        if (_visibleRowStateByIdentity.Remove(identity, out ProcessRowViewState? rowState))
+        {
+            _rowViewSource.Remove(rowState);
+            return true;
+        }
+
+        return false;
+    }
+
+    private ProcessRowViewState? ResolveSelectedVisibleRow()
+    {
+        return SelectedRow is null ? null : TryGetVisibleRow(SelectedRow.Identity());
+    }
+
+    private void AppendTableHeartbeatForVisibleRow(ProcessIdentity identity, ProcessRowViewState rowState, ulong seq)
+    {
+        if (!_allRows.TryGetValue(identity, out ProcessSample? sample) || sample is null)
+        {
+            return;
+        }
+
+        if (!ShouldShowSample(sample))
+        {
+            return;
+        }
+
+        if (AppendHeartbeatForIdentity(identity, sample, seq))
+        {
+            rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, sample));
+        }
     }
 }

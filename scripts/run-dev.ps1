@@ -12,16 +12,16 @@ $solutionPath = Join-Path $repoRoot "BatCave.slnx"
 $projectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
 
 if (-not $NoBuild) {
-    dotnet build $solutionPath
+    dotnet build "$solutionPath"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 }
 
 if ($AppArgs.Count -gt 0) {
-    dotnet run --project $projectPath -p:Platform=$Platform -- @AppArgs
+    dotnet run --project "$projectPath" "-p:Platform=$Platform" -- @AppArgs
 } else {
-    dotnet run --project $projectPath -p:Platform=$Platform
+    dotnet run --project "$projectPath" "-p:Platform=$Platform"
 }
 
 exit $LASTEXITCODE

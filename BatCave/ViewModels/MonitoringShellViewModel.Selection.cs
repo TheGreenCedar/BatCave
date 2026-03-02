@@ -18,7 +18,7 @@ public partial class MonitoringShellViewModel
     {
         if (row is null)
         {
-            if (SelectedRow is not null && _allRows.ContainsKey(SelectedRow.Identity()))
+            if (ShouldPreserveSelectionOnNullToggle())
             {
                 return;
             }
@@ -27,7 +27,7 @@ public partial class MonitoringShellViewModel
             return;
         }
 
-        if (SelectedRow?.Identity() == row.Identity())
+        if (IsSameAsCurrentSelection(row))
         {
             return;
         }
@@ -44,17 +44,11 @@ public partial class MonitoringShellViewModel
         }
 
         ProcessIdentity identity = row.Identity();
-        SelectedRow = row;
-        SelectedVisibleRow = TryGetVisibleRow(identity);
-        MetadataError = null;
-        SelectedMetadata = null;
-
+        PrepareSelectionState(row, identity);
         long requestVersion = Interlocked.Increment(ref _metadataRequestVersion);
 
-        if (_metadataCache.TryGetValue(identity, out ProcessMetadata? cached))
+        if (TryApplyCachedMetadata(identity))
         {
-            SelectedMetadata = cached;
-            IsMetadataLoading = false;
             return;
         }
 
@@ -91,9 +85,8 @@ public partial class MonitoringShellViewModel
         _isApplyingSelectedVisibleRowBinding = true;
         try
         {
-            if (value is not null)
+            if (TryApplySelectionFromVisibleBinding(value))
             {
-                _ = SelectRowAsync(value.Sample, CancellationToken.None);
                 return;
             }
 
@@ -109,18 +102,8 @@ public partial class MonitoringShellViewModel
                 return;
             }
 
-            ProcessRowViewState? restoredVisibleRow = TryGetVisibleRow(identity);
-            if (restoredVisibleRow is not null)
+            if (TryRestoreVisibleSelection(identity))
             {
-                RestoreVisibleSelection(restoredVisibleRow);
-                return;
-            }
-
-            if (_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? expectedVisibleRow)
-                && ShouldShowRow(expectedVisibleRow))
-            {
-                // Sorting/virtualization can briefly detach the selected item from the view.
-                RestoreVisibleSelection(expectedVisibleRow);
                 return;
             }
 
@@ -207,6 +190,67 @@ public partial class MonitoringShellViewModel
         return ShouldShowSample(row.Sample)
             ? row
             : null;
+    }
+
+    private bool IsSameAsCurrentSelection(ProcessSample row)
+    {
+        return SelectedRow?.Identity() == row.Identity();
+    }
+
+    private bool ShouldPreserveSelectionOnNullToggle()
+    {
+        return SelectedRow is not null && _allRows.ContainsKey(SelectedRow.Identity());
+    }
+
+    private void PrepareSelectionState(ProcessSample row, ProcessIdentity identity)
+    {
+        SelectedRow = row;
+        SelectedVisibleRow = TryGetVisibleRow(identity);
+        MetadataError = null;
+        SelectedMetadata = null;
+    }
+
+    private bool TryApplyCachedMetadata(ProcessIdentity identity)
+    {
+        if (!_metadataCache.TryGetValue(identity, out ProcessMetadata? cached))
+        {
+            return false;
+        }
+
+        SelectedMetadata = cached;
+        IsMetadataLoading = false;
+        return true;
+    }
+
+    private bool TryApplySelectionFromVisibleBinding(ProcessRowViewState? value)
+    {
+        if (value is null)
+        {
+            return false;
+        }
+
+        _ = SelectRowAsync(value.Sample, CancellationToken.None);
+        return true;
+    }
+
+    private bool TryRestoreVisibleSelection(ProcessIdentity identity)
+    {
+        ProcessRowViewState? restoredVisibleRow = TryGetVisibleRow(identity);
+        if (restoredVisibleRow is not null)
+        {
+            RestoreVisibleSelection(restoredVisibleRow);
+            return true;
+        }
+
+        if (_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? expectedVisibleRow)
+            && ShouldShowRow(expectedVisibleRow))
+        {
+            // Sorting/virtualization can briefly detach the selected item from the view.
+            RestoreVisibleSelection(expectedVisibleRow);
+            return true;
+        }
+
+        return false;
     }
 
     private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)

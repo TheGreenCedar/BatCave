@@ -6,21 +6,25 @@ namespace BatCave.Converters;
 
 public static class ValueFormat
 {
+    private const ulong OneKb = 1024UL;
+    private const ulong OneMb = OneKb * 1024UL;
+    private const ulong OneGb = OneMb * 1024UL;
+
     public static string FormatBytes(ulong value)
     {
         ByteSize size = ByteSize.FromBytes(value);
 
-        if (value >= 1024UL * 1024UL * 1024UL)
+        if (value >= OneGb)
         {
             return $"{size.Gigabytes:F2} GB";
         }
 
-        if (value >= 1024UL * 1024UL)
+        if (value >= OneMb)
         {
             return $"{size.Megabytes:F1} MB";
         }
 
-        if (value >= 1024UL)
+        if (value >= OneKb)
         {
             return $"{size.Kilobytes:F1} KB";
         }
@@ -38,12 +42,7 @@ public sealed class CpuPercentConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, string language)
     {
-        if (value is double cpu)
-        {
-            return $"{cpu:F2}%";
-        }
-
-        return "0.00%";
+        return value is double cpu ? $"{cpu:F2}%" : "0.00%";
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)
@@ -68,17 +67,24 @@ public sealed class BytesConverter : IValueConverter
 
     private static bool TryAsUlong(object value, out ulong result)
     {
-        (bool Success, ulong Value) parsed = value switch
+        switch (value)
         {
-            ulong u => (true, u),
-            long l when l >= 0 => (true, (ulong)l),
-            int i when i >= 0 => (true, (ulong)i),
-            uint ui => (true, ui),
-            _ => (false, 0),
-        };
-
-        result = parsed.Value;
-        return parsed.Success;
+            case ulong u:
+                result = u;
+                return true;
+            case long l when l >= 0:
+                result = (ulong)l;
+                return true;
+            case int i when i >= 0:
+                result = (ulong)i;
+                return true;
+            case uint ui:
+                result = ui;
+                return true;
+            default:
+                result = 0;
+                return false;
+        }
     }
 }
 

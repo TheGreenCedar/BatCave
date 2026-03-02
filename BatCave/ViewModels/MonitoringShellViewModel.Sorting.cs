@@ -11,12 +11,8 @@ public partial class MonitoringShellViewModel
 {
     public void ChangeSort(SortColumn column)
     {
-        SortDirection nextDirection = CurrentSortColumn == column && CurrentSortDirection == SortDirection.Desc
-            ? SortDirection.Asc
-            : SortDirection.Desc;
-
         CurrentSortColumn = column;
-        CurrentSortDirection = nextDirection;
+        CurrentSortDirection = ResolveNextSortDirection(column);
 
         _runtime.SetSort(CurrentSortColumn, CurrentSortDirection);
         ApplySortDescriptions();
@@ -46,12 +42,7 @@ public partial class MonitoringShellViewModel
 
     private bool ShouldShowSample(ProcessSample sample)
     {
-        if (!AdminModeEnabled && sample.AccessState == AccessState.Denied)
-        {
-            return false;
-        }
-
-        if (AdminEnabledOnlyFilter && sample.AccessState != AccessState.Full)
+        if (IsFilteredByAdminVisibility(sample))
         {
             return false;
         }
@@ -68,24 +59,8 @@ public partial class MonitoringShellViewModel
 
     private void ApplySortDescriptions()
     {
-        string primarySortKey = CurrentSortColumn switch
-        {
-            SortColumn.Pid => nameof(ProcessRowViewState.Pid),
-            SortColumn.Name => nameof(ProcessRowViewState.Name),
-            SortColumn.CpuPct => nameof(ProcessRowViewState.CpuSortBucket),
-            SortColumn.RssBytes => nameof(ProcessRowViewState.RssBytes),
-            SortColumn.IoReadBps => nameof(ProcessRowViewState.IoReadBps),
-            SortColumn.IoWriteBps => nameof(ProcessRowViewState.IoWriteBps),
-            SortColumn.OtherIoBps => nameof(ProcessRowViewState.OtherIoBps),
-            SortColumn.Threads => nameof(ProcessRowViewState.Threads),
-            SortColumn.Handles => nameof(ProcessRowViewState.Handles),
-            SortColumn.StartTimeMs => nameof(ProcessRowViewState.StartTimeMs),
-            _ => nameof(ProcessRowViewState.CpuSortBucket),
-        };
-
-        CommunityToolkit.WinUI.Collections.SortDirection direction = CurrentSortDirection == SortDirection.Asc
-            ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending
-            : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
+        string primarySortKey = ResolvePrimarySortKey(CurrentSortColumn);
+        CommunityToolkit.WinUI.Collections.SortDirection direction = ResolveCollectionSortDirection(CurrentSortDirection);
 
         VisibleRows.SortDescriptions.Clear();
         VisibleRows.SortDescriptions.Add(new SortDescription(primarySortKey, direction));
@@ -142,13 +117,14 @@ public partial class MonitoringShellViewModel
 
     private void RunOnUiThread(Action action)
     {
-        if (_dispatcherQueue is null || _dispatcherQueue.HasThreadAccess)
+        var dispatcherQueue = _dispatcherQueue;
+        if (dispatcherQueue is null || dispatcherQueue.HasThreadAccess)
         {
             action();
             return;
         }
 
-        _dispatcherQueue.TryEnqueue(() => action());
+        dispatcherQueue.TryEnqueue(() => action());
     }
 
     private string SortLabel(string text, SortColumn column)
@@ -158,9 +134,7 @@ public partial class MonitoringShellViewModel
             return text;
         }
 
-        return CurrentSortDirection == SortDirection.Desc
-            ? $"{text} ↓"
-            : $"{text} ↑";
+        return $"{text} {SortDirectionSuffix(CurrentSortDirection)}";
     }
 
     private void RaiseSortHeaderLabels()
@@ -175,5 +149,52 @@ public partial class MonitoringShellViewModel
             nameof(OtherIoSortLabel),
             nameof(ThreadsSortLabel),
             nameof(HandlesSortLabel));
+    }
+
+    private SortDirection ResolveNextSortDirection(SortColumn column)
+    {
+        return CurrentSortColumn == column && CurrentSortDirection == SortDirection.Desc
+            ? SortDirection.Asc
+            : SortDirection.Desc;
+    }
+
+    private bool IsFilteredByAdminVisibility(ProcessSample sample)
+    {
+        if (!AdminModeEnabled && sample.AccessState == AccessState.Denied)
+        {
+            return true;
+        }
+
+        return AdminEnabledOnlyFilter && sample.AccessState != AccessState.Full;
+    }
+
+    private static string ResolvePrimarySortKey(SortColumn column)
+    {
+        return column switch
+        {
+            SortColumn.Pid => nameof(ProcessRowViewState.Pid),
+            SortColumn.Name => nameof(ProcessRowViewState.Name),
+            SortColumn.CpuPct => nameof(ProcessRowViewState.CpuSortBucket),
+            SortColumn.RssBytes => nameof(ProcessRowViewState.RssBytes),
+            SortColumn.IoReadBps => nameof(ProcessRowViewState.IoReadBps),
+            SortColumn.IoWriteBps => nameof(ProcessRowViewState.IoWriteBps),
+            SortColumn.OtherIoBps => nameof(ProcessRowViewState.OtherIoBps),
+            SortColumn.Threads => nameof(ProcessRowViewState.Threads),
+            SortColumn.Handles => nameof(ProcessRowViewState.Handles),
+            SortColumn.StartTimeMs => nameof(ProcessRowViewState.StartTimeMs),
+            _ => nameof(ProcessRowViewState.CpuSortBucket),
+        };
+    }
+
+    private static CommunityToolkit.WinUI.Collections.SortDirection ResolveCollectionSortDirection(SortDirection direction)
+    {
+        return direction == SortDirection.Asc
+            ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending
+            : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
+    }
+
+    private static string SortDirectionSuffix(SortDirection direction)
+    {
+        return direction == SortDirection.Desc ? "↓" : "↑";
     }
 }

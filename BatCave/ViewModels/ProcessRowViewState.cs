@@ -22,11 +22,7 @@ public sealed class ProcessRowViewState : ObservableObject
     {
         _sample = sample;
         _cpuTrendPoints = cpuTrendPoints;
-        _cpuText = FormatCpu(sample.CpuPct);
-        _rssText = ValueFormat.FormatBytes(sample.RssBytes);
-        _ioReadText = ValueFormat.FormatRate(sample.IoReadBps);
-        _ioWriteText = ValueFormat.FormatRate(sample.IoWriteBps);
-        _otherIoText = ValueFormat.FormatRate(sample.OtherIoBps);
+        (_cpuText, _rssText, _ioReadText, _ioWriteText, _otherIoText) = CreateDisplayText(sample);
     }
 
     public ProcessSample Sample => _sample;
@@ -128,25 +124,10 @@ public sealed class ProcessRowViewState : ObservableObject
             CpuText = FormatCpu(current.CpuPct);
         }
 
-        if (RaiseIfChanged(previous.RssBytes, current.RssBytes, nameof(RssBytes)))
-        {
-            RssText = ValueFormat.FormatBytes(current.RssBytes);
-        }
-
-        if (RaiseIfChanged(previous.IoReadBps, current.IoReadBps, nameof(IoReadBps)))
-        {
-            IoReadText = ValueFormat.FormatRate(current.IoReadBps);
-        }
-
-        if (RaiseIfChanged(previous.IoWriteBps, current.IoWriteBps, nameof(IoWriteBps)))
-        {
-            IoWriteText = ValueFormat.FormatRate(current.IoWriteBps);
-        }
-
-        if (RaiseIfChanged(previous.OtherIoBps, current.OtherIoBps, nameof(OtherIoBps)))
-        {
-            OtherIoText = ValueFormat.FormatRate(current.OtherIoBps);
-        }
+        UpdateFormattedMetricIfChanged(previous.RssBytes, current.RssBytes, nameof(RssBytes), value => RssText = value, ValueFormat.FormatBytes);
+        UpdateFormattedMetricIfChanged(previous.IoReadBps, current.IoReadBps, nameof(IoReadBps), value => IoReadText = value, ValueFormat.FormatRate);
+        UpdateFormattedMetricIfChanged(previous.IoWriteBps, current.IoWriteBps, nameof(IoWriteBps), value => IoWriteText = value, ValueFormat.FormatRate);
+        UpdateFormattedMetricIfChanged(previous.OtherIoBps, current.OtherIoBps, nameof(OtherIoBps), value => OtherIoText = value, ValueFormat.FormatRate);
 
         RaiseIfChanged(previous.Threads, current.Threads, nameof(Threads));
         RaiseIfChanged(previous.Handles, current.Handles, nameof(Handles));
@@ -166,6 +147,29 @@ public sealed class ProcessRowViewState : ObservableObject
     private static string FormatCpu(double cpuPct)
     {
         return $"{cpuPct:F2}%";
+    }
+
+    private static (string Cpu, string Rss, string IoRead, string IoWrite, string OtherIo) CreateDisplayText(ProcessSample sample)
+    {
+        return (
+            FormatCpu(sample.CpuPct),
+            ValueFormat.FormatBytes(sample.RssBytes),
+            ValueFormat.FormatRate(sample.IoReadBps),
+            ValueFormat.FormatRate(sample.IoWriteBps),
+            ValueFormat.FormatRate(sample.OtherIoBps));
+    }
+
+    private void UpdateFormattedMetricIfChanged<TValue>(
+        TValue previous,
+        TValue current,
+        string propertyName,
+        Action<string> applyText,
+        Func<TValue, string> formatter)
+    {
+        if (RaiseIfChanged(previous, current, propertyName))
+        {
+            applyText(formatter(current));
+        }
     }
 
     private bool RaiseIfChanged<T>(T previous, T current, string propertyName)

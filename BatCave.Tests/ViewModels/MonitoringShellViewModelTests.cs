@@ -5,6 +5,7 @@ using BatCave.Core.Runtime;
 using BatCave.Core.Sort;
 using BatCave.Core.State;
 using BatCave.Services;
+using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
 
@@ -649,24 +650,22 @@ public class MonitoringShellViewModelTests
 
     private static ProcessSample Sample(uint pid, ulong startTime, AccessState access)
     {
-        return new ProcessSample
-        {
-            Seq = 1,
-            TsMs = 1,
-            Pid = pid,
-            ParentPid = 1,
-            StartTimeMs = startTime,
-            Name = $"proc-{pid}",
-            CpuPct = 1,
-            RssBytes = 1024,
-            PrivateBytes = 512,
-            IoReadBps = 10,
-            IoWriteBps = 10,
-            OtherIoBps = 10,
-            Threads = 2,
-            Handles = 3,
-            AccessState = access,
-        };
+        return TestProcessSamples.Create(
+            pid: pid,
+            seq: 1,
+            tsMs: 1,
+            parentPid: 1,
+            startTimeMs: startTime,
+            name: $"proc-{pid}",
+            cpuPct: 1,
+            rssBytes: 1024,
+            privateBytes: 512,
+            ioReadBps: 10,
+            ioWriteBps: 10,
+            otherIoBps: 10,
+            threads: 2,
+            handles: 3,
+            accessState: access);
     }
 
     private sealed class SequenceLaunchPolicyGate : ILaunchPolicyGate

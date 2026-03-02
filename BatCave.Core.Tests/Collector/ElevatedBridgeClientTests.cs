@@ -1,5 +1,6 @@
 using System.Text.Json;
 using BatCave.Core.Collector;
+using BatCave.Core.Tests.TestSupport;
 
 namespace BatCave.Core.Tests.Collector;
 
@@ -8,34 +9,26 @@ public class ElevatedBridgeClientTests
     [Fact]
     public void WriteSnapshotAtomically_WritesTargetAndCleansTemp()
     {
-        string dir = CreateTempDirectory();
-        try
-        {
-            string dataFile = Path.Combine(dir, "snapshot.json");
-            string tempFile = dataFile + ".tmp";
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
+        string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
+        string tempFile = dataFile + ".tmp";
 
-            ElevatedBridgeClient.WriteSnapshotAtomically(dataFile, tempFile, "{\"seq\":1}");
+        ElevatedBridgeClient.WriteSnapshotAtomically(dataFile, tempFile, "{\"seq\":1}");
 
-            Assert.True(File.Exists(dataFile));
-            Assert.False(File.Exists(tempFile));
-            Assert.Equal("{\"seq\":1}", File.ReadAllText(dataFile));
-        }
-        finally
-        {
-            DeleteDirectory(dir);
-        }
+        Assert.True(File.Exists(dataFile));
+        Assert.False(File.Exists(tempFile));
+        Assert.Equal("{\"seq\":1}", File.ReadAllText(dataFile));
     }
 
     [Fact]
     public void PollRows_FaultsWhenStartupGraceExpiresWithoutSnapshot()
     {
-        string dir = CreateTempDirectory();
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
+        string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
+        string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
+        ElevatedBridgeClient.NowMsOverrideForTest = () => 20_000;
         try
         {
-            string dataFile = Path.Combine(dir, "snapshot.json");
-            string stopFile = Path.Combine(dir, "stop.signal");
-            ElevatedBridgeClient.NowMsOverrideForTest = () => 20_000;
-
             ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
             BridgePollResult result = client.PollRows();
 
@@ -45,19 +38,17 @@ public class ElevatedBridgeClientTests
         finally
         {
             ElevatedBridgeClient.NowMsOverrideForTest = null;
-            DeleteDirectory(dir);
         }
     }
 
     [Fact]
     public void PollRows_FaultsWhenSnapshotStreamGoesStale()
     {
-        string dir = CreateTempDirectory();
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
+        string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
+        string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
         try
         {
-            string dataFile = Path.Combine(dir, "snapshot.json");
-            string stopFile = Path.Combine(dir, "stop.signal");
-
             File.WriteAllText(dataFile, JsonSerializer.Serialize(new
             {
                 Token = "token",
@@ -80,21 +71,20 @@ public class ElevatedBridgeClientTests
         finally
         {
             ElevatedBridgeClient.NowMsOverrideForTest = null;
-            DeleteDirectory(dir);
         }
     }
 
     [Fact]
     public void PollRows_WhenSnapshotParseFails_QueuesWarning()
     {
-        string dir = CreateTempDirectory();
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
+        string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
+        string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
+        ElevatedBridgeClient.NowMsOverrideForTest = () => 1_000;
         try
         {
-            string dataFile = Path.Combine(dir, "snapshot.json");
-            string stopFile = Path.Combine(dir, "stop.signal");
             File.WriteAllText(dataFile, "{ invalid-json");
 
-            ElevatedBridgeClient.NowMsOverrideForTest = () => 1_000;
             ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 1_000);
 
             BridgePollResult result = client.PollRows();
@@ -107,29 +97,6 @@ public class ElevatedBridgeClientTests
         finally
         {
             ElevatedBridgeClient.NowMsOverrideForTest = null;
-            DeleteDirectory(dir);
-        }
-    }
-
-    private static string CreateTempDirectory()
-    {
-        string path = Path.Combine(Path.GetTempPath(), $"batcave-bridge-tests-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(path);
-        return path;
-    }
-
-    private static void DeleteDirectory(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, recursive: true);
-            }
-        }
-        catch
-        {
-            // best effort cleanup
         }
     }
 }

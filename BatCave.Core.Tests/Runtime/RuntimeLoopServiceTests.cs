@@ -1,9 +1,7 @@
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
-using BatCave.Core.Pipeline;
-using BatCave.Core.Sort;
-using BatCave.Core.State;
 using BatCave.Core.Runtime;
+using BatCave.Core.Tests.Runtime.TestSupport;
 
 namespace BatCave.Core.Tests.Runtime;
 
@@ -18,7 +16,7 @@ public class RuntimeLoopServiceTests
             _ => [],
         ]);
 
-        using MonitoringRuntime runtime = CreateRuntime(collector);
+        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, new TestPersistenceStore());
         RuntimeLoopService service = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
         List<TickFaultedEventArgs> faults = [];
         int completed = 0;
@@ -50,7 +48,7 @@ public class RuntimeLoopServiceTests
             _ => [],
         ]);
 
-        using MonitoringRuntime runtime = CreateRuntime(collector);
+        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, new TestPersistenceStore());
         RuntimeLoopService service = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
         List<int> delays = [];
 
@@ -67,31 +65,6 @@ public class RuntimeLoopServiceTests
         Assert.Equal(250, delays[2]);
     }
 
-    private static MonitoringRuntime CreateRuntime(IProcessCollector collector)
-    {
-        return new MonitoringRuntime(
-            new TestCollectorFactory(collector),
-            new DeltaTelemetryPipeline(),
-            new InMemoryStateStore(),
-            new IncrementalSortIndexEngine(),
-            new TestPersistenceStore());
-    }
-
-    private sealed class TestCollectorFactory : IProcessCollectorFactory
-    {
-        private readonly IProcessCollector _collector;
-
-        public TestCollectorFactory(IProcessCollector collector)
-        {
-            _collector = collector;
-        }
-
-        public IProcessCollector Create(bool adminMode)
-        {
-            return _collector;
-        }
-    }
-
     private sealed class SequenceCollector : IProcessCollector
     {
         private readonly Queue<Func<ulong, IReadOnlyList<ProcessSample>>> _steps;
@@ -105,41 +78,6 @@ public class RuntimeLoopServiceTests
         {
             Func<ulong, IReadOnlyList<ProcessSample>> step = _steps.Count > 1 ? _steps.Dequeue() : _steps.Peek();
             return step(seq);
-        }
-
-        public string? TakeWarning()
-        {
-            return null;
-        }
-    }
-
-    private sealed class TestPersistenceStore : IPersistenceStore
-    {
-        public string BaseDirectory => Path.GetTempPath();
-
-        public UserSettings? LoadSettings()
-        {
-            return new UserSettings();
-        }
-
-        public Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
-        {
-            return Task.CompletedTask;
-        }
-
-        public WarmCache? LoadWarmCache()
-        {
-            return null;
-        }
-
-        public Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
-        {
-            return Task.CompletedTask;
         }
 
         public string? TakeWarning()

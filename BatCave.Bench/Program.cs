@@ -39,39 +39,53 @@ internal static class Program
 
         for (int index = 0; index < args.Length; index++)
         {
-            string argument = args[index];
-            switch (argument)
+            if (!TryParseArgument(args, ref index, ref ticks, ref sleepMs, ref strict, out error))
             {
-                case "--strict":
-                    strict = true;
-                    break;
-                case "--ticks":
-                {
-                    if (!TryReadIntValue(args, ref index, out ticks))
-                    {
-                        error = "Missing or invalid value for --ticks.";
-                        return false;
-                    }
-
-                    break;
-                }
-                case "--sleep-ms":
-                {
-                    if (!TryReadIntValue(args, ref index, out sleepMs))
-                    {
-                        error = "Missing or invalid value for --sleep-ms.";
-                        return false;
-                    }
-
-                    break;
-                }
-                default:
-                    error = $"Unknown argument: {argument}";
-                    return false;
+                return false;
             }
         }
 
         return true;
+    }
+
+    private static bool TryParseArgument(
+        string[] args,
+        ref int index,
+        ref int ticks,
+        ref int sleepMs,
+        ref bool strict,
+        out string? error)
+    {
+        error = null;
+
+        string argument = args[index];
+        switch (argument)
+        {
+            case "--strict":
+                strict = true;
+                return true;
+            case "--ticks":
+                if (!TryReadIntValue(args, ref index, out int parsedTicks))
+                {
+                    error = "Missing or invalid value for --ticks.";
+                    return false;
+                }
+
+                ticks = parsedTicks;
+                return true;
+            case "--sleep-ms":
+                if (!TryReadIntValue(args, ref index, out int parsedSleepMs))
+                {
+                    error = "Missing or invalid value for --sleep-ms.";
+                    return false;
+                }
+
+                sleepMs = parsedSleepMs;
+                return true;
+            default:
+                error = $"Unknown argument: {argument}";
+                return false;
+        }
     }
 
     private static bool TryReadIntValue(string[] args, ref int index, out int value)

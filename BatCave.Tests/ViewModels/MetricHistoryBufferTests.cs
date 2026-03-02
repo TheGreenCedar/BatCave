@@ -1,4 +1,5 @@
 using BatCave.Core.Domain;
+using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
 
 namespace BatCave.Tests.ViewModels;
@@ -37,23 +38,21 @@ public sealed class MetricHistoryBufferTests
     private static ProcessSample Sample(ulong seq, double cpu)
     {
         ulong value = (ulong)(seq * 100);
-        return new ProcessSample
-        {
-            Seq = seq,
-            TsMs = seq,
-            Pid = 1,
-            ParentPid = 0,
-            StartTimeMs = 1,
-            Name = "sample",
-            CpuPct = cpu,
-            RssBytes = value,
-            PrivateBytes = value / 2,
-            IoReadBps = value,
-            IoWriteBps = value,
-            OtherIoBps = value,
-            Threads = 1,
-            Handles = 1,
-            AccessState = AccessState.Full,
-        };
+        return TestProcessSamples.Create(
+            pid: 1,
+            seq: seq,
+            tsMs: seq,
+            parentPid: 0,
+            startTimeMs: 1,
+            name: "sample",
+            cpuPct: cpu,
+            rssBytes: value,
+            privateBytes: value / 2,
+            ioReadBps: value,
+            ioWriteBps: value,
+            otherIoBps: value,
+            threads: 1,
+            handles: 1,
+            accessState: AccessState.Full);
     }
 }

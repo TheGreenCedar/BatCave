@@ -46,30 +46,10 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
         _collector = _collectorFactory.Create(_settings.AdminMode);
 
-        _queryRequest = new QueryRequest
-        {
-            Offset = 0,
-            Limit = 5000,
-            SortCol = _settings.SortCol,
-            SortDir = _settings.SortDir,
-            FilterText = _settings.FilterText,
-        };
+        _queryRequest = BuildQueryRequest(_settings);
 
-        WarmCache? warmCache = _persistenceStore.LoadWarmCache();
-        if (warmCache is not null)
-        {
-            _pipeline.SeedFromWarmCache(warmCache.Rows);
-            _stateStore.ImportWarmCache(warmCache);
-            _seq = Math.Max(_seq, warmCache.Seq);
-        }
-
-        _logger.LogInformation(
-            "runtime_startup warm_cache_rows={WarmCacheRows} sort_col={SortCol} sort_dir={SortDir} filter_text={FilterText} admin_mode={AdminMode}",
-            warmCache?.Rows.Count ?? 0,
-            _settings.SortCol,
-            _settings.SortDir,
-            _settings.FilterText,
-            _settings.AdminMode);
+        WarmCache? warmCache = LoadWarmCache();
+        LogStartup(warmCache);
     }
 
     public QueryResponse GetSnapshot()
@@ -131,14 +111,80 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         IReadOnlyList<ProcessSample> raw = _collector.CollectTick(_seq);
         CollectorWarning? warning = CaptureRuntimeWarning();
 
+        ProcessDeltaBatch delta = ApplyRawDelta(raw);
+
+        RuntimePolicy policy = ApplyHealthAndPolicy(raw, jitterMs, out int rowCount);
+
+        PersistWarmCacheIfDue(policy.WarmCacheInterval);
+        warning ??= CaptureRuntimeWarning();
+
+        LogTick(policy, rowCount);
+
+        return new TickOutcome
+        {
+            Delta = delta,
+            Health = _health,
+            Warning = warning,
+            EmitTelemetryDelta = policy.EmitTelemetryDelta,
+        };
+    }
+
+    private void PersistSettings()
+    {
+        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
+    }
+
+    private static QueryRequest BuildQueryRequest(UserSettings settings)
+    {
+        return new QueryRequest
+        {
+            Offset = 0,
+            Limit = 5000,
+            SortCol = settings.SortCol,
+            SortDir = settings.SortDir,
+            FilterText = settings.FilterText,
+        };
+    }
+
+    private WarmCache? LoadWarmCache()
+    {
+        WarmCache? warmCache = _persistenceStore.LoadWarmCache();
+        if (warmCache is null)
+        {
+            return null;
+        }
+
+        _pipeline.SeedFromWarmCache(warmCache.Rows);
+        _stateStore.ImportWarmCache(warmCache);
+        _seq = Math.Max(_seq, warmCache.Seq);
+        return warmCache;
+    }
+
+    private void LogStartup(WarmCache? warmCache)
+    {
+        _logger.LogInformation(
+            "runtime_startup warm_cache_rows={WarmCacheRows} sort_col={SortCol} sort_dir={SortDir} filter_text={FilterText} admin_mode={AdminMode}",
+            warmCache?.Rows.Count ?? 0,
+            _settings.SortCol,
+            _settings.SortDir,
+            _settings.FilterText,
+            _settings.AdminMode);
+    }
+
+    private ProcessDeltaBatch ApplyRawDelta(IReadOnlyList<ProcessSample> raw)
+    {
         ProcessDeltaBatch delta = _pipeline.ApplyRaw(_seq, raw);
         _stateStore.ApplyDelta(delta);
         _sortIndexEngine.OnDelta(delta);
+        return delta;
+    }
 
+    private RuntimePolicy ApplyHealthAndPolicy(IReadOnlyList<ProcessSample> raw, double jitterMs, out int rowCount)
+    {
         UpdateJitterSamples(jitterMs);
         UpdateHealthForCurrentTick(raw);
 
-        int rowCount = _stateStore.RowCount();
+        rowCount = _stateStore.RowCount();
         RuntimePolicy policy = _budgetGuardian.Evaluate(_seq, _health, rowCount);
 
         if (policy.CompactMaxRows is int maxRows)
@@ -152,9 +198,46 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             DegradeMode = _budgetGuardian.IsDegraded(),
         };
 
-        PersistWarmCacheIfDue(policy.WarmCacheInterval);
-        warning ??= CaptureRuntimeWarning();
+        return policy;
+    }
 
+    private CollectorWarning? CaptureRuntimeWarning()
+    {
+        string? warningMessage = TakeNextWarningMessage();
+
+        if (string.IsNullOrWhiteSpace(warningMessage))
+        {
+            return null;
+        }
+
+        CollectorWarning warning = new()
+        {
+            Message = warningMessage,
+            Seq = _seq,
+        };
+
+        _health = _health with
+        {
+            CollectorWarnings = _health.CollectorWarnings + 1,
+        };
+
+        _logger.LogWarning("runtime_warning seq={Seq} message={Message}", _seq, warningMessage);
+        return warning;
+    }
+
+    private string? TakeNextWarningMessage()
+    {
+        string? warningMessage = _collector.TakeWarning();
+        if (!string.IsNullOrWhiteSpace(warningMessage))
+        {
+            return warningMessage;
+        }
+
+        return _persistenceStore.TakeWarning();
+    }
+
+    private void LogTick(RuntimePolicy policy, int rowCount)
+    {
         _logger.LogDebug(
             "runtime_tick seq={Seq} rows={Rows} emit_delta={EmitDelta} degrade_mode={DegradeMode} jitter_p95_ms={JitterP95Ms} dropped_ticks={DroppedTicks} admin_mode={AdminMode}",
             _seq,
@@ -176,47 +259,6 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
                 _health.DegradeMode,
                 _health.DroppedTicks);
         }
-
-        return new TickOutcome
-        {
-            Delta = delta,
-            Health = _health,
-            Warning = warning,
-            EmitTelemetryDelta = policy.EmitTelemetryDelta,
-        };
-    }
-
-    private void PersistSettings()
-    {
-        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
-    }
-
-    private CollectorWarning? CaptureRuntimeWarning()
-    {
-        string? warningMessage = _collector.TakeWarning();
-        if (string.IsNullOrWhiteSpace(warningMessage))
-        {
-            warningMessage = _persistenceStore.TakeWarning();
-        }
-
-        if (string.IsNullOrWhiteSpace(warningMessage))
-        {
-            return null;
-        }
-
-        CollectorWarning warning = new()
-        {
-            Message = warningMessage,
-            Seq = _seq,
-        };
-
-        _health = _health with
-        {
-            CollectorWarnings = _health.CollectorWarnings + 1,
-        };
-
-        _logger.LogWarning("runtime_warning seq={Seq} message={Message}", _seq, warningMessage);
-        return warning;
     }
 
     private void UpdateJitterSamples(double jitterMs)

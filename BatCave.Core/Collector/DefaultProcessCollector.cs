@@ -36,14 +36,14 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
             switch (pollResult.State)
             {
                 case BridgePollState.Rows:
-                {
-                    ulong timestamp = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    return pollResult.Rows.Select(row => row with
                     {
-                        Seq = seq,
-                        TsMs = timestamp,
-                    }).ToList();
-                }
+                        ulong timestamp = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        return pollResult.Rows.Select(row => row with
+                        {
+                            Seq = seq,
+                            TsMs = timestamp,
+                        }).ToList();
+                    }
                 case BridgePollState.Pending:
                     return _local.CollectTick(seq);
                 case BridgePollState.Faulted:

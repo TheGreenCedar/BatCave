@@ -39,15 +39,10 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
 
     public async Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
     {
-        try
-        {
-            await WriteJsonAtomicAsync(_settingsPath, settings, _prettyJson, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            EnqueueWarning("save_settings", _settingsPath, ex);
-            throw;
-        }
+        await ExecuteWithWarningAsync(
+            operation: "save_settings",
+            path: _settingsPath,
+            action: () => WriteJsonAtomicAsync(_settingsPath, settings, _prettyJson, ct)).ConfigureAwait(false);
     }
 
     public WarmCache? LoadWarmCache()
@@ -57,41 +52,18 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
 
     public async Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
     {
-        try
-        {
-            await WriteJsonAtomicAsync(_warmCachePath, cache, _compactJson, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            EnqueueWarning("save_warm_cache", _warmCachePath, ex);
-            throw;
-        }
+        await ExecuteWithWarningAsync(
+            operation: "save_warm_cache",
+            path: _warmCachePath,
+            action: () => WriteJsonAtomicAsync(_warmCachePath, cache, _compactJson, ct)).ConfigureAwait(false);
     }
 
     public async Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
     {
-        try
-        {
-            EnsureLogDirectory();
-            string logPath = ResolveDailyLogPath();
-
-            DiagnosticEntry entry = new()
-            {
-                TsMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Category = category,
-                Payload = payload,
-            };
-
-            string line = JsonSerializer.Serialize(entry, _compactJson);
-            await File.AppendAllTextAsync(logPath, line + Environment.NewLine, Encoding.UTF8, ct).ConfigureAwait(false);
-
-            RotateLogFiles(maxFiles: 14);
-        }
-        catch (Exception ex)
-        {
-            EnqueueWarning("append_diagnostic", _logsDirectory, ex);
-            throw;
-        }
+        await ExecuteWithWarningAsync(
+            operation: "append_diagnostic",
+            path: _logsDirectory,
+            action: () => AppendDiagnosticCoreAsync(category, payload, ct)).ConfigureAwait(false);
     }
 
     public string? TakeWarning()
@@ -145,6 +117,29 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
         File.Move(tempPath, path, overwrite: true);
     }
 
+    private async Task AppendDiagnosticCoreAsync(string category, object payload, CancellationToken ct)
+    {
+        EnsureLogDirectory();
+        string logPath = ResolveDailyLogPath();
+        DiagnosticEntry entry = CreateDiagnosticEntry(category, payload);
+        string line = JsonSerializer.Serialize(entry, _compactJson);
+        await File.AppendAllTextAsync(logPath, line + Environment.NewLine, Encoding.UTF8, ct).ConfigureAwait(false);
+        RotateLogFiles(maxFiles: 14);
+    }
+
+    private async Task ExecuteWithWarningAsync(string operation, string path, Func<Task> action)
+    {
+        try
+        {
+            await action().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            EnqueueWarning(operation, path, ex);
+            throw;
+        }
+    }
+
     private void RotateLogFiles(int maxFiles)
     {
         FileInfo[] files = new DirectoryInfo(_logsDirectory)
@@ -195,6 +190,16 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
     {
         string fileName = $"monitor-{DateTime.UtcNow:yyyyMMdd}.jsonl";
         return Path.Combine(_logsDirectory, fileName);
+    }
+
+    private static DiagnosticEntry CreateDiagnosticEntry(string category, object payload)
+    {
+        return new DiagnosticEntry
+        {
+            TsMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Category = category,
+            Payload = payload,
+        };
     }
 
     private sealed record DiagnosticEntry

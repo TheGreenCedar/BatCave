@@ -27,14 +27,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
 
     public QueryResponse Query(QueryRequest request, IReadOnlyList<ProcessSample> rows, ulong seq)
     {
-        if (rows.Count > 0 && rows.Count != _cache.Rows.Count)
-        {
-            ResetCacheRows(rows);
-        }
-
-        EnsureOrdering(request);
-
-        IReadOnlyList<ProcessIdentity> ordered = ApplyFilter(request.FilterText);
+        IReadOnlyList<ProcessIdentity> ordered = ResolveOrderedRows(request, rows);
 
         int total = ordered.Count;
         (int start, int count) = SlicePage(request.Offset, request.Limit, total);
@@ -48,6 +41,22 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         };
     }
 
+    private IReadOnlyList<ProcessIdentity> ResolveOrderedRows(QueryRequest request, IReadOnlyList<ProcessSample> rows)
+    {
+        if (ShouldResetCacheRows(rows))
+        {
+            ResetCacheRows(rows);
+        }
+
+        EnsureOrdering(request);
+        return ApplyFilter(request.FilterText);
+    }
+
+    private bool ShouldResetCacheRows(IReadOnlyList<ProcessSample> rows)
+    {
+        return rows.Count > 0 && rows.Count != _cache.Rows.Count;
+    }
+
     private void ResetCacheRows(IReadOnlyList<ProcessSample> rows)
     {
         _cache.Rows = rows.ToDictionary(row => row.Identity(), row => row);
@@ -57,7 +66,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
 
     private void EnsureOrdering(QueryRequest request)
     {
-        if (!_cache.Initialized || _cache.SortCol != request.SortCol || _cache.SortDir != request.SortDir)
+        if (IsSortDefinitionChanged(request))
         {
             _cache.SortCol = request.SortCol;
             _cache.SortDir = request.SortDir;
@@ -67,6 +76,11 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         }
 
         ApplyIncrementalUpdates();
+    }
+
+    private bool IsSortDefinitionChanged(QueryRequest request)
+    {
+        return !_cache.Initialized || _cache.SortCol != request.SortCol || _cache.SortDir != request.SortDir;
     }
 
     private IReadOnlyList<ProcessIdentity> ApplyFilter(string filterText)
@@ -115,7 +129,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
 
     private void ApplyIncrementalUpdates()
     {
-        if (_cache.PendingUpserts.Count == 0 && _cache.PendingExits.Count == 0)
+        if (!HasPendingChanges())
         {
             return;
         }
@@ -127,42 +141,66 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
             return;
         }
 
-        _cache.ExitsScratch.Clear();
-        foreach (ProcessIdentity identity in _cache.PendingExits)
-        {
-            _cache.ExitsScratch.Add(identity);
-        }
+        CopyPendingExitsToScratch();
 
         List<ProcessIdentity> pendingUpserts = CollectPendingUpserts();
-
         ClearPendingChanges();
 
-        int changeCount = _cache.ExitsScratch.Count + pendingUpserts.Count;
-        int rebuildThreshold = Math.Max(_cache.Rows.Count / 4, 96);
-        if (changeCount >= rebuildThreshold)
+        if (ShouldRebuildForChangeCount(_cache.ExitsScratch.Count + pendingUpserts.Count))
         {
             RebuildOrdering();
             return;
         }
 
-        if (_cache.ExitsScratch.Count > 0 || pendingUpserts.Count > 0)
+        RemoveChangedIdentitiesFromOrdering(pendingUpserts);
+        InsertPendingUpserts(pendingUpserts);
+    }
+
+    private bool HasPendingChanges()
+    {
+        return _cache.PendingUpserts.Count > 0 || _cache.PendingExits.Count > 0;
+    }
+
+    private void CopyPendingExitsToScratch()
+    {
+        _cache.ExitsScratch.Clear();
+        foreach (ProcessIdentity identity in _cache.PendingExits)
         {
-            HashSet<ProcessIdentity> removed = _cache.ExitsScratch;
-            removed.UnionWith(pendingUpserts);
+            _cache.ExitsScratch.Add(identity);
+        }
+    }
 
-            _cache.RemainingScratch.Clear();
-            foreach (ProcessIdentity identity in _cache.Ordered)
-            {
-                if (!removed.Contains(identity))
-                {
-                    _cache.RemainingScratch.Add(identity);
-                }
-            }
+    private bool ShouldRebuildForChangeCount(int changeCount)
+    {
+        int rebuildThreshold = Math.Max(_cache.Rows.Count / 4, 96);
+        return changeCount >= rebuildThreshold;
+    }
 
-            _cache.Ordered.Clear();
-            _cache.Ordered.AddRange(_cache.RemainingScratch);
+    private void RemoveChangedIdentitiesFromOrdering(IReadOnlyCollection<ProcessIdentity> pendingUpserts)
+    {
+        if (_cache.ExitsScratch.Count == 0 && pendingUpserts.Count == 0)
+        {
+            return;
         }
 
+        HashSet<ProcessIdentity> removed = _cache.ExitsScratch;
+        removed.UnionWith(pendingUpserts);
+
+        _cache.RemainingScratch.Clear();
+        foreach (ProcessIdentity identity in _cache.Ordered)
+        {
+            if (!removed.Contains(identity))
+            {
+                _cache.RemainingScratch.Add(identity);
+            }
+        }
+
+        _cache.Ordered.Clear();
+        _cache.Ordered.AddRange(_cache.RemainingScratch);
+    }
+
+    private void InsertPendingUpserts(IReadOnlyList<ProcessIdentity> pendingUpserts)
+    {
         foreach (ProcessIdentity identity in pendingUpserts)
         {
             int insertAt = InsertionIndex(identity);

@@ -48,26 +48,41 @@ public sealed class WindowsProcessCollector : IProcessCollector
     {
         ulong now = NowMs();
         ulong? systemTotal100ns = QuerySystemTotal100ns();
-        ulong? systemDelta100ns = _previousSystemTotal100ns is ulong previousSystemTotal &&
-                                  systemTotal100ns is ulong currentSystemTotal
-            ? currentSystemTotal >= previousSystemTotal
-                ? currentSystemTotal - previousSystemTotal
-                : 0
-            : null;
-
-        ulong elapsedMs = _previousTickMs is ulong previousTickMs
-            ? Math.Max(1, now >= previousTickMs ? now - previousTickMs : 1)
-            : 1000;
+        ulong? systemDelta100ns = ResolveSystemDelta100ns(_previousSystemTotal100ns, systemTotal100ns);
+        ulong elapsedMs = ResolveElapsedMs(now, _previousTickMs);
 
         Dictionary<ProcessIdentity, ProcessCounterSnapshot> currentSnapshot = new(_previousProcess.Count + 256);
         HashSet<uint> seenPids = new();
-        List<ProcessSample> rows = new(Math.Max(256, _previousProcess.Count));
+        if (!TryCollectSnapshotRows(seq, now, elapsedMs, systemDelta100ns, currentSnapshot, seenPids, out List<ProcessSample> rows))
+        {
+            return rows;
+        }
 
+        UpdatePreviousProcessSnapshot(currentSnapshot);
+
+        _previousSystemTotal100ns = systemTotal100ns;
+        _previousTickMs = now;
+
+        RetainOnlySeenPids(seenPids);
+
+        return rows;
+    }
+
+    private bool TryCollectSnapshotRows(
+        ulong seq,
+        ulong now,
+        ulong elapsedMs,
+        ulong? systemDelta100ns,
+        Dictionary<ProcessIdentity, ProcessCounterSnapshot> currentSnapshot,
+        HashSet<uint> seenPids,
+        out List<ProcessSample> rows)
+    {
+        rows = new List<ProcessSample>(Math.Max(256, _previousProcess.Count));
         IntPtr snapshotHandle = CreateToolhelp32Snapshot(Th32CsSnapProcess, 0);
-        if (snapshotHandle == IntPtr.Zero || snapshotHandle == new IntPtr(-1))
+        if (IsInvalidHandle(snapshotHandle))
         {
             _pendingWarning = "failed to create process snapshot";
-            return rows;
+            return false;
         }
 
         using SafeSnapshotHandle safeSnapshotHandle = new(snapshotHandle, ownsHandle: true);
@@ -92,18 +107,16 @@ public sealed class WindowsProcessCollector : IProcessCollector
             hasEntry = Process32NextW(safeSnapshotHandle.DangerousGetHandle(), ref processEntry);
         }
 
+        return true;
+    }
+
+    private void UpdatePreviousProcessSnapshot(Dictionary<ProcessIdentity, ProcessCounterSnapshot> currentSnapshot)
+    {
         _previousProcess.Clear();
         foreach ((ProcessIdentity identity, ProcessCounterSnapshot snapshot) in currentSnapshot)
         {
             _previousProcess[identity] = snapshot;
         }
-
-        _previousSystemTotal100ns = systemTotal100ns;
-        _previousTickMs = now;
-
-        RetainOnlySeenPids(seenPids);
-
-        return rows;
     }
 
     private ProcessRowCapture CaptureProcessRow(
@@ -375,7 +388,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
 
     private static bool IsProcessHandleAlive(IntPtr handle)
     {
-        if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+        if (IsInvalidHandle(handle))
         {
             return false;
         }
@@ -407,6 +420,31 @@ public sealed class WindowsProcessCollector : IProcessCollector
         }
 
         return (windows100ns - WindowsToUnixEpoch100ns) / 10_000;
+    }
+
+    private static ulong? ResolveSystemDelta100ns(ulong? previousSystemTotal100ns, ulong? currentSystemTotal100ns)
+    {
+        if (previousSystemTotal100ns is not ulong previous || currentSystemTotal100ns is not ulong current)
+        {
+            return null;
+        }
+
+        return current >= previous ? current - previous : 0;
+    }
+
+    private static ulong ResolveElapsedMs(ulong now, ulong? previousTickMs)
+    {
+        if (previousTickMs is not ulong previous)
+        {
+            return 1000;
+        }
+
+        return Math.Max(1, now >= previous ? now - previous : 1);
+    }
+
+    private static bool IsInvalidHandle(IntPtr handle)
+    {
+        return handle == IntPtr.Zero || handle == new IntPtr(-1);
     }
 
     private static bool ShouldRefreshMetric(ulong seq, ulong lastSampleSeq, ulong stride)

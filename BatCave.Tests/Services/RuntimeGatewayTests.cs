@@ -1,5 +1,6 @@
 using BatCave.Core.Domain;
 using BatCave.Services;
+using BatCave.Tests.TestSupport;
 
 namespace BatCave.Tests.Services;
 
@@ -81,23 +82,21 @@ public class RuntimeGatewayTests
 
     private static ProcessSample Sample(uint pid, ulong seq)
     {
-        return new ProcessSample
-        {
-            Seq = seq,
-            TsMs = seq,
-            Pid = pid,
-            ParentPid = 1,
-            StartTimeMs = seq * 100,
-            Name = $"proc-{pid}",
-            CpuPct = 4.0,
-            RssBytes = 1000,
-            PrivateBytes = 600,
-            IoReadBps = 10,
-            IoWriteBps = 12,
-            OtherIoBps = 8,
-            Threads = 3,
-            Handles = 6,
-            AccessState = AccessState.Full,
-        };
+        return TestProcessSamples.Create(
+            pid: pid,
+            seq: seq,
+            tsMs: seq,
+            parentPid: 1,
+            startTimeMs: seq * 100,
+            name: $"proc-{pid}",
+            cpuPct: 4.0,
+            rssBytes: 1000,
+            privateBytes: 600,
+            ioReadBps: 10,
+            ioWriteBps: 12,
+            otherIoBps: 8,
+            threads: 3,
+            handles: 6,
+            accessState: AccessState.Full);
     }
 }

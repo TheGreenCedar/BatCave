@@ -77,13 +77,7 @@ public sealed class ElevatedBridgeClient : IDisposable
 
     public static async Task<ElevatedBridgeClient> LaunchAsync(CancellationToken ct)
     {
-        string bridgeDir = Path.Combine(LocalJsonPersistenceStore.DefaultBaseDirectory(), "elevated-bridge");
-        Directory.CreateDirectory(bridgeDir);
-
-        string runId = $"{Environment.ProcessId}-{NowMs()}";
-        string token = $"{runId}-token";
-        string dataFile = Path.Combine(bridgeDir, $"snapshot-{runId}.json");
-        string stopFile = Path.Combine(bridgeDir, $"stop-{runId}.signal");
+        (string dataFile, string stopFile, string token) = BuildBridgeFiles();
 
         TryDelete(dataFile);
         TryDelete(stopFile);
@@ -100,21 +94,18 @@ public sealed class ElevatedBridgeClient : IDisposable
     public BridgePollResult PollRows()
     {
         ulong now = NowMs();
-        if (TryGetExistingFault(out BridgePollResult faulted))
+        BridgePollResult? existingFault = GetExistingFaultResult();
+        if (existingFault is not null)
         {
-            return faulted;
+            return existingFault;
         }
 
         TryReadLatestSnapshot(now);
 
-        if (TryGetStartupPendingOrFault(now, out BridgePollResult startupState))
+        BridgePollResult? stateBeforeRows = GetPendingOrFaultBeforeRows(now);
+        if (stateBeforeRows is not null)
         {
-            return startupState;
-        }
-
-        if (TryGetStaleOrFault(now, out BridgePollResult staleState))
-        {
-            return staleState;
+            return stateBeforeRows;
         }
 
         return BridgePollResult.RowsResult(_lastRows);
@@ -161,54 +152,46 @@ public sealed class ElevatedBridgeClient : IDisposable
         return BridgePollResult.Faulted(reason);
     }
 
-    private bool TryGetExistingFault(out BridgePollResult result)
+    private BridgePollResult? GetExistingFaultResult()
     {
         if (string.IsNullOrWhiteSpace(_faultReason))
         {
-            result = BridgePollResult.Pending();
-            return false;
+            return null;
         }
 
-        result = BridgePollResult.Faulted(_faultReason!);
-        return true;
+        return BridgePollResult.Faulted(_faultReason!);
     }
 
-    private bool TryGetStartupPendingOrFault(ulong now, out BridgePollResult result)
-    {
-        if (_lastSuccessMs is not null)
-        {
-            result = BridgePollResult.Pending();
-            return false;
-        }
-
-        ulong startupElapsed = now - _launchedMs;
-        if (startupElapsed > BridgeStartupGraceMs)
-        {
-            result = SetFault($"no elevated bridge snapshot received within startup grace window ({BridgeStartupGraceMs} ms)");
-            return true;
-        }
-
-        result = BridgePollResult.Pending();
-        return true;
-    }
-
-    private bool TryGetStaleOrFault(ulong now, out BridgePollResult result)
+    private BridgePollResult? GetPendingOrFaultBeforeRows(ulong now)
     {
         if (_lastSuccessMs is null)
         {
-            result = BridgePollResult.Pending();
-            return false;
+            return GetStartupPendingOrFault(now);
         }
 
-        ulong staleFor = now - _lastSuccessMs.Value;
+        return GetStaleFaultIfAny(now, _lastSuccessMs.Value);
+    }
+
+    private BridgePollResult GetStartupPendingOrFault(ulong now)
+    {
+        ulong startupElapsed = now - _launchedMs;
+        if (startupElapsed > BridgeStartupGraceMs)
+        {
+            return SetFault($"no elevated bridge snapshot received within startup grace window ({BridgeStartupGraceMs} ms)");
+        }
+
+        return BridgePollResult.Pending();
+    }
+
+    private BridgePollResult? GetStaleFaultIfAny(ulong now, ulong lastSuccessMs)
+    {
+        ulong staleFor = now - lastSuccessMs;
         if (staleFor <= BridgeStaleTimeoutMs)
         {
-            result = BridgePollResult.Pending();
-            return false;
+            return null;
         }
 
-        result = SetFault($"elevated bridge snapshot stream stalled for {staleFor} ms");
-        return true;
+        return SetFault($"elevated bridge snapshot stream stalled for {staleFor} ms");
     }
 
     public void Dispose()
@@ -367,6 +350,18 @@ public sealed class ElevatedBridgeClient : IDisposable
     private static string EscapePowerShellLiteral(string value)
     {
         return value.Replace("'", "''", StringComparison.Ordinal);
+    }
+
+    private static (string DataFile, string StopFile, string Token) BuildBridgeFiles()
+    {
+        string bridgeDir = Path.Combine(LocalJsonPersistenceStore.DefaultBaseDirectory(), "elevated-bridge");
+        Directory.CreateDirectory(bridgeDir);
+
+        string runId = $"{Environment.ProcessId}-{NowMs()}";
+        string token = $"{runId}-token";
+        string dataFile = Path.Combine(bridgeDir, $"snapshot-{runId}.json");
+        string stopFile = Path.Combine(bridgeDir, $"stop-{runId}.signal");
+        return (dataFile, stopFile, token);
     }
 
     private static ulong NowMs()

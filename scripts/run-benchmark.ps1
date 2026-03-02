@@ -17,27 +17,25 @@ $coreProjectPath = Join-Path $repoRoot "BatCave.Bench/BatCave.Bench.csproj"
 $winUiProjectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
 
 if (-not $NoBuild) {
-    dotnet build $solutionPath
+    dotnet build "$solutionPath"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 }
 
-$cliArgs = @("--benchmark", "--ticks", "$Ticks", "--sleep-ms", "$SleepMs")
+$strictArgs = @()
 if ($Strict.IsPresent) {
-    $cliArgs += "--strict"
+    $strictArgs = @("--strict")
 }
+
+$coreArgs = @("--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs
+$winUiArgs = @("--benchmark", "--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs
 
 if ($BenchmarkHost -eq "core") {
-    $coreArgs = @("--ticks", "$Ticks", "--sleep-ms", "$SleepMs")
-    if ($Strict.IsPresent) {
-        $coreArgs += "--strict"
-    }
-
-    dotnet run --project $coreProjectPath -- @coreArgs
+    dotnet run --project "$coreProjectPath" -- @coreArgs
 }
 else {
-    dotnet run --project $winUiProjectPath -p:Platform=$Platform -- @cliArgs
+    dotnet run --project "$winUiProjectPath" "-p:Platform=$Platform" -- @winUiArgs
 }
 
 exit $LASTEXITCODE
