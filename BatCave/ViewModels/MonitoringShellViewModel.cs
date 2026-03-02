@@ -25,7 +25,7 @@ public enum DetailMetricFocus
     Memory,
     IoRead,
     IoWrite,
-    Network,
+    OtherIo,
 }
 
 public partial class MonitoringShellViewModel : ObservableObject
@@ -86,7 +86,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private double _summaryPrivateBytes;
     private double _summaryIoReadBps;
     private double _summaryIoWriteBps;
-    private double _summaryNetBps;
+    private double _summaryOtherIoBps;
     private double _summaryThreads;
     private double _summaryHandles;
     private ProcessSample _globalSummaryRow = CreateEmptyGlobalSummary();
@@ -95,14 +95,14 @@ public partial class MonitoringShellViewModel : ObservableObject
     private double[] _memoryMetricTrendValues = [];
     private double[] _ioReadMetricTrendValues = [];
     private double[] _ioWriteMetricTrendValues = [];
-    private double[] _networkMetricTrendValues = [];
+    private double[] _otherIoMetricTrendValues = [];
     private double[] _expandedMetricTrendValues = [];
 
     private string _cpuMetricChipValue = "0.00%";
     private string _memoryMetricChipValue = "0 B";
     private string _ioReadMetricChipValue = "0 B/s";
     private string _ioWriteMetricChipValue = "0 B/s";
-    private string _networkMetricChipValue = "0 B/s";
+    private string _otherIoMetricChipValue = "0 B/s";
     private string _expandedMetricTitle = "CPU Trend";
     private string _expandedMetricValue = "0.0% CPU";
 
@@ -405,7 +405,7 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     public bool IsIoWriteMetricFocused => MetricFocus == DetailMetricFocus.IoWrite;
 
-    public bool IsNetworkMetricFocused => MetricFocus == DetailMetricFocus.Network;
+    public bool IsOtherIoMetricFocused => MetricFocus == DetailMetricFocus.OtherIo;
 
     public bool HasSelection => SelectedRow is not null;
 
@@ -471,7 +471,7 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     public string IoWriteSortLabel => SortLabel("IO Write", SortColumn.IoWriteBps);
 
-    public string NetSortLabel => SortLabel("Net", SortColumn.NetBps);
+    public string OtherIoSortLabel => SortLabel("Other I/O", SortColumn.OtherIoBps);
 
     public string ThreadsSortLabel => SortLabel("Threads", SortColumn.Threads);
 
@@ -501,10 +501,10 @@ public partial class MonitoringShellViewModel : ObservableObject
         private set => SetProperty(ref _ioWriteMetricTrendValues, value);
     }
 
-    public double[] NetworkMetricTrendValues
+    public double[] OtherIoMetricTrendValues
     {
-        get => _networkMetricTrendValues;
-        private set => SetProperty(ref _networkMetricTrendValues, value);
+        get => _otherIoMetricTrendValues;
+        private set => SetProperty(ref _otherIoMetricTrendValues, value);
     }
 
     public double[] ExpandedMetricTrendValues
@@ -537,10 +537,10 @@ public partial class MonitoringShellViewModel : ObservableObject
         private set => SetProperty(ref _ioWriteMetricChipValue, value);
     }
 
-    public string NetworkMetricChipValue
+    public string OtherIoMetricChipValue
     {
-        get => _networkMetricChipValue;
-        private set => SetProperty(ref _networkMetricChipValue, value);
+        get => _otherIoMetricChipValue;
+        private set => SetProperty(ref _otherIoMetricChipValue, value);
     }
 
     public string ExpandedMetricTitle

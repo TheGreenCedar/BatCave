@@ -64,6 +64,7 @@ public sealed class ElevatedBridgeClient : IDisposable
     private List<ProcessSample> _lastRows = [];
     private ulong? _lastSuccessMs;
     private string? _faultReason;
+    private readonly Queue<string> _pendingWarnings = [];
 
     private ElevatedBridgeClient(string dataFile, string stopFile, string token, uint helperPid, ulong? launchedMs = null)
     {
@@ -119,6 +120,11 @@ public sealed class ElevatedBridgeClient : IDisposable
         return BridgePollResult.RowsResult(_lastRows);
     }
 
+    public string? TakeWarning()
+    {
+        return _pendingWarnings.Count > 0 ? _pendingWarnings.Dequeue() : null;
+    }
+
     private void TryReadLatestSnapshot(ulong now)
     {
         if (!File.Exists(_dataFile))
@@ -142,15 +148,16 @@ public sealed class ElevatedBridgeClient : IDisposable
                 _lastSuccessMs = now;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore one-off parse errors and continue polling
+            EnqueueWarning($"elevated_bridge_snapshot_parse_failed file={_dataFile} error={ex.GetType().Name}: {ex.Message}");
         }
     }
 
     private BridgePollResult SetFault(string reason)
     {
         _faultReason = reason;
+        EnqueueWarning(reason);
         return BridgePollResult.Faulted(reason);
     }
 
@@ -370,6 +377,16 @@ public sealed class ElevatedBridgeClient : IDisposable
         }
 
         return (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    private void EnqueueWarning(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        _pendingWarnings.Enqueue(message);
     }
 
     private sealed record ElevatedSnapshotFile

@@ -84,6 +84,33 @@ public class ElevatedBridgeClientTests
         }
     }
 
+    [Fact]
+    public void PollRows_WhenSnapshotParseFails_QueuesWarning()
+    {
+        string dir = CreateTempDirectory();
+        try
+        {
+            string dataFile = Path.Combine(dir, "snapshot.json");
+            string stopFile = Path.Combine(dir, "stop.signal");
+            File.WriteAllText(dataFile, "{ invalid-json");
+
+            ElevatedBridgeClient.NowMsOverrideForTest = () => 1_000;
+            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 1_000);
+
+            BridgePollResult result = client.PollRows();
+            string? warning = client.TakeWarning();
+
+            Assert.Equal(BridgePollState.Pending, result.State);
+            Assert.NotNull(warning);
+            Assert.Contains("snapshot_parse_failed", warning, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            ElevatedBridgeClient.NowMsOverrideForTest = null;
+            DeleteDirectory(dir);
+        }
+    }
+
     private static string CreateTempDirectory()
     {
         string path = Path.Combine(Path.GetTempPath(), $"batcave-bridge-tests-{Guid.NewGuid():N}");

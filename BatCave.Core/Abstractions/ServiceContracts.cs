@@ -60,6 +60,8 @@ public interface IPersistenceStore
 
     Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct);
 
+    string? TakeWarning();
+
     string BaseDirectory { get; }
 }
 

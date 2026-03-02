@@ -42,7 +42,16 @@ public sealed record ProcessSample
 
     public ulong IoWriteBps { get; init; }
 
-    public ulong NetBps { get; init; }
+    [JsonPropertyName("net_bps")]
+    public ulong OtherIoBps { get; init; }
+
+    [JsonIgnore]
+    [Obsolete("Use OtherIoBps instead.")]
+    public ulong NetBps
+    {
+        get => OtherIoBps;
+        init => OtherIoBps = value;
+    }
 
     public uint Threads { get; init; }
 
@@ -73,7 +82,9 @@ public enum SortColumn
     RssBytes,
     IoReadBps,
     IoWriteBps,
-    NetBps,
+    OtherIoBps,
+    [Obsolete("Use OtherIoBps instead.")]
+    NetBps = OtherIoBps,
     Threads,
     Handles,
     StartTimeMs,

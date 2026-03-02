@@ -76,7 +76,7 @@ public partial class MonitoringShellViewModel
             SortColumn.RssBytes => nameof(ProcessRowViewState.RssBytes),
             SortColumn.IoReadBps => nameof(ProcessRowViewState.IoReadBps),
             SortColumn.IoWriteBps => nameof(ProcessRowViewState.IoWriteBps),
-            SortColumn.NetBps => nameof(ProcessRowViewState.NetBps),
+            SortColumn.OtherIoBps => nameof(ProcessRowViewState.OtherIoBps),
             SortColumn.Threads => nameof(ProcessRowViewState.Threads),
             SortColumn.Handles => nameof(ProcessRowViewState.Handles),
             SortColumn.StartTimeMs => nameof(ProcessRowViewState.StartTimeMs),
@@ -172,7 +172,7 @@ public partial class MonitoringShellViewModel
             nameof(MemorySortLabel),
             nameof(IoReadSortLabel),
             nameof(IoWriteSortLabel),
-            nameof(NetSortLabel),
+            nameof(OtherIoSortLabel),
             nameof(ThreadsSortLabel),
             nameof(HandlesSortLabel));
     }

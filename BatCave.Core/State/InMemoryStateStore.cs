@@ -99,6 +99,6 @@ public sealed class InMemoryStateStore : IStateStore
 
     private static ulong ComputeActivityScore(ProcessSample row)
     {
-        return (ulong)(row.CpuPct * 1000.0) + row.IoReadBps + row.IoWriteBps + row.NetBps + row.RssBytes / 1024;
+        return (ulong)(row.CpuPct * 1000.0) + row.IoReadBps + row.IoWriteBps + row.OtherIoBps + row.RssBytes / 1024;
     }
 }

@@ -139,5 +139,10 @@ public static class BenchmarkRunner
         {
             return Task.CompletedTask;
         }
+
+        public string? TakeWarning()
+        {
+            return null;
+        }
     }
 }

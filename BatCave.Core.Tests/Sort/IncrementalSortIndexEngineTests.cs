@@ -123,7 +123,7 @@ public class IncrementalSortIndexEngineTests
             PrivateBytes = rss / 2,
             IoReadBps = 5,
             IoWriteBps = 6,
-            NetBps = 7,
+            OtherIoBps = 7,
             Threads = 3,
             Handles = 4,
             AccessState = AccessState.Full,

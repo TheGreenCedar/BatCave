@@ -17,6 +17,8 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
     private readonly string _settingsPath;
     private readonly string _warmCachePath;
     private readonly string _logsDirectory;
+    private readonly object _warningSync = new();
+    private readonly Queue<string> _pendingWarnings = new();
 
     public LocalJsonPersistenceStore(string? baseDirectory = null)
     {
@@ -37,7 +39,15 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
 
     public async Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
     {
-        await WriteJsonAtomicAsync(_settingsPath, settings, _prettyJson, ct).ConfigureAwait(false);
+        try
+        {
+            await WriteJsonAtomicAsync(_settingsPath, settings, _prettyJson, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            EnqueueWarning("save_settings", _settingsPath, ex);
+            throw;
+        }
     }
 
     public WarmCache? LoadWarmCache()
@@ -47,25 +57,49 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
 
     public async Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
     {
-        await WriteJsonAtomicAsync(_warmCachePath, cache, _compactJson, ct).ConfigureAwait(false);
+        try
+        {
+            await WriteJsonAtomicAsync(_warmCachePath, cache, _compactJson, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            EnqueueWarning("save_warm_cache", _warmCachePath, ex);
+            throw;
+        }
     }
 
     public async Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
     {
-        EnsureLogDirectory();
-        string logPath = ResolveDailyLogPath();
-
-        DiagnosticEntry entry = new()
+        try
         {
-            TsMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            Category = category,
-            Payload = payload,
-        };
+            EnsureLogDirectory();
+            string logPath = ResolveDailyLogPath();
 
-        string line = JsonSerializer.Serialize(entry, _compactJson);
-        await File.AppendAllTextAsync(logPath, line + Environment.NewLine, Encoding.UTF8, ct).ConfigureAwait(false);
+            DiagnosticEntry entry = new()
+            {
+                TsMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Category = category,
+                Payload = payload,
+            };
 
-        RotateLogFiles(maxFiles: 14);
+            string line = JsonSerializer.Serialize(entry, _compactJson);
+            await File.AppendAllTextAsync(logPath, line + Environment.NewLine, Encoding.UTF8, ct).ConfigureAwait(false);
+
+            RotateLogFiles(maxFiles: 14);
+        }
+        catch (Exception ex)
+        {
+            EnqueueWarning("append_diagnostic", _logsDirectory, ex);
+            throw;
+        }
+    }
+
+    public string? TakeWarning()
+    {
+        lock (_warningSync)
+        {
+            return _pendingWarnings.Count > 0 ? _pendingWarnings.Dequeue() : null;
+        }
     }
 
     public static string DefaultBaseDirectory()
@@ -91,8 +125,9 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
             string content = File.ReadAllText(path, Encoding.UTF8);
             return JsonSerializer.Deserialize<T>(content, _compactJson);
         }
-        catch
+        catch (Exception ex)
         {
+            EnqueueWarning("load_json", path, ex);
             return default;
         }
     }
@@ -128,10 +163,20 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
             {
                 staleFile.Delete();
             }
-            catch
+            catch (Exception ex)
             {
+                EnqueueWarning("rotate_log_delete", staleFile.FullName, ex);
                 // best effort rotation; keep local-only behavior even if a stale file cannot be removed
             }
+        }
+    }
+
+    private void EnqueueWarning(string operation, string path, Exception ex)
+    {
+        string warning = $"persistence_{operation}_failed path={path} error={ex.GetType().Name}: {ex.Message}";
+        lock (_warningSync)
+        {
+            _pendingWarnings.Enqueue(warning);
         }
     }
 

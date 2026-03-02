@@ -5,7 +5,7 @@
 - `BatCave.Core/`: runtime/domain logic (collectors, telemetry pipeline, sorting, persistence, policies).
 - `BatCave.Core.Tests/`: unit tests for core runtime and services.
 - `BatCave.Tests/`: UI/view-model-focused tests for host-side behavior.
-- `docs/`: spec and traceability docs (`requirements.md`, `design.md`, `tasks.md`, `validation.md`, `blueprint.md`).
+- `docs/`: currently absent; if reintroduced, use it for spec/traceability artifacts (`requirements.md`, `design.md`, `tasks.md`, `validation.md`, `blueprint.md`).
 - `scripts/`: repeatable local workflows (`run-dev.ps1`, `run-benchmark.ps1`, `validate-winui.ps1`).
 
 ## Build, Test, and Development Commands
@@ -30,7 +30,7 @@
 - Follow observed commit prefixes: `feat:`, `test:`, `docs:`, and task-oriented entries like `Task 7: ...`.
 - Keep commit subjects imperative and scoped to one change.
 - PRs should include: summary, linked task/issue, validation evidence (command(s) run), and screenshots/GIFs for UI changes.
-- If updating numbered work in `docs/tasks.md`, mark completion and keep `docs/validation.md` in sync.
+- If the optional `docs/` tree exists and you update numbered work in `docs/tasks.md`, keep `docs/validation.md` in sync.
 
 ## Security & Configuration Notes
 - Persistence is local-only under `%LOCALAPPDATA%\BatCaveMonitor`.

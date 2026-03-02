@@ -180,7 +180,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
             PrivateBytes = 0,
             IoReadBps = 0,
             IoWriteBps = 0,
-            NetBps = 0,
+            OtherIoBps = 0,
             Threads = processEntry.cntThreads,
             Handles = 0,
             AccessState = AccessState.Denied,
@@ -318,7 +318,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
             CpuPct = cpuPct,
             IoReadBps = (ulong)((readDelta * 1000.0) / elapsedMs),
             IoWriteBps = (ulong)((writeDelta * 1000.0) / elapsedMs),
-            NetBps = (ulong)((otherDelta * 1000.0) / elapsedMs),
+            OtherIoBps = (ulong)((otherDelta * 1000.0) / elapsedMs),
         };
     }
 

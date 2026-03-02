@@ -16,7 +16,7 @@ public sealed class ProcessRowViewState : ObservableObject
     private string _rssText;
     private string _ioReadText;
     private string _ioWriteText;
-    private string _netText;
+    private string _otherIoText;
 
     public ProcessRowViewState(ProcessSample sample, string cpuTrendPoints)
     {
@@ -26,7 +26,7 @@ public sealed class ProcessRowViewState : ObservableObject
         _rssText = ValueFormat.FormatBytes(sample.RssBytes);
         _ioReadText = ValueFormat.FormatRate(sample.IoReadBps);
         _ioWriteText = ValueFormat.FormatRate(sample.IoWriteBps);
-        _netText = ValueFormat.FormatRate(sample.NetBps);
+        _otherIoText = ValueFormat.FormatRate(sample.OtherIoBps);
     }
 
     public ProcessSample Sample => _sample;
@@ -49,7 +49,7 @@ public sealed class ProcessRowViewState : ObservableObject
 
     public ulong IoWriteBps => _sample.IoWriteBps;
 
-    public ulong NetBps => _sample.NetBps;
+    public ulong OtherIoBps => _sample.OtherIoBps;
 
     public string CpuText
     {
@@ -75,10 +75,10 @@ public sealed class ProcessRowViewState : ObservableObject
         private set => SetProperty(ref _ioWriteText, value);
     }
 
-    public string NetText
+    public string OtherIoText
     {
-        get => _netText;
-        private set => SetProperty(ref _netText, value);
+        get => _otherIoText;
+        private set => SetProperty(ref _otherIoText, value);
     }
 
     public uint Threads => _sample.Threads;
@@ -143,9 +143,9 @@ public sealed class ProcessRowViewState : ObservableObject
             IoWriteText = ValueFormat.FormatRate(current.IoWriteBps);
         }
 
-        if (RaiseIfChanged(previous.NetBps, current.NetBps, nameof(NetBps)))
+        if (RaiseIfChanged(previous.OtherIoBps, current.OtherIoBps, nameof(OtherIoBps)))
         {
-            NetText = ValueFormat.FormatRate(current.NetBps);
+            OtherIoText = ValueFormat.FormatRate(current.OtherIoBps);
         }
 
         RaiseIfChanged(previous.Threads, current.Threads, nameof(Threads));

@@ -83,7 +83,7 @@ public class DeltaTelemetryPipelineTests
             PrivateBytes = 5_000,
             IoReadBps = 10,
             IoWriteBps = 11,
-            NetBps = 12,
+            OtherIoBps = 12,
             Threads = 4,
             Handles = 5,
             AccessState = AccessState.Full,

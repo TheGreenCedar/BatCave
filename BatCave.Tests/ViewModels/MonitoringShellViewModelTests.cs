@@ -620,7 +620,7 @@ public class MonitoringShellViewModelTests
             PrivateBytes = 512,
             IoReadBps = 10,
             IoWriteBps = 10,
-            NetBps = 10,
+            OtherIoBps = 10,
             Threads = 2,
             Handles = 3,
             AccessState = access,
@@ -697,6 +697,11 @@ public class MonitoringShellViewModelTests
         {
             return Task.CompletedTask;
         }
+
+        public string? TakeWarning()
+        {
+            return null;
+        }
     }
 
     private sealed class TestMetadataProvider : IProcessMetadataProvider
@@ -733,6 +738,11 @@ public class MonitoringShellViewModelTests
             {
                 CollectorWarningRaised?.Invoke(this, outcome.Warning);
             }
+        }
+
+        public void PublishWarning(CollectorWarning warning)
+        {
+            CollectorWarningRaised?.Invoke(this, warning);
         }
 
         public void RaiseDelta(ulong seq, IReadOnlyList<ProcessSample> upserts, IReadOnlyList<ProcessIdentity> exits)

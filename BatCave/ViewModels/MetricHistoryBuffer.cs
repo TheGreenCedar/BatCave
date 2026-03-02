@@ -11,7 +11,7 @@ public sealed class MetricHistoryBuffer
     private readonly RingSeries _memory;
     private readonly RingSeries _ioRead;
     private readonly RingSeries _ioWrite;
-    private readonly RingSeries _net;
+    private readonly RingSeries _otherIo;
 
     public MetricHistoryBuffer(int limit)
     {
@@ -20,7 +20,7 @@ public sealed class MetricHistoryBuffer
         _memory = new RingSeries(normalizedLimit);
         _ioRead = new RingSeries(normalizedLimit);
         _ioWrite = new RingSeries(normalizedLimit);
-        _net = new RingSeries(normalizedLimit);
+        _otherIo = new RingSeries(normalizedLimit);
     }
 
     public IReadOnlyList<double> Cpu => _cpu;
@@ -31,7 +31,7 @@ public sealed class MetricHistoryBuffer
 
     public IReadOnlyList<double> IoWrite => _ioWrite;
 
-    public IReadOnlyList<double> Net => _net;
+    public IReadOnlyList<double> OtherIo => _otherIo;
 
     public void Reset()
     {
@@ -47,7 +47,7 @@ public sealed class MetricHistoryBuffer
         Append(_memory, sample.RssBytes);
         Append(_ioRead, sample.IoReadBps);
         Append(_ioWrite, sample.IoWriteBps);
-        Append(_net, sample.NetBps);
+        Append(_otherIo, sample.OtherIoBps);
     }
 
     public static IReadOnlyList<double> Singleton(double value)
@@ -66,7 +66,7 @@ public sealed class MetricHistoryBuffer
         yield return _memory;
         yield return _ioRead;
         yield return _ioWrite;
-        yield return _net;
+        yield return _otherIo;
     }
 
     private sealed class RingSeries : IReadOnlyList<double>

@@ -70,7 +70,7 @@ public class InMemoryStateStoreTests
             PrivateBytes = 512 * pid,
             IoReadBps = io,
             IoWriteBps = io,
-            NetBps = io,
+            OtherIoBps = io,
             Threads = 1,
             Handles = 1,
             AccessState = AccessState.Full,

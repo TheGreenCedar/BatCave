@@ -31,7 +31,7 @@ public sealed class MetricHistoryBufferTests
         Assert.Empty(buffer.Memory);
         Assert.Empty(buffer.IoRead);
         Assert.Empty(buffer.IoWrite);
-        Assert.Empty(buffer.Net);
+        Assert.Empty(buffer.OtherIo);
     }
 
     private static ProcessSample Sample(ulong seq, double cpu)
@@ -50,7 +50,7 @@ public sealed class MetricHistoryBufferTests
             PrivateBytes = value / 2,
             IoReadBps = value,
             IoWriteBps = value,
-            NetBps = value,
+            OtherIoBps = value,
             Threads = 1,
             Handles = 1,
             AccessState = AccessState.Full,

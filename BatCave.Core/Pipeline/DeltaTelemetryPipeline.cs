@@ -78,7 +78,7 @@ public sealed class DeltaTelemetryPipeline : ITelemetryPipeline
                && left.PrivateBytes == right.PrivateBytes
                && left.IoReadBps == right.IoReadBps
                && left.IoWriteBps == right.IoWriteBps
-               && left.NetBps == right.NetBps
+               && left.OtherIoBps == right.OtherIoBps
                && left.Threads == right.Threads
                && left.Handles == right.Handles
                && left.AccessState == right.AccessState

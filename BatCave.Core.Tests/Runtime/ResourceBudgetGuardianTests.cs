@@ -61,4 +61,25 @@ public class ResourceBudgetGuardianTests
 
         Assert.Equal(20UL, policyAfterEight.WarmCacheInterval);
     }
+
+    [Fact]
+    public void EmitTelemetryDelta_FollowsStrideWhenDegraded()
+    {
+        ResourceBudgetGuardian guardian = new();
+        RuntimeHealth overBudget = new()
+        {
+            AppCpuPct = 2.0,
+            AppRssBytes = 200UL * 1024UL * 1024UL,
+        };
+
+        RuntimePolicy policySeq1 = guardian.Evaluate(1, overBudget, rowCount: 1000);
+        RuntimePolicy policySeq2 = guardian.Evaluate(2, overBudget, rowCount: 1000);
+        RuntimePolicy policySeq3 = guardian.Evaluate(3, overBudget, rowCount: 1000);
+        RuntimePolicy policySeq4 = guardian.Evaluate(4, overBudget, rowCount: 1000);
+
+        Assert.True(policySeq1.EmitTelemetryDelta);
+        Assert.True(policySeq2.EmitTelemetryDelta);
+        Assert.False(policySeq3.EmitTelemetryDelta);
+        Assert.True(policySeq4.EmitTelemetryDelta);
+    }
 }

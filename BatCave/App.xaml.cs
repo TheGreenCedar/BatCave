@@ -109,6 +109,12 @@ public partial class App : Application
         IRuntimeEventGateway runtimeEventGateway = _host.Services.GetRequiredService<IRuntimeEventGateway>();
 
         runtimeLoopService.TickCompleted += (_, outcome) => runtimeEventGateway.Publish(outcome);
+        runtimeLoopService.TickFaulted += (_, fault) => runtimeEventGateway.PublishWarning(new CollectorWarning
+        {
+            Seq = 0,
+            Message =
+                $"runtime loop fault ({fault.ExceptionType}): {fault.Message}. retry in {fault.DelayMs} ms (streak {fault.ConsecutiveFaults}, generation {fault.Generation})",
+        });
         runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
 
         _runtimeLoopWired = true;

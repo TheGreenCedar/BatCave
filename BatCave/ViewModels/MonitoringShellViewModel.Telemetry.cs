@@ -196,7 +196,7 @@ public partial class MonitoringShellViewModel
             || current.RssBytes != next.RssBytes
             || current.IoReadBps != next.IoReadBps
             || current.IoWriteBps != next.IoWriteBps
-            || current.NetBps != next.NetBps
+            || current.OtherIoBps != next.OtherIoBps
             || current.Threads != next.Threads
             || current.Handles != next.Handles
             || current.AccessState != next.AccessState;
@@ -224,7 +224,7 @@ public partial class MonitoringShellViewModel
             SortColumn.RssBytes => previous.RssBytes != current.RssBytes,
             SortColumn.IoReadBps => previous.IoReadBps != current.IoReadBps,
             SortColumn.IoWriteBps => previous.IoWriteBps != current.IoWriteBps,
-            SortColumn.NetBps => previous.NetBps != current.NetBps,
+            SortColumn.OtherIoBps => previous.OtherIoBps != current.OtherIoBps,
             SortColumn.Threads => previous.Threads != current.Threads,
             SortColumn.Handles => previous.Handles != current.Handles,
             SortColumn.StartTimeMs => previous.StartTimeMs != current.StartTimeMs,

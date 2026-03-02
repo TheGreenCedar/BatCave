@@ -118,7 +118,7 @@
                             <Button Grid.Column="3" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="RssBytes" Content="{x:Bind ViewModel.MemorySortLabel, Mode=OneWay}" />
                             <Button Grid.Column="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="IoReadBps" Content="{x:Bind ViewModel.IoReadSortLabel, Mode=OneWay}" />
                             <Button Grid.Column="5" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="IoWriteBps" Content="{x:Bind ViewModel.IoWriteSortLabel, Mode=OneWay}" />
-                            <Button Grid.Column="6" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="NetBps" Content="{x:Bind ViewModel.NetSortLabel, Mode=OneWay}" />
+                            <Button Grid.Column="6" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="OtherIoBps" Content="{x:Bind ViewModel.OtherIoSortLabel, Mode=OneWay}" />
                             <Button Grid.Column="7" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="Threads" Content="{x:Bind ViewModel.ThreadsSortLabel, Mode=OneWay}" />
                             <Button Grid.Column="8" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" Command="{x:Bind ViewModel.SortHeaderCommand}" CommandParameter="Handles" Content="{x:Bind ViewModel.HandlesSortLabel, Mode=OneWay}" />
                             <TextBlock Grid.Column="9" VerticalAlignment="Center" FontWeight="SemiBold" Text="CPU Trend" />
@@ -177,7 +177,7 @@
                                         <TextBlock Grid.Column="3" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind RssText, Mode=OneWay}" TextAlignment="Right" />
                                         <TextBlock Grid.Column="4" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind IoReadText, Mode=OneWay}" TextAlignment="Right" />
                                         <TextBlock Grid.Column="5" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind IoWriteText, Mode=OneWay}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="6" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind NetText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="6" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind OtherIoText, Mode=OneWay}" TextAlignment="Right" />
                                         <TextBlock Grid.Column="7" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Threads, Mode=OneWay}" TextAlignment="Right" />
                                         <TextBlock Grid.Column="8" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Handles, Mode=OneWay}" TextAlignment="Right" />
                                         <Canvas Grid.Column="9" Width="96" Height="22" HorizontalAlignment="Stretch">
@@ -315,19 +315,19 @@
                                         HorizontalContentAlignment="Stretch"
                                         MinHeight="56"
                                         Padding="12,8"
-                                        IsChecked="{x:Bind ViewModel.IsNetworkMetricFocused, Mode=OneWay}"
+                                        IsChecked="{x:Bind ViewModel.IsOtherIoMetricFocused, Mode=OneWay}"
                                         Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                        CommandParameter="Network">
+                                        CommandParameter="OtherIo">
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="98" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
                                             <StackPanel>
-                                                <TextBlock FontWeight="SemiBold" Text="Network" />
-                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.NetworkMetricChipValue, Mode=OneWay}" />
+                                                <TextBlock FontWeight="SemiBold" Text="Other I/O" />
+                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.OtherIoMetricChipValue, Mode=OneWay}" />
                                             </StackPanel>
-                                            <scottPlot:WinUIPlot x:Name="NetworkChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
+                                            <scottPlot:WinUIPlot x:Name="OtherIoChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
                                         </Grid>
                                     </ToggleButton>
                                 </StackPanel>

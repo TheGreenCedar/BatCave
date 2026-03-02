@@ -62,7 +62,7 @@ public sealed class ProcessRowViewStateTests
             RssBytes = 2048,
             IoReadBps = 4096,
             IoWriteBps = 5120,
-            NetBps = 6144,
+            OtherIoBps = 6144,
         };
 
         ProcessRowViewState state = new(initial, "0,0 1,1");
@@ -71,7 +71,7 @@ public sealed class ProcessRowViewStateTests
         Assert.Equal("25.50%", state.CpuText);
         Assert.EndsWith("/s", state.IoReadText, StringComparison.Ordinal);
         Assert.EndsWith("/s", state.IoWriteText, StringComparison.Ordinal);
-        Assert.EndsWith("/s", state.NetText, StringComparison.Ordinal);
+        Assert.EndsWith("/s", state.OtherIoText, StringComparison.Ordinal);
         Assert.Contains("KB", state.RssText, StringComparison.Ordinal);
     }
 
@@ -97,7 +97,7 @@ public sealed class ProcessRowViewStateTests
             PrivateBytes = 512,
             IoReadBps = ioReadBps,
             IoWriteBps = ioWriteBps,
-            NetBps = netBps,
+            OtherIoBps = netBps,
             Threads = threads,
             Handles = handles,
             AccessState = AccessState.Full,

@@ -64,7 +64,7 @@ public class LocalJsonPersistenceStoreTests
                         PrivateBytes = 5,
                         IoReadBps = 1,
                         IoWriteBps = 2,
-                        NetBps = 3,
+                        OtherIoBps = 3,
                         Threads = 4,
                         Handles = 5,
                         AccessState = AccessState.Full,
@@ -89,6 +89,32 @@ public class LocalJsonPersistenceStoreTests
             Assert.Contains("runtime_tick", content, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("http://", content, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("https://", content, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectory(baseDir);
+        }
+    }
+
+    [Fact]
+    public void LoadSettings_WhenJsonCorrupt_ReturnsDefaultAndQueuesWarning()
+    {
+        string baseDir = CreateTempDirectory();
+        try
+        {
+            string settingsPath = Path.Combine(baseDir, "settings.json");
+            Directory.CreateDirectory(baseDir);
+            File.WriteAllText(settingsPath, "{ not-valid-json");
+
+            LocalJsonPersistenceStore store = new(baseDir);
+
+            UserSettings? loaded = store.LoadSettings();
+            string? warning = store.TakeWarning();
+
+            Assert.Null(loaded);
+            Assert.NotNull(warning);
+            Assert.Contains("persistence_load_json_failed", warning, StringComparison.OrdinalIgnoreCase);
+            Assert.Null(store.TakeWarning());
         }
         finally
         {

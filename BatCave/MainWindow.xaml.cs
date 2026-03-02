@@ -21,7 +21,7 @@ public sealed partial class MainWindow : Window
         nameof(MonitoringShellViewModel.MemoryMetricTrendValues),
         nameof(MonitoringShellViewModel.IoReadMetricTrendValues),
         nameof(MonitoringShellViewModel.IoWriteMetricTrendValues),
-        nameof(MonitoringShellViewModel.NetworkMetricTrendValues),
+        nameof(MonitoringShellViewModel.OtherIoMetricTrendValues),
         nameof(MonitoringShellViewModel.ExpandedMetricTrendValues),
     ];
 
@@ -152,7 +152,7 @@ public sealed partial class MainWindow : Window
         RenderMetricPlot(MemoryChipPlot, ViewModel.MemoryMetricTrendValues, lineWidth: 2f);
         RenderMetricPlot(IoReadChipPlot, ViewModel.IoReadMetricTrendValues, lineWidth: 2f);
         RenderMetricPlot(IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues, lineWidth: 2f);
-        RenderMetricPlot(NetworkChipPlot, ViewModel.NetworkMetricTrendValues, lineWidth: 2f);
+        RenderMetricPlot(OtherIoChipPlot, ViewModel.OtherIoMetricTrendValues, lineWidth: 2f);
         RenderMetricPlot(ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, lineWidth: 3f);
     }
 

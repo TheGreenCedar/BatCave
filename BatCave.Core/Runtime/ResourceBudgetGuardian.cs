@@ -45,8 +45,7 @@ public sealed class ResourceBudgetGuardian
 
         return new RuntimePolicy
         {
-            // UI must remain tick-synchronous with runtime seq progression.
-            EmitTelemetryDelta = true,
+            EmitTelemetryDelta = ShouldEmitTelemetryDelta(seq, _emitStride),
             WarmCacheInterval = warmCacheInterval,
             CompactMaxRows = compactMaxRows,
         };
@@ -100,5 +99,10 @@ public sealed class ResourceBudgetGuardian
         }
 
         return null;
+    }
+
+    private static bool ShouldEmitTelemetryDelta(ulong seq, ulong emitStride)
+    {
+        return emitStride <= 1 || seq % emitStride == 0;
     }
 }

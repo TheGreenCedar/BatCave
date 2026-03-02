@@ -269,7 +269,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
             SortColumn.RssBytes => left.RssBytes.CompareTo(right.RssBytes),
             SortColumn.IoReadBps => left.IoReadBps.CompareTo(right.IoReadBps),
             SortColumn.IoWriteBps => left.IoWriteBps.CompareTo(right.IoWriteBps),
-            SortColumn.NetBps => left.NetBps.CompareTo(right.NetBps),
+            SortColumn.OtherIoBps => left.OtherIoBps.CompareTo(right.OtherIoBps),
             SortColumn.Threads => left.Threads.CompareTo(right.Threads),
             SortColumn.Handles => left.Handles.CompareTo(right.Handles),
             SortColumn.StartTimeMs => left.StartTimeMs.CompareTo(right.StartTimeMs),

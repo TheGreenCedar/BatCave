@@ -129,7 +129,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     {
         _seq++;
         IReadOnlyList<ProcessSample> raw = _collector.CollectTick(_seq);
-        CollectorWarning? warning = CaptureCollectorWarning();
+        CollectorWarning? warning = CaptureRuntimeWarning();
 
         ProcessDeltaBatch delta = _pipeline.ApplyRaw(_seq, raw);
         _stateStore.ApplyDelta(delta);
@@ -153,6 +153,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         };
 
         PersistWarmCacheIfDue(policy.WarmCacheInterval);
+        warning ??= CaptureRuntimeWarning();
 
         _logger.LogDebug(
             "runtime_tick seq={Seq} rows={Rows} emit_delta={EmitDelta} degrade_mode={DegradeMode} jitter_p95_ms={JitterP95Ms} dropped_ticks={DroppedTicks} admin_mode={AdminMode}",
@@ -190,9 +191,14 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
     }
 
-    private CollectorWarning? CaptureCollectorWarning()
+    private CollectorWarning? CaptureRuntimeWarning()
     {
         string? warningMessage = _collector.TakeWarning();
+        if (string.IsNullOrWhiteSpace(warningMessage))
+        {
+            warningMessage = _persistenceStore.TakeWarning();
+        }
+
         if (string.IsNullOrWhiteSpace(warningMessage))
         {
             return null;
@@ -209,7 +215,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             CollectorWarnings = _health.CollectorWarnings + 1,
         };
 
-        _logger.LogWarning("collector_warning seq={Seq} message={Message}", _seq, warningMessage);
+        _logger.LogWarning("runtime_warning seq={Seq} message={Message}", _seq, warningMessage);
         return warning;
     }
 

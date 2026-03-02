@@ -27,7 +27,7 @@ public partial class MonitoringShellViewModel
             nameof(IsMemoryMetricFocused),
             nameof(IsIoReadMetricFocused),
             nameof(IsIoWriteMetricFocused),
-            nameof(IsNetworkMetricFocused));
+            nameof(IsOtherIoMetricFocused));
     }
 
     private void RaiseMetadataProperties()
@@ -48,19 +48,19 @@ public partial class MonitoringShellViewModel
         MemoryMetricChipValue = ValueFormat.FormatBytes(detailSample.RssBytes);
         IoReadMetricChipValue = ValueFormat.FormatRate(detailSample.IoReadBps);
         IoWriteMetricChipValue = ValueFormat.FormatRate(detailSample.IoWriteBps);
-        NetworkMetricChipValue = ValueFormat.FormatRate(detailSample.NetBps);
+        OtherIoMetricChipValue = ValueFormat.FormatRate(detailSample.OtherIoBps);
 
         double[] cpuTrend = history.Cpu.ToArray();
         double[] memoryTrend = history.Memory.ToArray();
         double[] ioReadTrend = history.IoRead.ToArray();
         double[] ioWriteTrend = history.IoWrite.ToArray();
-        double[] networkTrend = history.Net.ToArray();
+        double[] otherIoTrend = history.OtherIo.ToArray();
 
         CpuMetricTrendValues = cpuTrend;
         MemoryMetricTrendValues = memoryTrend;
         IoReadMetricTrendValues = ioReadTrend;
         IoWriteMetricTrendValues = ioWriteTrend;
-        NetworkMetricTrendValues = networkTrend;
+        OtherIoMetricTrendValues = otherIoTrend;
 
         (ExpandedMetricTitle, ExpandedMetricValue, ExpandedMetricTrendValues) =
             MetricFocus switch
@@ -68,7 +68,7 @@ public partial class MonitoringShellViewModel
                 DetailMetricFocus.Memory => ("Memory Trend", $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS", memoryTrend),
                 DetailMetricFocus.IoRead => ("Disk Read Trend", $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read", ioReadTrend),
                 DetailMetricFocus.IoWrite => ("Disk Write Trend", $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write", ioWriteTrend),
-                DetailMetricFocus.Network => ("Network Trend", $"{ValueFormat.FormatRate(detailSample.NetBps)} net", networkTrend),
+                DetailMetricFocus.OtherIo => ("Other I/O Trend", $"{ValueFormat.FormatRate(detailSample.OtherIoBps)} net", otherIoTrend),
                 _ => ("CPU Trend", $"{detailSample.CpuPct:F1}% CPU", cpuTrend),
             };
     }
@@ -99,7 +99,7 @@ public partial class MonitoringShellViewModel
         _summaryPrivateBytes = 0;
         _summaryIoReadBps = 0;
         _summaryIoWriteBps = 0;
-        _summaryNetBps = 0;
+        _summaryOtherIoBps = 0;
         _summaryThreads = 0;
         _summaryHandles = 0;
 
@@ -120,7 +120,7 @@ public partial class MonitoringShellViewModel
         _summaryPrivateBytes += sample.PrivateBytes * multiplier;
         _summaryIoReadBps += sample.IoReadBps * multiplier;
         _summaryIoWriteBps += sample.IoWriteBps * multiplier;
-        _summaryNetBps += sample.NetBps * multiplier;
+        _summaryOtherIoBps += sample.OtherIoBps * multiplier;
         _summaryThreads += sample.Threads * multiplier;
         _summaryHandles += sample.Handles * multiplier;
     }
@@ -132,7 +132,7 @@ public partial class MonitoringShellViewModel
         _summaryPrivateBytes = ClampNonNegative(_summaryPrivateBytes);
         _summaryIoReadBps = ClampNonNegative(_summaryIoReadBps);
         _summaryIoWriteBps = ClampNonNegative(_summaryIoWriteBps);
-        _summaryNetBps = ClampNonNegative(_summaryNetBps);
+        _summaryOtherIoBps = ClampNonNegative(_summaryOtherIoBps);
         _summaryThreads = ClampNonNegative(_summaryThreads);
         _summaryHandles = ClampNonNegative(_summaryHandles);
     }
@@ -152,7 +152,7 @@ public partial class MonitoringShellViewModel
             PrivateBytes = ClampToUlong(_summaryPrivateBytes),
             IoReadBps = ClampToUlong(_summaryIoReadBps),
             IoWriteBps = ClampToUlong(_summaryIoWriteBps),
-            NetBps = ClampToUlong(_summaryNetBps),
+            OtherIoBps = ClampToUlong(_summaryOtherIoBps),
             Threads = ClampToUInt(_summaryThreads),
             Handles = ClampToUInt(_summaryHandles),
             AccessState = AccessState.Full,
@@ -180,7 +180,7 @@ public partial class MonitoringShellViewModel
             PrivateBytes = 0,
             IoReadBps = 0,
             IoWriteBps = 0,
-            NetBps = 0,
+            OtherIoBps = 0,
             Threads = 0,
             Handles = 0,
             AccessState = AccessState.Full,

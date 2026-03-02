@@ -7,6 +7,8 @@ namespace BatCave.ViewModels;
 
 public partial class MonitoringShellViewModel
 {
+    private string? _latestWarningSummary;
+
     public Task BootstrapAsync(CancellationToken ct)
     {
         InitializeBootstrapState();
@@ -89,7 +91,12 @@ public partial class MonitoringShellViewModel
 
     private void OnCollectorWarningRaised(object? sender, CollectorWarning warning)
     {
-        RunOnUiThread(() => AdminModeError = warning.Message);
+        RunOnUiThread(() =>
+        {
+            _latestWarningSummary = warning.Message;
+            AdminModeError = warning.Message;
+            RuntimeHealthStatus = BuildRuntimeHealthStatus(_runtime.GetRuntimeHealth());
+        });
     }
 
     private void RefreshRuntimeSnapshot()
@@ -106,6 +113,7 @@ public partial class MonitoringShellViewModel
         IsStartupError = false;
         IsBlocked = false;
         IsLive = false;
+        _latestWarningSummary = null;
         StartupErrorMessage = string.Empty;
         ShellHeadline = "Initializing monitor runtime...";
         ShellBody = "Starting monitoring services.";
@@ -114,6 +122,7 @@ public partial class MonitoringShellViewModel
     private void ApplyBlockedStartupState(StartupGateStatus startupGateStatus)
     {
         IsBlocked = true;
+        _latestWarningSummary = null;
         BlockedReasonMessage = FormatBlockReason(startupGateStatus.Reason);
         ShellHeadline = "Startup Blocked";
         ShellBody = BlockedReasonMessage;
@@ -123,6 +132,7 @@ public partial class MonitoringShellViewModel
     private void ApplyStartupFailureState(Exception ex)
     {
         IsStartupError = true;
+        _latestWarningSummary = null;
         StartupErrorMessage = ex.Message;
         ShellHeadline = "Startup Incomplete";
         ShellBody = ex.Message;
@@ -130,8 +140,20 @@ public partial class MonitoringShellViewModel
 
     private void ApplyRuntimeHealth(RuntimeHealth health)
     {
-        RuntimeHealthStatus =
+        RuntimeHealthStatus = BuildRuntimeHealthStatus(health);
+    }
+
+    private string BuildRuntimeHealthStatus(RuntimeHealth health)
+    {
+        string status =
             $"seq {health.Seq}, jitter p95 {health.JitterP95Ms:F0} ms, dropped {health.DroppedTicks}, degrade {(health.DegradeMode ? "ON" : "OFF")}";
+
+        if (!string.IsNullOrWhiteSpace(_latestWarningSummary))
+        {
+            status += $", last warning: {_latestWarningSummary}";
+        }
+
+        return status;
     }
 
     private static string FormatBlockReason(LaunchBlockReason? reason)
