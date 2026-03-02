@@ -22,20 +22,20 @@ public class DeltaTelemetryPipelineTests
     }
 
     [Fact]
-    public void UnchangedRows_EmitHeartbeatEveryFourthTick()
+    public void UnchangedRows_EmitHeartbeatEveryEighthTick()
     {
         DeltaTelemetryPipeline pipeline = new();
         ProcessSample baseline = Sample(pid: 100, startTimeMs: 2_000, cpu: 1);
 
         ProcessDeltaBatch first = pipeline.ApplyRaw(1, [baseline]);
         ProcessDeltaBatch second = pipeline.ApplyRaw(2, [baseline]);
-        ProcessDeltaBatch fourth = pipeline.ApplyRaw(4, [baseline]);
-        ProcessDeltaBatch fifth = pipeline.ApplyRaw(5, [baseline]);
+        ProcessDeltaBatch eighth = pipeline.ApplyRaw(8, [baseline]);
+        ProcessDeltaBatch ninth = pipeline.ApplyRaw(9, [baseline]);
 
         Assert.Single(first.Upserts);
         Assert.Empty(second.Upserts);
-        Assert.Empty(fourth.Upserts);
-        Assert.Single(fifth.Upserts);
+        Assert.Empty(eighth.Upserts);
+        Assert.Single(ninth.Upserts);
     }
 
     [Fact]

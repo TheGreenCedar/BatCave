@@ -6,6 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:scottPlot="using:ScottPlot.WinUI"
+    xmlns:viewModels="using:BatCave.ViewModels"
     mc:Ignorable="d"
     Title="BatCave">
 
@@ -156,7 +157,7 @@
                                 </Style>
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
-                                <DataTemplate>
+                                <DataTemplate x:DataType="viewModels:ProcessRowViewState">
                                     <Grid Padding="2,4">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="2*" />
@@ -170,15 +171,15 @@
                                             <ColumnDefinition Width="0.8*" />
                                             <ColumnDefinition Width="1.3*" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="1" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding Pid}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="2" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding CpuPct, Converter={StaticResource CpuPercentConverter}}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="3" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding RssBytes, Converter={StaticResource BytesConverter}}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="4" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding IoReadBps, Converter={StaticResource BytesRateConverter}}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="5" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding IoWriteBps, Converter={StaticResource BytesRateConverter}}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="6" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding NetBps, Converter={StaticResource BytesRateConverter}}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="7" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding Threads}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="8" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{Binding Handles}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="0" Text="{x:Bind Name, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Pid, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="2" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind CpuText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="3" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind RssText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="4" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind IoReadText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="5" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind IoWriteText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="6" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind NetText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="7" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Threads, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="8" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Handles, Mode=OneWay}" TextAlignment="Right" />
                                         <Canvas Grid.Column="9" Width="96" Height="22" HorizontalAlignment="Stretch">
                                             <Polyline
                                                 Points="{Binding CpuTrendPoints}"

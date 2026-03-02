@@ -202,7 +202,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task TelemetryDelta_HeartbeatOnly_DoesNotReplaceVisibleRowInstance()
+    public async Task TelemetryDelta_HeartbeatOnly_RespectsSparklineStrideAndKeepsRowInstance()
     {
         SequenceLaunchPolicyGate gate = new(
             () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
@@ -221,10 +221,66 @@ public class MonitoringShellViewModelTests
 
         ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
         gateway.RaiseDelta(3, [heartbeatOnlyUpdate], []);
-        string afterTrend = firstVisible.CpuTrendPoints;
+        string afterOddHeartbeat = firstVisible.CpuTrendPoints;
+
+        ProcessSample strideHeartbeat = heartbeatOnlyUpdate with { Seq = 4, TsMs = 4, ParentPid = heartbeatOnlyUpdate.ParentPid + 1 };
+        gateway.RaiseDelta(4, [strideHeartbeat], []);
+        string afterEvenHeartbeat = firstVisible.CpuTrendPoints;
 
         Assert.Same(firstVisible, RowAt(viewModel, 0));
-        Assert.NotEqual(beforeTrend, afterTrend);
+        Assert.Equal(beforeTrend, afterOddHeartbeat);
+        Assert.NotEqual(beforeTrend, afterEvenHeartbeat);
+    }
+
+    [Fact]
+    public async Task SelectedProcessTrend_AdvancesOnEmptyDeltaWhenValueUnchanged()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 90, startTime: 9000, access: AccessState.Full) with { CpuPct = 3.25 };
+        gateway.RaiseDelta(1, [row], []);
+        viewModel.SelectedVisibleRowBinding = RowAt(viewModel, 0);
+        int before = viewModel.CpuMetricTrendValues.Length;
+
+        gateway.RaiseDelta(2, [], []);
+        int after = viewModel.CpuMetricTrendValues.Length;
+
+        Assert.True(after > before);
+        Assert.All(viewModel.CpuMetricTrendValues, value => Assert.Equal(3.25, value, 2));
+    }
+
+    [Fact]
+    public async Task TableMiniChart_AdvancesOnStrideWhenNoUpsertArrives()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        ProcessSample row = Sample(pid: 91, startTime: 9100, access: AccessState.Full) with { CpuPct = 4.5 };
+        gateway.RaiseDelta(1, [row], []);
+        ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 11.0 };
+        gateway.RaiseDelta(2, [varied], []);
+        ProcessRowViewState rowState = RowAt(viewModel, 0);
+        string before = rowState.CpuTrendPoints;
+
+        gateway.RaiseDelta(3, [], []);
+        string afterOdd = rowState.CpuTrendPoints;
+
+        gateway.RaiseDelta(4, [], []);
+        string afterEven = rowState.CpuTrendPoints;
+
+        Assert.Equal(before, afterOdd);
+        Assert.NotEqual(before, afterEven);
     }
 
     [Fact]

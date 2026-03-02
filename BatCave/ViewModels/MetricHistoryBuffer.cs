@@ -1,21 +1,26 @@
+using System.Collections;
 using System.Collections.Generic;
+using System;
 using BatCave.Core.Domain;
 
 namespace BatCave.ViewModels;
 
 public sealed class MetricHistoryBuffer
 {
-    private readonly int _limit;
-
-    private readonly List<double> _cpu = [];
-    private readonly List<double> _memory = [];
-    private readonly List<double> _ioRead = [];
-    private readonly List<double> _ioWrite = [];
-    private readonly List<double> _net = [];
+    private readonly RingSeries _cpu;
+    private readonly RingSeries _memory;
+    private readonly RingSeries _ioRead;
+    private readonly RingSeries _ioWrite;
+    private readonly RingSeries _net;
 
     public MetricHistoryBuffer(int limit)
     {
-        _limit = limit;
+        int normalizedLimit = Math.Max(1, limit);
+        _cpu = new RingSeries(normalizedLimit);
+        _memory = new RingSeries(normalizedLimit);
+        _ioRead = new RingSeries(normalizedLimit);
+        _ioWrite = new RingSeries(normalizedLimit);
+        _net = new RingSeries(normalizedLimit);
     }
 
     public IReadOnlyList<double> Cpu => _cpu;
@@ -30,7 +35,7 @@ public sealed class MetricHistoryBuffer
 
     public void Reset()
     {
-        foreach (List<double> series in Series())
+        foreach (RingSeries series in Series())
         {
             series.Clear();
         }
@@ -50,21 +55,76 @@ public sealed class MetricHistoryBuffer
         return [value];
     }
 
-    private void Append(List<double> values, double value)
+    private static void Append(RingSeries values, double value)
     {
         values.Add(value);
-        if (values.Count > _limit)
-        {
-            values.RemoveRange(0, values.Count - _limit);
-        }
     }
 
-    private IEnumerable<List<double>> Series()
+    private IEnumerable<RingSeries> Series()
     {
         yield return _cpu;
         yield return _memory;
         yield return _ioRead;
         yield return _ioWrite;
         yield return _net;
+    }
+
+    private sealed class RingSeries : IReadOnlyList<double>
+    {
+        private readonly double[] _buffer;
+        private int _start;
+        private int _count;
+
+        public RingSeries(int capacity)
+        {
+            _buffer = new double[Math.Max(1, capacity)];
+        }
+
+        public int Count => _count;
+
+        public double this[int index]
+        {
+            get
+            {
+                if ((uint)index >= (uint)_count)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                return _buffer[(_start + index) % _buffer.Length];
+            }
+        }
+
+        public void Add(double value)
+        {
+            if (_count < _buffer.Length)
+            {
+                _buffer[(_start + _count) % _buffer.Length] = value;
+                _count++;
+                return;
+            }
+
+            _buffer[_start] = value;
+            _start = (_start + 1) % _buffer.Length;
+        }
+
+        public void Clear()
+        {
+            _start = 0;
+            _count = 0;
+        }
+
+        public IEnumerator<double> GetEnumerator()
+        {
+            for (int index = 0; index < _count; index++)
+            {
+                yield return this[index];
+            }
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
     }
 }

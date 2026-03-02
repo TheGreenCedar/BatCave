@@ -41,12 +41,17 @@ public partial class MonitoringShellViewModel
             return false;
         }
 
-        if (!AdminModeEnabled && row.AccessState == AccessState.Denied)
+        return ShouldShowSample(row.Sample);
+    }
+
+    private bool ShouldShowSample(ProcessSample sample)
+    {
+        if (!AdminModeEnabled && sample.AccessState == AccessState.Denied)
         {
             return false;
         }
 
-        if (AdminEnabledOnlyFilter && row.AccessState != AccessState.Full)
+        if (AdminEnabledOnlyFilter && sample.AccessState != AccessState.Full)
         {
             return false;
         }
@@ -57,8 +62,8 @@ public partial class MonitoringShellViewModel
             return true;
         }
 
-        return row.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
-               || row.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase);
+        return sample.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+               || sample.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase);
     }
 
     private void ApplySortDescriptions()
@@ -127,7 +132,7 @@ public partial class MonitoringShellViewModel
             }
 
             _runtime.SetFilter(filterText);
-            RunOnUiThread(RefreshVisibleRows);
+            RunOnUiThread(() => RefreshVisibleRows(refreshFilter: true));
         }
         catch (OperationCanceledException)
         {

@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using BatCave.Core.Domain;
@@ -200,9 +199,14 @@ public partial class MonitoringShellViewModel
 
     private ProcessRowViewState? TryGetVisibleRow(ProcessIdentity identity)
     {
-        return VisibleRows
-            .OfType<ProcessRowViewState>()
-            .FirstOrDefault(row => row.Identity == identity);
+        if (!_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? row))
+        {
+            return null;
+        }
+
+        return ShouldShowSample(row.Sample)
+            ? row
+            : null;
     }
 
     private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)

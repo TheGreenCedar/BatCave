@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
@@ -39,6 +38,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
     private readonly Dictionary<uint, FallbackIdentity> _pidFallbackStart = new();
     private readonly Dictionary<uint, OwnedProcessHandle> _processHandles = new();
     private readonly Dictionary<uint, ulong> _deniedHandleRetryUntilMs = new();
+    private readonly List<uint> _stalePidScratch = [];
 
     private ulong? _previousSystemTotal100ns;
     private ulong? _previousTickMs;
@@ -462,9 +462,9 @@ public sealed class WindowsProcessCollector : IProcessCollector
 
     private void RetainOnlySeenPids(HashSet<uint> seenPids)
     {
-        RemoveMissingPids(_pidFallbackStart, seenPids);
-        RemoveMissingPids(_processHandles, seenPids, handle => handle.Dispose());
-        RemoveMissingPids(_deniedHandleRetryUntilMs, seenPids);
+        RemoveMissingPids(_pidFallbackStart, seenPids, _stalePidScratch);
+        RemoveMissingPids(_processHandles, seenPids, _stalePidScratch, handle => handle.Dispose());
+        RemoveMissingPids(_deniedHandleRetryUntilMs, seenPids, _stalePidScratch);
     }
 
     private static ulong NowMs()
@@ -480,9 +480,18 @@ public sealed class WindowsProcessCollector : IProcessCollector
     private static void RemoveMissingPids<TValue>(
         Dictionary<uint, TValue> entries,
         HashSet<uint> seenPids,
+        List<uint> stalePids,
         Action<TValue>? onRemove = null)
     {
-        List<uint> stalePids = entries.Keys.Where(pid => !seenPids.Contains(pid)).ToList();
+        stalePids.Clear();
+        foreach (uint pid in entries.Keys)
+        {
+            if (!seenPids.Contains(pid))
+            {
+                stalePids.Add(pid);
+            }
+        }
+
         foreach (uint pid in stalePids)
         {
             if (!entries.TryGetValue(pid, out TValue? value))

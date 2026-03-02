@@ -22,15 +22,27 @@ public sealed class InMemoryStateStore : IStateStore
 
     public IReadOnlyList<ProcessSample> AllRows()
     {
-        return _rows.Values.ToList();
+        List<ProcessSample> rows = new(_rows.Count);
+        foreach (ProcessSample row in _rows.Values)
+        {
+            rows.Add(row);
+        }
+
+        return rows;
     }
 
     public WarmCache ExportWarmCache(ulong seq)
     {
+        List<ProcessSample> rows = new(_rows.Count);
+        foreach (ProcessSample row in _rows.Values)
+        {
+            rows.Add(row);
+        }
+
         return new WarmCache
         {
             Seq = seq,
-            Rows = _rows.Values.ToList(),
+            Rows = rows,
         };
     }
 
@@ -55,18 +67,30 @@ public sealed class InMemoryStateStore : IStateStore
             return;
         }
 
-        HashSet<ProcessIdentity> keep = _rows.Values
-            .Select(row => new
-            {
-                Identity = row.Identity(),
-                ActivityScore = ComputeActivityScore(row),
-            })
-            .OrderByDescending(entry => entry.ActivityScore)
-            .Take(maxRows)
-            .Select(entry => entry.Identity)
-            .ToHashSet();
+        List<(ProcessIdentity Identity, ulong Score)> ranked = new(_rows.Count);
+        foreach ((ProcessIdentity identity, ProcessSample row) in _rows)
+        {
+            ranked.Add((identity, ComputeActivityScore(row)));
+        }
 
-        List<ProcessIdentity> toRemove = _rows.Keys.Where(identity => !keep.Contains(identity)).ToList();
+        ranked.Sort(static (left, right) => right.Score.CompareTo(left.Score));
+
+        HashSet<ProcessIdentity> keep = new(maxRows);
+        int keepCount = Math.Min(maxRows, ranked.Count);
+        for (int index = 0; index < keepCount; index++)
+        {
+            keep.Add(ranked[index].Identity);
+        }
+
+        List<ProcessIdentity> toRemove = new(_rows.Count - keep.Count);
+        foreach (ProcessIdentity identity in _rows.Keys)
+        {
+            if (!keep.Contains(identity))
+            {
+                toRemove.Add(identity);
+            }
+        }
+
         foreach (ProcessIdentity identity in toRemove)
         {
             _rows.Remove(identity);

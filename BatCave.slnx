@@ -7,6 +7,7 @@
   <Project Path="BatCave.Core.Tests/BatCave.Core.Tests.csproj" />
   <Project Path="BatCave.Tests/BatCave.Tests.csproj" />
   <Project Path="BatCave.Core/BatCave.Core.csproj" />
+  <Project Path="BatCave.Bench/BatCave.Bench.csproj" />
   <Project Path="BatCave/BatCave.csproj">
     <Platform Solution="*|ARM64" Project="ARM64" />
     <Platform Solution="*|x64" Project="x64" />

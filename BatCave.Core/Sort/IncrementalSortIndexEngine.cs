@@ -77,23 +77,38 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
             return _cache.Ordered;
         }
 
-        return _cache.Ordered
-            .Where(identity => MatchesFilter(_cache.Rows[identity], filterNeedle))
-            .ToList();
+        _cache.Filtered.Clear();
+        foreach (ProcessIdentity identity in _cache.Ordered)
+        {
+            if (MatchesFilter(_cache.Rows[identity], filterNeedle))
+            {
+                _cache.Filtered.Add(identity);
+            }
+        }
+
+        return _cache.Filtered;
     }
 
     private List<ProcessSample> BuildPage(IReadOnlyList<ProcessIdentity> ordered, int start, int count)
     {
-        return ordered
-            .Skip(start)
-            .Take(count)
-            .Select(identity => _cache.Rows[identity])
-            .ToList();
+        List<ProcessSample> page = new(count);
+        int end = start + count;
+        for (int index = start; index < end; index++)
+        {
+            page.Add(_cache.Rows[ordered[index]]);
+        }
+
+        return page;
     }
 
     private void RebuildOrdering()
     {
-        _cache.Ordered = _cache.Rows.Keys.ToList();
+        _cache.Ordered.Clear();
+        foreach (ProcessIdentity identity in _cache.Rows.Keys)
+        {
+            _cache.Ordered.Add(identity);
+        }
+
         _cache.Ordered.Sort((left, right) => CompareIdentity(left, right, _cache.Rows, _cache.SortCol, _cache.SortDir));
         _cache.Initialized = true;
     }
@@ -112,12 +127,17 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
             return;
         }
 
-        HashSet<ProcessIdentity> exitsSeen = _cache.PendingExits.ToHashSet();
+        _cache.ExitsScratch.Clear();
+        foreach (ProcessIdentity identity in _cache.PendingExits)
+        {
+            _cache.ExitsScratch.Add(identity);
+        }
+
         List<ProcessIdentity> pendingUpserts = CollectPendingUpserts();
 
         ClearPendingChanges();
 
-        int changeCount = exitsSeen.Count + pendingUpserts.Count;
+        int changeCount = _cache.ExitsScratch.Count + pendingUpserts.Count;
         int rebuildThreshold = Math.Max(_cache.Rows.Count / 4, 96);
         if (changeCount >= rebuildThreshold)
         {
@@ -125,12 +145,22 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
             return;
         }
 
-        if (exitsSeen.Count > 0 || pendingUpserts.Count > 0)
+        if (_cache.ExitsScratch.Count > 0 || pendingUpserts.Count > 0)
         {
-            HashSet<ProcessIdentity> removed = exitsSeen;
+            HashSet<ProcessIdentity> removed = _cache.ExitsScratch;
             removed.UnionWith(pendingUpserts);
 
-            _cache.Ordered = _cache.Ordered.Where(identity => !removed.Contains(identity)).ToList();
+            _cache.RemainingScratch.Clear();
+            foreach (ProcessIdentity identity in _cache.Ordered)
+            {
+                if (!removed.Contains(identity))
+                {
+                    _cache.RemainingScratch.Add(identity);
+                }
+            }
+
+            _cache.Ordered.Clear();
+            _cache.Ordered.AddRange(_cache.RemainingScratch);
         }
 
         foreach (ProcessIdentity identity in pendingUpserts)
@@ -165,17 +195,17 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
 
     private List<ProcessIdentity> CollectPendingUpserts()
     {
-        HashSet<ProcessIdentity> upsertsSeen = [];
-        List<ProcessIdentity> pendingUpserts = [];
+        _cache.UpsertsSeenScratch.Clear();
+        _cache.PendingUpsertsScratch.Clear();
         foreach (ProcessIdentity identity in _cache.PendingUpserts)
         {
-            if (upsertsSeen.Add(identity) && _cache.Rows.ContainsKey(identity))
+            if (_cache.UpsertsSeenScratch.Add(identity) && _cache.Rows.ContainsKey(identity))
             {
-                pendingUpserts.Add(identity);
+                _cache.PendingUpsertsScratch.Add(identity);
             }
         }
 
-        return pendingUpserts;
+        return _cache.PendingUpsertsScratch;
     }
 
     private void ClearPendingChanges()
@@ -259,11 +289,21 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
 
         public List<ProcessIdentity> Ordered { get; set; } = [];
 
+        public List<ProcessIdentity> Filtered { get; } = [];
+
         public Dictionary<ProcessIdentity, ProcessSample> Rows { get; set; } = [];
 
         public List<ProcessIdentity> PendingUpserts { get; } = [];
 
         public List<ProcessIdentity> PendingExits { get; } = [];
+
+        public HashSet<ProcessIdentity> ExitsScratch { get; } = [];
+
+        public HashSet<ProcessIdentity> UpsertsSeenScratch { get; } = [];
+
+        public List<ProcessIdentity> PendingUpsertsScratch { get; } = [];
+
+        public List<ProcessIdentity> RemainingScratch { get; } = [];
 
         public bool Initialized { get; set; }
     }

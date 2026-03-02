@@ -32,6 +32,7 @@ public partial class MonitoringShellViewModel : ObservableObject
 {
     private const int FilterDebounceMs = 160;
     private const int HistoryLimit = 120;
+    private const ulong RowSparklineStride = 2;
     private const double RowSparklineWidth = 96;
     private const double RowSparklineHeight = 22;
 
@@ -44,6 +45,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = new();
     private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = new();
     private readonly Dictionary<ProcessIdentity, MetricHistoryBuffer> _metricHistory = new();
+    private readonly Dictionary<ProcessIdentity, ulong> _metricHistoryLastSeq = new();
     private readonly Dictionary<ProcessIdentity, ProcessRowViewState> _visibleRowStateByIdentity = new();
     private readonly ObservableCollection<ProcessRowViewState> _rowViewSource = [];
     private readonly MetricHistoryBuffer _globalHistory = new(HistoryLimit);
@@ -248,7 +250,7 @@ public partial class MonitoringShellViewModel : ObservableObject
                     AdminEnabledOnlyFilter = false;
                 }
 
-                RefreshVisibleRows();
+                RefreshVisibleRows(refreshFilter: true);
             }
         }
     }
@@ -265,7 +267,7 @@ public partial class MonitoringShellViewModel : ObservableObject
 
             if (SetProperty(ref _adminEnabledOnlyFilter, value))
             {
-                RefreshVisibleRows();
+                RefreshVisibleRows(refreshFilter: true);
             }
         }
     }

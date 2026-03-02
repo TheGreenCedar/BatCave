@@ -89,26 +89,14 @@ public static class BenchmarkRunner
             Ticks = safeTicks,
             SleepMs = safeSleepMs,
             StartupMs = startupStopwatch.ElapsedMilliseconds,
-            TickP95Ms = Percentile95(tickSamples),
-            SortP95Ms = Percentile95(sortSamples),
+            TickP95Ms = PercentileMath.Percentile95(tickSamples),
+            SortP95Ms = PercentileMath.Percentile95(sortSamples),
             AvgAppCpuPct = avgCpu,
             AvgAppRssBytes = avgRss,
             BudgetPassed = budgetPassed,
             CpuBudgetPct = CpuBudgetPct,
             RssBudgetBytes = RssBudgetBytes,
         };
-    }
-
-    private static double Percentile95(IReadOnlyList<double> values)
-    {
-        if (values.Count == 0)
-        {
-            return 0;
-        }
-
-        List<double> sorted = values.OrderBy(value => value).ToList();
-        int index = Math.Min(sorted.Count - 1, Math.Max(0, (int)Math.Ceiling(sorted.Count * 0.95) - 1));
-        return sorted[index];
     }
 
     private static ulong AddSaturating(ulong left, ulong right)

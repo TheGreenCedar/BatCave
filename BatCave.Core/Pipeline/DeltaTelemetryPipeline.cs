@@ -5,10 +5,12 @@ namespace BatCave.Core.Pipeline;
 
 public sealed class DeltaTelemetryPipeline : ITelemetryPipeline
 {
-    private const ulong HeartbeatIntervalTicks = 4;
+    private const ulong HeartbeatIntervalTicks = 8;
 
     private readonly Dictionary<ProcessIdentity, ProcessSample> _previous = new();
     private readonly Dictionary<ProcessIdentity, ulong> _lastEmittedSeq = new();
+    private readonly HashSet<ProcessIdentity> _seenThisTick = [];
+    private readonly List<ProcessIdentity> _staleIdentities = [];
 
     public void SeedFromWarmCache(IReadOnlyList<ProcessSample> rows)
     {
@@ -23,14 +25,15 @@ public sealed class DeltaTelemetryPipeline : ITelemetryPipeline
 
     public ProcessDeltaBatch ApplyRaw(ulong seq, IReadOnlyList<ProcessSample> raw)
     {
-        HashSet<ProcessIdentity> current = new(raw.Count);
-        Dictionary<ProcessIdentity, ProcessSample> nextPrevious = new(raw.Count);
-        Dictionary<ProcessIdentity, ulong> nextLastEmittedSeq = new(raw.Count);
+        _seenThisTick.Clear();
+        _staleIdentities.Clear();
         List<ProcessSample> upserts = new(raw.Count);
 
         foreach (ProcessSample sample in raw)
         {
             ProcessIdentity identity = sample.Identity();
+            _seenThisTick.Add(identity);
+
             bool changed = !_previous.TryGetValue(identity, out ProcessSample? previous) || !EquivalentSample(previous, sample);
             ulong previousEmitSeq = _lastEmittedSeq.TryGetValue(identity, out ulong emitSeq) ? emitSeq : 0;
             bool dueForHeartbeat = seq >= previousEmitSeq && seq - previousEmitSeq >= HeartbeatIntervalTicks;
@@ -38,31 +41,26 @@ public sealed class DeltaTelemetryPipeline : ITelemetryPipeline
             if (changed || dueForHeartbeat)
             {
                 upserts.Add(sample);
-                nextLastEmittedSeq[identity] = seq;
-            }
-            else
-            {
-                nextLastEmittedSeq[identity] = previousEmitSeq;
+                _lastEmittedSeq[identity] = seq;
             }
 
-            current.Add(identity);
-            nextPrevious[identity] = sample;
-        }
-
-        List<ProcessIdentity> exits = _previous.Keys
-            .Where(identity => !current.Contains(identity))
-            .ToList();
-
-        _previous.Clear();
-        foreach ((ProcessIdentity identity, ProcessSample sample) in nextPrevious)
-        {
             _previous[identity] = sample;
         }
 
-        _lastEmittedSeq.Clear();
-        foreach ((ProcessIdentity identity, ulong emittedSeq) in nextLastEmittedSeq)
+        foreach (ProcessIdentity identity in _previous.Keys)
         {
-            _lastEmittedSeq[identity] = emittedSeq;
+            if (!_seenThisTick.Contains(identity))
+            {
+                _staleIdentities.Add(identity);
+            }
+        }
+
+        List<ProcessIdentity> exits = new(_staleIdentities.Count);
+        foreach (ProcessIdentity staleIdentity in _staleIdentities)
+        {
+            _previous.Remove(staleIdentity);
+            _lastEmittedSeq.Remove(staleIdentity);
+            exits.Add(staleIdentity);
         }
 
         return new ProcessDeltaBatch

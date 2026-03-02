@@ -7,6 +7,9 @@ namespace BatCave.Core.Runtime;
 
 public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 {
+    private const int JitterWindowSize = 120;
+    private const ulong TickHealthSummaryInterval = 30;
+
     private readonly IProcessCollectorFactory _collectorFactory;
     private readonly ITelemetryPipeline _pipeline;
     private readonly IStateStore _stateStore;
@@ -14,13 +17,16 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private readonly IPersistenceStore _persistenceStore;
     private readonly ILogger<MonitoringRuntime> _logger;
     private readonly ResourceBudgetGuardian _budgetGuardian = new();
-    private readonly List<double> _jitterSamples = [];
+    private readonly double[] _jitterSamples = new double[JitterWindowSize];
+    private readonly double[] _jitterScratch = new double[JitterWindowSize];
 
     private IProcessCollector _collector;
     private QueryRequest _queryRequest;
     private RuntimeHealth _health = new();
     private UserSettings _settings;
     private ulong _seq;
+    private int _jitterSampleCount;
+    private int _jitterSampleCursor;
 
     public MonitoringRuntime(
         IProcessCollectorFactory collectorFactory,
@@ -132,11 +138,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         UpdateJitterSamples(jitterMs);
         UpdateHealthForCurrentTick(raw);
 
-        RuntimePolicy policy = _budgetGuardian.Evaluate(_seq, _health, _stateStore.RowCount());
+        int rowCount = _stateStore.RowCount();
+        RuntimePolicy policy = _budgetGuardian.Evaluate(_seq, _health, rowCount);
 
         if (policy.CompactMaxRows is int maxRows)
         {
             _stateStore.CompactTo(maxRows);
+            rowCount = _stateStore.RowCount();
         }
 
         _health = _health with
@@ -146,15 +154,27 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
         PersistWarmCacheIfDue(policy.WarmCacheInterval);
 
-        _logger.LogInformation(
+        _logger.LogDebug(
             "runtime_tick seq={Seq} rows={Rows} emit_delta={EmitDelta} degrade_mode={DegradeMode} jitter_p95_ms={JitterP95Ms} dropped_ticks={DroppedTicks} admin_mode={AdminMode}",
             _seq,
-            _stateStore.RowCount(),
+            rowCount,
             policy.EmitTelemetryDelta,
             _health.DegradeMode,
             _health.JitterP95Ms,
             _health.DroppedTicks,
             _settings.AdminMode);
+
+        if (_seq % TickHealthSummaryInterval == 0)
+        {
+            _logger.LogInformation(
+                "runtime_health_summary seq={Seq} rows={Rows} app_cpu_pct={AppCpuPct:F3} app_rss_bytes={AppRssBytes} degrade_mode={DegradeMode} dropped_ticks={DroppedTicks}",
+                _seq,
+                rowCount,
+                _health.AppCpuPct,
+                _health.AppRssBytes,
+                _health.DegradeMode,
+                _health.DroppedTicks);
+        }
 
         return new TickOutcome
         {
@@ -195,21 +215,30 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     private void UpdateJitterSamples(double jitterMs)
     {
-        _jitterSamples.Add(Math.Abs(jitterMs));
-        if (_jitterSamples.Count > 120)
-        {
-            _jitterSamples.RemoveRange(0, _jitterSamples.Count - 120);
-        }
+        _jitterSamples[_jitterSampleCursor] = Math.Abs(jitterMs);
+        _jitterSampleCursor = (_jitterSampleCursor + 1) % JitterWindowSize;
+        _jitterSampleCount = Math.Min(_jitterSampleCount + 1, JitterWindowSize);
     }
 
     private void UpdateHealthForCurrentTick(IReadOnlyList<ProcessSample> raw)
     {
-        ProcessSample? selfSample = raw.FirstOrDefault(sample => sample.Pid == (uint)Environment.ProcessId);
+        ProcessSample? selfSample = null;
+        for (int index = 0; index < raw.Count; index++)
+        {
+            ProcessSample sample = raw[index];
+            if (sample.Pid == (uint)Environment.ProcessId)
+            {
+                selfSample = sample;
+                break;
+            }
+        }
+
+        RotateJitterSamplesIntoScratch();
         _health = _health with
         {
             Seq = _seq,
             LastTickMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            JitterP95Ms = Percentile95(_jitterSamples),
+            JitterP95Ms = PercentileMath.Percentile95(_jitterScratch, _jitterSampleCount, _jitterScratch),
             AppCpuPct = selfSample?.CpuPct ?? _health.AppCpuPct,
             AppRssBytes = selfSample?.RssBytes ?? EstimateRssFromRows(_stateStore.RowCount()),
         };
@@ -236,16 +265,22 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _logger.LogWarning("runtime_dropped_ticks seq={Seq} dropped_delta={DroppedDelta} dropped_total={DroppedTotal}", _seq, dropped, _health.DroppedTicks);
     }
 
-    private static double Percentile95(IReadOnlyList<double> values)
+    private void RotateJitterSamplesIntoScratch()
     {
-        if (values.Count == 0)
+        if (_jitterSampleCount == 0)
         {
-            return 0;
+            return;
         }
 
-        List<double> sorted = values.OrderBy(value => value).ToList();
-        int index = Math.Min(sorted.Count - 1, Math.Max(0, (int)Math.Ceiling(sorted.Count * 0.95) - 1));
-        return sorted[index];
+        if (_jitterSampleCount < JitterWindowSize)
+        {
+            Array.Copy(_jitterSamples, 0, _jitterScratch, 0, _jitterSampleCount);
+            return;
+        }
+
+        int tailLength = JitterWindowSize - _jitterSampleCursor;
+        Array.Copy(_jitterSamples, _jitterSampleCursor, _jitterScratch, 0, tailLength);
+        Array.Copy(_jitterSamples, 0, _jitterScratch, tailLength, _jitterSampleCursor);
     }
 
     private static ulong EstimateRssFromRows(int rowCount)

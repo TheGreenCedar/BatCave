@@ -26,6 +26,7 @@ public sealed partial class MainWindow : Window
     ];
 
     private bool _bootstrapped;
+    private bool _metricPlotRefreshQueued;
     private bool _syncingSelectionVisual;
 
     public MainWindow()
@@ -50,7 +51,7 @@ public sealed partial class MainWindow : Window
 
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
-        RefreshMetricPlots();
+        ScheduleMetricPlotRefresh();
         ApplyMetricTrendLayoutForWindowWidth(GetWindowWidth());
     }
 
@@ -76,7 +77,7 @@ public sealed partial class MainWindow : Window
 
         if (MetricPlotProperties.Contains(e.PropertyName))
         {
-            RefreshMetricPlots();
+            ScheduleMetricPlotRefresh();
             return;
         }
 
@@ -130,6 +131,21 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void ScheduleMetricPlotRefresh()
+    {
+        if (_metricPlotRefreshQueued)
+        {
+            return;
+        }
+
+        _metricPlotRefreshQueued = true;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _metricPlotRefreshQueued = false;
+            RefreshMetricPlots();
+        });
+    }
+
     private void RefreshMetricPlots()
     {
         RenderMetricPlot(CpuChipPlot, ViewModel.CpuMetricTrendValues, lineWidth: 2f);
@@ -179,8 +195,9 @@ public sealed partial class MainWindow : Window
 
         ConfigureMetricPlot(plotControl);
         plotControl.Plot.Clear();
-        var signal = plotControl.Plot.Add.Signal(series);
+        ScottPlot.Plottables.Signal signal = plotControl.Plot.Add.Signal(series);
         signal.LineWidth = lineWidth;
+        plotControl.Plot.Axes.AutoScale();
         plotControl.Refresh();
     }
 
