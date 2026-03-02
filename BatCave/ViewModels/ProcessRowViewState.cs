@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -84,44 +85,25 @@ public sealed class ProcessRowViewState : ObservableObject
             }
         }
 
-        if (previous.RssBytes != current.RssBytes)
-        {
-            OnPropertyChanged(nameof(RssBytes));
-        }
-
-        if (previous.IoReadBps != current.IoReadBps)
-        {
-            OnPropertyChanged(nameof(IoReadBps));
-        }
-
-        if (previous.IoWriteBps != current.IoWriteBps)
-        {
-            OnPropertyChanged(nameof(IoWriteBps));
-        }
-
-        if (previous.NetBps != current.NetBps)
-        {
-            OnPropertyChanged(nameof(NetBps));
-        }
-
-        if (previous.Threads != current.Threads)
-        {
-            OnPropertyChanged(nameof(Threads));
-        }
-
-        if (previous.Handles != current.Handles)
-        {
-            OnPropertyChanged(nameof(Handles));
-        }
-
-        if (previous.AccessState != current.AccessState)
-        {
-            OnPropertyChanged(nameof(AccessState));
-        }
+        RaiseIfChanged(previous.RssBytes, current.RssBytes, nameof(RssBytes));
+        RaiseIfChanged(previous.IoReadBps, current.IoReadBps, nameof(IoReadBps));
+        RaiseIfChanged(previous.IoWriteBps, current.IoWriteBps, nameof(IoWriteBps));
+        RaiseIfChanged(previous.NetBps, current.NetBps, nameof(NetBps));
+        RaiseIfChanged(previous.Threads, current.Threads, nameof(Threads));
+        RaiseIfChanged(previous.Handles, current.Handles, nameof(Handles));
+        RaiseIfChanged(previous.AccessState, current.AccessState, nameof(AccessState));
     }
 
     private static double QuantizeCpu(double cpuPct)
     {
         return Math.Round(cpuPct / CpuSortPrecision, MidpointRounding.AwayFromZero) * CpuSortPrecision;
+    }
+
+    private void RaiseIfChanged<T>(T previous, T current, string propertyName)
+    {
+        if (!EqualityComparer<T>.Default.Equals(previous, current))
+        {
+            OnPropertyChanged(propertyName);
+        }
     }
 }

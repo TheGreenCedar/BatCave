@@ -36,13 +36,7 @@ public partial class App : Application
         _host = CreateHost();
     }
 
-    public static IServiceProvider Services
-    {
-        get
-        {
-            return ((App)Current)._host.Services;
-        }
-    }
+    public static IServiceProvider Services => ((App)Current)._host.Services;
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {

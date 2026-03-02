@@ -49,41 +49,21 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         }
 
         string filterNeedle = request.FilterText.Trim().ToLowerInvariant();
-
-        int total;
-        List<ProcessSample> page;
-
-        if (string.IsNullOrWhiteSpace(filterNeedle))
+        IReadOnlyList<ProcessIdentity> ordered = _cache.Ordered;
+        if (!string.IsNullOrWhiteSpace(filterNeedle))
         {
-            total = _cache.Ordered.Count;
-            int start = Math.Min(Math.Max(0, request.Offset), total);
-            int end = Math.Min(total, start + Math.Max(0, request.Limit));
-            page = _cache.Ordered
-                .Skip(start)
-                .Take(end - start)
-                .Select(identity => _cache.Rows[identity])
+            ordered = _cache.Ordered
+                .Where(identity => MatchesFilter(_cache.Rows[identity], filterNeedle))
                 .ToList();
         }
-        else
-        {
-            List<ProcessIdentity> filtered = _cache.Ordered
-                .Where(identity =>
-                {
-                    ProcessSample row = _cache.Rows[identity];
-                    return row.Name.Contains(filterNeedle, StringComparison.OrdinalIgnoreCase)
-                           || row.Pid.ToString().Contains(filterNeedle, StringComparison.OrdinalIgnoreCase);
-                })
-                .ToList();
 
-            total = filtered.Count;
-            int start = Math.Min(Math.Max(0, request.Offset), total);
-            int end = Math.Min(total, start + Math.Max(0, request.Limit));
-            page = filtered
-                .Skip(start)
-                .Take(end - start)
-                .Select(identity => _cache.Rows[identity])
-                .ToList();
-        }
+        int total = ordered.Count;
+        (int start, int count) = SlicePage(request.Offset, request.Limit, total);
+        List<ProcessSample> page = ordered
+            .Skip(start)
+            .Take(count)
+            .Select(identity => _cache.Rows[identity])
+            .ToList();
 
         return new QueryResponse
         {
@@ -116,21 +96,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         }
 
         HashSet<ProcessIdentity> exitsSeen = _cache.PendingExits.ToHashSet();
-        List<ProcessIdentity> pendingUpserts = [];
-        HashSet<ProcessIdentity> upsertsSeen = [];
-
-        foreach (ProcessIdentity identity in _cache.PendingUpserts)
-        {
-            if (!upsertsSeen.Add(identity))
-            {
-                continue;
-            }
-
-            if (_cache.Rows.ContainsKey(identity))
-            {
-                pendingUpserts.Add(identity);
-            }
-        }
+        List<ProcessIdentity> pendingUpserts = CollectPendingUpserts();
 
         _cache.PendingExits.Clear();
         _cache.PendingUpserts.Clear();
@@ -146,10 +112,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         if (exitsSeen.Count > 0 || pendingUpserts.Count > 0)
         {
             HashSet<ProcessIdentity> removed = exitsSeen;
-            foreach (ProcessIdentity identity in pendingUpserts)
-            {
-                removed.Add(identity);
-            }
+            removed.UnionWith(pendingUpserts);
 
             _cache.Ordered = _cache.Ordered.Where(identity => !removed.Contains(identity)).ToList();
         }
@@ -184,6 +147,34 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         return low;
     }
 
+    private List<ProcessIdentity> CollectPendingUpserts()
+    {
+        HashSet<ProcessIdentity> upsertsSeen = [];
+        List<ProcessIdentity> pendingUpserts = [];
+        foreach (ProcessIdentity identity in _cache.PendingUpserts)
+        {
+            if (upsertsSeen.Add(identity) && _cache.Rows.ContainsKey(identity))
+            {
+                pendingUpserts.Add(identity);
+            }
+        }
+
+        return pendingUpserts;
+    }
+
+    private static bool MatchesFilter(ProcessSample row, string filterNeedle)
+    {
+        return row.Name.Contains(filterNeedle, StringComparison.OrdinalIgnoreCase)
+               || row.Pid.ToString().Contains(filterNeedle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (int Start, int Count) SlicePage(int offset, int limit, int total)
+    {
+        int start = Math.Min(Math.Max(0, offset), total);
+        int end = Math.Min(total, start + Math.Max(0, limit));
+        return (start, end - start);
+    }
+
     private static int CompareIdentity(
         ProcessIdentity left,
         ProcessIdentity right,
@@ -191,26 +182,16 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         SortColumn sortCol,
         SortDirection sortDir)
     {
-        int ordering;
         bool hasLeft = rows.TryGetValue(left, out ProcessSample? leftRow);
         bool hasRight = rows.TryGetValue(right, out ProcessSample? rightRow);
 
-        if (hasLeft && hasRight)
+        int ordering = (hasLeft, hasRight) switch
         {
-            ordering = CompareRows(leftRow!, rightRow!, sortCol, sortDir);
-        }
-        else if (!hasLeft && hasRight)
-        {
-            ordering = 1;
-        }
-        else if (hasLeft)
-        {
-            ordering = -1;
-        }
-        else
-        {
-            ordering = 0;
-        }
+            (true, true) => CompareRows(leftRow!, rightRow!, sortCol, sortDir),
+            (false, true) => 1,
+            (true, false) => -1,
+            _ => 0,
+        };
 
         if (ordering != 0)
         {

@@ -751,33 +751,11 @@ public partial class MonitoringShellViewModel : ObservableObject
         try
         {
             ProcessMetadata? metadata = await _metadataProvider.GetAsync(row.Pid, row.StartTimeMs, ct);
-
-            RunOnUiThread(() =>
-            {
-                if (!IsCurrentMetadataRequest(requestVersion, identity))
-                {
-                    return;
-                }
-
-                _metadataCache[identity] = metadata;
-                SelectedMetadata = metadata;
-                MetadataError = null;
-                IsMetadataLoading = false;
-            });
+            RunOnUiThread(() => CompleteMetadataRequest(identity, requestVersion, metadata, error: null));
         }
         catch (Exception ex)
         {
-            RunOnUiThread(() =>
-            {
-                if (!IsCurrentMetadataRequest(requestVersion, identity))
-                {
-                    return;
-                }
-
-                MetadataError = ex.Message;
-                SelectedMetadata = null;
-                IsMetadataLoading = false;
-            });
+            RunOnUiThread(() => CompleteMetadataRequest(identity, requestVersion, metadata: null, error: ex.Message));
         }
     }
 
@@ -1150,6 +1128,28 @@ public partial class MonitoringShellViewModel : ObservableObject
         return requestVersion == _metadataRequestVersion && SelectedRow?.Identity() == identity;
     }
 
+    private void CompleteMetadataRequest(ProcessIdentity identity, long requestVersion, ProcessMetadata? metadata, string? error)
+    {
+        if (!IsCurrentMetadataRequest(requestVersion, identity))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            _metadataCache[identity] = metadata;
+            SelectedMetadata = metadata;
+            MetadataError = null;
+        }
+        else
+        {
+            SelectedMetadata = null;
+            MetadataError = error;
+        }
+
+        IsMetadataLoading = false;
+    }
+
     private void ScheduleFilterApply(string filterText)
     {
         _filterDebounceCts?.Cancel();
@@ -1204,32 +1204,35 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     private void RaiseSortHeaderLabels()
     {
-        OnPropertyChanged(nameof(NameSortLabel));
-        OnPropertyChanged(nameof(PidSortLabel));
-        OnPropertyChanged(nameof(CpuSortLabel));
-        OnPropertyChanged(nameof(MemorySortLabel));
-        OnPropertyChanged(nameof(IoReadSortLabel));
-        OnPropertyChanged(nameof(IoWriteSortLabel));
-        OnPropertyChanged(nameof(NetSortLabel));
-        OnPropertyChanged(nameof(ThreadsSortLabel));
-        OnPropertyChanged(nameof(HandlesSortLabel));
+        RaiseProperties(
+            nameof(NameSortLabel),
+            nameof(PidSortLabel),
+            nameof(CpuSortLabel),
+            nameof(MemorySortLabel),
+            nameof(IoReadSortLabel),
+            nameof(IoWriteSortLabel),
+            nameof(NetSortLabel),
+            nameof(ThreadsSortLabel),
+            nameof(HandlesSortLabel));
     }
 
     private void RaiseMetricFocusProperties()
     {
-        OnPropertyChanged(nameof(IsCpuMetricFocused));
-        OnPropertyChanged(nameof(IsMemoryMetricFocused));
-        OnPropertyChanged(nameof(IsIoReadMetricFocused));
-        OnPropertyChanged(nameof(IsIoWriteMetricFocused));
-        OnPropertyChanged(nameof(IsNetworkMetricFocused));
+        RaiseProperties(
+            nameof(IsCpuMetricFocused),
+            nameof(IsMemoryMetricFocused),
+            nameof(IsIoReadMetricFocused),
+            nameof(IsIoWriteMetricFocused),
+            nameof(IsNetworkMetricFocused));
     }
 
     private void RaiseMetadataProperties()
     {
-        OnPropertyChanged(nameof(MetadataStatus));
-        OnPropertyChanged(nameof(MetadataParentPid));
-        OnPropertyChanged(nameof(MetadataCommandLine));
-        OnPropertyChanged(nameof(MetadataExecutablePath));
+        RaiseProperties(
+            nameof(MetadataStatus),
+            nameof(MetadataParentPid),
+            nameof(MetadataCommandLine),
+            nameof(MetadataExecutablePath));
     }
 
     private void RefreshDetailMetrics()
@@ -1243,45 +1246,30 @@ public partial class MonitoringShellViewModel : ObservableObject
         IoWriteMetricChipValue = ValueFormat.FormatRate(detailSample.IoWriteBps);
         NetworkMetricChipValue = ValueFormat.FormatRate(detailSample.NetBps);
 
-        CpuMetricTrendValues = history.Cpu.ToArray();
-        MemoryMetricTrendValues = history.Memory.ToArray();
-        IoReadMetricTrendValues = history.IoRead.ToArray();
-        IoWriteMetricTrendValues = history.IoWrite.ToArray();
-        NetworkMetricTrendValues = history.Net.ToArray();
+        double[] cpuTrend = history.Cpu.ToArray();
+        double[] memoryTrend = history.Memory.ToArray();
+        double[] ioReadTrend = history.IoRead.ToArray();
+        double[] ioWriteTrend = history.IoWrite.ToArray();
+        double[] networkTrend = history.Net.ToArray();
 
-        switch (MetricFocus)
+        CpuMetricTrendValues = cpuTrend;
+        MemoryMetricTrendValues = memoryTrend;
+        IoReadMetricTrendValues = ioReadTrend;
+        IoWriteMetricTrendValues = ioWriteTrend;
+        NetworkMetricTrendValues = networkTrend;
+
+        (string title, string value, double[] trend) = MetricFocus switch
         {
-            case DetailMetricFocus.Cpu:
-                ExpandedMetricTitle = "CPU Trend";
-                ExpandedMetricValue = $"{detailSample.CpuPct:F1}% CPU";
-                ExpandedMetricTrendValues = history.Cpu.ToArray();
-                break;
-            case DetailMetricFocus.Memory:
-                ExpandedMetricTitle = "Memory Trend";
-                ExpandedMetricValue = $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS";
-                ExpandedMetricTrendValues = history.Memory.ToArray();
-                break;
-            case DetailMetricFocus.IoRead:
-                ExpandedMetricTitle = "Disk Read Trend";
-                ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read";
-                ExpandedMetricTrendValues = history.IoRead.ToArray();
-                break;
-            case DetailMetricFocus.IoWrite:
-                ExpandedMetricTitle = "Disk Write Trend";
-                ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write";
-                ExpandedMetricTrendValues = history.IoWrite.ToArray();
-                break;
-            case DetailMetricFocus.Network:
-                ExpandedMetricTitle = "Network Trend";
-                ExpandedMetricValue = $"{ValueFormat.FormatRate(detailSample.NetBps)} net";
-                ExpandedMetricTrendValues = history.Net.ToArray();
-                break;
-            default:
-                ExpandedMetricTitle = "CPU Trend";
-                ExpandedMetricValue = $"{detailSample.CpuPct:F1}% CPU";
-                ExpandedMetricTrendValues = history.Cpu.ToArray();
-                break;
-        }
+            DetailMetricFocus.Memory => ("Memory Trend", $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS", memoryTrend),
+            DetailMetricFocus.IoRead => ("Disk Read Trend", $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read", ioReadTrend),
+            DetailMetricFocus.IoWrite => ("Disk Write Trend", $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write", ioWriteTrend),
+            DetailMetricFocus.Network => ("Network Trend", $"{ValueFormat.FormatRate(detailSample.NetBps)} net", networkTrend),
+            _ => ("CPU Trend", $"{detailSample.CpuPct:F1}% CPU", cpuTrend),
+        };
+
+        ExpandedMetricTitle = title;
+        ExpandedMetricValue = value;
+        ExpandedMetricTrendValues = trend;
     }
 
     private MetricHistoryBuffer GetDetailHistory(ProcessSample detailSample)
@@ -1338,14 +1326,14 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     private void ClampSummary()
     {
-        _summaryCpuPct = Math.Max(0d, _summaryCpuPct);
-        _summaryRssBytes = Math.Max(0d, _summaryRssBytes);
-        _summaryPrivateBytes = Math.Max(0d, _summaryPrivateBytes);
-        _summaryIoReadBps = Math.Max(0d, _summaryIoReadBps);
-        _summaryIoWriteBps = Math.Max(0d, _summaryIoWriteBps);
-        _summaryNetBps = Math.Max(0d, _summaryNetBps);
-        _summaryThreads = Math.Max(0d, _summaryThreads);
-        _summaryHandles = Math.Max(0d, _summaryHandles);
+        _summaryCpuPct = ClampNonNegative(_summaryCpuPct);
+        _summaryRssBytes = ClampNonNegative(_summaryRssBytes);
+        _summaryPrivateBytes = ClampNonNegative(_summaryPrivateBytes);
+        _summaryIoReadBps = ClampNonNegative(_summaryIoReadBps);
+        _summaryIoWriteBps = ClampNonNegative(_summaryIoWriteBps);
+        _summaryNetBps = ClampNonNegative(_summaryNetBps);
+        _summaryThreads = ClampNonNegative(_summaryThreads);
+        _summaryHandles = ClampNonNegative(_summaryHandles);
     }
 
     private void UpdateGlobalSummaryHistory()
@@ -1432,6 +1420,19 @@ public partial class MonitoringShellViewModel : ObservableObject
     {
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         return now <= 0 ? 0UL : (ulong)now;
+    }
+
+    private void RaiseProperties(params string[] propertyNames)
+    {
+        foreach (string propertyName in propertyNames)
+        {
+            OnPropertyChanged(propertyName);
+        }
+    }
+
+    private static double ClampNonNegative(double value)
+    {
+        return Math.Max(0d, value);
     }
 
     private static string FormatBlockReason(LaunchBlockReason? reason)

@@ -23,6 +23,18 @@ public sealed class WindowsProcessCollector : IProcessCollector
 
     private const uint WaitTimeout = 0x00000102;
 
+    private static readonly uint[] ProcessAccessMasks =
+    [
+        ProcessQueryInformation | ProcessVmRead | SynchronizeAccess,
+        ProcessQueryInformation | SynchronizeAccess,
+        ProcessQueryLimitedInformation | ProcessVmRead | SynchronizeAccess,
+        ProcessQueryLimitedInformation | SynchronizeAccess,
+        ProcessQueryInformation | ProcessVmRead,
+        ProcessQueryInformation,
+        ProcessQueryLimitedInformation | ProcessVmRead,
+        ProcessQueryLimitedInformation,
+    ];
+
     private readonly Dictionary<ProcessIdentity, ProcessCounterSnapshot> _previousProcess = new();
     private readonly Dictionary<uint, FallbackIdentity> _pidFallbackStart = new();
     private readonly Dictionary<uint, OwnedProcessHandle> _processHandles = new();
@@ -228,21 +240,13 @@ public sealed class WindowsProcessCollector : IProcessCollector
                     double cpuPct = 0;
                     if (systemDelta100ns is ulong systemDeltaValue && systemDeltaValue > 0)
                     {
-                        ulong processDelta = counters.CpuTotal100ns >= previousSnapshot.CpuTotal100ns
-                            ? counters.CpuTotal100ns - previousSnapshot.CpuTotal100ns
-                            : 0;
+                        ulong processDelta = CounterDelta(counters.CpuTotal100ns, previousSnapshot.CpuTotal100ns);
                         cpuPct = processDelta * 100.0 / systemDeltaValue;
                     }
 
-                    ulong readDelta = counters.IoReadTotal >= previousSnapshot.IoReadTotal
-                        ? counters.IoReadTotal - previousSnapshot.IoReadTotal
-                        : 0;
-                    ulong writeDelta = counters.IoWriteTotal >= previousSnapshot.IoWriteTotal
-                        ? counters.IoWriteTotal - previousSnapshot.IoWriteTotal
-                        : 0;
-                    ulong otherDelta = counters.IoOtherTotal >= previousSnapshot.IoOtherTotal
-                        ? counters.IoOtherTotal - previousSnapshot.IoOtherTotal
-                        : 0;
+                    ulong readDelta = CounterDelta(counters.IoReadTotal, previousSnapshot.IoReadTotal);
+                    ulong writeDelta = CounterDelta(counters.IoWriteTotal, previousSnapshot.IoWriteTotal);
+                    ulong otherDelta = CounterDelta(counters.IoOtherTotal, previousSnapshot.IoOtherTotal);
 
                     sample = sample with
                     {
@@ -313,19 +317,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
 
     private static OwnedProcessHandle? OpenProcessHandle(uint pid)
     {
-        uint[] accessMasks =
-        [
-            ProcessQueryInformation | ProcessVmRead | SynchronizeAccess,
-            ProcessQueryInformation | SynchronizeAccess,
-            ProcessQueryLimitedInformation | ProcessVmRead | SynchronizeAccess,
-            ProcessQueryLimitedInformation | SynchronizeAccess,
-            ProcessQueryInformation | ProcessVmRead,
-            ProcessQueryInformation,
-            ProcessQueryLimitedInformation | ProcessVmRead,
-            ProcessQueryLimitedInformation,
-        ];
-
-        foreach (uint accessMask in accessMasks)
+        foreach (uint accessMask in ProcessAccessMasks)
         {
             IntPtr handle = OpenProcess(accessMask, false, pid);
             if (handle != IntPtr.Zero)
@@ -426,29 +418,37 @@ public sealed class WindowsProcessCollector : IProcessCollector
 
     private void RetainOnlySeenPids(HashSet<uint> seenPids)
     {
-        List<uint> staleFallbackPids = _pidFallbackStart.Keys.Where(pid => !seenPids.Contains(pid)).ToList();
-        foreach (uint pid in staleFallbackPids)
-        {
-            _pidFallbackStart.Remove(pid);
-        }
-
-        List<uint> staleHandlePids = _processHandles.Keys.Where(pid => !seenPids.Contains(pid)).ToList();
-        foreach (uint pid in staleHandlePids)
-        {
-            _processHandles[pid].Dispose();
-            _processHandles.Remove(pid);
-        }
-
-        List<uint> staleRetryPids = _deniedHandleRetryUntilMs.Keys.Where(pid => !seenPids.Contains(pid)).ToList();
-        foreach (uint pid in staleRetryPids)
-        {
-            _deniedHandleRetryUntilMs.Remove(pid);
-        }
+        RemoveMissingPids(_pidFallbackStart, seenPids);
+        RemoveMissingPids(_processHandles, seenPids, handle => handle.Dispose());
+        RemoveMissingPids(_deniedHandleRetryUntilMs, seenPids);
     }
 
     private static ulong NowMs()
     {
         return (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    private static ulong CounterDelta(ulong current, ulong previous)
+    {
+        return current >= previous ? current - previous : 0;
+    }
+
+    private static void RemoveMissingPids<TValue>(
+        Dictionary<uint, TValue> entries,
+        HashSet<uint> seenPids,
+        Action<TValue>? onRemove = null)
+    {
+        List<uint> stalePids = entries.Keys.Where(pid => !seenPids.Contains(pid)).ToList();
+        foreach (uint pid in stalePids)
+        {
+            if (!entries.TryGetValue(pid, out TValue? value))
+            {
+                continue;
+            }
+
+            onRemove?.Invoke(value);
+            entries.Remove(pid);
+        }
     }
 
     private struct ProcessCounterSnapshot

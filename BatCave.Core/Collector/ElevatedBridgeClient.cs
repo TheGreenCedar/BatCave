@@ -104,35 +104,14 @@ public sealed class ElevatedBridgeClient : IDisposable
         }
 
         ulong now = NowMs();
-        if (File.Exists(_dataFile))
-        {
-            try
-            {
-                string content = File.ReadAllText(_dataFile);
-                ElevatedSnapshotFile? snapshot = JsonSerializer.Deserialize<ElevatedSnapshotFile>(content);
-                if (snapshot is not null)
-                {
-                    if (string.Equals(snapshot.Token, _token, StringComparison.Ordinal) && snapshot.Seq > _lastSeq)
-                    {
-                        _lastSeq = snapshot.Seq;
-                        _lastRows = snapshot.Rows;
-                        _lastSuccessMs = now;
-                    }
-                }
-            }
-            catch
-            {
-                // ignore one-off parse errors and continue polling
-            }
-        }
+        TryReadLatestSnapshot(now);
 
         if (_lastSuccessMs is null)
         {
             ulong startupElapsed = now - _launchedMs;
             if (startupElapsed > BridgeStartupGraceMs)
             {
-                _faultReason = $"no elevated bridge snapshot received within startup grace window ({BridgeStartupGraceMs} ms)";
-                return BridgePollResult.Faulted(_faultReason);
+                return SetFault($"no elevated bridge snapshot received within startup grace window ({BridgeStartupGraceMs} ms)");
             }
 
             return BridgePollResult.Pending();
@@ -141,11 +120,45 @@ public sealed class ElevatedBridgeClient : IDisposable
         ulong staleFor = now - _lastSuccessMs.Value;
         if (staleFor > BridgeStaleTimeoutMs)
         {
-            _faultReason = $"elevated bridge snapshot stream stalled for {staleFor} ms";
-            return BridgePollResult.Faulted(_faultReason);
+            return SetFault($"elevated bridge snapshot stream stalled for {staleFor} ms");
         }
 
         return BridgePollResult.RowsResult(_lastRows);
+    }
+
+    private void TryReadLatestSnapshot(ulong now)
+    {
+        if (!File.Exists(_dataFile))
+        {
+            return;
+        }
+
+        try
+        {
+            string content = File.ReadAllText(_dataFile);
+            ElevatedSnapshotFile? snapshot = JsonSerializer.Deserialize<ElevatedSnapshotFile>(content);
+            if (snapshot is null)
+            {
+                return;
+            }
+
+            if (string.Equals(snapshot.Token, _token, StringComparison.Ordinal) && snapshot.Seq > _lastSeq)
+            {
+                _lastSeq = snapshot.Seq;
+                _lastRows = snapshot.Rows;
+                _lastSuccessMs = now;
+            }
+        }
+        catch
+        {
+            // ignore one-off parse errors and continue polling
+        }
+    }
+
+    private BridgePollResult SetFault(string reason)
+    {
+        _faultReason = reason;
+        return BridgePollResult.Faulted(reason);
     }
 
     public void Dispose()

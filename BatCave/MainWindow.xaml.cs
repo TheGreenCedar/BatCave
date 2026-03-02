@@ -82,22 +82,9 @@ public sealed partial class MainWindow : Window
 
     private void SyncSelectionVisual(bool deferSecondPass = false)
     {
-        if (_syncingSelectionVisual)
+        if (!TrySyncSelectionVisual())
         {
             return;
-        }
-
-        _syncingSelectionVisual = true;
-        try
-        {
-            if (!ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
-            {
-                ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
-            }
-        }
-        finally
-        {
-            _syncingSelectionVisual = false;
         }
 
         if (!deferSecondPass)
@@ -107,19 +94,7 @@ public sealed partial class MainWindow : Window
 
         DispatcherQueue.TryEnqueue(() =>
         {
-            if (!_syncingSelectionVisual
-                && !ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
-            {
-                _syncingSelectionVisual = true;
-                try
-                {
-                    ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
-                }
-                finally
-                {
-                    _syncingSelectionVisual = false;
-                }
-            }
+            _ = TrySyncSelectionVisual();
         });
     }
 
@@ -207,5 +182,28 @@ public sealed partial class MainWindow : Window
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
         SizeChanged -= OnWindowSizeChanged;
         Closed -= OnWindowClosed;
+    }
+
+    private bool TrySyncSelectionVisual()
+    {
+        if (_syncingSelectionVisual)
+        {
+            return false;
+        }
+
+        _syncingSelectionVisual = true;
+        try
+        {
+            if (!ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
+            {
+                ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
+            }
+        }
+        finally
+        {
+            _syncingSelectionVisual = false;
+        }
+
+        return true;
     }
 }
