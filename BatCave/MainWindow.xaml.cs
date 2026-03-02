@@ -13,6 +13,9 @@ namespace BatCave;
 
 public sealed partial class MainWindow : Window
 {
+    private const double WideMetricTrendBreakpoint = 1200;
+    private const double WideMetricSidebarWidth = 248;
+
     private bool _bootstrapped;
     private bool _syncingSelectionVisual;
 
@@ -23,6 +26,7 @@ public sealed partial class MainWindow : Window
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
         Activated += OnActivated;
+        SizeChanged += OnWindowSizeChanged;
         Closed += OnWindowClosed;
     }
 
@@ -38,6 +42,7 @@ public sealed partial class MainWindow : Window
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
         RefreshMetricPlots();
+        ApplyMetricTrendLayoutForWindowWidth(GetWindowWidth());
     }
 
     private async void AdminModeToggle_Toggled(object sender, RoutedEventArgs e)
@@ -148,6 +153,39 @@ public sealed partial class MainWindow : Window
         RenderMetricPlot(ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, lineWidth: 3f);
     }
 
+    private void OnWindowSizeChanged(object sender, WindowSizeChangedEventArgs args)
+    {
+        ApplyMetricTrendLayoutForWindowWidth(args.Size.Width);
+    }
+
+    private double GetWindowWidth()
+    {
+        if (Content is FrameworkElement root && root.ActualWidth > 0)
+        {
+            return root.ActualWidth;
+        }
+
+        return AppWindow.Size.Width;
+    }
+
+    private void ApplyMetricTrendLayoutForWindowWidth(double windowWidth)
+    {
+        bool isWide = windowWidth >= WideMetricTrendBreakpoint;
+
+        MetricSidebarColumn.Width = isWide
+            ? new GridLength(WideMetricSidebarWidth)
+            : new GridLength(1, GridUnitType.Star);
+        MetricMainColumn.Width = isWide
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        MetricMainRow.Height = isWide
+            ? new GridLength(0)
+            : GridLength.Auto;
+
+        Grid.SetRow(MetricMainHost, isWide ? 0 : 1);
+        Grid.SetColumn(MetricMainHost, isWide ? 1 : 0);
+    }
+
     private static void RenderMetricPlot(WinUIPlot plotControl, IReadOnlyList<double> values, float lineWidth)
     {
         double[] series = values.Count > 0 ? values.ToArray() : [0d, 0d];
@@ -167,6 +205,7 @@ public sealed partial class MainWindow : Window
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        SizeChanged -= OnWindowSizeChanged;
         Closed -= OnWindowClosed;
     }
 }

@@ -204,127 +204,158 @@
                     BorderThickness="1"
                     CornerRadius="12">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel Spacing="10">
+                        <StackPanel HorizontalAlignment="Stretch" Spacing="10">
                             <TextBlock FontSize="24" FontWeight="SemiBold" Text="{x:Bind ViewModel.DetailTitle, Mode=OneWay}" />
                             <Button
                                 Command="{x:Bind ViewModel.ClearSelectionRequestedCommand}"
                                 Content="Clear Selection"
                                 IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}" />
 
-                            <TextBlock FontWeight="SemiBold" Text="Metric Trends" />
+                            <Grid x:Name="MetricTrendSplitGrid" ColumnSpacing="6" RowSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition x:Name="MetricSidebarColumn" Width="*" />
+                                    <ColumnDefinition x:Name="MetricMainColumn" Width="0" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition x:Name="MetricMainRow" Height="Auto" />
+                                </Grid.RowDefinitions>
 
-                            <ToggleButton
-                                HorizontalContentAlignment="Stretch"
-                                IsChecked="{x:Bind ViewModel.IsCpuMetricFocused, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                CommandParameter="Cpu">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock FontWeight="SemiBold" Text="CPU" />
-                                        <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.CpuMetricChipValue, Mode=OneWay}" />
-                                    </StackPanel>
-                                    <!-- ScottPlot.WinUI uses WinUIPlot as the XAML control type. -->
-                                    <scottPlot:WinUIPlot x:Name="CpuChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
-                                </Grid>
-                            </ToggleButton>
+                                <StackPanel x:Name="MetricSidebarHost" Grid.Row="0" Grid.Column="0" HorizontalAlignment="Stretch" Spacing="8">
+                                    <TextBlock FontWeight="SemiBold" Text="Metric Trends" />
 
-                            <ToggleButton
-                                HorizontalContentAlignment="Stretch"
-                                IsChecked="{x:Bind ViewModel.IsMemoryMetricFocused, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                CommandParameter="Memory">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock FontWeight="SemiBold" Text="Memory" />
-                                        <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.MemoryMetricChipValue, Mode=OneWay}" />
-                                    </StackPanel>
-                                    <scottPlot:WinUIPlot x:Name="MemoryChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
-                                </Grid>
-                            </ToggleButton>
+                                    <ToggleButton
+                                        HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Stretch"
+                                        MinHeight="56"
+                                        Padding="12,8"
+                                        IsChecked="{x:Bind ViewModel.IsCpuMetricFocused, Mode=OneWay}"
+                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                        CommandParameter="Cpu">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="98" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock FontWeight="SemiBold" Text="CPU" />
+                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.CpuMetricChipValue, Mode=OneWay}" />
+                                            </StackPanel>
+                                            <!-- ScottPlot.WinUI uses WinUIPlot as the XAML control type. -->
+                                            <scottPlot:WinUIPlot x:Name="CpuChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
+                                        </Grid>
+                                    </ToggleButton>
 
-                            <ToggleButton
-                                HorizontalContentAlignment="Stretch"
-                                IsChecked="{x:Bind ViewModel.IsIoReadMetricFocused, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                CommandParameter="IoRead">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock FontWeight="SemiBold" Text="Disk Read" />
-                                        <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoReadMetricChipValue, Mode=OneWay}" />
-                                    </StackPanel>
-                                    <scottPlot:WinUIPlot x:Name="IoReadChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
-                                </Grid>
-                            </ToggleButton>
+                                    <ToggleButton
+                                        HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Stretch"
+                                        MinHeight="56"
+                                        Padding="12,8"
+                                        IsChecked="{x:Bind ViewModel.IsMemoryMetricFocused, Mode=OneWay}"
+                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                        CommandParameter="Memory">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="98" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock FontWeight="SemiBold" Text="Memory" />
+                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.MemoryMetricChipValue, Mode=OneWay}" />
+                                            </StackPanel>
+                                            <scottPlot:WinUIPlot x:Name="MemoryChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
+                                        </Grid>
+                                    </ToggleButton>
 
-                            <ToggleButton
-                                HorizontalContentAlignment="Stretch"
-                                IsChecked="{x:Bind ViewModel.IsIoWriteMetricFocused, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                CommandParameter="IoWrite">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock FontWeight="SemiBold" Text="Disk Write" />
-                                        <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoWriteMetricChipValue, Mode=OneWay}" />
-                                    </StackPanel>
-                                    <scottPlot:WinUIPlot x:Name="IoWriteChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
-                                </Grid>
-                            </ToggleButton>
+                                    <ToggleButton
+                                        HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Stretch"
+                                        MinHeight="56"
+                                        Padding="12,8"
+                                        IsChecked="{x:Bind ViewModel.IsIoReadMetricFocused, Mode=OneWay}"
+                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                        CommandParameter="IoRead">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="98" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock FontWeight="SemiBold" Text="Disk Read" />
+                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoReadMetricChipValue, Mode=OneWay}" />
+                                            </StackPanel>
+                                            <scottPlot:WinUIPlot x:Name="IoReadChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
+                                        </Grid>
+                                    </ToggleButton>
 
-                            <ToggleButton
-                                HorizontalContentAlignment="Stretch"
-                                IsChecked="{x:Bind ViewModel.IsNetworkMetricFocused, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                CommandParameter="Network">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock FontWeight="SemiBold" Text="Network" />
-                                        <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.NetworkMetricChipValue, Mode=OneWay}" />
-                                    </StackPanel>
-                                    <scottPlot:WinUIPlot x:Name="NetworkChipPlot" Grid.Column="1" Width="206" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
-                                </Grid>
-                            </ToggleButton>
+                                    <ToggleButton
+                                        HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Stretch"
+                                        MinHeight="56"
+                                        Padding="12,8"
+                                        IsChecked="{x:Bind ViewModel.IsIoWriteMetricFocused, Mode=OneWay}"
+                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                        CommandParameter="IoWrite">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="98" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock FontWeight="SemiBold" Text="Disk Write" />
+                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoWriteMetricChipValue, Mode=OneWay}" />
+                                            </StackPanel>
+                                            <scottPlot:WinUIPlot x:Name="IoWriteChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
+                                        </Grid>
+                                    </ToggleButton>
 
-                            <Border
-                                Padding="10"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8">
-                                <Grid RowSpacing="8">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.ExpandedMetricTitle, Mode=OneWay}" />
-                                        <TextBlock Grid.Column="1" FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.ExpandedMetricValue, Mode=OneWay}" />
+                                    <ToggleButton
+                                        HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Stretch"
+                                        MinHeight="56"
+                                        Padding="12,8"
+                                        IsChecked="{x:Bind ViewModel.IsNetworkMetricFocused, Mode=OneWay}"
+                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                        CommandParameter="Network">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="98" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock FontWeight="SemiBold" Text="Network" />
+                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.NetworkMetricChipValue, Mode=OneWay}" />
+                                            </StackPanel>
+                                            <scottPlot:WinUIPlot x:Name="NetworkChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" />
+                                        </Grid>
+                                    </ToggleButton>
+                                </StackPanel>
+
+                                <Border
+                                    x:Name="MetricMainHost"
+                                    Grid.Row="1"
+                                    Grid.Column="0"
+                                    Padding="10"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8">
+                                    <Grid RowSpacing="8">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.ExpandedMetricTitle, Mode=OneWay}" />
+                                            <TextBlock Grid.Column="1" FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.ExpandedMetricValue, Mode=OneWay}" />
+                                        </Grid>
+                                        <scottPlot:WinUIPlot x:Name="ExpandedMetricPlot" Grid.Row="1" Height="220" HorizontalAlignment="Stretch" Background="Transparent" />
                                     </Grid>
-                                    <scottPlot:WinUIPlot x:Name="ExpandedMetricPlot" Grid.Row="1" Height="220" HorizontalAlignment="Stretch" Background="Transparent" />
-                                </Grid>
-                            </Border>
+                                </Border>
+                            </Grid>
 
                             <TextBlock FontWeight="SemiBold" Text="Metadata Status" />
                             <TextBlock Text="{x:Bind ViewModel.MetadataStatus, Mode=OneWay}" TextWrapping="Wrap" />
