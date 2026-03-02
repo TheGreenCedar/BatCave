@@ -1,0 +1,395 @@
+BatCave\App.xaml.cs:26:public partial class App : Application
+BatCave\App.xaml.cs:33:    public App()
+BatCave\App.xaml.cs:39:    public static IServiceProvider Services => ((App)Current)._host.Services;
+BatCave\MainWindow.xaml.cs:14:public sealed partial class MainWindow : Window
+BatCave\MainWindow.xaml.cs:31:    public MainWindow()
+BatCave\MainWindow.xaml.cs:42:    public MonitoringShellViewModel ViewModel { get; }
+BatCave\Converters\ValueFormatConverters.cs:7:public static class ValueFormat
+BatCave\Converters\ValueFormatConverters.cs:9:    public static string FormatBytes(ulong value)
+BatCave\Converters\ValueFormatConverters.cs:31:    public static string FormatRate(ulong value)
+BatCave\Converters\ValueFormatConverters.cs:37:public sealed class CpuPercentConverter : IValueConverter
+BatCave\Converters\ValueFormatConverters.cs:39:    public object Convert(object value, Type targetType, object parameter, string language)
+BatCave\Converters\ValueFormatConverters.cs:49:    public object ConvertBack(object value, Type targetType, object parameter, string language)
+BatCave\Converters\ValueFormatConverters.cs:55:public sealed class BytesConverter : IValueConverter
+BatCave\Converters\ValueFormatConverters.cs:57:    public object Convert(object value, Type targetType, object parameter, string language)
+BatCave\Converters\ValueFormatConverters.cs:64:    public object ConvertBack(object value, Type targetType, object parameter, string language)
+BatCave\Converters\ValueFormatConverters.cs:85:public sealed class BytesRateConverter : IValueConverter
+BatCave\Converters\ValueFormatConverters.cs:87:    public object Convert(object value, Type targetType, object parameter, string language)
+BatCave\Converters\ValueFormatConverters.cs:97:    public object ConvertBack(object value, Type targetType, object parameter, string language)
+BatCave\Charts\SparklineMath.cs:8:public static class SparklineMath
+BatCave\Charts\SparklineMath.cs:10:    public const string FlatlineFallbackPoints = "0,0 1,0";
+BatCave\Charts\SparklineMath.cs:12:    public static IReadOnlyList<Point> BuildPoints(IReadOnlyList<double> values, double width, double height)
+BatCave\Charts\SparklineMath.cs:55:    public static string BuildPointString(IReadOnlyList<double> values, double width, double height)
+BatCave\Services\RuntimeGateway.cs:6:public interface IRuntimeEventGateway
+BatCave\Services\RuntimeGateway.cs:17:public sealed class RuntimeGateway : IRuntimeEventGateway
+BatCave\Services\RuntimeGateway.cs:19:    public event EventHandler<ProcessDeltaBatch>? TelemetryDelta;
+BatCave\Services\RuntimeGateway.cs:21:    public event EventHandler<RuntimeHealth>? RuntimeHealthChanged;
+BatCave\Services\RuntimeGateway.cs:23:    public event EventHandler<CollectorWarning>? CollectorWarningRaised;
+BatCave\Services\RuntimeGateway.cs:25:    public void Publish(TickOutcome outcome)
+BatCave\ViewModels\MetricHistoryBuffer.cs:6:public sealed class MetricHistoryBuffer
+BatCave\ViewModels\MetricHistoryBuffer.cs:16:    public MetricHistoryBuffer(int limit)
+BatCave\ViewModels\MetricHistoryBuffer.cs:21:    public IReadOnlyList<double> Cpu => _cpu;
+BatCave\ViewModels\MetricHistoryBuffer.cs:23:    public IReadOnlyList<double> Memory => _memory;
+BatCave\ViewModels\MetricHistoryBuffer.cs:25:    public IReadOnlyList<double> IoRead => _ioRead;
+BatCave\ViewModels\MetricHistoryBuffer.cs:27:    public IReadOnlyList<double> IoWrite => _ioWrite;
+BatCave\ViewModels\MetricHistoryBuffer.cs:29:    public IReadOnlyList<double> Net => _net;
+BatCave\ViewModels\MetricHistoryBuffer.cs:31:    public void Reset()
+BatCave\ViewModels\MetricHistoryBuffer.cs:39:    public void Append(ProcessSample sample)
+BatCave\ViewModels\MetricHistoryBuffer.cs:48:    public static IReadOnlyList<double> Singleton(double value)
+BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs:8:public partial class MonitoringShellViewModel
+BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs:10:    public Task BootstrapAsync(CancellationToken ct)
+BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs:50:    public Task RetryBootstrapAsync(CancellationToken ct)
+BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs:55:    public async Task ToggleAdminModeAsync(bool nextAdminMode, CancellationToken ct)
+BatCave.Core\Pipeline\DeltaTelemetryPipeline.cs:6:public sealed class DeltaTelemetryPipeline : ITelemetryPipeline
+BatCave.Core\Pipeline\DeltaTelemetryPipeline.cs:13:    public void SeedFromWarmCache(IReadOnlyList<ProcessSample> rows)
+BatCave.Core\Pipeline\DeltaTelemetryPipeline.cs:24:    public ProcessDeltaBatch ApplyRaw(ulong seq, IReadOnlyList<ProcessSample> raw)
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:9:public sealed class LocalJsonPersistenceStore : IPersistenceStore
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:21:    public LocalJsonPersistenceStore(string? baseDirectory = null)
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:31:    public string BaseDirectory { get; }
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:33:    public UserSettings? LoadSettings()
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:38:    public async Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:43:    public WarmCache? LoadWarmCache()
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:48:    public async Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:53:    public async Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:71:    public static string DefaultBaseDirectory()
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:157:        public ulong TsMs { get; init; }
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:159:        public string Category { get; init; } = string.Empty;
+BatCave.Core\Persistence\LocalJsonPersistenceStore.cs:161:        public object Payload { get; init; } = new();
+BatCave\ViewModels\MonitoringShellViewModel.Metrics.cs:10:public partial class MonitoringShellViewModel
+BatCave\ViewModels\MonitoringShellViewModel.Selection.cs:10:public partial class MonitoringShellViewModel
+BatCave\ViewModels\MonitoringShellViewModel.Selection.cs:18:    public async Task ToggleSelectionAsync(ProcessSample? row, CancellationToken ct)
+BatCave\ViewModels\MonitoringShellViewModel.Selection.cs:39:    public async Task SelectRowAsync(ProcessSample? row, CancellationToken ct)
+BatCave\ViewModels\MonitoringShellViewModel.Selection.cs:75:    public void ClearSelection()
+BatCave.Core\State\InMemoryStateStore.cs:6:public sealed class InMemoryStateStore : IStateStore
+BatCave.Core\State\InMemoryStateStore.cs:10:    public void ApplyDelta(ProcessDeltaBatch delta)
+BatCave.Core\State\InMemoryStateStore.cs:23:    public IReadOnlyList<ProcessSample> AllRows()
+BatCave.Core\State\InMemoryStateStore.cs:28:    public WarmCache ExportWarmCache(ulong seq)
+BatCave.Core\State\InMemoryStateStore.cs:37:    public void ImportWarmCache(WarmCache cache)
+BatCave.Core\State\InMemoryStateStore.cs:46:    public int RowCount()
+BatCave.Core\State\InMemoryStateStore.cs:51:    public void CompactTo(int maxRows)
+BatCave\ViewModels\MonitoringShellViewModel.cs:22:public enum DetailMetricFocus
+BatCave\ViewModels\MonitoringShellViewModel.cs:31:public partial class MonitoringShellViewModel : ObservableObject
+BatCave\ViewModels\MonitoringShellViewModel.cs:107:    public MonitoringShellViewModel(
+BatCave\ViewModels\MonitoringShellViewModel.cs:129:    public AdvancedCollectionView VisibleRows { get; }
+BatCave\ViewModels\MonitoringShellViewModel.cs:131:    public bool IsLoading
+BatCave\ViewModels\MonitoringShellViewModel.cs:143:    public bool IsBlocked
+BatCave\ViewModels\MonitoringShellViewModel.cs:155:    public bool IsStartupError
+BatCave\ViewModels\MonitoringShellViewModel.cs:167:    public bool IsLive
+BatCave\ViewModels\MonitoringShellViewModel.cs:179:    public string ShellHeadline
+BatCave\ViewModels\MonitoringShellViewModel.cs:185:    public string ShellBody
+BatCave\ViewModels\MonitoringShellViewModel.cs:191:    public string BlockedReasonMessage
+BatCave\ViewModels\MonitoringShellViewModel.cs:197:    public string StartupErrorMessage
+BatCave\ViewModels\MonitoringShellViewModel.cs:203:    public string FilterText
+BatCave\ViewModels\MonitoringShellViewModel.cs:215:    public SortColumn CurrentSortColumn
+BatCave\ViewModels\MonitoringShellViewModel.cs:227:    public SortDirection CurrentSortDirection
+BatCave\ViewModels\MonitoringShellViewModel.cs:239:    public bool AdminModeEnabled
+BatCave\ViewModels\MonitoringShellViewModel.cs:256:    public bool AdminEnabledOnlyFilter
+BatCave\ViewModels\MonitoringShellViewModel.cs:273:    public bool AdminModePending
+BatCave\ViewModels\MonitoringShellViewModel.cs:279:    public string? AdminModeError
+BatCave\ViewModels\MonitoringShellViewModel.cs:292:    public bool HasAdminModeError => !string.IsNullOrWhiteSpace(AdminModeError);
+BatCave\ViewModels\MonitoringShellViewModel.cs:294:    public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
+BatCave\ViewModels\MonitoringShellViewModel.cs:296:    public Visibility BlockedVisibility => IsBlocked ? Visibility.Visible : Visibility.Collapsed;
+BatCave\ViewModels\MonitoringShellViewModel.cs:298:    public Visibility StartupErrorVisibility => IsStartupError ? Visibility.Visible : Visibility.Collapsed;
+BatCave\ViewModels\MonitoringShellViewModel.cs:300:    public Visibility LiveVisibility => IsLive ? Visibility.Visible : Visibility.Collapsed;
+BatCave\ViewModels\MonitoringShellViewModel.cs:302:    public Visibility AdminErrorVisibility => HasAdminModeError ? Visibility.Visible : Visibility.Collapsed;
+BatCave\ViewModels\MonitoringShellViewModel.cs:304:    public string RuntimeHealthStatus
+BatCave\ViewModels\MonitoringShellViewModel.cs:310:    public StartupGateStatus StartupGateStatus
+BatCave\ViewModels\MonitoringShellViewModel.cs:316:    public ProcessSample? SelectedRow
+BatCave\ViewModels\MonitoringShellViewModel.cs:331:    public ProcessRowViewState? SelectedVisibleRow
+BatCave\ViewModels\MonitoringShellViewModel.cs:343:    public ProcessRowViewState? SelectedVisibleRowBinding
+BatCave\ViewModels\MonitoringShellViewModel.cs:349:    public ProcessMetadata? SelectedMetadata
+BatCave\ViewModels\MonitoringShellViewModel.cs:361:    public bool IsMetadataLoading
+BatCave\ViewModels\MonitoringShellViewModel.cs:373:    public string? MetadataError
+BatCave\ViewModels\MonitoringShellViewModel.cs:385:    public DetailMetricFocus MetricFocus
+BatCave\ViewModels\MonitoringShellViewModel.cs:398:    public bool IsCpuMetricFocused => MetricFocus == DetailMetricFocus.Cpu;
+BatCave\ViewModels\MonitoringShellViewModel.cs:400:    public bool IsMemoryMetricFocused => MetricFocus == DetailMetricFocus.Memory;
+BatCave\ViewModels\MonitoringShellViewModel.cs:402:    public bool IsIoReadMetricFocused => MetricFocus == DetailMetricFocus.IoRead;
+BatCave\ViewModels\MonitoringShellViewModel.cs:404:    public bool IsIoWriteMetricFocused => MetricFocus == DetailMetricFocus.IoWrite;
+BatCave\ViewModels\MonitoringShellViewModel.cs:406:    public bool IsNetworkMetricFocused => MetricFocus == DetailMetricFocus.Network;
+BatCave\ViewModels\MonitoringShellViewModel.cs:408:    public bool HasSelection => SelectedRow is not null;
+BatCave\ViewModels\MonitoringShellViewModel.cs:410:    public string DetailTitle =>
+BatCave\ViewModels\MonitoringShellViewModel.cs:415:    public string DetailMetricValue => ExpandedMetricValue;
+BatCave\ViewModels\MonitoringShellViewModel.cs:417:    public string MetadataStatus
+BatCave\ViewModels\MonitoringShellViewModel.cs:445:    public string MetadataParentPid =>
+BatCave\ViewModels\MonitoringShellViewModel.cs:450:    public string MetadataCommandLine =>
+BatCave\ViewModels\MonitoringShellViewModel.cs:455:    public string MetadataExecutablePath =>
+BatCave\ViewModels\MonitoringShellViewModel.cs:460:    public string NameSortLabel => SortLabel("Name", SortColumn.Name);
+BatCave\ViewModels\MonitoringShellViewModel.cs:462:    public string PidSortLabel => SortLabel("PID", SortColumn.Pid);
+BatCave\ViewModels\MonitoringShellViewModel.cs:464:    public string CpuSortLabel => SortLabel("CPU", SortColumn.CpuPct);
+BatCave\ViewModels\MonitoringShellViewModel.cs:466:    public string MemorySortLabel => SortLabel("Memory", SortColumn.RssBytes);
+BatCave\ViewModels\MonitoringShellViewModel.cs:468:    public string IoReadSortLabel => SortLabel("IO Read", SortColumn.IoReadBps);
+BatCave\ViewModels\MonitoringShellViewModel.cs:470:    public string IoWriteSortLabel => SortLabel("IO Write", SortColumn.IoWriteBps);
+BatCave\ViewModels\MonitoringShellViewModel.cs:472:    public string NetSortLabel => SortLabel("Net", SortColumn.NetBps);
+BatCave\ViewModels\MonitoringShellViewModel.cs:474:    public string ThreadsSortLabel => SortLabel("Threads", SortColumn.Threads);
+BatCave\ViewModels\MonitoringShellViewModel.cs:476:    public string HandlesSortLabel => SortLabel("Handles", SortColumn.Handles);
+BatCave\ViewModels\MonitoringShellViewModel.cs:478:    public double[] CpuMetricTrendValues
+BatCave\ViewModels\MonitoringShellViewModel.cs:484:    public double[] MemoryMetricTrendValues
+BatCave\ViewModels\MonitoringShellViewModel.cs:490:    public double[] IoReadMetricTrendValues
+BatCave\ViewModels\MonitoringShellViewModel.cs:496:    public double[] IoWriteMetricTrendValues
+BatCave\ViewModels\MonitoringShellViewModel.cs:502:    public double[] NetworkMetricTrendValues
+BatCave\ViewModels\MonitoringShellViewModel.cs:508:    public double[] ExpandedMetricTrendValues
+BatCave\ViewModels\MonitoringShellViewModel.cs:514:    public string CpuMetricChipValue
+BatCave\ViewModels\MonitoringShellViewModel.cs:520:    public string MemoryMetricChipValue
+BatCave\ViewModels\MonitoringShellViewModel.cs:526:    public string IoReadMetricChipValue
+BatCave\ViewModels\MonitoringShellViewModel.cs:532:    public string IoWriteMetricChipValue
+BatCave\ViewModels\MonitoringShellViewModel.cs:538:    public string NetworkMetricChipValue
+BatCave\ViewModels\MonitoringShellViewModel.cs:544:    public string ExpandedMetricTitle
+BatCave\ViewModels\MonitoringShellViewModel.cs:550:    public string ExpandedMetricValue
+BatCave\ViewModels\MonitoringShellViewModel.cs:562:    public void AttachDispatcherQueue(DispatcherQueue dispatcherQueue)
+BatCave\ViewModels\MonitoringShellViewModel.Sorting.cs:10:public partial class MonitoringShellViewModel
+BatCave\ViewModels\MonitoringShellViewModel.Sorting.cs:12:    public void ChangeSort(SortColumn column)
+BatCave.Core\Serialization\JsonDefaults.cs:6:public static class JsonDefaults
+BatCave.Core\Serialization\JsonDefaults.cs:8:    public static JsonSerializerOptions SnakeCase { get; } = CreateSnakeCase();
+BatCave\ViewModels\MonitoringShellViewModel.Telemetry.cs:9:public partial class MonitoringShellViewModel
+BatCave\ViewModels\ProcessRowViewState.cs:8:public sealed class ProcessRowViewState : ObservableObject
+BatCave\ViewModels\ProcessRowViewState.cs:15:    public ProcessRowViewState(ProcessSample sample, string cpuTrendPoints)
+BatCave\ViewModels\ProcessRowViewState.cs:21:    public ProcessSample Sample => _sample;
+BatCave\ViewModels\ProcessRowViewState.cs:23:    public ProcessIdentity Identity => _sample.Identity();
+BatCave\ViewModels\ProcessRowViewState.cs:25:    public string Name => _sample.Name;
+BatCave\ViewModels\ProcessRowViewState.cs:27:    public uint Pid => _sample.Pid;
+BatCave\ViewModels\ProcessRowViewState.cs:29:    public ulong StartTimeMs => _sample.StartTimeMs;
+BatCave\ViewModels\ProcessRowViewState.cs:31:    public double CpuPct => _sample.CpuPct;
+BatCave\ViewModels\ProcessRowViewState.cs:33:    public double CpuSortBucket => QuantizeCpu(_sample.CpuPct);
+BatCave\ViewModels\ProcessRowViewState.cs:35:    public ulong RssBytes => _sample.RssBytes;
+BatCave\ViewModels\ProcessRowViewState.cs:37:    public ulong IoReadBps => _sample.IoReadBps;
+BatCave\ViewModels\ProcessRowViewState.cs:39:    public ulong IoWriteBps => _sample.IoWriteBps;
+BatCave\ViewModels\ProcessRowViewState.cs:41:    public ulong NetBps => _sample.NetBps;
+BatCave\ViewModels\ProcessRowViewState.cs:43:    public uint Threads => _sample.Threads;
+BatCave\ViewModels\ProcessRowViewState.cs:45:    public uint Handles => _sample.Handles;
+BatCave\ViewModels\ProcessRowViewState.cs:47:    public AccessState AccessState => _sample.AccessState;
+BatCave\ViewModels\ProcessRowViewState.cs:49:    public string CpuTrendPoints
+BatCave\ViewModels\ProcessRowViewState.cs:55:    public void UpdateSample(ProcessSample sample)
+BatCave\ViewModels\ProcessRowViewState.cs:67:    public void UpdateCpuTrendPoints(string points)
+BatCave.Core\Policy\WindowsLaunchPolicyGate.cs:7:public sealed class WindowsLaunchPolicyGate : ILaunchPolicyGate
+BatCave.Core\Policy\WindowsLaunchPolicyGate.cs:11:    public StartupGateStatus Enforce()
+BatCave.Core\Runtime\MonitoringRuntime.cs:8:public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
+BatCave.Core\Runtime\MonitoringRuntime.cs:25:    public MonitoringRuntime(
+BatCave.Core\Runtime\MonitoringRuntime.cs:69:    public QueryResponse GetSnapshot()
+BatCave.Core\Runtime\MonitoringRuntime.cs:75:    public SortColumn CurrentSortColumn => _queryRequest.SortCol;
+BatCave.Core\Runtime\MonitoringRuntime.cs:77:    public SortDirection CurrentSortDirection => _queryRequest.SortDir;
+BatCave.Core\Runtime\MonitoringRuntime.cs:79:    public string CurrentFilterText => _queryRequest.FilterText;
+BatCave.Core\Runtime\MonitoringRuntime.cs:81:    public RuntimeHealth GetRuntimeHealth()
+BatCave.Core\Runtime\MonitoringRuntime.cs:86:    public void SetSort(SortColumn sortCol, SortDirection sortDir)
+BatCave.Core\Runtime\MonitoringRuntime.cs:93:    public void SetFilter(string filterText)
+BatCave.Core\Runtime\MonitoringRuntime.cs:100:    public bool IsAdminMode()
+BatCave.Core\Runtime\MonitoringRuntime.cs:105:    public Task RestartAsync(bool adminMode, CancellationToken ct)
+BatCave.Core\Runtime\MonitoringRuntime.cs:122:    public TickOutcome Tick(double jitterMs)
+BatCave.Core\Runtime\MonitoringRuntime.cs:229:    public void RecordDroppedTicks(ulong dropped)
+BatCave.Core\Runtime\MonitoringRuntime.cs:269:    public void Dispose()
+BatCave.Core\Runtime\BenchmarkRunner.cs:11:public sealed record BenchmarkSummary
+BatCave.Core\Runtime\BenchmarkRunner.cs:13:    public int Ticks { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:15:    public int SleepMs { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:17:    public long StartupMs { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:19:    public double TickP95Ms { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:21:    public double SortP95Ms { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:23:    public double AvgAppCpuPct { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:25:    public ulong AvgAppRssBytes { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:27:    public bool BudgetPassed { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:29:    public double CpuBudgetPct { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:31:    public ulong RssBudgetBytes { get; init; }
+BatCave.Core\Runtime\BenchmarkRunner.cs:34:public static class BenchmarkRunner
+BatCave.Core\Runtime\BenchmarkRunner.cs:36:    public const double CpuBudgetPct = 1.0;
+BatCave.Core\Runtime\BenchmarkRunner.cs:37:    public const ulong RssBudgetBytes = 150UL * 1024UL * 1024UL;
+BatCave.Core\Runtime\BenchmarkRunner.cs:39:    public static BenchmarkSummary Run(int ticks, int sleepMs, CancellationToken ct)
+BatCave.Core\Runtime\BenchmarkRunner.cs:122:        public string BaseDirectory => Path.GetTempPath();
+BatCave.Core\Runtime\BenchmarkRunner.cs:124:        public UserSettings? LoadSettings()
+BatCave.Core\Runtime\BenchmarkRunner.cs:135:        public Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
+BatCave.Core\Runtime\BenchmarkRunner.cs:140:        public WarmCache? LoadWarmCache()
+BatCave.Core\Runtime\BenchmarkRunner.cs:145:        public Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
+BatCave.Core\Runtime\BenchmarkRunner.cs:150:        public Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
+BatCave.Core\Runtime\ResourceBudgetGuardian.cs:5:public sealed record RuntimePolicy
+BatCave.Core\Runtime\ResourceBudgetGuardian.cs:7:    public bool EmitTelemetryDelta { get; init; }
+BatCave.Core\Runtime\ResourceBudgetGuardian.cs:9:    public ulong WarmCacheInterval { get; init; }
+BatCave.Core\Runtime\ResourceBudgetGuardian.cs:11:    public int? CompactMaxRows { get; init; }
+BatCave.Core\Runtime\ResourceBudgetGuardian.cs:14:public sealed class ResourceBudgetGuardian
+BatCave.Core\Runtime\ResourceBudgetGuardian.cs:24:    public RuntimePolicy Evaluate(ulong seq, RuntimeHealth health, int rowCount)
+BatCave.Core\Runtime\ResourceBudgetGuardian.cs:55:    public bool IsDegraded()
+BatCave.Core\Runtime\RuntimeLoopService.cs:5:public sealed class RuntimeLoopService
+BatCave.Core\Runtime\RuntimeLoopService.cs:15:    public RuntimeLoopService(MonitoringRuntime runtime, TimeProvider? timeProvider = null)
+BatCave.Core\Runtime\RuntimeLoopService.cs:21:    public event EventHandler<TickOutcome>? TickCompleted;
+BatCave.Core\Runtime\RuntimeLoopService.cs:23:    public long CurrentGeneration => Interlocked.Read(ref _generation);
+BatCave.Core\Runtime\RuntimeLoopService.cs:25:    public void Start(long generation)
+BatCave.Core\Runtime\RuntimeLoopService.cs:40:    public void StopAndAdvanceGeneration()
+BatCave.Core\Metadata\ProcessMetadataProvider.cs:8:public sealed class ProcessMetadataProvider : IProcessMetadataProvider
+BatCave.Core\Metadata\ProcessMetadataProvider.cs:10:    public async Task<ProcessMetadata?> GetAsync(uint pid, ulong startTimeMs, CancellationToken ct)
+BatCave.Core\Operations\ICliOperationsHost.cs:3:public interface ICliOperationsHost
+BatCave.Core\Operations\CliOperationsHost.cs:12:public sealed class CliOperationsHost : ICliOperationsHost
+BatCave.Core\Operations\CliOperationsHost.cs:35:    public CliOperationsHost(ILaunchPolicyGate launchPolicyGate)
+BatCave.Core\Operations\CliOperationsHost.cs:40:    public bool IsCliMode(string[] args)
+BatCave.Core\Operations\CliOperationsHost.cs:45:    public Task<int> ExecuteAsync(string[] args, CancellationToken ct)
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:6:public sealed class IncrementalSortIndexEngine : ISortIndexEngine
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:10:    public void OnDelta(ProcessDeltaBatch delta)
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:28:    public QueryResponse Query(QueryRequest request, IReadOnlyList<ProcessSample> rows, ulong seq)
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:254:        public ulong LatestSeq { get; set; }
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:256:        public SortColumn SortCol { get; set; } = SortColumn.CpuPct;
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:258:        public SortDirection SortDir { get; set; } = SortDirection.Desc;
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:260:        public List<ProcessIdentity> Ordered { get; set; } = [];
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:262:        public Dictionary<ProcessIdentity, ProcessSample> Rows { get; set; } = [];
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:264:        public List<ProcessIdentity> PendingUpserts { get; } = [];
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:266:        public List<ProcessIdentity> PendingExits { get; } = [];
+BatCave.Core\Sort\IncrementalSortIndexEngine.cs:268:        public bool Initialized { get; set; }
+BatCave.Core\Domain\Models.cs:5:public static class EventContracts
+BatCave.Core\Domain\Models.cs:7:    public const string TelemetryDelta = "telemetry_delta";
+BatCave.Core\Domain\Models.cs:8:    public const string RuntimeHealth = "runtime_health";
+BatCave.Core\Domain\Models.cs:9:    public const string CollectorWarning = "collector_warning";
+BatCave.Core\Domain\Models.cs:12:public enum AccessState
+BatCave.Core\Domain\Models.cs:19:public readonly record struct ProcessIdentity(uint Pid, ulong StartTimeMs);
+BatCave.Core\Domain\Models.cs:21:public sealed record ProcessSample
+BatCave.Core\Domain\Models.cs:23:    public ulong Seq { get; init; }
+BatCave.Core\Domain\Models.cs:25:    public ulong TsMs { get; init; }
+BatCave.Core\Domain\Models.cs:27:    public uint Pid { get; init; }
+BatCave.Core\Domain\Models.cs:29:    public uint ParentPid { get; init; }
+BatCave.Core\Domain\Models.cs:31:    public ulong StartTimeMs { get; init; }
+BatCave.Core\Domain\Models.cs:33:    public string Name { get; init; } = string.Empty;
+BatCave.Core\Domain\Models.cs:35:    public double CpuPct { get; init; }
+BatCave.Core\Domain\Models.cs:37:    public ulong RssBytes { get; init; }
+BatCave.Core\Domain\Models.cs:39:    public ulong PrivateBytes { get; init; }
+BatCave.Core\Domain\Models.cs:41:    public ulong IoReadBps { get; init; }
+BatCave.Core\Domain\Models.cs:43:    public ulong IoWriteBps { get; init; }
+BatCave.Core\Domain\Models.cs:45:    public ulong NetBps { get; init; }
+BatCave.Core\Domain\Models.cs:47:    public uint Threads { get; init; }
+BatCave.Core\Domain\Models.cs:49:    public uint Handles { get; init; }
+BatCave.Core\Domain\Models.cs:51:    public AccessState AccessState { get; init; }
+BatCave.Core\Domain\Models.cs:53:    public ProcessIdentity Identity()
+BatCave.Core\Domain\Models.cs:59:public sealed record ProcessDeltaBatch
+BatCave.Core\Domain\Models.cs:61:    public ulong Seq { get; init; }
+BatCave.Core\Domain\Models.cs:63:    public IReadOnlyList<ProcessSample> Upserts { get; init; } = [];
+BatCave.Core\Domain\Models.cs:65:    public IReadOnlyList<ProcessIdentity> Exits { get; init; } = [];
+BatCave.Core\Domain\Models.cs:68:public enum SortColumn
+BatCave.Core\Domain\Models.cs:82:public enum SortDirection
+BatCave.Core\Domain\Models.cs:88:public sealed record QueryRequest
+BatCave.Core\Domain\Models.cs:90:    public int Offset { get; init; }
+BatCave.Core\Domain\Models.cs:92:    public int Limit { get; init; } = 5000;
+BatCave.Core\Domain\Models.cs:94:    public SortColumn SortCol { get; init; } = SortColumn.CpuPct;
+BatCave.Core\Domain\Models.cs:96:    public SortDirection SortDir { get; init; } = SortDirection.Desc;
+BatCave.Core\Domain\Models.cs:98:    public string FilterText { get; init; } = string.Empty;
+BatCave.Core\Domain\Models.cs:101:public sealed record QueryResponse
+BatCave.Core\Domain\Models.cs:103:    public ulong Seq { get; init; }
+BatCave.Core\Domain\Models.cs:105:    public int Total { get; init; }
+BatCave.Core\Domain\Models.cs:107:    public IReadOnlyList<ProcessSample> Rows { get; init; } = [];
+BatCave.Core\Domain\Models.cs:110:public sealed record RuntimeHealth
+BatCave.Core\Domain\Models.cs:112:    public ulong Seq { get; init; }
+BatCave.Core\Domain\Models.cs:114:    public ulong LastTickMs { get; init; }
+BatCave.Core\Domain\Models.cs:116:    public double JitterP95Ms { get; init; }
+BatCave.Core\Domain\Models.cs:118:    public ulong DroppedTicks { get; init; }
+BatCave.Core\Domain\Models.cs:120:    public double AppCpuPct { get; init; }
+BatCave.Core\Domain\Models.cs:122:    public ulong AppRssBytes { get; init; }
+BatCave.Core\Domain\Models.cs:124:    public bool DegradeMode { get; init; }
+BatCave.Core\Domain\Models.cs:126:    public ulong CollectorWarnings { get; init; }
+BatCave.Core\Domain\Models.cs:129:public enum LaunchBlockReasonKind
+BatCave.Core\Domain\Models.cs:135:public sealed record LaunchBlockReason
+BatCave.Core\Domain\Models.cs:137:    public LaunchBlockReasonKind Kind { get; init; }
+BatCave.Core\Domain\Models.cs:140:    public string? Os { get; init; }
+BatCave.Core\Domain\Models.cs:143:    public uint? DetectedBuild { get; init; }
+BatCave.Core\Domain\Models.cs:145:    public static LaunchBlockReason UnsupportedPlatform(string os)
+BatCave.Core\Domain\Models.cs:154:    public static LaunchBlockReason RequiresWindows11(uint detectedBuild)
+BatCave.Core\Domain\Models.cs:164:public sealed record LaunchContext
+BatCave.Core\Domain\Models.cs:166:    public string Os { get; init; } = string.Empty;
+BatCave.Core\Domain\Models.cs:168:    public uint WindowsBuild { get; init; }
+BatCave.Core\Domain\Models.cs:171:public sealed record StartupGateStatus
+BatCave.Core\Domain\Models.cs:173:    public bool Passed { get; init; }
+BatCave.Core\Domain\Models.cs:176:    public LaunchContext? Context { get; init; }
+BatCave.Core\Domain\Models.cs:179:    public LaunchBlockReason? Reason { get; init; }
+BatCave.Core\Domain\Models.cs:181:    public static StartupGateStatus PassedContext(LaunchContext context)
+BatCave.Core\Domain\Models.cs:190:    public static StartupGateStatus Blocked(LaunchBlockReason reason)
+BatCave.Core\Domain\Models.cs:200:public sealed record UserSettings
+BatCave.Core\Domain\Models.cs:202:    public SortColumn SortCol { get; init; } = SortColumn.CpuPct;
+BatCave.Core\Domain\Models.cs:204:    public SortDirection SortDir { get; init; } = SortDirection.Desc;
+BatCave.Core\Domain\Models.cs:206:    public string FilterText { get; init; } = string.Empty;
+BatCave.Core\Domain\Models.cs:208:    public bool AdminMode { get; init; }
+BatCave.Core\Domain\Models.cs:211:public sealed record WarmCache
+BatCave.Core\Domain\Models.cs:213:    public ulong Seq { get; init; }
+BatCave.Core\Domain\Models.cs:215:    public IReadOnlyList<ProcessSample> Rows { get; init; } = [];
+BatCave.Core\Domain\Models.cs:218:public sealed record CollectorWarning
+BatCave.Core\Domain\Models.cs:220:    public string Message { get; init; } = string.Empty;
+BatCave.Core\Domain\Models.cs:222:    public ulong Seq { get; init; }
+BatCave.Core\Domain\Models.cs:225:public sealed record ProcessMetadata
+BatCave.Core\Domain\Models.cs:227:    public uint Pid { get; init; }
+BatCave.Core\Domain\Models.cs:229:    public uint ParentPid { get; init; }
+BatCave.Core\Domain\Models.cs:231:    public string? CommandLine { get; init; }
+BatCave.Core\Domain\Models.cs:233:    public string? ExecutablePath { get; init; }
+BatCave.Core\Collector\ElevatedBridgeClient.cs:8:public enum BridgePollState
+BatCave.Core\Collector\ElevatedBridgeClient.cs:15:public sealed record BridgePollResult
+BatCave.Core\Collector\ElevatedBridgeClient.cs:17:    public BridgePollState State { get; init; }
+BatCave.Core\Collector\ElevatedBridgeClient.cs:19:    public IReadOnlyList<ProcessSample> Rows { get; init; } = [];
+BatCave.Core\Collector\ElevatedBridgeClient.cs:21:    public string? Reason { get; init; }
+BatCave.Core\Collector\ElevatedBridgeClient.cs:23:    public static BridgePollResult RowsResult(IReadOnlyList<ProcessSample> rows)
+BatCave.Core\Collector\ElevatedBridgeClient.cs:32:    public static BridgePollResult Pending()
+BatCave.Core\Collector\ElevatedBridgeClient.cs:40:    public static BridgePollResult Faulted(string reason)
+BatCave.Core\Collector\ElevatedBridgeClient.cs:50:public sealed class ElevatedBridgeClient : IDisposable
+BatCave.Core\Collector\ElevatedBridgeClient.cs:77:    public static async Task<ElevatedBridgeClient> LaunchAsync(CancellationToken ct)
+BatCave.Core\Collector\ElevatedBridgeClient.cs:99:    public BridgePollResult PollRows()
+BatCave.Core\Collector\ElevatedBridgeClient.cs:207:    public void Dispose()
+BatCave.Core\Collector\ElevatedBridgeClient.cs:219:    public static int RunElevatedHelper(string dataFile, string stopFile, string token, CancellationToken ct)
+BatCave.Core\Collector\ElevatedBridgeClient.cs:377:        public string Token { get; init; } = string.Empty;
+BatCave.Core\Collector\ElevatedBridgeClient.cs:379:        public ulong Seq { get; init; }
+BatCave.Core\Collector\ElevatedBridgeClient.cs:381:        public List<ProcessSample> Rows { get; init; } = [];
+BatCave.Core\Collector\DefaultProcessCollector.cs:6:public sealed class DefaultProcessCollectorFactory : IProcessCollectorFactory
+BatCave.Core\Collector\DefaultProcessCollector.cs:8:    public IProcessCollector Create(bool adminMode)
+BatCave.Core\Collector\DefaultProcessCollector.cs:14:public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
+BatCave.Core\Collector\DefaultProcessCollector.cs:19:    public DefaultProcessCollector(bool adminMode)
+BatCave.Core\Collector\DefaultProcessCollector.cs:28:    public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
+BatCave.Core\Collector\DefaultProcessCollector.cs:56:    public string? TakeWarning()
+BatCave.Core\Collector\DefaultProcessCollector.cs:61:    public void Dispose()
+BatCave.Core\Domain\TickOutcome.cs:5:public sealed record TickOutcome
+BatCave.Core\Domain\TickOutcome.cs:7:    public ProcessDeltaBatch Delta { get; init; } = new();
+BatCave.Core\Domain\TickOutcome.cs:9:    public RuntimeHealth Health { get; init; } = new();
+BatCave.Core\Domain\TickOutcome.cs:11:    public CollectorWarning? Warning { get; init; }
+BatCave.Core\Domain\TickOutcome.cs:13:    public bool EmitTelemetryDelta { get; init; }
+BatCave.Core\Collector\WindowsProcessCollector.cs:11:public sealed class WindowsProcessCollector : IProcessCollector
+BatCave.Core\Collector\WindowsProcessCollector.cs:47:    public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
+BatCave.Core\Collector\WindowsProcessCollector.cs:325:    public string? TakeWarning()
+BatCave.Core\Collector\WindowsProcessCollector.cs:500:        public ulong CpuTotal100ns;
+BatCave.Core\Collector\WindowsProcessCollector.cs:501:        public ulong IoReadTotal;
+BatCave.Core\Collector\WindowsProcessCollector.cs:502:        public ulong IoWriteTotal;
+BatCave.Core\Collector\WindowsProcessCollector.cs:503:        public ulong IoOtherTotal;
+BatCave.Core\Collector\WindowsProcessCollector.cs:504:        public ulong RssBytes;
+BatCave.Core\Collector\WindowsProcessCollector.cs:505:        public ulong PrivateBytes;
+BatCave.Core\Collector\WindowsProcessCollector.cs:506:        public uint Handles;
+BatCave.Core\Collector\WindowsProcessCollector.cs:507:        public ulong LastMemorySeq;
+BatCave.Core\Collector\WindowsProcessCollector.cs:508:        public ulong LastHandlesSeq;
+BatCave.Core\Collector\WindowsProcessCollector.cs:509:        public bool HasMemory;
+BatCave.Core\Collector\WindowsProcessCollector.cs:510:        public bool HasHandles;
+BatCave.Core\Collector\WindowsProcessCollector.cs:520:        public ulong StartTimeMs { get; set; }
+BatCave.Core\Collector\WindowsProcessCollector.cs:522:        public uint ParentPid { get; set; }
+BatCave.Core\Collector\WindowsProcessCollector.cs:524:        public string Name { get; set; } = string.Empty;
+BatCave.Core\Collector\WindowsProcessCollector.cs:529:        public SafeSnapshotHandle(IntPtr handle, bool ownsHandle)
+BatCave.Core\Collector\WindowsProcessCollector.cs:543:        public OwnedProcessHandle(IntPtr handle, bool ownsHandle)
+BatCave.Core\Collector\WindowsProcessCollector.cs:558:        public uint dwSize;
+BatCave.Core\Collector\WindowsProcessCollector.cs:559:        public uint cntUsage;
+BatCave.Core\Collector\WindowsProcessCollector.cs:560:        public uint th32ProcessID;
+BatCave.Core\Collector\WindowsProcessCollector.cs:561:        public nuint th32DefaultHeapID;
+BatCave.Core\Collector\WindowsProcessCollector.cs:562:        public uint th32ModuleID;
+BatCave.Core\Collector\WindowsProcessCollector.cs:563:        public uint cntThreads;
+BatCave.Core\Collector\WindowsProcessCollector.cs:564:        public uint th32ParentProcessID;
+BatCave.Core\Collector\WindowsProcessCollector.cs:565:        public int pcPriClassBase;
+BatCave.Core\Collector\WindowsProcessCollector.cs:566:        public uint dwFlags;
+BatCave.Core\Collector\WindowsProcessCollector.cs:568:        public string szExeFile;
+BatCave.Core\Collector\WindowsProcessCollector.cs:574:        public uint dwLowDateTime;
+BatCave.Core\Collector\WindowsProcessCollector.cs:575:        public uint dwHighDateTime;
+BatCave.Core\Collector\WindowsProcessCollector.cs:581:        public ulong ReadOperationCount;
+BatCave.Core\Collector\WindowsProcessCollector.cs:582:        public ulong WriteOperationCount;
+BatCave.Core\Collector\WindowsProcessCollector.cs:583:        public ulong OtherOperationCount;
+BatCave.Core\Collector\WindowsProcessCollector.cs:584:        public ulong ReadTransferCount;
+BatCave.Core\Collector\WindowsProcessCollector.cs:585:        public ulong WriteTransferCount;
+BatCave.Core\Collector\WindowsProcessCollector.cs:586:        public ulong OtherTransferCount;
+BatCave.Core\Collector\WindowsProcessCollector.cs:592:        public uint cb;
+BatCave.Core\Collector\WindowsProcessCollector.cs:593:        public uint PageFaultCount;
+BatCave.Core\Collector\WindowsProcessCollector.cs:594:        public nuint PeakWorkingSetSize;
+BatCave.Core\Collector\WindowsProcessCollector.cs:595:        public nuint WorkingSetSize;
+BatCave.Core\Collector\WindowsProcessCollector.cs:596:        public nuint QuotaPeakPagedPoolUsage;
+BatCave.Core\Collector\WindowsProcessCollector.cs:597:        public nuint QuotaPagedPoolUsage;
+BatCave.Core\Collector\WindowsProcessCollector.cs:598:        public nuint QuotaPeakNonPagedPoolUsage;
+BatCave.Core\Collector\WindowsProcessCollector.cs:599:        public nuint QuotaNonPagedPoolUsage;
+BatCave.Core\Collector\WindowsProcessCollector.cs:600:        public nuint PagefileUsage;
+BatCave.Core\Collector\WindowsProcessCollector.cs:601:        public nuint PeakPagefileUsage;
+BatCave.Core\Collector\WindowsProcessCollector.cs:602:        public nuint PrivateUsage;
+BatCave.Core\Abstractions\ServiceContracts.cs:5:public interface ILaunchPolicyGate
+BatCave.Core\Abstractions\ServiceContracts.cs:10:public interface IProcessCollectorFactory
+BatCave.Core\Abstractions\ServiceContracts.cs:15:public interface IProcessCollector
+BatCave.Core\Abstractions\ServiceContracts.cs:22:public interface ITelemetryPipeline
+BatCave.Core\Abstractions\ServiceContracts.cs:29:public interface IStateStore
+BatCave.Core\Abstractions\ServiceContracts.cs:44:public interface ISortIndexEngine
+BatCave.Core\Abstractions\ServiceContracts.cs:51:public interface IPersistenceStore
+BatCave.Core\Abstractions\ServiceContracts.cs:66:public interface IMonitoringRuntime
+BatCave.Core\Abstractions\ServiceContracts.cs:83:public interface IProcessMetadataProvider

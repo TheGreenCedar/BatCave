@@ -43,21 +43,13 @@ public partial class App : Application
         await _host.StartAsync();
 
         string[] commandLineArgs = Environment.GetCommandLineArgs().Skip(1).ToArray();
-        ICliOperationsHost cliOperationsHost = _host.Services.GetRequiredService<ICliOperationsHost>();
-
-        if (cliOperationsHost.IsCliMode(commandLineArgs))
+        if (await TryRunCliModeAsync(commandLineArgs))
         {
-            int exitCode = await cliOperationsHost.ExecuteAsync(commandLineArgs, CancellationToken.None);
-            await ShutdownHostAsync();
-            Environment.Exit(exitCode);
             return;
         }
 
         StartRuntimeLoopIfAllowed();
-
-        _window = _host.Services.GetRequiredService<MainWindow>();
-        _window.Closed += OnWindowClosed;
-        _window.Activate();
+        ActivateMainWindow();
     }
 
     private static IHost CreateHost()
@@ -120,6 +112,27 @@ public partial class App : Application
         runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
 
         _runtimeLoopWired = true;
+    }
+
+    private async Task<bool> TryRunCliModeAsync(string[] commandLineArgs)
+    {
+        ICliOperationsHost cliOperationsHost = _host.Services.GetRequiredService<ICliOperationsHost>();
+        if (!cliOperationsHost.IsCliMode(commandLineArgs))
+        {
+            return false;
+        }
+
+        int exitCode = await cliOperationsHost.ExecuteAsync(commandLineArgs, CancellationToken.None);
+        await ShutdownHostAsync();
+        Environment.Exit(exitCode);
+        return true;
+    }
+
+    private void ActivateMainWindow()
+    {
+        _window = _host.Services.GetRequiredService<MainWindow>();
+        _window.Closed += OnWindowClosed;
+        _window.Activate();
     }
 
     private async void OnWindowClosed(object sender, WindowEventArgs args)

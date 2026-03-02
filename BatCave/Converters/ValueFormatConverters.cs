@@ -56,12 +56,9 @@ public sealed class BytesConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, string language)
     {
-        if (TryAsUlong(value, out ulong bytes))
-        {
-            return ValueFormat.FormatBytes(bytes);
-        }
-
-        return "0 B";
+        return TryAsUlong(value, out ulong bytes)
+            ? ValueFormat.FormatBytes(bytes)
+            : "0 B";
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)
@@ -71,24 +68,17 @@ public sealed class BytesConverter : IValueConverter
 
     private static bool TryAsUlong(object value, out ulong result)
     {
-        switch (value)
+        (bool Success, ulong Value) parsed = value switch
         {
-            case ulong u:
-                result = u;
-                return true;
-            case long l when l >= 0:
-                result = (ulong)l;
-                return true;
-            case int i when i >= 0:
-                result = (ulong)i;
-                return true;
-            case uint ui:
-                result = ui;
-                return true;
-            default:
-                result = 0;
-                return false;
-        }
+            ulong u => (true, u),
+            long l when l >= 0 => (true, (ulong)l),
+            int i when i >= 0 => (true, (ulong)i),
+            uint ui => (true, ui),
+            _ => (false, 0),
+        };
+
+        result = parsed.Value;
+        return parsed.Success;
     }
 }
 

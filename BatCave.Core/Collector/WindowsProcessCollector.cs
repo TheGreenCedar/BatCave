@@ -84,181 +84,9 @@ public sealed class WindowsProcessCollector : IProcessCollector
             if (pid != 0)
             {
                 seenPids.Add(pid);
-
-                ProcessSample sample = new ProcessSample
-                {
-                    Seq = seq,
-                    TsMs = now,
-                    Pid = pid,
-                    ParentPid = processEntry.th32ParentProcessID,
-                    StartTimeMs = 0,
-                    Name = processEntry.szExeFile,
-                    CpuPct = 0,
-                    RssBytes = 0,
-                    PrivateBytes = 0,
-                    IoReadBps = 0,
-                    IoWriteBps = 0,
-                    NetBps = 0,
-                    Threads = processEntry.cntThreads,
-                    Handles = 0,
-                    AccessState = AccessState.Denied,
-                };
-
-                ProcessCounterSnapshot counters = default;
-
-                IntPtr processHandle = EnsureProcessHandle(pid, now);
-                bool hasTimes = false;
-                bool hasIo = false;
-                bool hasHandles = false;
-
-                if (processHandle != IntPtr.Zero)
-                {
-                    sample = sample with
-                    {
-                        AccessState = AccessState.Partial,
-                    };
-
-                    if (GetProcessTimes(processHandle, out FILETIME created, out _, out FILETIME kernel, out FILETIME user))
-                    {
-                        sample = sample with
-                        {
-                            StartTimeMs = FiletimeToUnixMs(created),
-                        };
-                        counters.CpuTotal100ns = FiletimeToU64(kernel) + FiletimeToU64(user);
-                        hasTimes = true;
-                    }
-
-                    if (GetProcessIoCounters(processHandle, out IO_COUNTERS ioCounters))
-                    {
-                        counters.IoReadTotal = ioCounters.ReadTransferCount;
-                        counters.IoWriteTotal = ioCounters.WriteTransferCount;
-                        counters.IoOtherTotal = ioCounters.OtherTransferCount;
-                        hasIo = true;
-                    }
-                }
-
-                sample = sample with
-                {
-                    StartTimeMs = ResolveStartTimeMs(
-                        _pidFallbackStart,
-                        pid,
-                        sample.StartTimeMs,
-                        now,
-                        sample.ParentPid,
-                        sample.Name),
-                };
-
-                ProcessIdentity identity = sample.Identity();
-
-                if (_previousProcess.TryGetValue(identity, out ProcessCounterSnapshot previous))
-                {
-                    if (!hasTimes)
-                    {
-                        counters.CpuTotal100ns = previous.CpuTotal100ns;
-                    }
-
-                    if (!hasIo)
-                    {
-                        counters.IoReadTotal = previous.IoReadTotal;
-                        counters.IoWriteTotal = previous.IoWriteTotal;
-                        counters.IoOtherTotal = previous.IoOtherTotal;
-                    }
-
-                    counters.RssBytes = previous.RssBytes;
-                    counters.PrivateBytes = previous.PrivateBytes;
-                    counters.Handles = previous.Handles;
-                    counters.LastMemorySeq = previous.LastMemorySeq;
-                    counters.LastHandlesSeq = previous.LastHandlesSeq;
-                    counters.HasMemory = previous.HasMemory;
-                    counters.HasHandles = previous.HasHandles;
-
-                    if (processHandle != IntPtr.Zero)
-                    {
-                        sample = sample with
-                        {
-                            RssBytes = previous.RssBytes,
-                            PrivateBytes = previous.PrivateBytes,
-                            Handles = previous.Handles,
-                        };
-                    }
-                }
-
-                if (processHandle != IntPtr.Zero)
-                {
-                    bool refreshMemory = !counters.HasMemory || ShouldRefreshMetric(seq, counters.LastMemorySeq, MemorySampleStride);
-                    if (refreshMemory)
-                    {
-                        if (GetProcessMemoryInfo(processHandle, out PROCESS_MEMORY_COUNTERS_EX memoryCounters, (uint)Marshal.SizeOf<PROCESS_MEMORY_COUNTERS_EX>()))
-                        {
-                            sample = sample with
-                            {
-                                RssBytes = (ulong)memoryCounters.WorkingSetSize,
-                                PrivateBytes = (ulong)memoryCounters.PrivateUsage,
-                            };
-                            counters.RssBytes = sample.RssBytes;
-                            counters.PrivateBytes = sample.PrivateBytes;
-                            counters.LastMemorySeq = seq;
-                            counters.HasMemory = true;
-                        }
-                    }
-
-                    bool refreshHandles = !counters.HasHandles || ShouldRefreshMetric(seq, counters.LastHandlesSeq, HandleSampleStride);
-                    if (refreshHandles)
-                    {
-                        if (GetProcessHandleCount(processHandle, out uint handleCount))
-                        {
-                            sample = sample with
-                            {
-                                Handles = handleCount,
-                            };
-                            counters.Handles = handleCount;
-                            counters.LastHandlesSeq = seq;
-                            counters.HasHandles = true;
-                            hasHandles = true;
-                        }
-                    }
-                    else if (counters.HasHandles)
-                    {
-                        sample = sample with
-                        {
-                            Handles = counters.Handles,
-                        };
-                        hasHandles = true;
-                    }
-
-                    if (hasTimes && hasIo && hasHandles)
-                    {
-                        sample = sample with
-                        {
-                            AccessState = AccessState.Full,
-                        };
-                    }
-                }
-
-                if (_previousProcess.TryGetValue(identity, out ProcessCounterSnapshot previousSnapshot))
-                {
-                    double cpuPct = 0;
-                    if (systemDelta100ns is ulong systemDeltaValue && systemDeltaValue > 0)
-                    {
-                        ulong processDelta = CounterDelta(counters.CpuTotal100ns, previousSnapshot.CpuTotal100ns);
-                        cpuPct = processDelta * 100.0 / systemDeltaValue;
-                    }
-
-                    ulong readDelta = CounterDelta(counters.IoReadTotal, previousSnapshot.IoReadTotal);
-                    ulong writeDelta = CounterDelta(counters.IoWriteTotal, previousSnapshot.IoWriteTotal);
-                    ulong otherDelta = CounterDelta(counters.IoOtherTotal, previousSnapshot.IoOtherTotal);
-
-                    sample = sample with
-                    {
-                        CpuPct = cpuPct,
-                        IoReadBps = (ulong)((readDelta * 1000.0) / elapsedMs),
-                        IoWriteBps = (ulong)((writeDelta * 1000.0) / elapsedMs),
-                        NetBps = (ulong)((otherDelta * 1000.0) / elapsedMs),
-                    };
-                }
-
-                currentSnapshot[identity] = counters;
-                rows.Add(sample);
+                ProcessRowCapture capture = CaptureProcessRow(processEntry, seq, now, elapsedMs, systemDelta100ns);
+                currentSnapshot[capture.Identity] = capture.Counters;
+                rows.Add(capture.Sample);
             }
 
             hasEntry = Process32NextW(safeSnapshotHandle.DangerousGetHandle(), ref processEntry);
@@ -276,6 +104,222 @@ public sealed class WindowsProcessCollector : IProcessCollector
         RetainOnlySeenPids(seenPids);
 
         return rows;
+    }
+
+    private ProcessRowCapture CaptureProcessRow(
+        PROCESSENTRY32 processEntry,
+        ulong seq,
+        ulong now,
+        ulong elapsedMs,
+        ulong? systemDelta100ns)
+    {
+        uint pid = processEntry.th32ProcessID;
+        ProcessSample sample = CreateBaseSample(processEntry, seq, now);
+        ProcessCounterSnapshot counters = default;
+
+        IntPtr processHandle = EnsureProcessHandle(pid, now);
+        bool hasTimes = false;
+        bool hasIo = false;
+        bool hasHandles = false;
+
+        if (processHandle != IntPtr.Zero)
+        {
+            sample = sample with { AccessState = AccessState.Partial };
+            CaptureTimesAndIo(processHandle, ref sample, ref counters, ref hasTimes, ref hasIo);
+        }
+
+        sample = sample with
+        {
+            StartTimeMs = ResolveStartTimeMs(
+                _pidFallbackStart,
+                pid,
+                sample.StartTimeMs,
+                now,
+                sample.ParentPid,
+                sample.Name),
+        };
+
+        ProcessIdentity identity = sample.Identity();
+
+        bool hadPrevious = _previousProcess.TryGetValue(identity, out ProcessCounterSnapshot previous);
+        if (hadPrevious)
+        {
+            MergePreviousCounters(processHandle, ref sample, ref counters, previous, hasTimes, hasIo);
+        }
+
+        if (processHandle != IntPtr.Zero)
+        {
+            CaptureMemoryAndHandles(seq, processHandle, ref sample, ref counters, ref hasHandles);
+
+            if (hasTimes && hasIo && hasHandles)
+            {
+                sample = sample with { AccessState = AccessState.Full };
+            }
+        }
+
+        if (hadPrevious)
+        {
+            sample = ApplyRateDeltas(sample, counters, previous, elapsedMs, systemDelta100ns);
+        }
+
+        return new ProcessRowCapture(identity, sample, counters);
+    }
+
+    private static ProcessSample CreateBaseSample(PROCESSENTRY32 processEntry, ulong seq, ulong now)
+    {
+        return new ProcessSample
+        {
+            Seq = seq,
+            TsMs = now,
+            Pid = processEntry.th32ProcessID,
+            ParentPid = processEntry.th32ParentProcessID,
+            StartTimeMs = 0,
+            Name = processEntry.szExeFile,
+            CpuPct = 0,
+            RssBytes = 0,
+            PrivateBytes = 0,
+            IoReadBps = 0,
+            IoWriteBps = 0,
+            NetBps = 0,
+            Threads = processEntry.cntThreads,
+            Handles = 0,
+            AccessState = AccessState.Denied,
+        };
+    }
+
+    private static void CaptureTimesAndIo(
+        IntPtr processHandle,
+        ref ProcessSample sample,
+        ref ProcessCounterSnapshot counters,
+        ref bool hasTimes,
+        ref bool hasIo)
+    {
+        if (GetProcessTimes(processHandle, out FILETIME created, out _, out FILETIME kernel, out FILETIME user))
+        {
+            sample = sample with
+            {
+                StartTimeMs = FiletimeToUnixMs(created),
+            };
+            counters.CpuTotal100ns = FiletimeToU64(kernel) + FiletimeToU64(user);
+            hasTimes = true;
+        }
+
+        if (GetProcessIoCounters(processHandle, out IO_COUNTERS ioCounters))
+        {
+            counters.IoReadTotal = ioCounters.ReadTransferCount;
+            counters.IoWriteTotal = ioCounters.WriteTransferCount;
+            counters.IoOtherTotal = ioCounters.OtherTransferCount;
+            hasIo = true;
+        }
+    }
+
+    private static void MergePreviousCounters(
+        IntPtr processHandle,
+        ref ProcessSample sample,
+        ref ProcessCounterSnapshot counters,
+        ProcessCounterSnapshot previous,
+        bool hasTimes,
+        bool hasIo)
+    {
+        if (!hasTimes)
+        {
+            counters.CpuTotal100ns = previous.CpuTotal100ns;
+        }
+
+        if (!hasIo)
+        {
+            counters.IoReadTotal = previous.IoReadTotal;
+            counters.IoWriteTotal = previous.IoWriteTotal;
+            counters.IoOtherTotal = previous.IoOtherTotal;
+        }
+
+        counters.RssBytes = previous.RssBytes;
+        counters.PrivateBytes = previous.PrivateBytes;
+        counters.Handles = previous.Handles;
+        counters.LastMemorySeq = previous.LastMemorySeq;
+        counters.LastHandlesSeq = previous.LastHandlesSeq;
+        counters.HasMemory = previous.HasMemory;
+        counters.HasHandles = previous.HasHandles;
+
+        if (processHandle != IntPtr.Zero)
+        {
+            sample = sample with
+            {
+                RssBytes = previous.RssBytes,
+                PrivateBytes = previous.PrivateBytes,
+                Handles = previous.Handles,
+            };
+        }
+    }
+
+    private static void CaptureMemoryAndHandles(
+        ulong seq,
+        IntPtr processHandle,
+        ref ProcessSample sample,
+        ref ProcessCounterSnapshot counters,
+        ref bool hasHandles)
+    {
+        bool refreshMemory = !counters.HasMemory || ShouldRefreshMetric(seq, counters.LastMemorySeq, MemorySampleStride);
+        if (refreshMemory)
+        {
+            if (GetProcessMemoryInfo(processHandle, out PROCESS_MEMORY_COUNTERS_EX memoryCounters, (uint)Marshal.SizeOf<PROCESS_MEMORY_COUNTERS_EX>()))
+            {
+                sample = sample with
+                {
+                    RssBytes = (ulong)memoryCounters.WorkingSetSize,
+                    PrivateBytes = (ulong)memoryCounters.PrivateUsage,
+                };
+                counters.RssBytes = sample.RssBytes;
+                counters.PrivateBytes = sample.PrivateBytes;
+                counters.LastMemorySeq = seq;
+                counters.HasMemory = true;
+            }
+        }
+
+        bool refreshHandles = !counters.HasHandles || ShouldRefreshMetric(seq, counters.LastHandlesSeq, HandleSampleStride);
+        if (refreshHandles)
+        {
+            if (GetProcessHandleCount(processHandle, out uint handleCount))
+            {
+                sample = sample with { Handles = handleCount };
+                counters.Handles = handleCount;
+                counters.LastHandlesSeq = seq;
+                counters.HasHandles = true;
+                hasHandles = true;
+            }
+        }
+        else if (counters.HasHandles)
+        {
+            sample = sample with { Handles = counters.Handles };
+            hasHandles = true;
+        }
+    }
+
+    private static ProcessSample ApplyRateDeltas(
+        ProcessSample sample,
+        ProcessCounterSnapshot counters,
+        ProcessCounterSnapshot previousSnapshot,
+        ulong elapsedMs,
+        ulong? systemDelta100ns)
+    {
+        double cpuPct = 0;
+        if (systemDelta100ns is ulong systemDeltaValue && systemDeltaValue > 0)
+        {
+            ulong processDelta = CounterDelta(counters.CpuTotal100ns, previousSnapshot.CpuTotal100ns);
+            cpuPct = processDelta * 100.0 / systemDeltaValue;
+        }
+
+        ulong readDelta = CounterDelta(counters.IoReadTotal, previousSnapshot.IoReadTotal);
+        ulong writeDelta = CounterDelta(counters.IoWriteTotal, previousSnapshot.IoWriteTotal);
+        ulong otherDelta = CounterDelta(counters.IoOtherTotal, previousSnapshot.IoOtherTotal);
+
+        return sample with
+        {
+            CpuPct = cpuPct,
+            IoReadBps = (ulong)((readDelta * 1000.0) / elapsedMs),
+            IoWriteBps = (ulong)((writeDelta * 1000.0) / elapsedMs),
+            NetBps = (ulong)((otherDelta * 1000.0) / elapsedMs),
+        };
     }
 
     public string? TakeWarning()
@@ -465,6 +509,11 @@ public sealed class WindowsProcessCollector : IProcessCollector
         public bool HasMemory;
         public bool HasHandles;
     }
+
+    private readonly record struct ProcessRowCapture(
+        ProcessIdentity Identity,
+        ProcessSample Sample,
+        ProcessCounterSnapshot Counters);
 
     private sealed class FallbackIdentity
     {

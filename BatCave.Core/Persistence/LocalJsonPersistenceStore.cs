@@ -21,12 +21,11 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
     public LocalJsonPersistenceStore(string? baseDirectory = null)
     {
         BaseDirectory = baseDirectory ?? DefaultBaseDirectory();
-        Directory.CreateDirectory(BaseDirectory);
-
         _settingsPath = Path.Combine(BaseDirectory, "settings.json");
         _warmCachePath = Path.Combine(BaseDirectory, "warm-cache.json");
         _logsDirectory = Path.Combine(BaseDirectory, "logs");
-        Directory.CreateDirectory(_logsDirectory);
+
+        EnsureBaseDirectories();
     }
 
     public string BaseDirectory { get; }
@@ -53,10 +52,8 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
 
     public async Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
     {
-        Directory.CreateDirectory(_logsDirectory);
-
-        string fileName = $"monitor-{DateTime.UtcNow:yyyyMMdd}.jsonl";
-        string logPath = Path.Combine(_logsDirectory, fileName);
+        EnsureLogDirectory();
+        string logPath = ResolveDailyLogPath();
 
         DiagnosticEntry entry = new()
         {
@@ -136,6 +133,23 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
                 // best effort rotation; keep local-only behavior even if a stale file cannot be removed
             }
         }
+    }
+
+    private void EnsureBaseDirectories()
+    {
+        Directory.CreateDirectory(BaseDirectory);
+        EnsureLogDirectory();
+    }
+
+    private void EnsureLogDirectory()
+    {
+        Directory.CreateDirectory(_logsDirectory);
+    }
+
+    private string ResolveDailyLogPath()
+    {
+        string fileName = $"monitor-{DateTime.UtcNow:yyyyMMdd}.jsonl";
+        return Path.Combine(_logsDirectory, fileName);
     }
 
     private sealed record DiagnosticEntry

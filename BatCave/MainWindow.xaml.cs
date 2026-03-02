@@ -15,6 +15,15 @@ public sealed partial class MainWindow : Window
 {
     private const double WideMetricTrendBreakpoint = 1200;
     private const double WideMetricSidebarWidth = 248;
+    private static readonly HashSet<string> MetricPlotProperties =
+    [
+        nameof(MonitoringShellViewModel.CpuMetricTrendValues),
+        nameof(MonitoringShellViewModel.MemoryMetricTrendValues),
+        nameof(MonitoringShellViewModel.IoReadMetricTrendValues),
+        nameof(MonitoringShellViewModel.IoWriteMetricTrendValues),
+        nameof(MonitoringShellViewModel.NetworkMetricTrendValues),
+        nameof(MonitoringShellViewModel.ExpandedMetricTrendValues),
+    ];
 
     private bool _bootstrapped;
     private bool _syncingSelectionVisual;
@@ -60,23 +69,27 @@ public sealed partial class MainWindow : Window
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        switch (e.PropertyName)
+        if (e.PropertyName is null)
         {
-            case nameof(MonitoringShellViewModel.CpuMetricTrendValues):
-            case nameof(MonitoringShellViewModel.MemoryMetricTrendValues):
-            case nameof(MonitoringShellViewModel.IoReadMetricTrendValues):
-            case nameof(MonitoringShellViewModel.IoWriteMetricTrendValues):
-            case nameof(MonitoringShellViewModel.NetworkMetricTrendValues):
-            case nameof(MonitoringShellViewModel.ExpandedMetricTrendValues):
-                RefreshMetricPlots();
-                break;
-            case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
-                SyncSelectionVisual();
-                break;
-            case nameof(MonitoringShellViewModel.CurrentSortColumn):
-            case nameof(MonitoringShellViewModel.CurrentSortDirection):
-                SyncSelectionVisual(deferSecondPass: true);
-                break;
+            return;
+        }
+
+        if (MetricPlotProperties.Contains(e.PropertyName))
+        {
+            RefreshMetricPlots();
+            return;
+        }
+
+        if (e.PropertyName == nameof(MonitoringShellViewModel.SelectedVisibleRowBinding))
+        {
+            SyncSelectionVisual();
+            return;
+        }
+
+        if (e.PropertyName == nameof(MonitoringShellViewModel.CurrentSortColumn)
+            || e.PropertyName == nameof(MonitoringShellViewModel.CurrentSortDirection))
+        {
+            SyncSelectionVisual(deferSecondPass: true);
         }
     }
 
@@ -113,8 +126,7 @@ public sealed partial class MainWindow : Window
 
         if (ViewModel.SelectedVisibleRowBinding is not null)
         {
-            // Ignore transient null churn from virtualization/sort transitions.
-            SyncSelectionVisual(deferSecondPass: true);
+            HandleTransientSelectionNull();
         }
     }
 
@@ -165,16 +177,27 @@ public sealed partial class MainWindow : Window
     {
         double[] series = values.Count > 0 ? values.ToArray() : [0d, 0d];
 
-        plotControl.Plot.FigureBackground.Color = ScottPlot.Colors.Transparent;
-        plotControl.Plot.DataBackground.Color = ScottPlot.Colors.Transparent;
+        ConfigureMetricPlot(plotControl);
         plotControl.Plot.Clear();
         var signal = plotControl.Plot.Add.Signal(series);
         signal.LineWidth = lineWidth;
+        plotControl.Refresh();
+    }
+
+    private static void ConfigureMetricPlot(WinUIPlot plotControl)
+    {
+        plotControl.Plot.FigureBackground.Color = ScottPlot.Colors.Transparent;
+        plotControl.Plot.DataBackground.Color = ScottPlot.Colors.Transparent;
         plotControl.Plot.Axes.Frameless();
         plotControl.Plot.Axes.Margins(0.02, 0.05);
         plotControl.Plot.HideGrid();
         plotControl.Plot.HideLegend();
-        plotControl.Refresh();
+    }
+
+    private void HandleTransientSelectionNull()
+    {
+        // Ignore transient null churn from virtualization/sort transitions.
+        SyncSelectionVisual(deferSecondPass: true);
     }
 
     private void OnWindowClosed(object sender, WindowEventArgs args)

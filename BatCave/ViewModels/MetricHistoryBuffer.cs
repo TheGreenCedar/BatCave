@@ -30,11 +30,10 @@ public sealed class MetricHistoryBuffer
 
     public void Reset()
     {
-        _cpu.Clear();
-        _memory.Clear();
-        _ioRead.Clear();
-        _ioWrite.Clear();
-        _net.Clear();
+        foreach (List<double> series in Series())
+        {
+            series.Clear();
+        }
     }
 
     public void Append(ProcessSample sample)
@@ -58,5 +57,14 @@ public sealed class MetricHistoryBuffer
         {
             values.RemoveRange(0, values.Count - _limit);
         }
+    }
+
+    private IEnumerable<List<double>> Series()
+    {
+        yield return _cpu;
+        yield return _memory;
+        yield return _ioRead;
+        yield return _ioWrite;
+        yield return _net;
     }
 }

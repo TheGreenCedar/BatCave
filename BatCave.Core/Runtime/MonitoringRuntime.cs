@@ -85,34 +85,16 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     public void SetSort(SortColumn sortCol, SortDirection sortDir)
     {
-        _settings = _settings with
-        {
-            SortCol = sortCol,
-            SortDir = sortDir,
-        };
-
-        _queryRequest = _queryRequest with
-        {
-            SortCol = sortCol,
-            SortDir = sortDir,
-        };
-
-        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
+        _settings = _settings with { SortCol = sortCol, SortDir = sortDir };
+        _queryRequest = _queryRequest with { SortCol = sortCol, SortDir = sortDir };
+        PersistSettings();
     }
 
     public void SetFilter(string filterText)
     {
-        _settings = _settings with
-        {
-            FilterText = filterText,
-        };
-
-        _queryRequest = _queryRequest with
-        {
-            FilterText = filterText,
-        };
-
-        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
+        _settings = _settings with { FilterText = filterText };
+        _queryRequest = _queryRequest with { FilterText = filterText };
+        PersistSettings();
     }
 
     public bool IsAdminMode()
@@ -141,44 +123,14 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     {
         _seq++;
         IReadOnlyList<ProcessSample> raw = _collector.CollectTick(_seq);
-        string? warningMessage = _collector.TakeWarning();
-
-        CollectorWarning? warning = null;
-        if (!string.IsNullOrWhiteSpace(warningMessage))
-        {
-            warning = new CollectorWarning
-            {
-                Message = warningMessage,
-                Seq = _seq,
-            };
-            _health = _health with
-            {
-                CollectorWarnings = _health.CollectorWarnings + 1,
-            };
-
-            _logger.LogWarning("collector_warning seq={Seq} message={Message}", _seq, warningMessage);
-        }
+        CollectorWarning? warning = CaptureCollectorWarning();
 
         ProcessDeltaBatch delta = _pipeline.ApplyRaw(_seq, raw);
         _stateStore.ApplyDelta(delta);
         _sortIndexEngine.OnDelta(delta);
 
-        _jitterSamples.Add(Math.Abs(jitterMs));
-        if (_jitterSamples.Count > 120)
-        {
-            _jitterSamples.RemoveRange(0, _jitterSamples.Count - 120);
-        }
-
-        ProcessSample? selfSample = raw.FirstOrDefault(sample => sample.Pid == (uint)Environment.ProcessId);
-
-        _health = _health with
-        {
-            Seq = _seq,
-            LastTickMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            JitterP95Ms = Percentile95(_jitterSamples),
-            AppCpuPct = selfSample?.CpuPct ?? _health.AppCpuPct,
-            AppRssBytes = selfSample?.RssBytes ?? EstimateRssFromRows(_stateStore.RowCount()),
-        };
+        UpdateJitterSamples(jitterMs);
+        UpdateHealthForCurrentTick(raw);
 
         RuntimePolicy policy = _budgetGuardian.Evaluate(_seq, _health, _stateStore.RowCount());
 
@@ -192,11 +144,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             DegradeMode = _budgetGuardian.IsDegraded(),
         };
 
-        if (_seq % policy.WarmCacheInterval == 0)
-        {
-            WarmCache cache = _stateStore.ExportWarmCache(_seq);
-            TryPersist(() => _persistenceStore.SaveWarmCacheAsync(cache, CancellationToken.None));
-        }
+        PersistWarmCacheIfDue(policy.WarmCacheInterval);
 
         _logger.LogInformation(
             "runtime_tick seq={Seq} rows={Rows} emit_delta={EmitDelta} degrade_mode={DegradeMode} jitter_p95_ms={JitterP95Ms} dropped_ticks={DroppedTicks} admin_mode={AdminMode}",
@@ -215,6 +163,67 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             Warning = warning,
             EmitTelemetryDelta = policy.EmitTelemetryDelta,
         };
+    }
+
+    private void PersistSettings()
+    {
+        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
+    }
+
+    private CollectorWarning? CaptureCollectorWarning()
+    {
+        string? warningMessage = _collector.TakeWarning();
+        if (string.IsNullOrWhiteSpace(warningMessage))
+        {
+            return null;
+        }
+
+        CollectorWarning warning = new()
+        {
+            Message = warningMessage,
+            Seq = _seq,
+        };
+
+        _health = _health with
+        {
+            CollectorWarnings = _health.CollectorWarnings + 1,
+        };
+
+        _logger.LogWarning("collector_warning seq={Seq} message={Message}", _seq, warningMessage);
+        return warning;
+    }
+
+    private void UpdateJitterSamples(double jitterMs)
+    {
+        _jitterSamples.Add(Math.Abs(jitterMs));
+        if (_jitterSamples.Count > 120)
+        {
+            _jitterSamples.RemoveRange(0, _jitterSamples.Count - 120);
+        }
+    }
+
+    private void UpdateHealthForCurrentTick(IReadOnlyList<ProcessSample> raw)
+    {
+        ProcessSample? selfSample = raw.FirstOrDefault(sample => sample.Pid == (uint)Environment.ProcessId);
+        _health = _health with
+        {
+            Seq = _seq,
+            LastTickMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            JitterP95Ms = Percentile95(_jitterSamples),
+            AppCpuPct = selfSample?.CpuPct ?? _health.AppCpuPct,
+            AppRssBytes = selfSample?.RssBytes ?? EstimateRssFromRows(_stateStore.RowCount()),
+        };
+    }
+
+    private void PersistWarmCacheIfDue(ulong warmCacheInterval)
+    {
+        if (_seq % warmCacheInterval != 0)
+        {
+            return;
+        }
+
+        WarmCache cache = _stateStore.ExportWarmCache(_seq);
+        TryPersist(() => _persistenceStore.SaveWarmCacheAsync(cache, CancellationToken.None));
     }
 
     public void RecordDroppedTicks(ulong dropped)

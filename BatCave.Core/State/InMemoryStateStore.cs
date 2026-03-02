@@ -59,7 +59,7 @@ public sealed class InMemoryStateStore : IStateStore
             .Select(row => new
             {
                 Identity = row.Identity(),
-                ActivityScore = (ulong)(row.CpuPct * 1000.0) + row.IoReadBps + row.IoWriteBps + row.NetBps + row.RssBytes / 1024,
+                ActivityScore = ComputeActivityScore(row),
             })
             .OrderByDescending(entry => entry.ActivityScore)
             .Take(maxRows)
@@ -71,5 +71,10 @@ public sealed class InMemoryStateStore : IStateStore
         {
             _rows.Remove(identity);
         }
+    }
+
+    private static ulong ComputeActivityScore(ProcessSample row)
+    {
+        return (ulong)(row.CpuPct * 1000.0) + row.IoReadBps + row.IoWriteBps + row.NetBps + row.RssBytes / 1024;
     }
 }

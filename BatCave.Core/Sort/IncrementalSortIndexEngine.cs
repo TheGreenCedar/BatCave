@@ -29,41 +29,16 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
     {
         if (rows.Count > 0 && rows.Count != _cache.Rows.Count)
         {
-            _cache.Rows = rows.ToDictionary(row => row.Identity(), row => row);
-            _cache.PendingUpserts.Clear();
-            _cache.PendingExits.Clear();
-            _cache.Initialized = false;
+            ResetCacheRows(rows);
         }
 
-        if (!_cache.Initialized || _cache.SortCol != request.SortCol || _cache.SortDir != request.SortDir)
-        {
-            _cache.SortCol = request.SortCol;
-            _cache.SortDir = request.SortDir;
-            RebuildOrdering();
-            _cache.PendingUpserts.Clear();
-            _cache.PendingExits.Clear();
-        }
-        else
-        {
-            ApplyIncrementalUpdates();
-        }
+        EnsureOrdering(request);
 
-        string filterNeedle = request.FilterText.Trim().ToLowerInvariant();
-        IReadOnlyList<ProcessIdentity> ordered = _cache.Ordered;
-        if (!string.IsNullOrWhiteSpace(filterNeedle))
-        {
-            ordered = _cache.Ordered
-                .Where(identity => MatchesFilter(_cache.Rows[identity], filterNeedle))
-                .ToList();
-        }
+        IReadOnlyList<ProcessIdentity> ordered = ApplyFilter(request.FilterText);
 
         int total = ordered.Count;
         (int start, int count) = SlicePage(request.Offset, request.Limit, total);
-        List<ProcessSample> page = ordered
-            .Skip(start)
-            .Take(count)
-            .Select(identity => _cache.Rows[identity])
-            .ToList();
+        List<ProcessSample> page = BuildPage(ordered, start, count);
 
         return new QueryResponse
         {
@@ -71,6 +46,49 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
             Total = total,
             Rows = page,
         };
+    }
+
+    private void ResetCacheRows(IReadOnlyList<ProcessSample> rows)
+    {
+        _cache.Rows = rows.ToDictionary(row => row.Identity(), row => row);
+        ClearPendingChanges();
+        _cache.Initialized = false;
+    }
+
+    private void EnsureOrdering(QueryRequest request)
+    {
+        if (!_cache.Initialized || _cache.SortCol != request.SortCol || _cache.SortDir != request.SortDir)
+        {
+            _cache.SortCol = request.SortCol;
+            _cache.SortDir = request.SortDir;
+            RebuildOrdering();
+            ClearPendingChanges();
+            return;
+        }
+
+        ApplyIncrementalUpdates();
+    }
+
+    private IReadOnlyList<ProcessIdentity> ApplyFilter(string filterText)
+    {
+        string filterNeedle = filterText.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(filterNeedle))
+        {
+            return _cache.Ordered;
+        }
+
+        return _cache.Ordered
+            .Where(identity => MatchesFilter(_cache.Rows[identity], filterNeedle))
+            .ToList();
+    }
+
+    private List<ProcessSample> BuildPage(IReadOnlyList<ProcessIdentity> ordered, int start, int count)
+    {
+        return ordered
+            .Skip(start)
+            .Take(count)
+            .Select(identity => _cache.Rows[identity])
+            .ToList();
     }
 
     private void RebuildOrdering()
@@ -90,16 +108,14 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         if (!_cache.Initialized)
         {
             RebuildOrdering();
-            _cache.PendingUpserts.Clear();
-            _cache.PendingExits.Clear();
+            ClearPendingChanges();
             return;
         }
 
         HashSet<ProcessIdentity> exitsSeen = _cache.PendingExits.ToHashSet();
         List<ProcessIdentity> pendingUpserts = CollectPendingUpserts();
 
-        _cache.PendingExits.Clear();
-        _cache.PendingUpserts.Clear();
+        ClearPendingChanges();
 
         int changeCount = exitsSeen.Count + pendingUpserts.Count;
         int rebuildThreshold = Math.Max(_cache.Rows.Count / 4, 96);
@@ -160,6 +176,12 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         }
 
         return pendingUpserts;
+    }
+
+    private void ClearPendingChanges()
+    {
+        _cache.PendingUpserts.Clear();
+        _cache.PendingExits.Clear();
     }
 
     private static bool MatchesFilter(ProcessSample row, string filterNeedle)

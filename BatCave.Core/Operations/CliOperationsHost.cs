@@ -45,33 +45,12 @@ public sealed class CliOperationsHost : ICliOperationsHost
     public Task<int> ExecuteAsync(string[] args, CancellationToken ct)
     {
         ParseResult parseResult = CliRootCommand.Parse(args);
-        if (parseResult.Errors.Count > 0)
+        if (TryWriteParseErrors(parseResult))
         {
-            foreach (ParseError parseError in parseResult.Errors)
-            {
-                Console.Error.WriteLine(parseError.Message);
-            }
-
             return Task.FromResult(2);
         }
 
-        if (parseResult.GetValue(ElevatedHelperOption))
-        {
-            return Task.FromResult(ExecuteElevatedHelper(parseResult, ct));
-        }
-
-        if (parseResult.GetValue(PrintGateStatusOption))
-        {
-            return Task.FromResult(ExecuteGateStatus());
-        }
-
-        if (parseResult.GetValue(BenchmarkOption))
-        {
-            return Task.FromResult(ExecuteBenchmark(parseResult, ct));
-        }
-
-        Console.Error.WriteLine("CLI mode is recognized but no command was selected.");
-        return Task.FromResult(2);
+        return Task.FromResult(ExecuteParsedCommand(parseResult, ct));
     }
 
     private int ExecuteGateStatus()
@@ -131,6 +110,42 @@ public sealed class CliOperationsHost : ICliOperationsHost
     private static int ParseOptionInt(string? value, int defaultValue)
     {
         return int.TryParse(value, out int parsed) ? parsed : defaultValue;
+    }
+
+    private static bool TryWriteParseErrors(ParseResult parseResult)
+    {
+        if (parseResult.Errors.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (ParseError parseError in parseResult.Errors)
+        {
+            Console.Error.WriteLine(parseError.Message);
+        }
+
+        return true;
+    }
+
+    private int ExecuteParsedCommand(ParseResult parseResult, CancellationToken ct)
+    {
+        if (parseResult.GetValue(ElevatedHelperOption))
+        {
+            return ExecuteElevatedHelper(parseResult, ct);
+        }
+
+        if (parseResult.GetValue(PrintGateStatusOption))
+        {
+            return ExecuteGateStatus();
+        }
+
+        if (parseResult.GetValue(BenchmarkOption))
+        {
+            return ExecuteBenchmark(parseResult, ct);
+        }
+
+        Console.Error.WriteLine("CLI mode is recognized but no command was selected.");
+        return 2;
     }
 
     private static void WriteJson<T>(T value)

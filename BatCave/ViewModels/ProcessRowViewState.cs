@@ -79,7 +79,7 @@ public sealed class ProcessRowViewState : ObservableObject
         if (previous.CpuPct != current.CpuPct)
         {
             OnPropertyChanged(nameof(CpuPct));
-            if (QuantizeCpu(previous.CpuPct) != QuantizeCpu(current.CpuPct))
+            if (IsCpuSortBucketChanged(previous.CpuPct, current.CpuPct))
             {
                 OnPropertyChanged(nameof(CpuSortBucket));
             }
@@ -97,6 +97,11 @@ public sealed class ProcessRowViewState : ObservableObject
     private static double QuantizeCpu(double cpuPct)
     {
         return Math.Round(cpuPct / CpuSortPrecision, MidpointRounding.AwayFromZero) * CpuSortPrecision;
+    }
+
+    private static bool IsCpuSortBucketChanged(double previous, double current)
+    {
+        return QuantizeCpu(previous) != QuantizeCpu(current);
     }
 
     private void RaiseIfChanged<T>(T previous, T current, string propertyName)

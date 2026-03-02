@@ -38,35 +38,10 @@ public sealed class ResourceBudgetGuardian
             _highStreak = 0;
         }
 
-        if (_highStreak >= 8)
-        {
-            _emitStride = 4;
-        }
-        else if (_highStreak >= 3)
-        {
-            _emitStride = 2;
-        }
-        else if (_lowStreak >= 10)
-        {
-            _emitStride = 1;
-        }
+        _emitStride = ResolveEmitStride(_emitStride, _highStreak, _lowStreak);
 
-        ulong warmCacheInterval = _emitStride switch
-        {
-            1 => 5,
-            2 => 10,
-            _ => 20,
-        };
-
-        int? compactMaxRows = null;
-        if (overRss && rowCount > 3500)
-        {
-            compactMaxRows = 3500;
-        }
-        else if (_emitStride > 1 && rowCount > 5000)
-        {
-            compactMaxRows = 5000;
-        }
+        ulong warmCacheInterval = ResolveWarmCacheInterval(_emitStride);
+        int? compactMaxRows = ResolveCompactMaxRows(overRss, rowCount, _emitStride);
 
         return new RuntimePolicy
         {
@@ -80,5 +55,50 @@ public sealed class ResourceBudgetGuardian
     public bool IsDegraded()
     {
         return _emitStride > 1;
+    }
+
+    private static ulong ResolveEmitStride(ulong currentStride, uint highStreak, uint lowStreak)
+    {
+        if (highStreak >= 8)
+        {
+            return 4;
+        }
+
+        if (highStreak >= 3)
+        {
+            return 2;
+        }
+
+        if (lowStreak >= 10)
+        {
+            return 1;
+        }
+
+        return currentStride;
+    }
+
+    private static ulong ResolveWarmCacheInterval(ulong emitStride)
+    {
+        return emitStride switch
+        {
+            1 => 5,
+            2 => 10,
+            _ => 20,
+        };
+    }
+
+    private static int? ResolveCompactMaxRows(bool overRss, int rowCount, ulong emitStride)
+    {
+        if (overRss && rowCount > 3500)
+        {
+            return 3500;
+        }
+
+        if (emitStride > 1 && rowCount > 5000)
+        {
+            return 5000;
+        }
+
+        return null;
     }
 }

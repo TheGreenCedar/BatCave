@@ -33,7 +33,12 @@
     <Compile Include="..\BatCave\Converters\ValueFormatConverters.cs" Link="Converters\ValueFormatConverters.cs" />
     <Compile Include="..\BatCave\Services\RuntimeGateway.cs" Link="Services\RuntimeGateway.cs" />
     <Compile Include="..\BatCave\ViewModels\MetricHistoryBuffer.cs" Link="ViewModels\MetricHistoryBuffer.cs" />
+    <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs" Link="ViewModels\MonitoringShellViewModel.Bootstrap.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.cs" Link="ViewModels\MonitoringShellViewModel.cs" />
+    <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Metrics.cs" Link="ViewModels\MonitoringShellViewModel.Metrics.cs" />
+    <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Selection.cs" Link="ViewModels\MonitoringShellViewModel.Selection.cs" />
+    <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Sorting.cs" Link="ViewModels\MonitoringShellViewModel.Sorting.cs" />
+    <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Telemetry.cs" Link="ViewModels\MonitoringShellViewModel.Telemetry.cs" />
     <Compile Include="..\BatCave\ViewModels\ProcessRowViewState.cs" Link="ViewModels\ProcessRowViewState.cs" />
   </ItemGroup>
 
