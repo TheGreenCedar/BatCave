@@ -7,6 +7,7 @@ using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using ScottPlot.WinUI;
 
 namespace BatCave;
@@ -66,6 +67,31 @@ public sealed partial class MainWindow : Window
     private async void RetryBootstrap_Click(object sender, RoutedEventArgs e)
     {
         await ViewModel.RetryBootstrapAsync(CancellationToken.None);
+    }
+
+    private void FocusFilterAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        FilterTextBox.Focus(FocusState.Programmatic);
+        FilterTextBox.SelectAll();
+    }
+
+    private async void RetryAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        if (RetryBootstrapButton.Visibility == Visibility.Visible && RetryBootstrapButton.IsEnabled)
+        {
+            await ViewModel.RetryBootstrapAsync(CancellationToken.None);
+        }
+    }
+
+    private void ClearSelectionAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        if (ViewModel.ClearSelectionRequestedCommand.CanExecute(null))
+        {
+            ViewModel.ClearSelectionRequestedCommand.Execute(null);
+        }
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
