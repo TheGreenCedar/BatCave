@@ -35,10 +35,11 @@ public sealed class MetricHistoryBuffer
 
     public void Reset()
     {
-        foreach (RingSeries series in Series())
-        {
-            series.Clear();
-        }
+        _cpu.Clear();
+        _memory.Clear();
+        _ioRead.Clear();
+        _ioWrite.Clear();
+        _otherIo.Clear();
     }
 
     public void Append(ProcessSample sample)
@@ -58,15 +59,6 @@ public sealed class MetricHistoryBuffer
     private static void Append(RingSeries values, double value)
     {
         values.Add(value);
-    }
-
-    private IEnumerable<RingSeries> Series()
-    {
-        yield return _cpu;
-        yield return _memory;
-        yield return _ioRead;
-        yield return _ioWrite;
-        yield return _otherIo;
     }
 
     private sealed class RingSeries : IReadOnlyList<double>

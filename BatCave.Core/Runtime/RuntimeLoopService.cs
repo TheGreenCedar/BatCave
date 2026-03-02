@@ -84,28 +84,12 @@ public sealed class RuntimeLoopService
             }
 
             DateTimeOffset tickStart = _timeProvider.GetUtcNow();
-            double jitterMs = Math.Abs((tickStart - nextTick).TotalMilliseconds);
+            double jitterMs = ResolveJitterMs(tickStart, nextTick);
 
             try
             {
                 TickOutcome outcome = _runtime.Tick(jitterMs);
-                TickCompleted?.Invoke(this, outcome);
-                consecutiveFaults = 0;
-
-                nextTick = nextTick.Add(_interval);
-                DateTimeOffset loopEnd = _timeProvider.GetUtcNow();
-
-                if (loopEnd > nextTick + _interval)
-                {
-                    long lagMs = (long)(loopEnd - nextTick).TotalMilliseconds;
-                    ulong dropped = lagMs > 0 ? (ulong)(lagMs / 1000) : 0;
-                    if (dropped > 0)
-                    {
-                        _runtime.RecordDroppedTicks(dropped);
-                    }
-
-                    nextTick = loopEnd.Add(_interval);
-                }
+                HandleSuccessfulTick(outcome, ref consecutiveFaults, ref nextTick);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -113,23 +97,9 @@ public sealed class RuntimeLoopService
             }
             catch (Exception ex)
             {
-                consecutiveFaults++;
-                int delayMs = ResolveBackoffDelayMs(consecutiveFaults);
-                TickFaulted?.Invoke(this, new TickFaultedEventArgs
-                {
-                    Generation = generation,
-                    ConsecutiveFaults = consecutiveFaults,
-                    DelayMs = delayMs,
-                    ExceptionType = ex.GetType().FullName ?? ex.GetType().Name,
-                    Message = ex.Message,
-                    TsMs = (ulong)_timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
-                });
-
-                try
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(delayMs), ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                int delayMs;
+                consecutiveFaults = ReportFault(generation, ex, consecutiveFaults, out delayMs);
+                if (await DelayBackoffAsync(delayMs, ct).ConfigureAwait(false))
                 {
                     break;
                 }
@@ -137,6 +107,71 @@ public sealed class RuntimeLoopService
                 nextTick = _timeProvider.GetUtcNow().Add(_interval);
             }
         }
+    }
+
+    private static double ResolveJitterMs(DateTimeOffset tickStart, DateTimeOffset nextTick)
+    {
+        return Math.Abs((tickStart - nextTick).TotalMilliseconds);
+    }
+
+    private void HandleSuccessfulTick(TickOutcome outcome, ref int consecutiveFaults, ref DateTimeOffset nextTick)
+    {
+        TickCompleted?.Invoke(this, outcome);
+        consecutiveFaults = 0;
+
+        nextTick = nextTick.Add(_interval);
+        DateTimeOffset loopEnd = _timeProvider.GetUtcNow();
+        if (loopEnd <= nextTick + _interval)
+        {
+            return;
+        }
+
+        RecordDroppedTicks(nextTick, loopEnd);
+        nextTick = loopEnd.Add(_interval);
+    }
+
+    private void RecordDroppedTicks(DateTimeOffset scheduledTick, DateTimeOffset loopEnd)
+    {
+        long lagMs = (long)(loopEnd - scheduledTick).TotalMilliseconds;
+        ulong dropped = lagMs > 0 ? (ulong)(lagMs / 1000) : 0;
+        if (dropped > 0)
+        {
+            _runtime.RecordDroppedTicks(dropped);
+        }
+    }
+
+    private int ReportFault(long generation, Exception ex, int consecutiveFaults, out int delayMs)
+    {
+        int updatedFaults = consecutiveFaults + 1;
+        delayMs = ResolveBackoffDelayMs(updatedFaults);
+        TickFaulted?.Invoke(this, BuildTickFaultedEventArgs(generation, updatedFaults, delayMs, ex));
+        return updatedFaults;
+    }
+
+    private async Task<bool> DelayBackoffAsync(int delayMs, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(delayMs), ct).ConfigureAwait(false);
+            return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return true;
+        }
+    }
+
+    private TickFaultedEventArgs BuildTickFaultedEventArgs(long generation, int consecutiveFaults, int delayMs, Exception ex)
+    {
+        return new TickFaultedEventArgs
+        {
+            Generation = generation,
+            ConsecutiveFaults = consecutiveFaults,
+            DelayMs = delayMs,
+            ExceptionType = ex.GetType().FullName ?? ex.GetType().Name,
+            Message = ex.Message,
+            TsMs = (ulong)_timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+        };
     }
 
     private static int ResolveBackoffDelayMs(int consecutiveFaults)

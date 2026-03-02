@@ -35,13 +35,16 @@ public static class SparklineMath
         bool hasVariance = max > min;
         double verticalPadding = height > 2 ? 1d : 0d;
         double drawableHeight = Math.Max(1d, height - verticalPadding * 2d);
-        int pointCount = values.Count == 1 ? 2 : values.Count;
+        bool singleValueSeries = values.Count == 1;
+        int pointCount = singleValueSeries ? 2 : values.Count;
+        double xDenominator = pointCount - 1;
+        double singleValue = values[0];
 
         List<Point> points = new(pointCount);
         for (int index = 0; index < pointCount; index++)
         {
-            double value = values.Count == 1 ? values[0] : values[index];
-            double x = pointCount == 1 ? 0d : (index * width) / (pointCount - 1);
+            double value = singleValueSeries ? singleValue : values[index];
+            double x = (index * width) / xDenominator;
             double y = hasVariance
                 ? verticalPadding + (1d - (value - min) / (max - min)) * drawableHeight
                 : height / 2d;

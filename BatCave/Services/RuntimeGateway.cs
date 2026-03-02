@@ -33,9 +33,7 @@ public sealed class RuntimeGateway : IRuntimeEventGateway
     public void Publish(TickOutcome outcome)
     {
         MergeDelta(outcome.Delta);
-
-        bool hasDeltaChanges = outcome.Delta.Upserts.Count > 0 || outcome.Delta.Exits.Count > 0;
-        if (outcome.EmitTelemetryDelta || hasDeltaChanges)
+        if (ShouldEmitTelemetryDelta(outcome))
         {
             TelemetryDelta?.Invoke(this, FlushPendingDelta());
         }
@@ -60,20 +58,38 @@ public sealed class RuntimeGateway : IRuntimeEventGateway
             _pendingSeq = delta.Seq;
         }
 
-        for (int index = 0; index < delta.Upserts.Count; index++)
+        foreach (ProcessSample sample in delta.Upserts)
         {
-            ProcessSample sample = delta.Upserts[index];
-            ProcessIdentity identity = sample.Identity();
-            _pendingExits.Remove(identity);
-            _pendingUpserts[identity] = sample;
+            UpsertPending(sample);
         }
 
-        for (int index = 0; index < delta.Exits.Count; index++)
+        foreach (ProcessIdentity identity in delta.Exits)
         {
-            ProcessIdentity identity = delta.Exits[index];
-            _pendingUpserts.Remove(identity);
-            _pendingExits.Add(identity);
+            RegisterExit(identity);
         }
+    }
+
+    private static bool ShouldEmitTelemetryDelta(TickOutcome outcome)
+    {
+        return outcome.EmitTelemetryDelta || HasDeltaChanges(outcome.Delta);
+    }
+
+    private static bool HasDeltaChanges(ProcessDeltaBatch delta)
+    {
+        return delta.Upserts.Count > 0 || delta.Exits.Count > 0;
+    }
+
+    private void UpsertPending(ProcessSample sample)
+    {
+        ProcessIdentity identity = sample.Identity();
+        _pendingExits.Remove(identity);
+        _pendingUpserts[identity] = sample;
+    }
+
+    private void RegisterExit(ProcessIdentity identity)
+    {
+        _pendingUpserts.Remove(identity);
+        _pendingExits.Add(identity);
     }
 
     private ProcessDeltaBatch FlushPendingDelta()
