@@ -129,21 +129,20 @@ public sealed class CliOperationsHost : ICliOperationsHost
 
     private int ExecuteParsedCommand(ParseResult parseResult, CancellationToken ct)
     {
-        if (parseResult.GetValue(ElevatedHelperOption))
+        return (
+            parseResult.GetValue(ElevatedHelperOption),
+            parseResult.GetValue(PrintGateStatusOption),
+            parseResult.GetValue(BenchmarkOption)) switch
         {
-            return ExecuteElevatedHelper(parseResult, ct);
-        }
+            (true, _, _) => ExecuteElevatedHelper(parseResult, ct),
+            (_, true, _) => ExecuteGateStatus(),
+            (_, _, true) => ExecuteBenchmark(parseResult, ct),
+            _ => WriteNoCommandSelected(),
+        };
+    }
 
-        if (parseResult.GetValue(PrintGateStatusOption))
-        {
-            return ExecuteGateStatus();
-        }
-
-        if (parseResult.GetValue(BenchmarkOption))
-        {
-            return ExecuteBenchmark(parseResult, ct);
-        }
-
+    private static int WriteNoCommandSelected()
+    {
         Console.Error.WriteLine("CLI mode is recognized but no command was selected.");
         return 2;
     }

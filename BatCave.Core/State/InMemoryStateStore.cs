@@ -22,27 +22,15 @@ public sealed class InMemoryStateStore : IStateStore
 
     public IReadOnlyList<ProcessSample> AllRows()
     {
-        List<ProcessSample> rows = new(_rows.Count);
-        foreach (ProcessSample row in _rows.Values)
-        {
-            rows.Add(row);
-        }
-
-        return rows;
+        return BuildRowSnapshot();
     }
 
     public WarmCache ExportWarmCache(ulong seq)
     {
-        List<ProcessSample> rows = new(_rows.Count);
-        foreach (ProcessSample row in _rows.Values)
-        {
-            rows.Add(row);
-        }
-
         return new WarmCache
         {
             Seq = seq,
-            Rows = rows,
+            Rows = BuildRowSnapshot(),
         };
     }
 
@@ -100,5 +88,16 @@ public sealed class InMemoryStateStore : IStateStore
     private static ulong ComputeActivityScore(ProcessSample row)
     {
         return (ulong)(row.CpuPct * 1000.0) + row.IoReadBps + row.IoWriteBps + row.OtherIoBps + row.RssBytes / 1024;
+    }
+
+    private List<ProcessSample> BuildRowSnapshot()
+    {
+        List<ProcessSample> rows = new(_rows.Count);
+        foreach (ProcessSample row in _rows.Values)
+        {
+            rows.Add(row);
+        }
+
+        return rows;
     }
 }

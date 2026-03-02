@@ -28,34 +28,34 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
 
     public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
     {
-        if (_bridge is not null)
+        if (_bridge is null)
         {
-            CaptureBridgeWarning(_bridge);
-            BridgePollResult pollResult = _bridge.PollRows();
-            CaptureBridgeWarning(_bridge);
-            switch (pollResult.State)
-            {
-                case BridgePollState.Rows:
-                    {
-                        ulong timestamp = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                        return pollResult.Rows.Select(row => row with
-                        {
-                            Seq = seq,
-                            TsMs = timestamp,
-                        }).ToList();
-                    }
-                case BridgePollState.Pending:
-                    return _local.CollectTick(seq);
-                case BridgePollState.Faulted:
-                    if (!string.IsNullOrWhiteSpace(pollResult.Reason))
-                    {
-                        _pendingWarnings.Enqueue($"elevated_bridge_faulted: {pollResult.Reason}");
-                    }
+            return _local.CollectTick(seq);
+        }
 
-                    _bridge.Dispose();
-                    _bridge = null;
-                    return _local.CollectTick(seq);
+        CaptureBridgeWarning(_bridge);
+        BridgePollResult pollResult = _bridge.PollRows();
+        CaptureBridgeWarning(_bridge);
+
+        if (pollResult.State == BridgePollState.Rows)
+        {
+            ulong timestamp = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return pollResult.Rows.Select(row => row with
+            {
+                Seq = seq,
+                TsMs = timestamp,
+            }).ToList();
+        }
+
+        if (pollResult.State == BridgePollState.Faulted)
+        {
+            if (!string.IsNullOrWhiteSpace(pollResult.Reason))
+            {
+                _pendingWarnings.Enqueue($"elevated_bridge_faulted: {pollResult.Reason}");
             }
+
+            _bridge.Dispose();
+            _bridge = null;
         }
 
         return _local.CollectTick(seq);

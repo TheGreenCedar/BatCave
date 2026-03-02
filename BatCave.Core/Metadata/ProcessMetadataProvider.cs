@@ -82,15 +82,7 @@ public sealed class ProcessMetadataProvider : IProcessMetadataProvider
             startTimeMs = (ulong)new DateTimeOffset(utcStart).ToUnixTimeMilliseconds();
             return true;
         }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
-        catch (System.ComponentModel.Win32Exception)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             return false;
         }
