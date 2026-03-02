@@ -6,7 +6,7 @@ namespace BatCave.Tests.Services;
 public class RuntimeGatewayTests
 {
     [Fact]
-    public void Publish_WhenSuppressed_DoesNotRaiseTelemetryDelta_ButRaisesHealth()
+    public void Publish_WhenSuppressedAndDeltaIsEmpty_DoesNotRaiseTelemetryDelta_ButRaisesHealth()
     {
         RuntimeGateway gateway = new();
         int telemetryRaised = 0;
@@ -20,7 +20,7 @@ public class RuntimeGatewayTests
             Delta = new ProcessDeltaBatch
             {
                 Seq = 1,
-                Upserts = [Sample(pid: 11, seq: 1)],
+                Upserts = [],
                 Exits = [],
             },
             Health = new RuntimeHealth { Seq = 1 },
@@ -32,62 +32,33 @@ public class RuntimeGatewayTests
     }
 
     [Fact]
-    public void Publish_WhenSuppressedThenEmitted_FlushesMergedPendingDelta()
+    public void Publish_WhenSuppressedButDeltaHasChanges_EmitsImmediately()
     {
         RuntimeGateway gateway = new();
         List<ProcessDeltaBatch> emitted = [];
 
         gateway.TelemetryDelta += (_, delta) => emitted.Add(delta);
 
-        ProcessSample first = Sample(pid: 31, seq: 1);
-        ProcessSample updated = first with { Seq = 2, TsMs = 2, CpuPct = 7.5 };
-        ProcessIdentity exited = new(77, 7700);
-        ProcessSample extra = Sample(pid: 88, seq: 2);
+        ProcessSample sample = Sample(pid: 31, seq: 1);
 
         gateway.Publish(new TickOutcome
         {
             Delta = new ProcessDeltaBatch
             {
                 Seq = 1,
-                Upserts = [first],
-                Exits = [exited],
+                Upserts = [sample],
+                Exits = [],
             },
             Health = new RuntimeHealth { Seq = 1 },
             EmitTelemetryDelta = false,
         });
 
-        gateway.Publish(new TickOutcome
-        {
-            Delta = new ProcessDeltaBatch
-            {
-                Seq = 2,
-                Upserts = [updated, extra],
-                Exits = [],
-            },
-            Health = new RuntimeHealth { Seq = 2 },
-            EmitTelemetryDelta = false,
-        });
-
-        gateway.Publish(new TickOutcome
-        {
-            Delta = new ProcessDeltaBatch
-            {
-                Seq = 3,
-                Upserts = [],
-                Exits = [],
-            },
-            Health = new RuntimeHealth { Seq = 3 },
-            EmitTelemetryDelta = true,
-        });
-
         Assert.Single(emitted);
         ProcessDeltaBatch delta = emitted[0];
-        Assert.Equal(3UL, delta.Seq);
-        Assert.Equal(2, delta.Upserts.Count);
-        Assert.Contains(delta.Upserts, row => row.Identity() == updated.Identity() && Math.Abs(row.CpuPct - 7.5) < 0.001);
-        Assert.Contains(delta.Upserts, row => row.Identity() == extra.Identity());
-        Assert.Single(delta.Exits);
-        Assert.Equal(exited, delta.Exits[0]);
+        Assert.Equal(1UL, delta.Seq);
+        Assert.Single(delta.Upserts);
+        Assert.Equal(sample.Identity(), delta.Upserts[0].Identity());
+        Assert.Empty(delta.Exits);
     }
 
     [Fact]

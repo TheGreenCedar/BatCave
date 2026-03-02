@@ -79,6 +79,48 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task CollectorWarning_ClearsAfterQuietTickWindow()
+    {
+        SequenceLaunchPolicyGate gate = new(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        gateway.PublishWarning(new CollectorWarning
+        {
+            Seq = 2,
+            Message = "bridge warning",
+        });
+
+        Assert.True(viewModel.HasAdminModeError);
+        Assert.Contains("bridge warning", viewModel.RuntimeHealthStatus, StringComparison.OrdinalIgnoreCase);
+
+        for (ulong seq = 3; seq <= 10; seq++)
+        {
+            gateway.Publish(new TickOutcome
+            {
+                Delta = new ProcessDeltaBatch
+                {
+                    Seq = seq,
+                    Upserts = [],
+                    Exits = [],
+                },
+                Health = new RuntimeHealth
+                {
+                    Seq = seq,
+                },
+                EmitTelemetryDelta = false,
+            });
+        }
+
+        Assert.False(viewModel.HasAdminModeError);
+        Assert.DoesNotContain("last warning", viewModel.RuntimeHealthStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MetadataSelection_UsesCacheAndSurfacesNonFatalErrors()
     {
         SequenceLaunchPolicyGate gate = new(

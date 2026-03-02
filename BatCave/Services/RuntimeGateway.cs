@@ -34,7 +34,8 @@ public sealed class RuntimeGateway : IRuntimeEventGateway
     {
         MergeDelta(outcome.Delta);
 
-        if (outcome.EmitTelemetryDelta)
+        bool hasDeltaChanges = outcome.Delta.Upserts.Count > 0 || outcome.Delta.Exits.Count > 0;
+        if (outcome.EmitTelemetryDelta || hasDeltaChanges)
         {
             TelemetryDelta?.Invoke(this, FlushPendingDelta());
         }

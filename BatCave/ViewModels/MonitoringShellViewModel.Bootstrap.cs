@@ -7,7 +7,9 @@ namespace BatCave.ViewModels;
 
 public partial class MonitoringShellViewModel
 {
+    private const ulong WarningClearAfterTicks = 8;
     private string? _latestWarningSummary;
+    private ulong _latestWarningSeq;
 
     public Task BootstrapAsync(CancellationToken ct)
     {
@@ -93,9 +95,11 @@ public partial class MonitoringShellViewModel
     {
         RunOnUiThread(() =>
         {
+            RuntimeHealth runtimeHealth = _runtime.GetRuntimeHealth();
+            _latestWarningSeq = warning.Seq > 0 ? warning.Seq : runtimeHealth.Seq;
             _latestWarningSummary = warning.Message;
             AdminModeError = warning.Message;
-            RuntimeHealthStatus = BuildRuntimeHealthStatus(_runtime.GetRuntimeHealth());
+            RuntimeHealthStatus = BuildRuntimeHealthStatus(runtimeHealth);
         });
     }
 
@@ -114,6 +118,7 @@ public partial class MonitoringShellViewModel
         IsBlocked = false;
         IsLive = false;
         _latestWarningSummary = null;
+        _latestWarningSeq = 0;
         StartupErrorMessage = string.Empty;
         ShellHeadline = "Initializing monitor runtime...";
         ShellBody = "Starting monitoring services.";
@@ -123,6 +128,7 @@ public partial class MonitoringShellViewModel
     {
         IsBlocked = true;
         _latestWarningSummary = null;
+        _latestWarningSeq = 0;
         BlockedReasonMessage = FormatBlockReason(startupGateStatus.Reason);
         ShellHeadline = "Startup Blocked";
         ShellBody = BlockedReasonMessage;
@@ -133,6 +139,7 @@ public partial class MonitoringShellViewModel
     {
         IsStartupError = true;
         _latestWarningSummary = null;
+        _latestWarningSeq = 0;
         StartupErrorMessage = ex.Message;
         ShellHeadline = "Startup Incomplete";
         ShellBody = ex.Message;
@@ -140,6 +147,7 @@ public partial class MonitoringShellViewModel
 
     private void ApplyRuntimeHealth(RuntimeHealth health)
     {
+        MaybeClearStaleWarning(health);
         RuntimeHealthStatus = BuildRuntimeHealthStatus(health);
     }
 
@@ -154,6 +162,29 @@ public partial class MonitoringShellViewModel
         }
 
         return status;
+    }
+
+    private void MaybeClearStaleWarning(RuntimeHealth health)
+    {
+        if (string.IsNullOrWhiteSpace(_latestWarningSummary))
+        {
+            return;
+        }
+
+        if (health.Seq <= _latestWarningSeq)
+        {
+            return;
+        }
+
+        ulong elapsedTicks = health.Seq - _latestWarningSeq;
+        if (elapsedTicks < WarningClearAfterTicks)
+        {
+            return;
+        }
+
+        _latestWarningSummary = null;
+        _latestWarningSeq = 0;
+        AdminModeError = null;
     }
 
     private static string FormatBlockReason(LaunchBlockReason? reason)
