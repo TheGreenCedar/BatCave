@@ -31,6 +31,7 @@
   <ItemGroup>
     <Compile Include="..\BatCave\Charts\SparklineMath.cs" Link="Charts\SparklineMath.cs" />
     <Compile Include="..\BatCave\Converters\ValueFormatConverters.cs" Link="Converters\ValueFormatConverters.cs" />
+    <Compile Include="..\BatCave\Rendering\TelemetryDeltaAccumulator.cs" Link="Rendering\TelemetryDeltaAccumulator.cs" />
     <Compile Include="..\BatCave\Services\RuntimeGateway.cs" Link="Services\RuntimeGateway.cs" />
     <Compile Include="..\BatCave\ViewModels\MetricHistoryBuffer.cs" Link="ViewModels\MetricHistoryBuffer.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs" Link="ViewModels\MonitoringShellViewModel.Bootstrap.cs" />

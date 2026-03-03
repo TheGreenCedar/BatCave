@@ -6,6 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:scottPlot="using:ScottPlot.WinUI"
+    xmlns:charts="using:BatCave.Charts"
     xmlns:viewModels="using:BatCave.ViewModels"
     mc:Ignorable="d"
     Title="BatCave">
@@ -249,7 +250,7 @@
                                         <TextBlock Grid.Column="8" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Handles, Mode=OneWay}" TextAlignment="Right" />
                                         <Canvas Grid.Column="9" Width="96" Height="22" HorizontalAlignment="Stretch" IsTabStop="False">
                                             <Polyline
-                                                Points="{Binding CpuTrendPoints}"
+                                                Points="{x:Bind charts:SparklineMath.ToPointCollection(CpuTrendGeometry), Mode=OneWay}"
                                                 Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}"
                                                 StrokeLineJoin="Round"
                                                 StrokeStartLineCap="Round"
@@ -477,13 +478,22 @@
             Grid.Row="2"
             Padding="12"
             BorderThickness="0,1,0,0">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBlock FontWeight="SemiBold" Text="Runtime Health:" />
+            <StackPanel Spacing="4">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock FontWeight="SemiBold" Text="Runtime Health:" />
+                    <TextBlock
+                        AutomationProperties.LiveSetting="Polite"
+                        AutomationProperties.Name="Runtime Health Status"
+                        Text="{x:Bind ViewModel.RuntimeHealthStatus, Mode=OneWay}"
+                        TextWrapping="Wrap" />
+                </StackPanel>
                 <TextBlock
                     AutomationProperties.LiveSetting="Polite"
-                    AutomationProperties.Name="Runtime Health Status"
-                    Text="{x:Bind ViewModel.RuntimeHealthStatus, Mode=OneWay}"
-                    TextWrapping="Wrap" />
+                    AutomationProperties.Name="Interaction Timing Probe"
+                    FontFamily="Cascadia Mono"
+                    Opacity="0.8"
+                    Text="{x:Bind ViewModel.InteractionTimingProbe, Mode=OneWay}"
+                    TextWrapping="WrapWholeWords" />
             </StackPanel>
         </Border>
     </Grid>

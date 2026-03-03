@@ -94,26 +94,18 @@ public sealed class ElevatedBridgeClient : IDisposable
     public BridgePollResult PollRows()
     {
         ulong now = NowMs();
-        BridgePollResult? existingFault = GetExistingFaultResult();
-        if (existingFault is not null)
+        if (GetExistingFaultResult() is BridgePollResult existingFault)
         {
             return existingFault;
         }
 
         TryReadLatestSnapshot(now);
-
-        BridgePollResult? stateBeforeRows = GetPendingOrFaultBeforeRows(now);
-        if (stateBeforeRows is not null)
-        {
-            return stateBeforeRows;
-        }
-
-        return BridgePollResult.RowsResult(_lastRows);
+        return GetPendingOrFaultBeforeRows(now) ?? BridgePollResult.RowsResult(_lastRows);
     }
 
     public string? TakeWarning()
     {
-        return _pendingWarnings.Count > 0 ? _pendingWarnings.Dequeue() : null;
+        return _pendingWarnings.TryDequeue(out string? warning) ? warning : null;
     }
 
     private void TryReadLatestSnapshot(ulong now)
@@ -277,6 +269,13 @@ public sealed class ElevatedBridgeClient : IDisposable
         string token,
         CancellationToken ct)
     {
+        bool isPackagedProcess = IsLikelyPackagedProcess();
+        if (isPackagedProcess)
+        {
+            throw new InvalidOperationException(
+                "admin mode is unavailable in packaged runs. use an unpackaged launch profile or unpackaged publish profile.");
+        }
+
         string? executable = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executable))
         {
@@ -313,7 +312,8 @@ public sealed class ElevatedBridgeClient : IDisposable
             string detail = string.IsNullOrWhiteSpace(stderr)
                 ? "unknown elevation start failure"
                 : stderr.Trim();
-            throw new InvalidOperationException($"failed to start elevated helper: {detail}");
+            throw new InvalidOperationException(
+                $"failed to start elevated helper (packaged={isPackagedProcess}): {detail}");
         }
 
         return ParseHelperPid(stdout);
@@ -350,6 +350,19 @@ public sealed class ElevatedBridgeClient : IDisposable
     private static string EscapePowerShellLiteral(string value)
     {
         return value.Replace("'", "''", StringComparison.Ordinal);
+    }
+
+    private static bool IsLikelyPackagedProcess()
+    {
+        string? packageFamilyName = Environment.GetEnvironmentVariable("PACKAGE_FAMILY_NAME");
+        if (!string.IsNullOrWhiteSpace(packageFamilyName))
+        {
+            return true;
+        }
+
+        string? processPath = Environment.ProcessPath;
+        return !string.IsNullOrWhiteSpace(processPath)
+               && processPath.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase);
     }
 
     private static (string DataFile, string StopFile, string Token) BuildBridgeFiles()

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using BatCave.Core.Domain;
@@ -9,14 +10,33 @@ namespace BatCave.ViewModels;
 
 public partial class MonitoringShellViewModel
 {
+    private const double InteractionProbeSmoothingFactor = 0.35;
+
+    private long _filterApplyProbeStartedAt = Stopwatch.GetTimestamp();
+    private double _filterApplyProbeMs;
+    private double _sortCompleteProbeMs;
+    private double _selectionSettleProbeMs;
+    private double _uiBatchProbeMs;
+    private double _plotRefreshProbeMs;
+    private string _interactionTimingProbe = BuildInteractionTimingProbeText(0, 0, 0, 0, 0);
+
+    public string InteractionTimingProbe
+    {
+        get => _interactionTimingProbe;
+        private set => SetProperty(ref _interactionTimingProbe, value);
+    }
+
     public void ChangeSort(SortColumn column)
     {
+        long startedAt = Stopwatch.GetTimestamp();
         CurrentSortColumn = column;
         CurrentSortDirection = ResolveNextSortDirection(column);
 
         _runtime.SetSort(CurrentSortColumn, CurrentSortDirection);
         ApplySortDescriptions();
         ReassertSelectionAfterSort();
+
+        RecordTimingProbe(InteractionProbe.SortComplete, Stopwatch.GetTimestamp() - startedAt);
     }
 
     [RelayCommand]
@@ -69,19 +89,16 @@ public partial class MonitoringShellViewModel
 
     private void AddSortTieBreakers(string primarySortKey)
     {
-        if (!string.Equals(primarySortKey, nameof(ProcessRowViewState.Pid), StringComparison.Ordinal))
+        foreach (string tieBreaker in GetSortTieBreakerKeys())
         {
-            VisibleRows.SortDescriptions.Add(
-                new SortDescription(
-                    nameof(ProcessRowViewState.Pid),
-                    CommunityToolkit.WinUI.Collections.SortDirection.Ascending));
-        }
+            if (string.Equals(primarySortKey, tieBreaker, StringComparison.Ordinal))
+            {
+                continue;
+            }
 
-        if (!string.Equals(primarySortKey, nameof(ProcessRowViewState.StartTimeMs), StringComparison.Ordinal))
-        {
             VisibleRows.SortDescriptions.Add(
                 new SortDescription(
-                    nameof(ProcessRowViewState.StartTimeMs),
+                    tieBreaker,
                     CommunityToolkit.WinUI.Collections.SortDirection.Ascending));
         }
     }
@@ -93,6 +110,7 @@ public partial class MonitoringShellViewModel
 
         CancellationTokenSource cts = new();
         _filterDebounceCts = cts;
+        _filterApplyProbeStartedAt = Stopwatch.GetTimestamp();
         _ = ApplyFilterAfterDelayAsync(filterText, cts.Token);
     }
 
@@ -106,13 +124,31 @@ public partial class MonitoringShellViewModel
                 return;
             }
 
+            long probeStartedAt = _filterApplyProbeStartedAt;
             _runtime.SetFilter(filterText);
-            RunOnUiThread(() => RefreshVisibleRows(refreshFilter: true));
+            RunOnUiThread(() =>
+            {
+                RefreshVisibleRows(refreshFilter: true);
+                if (probeStartedAt > 0)
+                {
+                    RecordTimingProbe(InteractionProbe.FilterApply, Stopwatch.GetTimestamp() - probeStartedAt);
+                }
+            });
         }
         catch (OperationCanceledException)
         {
             // no-op
         }
+    }
+
+    internal void RecordSelectionSettleProbe(long elapsedTicks)
+    {
+        RecordTimingProbe(InteractionProbe.SelectionSettle, elapsedTicks);
+    }
+
+    internal void RecordPlotRefreshProbe(long elapsedTicks)
+    {
+        RecordTimingProbe(InteractionProbe.PlotRefresh, elapsedTicks);
     }
 
     private void RunOnUiThread(Action action)
@@ -196,5 +232,95 @@ public partial class MonitoringShellViewModel
     private static string SortDirectionSuffix(SortDirection direction)
     {
         return direction == SortDirection.Desc ? "↓" : "↑";
+    }
+
+    private void RecordTimingProbe(
+        InteractionProbe probe,
+        long elapsedTicks)
+    {
+        if (elapsedTicks <= 0)
+        {
+            return;
+        }
+
+        double sampleMs = elapsedTicks * 1000d / Stopwatch.Frequency;
+        if (!TryUpdateProbe(probe, sampleMs))
+        {
+            return;
+        }
+
+        InteractionTimingProbe = BuildInteractionTimingProbeText(
+            _filterApplyProbeMs,
+            _sortCompleteProbeMs,
+            _selectionSettleProbeMs,
+            _uiBatchProbeMs,
+            _plotRefreshProbeMs);
+    }
+
+    private bool TryUpdateProbe(InteractionProbe probe, double sampleMs)
+    {
+        switch (probe)
+        {
+            case InteractionProbe.FilterApply:
+                _filterApplyProbeMs = SmoothInteractionProbeSample(_filterApplyProbeMs, sampleMs);
+                return true;
+            case InteractionProbe.SortComplete:
+                _sortCompleteProbeMs = SmoothInteractionProbeSample(_sortCompleteProbeMs, sampleMs);
+                return true;
+            case InteractionProbe.SelectionSettle:
+                _selectionSettleProbeMs = SmoothInteractionProbeSample(_selectionSettleProbeMs, sampleMs);
+                return true;
+            case InteractionProbe.UiBatch:
+                _uiBatchProbeMs = SmoothInteractionProbeSample(_uiBatchProbeMs, sampleMs);
+                return true;
+            case InteractionProbe.PlotRefresh:
+                _plotRefreshProbeMs = SmoothInteractionProbeSample(_plotRefreshProbeMs, sampleMs);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static string[] GetSortTieBreakerKeys()
+    {
+        return
+        [
+            nameof(ProcessRowViewState.Pid),
+            nameof(ProcessRowViewState.StartTimeMs),
+        ];
+    }
+
+    private static double SmoothInteractionProbeSample(double currentValue, double sample)
+    {
+        if (currentValue <= 0)
+        {
+            return sample;
+        }
+
+        return currentValue + ((sample - currentValue) * InteractionProbeSmoothingFactor);
+    }
+
+    private static string BuildInteractionTimingProbeText(
+        double filterApplyMs,
+        double sortCompleteMs,
+        double selectionSettleMs,
+        double uiBatchMs,
+        double plotRefreshMs)
+    {
+        return $"Probe ms (smoothed): filter {FormatProbeMs(filterApplyMs)} | sort {FormatProbeMs(sortCompleteMs)} | selection {FormatProbeMs(selectionSettleMs)} | batch {FormatProbeMs(uiBatchMs)} | plot {FormatProbeMs(plotRefreshMs)}";
+    }
+
+    private static string FormatProbeMs(double value)
+    {
+        return value <= 0 ? "--" : value.ToString("F1");
+    }
+
+    private enum InteractionProbe
+    {
+        FilterApply,
+        SortComplete,
+        SelectionSettle,
+        UiBatch,
+        PlotRefresh,
     }
 }

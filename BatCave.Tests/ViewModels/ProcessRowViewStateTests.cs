@@ -1,6 +1,7 @@
 using BatCave.Core.Domain;
 using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
+using Windows.Foundation;
 
 namespace BatCave.Tests.ViewModels;
 
@@ -11,7 +12,7 @@ public sealed class ProcessRowViewStateTests
     {
         ProcessSample initial = Sample(cpuPct: 10, rssBytes: 1000, ioReadBps: 200, ioWriteBps: 300, netBps: 400, threads: 5, handles: 6);
         ProcessSample updated = initial with { Seq = 2, TsMs = 2, CpuPct = 25 };
-        ProcessRowViewState state = new(initial, "0,0 1,1");
+        ProcessRowViewState state = new(initial, CreateTrendGeometry());
 
         List<string> changed = [];
         state.PropertyChanged += (_, args) =>
@@ -35,7 +36,7 @@ public sealed class ProcessRowViewStateTests
     {
         ProcessSample initial = Sample(cpuPct: 10, rssBytes: 1000, ioReadBps: 200, ioWriteBps: 300, netBps: 400, threads: 5, handles: 6);
         ProcessSample heartbeatOnly = initial with { Seq = 2, TsMs = 2, ParentPid = initial.ParentPid + 1, PrivateBytes = initial.PrivateBytes + 1 };
-        ProcessRowViewState state = new(initial, "0,0 1,1");
+        ProcessRowViewState state = new(initial, CreateTrendGeometry());
 
         int changeCount = 0;
         state.PropertyChanged += (_, args) =>
@@ -66,7 +67,7 @@ public sealed class ProcessRowViewStateTests
             OtherIoBps = 6144,
         };
 
-        ProcessRowViewState state = new(initial, "0,0 1,1");
+        ProcessRowViewState state = new(initial, CreateTrendGeometry());
         state.UpdateSample(updated);
 
         Assert.Equal("25.50%", state.CpuText);
@@ -101,5 +102,14 @@ public sealed class ProcessRowViewStateTests
             threads: threads,
             handles: handles,
             accessState: AccessState.Full);
+    }
+
+    private static IReadOnlyList<Point> CreateTrendGeometry()
+    {
+        return new Point[]
+        {
+            new Point(0, 0),
+            new Point(1, 1),
+        };
     }
 }

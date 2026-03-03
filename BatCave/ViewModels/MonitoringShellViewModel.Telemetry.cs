@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using BatCave.Charts;
 using BatCave.Core.Domain;
+using BatCave.Rendering;
+using Windows.Foundation;
 
 namespace BatCave.ViewModels;
 
@@ -9,12 +13,46 @@ public partial class MonitoringShellViewModel
 {
     private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
     {
-        RunOnUiThread(() =>
+        _telemetryDeltaAccumulator.Enqueue(delta);
+        QueueTelemetryFrameApply();
+    }
+
+    private void QueueTelemetryFrameApply()
+    {
+        if (Interlocked.Exchange(ref _telemetryFrameApplyQueued, 1) == 1)
         {
-            bool refreshFilter = ApplyUpserts(delta.Upserts);
-            refreshFilter |= ApplyExits(delta.Exits);
-            FinalizeDeltaRefresh(delta, refreshFilter);
-        });
+            return;
+        }
+
+        RunOnUiThread(ApplyQueuedTelemetryDeltaFromFrame);
+    }
+
+    private void ApplyQueuedTelemetryDeltaFromFrame()
+    {
+        Interlocked.Exchange(ref _telemetryFrameApplyQueued, 0);
+
+        if (!_telemetryDeltaAccumulator.TryDrain(out ProcessDeltaBatch mergedDelta, out _))
+        {
+            return;
+        }
+
+        ApplyTelemetryDelta(mergedDelta);
+
+        if (_telemetryDeltaAccumulator.PendingBatchCount > 0)
+        {
+            QueueTelemetryFrameApply();
+        }
+    }
+
+    private void ApplyTelemetryDelta(ProcessDeltaBatch delta)
+    {
+        long startedAt = Stopwatch.GetTimestamp();
+        bool refreshFilter = ApplyUpserts(delta.Upserts);
+        refreshFilter |= ApplyExits(delta.Exits);
+        FinalizeDeltaRefresh(delta, refreshFilter);
+        RecordTimingProbe(
+            InteractionProbe.UiBatch,
+            Stopwatch.GetTimestamp() - startedAt);
     }
 
     private bool ApplyUpserts(IReadOnlyList<ProcessSample> upserts)
@@ -71,17 +109,7 @@ public partial class MonitoringShellViewModel
 
         foreach (ProcessSample row in rows)
         {
-            ProcessIdentity identity = row.Identity();
-            _allRows[identity] = row;
-
-            MetricHistoryBuffer history = new(HistoryLimit);
-            history.Append(row);
-            _metricHistory[identity] = history;
-            _metricHistoryLastSeq[identity] = row.Seq;
-
-            ProcessRowViewState rowState = new(row, BuildRowCpuTrendPoints(identity, row));
-            _visibleRowStateByIdentity[identity] = rowState;
-            _rowViewSource.Add(rowState);
+            AddSnapshotRow(row);
         }
 
         PruneMetadataCache();
@@ -92,6 +120,21 @@ public partial class MonitoringShellViewModel
 
         RefreshVisibleRows(refreshFilter: true);
         ReconcileSelectionAfterDelta();
+    }
+
+    private void AddSnapshotRow(ProcessSample row)
+    {
+        ProcessIdentity identity = row.Identity();
+        _allRows[identity] = row;
+
+        MetricHistoryBuffer history = new(HistoryLimit);
+        history.Append(row);
+        _metricHistory[identity] = history;
+        _metricHistoryLastSeq[identity] = row.Seq;
+
+        ProcessRowViewState rowState = new(row, BuildRowCpuTrendGeometry(identity, row));
+        _visibleRowStateByIdentity[identity] = rowState;
+        _rowViewSource.Add(rowState);
     }
 
     private void PruneMetadataCache()
@@ -131,20 +174,20 @@ public partial class MonitoringShellViewModel
             return existing;
         }
 
-        ProcessRowViewState state = new(sample, BuildRowCpuTrendPoints(identity, sample));
+        ProcessRowViewState state = new(sample, BuildRowCpuTrendGeometry(identity, sample));
         _visibleRowStateByIdentity[identity] = state;
         _rowViewSource.Add(state);
         created = true;
         return state;
     }
 
-    private string BuildRowCpuTrendPoints(ProcessIdentity identity, ProcessSample sample)
+    private IReadOnlyList<Point> BuildRowCpuTrendGeometry(ProcessIdentity identity, ProcessSample sample)
     {
         IReadOnlyList<double> values = _metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history)
             ? history.Cpu
             : MetricHistoryBuffer.Singleton(sample.CpuPct);
 
-        return SparklineMath.BuildPointString(values, RowSparklineWidth, RowSparklineHeight);
+        return SparklineMath.BuildPointsWithFallback(values, RowSparklineWidth, RowSparklineHeight);
     }
 
     private static bool ShouldReplaceVisibleRow(ProcessSample current, ProcessSample next)
@@ -203,21 +246,25 @@ public partial class MonitoringShellViewModel
 
     private void AppendHeartbeatSamplesIfNeeded(ulong seq)
     {
-        if (SelectedRow is not null)
+        AppendSelectedHeartbeatSample(seq);
+        if (IsTableHeartbeatDue(seq))
         {
-            ProcessIdentity selectedIdentity = SelectedRow.Identity();
-            if (_allRows.TryGetValue(selectedIdentity, out ProcessSample? selectedSample) && selectedSample is not null)
-            {
-                _ = AppendHeartbeatForIdentity(selectedIdentity, selectedSample, seq);
-            }
+            AppendTableHeartbeatSamples(seq);
         }
+    }
 
-        if (!IsTableHeartbeatDue(seq))
+    private void AppendSelectedHeartbeatSample(ulong seq)
+    {
+        if (SelectedRow is null)
         {
             return;
         }
 
-        AppendTableHeartbeatSamples(seq);
+        ProcessIdentity selectedIdentity = SelectedRow.Identity();
+        if (_allRows.TryGetValue(selectedIdentity, out ProcessSample? selectedSample) && selectedSample is not null)
+        {
+            _ = AppendHeartbeatForIdentity(selectedIdentity, selectedSample, seq);
+        }
     }
 
     private static bool IsTableHeartbeatDue(ulong seq)
@@ -241,7 +288,7 @@ public partial class MonitoringShellViewModel
 
             if (AppendHeartbeatForIdentity(identity, sample, seq))
             {
-                rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, sample));
+                rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(identity, sample));
             }
         }
     }
@@ -317,7 +364,7 @@ public partial class MonitoringShellViewModel
 
         if (ShouldRefreshRowSparkline(previous, upsert))
         {
-            rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, upsert));
+            rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(identity, upsert));
         }
 
         return shouldRefreshForVisibility;

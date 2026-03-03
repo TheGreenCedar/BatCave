@@ -9,6 +9,7 @@ using BatCave.Converters;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using BatCave.Core.Runtime;
+using BatCave.Rendering;
 using BatCave.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -49,9 +50,11 @@ public partial class MonitoringShellViewModel : ObservableObject
     private readonly Dictionary<ProcessIdentity, ProcessRowViewState> _visibleRowStateByIdentity = new();
     private readonly ObservableCollection<ProcessRowViewState> _rowViewSource = [];
     private readonly MetricHistoryBuffer _globalHistory = new(HistoryLimit);
+    private readonly TelemetryDeltaAccumulator _telemetryDeltaAccumulator = new();
 
     private DispatcherQueue? _dispatcherQueue;
     private CancellationTokenSource? _filterDebounceCts;
+    private int _telemetryFrameApplyQueued;
 
     private bool _isLoading = true;
     private bool _isBlocked;
@@ -382,40 +385,11 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     public bool HasSelection => SelectedRow is not null;
 
-    public string DetailTitle =>
-        SelectedRow is null
-            ? _globalSummaryRow.Name
-            : $"{SelectedRow.Name} ({SelectedRow.Pid})";
+    public string DetailTitle => BuildDetailTitle();
 
     public string DetailMetricValue => ExpandedMetricValue;
 
-    public string MetadataStatus
-    {
-        get
-        {
-            if (SelectedRow is null)
-            {
-                return "Select a process to load metadata.";
-            }
-
-            if (IsMetadataLoading)
-            {
-                return "Loading metadata...";
-            }
-
-            if (!string.IsNullOrWhiteSpace(MetadataError))
-            {
-                return $"Metadata error: {MetadataError}";
-            }
-
-            if (SelectedMetadata is null)
-            {
-                return "Metadata unavailable for this process identity.";
-            }
-
-            return "Metadata loaded.";
-        }
-    }
+    public string MetadataStatus => ResolveMetadataStatus();
 
     public string MetadataParentPid =>
         SelectedMetadata is null
@@ -558,5 +532,35 @@ public partial class MonitoringShellViewModel : ObservableObject
     private void RaiseSelectedVisibleRowBindingProperty()
     {
         OnPropertyChanged(nameof(SelectedVisibleRowBinding));
+    }
+
+    private string BuildDetailTitle()
+    {
+        ProcessSample? selected = SelectedRow;
+        return selected is null
+            ? _globalSummaryRow.Name
+            : $"{selected.Name} ({selected.Pid})";
+    }
+
+    private string ResolveMetadataStatus()
+    {
+        if (SelectedRow is null)
+        {
+            return "Select a process to load metadata.";
+        }
+
+        if (IsMetadataLoading)
+        {
+            return "Loading metadata...";
+        }
+
+        if (!string.IsNullOrWhiteSpace(MetadataError))
+        {
+            return $"Metadata error: {MetadataError}";
+        }
+
+        return SelectedMetadata is null
+            ? "Metadata unavailable for this process identity."
+            : "Metadata loaded.";
     }
 }

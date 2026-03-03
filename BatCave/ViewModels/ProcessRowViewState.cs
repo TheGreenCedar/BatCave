@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using BatCave.Converters;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Windows.Foundation;
 
 namespace BatCave.ViewModels;
 
@@ -11,17 +12,17 @@ public sealed class ProcessRowViewState : ObservableObject
     private const double CpuSortPrecision = 0.01;
 
     private ProcessSample _sample;
-    private string _cpuTrendPoints;
+    private IReadOnlyList<Point> _cpuTrendGeometry;
     private string _cpuText;
     private string _rssText;
     private string _ioReadText;
     private string _ioWriteText;
     private string _otherIoText;
 
-    public ProcessRowViewState(ProcessSample sample, string cpuTrendPoints)
+    public ProcessRowViewState(ProcessSample sample, IReadOnlyList<Point> cpuTrendGeometry)
     {
         _sample = sample;
-        _cpuTrendPoints = cpuTrendPoints;
+        _cpuTrendGeometry = cpuTrendGeometry;
         (_cpuText, _rssText, _ioReadText, _ioWriteText, _otherIoText) = CreateDisplayText(sample);
     }
 
@@ -83,10 +84,10 @@ public sealed class ProcessRowViewState : ObservableObject
 
     public AccessState AccessState => _sample.AccessState;
 
-    public string CpuTrendPoints
+    public IReadOnlyList<Point> CpuTrendGeometry
     {
-        get => _cpuTrendPoints;
-        private set => SetProperty(ref _cpuTrendPoints, value);
+        get => _cpuTrendGeometry;
+        private set => SetProperty(ref _cpuTrendGeometry, value);
     }
 
     public void UpdateSample(ProcessSample sample)
@@ -101,9 +102,60 @@ public sealed class ProcessRowViewState : ObservableObject
         RaiseSamplePropertyChanges(previous, sample);
     }
 
-    public void UpdateCpuTrendPoints(string points)
+    public void UpdateCpuTrendGeometry(IReadOnlyList<Point> geometry)
     {
-        CpuTrendPoints = points;
+        ArgumentNullException.ThrowIfNull(geometry);
+
+        IReadOnlyList<Point> currentGeometry = CpuTrendGeometry;
+        if (geometry.Count == currentGeometry.Count && currentGeometry is IList<Point> writableGeometry)
+        {
+            bool changed = false;
+            for (int index = 0; index < geometry.Count; index++)
+            {
+                Point next = geometry[index];
+                if (writableGeometry[index] == next)
+                {
+                    continue;
+                }
+
+                writableGeometry[index] = next;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                OnPropertyChanged(nameof(CpuTrendGeometry));
+            }
+
+            return;
+        }
+
+        CpuTrendGeometry = geometry;
+    }
+
+    private static double QuantizeCpu(double cpuPct)
+    {
+        return Math.Round(cpuPct / CpuSortPrecision, MidpointRounding.AwayFromZero) * CpuSortPrecision;
+    }
+
+    internal static bool IsCpuSortBucketChanged(double previous, double current)
+    {
+        return QuantizeCpu(previous) != QuantizeCpu(current);
+    }
+
+    private static string FormatCpu(double cpuPct)
+    {
+        return $"{cpuPct:F2}%";
+    }
+
+    private static (string Cpu, string Rss, string IoRead, string IoWrite, string OtherIo) CreateDisplayText(ProcessSample sample)
+    {
+        return (
+            FormatCpu(sample.CpuPct),
+            ValueFormat.FormatBytes(sample.RssBytes),
+            ValueFormat.FormatRate(sample.IoReadBps),
+            ValueFormat.FormatRate(sample.IoWriteBps),
+            ValueFormat.FormatRate(sample.OtherIoBps));
     }
 
     private void RaiseSamplePropertyChanges(ProcessSample previous, ProcessSample current)
@@ -132,31 +184,6 @@ public sealed class ProcessRowViewState : ObservableObject
         RaiseIfChanged(previous.Threads, current.Threads, nameof(Threads));
         RaiseIfChanged(previous.Handles, current.Handles, nameof(Handles));
         RaiseIfChanged(previous.AccessState, current.AccessState, nameof(AccessState));
-    }
-
-    private static double QuantizeCpu(double cpuPct)
-    {
-        return Math.Round(cpuPct / CpuSortPrecision, MidpointRounding.AwayFromZero) * CpuSortPrecision;
-    }
-
-    internal static bool IsCpuSortBucketChanged(double previous, double current)
-    {
-        return QuantizeCpu(previous) != QuantizeCpu(current);
-    }
-
-    private static string FormatCpu(double cpuPct)
-    {
-        return $"{cpuPct:F2}%";
-    }
-
-    private static (string Cpu, string Rss, string IoRead, string IoWrite, string OtherIo) CreateDisplayText(ProcessSample sample)
-    {
-        return (
-            FormatCpu(sample.CpuPct),
-            ValueFormat.FormatBytes(sample.RssBytes),
-            ValueFormat.FormatRate(sample.IoReadBps),
-            ValueFormat.FormatRate(sample.IoWriteBps),
-            ValueFormat.FormatRate(sample.OtherIoBps));
     }
 
     private void UpdateFormattedMetricIfChanged<TValue>(

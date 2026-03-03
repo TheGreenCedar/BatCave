@@ -44,21 +44,16 @@ public sealed class MetricHistoryBuffer
 
     public void Append(ProcessSample sample)
     {
-        Append(_cpu, sample.CpuPct);
-        Append(_memory, sample.RssBytes);
-        Append(_ioRead, sample.IoReadBps);
-        Append(_ioWrite, sample.IoWriteBps);
-        Append(_otherIo, sample.OtherIoBps);
+        _cpu.Add(sample.CpuPct);
+        _memory.Add(sample.RssBytes);
+        _ioRead.Add(sample.IoReadBps);
+        _ioWrite.Add(sample.IoWriteBps);
+        _otherIo.Add(sample.OtherIoBps);
     }
 
     public static IReadOnlyList<double> Singleton(double value)
     {
         return [value];
-    }
-
-    private static void Append(RingSeries values, double value)
-    {
-        values.Add(value);
     }
 
     private sealed class RingSeries : IReadOnlyList<double>
@@ -69,7 +64,7 @@ public sealed class MetricHistoryBuffer
 
         public RingSeries(int capacity)
         {
-            _buffer = new double[Math.Max(1, capacity)];
+            _buffer = new double[capacity];
         }
 
         public int Count => _count;

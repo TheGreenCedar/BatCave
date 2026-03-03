@@ -77,7 +77,7 @@ public partial class MonitoringShellViewModel
 
     private void ApplySelectedVisibleRowBinding(ProcessRowViewState? value)
     {
-        if (ShouldSkipSelectedVisibleRowBinding(value))
+        if (_isApplyingSelectedVisibleRowBinding || ReferenceEquals(value, SelectedVisibleRow))
         {
             return;
         }
@@ -85,8 +85,9 @@ public partial class MonitoringShellViewModel
         _isApplyingSelectedVisibleRowBinding = true;
         try
         {
-            if (TryApplySelectionFromVisibleBinding(value))
+            if (value is not null)
             {
+                _ = SelectRowAsync(value.Sample, CancellationToken.None);
                 return;
             }
 
@@ -151,7 +152,12 @@ public partial class MonitoringShellViewModel
 
     private bool ShouldPreserveSelectionOnNullToggle()
     {
-        return SelectedRow is not null && _allRows.ContainsKey(SelectedRow.Identity());
+        if (SelectedRow is null)
+        {
+            return false;
+        }
+
+        return _allRows.TryGetValue(SelectedRow.Identity(), out _);
     }
 
     private void PrepareSelectionState(ProcessSample row, ProcessIdentity identity)
@@ -174,31 +180,17 @@ public partial class MonitoringShellViewModel
         return true;
     }
 
-    private bool TryApplySelectionFromVisibleBinding(ProcessRowViewState? value)
-    {
-        if (value is null)
-        {
-            return false;
-        }
-
-        _ = SelectRowAsync(value.Sample, CancellationToken.None);
-        return true;
-    }
-
-    private bool ShouldSkipSelectedVisibleRowBinding(ProcessRowViewState? value)
-    {
-        return _isApplyingSelectedVisibleRowBinding || ReferenceEquals(value, SelectedVisibleRow);
-    }
-
     private void ReconcileVisibleSelectionAfterNullBinding()
     {
-        if (!TryGetTrackedSelectedIdentityForBinding(out ProcessIdentity identity))
+        if (!TryGetTrackedSelectedIdentity(out ProcessIdentity identity))
         {
             return;
         }
 
-        if (TryRestoreVisibleSelection(identity))
+        ProcessRowViewState? restoredVisibleRow = TryResolveVisibleSelection(identity);
+        if (restoredVisibleRow is not null)
         {
+            RestoreVisibleSelection(restoredVisibleRow);
             return;
         }
 
@@ -206,42 +198,47 @@ public partial class MonitoringShellViewModel
         SelectedVisibleRow = null;
     }
 
-    private bool TryGetTrackedSelectedIdentityForBinding(out ProcessIdentity identity)
+    private bool TryGetTrackedSelectedIdentity(out ProcessIdentity identity)
     {
-        if (SelectedRow is null)
+        return TryGetTrackedSelection(out identity, out _);
+    }
+
+    private bool TryGetTrackedSelection(out ProcessIdentity identity, out ProcessSample selected)
+    {
+        if (SelectedRow is not ProcessSample currentSelection)
         {
             identity = default;
+            selected = default!;
             return false;
         }
 
-        identity = SelectedRow.Identity();
-        if (_allRows.ContainsKey(identity))
+        identity = currentSelection.Identity();
+        if (_allRows.TryGetValue(identity, out selected!))
         {
             return true;
         }
 
         ClearSelection();
+        selected = default!;
         return false;
     }
 
-    private bool TryRestoreVisibleSelection(ProcessIdentity identity)
+    private ProcessRowViewState? TryResolveVisibleSelection(ProcessIdentity identity)
     {
         ProcessRowViewState? restoredVisibleRow = TryGetVisibleRow(identity);
         if (restoredVisibleRow is not null)
         {
-            RestoreVisibleSelection(restoredVisibleRow);
-            return true;
+            return restoredVisibleRow;
         }
 
         if (_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? expectedVisibleRow)
             && ShouldShowRow(expectedVisibleRow))
         {
             // Sorting/virtualization can briefly detach the selected item from the view.
-            RestoreVisibleSelection(expectedVisibleRow);
-            return true;
+            return expectedVisibleRow;
         }
 
-        return false;
+        return null;
     }
 
     private bool TrySyncSelectedRowFromTrackedRows(out ProcessIdentity identity)
@@ -253,10 +250,8 @@ public partial class MonitoringShellViewModel
             return false;
         }
 
-        identity = SelectedRow.Identity();
-        if (!_allRows.TryGetValue(identity, out ProcessSample? updated))
+        if (!TryGetTrackedSelection(out identity, out ProcessSample updated))
         {
-            ClearSelection();
             return false;
         }
 

@@ -37,16 +37,13 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
         BridgePollResult pollResult = _bridge.PollRows();
         CaptureBridgeWarning(_bridge);
 
-        if (pollResult.State == BridgePollState.Rows)
-        {
-            ulong timestamp = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            return pollResult.Rows.Select(row => row with
-            {
-                Seq = seq,
-                TsMs = timestamp,
-            }).ToList();
-        }
+        return pollResult.State == BridgePollState.Rows
+            ? StampRowsWithTick(pollResult.Rows, seq)
+            : CollectFromLocalAfterBridgeState(pollResult, seq);
+    }
 
+    private IReadOnlyList<ProcessSample> CollectFromLocalAfterBridgeState(BridgePollResult pollResult, ulong seq)
+    {
         if (pollResult.State == BridgePollState.Faulted)
         {
             if (!string.IsNullOrWhiteSpace(pollResult.Reason))
@@ -54,21 +51,28 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
                 _pendingWarnings.Enqueue($"elevated_bridge_faulted: {pollResult.Reason}");
             }
 
-            _bridge.Dispose();
+            _bridge?.Dispose();
             _bridge = null;
         }
 
         return _local.CollectTick(seq);
     }
 
+    private static IReadOnlyList<ProcessSample> StampRowsWithTick(IReadOnlyList<ProcessSample> rows, ulong seq)
+    {
+        ulong timestamp = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return rows.Select(row => row with
+        {
+            Seq = seq,
+            TsMs = timestamp,
+        }).ToList();
+    }
+
     public string? TakeWarning()
     {
-        if (_pendingWarnings.Count > 0)
-        {
-            return _pendingWarnings.Dequeue();
-        }
-
-        return _local.TakeWarning();
+        return _pendingWarnings.TryDequeue(out string? warning)
+            ? warning
+            : _local.TakeWarning();
     }
 
     public void Dispose()

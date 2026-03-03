@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using BatCave.Converters;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.Input;
@@ -45,23 +44,32 @@ public partial class MonitoringShellViewModel
         MetricHistoryBuffer history = GetDetailHistory(detailSample);
 
         UpdateMetricChipValues(detailSample);
-        MetricTrends trends = BuildMetricTrends(history);
 
-        CpuMetricTrendValues = trends.Cpu;
-        MemoryMetricTrendValues = trends.Memory;
-        IoReadMetricTrendValues = trends.IoRead;
-        IoWriteMetricTrendValues = trends.IoWrite;
-        OtherIoMetricTrendValues = trends.OtherIo;
+        bool cpuTrendChanged = ApplyMetricTrendValues(history.Cpu, ref _cpuMetricTrendValues, nameof(CpuMetricTrendValues));
+        bool memoryTrendChanged = ApplyMetricTrendValues(history.Memory, ref _memoryMetricTrendValues, nameof(MemoryMetricTrendValues));
+        bool ioReadTrendChanged = ApplyMetricTrendValues(history.IoRead, ref _ioReadMetricTrendValues, nameof(IoReadMetricTrendValues));
+        bool ioWriteTrendChanged = ApplyMetricTrendValues(history.IoWrite, ref _ioWriteMetricTrendValues, nameof(IoWriteMetricTrendValues));
+        bool otherIoTrendChanged = ApplyMetricTrendValues(history.OtherIo, ref _otherIoMetricTrendValues, nameof(OtherIoMetricTrendValues));
 
-        (ExpandedMetricTitle, ExpandedMetricValue, ExpandedMetricTrendValues) =
-            MetricFocus switch
-            {
-                DetailMetricFocus.Memory => ("Memory Trend", $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS", trends.Memory),
-                DetailMetricFocus.IoRead => ("Disk Read Trend", $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read", trends.IoRead),
-                DetailMetricFocus.IoWrite => ("Disk Write Trend", $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write", trends.IoWrite),
-                DetailMetricFocus.OtherIo => ("Other I/O Trend", $"{ValueFormat.FormatRate(detailSample.OtherIoBps)} net", trends.OtherIo),
-                _ => ("CPU Trend", $"{detailSample.CpuPct:F1}% CPU", trends.Cpu),
-            };
+        (string expandedTitle, string expandedValue, double[] expandedTrendValues, bool expandedSeriesChanged) = ResolveExpandedMetric(
+            detailSample,
+            cpuTrendChanged,
+            memoryTrendChanged,
+            ioReadTrendChanged,
+            ioWriteTrendChanged,
+            otherIoTrendChanged);
+
+        ExpandedMetricTitle = expandedTitle;
+        ExpandedMetricValue = expandedValue;
+
+        if (!ReferenceEquals(_expandedMetricTrendValues, expandedTrendValues))
+        {
+            ExpandedMetricTrendValues = expandedTrendValues;
+        }
+        else if (expandedSeriesChanged)
+        {
+            OnPropertyChanged(nameof(ExpandedMetricTrendValues));
+        }
     }
 
     private MetricHistoryBuffer GetDetailHistory(ProcessSample detailSample)
@@ -189,32 +197,27 @@ public partial class MonitoringShellViewModel
 
     private static ulong ClampToUlong(double value)
     {
-        if (value <= 0)
-        {
-            return 0;
-        }
-
-        if (value >= ulong.MaxValue)
-        {
-            return ulong.MaxValue;
-        }
-
-        return (ulong)Math.Round(value);
+        return (ulong)ClampRounded(value, ulong.MaxValue);
     }
 
     private static uint ClampToUInt(double value)
+    {
+        return (uint)ClampRounded(value, uint.MaxValue);
+    }
+
+    private static double ClampRounded(double value, double maxValue)
     {
         if (value <= 0)
         {
             return 0;
         }
 
-        if (value >= uint.MaxValue)
+        if (value >= maxValue)
         {
-            return uint.MaxValue;
+            return maxValue;
         }
 
-        return (uint)Math.Round(value);
+        return Math.Round(value);
     }
 
     private static ulong UnixNowMs()
@@ -245,14 +248,71 @@ public partial class MonitoringShellViewModel
         OtherIoMetricChipValue = ValueFormat.FormatRate(detailSample.OtherIoBps);
     }
 
-    private static MetricTrends BuildMetricTrends(MetricHistoryBuffer history)
+    private bool ApplyMetricTrendValues(IReadOnlyList<double> source, ref double[] target, string propertyName)
     {
-        return new MetricTrends(
-            history.Cpu.ToArray(),
-            history.Memory.ToArray(),
-            history.IoRead.ToArray(),
-            history.IoWrite.ToArray(),
-            history.OtherIo.ToArray());
+        bool changed = false;
+        if (target.Length != source.Count)
+        {
+            target = new double[source.Count];
+            changed = true;
+        }
+
+        for (int index = 0; index < source.Count; index++)
+        {
+            double next = source[index];
+            if (target[index] == next)
+            {
+                continue;
+            }
+
+            target[index] = next;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            OnPropertyChanged(propertyName);
+        }
+
+        return changed;
+    }
+
+    private (string Title, string Value, double[] TrendValues, bool SeriesChanged) ResolveExpandedMetric(
+        ProcessSample detailSample,
+        bool cpuTrendChanged,
+        bool memoryTrendChanged,
+        bool ioReadTrendChanged,
+        bool ioWriteTrendChanged,
+        bool otherIoTrendChanged)
+    {
+        return MetricFocus switch
+        {
+            DetailMetricFocus.Memory => (
+                "Memory Trend",
+                $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS",
+                _memoryMetricTrendValues,
+                memoryTrendChanged),
+            DetailMetricFocus.IoRead => (
+                "Disk Read Trend",
+                $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read",
+                _ioReadMetricTrendValues,
+                ioReadTrendChanged),
+            DetailMetricFocus.IoWrite => (
+                "Disk Write Trend",
+                $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write",
+                _ioWriteMetricTrendValues,
+                ioWriteTrendChanged),
+            DetailMetricFocus.OtherIo => (
+                "Other I/O Trend",
+                $"{ValueFormat.FormatRate(detailSample.OtherIoBps)} net",
+                _otherIoMetricTrendValues,
+                otherIoTrendChanged),
+            _ => (
+                "CPU Trend",
+                $"{detailSample.CpuPct:F1}% CPU",
+                _cpuMetricTrendValues,
+                cpuTrendChanged),
+        };
     }
 
     private void ResetSummaryTotals()
@@ -268,11 +328,4 @@ public partial class MonitoringShellViewModel
         _summaryThreads = 0;
         _summaryHandles = 0;
     }
-
-    private readonly record struct MetricTrends(
-        double[] Cpu,
-        double[] Memory,
-        double[] IoRead,
-        double[] IoWrite,
-        double[] OtherIo);
 }

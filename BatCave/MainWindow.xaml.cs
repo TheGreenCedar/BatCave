@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Linq;
+using System.Diagnostics;
 using System.Threading;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,19 +16,17 @@ public sealed partial class MainWindow : Window
 {
     private const double WideMetricTrendBreakpoint = 1200;
     private const double WideMetricSidebarWidth = 248;
-    private static readonly HashSet<string> MetricPlotProperties =
-    [
-        nameof(MonitoringShellViewModel.CpuMetricTrendValues),
-        nameof(MonitoringShellViewModel.MemoryMetricTrendValues),
-        nameof(MonitoringShellViewModel.IoReadMetricTrendValues),
-        nameof(MonitoringShellViewModel.IoWriteMetricTrendValues),
-        nameof(MonitoringShellViewModel.OtherIoMetricTrendValues),
-        nameof(MonitoringShellViewModel.ExpandedMetricTrendValues),
-    ];
+    private const int MetricPlotBufferCapacity = 128;
+    private const double AutoScaleMaterialShiftRatio = 0.35;
 
     private bool _bootstrapped;
     private bool _metricPlotRefreshQueued;
     private bool _syncingSelectionVisual;
+    private bool _selectionSyncQueued;
+    private bool _selectionSyncSecondPass;
+    private long _selectionSettleProbeStartedAt;
+    private MetricPlotDirtyFlags _dirtyMetricPlots = MetricPlotDirtyFlags.All;
+    private readonly Dictionary<WinUIPlot, MetricPlotState> _metricPlotStates = [];
 
     public MainWindow()
     {
@@ -52,6 +50,7 @@ public sealed partial class MainWindow : Window
 
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
+        _dirtyMetricPlots = MetricPlotDirtyFlags.All;
         ScheduleMetricPlotRefresh();
         ApplyMetricTrendLayoutForWindowWidth(GetWindowWidth());
     }
@@ -101,7 +100,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (MetricPlotProperties.Contains(e.PropertyName))
+        if (TryMarkMetricPlotDirty(e.PropertyName))
         {
             ScheduleMetricPlotRefresh();
             return;
@@ -110,30 +109,46 @@ public sealed partial class MainWindow : Window
         switch (e.PropertyName)
         {
             case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
-                SyncSelectionVisual();
+                QueueSelectionVisualSync();
                 break;
             case nameof(MonitoringShellViewModel.CurrentSortColumn):
             case nameof(MonitoringShellViewModel.CurrentSortDirection):
-                SyncSelectionVisual(deferSecondPass: true);
+                QueueSelectionVisualSync(includeSecondPass: true);
                 break;
         }
     }
 
-    private void SyncSelectionVisual(bool deferSecondPass = false)
+    private void QueueSelectionVisualSync(bool includeSecondPass = false)
     {
-        if (!TrySyncSelectionVisual())
+        if (includeSecondPass)
+        {
+            _selectionSyncSecondPass = true;
+            BeginSelectionSettleProbeIfNeeded();
+        }
+
+        if (_selectionSyncQueued)
         {
             return;
         }
 
-        if (!deferSecondPass)
-        {
-            return;
-        }
-
+        _selectionSyncQueued = true;
         DispatcherQueue.TryEnqueue(() =>
         {
+            _selectionSyncQueued = false;
             _ = TrySyncSelectionVisual();
+
+            if (_selectionSyncSecondPass)
+            {
+                _selectionSyncSecondPass = false;
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    _ = TrySyncSelectionVisual();
+                    CompleteSelectionSettleProbeIfPending();
+                });
+                return;
+            }
+
+            CompleteSelectionSettleProbeIfPending();
         });
     }
 
@@ -146,18 +161,30 @@ public sealed partial class MainWindow : Window
 
         if (listView.SelectedItem is ProcessRowViewState selected)
         {
+            BeginSelectionSettleProbeIfNeeded();
             await ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
+            QueueSelectionVisualSync();
             return;
         }
 
         if (ViewModel.SelectedVisibleRowBinding is not null)
         {
-            HandleTransientSelectionNull();
+            // Ignore transient null churn from virtualization/sort transitions.
+            BeginSelectionSettleProbeIfNeeded();
+            QueueSelectionVisualSync(includeSecondPass: true);
+            return;
         }
+
+        CompleteSelectionSettleProbeIfPending();
     }
 
     private void ScheduleMetricPlotRefresh()
     {
+        if (_dirtyMetricPlots == MetricPlotDirtyFlags.None)
+        {
+            return;
+        }
+
         if (_metricPlotRefreshQueued)
         {
             return;
@@ -168,17 +195,36 @@ public sealed partial class MainWindow : Window
         {
             _metricPlotRefreshQueued = false;
             RefreshMetricPlots();
+            if (_dirtyMetricPlots != MetricPlotDirtyFlags.None)
+            {
+                ScheduleMetricPlotRefresh();
+            }
         });
     }
 
     private void RefreshMetricPlots()
     {
-        RenderMetricPlot(CpuChipPlot, ViewModel.CpuMetricTrendValues, lineWidth: 2f);
-        RenderMetricPlot(MemoryChipPlot, ViewModel.MemoryMetricTrendValues, lineWidth: 2f);
-        RenderMetricPlot(IoReadChipPlot, ViewModel.IoReadMetricTrendValues, lineWidth: 2f);
-        RenderMetricPlot(IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues, lineWidth: 2f);
-        RenderMetricPlot(OtherIoChipPlot, ViewModel.OtherIoMetricTrendValues, lineWidth: 2f);
-        RenderMetricPlot(ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, lineWidth: 3f);
+        MetricPlotDirtyFlags dirty = _dirtyMetricPlots;
+        if (dirty == MetricPlotDirtyFlags.None)
+        {
+            return;
+        }
+
+        _dirtyMetricPlots = MetricPlotDirtyFlags.None;
+
+        long startedAt = Stopwatch.GetTimestamp();
+        bool refreshedAny = false;
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Cpu, CpuChipPlot, ViewModel.CpuMetricTrendValues, lineWidth: 2f);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Memory, MemoryChipPlot, ViewModel.MemoryMetricTrendValues, lineWidth: 2f);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoRead, IoReadChipPlot, ViewModel.IoReadMetricTrendValues, lineWidth: 2f);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoWrite, IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues, lineWidth: 2f);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.OtherIo, OtherIoChipPlot, ViewModel.OtherIoMetricTrendValues, lineWidth: 2f);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Expanded, ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, lineWidth: 3f);
+
+        if (refreshedAny)
+        {
+            ViewModel.RecordPlotRefreshProbe(Stopwatch.GetTimestamp() - startedAt);
+        }
     }
 
     private void OnWindowSizeChanged(object sender, WindowSizeChangedEventArgs args)
@@ -206,16 +252,165 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(MetricMainHost, isWide ? 1 : 0);
     }
 
-    private static void RenderMetricPlot(WinUIPlot plotControl, IReadOnlyList<double> values, float lineWidth)
+    private bool RefreshMetricPlotIfDirty(
+        MetricPlotDirtyFlags dirty,
+        MetricPlotDirtyFlags target,
+        WinUIPlot plotControl,
+        IReadOnlyList<double> values,
+        float lineWidth)
     {
-        double[] series = values.Count > 0 ? values.ToArray() : [0d, 0d];
+        if ((dirty & target) == 0)
+        {
+            return false;
+        }
+
+        MetricPlotState state = EnsureMetricPlotState(plotControl, lineWidth);
+        bool hasSeriesChanges = UpdateMetricPlotBuffer(
+            state,
+            values,
+            out int activePointCount,
+            out double minValue,
+            out double maxValue);
+
+        if (state.Signal.LineWidth != lineWidth)
+        {
+            state.Signal.LineWidth = lineWidth;
+            hasSeriesChanges = true;
+        }
+
+        bool forceAutoScale = !ReferenceEquals(state.LastValueSource, values);
+        state.LastValueSource = values;
+
+        bool requiresRender = hasSeriesChanges || forceAutoScale || !state.HasScaledBounds;
+        if (!requiresRender)
+        {
+            return false;
+        }
+
+        state.ActivePointCount = activePointCount;
+        state.Signal.MinRenderIndex = 0;
+        state.Signal.MaxRenderIndex = Math.Max(1, activePointCount - 1);
+        if (ShouldAutoScale(state, activePointCount, minValue, maxValue, forceAutoScale))
+        {
+            plotControl.Plot.Axes.AutoScale();
+            state.ScaledMin = minValue;
+            state.ScaledMax = maxValue;
+            state.ScaledPointCount = activePointCount;
+            state.HasScaledBounds = true;
+        }
+
+        plotControl.Refresh();
+        return true;
+    }
+
+    private static bool UpdateMetricPlotBuffer(
+        MetricPlotState state,
+        IReadOnlyList<double> values,
+        out int activePointCount,
+        out double minValue,
+        out double maxValue)
+    {
+        activePointCount = values.Count > 0 ? Math.Max(2, Math.Min(values.Count, state.Buffer.Length)) : 2;
+        bool changed = state.ActivePointCount != activePointCount;
+
+        if (values.Count == 0)
+        {
+            minValue = 0d;
+            maxValue = 0d;
+            return SetConstantBufferValue(state, 0d, changed);
+        }
+
+        if (values.Count == 1)
+        {
+            double single = values[0];
+            minValue = single;
+            maxValue = single;
+            return SetConstantBufferValue(state, single, changed);
+        }
+
+        int sourceStartIndex = values.Count > state.Buffer.Length ? values.Count - state.Buffer.Length : 0;
+        minValue = double.PositiveInfinity;
+        maxValue = double.NegativeInfinity;
+        for (int index = 0; index < activePointCount; index++)
+        {
+            double next = values[sourceStartIndex + index];
+            minValue = Math.Min(minValue, next);
+            maxValue = Math.Max(maxValue, next);
+            if (state.Buffer[index] == next)
+            {
+                continue;
+            }
+
+            state.Buffer[index] = next;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool SetConstantBufferValue(MetricPlotState state, double value, bool changed)
+    {
+        if (state.Buffer[0] != value)
+        {
+            state.Buffer[0] = value;
+            changed = true;
+        }
+
+        if (state.Buffer[1] != value)
+        {
+            state.Buffer[1] = value;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool ShouldAutoScale(
+        MetricPlotState state,
+        int activePointCount,
+        double minValue,
+        double maxValue,
+        bool forceAutoScale)
+    {
+        if (forceAutoScale || !state.HasScaledBounds)
+        {
+            return true;
+        }
+
+        if (minValue < state.ScaledMin || maxValue > state.ScaledMax)
+        {
+            return true;
+        }
+
+        double previousRange = Math.Max(1e-9, state.ScaledMax - state.ScaledMin);
+        double shiftedLowRatio = (minValue - state.ScaledMin) / previousRange;
+        double shiftedHighRatio = (state.ScaledMax - maxValue) / previousRange;
+
+        if (shiftedLowRatio >= AutoScaleMaterialShiftRatio || shiftedHighRatio >= AutoScaleMaterialShiftRatio)
+        {
+            return true;
+        }
+
+        return state.ScaledPointCount != activePointCount && activePointCount <= 2;
+    }
+
+    private MetricPlotState EnsureMetricPlotState(WinUIPlot plotControl, float lineWidth)
+    {
+        if (_metricPlotStates.TryGetValue(plotControl, out MetricPlotState? existing))
+        {
+            return existing;
+        }
 
         ConfigureMetricPlot(plotControl);
-        plotControl.Plot.Clear();
-        ScottPlot.Plottables.Signal signal = plotControl.Plot.Add.Signal(series);
+        double[] buffer = new double[MetricPlotBufferCapacity];
+        ScottPlot.Plottables.Signal signal = plotControl.Plot.Add.Signal(buffer);
         signal.LineWidth = lineWidth;
-        plotControl.Plot.Axes.AutoScale();
-        plotControl.Refresh();
+        signal.MinRenderIndex = 0;
+        signal.MaxRenderIndex = 1;
+
+        MetricPlotState created = new(signal, buffer);
+        _metricPlotStates[plotControl] = created;
+        return created;
     }
 
     private static void ConfigureMetricPlot(WinUIPlot plotControl)
@@ -226,12 +421,6 @@ public sealed partial class MainWindow : Window
         plotControl.Plot.Axes.Margins(0.02, 0.05);
         plotControl.Plot.HideGrid();
         plotControl.Plot.HideLegend();
-    }
-
-    private void HandleTransientSelectionNull()
-    {
-        // Ignore transient null churn from virtualization/sort transitions.
-        SyncSelectionVisual(deferSecondPass: true);
     }
 
     private void OnWindowClosed(object sender, WindowEventArgs args)
@@ -280,5 +469,92 @@ public sealed partial class MainWindow : Window
         {
             ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
         }
+    }
+
+    private bool TryMarkMetricPlotDirty(string propertyName)
+    {
+        if (!TryResolveMetricPlotFlag(propertyName, out MetricPlotDirtyFlags dirtyFlag))
+        {
+            return false;
+        }
+
+        _dirtyMetricPlots |= dirtyFlag;
+        return true;
+    }
+
+    private static bool TryResolveMetricPlotFlag(string propertyName, out MetricPlotDirtyFlags dirtyFlag)
+    {
+        dirtyFlag = propertyName switch
+        {
+            nameof(MonitoringShellViewModel.CpuMetricTrendValues) => MetricPlotDirtyFlags.Cpu,
+            nameof(MonitoringShellViewModel.MemoryMetricTrendValues) => MetricPlotDirtyFlags.Memory,
+            nameof(MonitoringShellViewModel.IoReadMetricTrendValues) => MetricPlotDirtyFlags.IoRead,
+            nameof(MonitoringShellViewModel.IoWriteMetricTrendValues) => MetricPlotDirtyFlags.IoWrite,
+            nameof(MonitoringShellViewModel.OtherIoMetricTrendValues) => MetricPlotDirtyFlags.OtherIo,
+            nameof(MonitoringShellViewModel.ExpandedMetricTrendValues) => MetricPlotDirtyFlags.Expanded,
+            _ => MetricPlotDirtyFlags.None,
+        };
+
+        return dirtyFlag != MetricPlotDirtyFlags.None;
+    }
+
+    private void BeginSelectionSettleProbeIfNeeded()
+    {
+        if (_selectionSettleProbeStartedAt <= 0)
+        {
+            _selectionSettleProbeStartedAt = Stopwatch.GetTimestamp();
+        }
+    }
+
+    private void CompleteSelectionSettleProbeIfPending()
+    {
+        if (_selectionSettleProbeStartedAt <= 0)
+        {
+            return;
+        }
+
+        long startedAt = _selectionSettleProbeStartedAt;
+        _selectionSettleProbeStartedAt = 0;
+        ViewModel.RecordSelectionSettleProbe(Stopwatch.GetTimestamp() - startedAt);
+    }
+
+    [Flags]
+    private enum MetricPlotDirtyFlags
+    {
+        None = 0,
+        Cpu = 1 << 0,
+        Memory = 1 << 1,
+        IoRead = 1 << 2,
+        IoWrite = 1 << 3,
+        OtherIo = 1 << 4,
+        Expanded = 1 << 5,
+        All = Cpu | Memory | IoRead | IoWrite | OtherIo | Expanded,
+    }
+
+    private sealed class MetricPlotState
+    {
+        public MetricPlotState(ScottPlot.Plottables.Signal signal, double[] buffer)
+        {
+            Signal = signal;
+            Buffer = buffer;
+            ActivePointCount = 2;
+            ScaledPointCount = 2;
+        }
+
+        public ScottPlot.Plottables.Signal Signal { get; }
+
+        public double[] Buffer { get; }
+
+        public int ActivePointCount { get; set; }
+
+        public IReadOnlyList<double>? LastValueSource { get; set; }
+
+        public bool HasScaledBounds { get; set; }
+
+        public double ScaledMin { get; set; }
+
+        public double ScaledMax { get; set; }
+
+        public int ScaledPointCount { get; set; }
     }
 }

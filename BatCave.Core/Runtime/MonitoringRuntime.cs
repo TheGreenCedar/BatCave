@@ -15,10 +15,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private readonly IStateStore _stateStore;
     private readonly ISortIndexEngine _sortIndexEngine;
     private readonly IPersistenceStore _persistenceStore;
+    private readonly CoalescedSettingsWriteQueue _settingsWriteQueue;
     private readonly ILogger<MonitoringRuntime> _logger;
     private readonly ResourceBudgetGuardian _budgetGuardian = new();
     private readonly double[] _jitterSamples = new double[JitterWindowSize];
     private readonly double[] _jitterScratch = new double[JitterWindowSize];
+    private readonly object _runtimeWarningSync = new();
+    private readonly Queue<string> _runtimeWarnings = [];
 
     private IProcessCollector _collector;
     private QueryRequest _queryRequest;
@@ -41,10 +44,22 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _stateStore = stateStore;
         _sortIndexEngine = sortIndexEngine;
         _persistenceStore = persistenceStore;
+        _settingsWriteQueue = new CoalescedSettingsWriteQueue(_persistenceStore.SaveSettingsAsync);
         _logger = logger ?? NullLogger<MonitoringRuntime>.Instance;
 
         _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
-        _collector = _collectorFactory.Create(_settings.AdminMode);
+        bool requestedStartupAdminMode = _settings.AdminMode;
+        CollectorActivationResult startupCollector = ActivateCollector(requestedStartupAdminMode);
+        _collector = startupCollector.Collector;
+        _settings = _settings with
+        {
+            AdminMode = startupCollector.AdminMode,
+        };
+        EnqueueRuntimeWarning(startupCollector.Warning);
+        if (startupCollector.AdminMode != requestedStartupAdminMode)
+        {
+            PersistSettings();
+        }
 
         _queryRequest = BuildQueryRequest(_settings);
 
@@ -88,21 +103,27 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         return _settings.AdminMode;
     }
 
-    public Task RestartAsync(bool adminMode, CancellationToken ct)
+    public async Task RestartAsync(bool adminMode, CancellationToken ct)
     {
+        CollectorActivationResult nextCollector = ActivateCollector(adminMode);
+        IProcessCollector previousCollector = _collector;
+        _collector = nextCollector.Collector;
         _settings = _settings with
         {
-            AdminMode = adminMode,
+            AdminMode = nextCollector.AdminMode,
         };
 
-        DisposeCollector(_collector);
-        _collector = _collectorFactory.Create(adminMode);
+        DisposeCollector(previousCollector);
+        EnqueueRuntimeWarning(nextCollector.Warning);
 
-        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, ct));
+        PersistSettings();
+        await FlushSettingsQueueAsync(ct).ConfigureAwait(false);
 
-        _logger.LogInformation("runtime_restart admin_mode={AdminMode} seq={Seq}", adminMode, _seq);
-
-        return Task.CompletedTask;
+        _logger.LogInformation(
+            "runtime_restart requested_admin_mode={RequestedAdminMode} effective_admin_mode={EffectiveAdminMode} seq={Seq}",
+            adminMode,
+            nextCollector.AdminMode,
+            _seq);
     }
 
     public TickOutcome Tick(double jitterMs)
@@ -131,7 +152,19 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     private void PersistSettings()
     {
-        TryPersist(() => _persistenceStore.SaveSettingsAsync(_settings, CancellationToken.None));
+        _settingsWriteQueue.Enqueue(_settings);
+    }
+
+    private async Task FlushSettingsQueueAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _settingsWriteQueue.FlushAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // keep runtime resilient if local persistence is temporarily unavailable
+        }
     }
 
     private static QueryRequest BuildQueryRequest(UserSettings settings)
@@ -227,6 +260,12 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     private string? TakeNextWarningMessage()
     {
+        string? runtimeWarning = TryDequeueRuntimeWarning();
+        if (!string.IsNullOrWhiteSpace(runtimeWarning))
+        {
+            return runtimeWarning;
+        }
+
         string? warningMessage = _collector.TakeWarning();
         if (!string.IsNullOrWhiteSpace(warningMessage))
         {
@@ -270,18 +309,8 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     private void UpdateHealthForCurrentTick(IReadOnlyList<ProcessSample> raw)
     {
-        ProcessSample? selfSample = null;
-        for (int index = 0; index < raw.Count; index++)
-        {
-            ProcessSample sample = raw[index];
-            if (sample.Pid == (uint)Environment.ProcessId)
-            {
-                selfSample = sample;
-                break;
-            }
-        }
-
-        RotateJitterSamplesIntoScratch();
+        ProcessSample? selfSample = FindSelfSample(raw);
+        CopyJitterWindowToScratch();
         _health = _health with
         {
             Seq = _seq,
@@ -290,6 +319,21 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             AppCpuPct = selfSample?.CpuPct ?? _health.AppCpuPct,
             AppRssBytes = selfSample?.RssBytes ?? EstimateRssFromRows(_stateStore.RowCount()),
         };
+    }
+
+    private static ProcessSample? FindSelfSample(IReadOnlyList<ProcessSample> raw)
+    {
+        uint processId = (uint)Environment.ProcessId;
+        for (int index = 0; index < raw.Count; index++)
+        {
+            ProcessSample sample = raw[index];
+            if (sample.Pid == processId)
+            {
+                return sample;
+            }
+        }
+
+        return null;
     }
 
     private void PersistWarmCacheIfDue(ulong warmCacheInterval)
@@ -313,7 +357,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _logger.LogWarning("runtime_dropped_ticks seq={Seq} dropped_delta={DroppedDelta} dropped_total={DroppedTotal}", _seq, dropped, _health.DroppedTicks);
     }
 
-    private void RotateJitterSamplesIntoScratch()
+    private void CopyJitterWindowToScratch()
     {
         if (_jitterSampleCount == 0)
         {
@@ -351,6 +395,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     public void Dispose()
     {
+        _settingsWriteQueue.Dispose();
         DisposeCollector(_collector);
     }
 
@@ -361,4 +406,51 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             disposable.Dispose();
         }
     }
+
+    private CollectorActivationResult ActivateCollector(bool adminMode)
+    {
+        try
+        {
+            return new CollectorActivationResult(
+                Collector: _collectorFactory.Create(adminMode),
+                AdminMode: adminMode,
+                Warning: null);
+        }
+        catch (Exception ex) when (adminMode)
+        {
+            _logger.LogWarning(
+                ex,
+                "collector_admin_mode_start_failed requested_admin_mode={RequestedAdminMode}. falling_back_to_non_admin",
+                adminMode);
+
+            return new CollectorActivationResult(
+                Collector: _collectorFactory.Create(adminMode: false),
+                AdminMode: false,
+                Warning:
+                    $"admin_mode_start_failed requested_admin_mode=true fallback_admin_mode=false error={ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void EnqueueRuntimeWarning(string? warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+        {
+            return;
+        }
+
+        lock (_runtimeWarningSync)
+        {
+            _runtimeWarnings.Enqueue(warning);
+        }
+    }
+
+    private string? TryDequeueRuntimeWarning()
+    {
+        lock (_runtimeWarningSync)
+        {
+            return _runtimeWarnings.TryDequeue(out string? warning) ? warning : null;
+        }
+    }
+
+    private sealed record CollectorActivationResult(IProcessCollector Collector, bool AdminMode, string? Warning);
 }
