@@ -150,23 +150,70 @@ public partial class MonitoringShellViewModel
 
     private void UpdateGlobalSummaryHistory()
     {
-        _globalSummaryRow = CreateGlobalSummarySample(
-            _summarySeq,
-            _summaryTsMs,
-            _summaryCpuPct,
-            _summaryRssBytes,
-            _summaryPrivateBytes,
-            _summaryIoReadBps,
-            _summaryIoWriteBps,
-            _summaryOtherIoBps,
-            _summaryThreads,
-            _summaryHandles);
+        _globalSummaryRow = CreateProjectedGlobalSample();
 
         _globalHistory.Append(_globalSummaryRow);
         if (SelectedRow is null)
         {
             OnPropertyChanged(nameof(DetailTitle));
         }
+    }
+
+    private ProcessSample CreateProjectedGlobalSample()
+    {
+        ProcessSample previous = _globalSummaryRow;
+        SystemGlobalMetricsSample sampled;
+        try
+        {
+            sampled = _systemGlobalMetricsSampler.Sample();
+        }
+        catch
+        {
+            SetGlobalAvailability(
+                cpu: false,
+                memory: false,
+                ioRead: false,
+                ioWrite: false,
+                otherIo: false);
+
+            return CreateGlobalSummarySample(
+                seq: _summarySeq,
+                tsMs: _summaryTsMs,
+                cpuPct: previous.CpuPct,
+                rssBytes: previous.RssBytes,
+                privateBytes: _summaryPrivateBytes,
+                ioReadBps: previous.IoReadBps,
+                ioWriteBps: previous.IoWriteBps,
+                otherIoBps: previous.OtherIoBps,
+                threads: _summaryThreads,
+                handles: _summaryHandles);
+        }
+
+        SetGlobalAvailability(
+            cpu: sampled.CpuPct.HasValue,
+            memory: sampled.MemoryUsedBytes.HasValue,
+            ioRead: sampled.DiskReadBps.HasValue,
+            ioWrite: sampled.DiskWriteBps.HasValue,
+            otherIo: sampled.OtherIoBps.HasValue);
+
+        ulong projectedTsMs = sampled.TsMs > 0 ? sampled.TsMs : _summaryTsMs;
+        double projectedCpuPct = ResolveGlobalMetricForTrend(sampled.CpuPct, previous.CpuPct);
+        ulong projectedMemory = ResolveGlobalMetricForTrend(sampled.MemoryUsedBytes, previous.RssBytes);
+        ulong projectedIoRead = ResolveGlobalMetricForTrend(sampled.DiskReadBps, previous.IoReadBps);
+        ulong projectedIoWrite = ResolveGlobalMetricForTrend(sampled.DiskWriteBps, previous.IoWriteBps);
+        ulong projectedOtherIo = ResolveGlobalMetricForTrend(sampled.OtherIoBps, previous.OtherIoBps);
+
+        return CreateGlobalSummarySample(
+            seq: _summarySeq,
+            tsMs: projectedTsMs,
+            cpuPct: projectedCpuPct,
+            rssBytes: projectedMemory,
+            privateBytes: _summaryPrivateBytes,
+            ioReadBps: projectedIoRead,
+            ioWriteBps: projectedIoWrite,
+            otherIoBps: projectedOtherIo,
+            threads: _summaryThreads,
+            handles: _summaryHandles);
     }
 
     private static ProcessSample CreateEmptyGlobalSummary()
@@ -247,6 +294,37 @@ public partial class MonitoringShellViewModel
         return now <= 0 ? 0UL : (ulong)now;
     }
 
+    private void SetGlobalAvailability(bool cpu, bool memory, bool ioRead, bool ioWrite, bool otherIo)
+    {
+        _isGlobalCpuAvailable = cpu;
+        _isGlobalMemoryAvailable = memory;
+        _isGlobalIoReadAvailable = ioRead;
+        _isGlobalIoWriteAvailable = ioWrite;
+        _isGlobalOtherIoAvailable = otherIo;
+    }
+
+    private static double ResolveGlobalMetricForTrend(double? currentValue, double previousValue)
+    {
+        return currentValue ?? previousValue;
+    }
+
+    private static ulong ResolveGlobalMetricForTrend(ulong? currentValue, ulong previousValue)
+    {
+        return currentValue ?? previousValue;
+    }
+
+    private static string FormatMetricWhenAvailable(bool isAvailable, string value)
+    {
+        return isAvailable ? value : "n/a";
+    }
+
+    private string FormatGlobalMetricValue(bool isAvailable, Func<string> formatValue)
+    {
+        return SelectedRow is null && !isAvailable
+            ? "n/a"
+            : formatValue();
+    }
+
     private void RaiseProperties(params string[] propertyNames)
     {
         foreach (string propertyName in propertyNames)
@@ -262,11 +340,21 @@ public partial class MonitoringShellViewModel
 
     private void UpdateMetricChipValues(ProcessSample detailSample)
     {
-        CpuMetricChipValue = $"{detailSample.CpuPct:F2}%";
-        MemoryMetricChipValue = ValueFormat.FormatBytes(detailSample.RssBytes);
-        IoReadMetricChipValue = ValueFormat.FormatRate(detailSample.IoReadBps);
-        IoWriteMetricChipValue = ValueFormat.FormatRate(detailSample.IoWriteBps);
-        OtherIoMetricChipValue = ValueFormat.FormatRate(detailSample.OtherIoBps);
+        if (SelectedRow is not null)
+        {
+            CpuMetricChipValue = $"{detailSample.CpuPct:F2}%";
+            MemoryMetricChipValue = ValueFormat.FormatBytes(detailSample.RssBytes);
+            IoReadMetricChipValue = ValueFormat.FormatRate(detailSample.IoReadBps);
+            IoWriteMetricChipValue = ValueFormat.FormatRate(detailSample.IoWriteBps);
+            OtherIoMetricChipValue = ValueFormat.FormatRate(detailSample.OtherIoBps);
+            return;
+        }
+
+        CpuMetricChipValue = FormatMetricWhenAvailable(_isGlobalCpuAvailable, $"{detailSample.CpuPct:F2}%");
+        MemoryMetricChipValue = FormatMetricWhenAvailable(_isGlobalMemoryAvailable, ValueFormat.FormatBytes(detailSample.RssBytes));
+        IoReadMetricChipValue = FormatMetricWhenAvailable(_isGlobalIoReadAvailable, ValueFormat.FormatRate(detailSample.IoReadBps));
+        IoWriteMetricChipValue = FormatMetricWhenAvailable(_isGlobalIoWriteAvailable, ValueFormat.FormatRate(detailSample.IoWriteBps));
+        OtherIoMetricChipValue = FormatMetricWhenAvailable(_isGlobalOtherIoAvailable, ValueFormat.FormatRate(detailSample.OtherIoBps));
     }
 
     private bool ApplyMetricTrendValues(IReadOnlyList<double> source, ref double[] target, string propertyName)
@@ -312,27 +400,27 @@ public partial class MonitoringShellViewModel
         {
             DetailMetricFocus.Memory => (
                 "Memory Trend",
-                $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS",
+                FormatGlobalMetricValue(_isGlobalMemoryAvailable, () => $"{ValueFormat.FormatBytes(detailSample.RssBytes)} RSS"),
                 _memoryMetricTrendValues,
                 memoryTrendChanged),
             DetailMetricFocus.IoRead => (
                 "Disk Read Trend",
-                $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read",
+                FormatGlobalMetricValue(_isGlobalIoReadAvailable, () => $"{ValueFormat.FormatRate(detailSample.IoReadBps)} read"),
                 _ioReadMetricTrendValues,
                 ioReadTrendChanged),
             DetailMetricFocus.IoWrite => (
                 "Disk Write Trend",
-                $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write",
+                FormatGlobalMetricValue(_isGlobalIoWriteAvailable, () => $"{ValueFormat.FormatRate(detailSample.IoWriteBps)} write"),
                 _ioWriteMetricTrendValues,
                 ioWriteTrendChanged),
             DetailMetricFocus.OtherIo => (
                 "Other I/O Trend",
-                $"{ValueFormat.FormatRate(detailSample.OtherIoBps)} net",
+                FormatGlobalMetricValue(_isGlobalOtherIoAvailable, () => $"{ValueFormat.FormatRate(detailSample.OtherIoBps)} net"),
                 _otherIoMetricTrendValues,
                 otherIoTrendChanged),
             _ => (
                 "CPU Trend",
-                $"{detailSample.CpuPct:F1}% CPU",
+                FormatGlobalMetricValue(_isGlobalCpuAvailable, () => $"{detailSample.CpuPct:F1}% CPU"),
                 _cpuMetricTrendValues,
                 cpuTrendChanged),
         };

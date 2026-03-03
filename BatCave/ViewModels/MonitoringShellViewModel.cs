@@ -42,6 +42,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private readonly RuntimeLoopService _runtimeLoopService;
     private readonly IRuntimeEventGateway _runtimeEventGateway;
     private readonly IProcessMetadataProvider _metadataProvider;
+    private readonly ISystemGlobalMetricsSampler _systemGlobalMetricsSampler;
 
     private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = new();
     private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = new();
@@ -109,19 +110,26 @@ public partial class MonitoringShellViewModel : ObservableObject
     private string _otherIoMetricChipValue = "0 B/s";
     private string _expandedMetricTitle = "CPU Trend";
     private string _expandedMetricValue = "0.0% CPU";
+    private bool _isGlobalCpuAvailable = true;
+    private bool _isGlobalMemoryAvailable = true;
+    private bool _isGlobalIoReadAvailable = true;
+    private bool _isGlobalIoWriteAvailable = true;
+    private bool _isGlobalOtherIoAvailable = true;
 
     public MonitoringShellViewModel(
         ILaunchPolicyGate launchPolicyGate,
         MonitoringRuntime runtime,
         RuntimeLoopService runtimeLoopService,
         IRuntimeEventGateway runtimeEventGateway,
-        IProcessMetadataProvider metadataProvider)
+        IProcessMetadataProvider metadataProvider,
+        ISystemGlobalMetricsSampler systemGlobalMetricsSampler)
     {
         _launchPolicyGate = launchPolicyGate;
         _runtime = runtime;
         _runtimeLoopService = runtimeLoopService;
         _runtimeEventGateway = runtimeEventGateway;
         _metadataProvider = metadataProvider;
+        _systemGlobalMetricsSampler = systemGlobalMetricsSampler;
 
         _runtimeEventGateway.TelemetryDelta += OnTelemetryDelta;
         _runtimeEventGateway.RuntimeHealthChanged += OnRuntimeHealthChanged;

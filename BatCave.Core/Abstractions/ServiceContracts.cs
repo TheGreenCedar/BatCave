@@ -90,3 +90,8 @@ public interface IProcessMetadataProvider
 {
     Task<ProcessMetadata?> GetAsync(uint pid, ulong startTimeMs, CancellationToken ct);
 }
+
+public interface ISystemGlobalMetricsSampler
+{
+    SystemGlobalMetricsSample Sample();
+}

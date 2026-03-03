@@ -118,6 +118,21 @@ public sealed record QueryResponse
     public IReadOnlyList<ProcessSample> Rows { get; init; } = [];
 }
 
+public sealed record SystemGlobalMetricsSample
+{
+    public ulong TsMs { get; init; }
+
+    public double? CpuPct { get; init; }
+
+    public ulong? MemoryUsedBytes { get; init; }
+
+    public ulong? DiskReadBps { get; init; }
+
+    public ulong? DiskWriteBps { get; init; }
+
+    public ulong? OtherIoBps { get; init; }
+}
+
 public sealed record RuntimeHealth
 {
     public ulong Seq { get; init; }

@@ -75,6 +75,7 @@ public partial class App : Application
                 services.AddSingleton<ILaunchPolicyGate, WindowsLaunchPolicyGate>();
 
                 services.AddSingleton<IProcessCollectorFactory, DefaultProcessCollectorFactory>();
+                services.AddSingleton<ISystemGlobalMetricsSampler, WindowsSystemGlobalMetricsSampler>();
                 services.AddSingleton<ITelemetryPipeline, DeltaTelemetryPipeline>();
                 services.AddSingleton<IStateStore, InMemoryStateStore>();
                 services.AddSingleton<ISortIndexEngine, IncrementalSortIndexEngine>();

@@ -4,6 +4,7 @@ using BatCave.Core.Pipeline;
 using BatCave.Core.Runtime;
 using BatCave.Core.Sort;
 using BatCave.Core.State;
+using BatCave.Converters;
 using BatCave.Services;
 using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
@@ -402,6 +403,101 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task NoSelection_UsesSamplerValuesWhenAvailable()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 11,
+                cpuPct: 88.8,
+                memoryUsedBytes: 10 * 1024UL * 1024UL,
+                diskReadBps: 2 * 1024UL,
+                diskWriteBps: 4 * 1024UL,
+                otherIoBps: 6 * 1024UL));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+
+        Assert.Null(viewModel.SelectedRow);
+        Assert.Equal("Global System Values", viewModel.DetailTitle);
+        Assert.Equal("88.80%", viewModel.CpuMetricChipValue);
+        Assert.Equal(ValueFormat.FormatBytes(10 * 1024UL * 1024UL), viewModel.MemoryMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(2 * 1024UL), viewModel.IoReadMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(4 * 1024UL), viewModel.IoWriteMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(6 * 1024UL), viewModel.OtherIoMetricChipValue);
+        Assert.Equal("88.8% CPU", viewModel.DetailMetricValue);
+    }
+
+    [Fact]
+    public async Task NoSelection_PerMetricUnavailable_ShowsNaOnlyForUnavailableMetric()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 12,
+                cpuPct: null,
+                memoryUsedBytes: 12 * 1024UL * 1024UL,
+                diskReadBps: 1024UL,
+                diskWriteBps: 2048UL,
+                otherIoBps: 4096UL));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+
+        Assert.Equal("n/a", viewModel.CpuMetricChipValue);
+        Assert.Equal(ValueFormat.FormatBytes(12 * 1024UL * 1024UL), viewModel.MemoryMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(1024UL), viewModel.IoReadMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(2048UL), viewModel.IoWriteMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(4096UL), viewModel.OtherIoMetricChipValue);
+
+        viewModel.MetricFocusSelectedCommand.Execute("Cpu");
+        Assert.Contains("n/a", viewModel.DetailMetricValue, StringComparison.OrdinalIgnoreCase);
+
+        viewModel.MetricFocusSelectedCommand.Execute("Memory");
+        Assert.DoesNotContain("n/a", viewModel.DetailMetricValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SelectedRow_ProcessMetricsRemainUnchangedWhenSamplerPresent()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 13,
+                cpuPct: 91.7,
+                memoryUsedBytes: 400 * 1024UL * 1024UL,
+                diskReadBps: 8000UL,
+                diskWriteBps: 9000UL,
+                otherIoBps: 10000UL));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        ProcessSample row = Sample(pid: 140, startTime: 14000, access: AccessState.Full) with
+        {
+            CpuPct = 17.25,
+            RssBytes = 24 * 1024UL * 1024UL,
+            IoReadBps = 3000UL,
+            IoWriteBps = 4000UL,
+            OtherIoBps = 5000UL,
+        };
+        gateway.RaiseDelta(1, [row], []);
+
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.Equal($"{row.CpuPct:F2}%", viewModel.CpuMetricChipValue);
+        Assert.Equal(ValueFormat.FormatBytes(row.RssBytes), viewModel.MemoryMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(row.IoReadBps), viewModel.IoReadMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(row.IoWriteBps), viewModel.IoWriteMetricChipValue);
+        Assert.Equal(ValueFormat.FormatRate(row.OtherIoBps), viewModel.OtherIoMetricChipValue);
+        Assert.DoesNotContain("n/a", viewModel.DetailMetricValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ToggleSelection_SameIdentity_DoesNotClearSelection()
     {
         TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
@@ -623,7 +719,8 @@ public class MonitoringShellViewModelTests
         SequenceLaunchPolicyGate gate,
         TestMetadataProvider metadataProvider,
         TestRuntimeEventGateway gateway,
-        UserSettings? settings = null)
+        UserSettings? settings = null,
+        TestSystemGlobalMetricsSampler? systemGlobalMetricsSampler = null)
     {
         MonitoringRuntime runtime = new(
             new TestCollectorFactory(),
@@ -632,20 +729,23 @@ public class MonitoringShellViewModelTests
             new IncrementalSortIndexEngine(),
             new TestPersistenceStore(settings));
         RuntimeLoopService loopService = new(runtime);
-        return new MonitoringShellViewModel(gate, runtime, loopService, gateway, metadataProvider);
+        TestSystemGlobalMetricsSampler sampler = systemGlobalMetricsSampler ?? TestSystemGlobalMetricsSampler.Default;
+        return new MonitoringShellViewModel(gate, runtime, loopService, gateway, metadataProvider, sampler);
     }
 
     private static async Task<MonitoringShellViewModel> CreateBootstrappedViewModelAsync(
         TestRuntimeEventGateway gateway,
         SequenceLaunchPolicyGate? gate = null,
         TestMetadataProvider? metadataProvider = null,
-        UserSettings? settings = null)
+        UserSettings? settings = null,
+        TestSystemGlobalMetricsSampler? systemGlobalMetricsSampler = null)
     {
         MonitoringShellViewModel viewModel = CreateViewModel(
             gate ?? CreatePassedGate(),
             metadataProvider ?? CreateNullMetadataProvider(),
             gateway,
-            settings);
+            settings,
+            systemGlobalMetricsSampler);
 
         await viewModel.BootstrapAsync(CancellationToken.None);
         return viewModel;
@@ -718,6 +818,25 @@ public class MonitoringShellViewModelTests
             threads: 2,
             handles: 3,
             accessState: access);
+    }
+
+    private static SystemGlobalMetricsSample CreateSystemGlobalMetricsSample(
+        ulong tsMs,
+        double? cpuPct,
+        ulong? memoryUsedBytes,
+        ulong? diskReadBps,
+        ulong? diskWriteBps,
+        ulong? otherIoBps)
+    {
+        return new SystemGlobalMetricsSample
+        {
+            TsMs = tsMs,
+            CpuPct = cpuPct,
+            MemoryUsedBytes = memoryUsedBytes,
+            DiskReadBps = diskReadBps,
+            DiskWriteBps = diskWriteBps,
+            OtherIoBps = otherIoBps,
+        };
     }
 
     private sealed class SequenceLaunchPolicyGate : ILaunchPolicyGate
@@ -814,6 +933,30 @@ public class MonitoringShellViewModelTests
         public Task<ProcessMetadata?> GetAsync(uint pid, ulong startTimeMs, CancellationToken ct)
         {
             return Handler(pid, startTimeMs, ct);
+        }
+    }
+
+    private sealed class TestSystemGlobalMetricsSampler : ISystemGlobalMetricsSampler
+    {
+        public static TestSystemGlobalMetricsSampler Default { get; } = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 1,
+                cpuPct: 7.5,
+                memoryUsedBytes: 5 * 1024UL * 1024UL,
+                diskReadBps: 1024UL,
+                diskWriteBps: 2048UL,
+                otherIoBps: 4096UL));
+
+        public SystemGlobalMetricsSample Current { get; set; }
+
+        public TestSystemGlobalMetricsSampler(SystemGlobalMetricsSample sample)
+        {
+            Current = sample;
+        }
+
+        public SystemGlobalMetricsSample Sample()
+        {
+            return Current;
         }
     }
 
