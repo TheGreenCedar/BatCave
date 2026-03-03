@@ -27,7 +27,7 @@ internal static class RuntimeTestHarness
             _collector = collector;
         }
 
-        public IProcessCollector Create(bool adminMode)
+        public IProcessCollector Create(bool _)
         {
             return _collector;
         }

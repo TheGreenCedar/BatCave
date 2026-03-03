@@ -10,9 +10,7 @@ public class MonitoringRuntimeTests
     [Fact]
     public void Tick_WhenPersistenceWarningQueued_SurfacesWarningAndIncrementsCounter()
     {
-        TestPersistenceStore persistenceStore = new();
-        TestCollector collector = new();
-        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, persistenceStore);
+        using MonitoringRuntime runtime = CreateRuntime(out _, out TestPersistenceStore persistenceStore);
 
         persistenceStore.EnqueueWarning("persistence_load_json_failed path=settings.json error=JsonException: invalid json");
 
@@ -26,10 +24,10 @@ public class MonitoringRuntimeTests
     [Fact]
     public void SetFilter_WhenPersistenceSaveFails_QueuesWarningForNextTick()
     {
-        TestPersistenceStore persistenceStore = new();
-        persistenceStore.FailSaveSettings = true;
-        TestCollector collector = new();
-        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, persistenceStore);
+        using MonitoringRuntime runtime = CreateRuntime(
+            out _,
+            out _,
+            configurePersistenceStore: store => store.FailSaveSettings = true);
 
         runtime.SetFilter("svc");
         TickOutcome outcome = runtime.Tick(jitterMs: 0);
@@ -41,11 +39,9 @@ public class MonitoringRuntimeTests
     [Fact]
     public void Tick_PrioritizesCollectorWarningBeforePersistenceWarning()
     {
-        TestPersistenceStore persistenceStore = new();
+        using MonitoringRuntime runtime = CreateRuntime(out TestCollector collector, out TestPersistenceStore persistenceStore);
         persistenceStore.EnqueueWarning("persistence_warning");
-        TestCollector collector = new();
-        collector.EnqueueWarning("collector_warning");
-        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, persistenceStore);
+        collector.EnqueueCollectorWarning("collector_warning");
 
         TickOutcome first = runtime.Tick(jitterMs: 0);
         TickOutcome second = runtime.Tick(jitterMs: 0);
@@ -54,6 +50,19 @@ public class MonitoringRuntimeTests
         Assert.Contains("collector_warning", first.Warning!.Message, StringComparison.OrdinalIgnoreCase);
         Assert.NotNull(second.Warning);
         Assert.Contains("persistence_warning", second.Warning!.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static MonitoringRuntime CreateRuntime(
+        out TestCollector collector,
+        out TestPersistenceStore persistenceStore,
+        Action<TestPersistenceStore>? configurePersistenceStore = null,
+        Action<TestCollector>? configureCollector = null)
+    {
+        persistenceStore = new TestPersistenceStore();
+        collector = new TestCollector();
+        configurePersistenceStore?.Invoke(persistenceStore);
+        configureCollector?.Invoke(collector);
+        return RuntimeTestHarness.CreateRuntime(collector, persistenceStore);
     }
 
     private sealed class TestCollector : IProcessCollector
@@ -70,7 +79,7 @@ public class MonitoringRuntimeTests
             return _warnings.Count > 0 ? _warnings.Dequeue() : null;
         }
 
-        public void EnqueueWarning(string warning)
+        public void EnqueueCollectorWarning(string warning)
         {
             _warnings.Enqueue(warning);
         }

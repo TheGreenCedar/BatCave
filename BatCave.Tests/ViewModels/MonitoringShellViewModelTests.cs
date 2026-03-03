@@ -18,7 +18,7 @@ public class MonitoringShellViewModelTests
     {
         SequenceLaunchPolicyGate gate = new(
             () => StartupGateStatus.Blocked(LaunchBlockReason.RequiresWindows11(21999)));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -36,7 +36,7 @@ public class MonitoringShellViewModelTests
         SequenceLaunchPolicyGate gate = new(
             () => throw new InvalidOperationException("transient gate check failure"),
             () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -53,9 +53,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task AdminToggle_ControlsDeniedVisibilityAndAdminOnlyFilter()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -65,26 +64,25 @@ public class MonitoringShellViewModelTests
         ProcessSample denied = Sample(pid: 2, startTime: 200, access: AccessState.Denied);
         gateway.RaiseDelta(1, [full, denied], []);
 
-        Assert.Single(VisibleRows(viewModel));
-        Assert.Equal(1U, RowAt(viewModel, 0).Pid);
+        Assert.Single(GetVisibleRows(viewModel));
+        Assert.Equal(1U, GetVisibleRow(viewModel, 0).Pid);
 
         await viewModel.ToggleAdminModeAsync(true, CancellationToken.None);
         gateway.RaiseDelta(2, [full, denied], []);
 
         Assert.True(viewModel.AdminModeEnabled);
-        Assert.Equal(2, VisibleRows(viewModel).Count);
+        Assert.Equal(2, GetVisibleRows(viewModel).Count);
 
         viewModel.AdminEnabledOnlyFilter = true;
-        Assert.Single(VisibleRows(viewModel));
-        Assert.Equal(AccessState.Full, RowAt(viewModel, 0).AccessState);
+        Assert.Single(GetVisibleRows(viewModel));
+        Assert.Equal(AccessState.Full, GetVisibleRow(viewModel, 0).AccessState);
     }
 
     [Fact]
     public async Task CollectorWarning_ClearsAfterQuietTickWindow()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -124,8 +122,7 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task MetadataSelection_UsesCacheAndSurfacesNonFatalErrors()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
         TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
         {
             Pid = pid,
@@ -160,9 +157,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task TelemetryDelta_RefreshesVisibleRowsWithoutCollectionReset()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -170,22 +166,21 @@ public class MonitoringShellViewModelTests
 
         ProcessSample row = Sample(pid: 20, startTime: 2000, access: AccessState.Full);
         gateway.RaiseDelta(1, [row], []);
-        ProcessRowViewState firstVisible = RowAt(viewModel, 0);
+        ProcessRowViewState firstVisible = GetVisibleRow(viewModel, 0);
 
         ProcessSample updatedRow = row with { Seq = 2, TsMs = 2, CpuPct = 67.4 };
         gateway.RaiseDelta(2, [updatedRow], []);
 
-        Assert.Single(VisibleRows(viewModel));
-        Assert.Same(firstVisible, RowAt(viewModel, 0));
-        Assert.Equal(updatedRow.CpuPct, RowAt(viewModel, 0).Sample.CpuPct);
+        Assert.Single(GetVisibleRows(viewModel));
+        Assert.Same(firstVisible, GetVisibleRow(viewModel, 0));
+        Assert.Equal(updatedRow.CpuPct, GetVisibleRow(viewModel, 0).Sample.CpuPct);
     }
 
     [Fact]
     public async Task TelemetryDelta_Reorder_UsesMoveOperationsWithoutReplace()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -195,9 +190,9 @@ public class MonitoringShellViewModelTests
         ProcessSample mid = Sample(pid: 101, startTime: 1001, access: AccessState.Full) with { CpuPct = 50 };
         ProcessSample low = Sample(pid: 102, startTime: 1002, access: AccessState.Full) with { CpuPct = 10 };
         gateway.RaiseDelta(1, [high, mid, low], []);
-        ProcessRowViewState highState = VisibleRows(viewModel).Single(row => row.Pid == high.Pid);
-        ProcessRowViewState midState = VisibleRows(viewModel).Single(row => row.Pid == mid.Pid);
-        ProcessRowViewState lowState = VisibleRows(viewModel).Single(row => row.Pid == low.Pid);
+        ProcessRowViewState highState = GetVisibleRows(viewModel).Single(row => row.Pid == high.Pid);
+        ProcessRowViewState midState = GetVisibleRows(viewModel).Single(row => row.Pid == mid.Pid);
+        ProcessRowViewState lowState = GetVisibleRows(viewModel).Single(row => row.Pid == low.Pid);
 
         ProcessSample highNowLow = high with { Seq = 2, TsMs = 2, CpuPct = 5 };
         ProcessSample midNowHigh = mid with { Seq = 2, TsMs = 2, CpuPct = 95 };
@@ -205,21 +200,20 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(2, [highNowLow, midNowHigh, lowNowMid], []);
 
         Assert.Collection(
-            VisibleRows(viewModel),
+            GetVisibleRows(viewModel),
             row => Assert.Equal(mid.Pid, row.Pid),
             row => Assert.Equal(low.Pid, row.Pid),
             row => Assert.Equal(high.Pid, row.Pid));
-        Assert.Same(midState, RowAt(viewModel, 0));
-        Assert.Same(lowState, RowAt(viewModel, 1));
-        Assert.Same(highState, RowAt(viewModel, 2));
+        Assert.Same(midState, GetVisibleRow(viewModel, 0));
+        Assert.Same(lowState, GetVisibleRow(viewModel, 1));
+        Assert.Same(highState, GetVisibleRow(viewModel, 2));
     }
 
     [Fact]
     public async Task TelemetryDelta_CpuResort_IgnoresInvisibleJitterButReordersOnMeaningfulChange()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -228,28 +222,27 @@ public class MonitoringShellViewModelTests
         ProcessSample first = Sample(pid: 110, startTime: 1110, access: AccessState.Full) with { CpuPct = 1.0040 };
         ProcessSample second = Sample(pid: 111, startTime: 1111, access: AccessState.Full) with { CpuPct = 1.0030 };
         gateway.RaiseDelta(1, [first, second], []);
-        Assert.Equal(first.Pid, RowAt(viewModel, 0).Pid);
+        Assert.Equal(first.Pid, GetVisibleRow(viewModel, 0).Pid);
 
         // Both values still render as 1.00%; hidden jitter should not churn order.
         ProcessSample firstJitter = first with { Seq = 2, TsMs = 2, CpuPct = 1.0031 };
         ProcessSample secondJitter = second with { Seq = 2, TsMs = 2, CpuPct = 1.0049 };
         gateway.RaiseDelta(2, [firstJitter, secondJitter], []);
 
-        Assert.Equal(first.Pid, RowAt(viewModel, 0).Pid);
+        Assert.Equal(first.Pid, GetVisibleRow(viewModel, 0).Pid);
 
         // Meaningful displayed difference should still reorder.
         ProcessSample secondMeaningful = secondJitter with { Seq = 3, TsMs = 3, CpuPct = 1.0200 };
         gateway.RaiseDelta(3, [firstJitter with { Seq = 3, TsMs = 3 }, secondMeaningful], []);
 
-        Assert.Equal(second.Pid, RowAt(viewModel, 0).Pid);
+        Assert.Equal(second.Pid, GetVisibleRow(viewModel, 0).Pid);
     }
 
     [Fact]
     public async Task TelemetryDelta_HeartbeatOnly_RespectsSparklineStrideAndKeepsRowInstance()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -259,7 +252,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [row], []);
         ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 20 };
         gateway.RaiseDelta(2, [varied], []);
-        ProcessRowViewState firstVisible = RowAt(viewModel, 0);
+        ProcessRowViewState firstVisible = GetVisibleRow(viewModel, 0);
         string beforeTrend = firstVisible.CpuTrendPoints;
 
         ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
@@ -270,7 +263,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(4, [strideHeartbeat], []);
         string afterEvenHeartbeat = firstVisible.CpuTrendPoints;
 
-        Assert.Same(firstVisible, RowAt(viewModel, 0));
+        Assert.Same(firstVisible, GetVisibleRow(viewModel, 0));
         Assert.Equal(beforeTrend, afterOddHeartbeat);
         Assert.NotEqual(beforeTrend, afterEvenHeartbeat);
     }
@@ -278,9 +271,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task SelectedProcessTrend_AdvancesOnEmptyDeltaWhenValueUnchanged()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -288,7 +280,7 @@ public class MonitoringShellViewModelTests
 
         ProcessSample row = Sample(pid: 90, startTime: 9000, access: AccessState.Full) with { CpuPct = 3.25 };
         gateway.RaiseDelta(1, [row], []);
-        viewModel.SelectedVisibleRowBinding = RowAt(viewModel, 0);
+        viewModel.SelectedVisibleRowBinding = GetVisibleRow(viewModel, 0);
         int before = viewModel.CpuMetricTrendValues.Length;
 
         gateway.RaiseDelta(2, [], []);
@@ -301,9 +293,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task TableMiniChart_AdvancesOnStrideWhenNoUpsertArrives()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -313,7 +304,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [row], []);
         ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 11.0 };
         gateway.RaiseDelta(2, [varied], []);
-        ProcessRowViewState rowState = RowAt(viewModel, 0);
+        ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
         string before = rowState.CpuTrendPoints;
 
         gateway.RaiseDelta(3, [], []);
@@ -329,9 +320,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task MetricHistory_CapsAtConfiguredLimit()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -351,17 +341,16 @@ public class MonitoringShellViewModelTests
 
         await viewModel.SelectRowAsync(current, CancellationToken.None);
 
-        Assert.Single(VisibleRows(viewModel));
-        Assert.Equal(120, CountPoints(RowAt(viewModel, 0).CpuTrendPoints));
+        Assert.Single(GetVisibleRows(viewModel));
+        Assert.Equal(120, GetTrendPointCount(GetVisibleRow(viewModel, 0).CpuTrendPoints));
         Assert.Equal(120, viewModel.CpuMetricTrendValues.Length);
     }
 
     [Fact]
     public async Task NoSelection_UsesGlobalSummaryForDetailTrends()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -379,8 +368,7 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task ToggleSelection_SameIdentity_DoesNotClearSelection()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
         TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
         {
             Pid = pid,
@@ -406,8 +394,7 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task ToggleSelection_NullRowWhenSelectedProcessStillTracked_DoesNotClearSelection()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
         TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
         {
             Pid = pid,
@@ -433,8 +420,7 @@ public class MonitoringShellViewModelTests
     public async Task SelectedVisibleRowBinding_WhenRowSelectedFromUi_SelectsDetailAndLoadsMetadata()
     {
         int metadataRequestCount = 0;
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
         TestMetadataProvider metadata = new((pid, _, _) =>
         {
             metadataRequestCount++;
@@ -451,7 +437,7 @@ public class MonitoringShellViewModelTests
 
         ProcessSample row = Sample(pid: 60, startTime: 6000, access: AccessState.Full);
         gateway.RaiseDelta(1, [row], []);
-        ProcessRowViewState rowState = RowAt(viewModel, 0);
+        ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
 
         viewModel.SelectedVisibleRowBinding = rowState;
 
@@ -465,9 +451,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task SelectedVisibleRowBinding_WhenUiSendsTransientNull_KeepsSelectionAndRestoresVisibleRow()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
         int selectedVisibleRowBindingNotifications = 0;
@@ -483,7 +468,7 @@ public class MonitoringShellViewModelTests
 
         ProcessSample row = Sample(pid: 61, startTime: 6100, access: AccessState.Full);
         gateway.RaiseDelta(1, [row], []);
-        ProcessRowViewState rowState = RowAt(viewModel, 0);
+        ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
 
         viewModel.SelectedVisibleRowBinding = rowState;
         int beforeTransientNull = selectedVisibleRowBindingNotifications;
@@ -499,9 +484,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task SelectedVisibleRowBinding_WhenSortChangesAndUiSendsNull_RestoresListSelection()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -511,7 +495,7 @@ public class MonitoringShellViewModelTests
         ProcessSample second = Sample(pid: 162, startTime: 16200, access: AccessState.Full) with { Name = "alpha", CpuPct = 90 };
         gateway.RaiseDelta(1, [first, second], []);
 
-        ProcessRowViewState selected = VisibleRows(viewModel).Single(row => row.Pid == second.Pid);
+        ProcessRowViewState selected = GetVisibleRows(viewModel).Single(row => row.Pid == second.Pid);
         viewModel.SelectedVisibleRowBinding = selected;
 
         viewModel.ChangeSort(SortColumn.Name);
@@ -525,9 +509,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task ChangeSort_WithSelection_ReassertsSelectedVisibleRowBindingForColumnAndDirectionChanges()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
         int bindingNotificationCount = 0;
@@ -545,7 +528,7 @@ public class MonitoringShellViewModelTests
         ProcessSample second = Sample(pid: 164, startTime: 16400, access: AccessState.Full) with { Name = "beta", CpuPct = 80 };
         gateway.RaiseDelta(1, [first, second], []);
 
-        ProcessRowViewState selected = VisibleRows(viewModel).Single(row => row.Pid == second.Pid);
+        ProcessRowViewState selected = GetVisibleRows(viewModel).Single(row => row.Pid == second.Pid);
         viewModel.SelectedVisibleRowBinding = selected;
         int beforeSortChanges = bindingNotificationCount;
 
@@ -562,9 +545,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task SelectedVisibleRowBinding_WhenRowBecomesHidden_KeepsDetailSelectionAndClearsVisibleSelection()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -577,7 +559,7 @@ public class MonitoringShellViewModelTests
         await viewModel.ToggleAdminModeAsync(true, CancellationToken.None);
         gateway.RaiseDelta(2, [full, denied], []);
 
-        ProcessRowViewState deniedState = VisibleRows(viewModel).Single(row => row.Pid == denied.Pid);
+        ProcessRowViewState deniedState = GetVisibleRows(viewModel).Single(row => row.Pid == denied.Pid);
         viewModel.SelectedVisibleRowBinding = deniedState;
 
         viewModel.AdminEnabledOnlyFilter = true;
@@ -591,9 +573,8 @@ public class MonitoringShellViewModelTests
     [Fact]
     public async Task SelectedVisibleRowBinding_WhenSelectedRowExits_ClearsSelectionState()
     {
-        SequenceLaunchPolicyGate gate = new(
-            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
-        TestMetadataProvider metadata = new((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
+        SequenceLaunchPolicyGate gate = CreatePassedGate();
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = CreateViewModel(gate, metadata, gateway);
 
@@ -601,7 +582,7 @@ public class MonitoringShellViewModelTests
 
         ProcessSample row = Sample(pid: 64, startTime: 6400, access: AccessState.Full);
         gateway.RaiseDelta(1, [row], []);
-        viewModel.SelectedVisibleRowBinding = RowAt(viewModel, 0);
+        viewModel.SelectedVisibleRowBinding = GetVisibleRow(viewModel, 0);
 
         gateway.RaiseDelta(2, [], [row.Identity()]);
 
@@ -611,6 +592,17 @@ public class MonitoringShellViewModelTests
         Assert.Null(viewModel.SelectedMetadata);
         Assert.Null(viewModel.MetadataError);
         Assert.False(viewModel.IsMetadataLoading);
+    }
+
+    private static SequenceLaunchPolicyGate CreatePassedGate()
+    {
+        return new SequenceLaunchPolicyGate(
+            () => StartupGateStatus.PassedContext(new LaunchContext { Os = "windows", WindowsBuild = 26000 }));
+    }
+
+    private static TestMetadataProvider CreateNullMetadataProvider()
+    {
+        return new TestMetadataProvider((_, _, _) => Task.FromResult<ProcessMetadata?>(null));
     }
 
     private static MonitoringShellViewModel CreateViewModel(
@@ -628,7 +620,7 @@ public class MonitoringShellViewModelTests
         return new MonitoringShellViewModel(gate, runtime, loopService, gateway, metadataProvider);
     }
 
-    private static int CountPoints(string serializedPoints)
+    private static int GetTrendPointCount(string serializedPoints)
     {
         if (string.IsNullOrWhiteSpace(serializedPoints))
         {
@@ -638,12 +630,12 @@ public class MonitoringShellViewModelTests
         return serializedPoints.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
-    private static IReadOnlyList<ProcessRowViewState> VisibleRows(MonitoringShellViewModel viewModel)
+    private static IReadOnlyList<ProcessRowViewState> GetVisibleRows(MonitoringShellViewModel viewModel)
     {
         return viewModel.VisibleRows.Cast<ProcessRowViewState>().ToList();
     }
 
-    private static ProcessRowViewState RowAt(MonitoringShellViewModel viewModel, int index)
+    private static ProcessRowViewState GetVisibleRow(MonitoringShellViewModel viewModel, int index)
     {
         return Assert.IsType<ProcessRowViewState>(viewModel.VisibleRows[index]);
     }
@@ -679,14 +671,14 @@ public class MonitoringShellViewModelTests
 
         public StartupGateStatus Enforce()
         {
-            Func<StartupGateStatus> step = _steps.Count > 1 ? _steps.Dequeue() : _steps.Peek();
-            return step();
+            Func<StartupGateStatus> nextGateStep = _steps.Count > 1 ? _steps.Dequeue() : _steps.Peek();
+            return nextGateStep();
         }
     }
 
     private sealed class TestCollectorFactory : IProcessCollectorFactory
     {
-        public IProcessCollector Create(bool adminMode)
+        public IProcessCollector Create(bool _)
         {
             return new TestCollector();
         }

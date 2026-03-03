@@ -17,23 +17,20 @@ public class RuntimeLoopServiceTests
         ]);
 
         using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, new TestPersistenceStore());
-        RuntimeLoopService service = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
+        RuntimeLoopService runtimeLoopService = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
         List<TickFaultedEventArgs> faults = [];
-        int completed = 0;
+        int completedTickCount = 0;
 
-        service.TickFaulted += (_, args) => faults.Add(args);
-        service.TickCompleted += (_, _) => Interlocked.Increment(ref completed);
+        runtimeLoopService.TickFaulted += (_, args) => faults.Add(args);
+        runtimeLoopService.TickCompleted += (_, _) => Interlocked.Increment(ref completedTickCount);
 
-        service.Start(service.CurrentGeneration);
-        await Task.Delay(950);
-        service.StopAndAdvanceGeneration();
-        await Task.Delay(150);
+        await RunLoopForAsync(runtimeLoopService, runDurationMs: 950);
 
         Assert.NotEmpty(faults);
         Assert.Equal(1, faults[0].ConsecutiveFaults);
         Assert.Equal(250, faults[0].DelayMs);
         Assert.Contains("InvalidOperationException", faults[0].ExceptionType, StringComparison.Ordinal);
-        Assert.True(completed > 0);
+        Assert.True(completedTickCount > 0);
     }
 
     [Fact]
@@ -49,15 +46,12 @@ public class RuntimeLoopServiceTests
         ]);
 
         using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, new TestPersistenceStore());
-        RuntimeLoopService service = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
+        RuntimeLoopService runtimeLoopService = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
         List<int> delays = [];
 
-        service.TickFaulted += (_, args) => delays.Add(args.DelayMs);
+        runtimeLoopService.TickFaulted += (_, args) => delays.Add(args.DelayMs);
 
-        service.Start(service.CurrentGeneration);
-        await Task.Delay(2_100);
-        service.StopAndAdvanceGeneration();
-        await Task.Delay(150);
+        await RunLoopForAsync(runtimeLoopService, runDurationMs: 2_100);
 
         Assert.True(delays.Count >= 3);
         Assert.Equal(250, delays[0]);
@@ -76,13 +70,21 @@ public class RuntimeLoopServiceTests
 
         public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
         {
-            Func<ulong, IReadOnlyList<ProcessSample>> step = _steps.Count > 1 ? _steps.Dequeue() : _steps.Peek();
-            return step(seq);
+            Func<ulong, IReadOnlyList<ProcessSample>> nextCollectStep = _steps.Count > 1 ? _steps.Dequeue() : _steps.Peek();
+            return nextCollectStep(seq);
         }
 
         public string? TakeWarning()
         {
             return null;
         }
+    }
+
+    private static async Task RunLoopForAsync(RuntimeLoopService runtimeLoopService, int runDurationMs)
+    {
+        runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
+        await Task.Delay(runDurationMs);
+        runtimeLoopService.StopAndAdvanceGeneration();
+        await Task.Delay(150);
     }
 }
