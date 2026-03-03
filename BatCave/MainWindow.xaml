@@ -272,8 +272,14 @@
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
                     CornerRadius="12">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel HorizontalAlignment="Stretch" Spacing="10">
+                    <Grid RowSpacing="10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" HorizontalAlignment="Stretch" Spacing="10">
                             <TextBlock FontSize="24" FontWeight="SemiBold" Text="{x:Bind ViewModel.DetailTitle, Mode=OneWay}" />
                             <Button
                                 x:Name="ClearSelectionButton"
@@ -283,208 +289,213 @@
                                 Content="Clear Selection"
                                 IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}"
                                 TabIndex="20" />
-
-                            <Grid x:Name="MetricTrendSplitGrid" ColumnSpacing="6" RowSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition x:Name="MetricSidebarColumn" Width="*" />
-                                    <ColumnDefinition x:Name="MetricMainColumn" Width="0" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition x:Name="MetricMainRow" Height="Auto" />
-                                </Grid.RowDefinitions>
-
-                                <StackPanel x:Name="MetricSidebarHost" Grid.Row="0" Grid.Column="0" HorizontalAlignment="Stretch" Spacing="8">
-                                    <TextBlock FontWeight="SemiBold" Text="Metric Trends" />
-
-                                    <ToggleButton
-                                        AccessKey="1"
-                                        AutomationProperties.Name="Focus cpu metric trend"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Stretch"
-                                        MinHeight="56"
-                                        Padding="12,8"
-                                        IsChecked="{x:Bind ViewModel.IsCpuMetricFocused, Mode=OneWay}"
-                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                        CommandParameter="Cpu"
-                                        TabIndex="30">
-                                        <ToggleButton.KeyboardAccelerators>
-                                            <KeyboardAccelerator Key="Number1" Modifiers="Control,Shift" />
-                                        </ToggleButton.KeyboardAccelerators>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="98" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock FontWeight="SemiBold" Text="CPU" />
-                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.CpuMetricChipValue, Mode=OneWay}" />
-                                            </StackPanel>
-                                            <controls:MetricTrendChart x:Name="CpuChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
-                                        </Grid>
-                                    </ToggleButton>
-
-                                    <ToggleButton
-                                        AccessKey="2"
-                                        AutomationProperties.Name="Focus memory metric trend"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Stretch"
-                                        MinHeight="56"
-                                        Padding="12,8"
-                                        IsChecked="{x:Bind ViewModel.IsMemoryMetricFocused, Mode=OneWay}"
-                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                        CommandParameter="Memory"
-                                        TabIndex="31">
-                                        <ToggleButton.KeyboardAccelerators>
-                                            <KeyboardAccelerator Key="Number2" Modifiers="Control,Shift" />
-                                        </ToggleButton.KeyboardAccelerators>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="98" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock FontWeight="SemiBold" Text="Memory" />
-                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.MemoryMetricChipValue, Mode=OneWay}" />
-                                            </StackPanel>
-                                            <controls:MetricTrendChart x:Name="MemoryChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
-                                        </Grid>
-                                    </ToggleButton>
-
-                                    <ToggleButton
-                                        AccessKey="3"
-                                        AutomationProperties.Name="Focus disk read metric trend"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Stretch"
-                                        MinHeight="56"
-                                        Padding="12,8"
-                                        IsChecked="{x:Bind ViewModel.IsIoReadMetricFocused, Mode=OneWay}"
-                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                        CommandParameter="IoRead"
-                                        TabIndex="32">
-                                        <ToggleButton.KeyboardAccelerators>
-                                            <KeyboardAccelerator Key="Number3" Modifiers="Control,Shift" />
-                                        </ToggleButton.KeyboardAccelerators>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="98" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock FontWeight="SemiBold" Text="Disk Read" />
-                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoReadMetricChipValue, Mode=OneWay}" />
-                                            </StackPanel>
-                                            <controls:MetricTrendChart x:Name="IoReadChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
-                                        </Grid>
-                                    </ToggleButton>
-
-                                    <ToggleButton
-                                        AccessKey="4"
-                                        AutomationProperties.Name="Focus disk write metric trend"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Stretch"
-                                        MinHeight="56"
-                                        Padding="12,8"
-                                        IsChecked="{x:Bind ViewModel.IsIoWriteMetricFocused, Mode=OneWay}"
-                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                        CommandParameter="IoWrite"
-                                        TabIndex="33">
-                                        <ToggleButton.KeyboardAccelerators>
-                                            <KeyboardAccelerator Key="Number4" Modifiers="Control,Shift" />
-                                        </ToggleButton.KeyboardAccelerators>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="98" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock FontWeight="SemiBold" Text="Disk Write" />
-                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoWriteMetricChipValue, Mode=OneWay}" />
-                                            </StackPanel>
-                                            <controls:MetricTrendChart x:Name="IoWriteChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
-                                        </Grid>
-                                    </ToggleButton>
-
-                                    <ToggleButton
-                                        AccessKey="5"
-                                        AutomationProperties.Name="Focus other input output metric trend"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Stretch"
-                                        MinHeight="56"
-                                        Padding="12,8"
-                                        IsChecked="{x:Bind ViewModel.IsOtherIoMetricFocused, Mode=OneWay}"
-                                        Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
-                                        CommandParameter="OtherIo"
-                                        TabIndex="34">
-                                        <ToggleButton.KeyboardAccelerators>
-                                            <KeyboardAccelerator Key="Number5" Modifiers="Control,Shift" />
-                                        </ToggleButton.KeyboardAccelerators>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="98" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock FontWeight="SemiBold" Text="Other I/O" />
-                                                <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.OtherIoMetricChipValue, Mode=OneWay}" />
-                                            </StackPanel>
-                                            <controls:MetricTrendChart x:Name="OtherIoChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
-                                        </Grid>
-                                    </ToggleButton>
-                                </StackPanel>
-
-                                <Border
-                                    x:Name="MetricMainHost"
-                                    Grid.Row="1"
-                                    Grid.Column="0"
-                                    Padding="10"
-                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="8">
-                                    <Grid RowSpacing="8">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.ExpandedMetricTitle, Mode=OneWay}" />
-                                            <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="6">
-                                                <TextBlock HorizontalAlignment="Right" FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.ExpandedMetricValue, Mode=OneWay}" />
-                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
-                                                    <ToggleButton
-                                                        Content="60s"
-                                                        IsChecked="{x:Bind ViewModel.IsTrendWindow60Selected, Mode=OneWay}"
-                                                        Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
-                                                        CommandParameter="60" />
-                                                    <ToggleButton
-                                                        Content="120s"
-                                                        IsChecked="{x:Bind ViewModel.IsTrendWindow120Selected, Mode=OneWay}"
-                                                        Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
-                                                        CommandParameter="120" />
-                                                </StackPanel>
-                                            </StackPanel>
-                                        </Grid>
-                                        <controls:MetricTrendChart x:Name="ExpandedMetricPlot" Grid.Row="1" Height="220" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
-                                    </Grid>
-                                </Border>
-                            </Grid>
-
-                            <TextBlock FontWeight="SemiBold" Text="Metadata Status" />
-                            <TextBlock Text="{x:Bind ViewModel.MetadataStatus, Mode=OneWay}" TextWrapping="Wrap" />
-                            <TextBlock FontWeight="SemiBold" Text="Parent PID" />
-                            <TextBlock Text="{x:Bind ViewModel.MetadataParentPid, Mode=OneWay}" />
-                            <TextBlock FontWeight="SemiBold" Text="Executable Path" />
-                            <TextBlock Text="{x:Bind ViewModel.MetadataExecutablePath, Mode=OneWay}" TextWrapping="Wrap" />
-                            <TextBlock FontWeight="SemiBold" Text="Command Line" />
-                            <TextBlock Text="{x:Bind ViewModel.MetadataCommandLine, Mode=OneWay}" TextWrapping="Wrap" />
                         </StackPanel>
-                    </ScrollViewer>
+
+                        <Grid x:Name="MetricTrendSplitGrid" Grid.Row="1" ColumnSpacing="6" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition x:Name="MetricSidebarColumn" Width="*" />
+                                <ColumnDefinition x:Name="MetricMainColumn" Width="0" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition x:Name="MetricSidebarRow" Height="Auto" />
+                                <RowDefinition x:Name="MetricMainRow" Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <StackPanel x:Name="MetricSidebarHost" Grid.Row="0" Grid.Column="0" HorizontalAlignment="Stretch" Spacing="8">
+                                <TextBlock FontWeight="SemiBold" Text="Metric Trends" />
+
+                                <ToggleButton
+                                    AccessKey="1"
+                                    AutomationProperties.Name="Focus cpu metric trend"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Stretch"
+                                    MinHeight="56"
+                                    Padding="12,8"
+                                    IsChecked="{x:Bind ViewModel.IsCpuMetricFocused, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                    CommandParameter="Cpu"
+                                    TabIndex="30">
+                                    <ToggleButton.KeyboardAccelerators>
+                                        <KeyboardAccelerator Key="Number1" Modifiers="Control,Shift" />
+                                    </ToggleButton.KeyboardAccelerators>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="98" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock FontWeight="SemiBold" Text="CPU" />
+                                            <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.CpuMetricChipValue, Mode=OneWay}" />
+                                        </StackPanel>
+                                        <controls:MetricTrendChart x:Name="CpuChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                    </Grid>
+                                </ToggleButton>
+
+                                <ToggleButton
+                                    AccessKey="2"
+                                    AutomationProperties.Name="Focus memory metric trend"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Stretch"
+                                    MinHeight="56"
+                                    Padding="12,8"
+                                    IsChecked="{x:Bind ViewModel.IsMemoryMetricFocused, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                    CommandParameter="Memory"
+                                    TabIndex="31">
+                                    <ToggleButton.KeyboardAccelerators>
+                                        <KeyboardAccelerator Key="Number2" Modifiers="Control,Shift" />
+                                    </ToggleButton.KeyboardAccelerators>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="98" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock FontWeight="SemiBold" Text="Memory" />
+                                            <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.MemoryMetricChipValue, Mode=OneWay}" />
+                                        </StackPanel>
+                                        <controls:MetricTrendChart x:Name="MemoryChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                    </Grid>
+                                </ToggleButton>
+
+                                <ToggleButton
+                                    AccessKey="3"
+                                    AutomationProperties.Name="Focus disk read metric trend"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Stretch"
+                                    MinHeight="56"
+                                    Padding="12,8"
+                                    IsChecked="{x:Bind ViewModel.IsIoReadMetricFocused, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                    CommandParameter="IoRead"
+                                    TabIndex="32">
+                                    <ToggleButton.KeyboardAccelerators>
+                                        <KeyboardAccelerator Key="Number3" Modifiers="Control,Shift" />
+                                    </ToggleButton.KeyboardAccelerators>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="98" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock FontWeight="SemiBold" Text="Disk Read" />
+                                            <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoReadMetricChipValue, Mode=OneWay}" />
+                                        </StackPanel>
+                                        <controls:MetricTrendChart x:Name="IoReadChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                    </Grid>
+                                </ToggleButton>
+
+                                <ToggleButton
+                                    AccessKey="4"
+                                    AutomationProperties.Name="Focus disk write metric trend"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Stretch"
+                                    MinHeight="56"
+                                    Padding="12,8"
+                                    IsChecked="{x:Bind ViewModel.IsIoWriteMetricFocused, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                    CommandParameter="IoWrite"
+                                    TabIndex="33">
+                                    <ToggleButton.KeyboardAccelerators>
+                                        <KeyboardAccelerator Key="Number4" Modifiers="Control,Shift" />
+                                    </ToggleButton.KeyboardAccelerators>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="98" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock FontWeight="SemiBold" Text="Disk Write" />
+                                            <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoWriteMetricChipValue, Mode=OneWay}" />
+                                        </StackPanel>
+                                        <controls:MetricTrendChart x:Name="IoWriteChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                    </Grid>
+                                </ToggleButton>
+
+                                <ToggleButton
+                                    AccessKey="5"
+                                    AutomationProperties.Name="Focus other input output metric trend"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Stretch"
+                                    MinHeight="56"
+                                    Padding="12,8"
+                                    IsChecked="{x:Bind ViewModel.IsOtherIoMetricFocused, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
+                                    CommandParameter="OtherIo"
+                                    TabIndex="34">
+                                    <ToggleButton.KeyboardAccelerators>
+                                        <KeyboardAccelerator Key="Number5" Modifiers="Control,Shift" />
+                                    </ToggleButton.KeyboardAccelerators>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="98" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock FontWeight="SemiBold" Text="Other I/O" />
+                                            <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.OtherIoMetricChipValue, Mode=OneWay}" />
+                                        </StackPanel>
+                                        <controls:MetricTrendChart x:Name="OtherIoChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                    </Grid>
+                                </ToggleButton>
+                            </StackPanel>
+
+                            <Border
+                                x:Name="MetricMainHost"
+                                Grid.Row="1"
+                                Grid.Column="0"
+                                Padding="10"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8">
+                                <Grid RowSpacing="8">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.ExpandedMetricTitle, Mode=OneWay}" />
+                                        <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="6">
+                                            <TextBlock HorizontalAlignment="Right" FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.ExpandedMetricValue, Mode=OneWay}" />
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
+                                                <ToggleButton
+                                                    Content="60s"
+                                                    IsChecked="{x:Bind ViewModel.IsTrendWindow60Selected, Mode=OneWay}"
+                                                    Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
+                                                    CommandParameter="60" />
+                                                <ToggleButton
+                                                    Content="120s"
+                                                    IsChecked="{x:Bind ViewModel.IsTrendWindow120Selected, Mode=OneWay}"
+                                                    Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
+                                                    CommandParameter="120" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                    <controls:MetricTrendChart x:Name="ExpandedMetricPlot" Grid.Row="1" MinHeight="220" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                </Grid>
+                            </Border>
+                        </Grid>
+
+                        <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" MaxHeight="240">
+                            <StackPanel Spacing="10">
+                                <TextBlock FontWeight="SemiBold" Text="Metadata Status" />
+                                <TextBlock Text="{x:Bind ViewModel.MetadataStatus, Mode=OneWay}" TextWrapping="Wrap" />
+                                <TextBlock FontWeight="SemiBold" Text="Parent PID" />
+                                <TextBlock Text="{x:Bind ViewModel.MetadataParentPid, Mode=OneWay}" />
+                                <TextBlock FontWeight="SemiBold" Text="Executable Path" />
+                                <TextBlock Text="{x:Bind ViewModel.MetadataExecutablePath, Mode=OneWay}" TextWrapping="Wrap" />
+                                <TextBlock FontWeight="SemiBold" Text="Command Line" />
+                                <TextBlock Text="{x:Bind ViewModel.MetadataCommandLine, Mode=OneWay}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
                 </Border>
             </Grid>
+
         </Grid>
 
         <Border
@@ -511,4 +522,5 @@
         </Border>
     </Grid>
 </Window>
+
 

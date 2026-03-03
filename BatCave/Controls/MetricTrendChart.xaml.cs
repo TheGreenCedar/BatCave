@@ -22,12 +22,8 @@ public sealed partial class MetricTrendChart : UserControl
 {
     private const int MinVisiblePointCount = 60;
     private const int MaxVisiblePointCount = 120;
-    private const double MemoryFloorBytes = 256d * 1024d * 1024d;
-    private const double IoRateFloorBytes = 1d * 1024d * 1024d;
-    private const double DynamicCeilingPaddingRatio = 1.12;
-    private const double DynamicCeilingDecayFactor = 0.08;
 
-    private double _dynamicDomainMax;
+    private double _dynamicDomainMaxRaw;
     private IReadOnlyList<double> _values = Array.Empty<double>();
     private int _visiblePointCount = MinVisiblePointCount;
     private MetricTrendScaleMode _scaleMode = MetricTrendScaleMode.CpuPercent;
@@ -76,7 +72,7 @@ public sealed partial class MetricTrendChart : UserControl
             }
 
             _scaleMode = value;
-            _dynamicDomainMax = 0d;
+            _dynamicDomainMaxRaw = 0d;
             RefreshChart();
         }
     }
@@ -190,31 +186,30 @@ public sealed partial class MetricTrendChart : UserControl
 
     private double ResolveDomainMax(double maxVisible)
     {
-        if (ScaleMode == MetricTrendScaleMode.CpuPercent)
+        (double floor, double? ceiling) = ResolveDomainPolicy();
+
+        _dynamicDomainMaxRaw = MetricTrendScaleDomain.ResolveNextRawDomainMax(
+            previousRawDomainMax: _dynamicDomainMaxRaw,
+            maxVisible: maxVisible,
+            floor: floor,
+            ceiling: ceiling,
+            paddingRatio: MetricTrendScaleDomain.DefaultPaddingRatio,
+            decayFactor: MetricTrendScaleDomain.DefaultDecayFactor);
+
+        return MetricTrendScaleDomain.ResolveRenderedDomainMax(
+            rawDomainMax: _dynamicDomainMaxRaw,
+            floor: floor,
+            ceiling: ceiling);
+    }
+
+    private (double Floor, double? Ceiling) ResolveDomainPolicy()
+    {
+        return ScaleMode switch
         {
-            _dynamicDomainMax = 100d;
-            return _dynamicDomainMax;
-        }
-
-        double floor = ScaleMode == MetricTrendScaleMode.MemoryBytes
-            ? MemoryFloorBytes
-            : IoRateFloorBytes;
-
-        double targetMax = Math.Max(maxVisible * DynamicCeilingPaddingRatio, floor);
-        targetMax = SparklineMath.RoundUpToNice(targetMax);
-
-        if (_dynamicDomainMax <= 0d || targetMax > _dynamicDomainMax)
-        {
-            _dynamicDomainMax = targetMax;
-        }
-        else
-        {
-            _dynamicDomainMax += (targetMax - _dynamicDomainMax) * DynamicCeilingDecayFactor;
-            _dynamicDomainMax = Math.Max(floor, _dynamicDomainMax);
-            _dynamicDomainMax = SparklineMath.RoundUpToNice(_dynamicDomainMax);
-        }
-
-        return _dynamicDomainMax;
+            MetricTrendScaleMode.CpuPercent => (MetricTrendScaleDomain.CpuFloorPercent, MetricTrendScaleDomain.CpuCeilingPercent),
+            MetricTrendScaleMode.MemoryBytes => (MetricTrendScaleDomain.MemoryFloorBytes, null),
+            _ => (MetricTrendScaleDomain.IoRateFloorBytes, null),
+        };
     }
 
     private static double[] CopyWindow(IReadOnlyList<double> values, int visiblePointCount)

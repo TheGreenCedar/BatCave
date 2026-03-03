@@ -421,6 +421,9 @@ public sealed partial class MainWindow : Window
         MetricMainColumn.Width = isWide
             ? new GridLength(1, GridUnitType.Star)
             : new GridLength(0);
+        MetricSidebarRow.Height = isWide
+            ? new GridLength(1, GridUnitType.Star)
+            : GridLength.Auto;
         MetricMainRow.Height = isWide
             ? new GridLength(0)
             : GridLength.Auto;
