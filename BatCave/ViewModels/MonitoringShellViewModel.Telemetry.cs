@@ -107,7 +107,7 @@ public partial class MonitoringShellViewModel
 
         foreach (ProcessIdentity staleIdentity in staleIdentities)
         {
-            _metadataCache.Remove(staleIdentity);
+            RemoveIdentityStateFromCaches(staleIdentity);
         }
     }
 
@@ -203,31 +203,46 @@ public partial class MonitoringShellViewModel
 
     private void AppendHeartbeatSamplesIfNeeded(ulong seq)
     {
-        if (SelectedRow is null)
+        if (SelectedRow is not null)
         {
-            AppendTableHeartbeatSamplesIfDue(seq);
+            ProcessIdentity selectedIdentity = SelectedRow.Identity();
+            if (_allRows.TryGetValue(selectedIdentity, out ProcessSample? selectedSample) && selectedSample is not null)
+            {
+                _ = AppendHeartbeatForIdentity(selectedIdentity, selectedSample, seq);
+            }
+        }
+
+        if (!IsTableHeartbeatDue(seq))
+        {
             return;
         }
 
-        ProcessIdentity selectedIdentity = SelectedRow.Identity();
-        if (_allRows.TryGetValue(selectedIdentity, out ProcessSample? selectedSample) && selectedSample is not null)
-        {
-            _ = AppendHeartbeatForIdentity(selectedIdentity, selectedSample, seq);
-        }
-
-        AppendTableHeartbeatSamplesIfDue(seq);
+        AppendTableHeartbeatSamples(seq);
     }
 
-    private void AppendTableHeartbeatSamplesIfDue(ulong seq)
+    private static bool IsTableHeartbeatDue(ulong seq)
     {
-        if (seq % RowSparklineStride != 0)
-        {
-            return;
-        }
+        return seq % RowSparklineStride == 0;
+    }
 
+    private void AppendTableHeartbeatSamples(ulong seq)
+    {
         foreach ((ProcessIdentity identity, ProcessRowViewState rowState) in _visibleRowStateByIdentity)
         {
-            AppendTableHeartbeatForVisibleRow(identity, rowState, seq);
+            if (!_allRows.TryGetValue(identity, out ProcessSample? sample) || sample is null)
+            {
+                continue;
+            }
+
+            if (!ShouldShowSample(sample))
+            {
+                continue;
+            }
+
+            if (AppendHeartbeatForIdentity(identity, sample, seq))
+            {
+                rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, sample));
+            }
         }
     }
 
@@ -315,9 +330,19 @@ public partial class MonitoringShellViewModel
             ApplySummaryDelta(previous, -1d);
         }
 
+        RemoveIdentityStateFromCaches(identity);
+        return RemoveVisibleRowState(identity);
+    }
+
+    private void RemoveIdentityStateFromCaches(ProcessIdentity identity)
+    {
         _metadataCache.Remove(identity);
         _metricHistory.Remove(identity);
         _metricHistoryLastSeq.Remove(identity);
+    }
+
+    private bool RemoveVisibleRowState(ProcessIdentity identity)
+    {
         if (_visibleRowStateByIdentity.Remove(identity, out ProcessRowViewState? rowState))
         {
             _rowViewSource.Remove(rowState);
@@ -330,23 +355,5 @@ public partial class MonitoringShellViewModel
     private ProcessRowViewState? ResolveSelectedVisibleRow()
     {
         return SelectedRow is null ? null : TryGetVisibleRow(SelectedRow.Identity());
-    }
-
-    private void AppendTableHeartbeatForVisibleRow(ProcessIdentity identity, ProcessRowViewState rowState, ulong seq)
-    {
-        if (!_allRows.TryGetValue(identity, out ProcessSample? sample) || sample is null)
-        {
-            return;
-        }
-
-        if (!ShouldShowSample(sample))
-        {
-            return;
-        }
-
-        if (AppendHeartbeatForIdentity(identity, sample, seq))
-        {
-            rowState.UpdateCpuTrendPoints(BuildRowCpuTrendPoints(identity, sample));
-        }
     }
 }

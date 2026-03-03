@@ -133,49 +133,25 @@ public partial class MonitoringShellViewModel : ObservableObject
     public bool IsLoading
     {
         get => _isLoading;
-        private set
-        {
-            if (SetProperty(ref _isLoading, value))
-            {
-                RaiseStateVisibilityProperties();
-            }
-        }
+        private set => SetStateFlagAndRaiseVisibility(ref _isLoading, value);
     }
 
     public bool IsBlocked
     {
         get => _isBlocked;
-        private set
-        {
-            if (SetProperty(ref _isBlocked, value))
-            {
-                RaiseStateVisibilityProperties();
-            }
-        }
+        private set => SetStateFlagAndRaiseVisibility(ref _isBlocked, value);
     }
 
     public bool IsStartupError
     {
         get => _isStartupError;
-        private set
-        {
-            if (SetProperty(ref _isStartupError, value))
-            {
-                RaiseStateVisibilityProperties();
-            }
-        }
+        private set => SetStateFlagAndRaiseVisibility(ref _isStartupError, value);
     }
 
     public bool IsLive
     {
         get => _isLive;
-        private set
-        {
-            if (SetProperty(ref _isLive, value))
-            {
-                RaiseStateVisibilityProperties();
-            }
-        }
+        private set => SetStateFlagAndRaiseVisibility(ref _isLive, value);
     }
 
     public string ShellHeadline
@@ -322,10 +298,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         {
             if (SetProperty(ref _selectedRow, value))
             {
-                OnPropertyChanged(nameof(HasSelection));
-                OnPropertyChanged(nameof(DetailTitle));
-                RaiseMetadataProperties();
-                RefreshDetailMetrics();
+                RaiseSelectedRowDerivedProperties();
             }
         }
     }
@@ -337,7 +310,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         {
             if (SetProperty(ref _selectedVisibleRow, value))
             {
-                OnPropertyChanged(nameof(SelectedVisibleRowBinding));
+                RaiseSelectedVisibleRowBindingProperty();
             }
         }
     }
@@ -564,5 +537,26 @@ public partial class MonitoringShellViewModel : ObservableObject
     public void AttachDispatcherQueue(DispatcherQueue dispatcherQueue)
     {
         _dispatcherQueue = dispatcherQueue;
+    }
+
+    private void SetStateFlagAndRaiseVisibility(ref bool stateField, bool value)
+    {
+        if (SetProperty(ref stateField, value))
+        {
+            RaiseStateVisibilityProperties();
+        }
+    }
+
+    private void RaiseSelectedRowDerivedProperties()
+    {
+        OnPropertyChanged(nameof(HasSelection));
+        OnPropertyChanged(nameof(DetailTitle));
+        RaiseMetadataProperties();
+        RefreshDetailMetrics();
+    }
+
+    private void RaiseSelectedVisibleRowBindingProperty()
+    {
+        OnPropertyChanged(nameof(SelectedVisibleRowBinding));
     }
 }

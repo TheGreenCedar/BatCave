@@ -163,18 +163,9 @@ public partial class MonitoringShellViewModel
 
     private void MaybeClearStaleWarning(RuntimeHealth health)
     {
-        if (string.IsNullOrWhiteSpace(_latestWarningSummary))
-        {
-            return;
-        }
-
-        if (health.Seq <= _latestWarningSeq)
-        {
-            return;
-        }
-
-        ulong elapsedTicks = health.Seq - _latestWarningSeq;
-        if (elapsedTicks < WarningClearAfterTicks)
+        if (string.IsNullOrWhiteSpace(_latestWarningSummary)
+            || health.Seq <= _latestWarningSeq
+            || health.Seq - _latestWarningSeq < WarningClearAfterTicks)
         {
             return;
         }

@@ -77,7 +77,7 @@ public partial class MonitoringShellViewModel
 
     private void ApplySelectedVisibleRowBinding(ProcessRowViewState? value)
     {
-        if (_isApplyingSelectedVisibleRowBinding || ReferenceEquals(value, SelectedVisibleRow))
+        if (ShouldSkipSelectedVisibleRowBinding(value))
         {
             return;
         }
@@ -90,25 +90,7 @@ public partial class MonitoringShellViewModel
                 return;
             }
 
-            if (SelectedRow is null)
-            {
-                return;
-            }
-
-            ProcessIdentity identity = SelectedRow.Identity();
-            if (!_allRows.ContainsKey(identity))
-            {
-                ClearSelection();
-                return;
-            }
-
-            if (TryRestoreVisibleSelection(identity))
-            {
-                return;
-            }
-
-            // Selected process is still tracked but hidden by filter/admin visibility; keep detail selection.
-            SelectedVisibleRow = null;
+            ReconcileVisibleSelectionAfterNullBinding();
         }
         finally
         {
@@ -121,7 +103,7 @@ public partial class MonitoringShellViewModel
         // If reference is unchanged we still need to notify binding so ListView re-applies selection visuals.
         if (ReferenceEquals(SelectedVisibleRow, row))
         {
-            OnPropertyChanged(nameof(SelectedVisibleRowBinding));
+            RaiseSelectedVisibleRowBindingProperty();
             return;
         }
 
@@ -130,54 +112,24 @@ public partial class MonitoringShellViewModel
 
     private void ReassertSelectionAfterSort()
     {
-        if (SelectedRow is null)
+        if (!TrySyncSelectedRowFromTrackedRows(out ProcessIdentity identity))
         {
-            SelectedVisibleRow = null;
             return;
         }
 
-        ProcessIdentity identity = SelectedRow.Identity();
-        if (!_allRows.TryGetValue(identity, out ProcessSample? updated))
-        {
-            ClearSelection();
-            return;
-        }
-
-        SelectedRow = updated;
-        ProcessRowViewState? visibleRow = _visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? rowState)
-            && ShouldShowRow(rowState)
-            ? rowState
-            : null;
-
-        SelectedVisibleRow = visibleRow;
-        OnPropertyChanged(nameof(SelectedVisibleRowBinding));
-
-        _dispatcherQueue?.TryEnqueue(() =>
-        {
-            if (SelectedRow?.Identity() == identity)
-            {
-                OnPropertyChanged(nameof(SelectedVisibleRowBinding));
-            }
-        });
+        SelectedVisibleRow = ResolveVisibleSelectionAfterSort(identity);
+        RaiseSelectedVisibleRowBindingProperty();
+        ReassertSelectedVisibleRowBindingOnDispatcher(identity);
     }
 
     private void ReconcileSelectionAfterDelta()
     {
-        if (SelectedRow is null)
+        if (!TrySyncSelectedRowFromTrackedRows(out ProcessIdentity identity))
         {
-            SelectedVisibleRow = null;
             return;
         }
 
-        ProcessIdentity identity = SelectedRow.Identity();
-        if (_allRows.TryGetValue(identity, out ProcessSample? updated))
-        {
-            SelectedRow = updated;
-            SelectedVisibleRow = TryGetVisibleRow(identity);
-            return;
-        }
-
-        ClearSelection();
+        SelectedVisibleRow = TryGetVisibleRow(identity);
     }
 
     private ProcessRowViewState? TryGetVisibleRow(ProcessIdentity identity)
@@ -233,6 +185,45 @@ public partial class MonitoringShellViewModel
         return true;
     }
 
+    private bool ShouldSkipSelectedVisibleRowBinding(ProcessRowViewState? value)
+    {
+        return _isApplyingSelectedVisibleRowBinding || ReferenceEquals(value, SelectedVisibleRow);
+    }
+
+    private void ReconcileVisibleSelectionAfterNullBinding()
+    {
+        if (!TryGetTrackedSelectedIdentityForBinding(out ProcessIdentity identity))
+        {
+            return;
+        }
+
+        if (TryRestoreVisibleSelection(identity))
+        {
+            return;
+        }
+
+        // Selected process is still tracked but hidden by filter/admin visibility; keep detail selection.
+        SelectedVisibleRow = null;
+    }
+
+    private bool TryGetTrackedSelectedIdentityForBinding(out ProcessIdentity identity)
+    {
+        if (SelectedRow is null)
+        {
+            identity = default;
+            return false;
+        }
+
+        identity = SelectedRow.Identity();
+        if (_allRows.ContainsKey(identity))
+        {
+            return true;
+        }
+
+        ClearSelection();
+        return false;
+    }
+
     private bool TryRestoreVisibleSelection(ProcessIdentity identity)
     {
         ProcessRowViewState? restoredVisibleRow = TryGetVisibleRow(identity);
@@ -251,6 +242,45 @@ public partial class MonitoringShellViewModel
         }
 
         return false;
+    }
+
+    private bool TrySyncSelectedRowFromTrackedRows(out ProcessIdentity identity)
+    {
+        if (SelectedRow is null)
+        {
+            SelectedVisibleRow = null;
+            identity = default;
+            return false;
+        }
+
+        identity = SelectedRow.Identity();
+        if (!_allRows.TryGetValue(identity, out ProcessSample? updated))
+        {
+            ClearSelection();
+            return false;
+        }
+
+        SelectedRow = updated;
+        return true;
+    }
+
+    private ProcessRowViewState? ResolveVisibleSelectionAfterSort(ProcessIdentity identity)
+    {
+        return _visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? rowState)
+               && ShouldShowRow(rowState)
+            ? rowState
+            : null;
+    }
+
+    private void ReassertSelectedVisibleRowBindingOnDispatcher(ProcessIdentity identity)
+    {
+        _dispatcherQueue?.TryEnqueue(() =>
+        {
+            if (SelectedRow?.Identity() == identity)
+            {
+                RaiseSelectedVisibleRowBindingProperty();
+            }
+        });
     }
 
     private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)

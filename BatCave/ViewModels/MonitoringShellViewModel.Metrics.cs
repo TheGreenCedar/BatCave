@@ -121,24 +121,17 @@ public partial class MonitoringShellViewModel
 
     private void UpdateGlobalSummaryHistory()
     {
-        _globalSummaryRow = new ProcessSample
-        {
-            Seq = _summarySeq,
-            TsMs = _summaryTsMs,
-            Pid = 0,
-            ParentPid = 0,
-            StartTimeMs = 0,
-            Name = "Global System Values",
-            CpuPct = _summaryCpuPct,
-            RssBytes = ClampToUlong(_summaryRssBytes),
-            PrivateBytes = ClampToUlong(_summaryPrivateBytes),
-            IoReadBps = ClampToUlong(_summaryIoReadBps),
-            IoWriteBps = ClampToUlong(_summaryIoWriteBps),
-            OtherIoBps = ClampToUlong(_summaryOtherIoBps),
-            Threads = ClampToUInt(_summaryThreads),
-            Handles = ClampToUInt(_summaryHandles),
-            AccessState = AccessState.Full,
-        };
+        _globalSummaryRow = CreateGlobalSummarySample(
+            _summarySeq,
+            _summaryTsMs,
+            _summaryCpuPct,
+            _summaryRssBytes,
+            _summaryPrivateBytes,
+            _summaryIoReadBps,
+            _summaryIoWriteBps,
+            _summaryOtherIoBps,
+            _summaryThreads,
+            _summaryHandles);
 
         _globalHistory.Append(_globalSummaryRow);
         if (SelectedRow is null)
@@ -149,22 +142,47 @@ public partial class MonitoringShellViewModel
 
     private static ProcessSample CreateEmptyGlobalSummary()
     {
+        return CreateGlobalSummarySample(
+            seq: 0,
+            tsMs: UnixNowMs(),
+            cpuPct: 0,
+            rssBytes: 0,
+            privateBytes: 0,
+            ioReadBps: 0,
+            ioWriteBps: 0,
+            otherIoBps: 0,
+            threads: 0,
+            handles: 0);
+    }
+
+    private static ProcessSample CreateGlobalSummarySample(
+        ulong seq,
+        ulong tsMs,
+        double cpuPct,
+        double rssBytes,
+        double privateBytes,
+        double ioReadBps,
+        double ioWriteBps,
+        double otherIoBps,
+        double threads,
+        double handles)
+    {
         return new ProcessSample
         {
-            Seq = 0,
-            TsMs = UnixNowMs(),
+            Seq = seq,
+            TsMs = tsMs,
             Pid = 0,
             ParentPid = 0,
             StartTimeMs = 0,
             Name = "Global System Values",
-            CpuPct = 0,
-            RssBytes = 0,
-            PrivateBytes = 0,
-            IoReadBps = 0,
-            IoWriteBps = 0,
-            OtherIoBps = 0,
-            Threads = 0,
-            Handles = 0,
+            CpuPct = cpuPct,
+            RssBytes = ClampToUlong(rssBytes),
+            PrivateBytes = ClampToUlong(privateBytes),
+            IoReadBps = ClampToUlong(ioReadBps),
+            IoWriteBps = ClampToUlong(ioWriteBps),
+            OtherIoBps = ClampToUlong(otherIoBps),
+            Threads = ClampToUInt(threads),
+            Handles = ClampToUInt(handles),
             AccessState = AccessState.Full,
         };
     }
