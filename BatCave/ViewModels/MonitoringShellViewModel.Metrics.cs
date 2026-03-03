@@ -19,6 +19,27 @@ public partial class MonitoringShellViewModel
         MetricFocus = focus;
     }
 
+    [RelayCommand]
+    private void MetricTrendWindowSelected(string? windowSeconds)
+    {
+        if (!int.TryParse(windowSeconds, out int requested))
+        {
+            return;
+        }
+
+        int normalized = NormalizeMetricTrendWindowSeconds(requested);
+        if (normalized == MetricTrendWindowSeconds)
+        {
+            // Keep one-way bound toggle visuals consistent when the selected window is clicked again.
+            OnPropertyChanged(nameof(IsTrendWindow60Selected));
+            OnPropertyChanged(nameof(IsTrendWindow120Selected));
+            return;
+        }
+
+        MetricTrendWindowSeconds = normalized;
+        _runtime.SetMetricTrendWindowSeconds(normalized);
+    }
+
     private void RaiseMetricFocusProperties()
     {
         RaiseProperties(
@@ -250,16 +271,18 @@ public partial class MonitoringShellViewModel
 
     private bool ApplyMetricTrendValues(IReadOnlyList<double> source, ref double[] target, string propertyName)
     {
+        int visiblePointCount = Math.Min(source.Count, MetricTrendWindowSeconds);
+        int sourceStartIndex = source.Count - visiblePointCount;
         bool changed = false;
-        if (target.Length != source.Count)
+        if (target.Length != visiblePointCount)
         {
-            target = new double[source.Count];
+            target = new double[visiblePointCount];
             changed = true;
         }
 
-        for (int index = 0; index < source.Count; index++)
+        for (int index = 0; index < visiblePointCount; index++)
         {
-            double next = source[index];
+            double next = source[sourceStartIndex + index];
             if (target[index] == next)
             {
                 continue;

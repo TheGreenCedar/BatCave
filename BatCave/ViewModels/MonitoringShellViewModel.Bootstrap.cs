@@ -31,6 +31,7 @@ public partial class MonitoringShellViewModel
             CurrentSortDirection = _runtime.CurrentSortDirection;
             ApplySortDescriptions();
             AdminModeEnabled = _runtime.IsAdminMode();
+            MetricTrendWindowSeconds = _runtime.CurrentMetricTrendWindowSeconds;
 
             RefreshRuntimeSnapshot();
 

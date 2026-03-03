@@ -80,6 +80,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private bool _isMetadataLoading;
     private string? _metadataError;
     private DetailMetricFocus _metricFocus = DetailMetricFocus.Cpu;
+    private int _metricTrendWindowSeconds = 60;
     private long _metadataRequestVersion;
 
     private ulong _summarySeq;
@@ -383,6 +384,27 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     public bool IsOtherIoMetricFocused => MetricFocus == DetailMetricFocus.OtherIo;
 
+    public int MetricTrendWindowSeconds
+    {
+        get => _metricTrendWindowSeconds;
+        private set
+        {
+            int normalized = NormalizeMetricTrendWindowSeconds(value);
+            if (!SetProperty(ref _metricTrendWindowSeconds, normalized))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(IsTrendWindow60Selected));
+            OnPropertyChanged(nameof(IsTrendWindow120Selected));
+            RefreshDetailMetrics();
+        }
+    }
+
+    public bool IsTrendWindow60Selected => MetricTrendWindowSeconds == 60;
+
+    public bool IsTrendWindow120Selected => MetricTrendWindowSeconds == 120;
+
     public bool HasSelection => SelectedRow is not null;
 
     public string DetailTitle => BuildDetailTitle();
@@ -562,5 +584,10 @@ public partial class MonitoringShellViewModel : ObservableObject
         return SelectedMetadata is null
             ? "Metadata unavailable for this process identity."
             : "Metadata loaded.";
+    }
+
+    private static int NormalizeMetricTrendWindowSeconds(int seconds)
+    {
+        return seconds >= 120 ? 120 : 60;
     }
 }

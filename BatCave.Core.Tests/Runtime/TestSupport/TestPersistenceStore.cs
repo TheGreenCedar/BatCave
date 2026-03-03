@@ -6,6 +6,7 @@ namespace BatCave.Core.Tests.Runtime.TestSupport;
 internal sealed class TestPersistenceStore : IPersistenceStore
 {
     private readonly Queue<string> _warnings = [];
+    private readonly List<UserSettings> _savedSettings = [];
     private UserSettings _settings = new();
     private WarmCache? _warmCache;
 
@@ -27,6 +28,7 @@ internal sealed class TestPersistenceStore : IPersistenceStore
         }
 
         _settings = settings;
+        _savedSettings.Add(settings);
         return Task.CompletedTask;
     }
 
@@ -54,5 +56,10 @@ internal sealed class TestPersistenceStore : IPersistenceStore
     public void EnqueueWarning(string warning)
     {
         _warnings.Enqueue(warning);
+    }
+
+    public IReadOnlyList<UserSettings> GetSavedSettingsSnapshot()
+    {
+        return _savedSettings.ToArray();
     }
 }

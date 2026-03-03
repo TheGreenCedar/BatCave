@@ -9,6 +9,8 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 {
     private const int JitterWindowSize = 120;
     private const ulong TickHealthSummaryInterval = 30;
+    private const int DefaultMetricTrendWindowSeconds = 60;
+    private const int ExtendedMetricTrendWindowSeconds = 120;
 
     private readonly IProcessCollectorFactory _collectorFactory;
     private readonly ITelemetryPipeline _pipeline;
@@ -48,6 +50,12 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _logger = logger ?? NullLogger<MonitoringRuntime>.Instance;
 
         _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
+        int normalizedMetricTrendWindowSeconds = NormalizeMetricTrendWindowSeconds(_settings.MetricTrendWindowSeconds);
+        bool metricTrendWindowNormalized = _settings.MetricTrendWindowSeconds != normalizedMetricTrendWindowSeconds;
+        _settings = _settings with
+        {
+            MetricTrendWindowSeconds = normalizedMetricTrendWindowSeconds,
+        };
         bool requestedStartupAdminMode = _settings.AdminMode;
         CollectorActivationResult startupCollector = ActivateCollector(requestedStartupAdminMode);
         _collector = startupCollector.Collector;
@@ -56,7 +64,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             AdminMode = startupCollector.AdminMode,
         };
         EnqueueRuntimeWarning(startupCollector.Warning);
-        if (startupCollector.AdminMode != requestedStartupAdminMode)
+        if (startupCollector.AdminMode != requestedStartupAdminMode || metricTrendWindowNormalized)
         {
             PersistSettings();
         }
@@ -101,6 +109,24 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     public bool IsAdminMode()
     {
         return _settings.AdminMode;
+    }
+
+    public int CurrentMetricTrendWindowSeconds => _settings.MetricTrendWindowSeconds;
+
+    public void SetMetricTrendWindowSeconds(int seconds)
+    {
+        int normalized = NormalizeMetricTrendWindowSeconds(seconds);
+        if (_settings.MetricTrendWindowSeconds == normalized)
+        {
+            return;
+        }
+
+        _settings = _settings with
+        {
+            MetricTrendWindowSeconds = normalized,
+        };
+
+        PersistSettings();
     }
 
     public async Task RestartAsync(bool adminMode, CancellationToken ct)
@@ -177,6 +203,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             SortDir = settings.SortDir,
             FilterText = settings.FilterText,
         };
+    }
+
+    private static int NormalizeMetricTrendWindowSeconds(int seconds)
+    {
+        return seconds >= ExtendedMetricTrendWindowSeconds
+            ? ExtendedMetricTrendWindowSeconds
+            : DefaultMetricTrendWindowSeconds;
     }
 
     private WarmCache? LoadWarmCache()

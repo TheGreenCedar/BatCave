@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Threading;
+using BatCave.Controls;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using ScottPlot.WinUI;
+using Microsoft.UI.Xaml.Media;
+using Windows.UI;
 
 namespace BatCave;
 
@@ -16,8 +18,17 @@ public sealed partial class MainWindow : Window
 {
     private const double WideMetricTrendBreakpoint = 1200;
     private const double WideMetricSidebarWidth = 248;
-    private const int MetricPlotBufferCapacity = 128;
-    private const double AutoScaleMaterialShiftRatio = 0.35;
+    private static readonly Brush CpuTrendStrokeBrush = CreateBrush(0xFF, 0x0B, 0x84, 0xD8);
+    private static readonly Brush CpuTrendFillBrush = CreateBrush(0x33, 0x0B, 0x84, 0xD8);
+    private static readonly Brush MemoryTrendStrokeBrush = CreateBrush(0xFF, 0x25, 0x63, 0xEB);
+    private static readonly Brush MemoryTrendFillBrush = CreateBrush(0x33, 0x25, 0x63, 0xEB);
+    private static readonly Brush IoReadTrendStrokeBrush = CreateBrush(0xFF, 0x6A, 0x9F, 0x2A);
+    private static readonly Brush IoReadTrendFillBrush = CreateBrush(0x33, 0x6A, 0x9F, 0x2A);
+    private static readonly Brush IoWriteTrendStrokeBrush = CreateBrush(0xFF, 0xD0, 0x7A, 0x00);
+    private static readonly Brush IoWriteTrendFillBrush = CreateBrush(0x33, 0xD0, 0x7A, 0x00);
+    private static readonly Brush OtherIoTrendStrokeBrush = CreateBrush(0xFF, 0xD1, 0x34, 0x38);
+    private static readonly Brush OtherIoTrendFillBrush = CreateBrush(0x33, 0xD1, 0x34, 0x38);
+    private static readonly Brush MetricGridBrush = CreateBrush(0x4C, 0xA0, 0xA8, 0xB8);
 
     private bool _bootstrapped;
     private bool _metricPlotRefreshQueued;
@@ -26,7 +37,6 @@ public sealed partial class MainWindow : Window
     private bool _selectionSyncSecondPass;
     private long _selectionSettleProbeStartedAt;
     private MetricPlotDirtyFlags _dirtyMetricPlots = MetricPlotDirtyFlags.All;
-    private readonly Dictionary<WinUIPlot, MetricPlotState> _metricPlotStates = [];
 
     public MainWindow()
     {
@@ -50,6 +60,7 @@ public sealed partial class MainWindow : Window
 
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
+        ConfigureMetricChartModes();
         _dirtyMetricPlots = MetricPlotDirtyFlags.All;
         ScheduleMetricPlotRefresh();
         ApplyMetricTrendLayoutForWindowWidth(GetWindowWidth());
@@ -214,12 +225,14 @@ public sealed partial class MainWindow : Window
 
         long startedAt = Stopwatch.GetTimestamp();
         bool refreshedAny = false;
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Cpu, CpuChipPlot, ViewModel.CpuMetricTrendValues, lineWidth: 2f);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Memory, MemoryChipPlot, ViewModel.MemoryMetricTrendValues, lineWidth: 2f);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoRead, IoReadChipPlot, ViewModel.IoReadMetricTrendValues, lineWidth: 2f);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoWrite, IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues, lineWidth: 2f);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.OtherIo, OtherIoChipPlot, ViewModel.OtherIoMetricTrendValues, lineWidth: 2f);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Expanded, ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, lineWidth: 3f);
+        int visiblePointCount = ViewModel.MetricTrendWindowSeconds;
+        ApplyExpandedMetricStyle();
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Cpu, CpuChipPlot, ViewModel.CpuMetricTrendValues, visiblePointCount);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Memory, MemoryChipPlot, ViewModel.MemoryMetricTrendValues, visiblePointCount);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoRead, IoReadChipPlot, ViewModel.IoReadMetricTrendValues, visiblePointCount);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoWrite, IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues, visiblePointCount);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.OtherIo, OtherIoChipPlot, ViewModel.OtherIoMetricTrendValues, visiblePointCount);
+        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Expanded, ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, visiblePointCount);
 
         if (refreshedAny)
         {
@@ -252,175 +265,125 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(MetricMainHost, isWide ? 1 : 0);
     }
 
-    private bool RefreshMetricPlotIfDirty(
+    private static bool RefreshMetricPlotIfDirty(
         MetricPlotDirtyFlags dirty,
         MetricPlotDirtyFlags target,
-        WinUIPlot plotControl,
+        MetricTrendChart chart,
         IReadOnlyList<double> values,
-        float lineWidth)
+        int visiblePointCount)
     {
         if ((dirty & target) == 0)
         {
             return false;
         }
-
-        MetricPlotState state = EnsureMetricPlotState(plotControl, lineWidth);
-        bool hasSeriesChanges = UpdateMetricPlotBuffer(
-            state,
-            values,
-            out int activePointCount,
-            out double minValue,
-            out double maxValue);
-
-        if (state.Signal.LineWidth != lineWidth)
+        if (!ReferenceEquals(chart.Values, values))
         {
-            state.Signal.LineWidth = lineWidth;
-            hasSeriesChanges = true;
+            chart.Values = values;
         }
 
-        bool forceAutoScale = !ReferenceEquals(state.LastValueSource, values);
-        state.LastValueSource = values;
-
-        bool requiresRender = hasSeriesChanges || forceAutoScale || !state.HasScaledBounds;
-        if (!requiresRender)
+        if (chart.VisiblePointCount != visiblePointCount)
         {
-            return false;
+            chart.VisiblePointCount = visiblePointCount;
         }
 
-        state.ActivePointCount = activePointCount;
-        state.Signal.MinRenderIndex = 0;
-        state.Signal.MaxRenderIndex = Math.Max(1, activePointCount - 1);
-        if (ShouldAutoScale(state, activePointCount, minValue, maxValue, forceAutoScale))
-        {
-            plotControl.Plot.Axes.AutoScale();
-            state.ScaledMin = minValue;
-            state.ScaledMax = maxValue;
-            state.ScaledPointCount = activePointCount;
-            state.HasScaledBounds = true;
-        }
-
-        plotControl.Refresh();
+        chart.RequestRender();
         return true;
     }
 
-    private static bool UpdateMetricPlotBuffer(
-        MetricPlotState state,
-        IReadOnlyList<double> values,
-        out int activePointCount,
-        out double minValue,
-        out double maxValue)
+    private void ApplyExpandedMetricStyle()
     {
-        activePointCount = values.Count > 0 ? Math.Max(2, Math.Min(values.Count, state.Buffer.Length)) : 2;
-        bool changed = state.ActivePointCount != activePointCount;
-
-        if (values.Count == 0)
-        {
-            minValue = 0d;
-            maxValue = 0d;
-            return SetConstantBufferValue(state, 0d, changed);
-        }
-
-        if (values.Count == 1)
-        {
-            double single = values[0];
-            minValue = single;
-            maxValue = single;
-            return SetConstantBufferValue(state, single, changed);
-        }
-
-        int sourceStartIndex = values.Count > state.Buffer.Length ? values.Count - state.Buffer.Length : 0;
-        minValue = double.PositiveInfinity;
-        maxValue = double.NegativeInfinity;
-        for (int index = 0; index < activePointCount; index++)
-        {
-            double next = values[sourceStartIndex + index];
-            minValue = Math.Min(minValue, next);
-            maxValue = Math.Max(maxValue, next);
-            if (state.Buffer[index] == next)
-            {
-                continue;
-            }
-
-            state.Buffer[index] = next;
-            changed = true;
-        }
-
-        return changed;
+        ExpandedMetricPlot.ScaleMode = ResolveExpandedScaleMode(ViewModel.MetricFocus);
+        ExpandedMetricPlot.StrokeBrush = ResolveExpandedStrokeBrush(ViewModel.MetricFocus);
+        ExpandedMetricPlot.FillBrush = ResolveExpandedFillBrush(ViewModel.MetricFocus);
     }
 
-    private static bool SetConstantBufferValue(MetricPlotState state, double value, bool changed)
+    private void ConfigureMetricChartModes()
     {
-        if (state.Buffer[0] != value)
-        {
-            state.Buffer[0] = value;
-            changed = true;
-        }
+        CpuChipPlot.ScaleMode = MetricTrendScaleMode.CpuPercent;
+        MemoryChipPlot.ScaleMode = MetricTrendScaleMode.MemoryBytes;
+        IoReadChipPlot.ScaleMode = MetricTrendScaleMode.IoRate;
+        IoWriteChipPlot.ScaleMode = MetricTrendScaleMode.IoRate;
+        OtherIoChipPlot.ScaleMode = MetricTrendScaleMode.IoRate;
+        ExpandedMetricPlot.ScaleMode = MetricTrendScaleMode.CpuPercent;
 
-        if (state.Buffer[1] != value)
-        {
-            state.Buffer[1] = value;
-            changed = true;
-        }
+        CpuChipPlot.ShowGrid = false;
+        MemoryChipPlot.ShowGrid = false;
+        IoReadChipPlot.ShowGrid = false;
+        IoWriteChipPlot.ShowGrid = false;
+        OtherIoChipPlot.ShowGrid = false;
+        ExpandedMetricPlot.ShowGrid = true;
 
-        return changed;
+        CpuChipPlot.GridBrush = MetricGridBrush;
+        MemoryChipPlot.GridBrush = MetricGridBrush;
+        IoReadChipPlot.GridBrush = MetricGridBrush;
+        IoWriteChipPlot.GridBrush = MetricGridBrush;
+        OtherIoChipPlot.GridBrush = MetricGridBrush;
+        ExpandedMetricPlot.GridBrush = MetricGridBrush;
+
+        CpuChipPlot.StrokeBrush = CpuTrendStrokeBrush;
+        CpuChipPlot.FillBrush = CpuTrendFillBrush;
+        CpuChipPlot.StrokeThickness = 1.4;
+
+        MemoryChipPlot.StrokeBrush = MemoryTrendStrokeBrush;
+        MemoryChipPlot.FillBrush = MemoryTrendFillBrush;
+        MemoryChipPlot.StrokeThickness = 1.4;
+
+        IoReadChipPlot.StrokeBrush = IoReadTrendStrokeBrush;
+        IoReadChipPlot.FillBrush = IoReadTrendFillBrush;
+        IoReadChipPlot.StrokeThickness = 1.4;
+
+        IoWriteChipPlot.StrokeBrush = IoWriteTrendStrokeBrush;
+        IoWriteChipPlot.FillBrush = IoWriteTrendFillBrush;
+        IoWriteChipPlot.StrokeThickness = 1.4;
+
+        OtherIoChipPlot.StrokeBrush = OtherIoTrendStrokeBrush;
+        OtherIoChipPlot.FillBrush = OtherIoTrendFillBrush;
+        OtherIoChipPlot.StrokeThickness = 1.4;
+
+        ExpandedMetricPlot.StrokeBrush = CpuTrendStrokeBrush;
+        ExpandedMetricPlot.FillBrush = CpuTrendFillBrush;
+        ExpandedMetricPlot.StrokeThickness = 1.8;
     }
 
-    private static bool ShouldAutoScale(
-        MetricPlotState state,
-        int activePointCount,
-        double minValue,
-        double maxValue,
-        bool forceAutoScale)
+    private static MetricTrendScaleMode ResolveExpandedScaleMode(DetailMetricFocus metricFocus)
     {
-        if (forceAutoScale || !state.HasScaledBounds)
+        return metricFocus switch
         {
-            return true;
-        }
-
-        if (minValue < state.ScaledMin || maxValue > state.ScaledMax)
-        {
-            return true;
-        }
-
-        double previousRange = Math.Max(1e-9, state.ScaledMax - state.ScaledMin);
-        double shiftedLowRatio = (minValue - state.ScaledMin) / previousRange;
-        double shiftedHighRatio = (state.ScaledMax - maxValue) / previousRange;
-
-        if (shiftedLowRatio >= AutoScaleMaterialShiftRatio || shiftedHighRatio >= AutoScaleMaterialShiftRatio)
-        {
-            return true;
-        }
-
-        return state.ScaledPointCount != activePointCount && activePointCount <= 2;
+            DetailMetricFocus.Memory => MetricTrendScaleMode.MemoryBytes,
+            DetailMetricFocus.IoRead => MetricTrendScaleMode.IoRate,
+            DetailMetricFocus.IoWrite => MetricTrendScaleMode.IoRate,
+            DetailMetricFocus.OtherIo => MetricTrendScaleMode.IoRate,
+            _ => MetricTrendScaleMode.CpuPercent,
+        };
     }
 
-    private MetricPlotState EnsureMetricPlotState(WinUIPlot plotControl, float lineWidth)
+    private Brush ResolveExpandedStrokeBrush(DetailMetricFocus metricFocus)
     {
-        if (_metricPlotStates.TryGetValue(plotControl, out MetricPlotState? existing))
+        return metricFocus switch
         {
-            return existing;
-        }
-
-        ConfigureMetricPlot(plotControl);
-        double[] buffer = new double[MetricPlotBufferCapacity];
-        ScottPlot.Plottables.Signal signal = plotControl.Plot.Add.Signal(buffer);
-        signal.LineWidth = lineWidth;
-        signal.MinRenderIndex = 0;
-        signal.MaxRenderIndex = 1;
-
-        MetricPlotState created = new(signal, buffer);
-        _metricPlotStates[plotControl] = created;
-        return created;
+            DetailMetricFocus.Memory => MemoryTrendStrokeBrush,
+            DetailMetricFocus.IoRead => IoReadTrendStrokeBrush,
+            DetailMetricFocus.IoWrite => IoWriteTrendStrokeBrush,
+            DetailMetricFocus.OtherIo => OtherIoTrendStrokeBrush,
+            _ => CpuTrendStrokeBrush,
+        };
     }
 
-    private static void ConfigureMetricPlot(WinUIPlot plotControl)
+    private Brush ResolveExpandedFillBrush(DetailMetricFocus metricFocus)
     {
-        plotControl.Plot.FigureBackground.Color = ScottPlot.Colors.Transparent;
-        plotControl.Plot.DataBackground.Color = ScottPlot.Colors.Transparent;
-        plotControl.Plot.Axes.Frameless();
-        plotControl.Plot.Axes.Margins(0.02, 0.05);
-        plotControl.Plot.HideGrid();
-        plotControl.Plot.HideLegend();
+        return metricFocus switch
+        {
+            DetailMetricFocus.Memory => MemoryTrendFillBrush,
+            DetailMetricFocus.IoRead => IoReadTrendFillBrush,
+            DetailMetricFocus.IoWrite => IoWriteTrendFillBrush,
+            DetailMetricFocus.OtherIo => OtherIoTrendFillBrush,
+            _ => CpuTrendFillBrush,
+        };
+    }
+
+    private static Brush CreateBrush(byte a, byte r, byte g, byte b)
+    {
+        return new SolidColorBrush(Color.FromArgb(a, r, g, b));
     }
 
     private void OnWindowClosed(object sender, WindowEventArgs args)
@@ -492,6 +455,8 @@ public sealed partial class MainWindow : Window
             nameof(MonitoringShellViewModel.IoWriteMetricTrendValues) => MetricPlotDirtyFlags.IoWrite,
             nameof(MonitoringShellViewModel.OtherIoMetricTrendValues) => MetricPlotDirtyFlags.OtherIo,
             nameof(MonitoringShellViewModel.ExpandedMetricTrendValues) => MetricPlotDirtyFlags.Expanded,
+            nameof(MonitoringShellViewModel.MetricFocus) => MetricPlotDirtyFlags.Expanded,
+            nameof(MonitoringShellViewModel.MetricTrendWindowSeconds) => MetricPlotDirtyFlags.All,
             _ => MetricPlotDirtyFlags.None,
         };
 
@@ -529,32 +494,5 @@ public sealed partial class MainWindow : Window
         OtherIo = 1 << 4,
         Expanded = 1 << 5,
         All = Cpu | Memory | IoRead | IoWrite | OtherIo | Expanded,
-    }
-
-    private sealed class MetricPlotState
-    {
-        public MetricPlotState(ScottPlot.Plottables.Signal signal, double[] buffer)
-        {
-            Signal = signal;
-            Buffer = buffer;
-            ActivePointCount = 2;
-            ScaledPointCount = 2;
-        }
-
-        public ScottPlot.Plottables.Signal Signal { get; }
-
-        public double[] Buffer { get; }
-
-        public int ActivePointCount { get; set; }
-
-        public IReadOnlyList<double>? LastValueSource { get; set; }
-
-        public bool HasScaledBounds { get; set; }
-
-        public double ScaledMin { get; set; }
-
-        public double ScaledMax { get; set; }
-
-        public int ScaledPointCount { get; set; }
     }
 }

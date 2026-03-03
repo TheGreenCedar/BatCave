@@ -49,6 +49,47 @@ public sealed class SparklineMathTests
         Assert.Equal(new Point(100, 1), points[2]);
     }
 
+    [Fact]
+    public void BuildPointsInDomain_ClampsOutOfRangeValuesIntoDomain()
+    {
+        IReadOnlyList<Point> points = SparklineMath.BuildPointsInDomain([-10, 50, 150], 100, 20, 0, 100);
+        Assert.Equal(3, points.Count);
+        Assert.Equal(new Point(0, 19), points[0]);
+        Assert.Equal(new Point(50, 10), points[1]);
+        Assert.Equal(new Point(100, 1), points[2]);
+    }
+
+    [Fact]
+    public void BuildFillPolygon_ClosesAreaToBaseline()
+    {
+        IReadOnlyList<Point> line =
+        [
+            new Point(0, 19),
+            new Point(50, 10),
+            new Point(100, 1),
+        ];
+
+        IReadOnlyList<Point> polygon = SparklineMath.BuildFillPolygon(line, 100, 20);
+        Assert.Equal(5, polygon.Count);
+        Assert.Equal(new Point(0, 20), polygon[0]);
+        Assert.Equal(line[0], polygon[1]);
+        Assert.Equal(line[1], polygon[2]);
+        Assert.Equal(line[2], polygon[3]);
+        Assert.Equal(new Point(100, 20), polygon[4]);
+    }
+
+    [Theory]
+    [InlineData(0.01, 0.01)]
+    [InlineData(1.1, 2)]
+    [InlineData(2.01, 5)]
+    [InlineData(5.01, 10)]
+    [InlineData(11.3, 20)]
+    [InlineData(222, 500)]
+    public void RoundUpToNice_UsesOneTwoFiveProgression(double value, double expected)
+    {
+        Assert.Equal(expected, SparklineMath.RoundUpToNice(value));
+    }
+
     [Theory]
     [MemberData(nameof(PointFallbackEquivalenceCases))]
     public void BuildPointsWithFallback_MatchesBuildPointsOrFallback(double[] values, double width, double height)

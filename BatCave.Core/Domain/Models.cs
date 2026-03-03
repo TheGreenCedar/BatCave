@@ -217,6 +217,8 @@ public sealed record UserSettings
     public string FilterText { get; init; } = string.Empty;
 
     public bool AdminMode { get; init; }
+
+    public int MetricTrendWindowSeconds { get; init; } = 60;
 }
 
 public sealed record WarmCache

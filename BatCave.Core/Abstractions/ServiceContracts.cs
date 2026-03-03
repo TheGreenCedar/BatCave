@@ -77,6 +77,10 @@ public interface IMonitoringRuntime
 
     bool IsAdminMode();
 
+    int CurrentMetricTrendWindowSeconds { get; }
+
+    void SetMetricTrendWindowSeconds(int seconds);
+
     Task RestartAsync(bool adminMode, CancellationToken ct);
 
     void RecordDroppedTicks(ulong dropped);

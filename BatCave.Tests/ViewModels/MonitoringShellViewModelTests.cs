@@ -145,6 +145,84 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task Bootstrap_LoadsPersistedMetricTrendWindowSetting()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            settings: new UserSettings
+            {
+                MetricTrendWindowSeconds = 120,
+            });
+
+        Assert.Equal(120, viewModel.MetricTrendWindowSeconds);
+        Assert.False(viewModel.IsTrendWindow60Selected);
+        Assert.True(viewModel.IsTrendWindow120Selected);
+    }
+
+    [Fact]
+    public async Task MetricTrendWindowSelected_SwitchesDisplayedTrendLength()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample current = Sample(pid: 77, startTime: 7700, access: AccessState.Full) with { CpuPct = 0 };
+        for (ulong seq = 1; seq <= 90; seq++)
+        {
+            current = current with
+            {
+                Seq = seq,
+                TsMs = seq,
+                CpuPct = seq,
+            };
+            gateway.RaiseDelta(seq, [current], []);
+        }
+
+        await viewModel.SelectRowAsync(current, CancellationToken.None);
+
+        Assert.Equal(60, viewModel.CpuMetricTrendValues.Length);
+        viewModel.MetricTrendWindowSelectedCommand.Execute("120");
+        Assert.Equal(120, viewModel.MetricTrendWindowSeconds);
+        Assert.Equal(90, viewModel.CpuMetricTrendValues.Length);
+        Assert.True(viewModel.IsTrendWindow120Selected);
+    }
+
+    [Fact]
+    public async Task MetricFocusSelectedCommand_UpdatesExpandedMetricSeriesAndLabels()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample current = Sample(pid: 78, startTime: 7800, access: AccessState.Full);
+        for (ulong seq = 1; seq <= 8; seq++)
+        {
+            current = current with
+            {
+                Seq = seq,
+                TsMs = seq,
+                CpuPct = 2 + seq,
+                RssBytes = 1024UL * seq,
+                IoReadBps = 4096UL * seq,
+                IoWriteBps = 8192UL * seq,
+                OtherIoBps = 2048UL * seq,
+            };
+            gateway.RaiseDelta(seq, [current], []);
+        }
+
+        await viewModel.SelectRowAsync(current, CancellationToken.None);
+
+        viewModel.MetricFocusSelectedCommand.Execute("Memory");
+        Assert.Equal("Memory Trend", viewModel.ExpandedMetricTitle);
+        Assert.Contains("RSS", viewModel.ExpandedMetricValue, StringComparison.Ordinal);
+        Assert.Equal(viewModel.MemoryMetricTrendValues.Length, viewModel.ExpandedMetricTrendValues.Length);
+
+        viewModel.MetricFocusSelectedCommand.Execute("IoRead");
+        Assert.Equal("Disk Read Trend", viewModel.ExpandedMetricTitle);
+        Assert.Contains("read", viewModel.ExpandedMetricValue, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(viewModel.IoReadMetricTrendValues.Length, viewModel.ExpandedMetricTrendValues.Length);
+    }
+
+    [Fact]
     public async Task TelemetryDelta_RefreshesVisibleRowsWithoutCollectionReset()
     {
         TestRuntimeEventGateway gateway = new();
@@ -305,7 +383,7 @@ public class MonitoringShellViewModelTests
 
         Assert.Single(GetVisibleRows(viewModel));
         Assert.Equal(120, GetVisibleRow(viewModel, 0).CpuTrendGeometry.Count);
-        Assert.Equal(120, viewModel.CpuMetricTrendValues.Length);
+        Assert.Equal(60, viewModel.CpuMetricTrendValues.Length);
     }
 
     [Fact]
@@ -544,14 +622,15 @@ public class MonitoringShellViewModelTests
     private static MonitoringShellViewModel CreateViewModel(
         SequenceLaunchPolicyGate gate,
         TestMetadataProvider metadataProvider,
-        TestRuntimeEventGateway gateway)
+        TestRuntimeEventGateway gateway,
+        UserSettings? settings = null)
     {
         MonitoringRuntime runtime = new(
             new TestCollectorFactory(),
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
-            new TestPersistenceStore());
+            new TestPersistenceStore(settings));
         RuntimeLoopService loopService = new(runtime);
         return new MonitoringShellViewModel(gate, runtime, loopService, gateway, metadataProvider);
     }
@@ -559,12 +638,14 @@ public class MonitoringShellViewModelTests
     private static async Task<MonitoringShellViewModel> CreateBootstrappedViewModelAsync(
         TestRuntimeEventGateway gateway,
         SequenceLaunchPolicyGate? gate = null,
-        TestMetadataProvider? metadataProvider = null)
+        TestMetadataProvider? metadataProvider = null,
+        UserSettings? settings = null)
     {
         MonitoringShellViewModel viewModel = CreateViewModel(
             gate ?? CreatePassedGate(),
             metadataProvider ?? CreateNullMetadataProvider(),
-            gateway);
+            gateway,
+            settings);
 
         await viewModel.BootstrapAsync(CancellationToken.None);
         return viewModel;
@@ -678,8 +759,13 @@ public class MonitoringShellViewModelTests
 
     private sealed class TestPersistenceStore : IPersistenceStore
     {
-        private UserSettings _settings = new();
+        private UserSettings _settings;
         private WarmCache? _warmCache;
+
+        public TestPersistenceStore(UserSettings? settings = null)
+        {
+            _settings = settings ?? new UserSettings();
+        }
 
         public string BaseDirectory => Path.GetTempPath();
 

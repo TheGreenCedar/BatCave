@@ -49,6 +49,108 @@ public static class SparklineMath
         return BuildResolvedPoints(values, width, height, in layout);
     }
 
+    public static IReadOnlyList<Point> BuildPointsInDomain(
+        IReadOnlyList<double> values,
+        double width,
+        double height,
+        double minDomain,
+        double maxDomain)
+    {
+        if (values.Count == 0 || width <= 0 || height <= 0)
+        {
+            return [];
+        }
+
+        if (!double.IsFinite(minDomain) || !double.IsFinite(maxDomain))
+        {
+            return [];
+        }
+
+        if (maxDomain <= minDomain)
+        {
+            maxDomain = minDomain + 1d;
+        }
+
+        bool singleValueSeries = values.Count == 1;
+        int pointCount = singleValueSeries ? 2 : values.Count;
+        double verticalPadding = height > 2 ? 1d : 0d;
+        double drawableHeight = Math.Max(1d, height - verticalPadding * 2d);
+        double denominator = pointCount - 1d;
+        double range = Math.Max(1e-9, maxDomain - minDomain);
+
+        List<Point> points = new(pointCount);
+        for (int index = 0; index < pointCount; index++)
+        {
+            double value = singleValueSeries ? values[0] : values[index];
+            double clamped = Math.Clamp(value, minDomain, maxDomain);
+            double x = denominator <= 0
+                ? 0d
+                : (index * width) / denominator;
+            double y = verticalPadding + (1d - (clamped - minDomain) / range) * drawableHeight;
+            points.Add(new Point(Math.Round(x, 2), Math.Round(y, 2)));
+        }
+
+        return points;
+    }
+
+    public static IReadOnlyList<Point> BuildPointsInDomainWithFallback(
+        IReadOnlyList<double> values,
+        double width,
+        double height,
+        double minDomain,
+        double maxDomain)
+    {
+        IReadOnlyList<Point> points = BuildPointsInDomain(values, width, height, minDomain, maxDomain);
+        return points.Count == 0 ? FlatlineFallbackGeometry : points;
+    }
+
+    public static IReadOnlyList<Point> BuildFillPolygon(
+        IReadOnlyList<Point> linePoints,
+        double width,
+        double height)
+    {
+        if (linePoints.Count == 0 || width <= 0 || height <= 0)
+        {
+            return [];
+        }
+
+        double baseline = Math.Round(height, 2);
+        List<Point> points = new(linePoints.Count + 2)
+        {
+            new Point(Math.Round(linePoints[0].X, 2), baseline),
+        };
+
+        for (int index = 0; index < linePoints.Count; index++)
+        {
+            points.Add(linePoints[index]);
+        }
+
+        points.Add(new Point(Math.Round(linePoints[^1].X, 2), baseline));
+        return points;
+    }
+
+    public static double RoundUpToNice(double value)
+    {
+        if (!double.IsFinite(value) || value <= 0)
+        {
+            return 1d;
+        }
+
+        double exponent = Math.Floor(Math.Log10(value));
+        double magnitude = Math.Pow(10d, exponent);
+        double normalized = value / magnitude;
+
+        double rounded = normalized <= 1d
+            ? 1d
+            : normalized <= 2d
+                ? 2d
+                : normalized <= 5d
+                    ? 5d
+                    : 10d;
+
+        return rounded * magnitude;
+    }
+
     public static string BuildPointString(IReadOnlyList<double> values, double width, double height)
     {
         if (!TryCreateLayout(values, width, height, out SparklineLayout layout))

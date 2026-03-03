@@ -40,6 +40,47 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
+    public async Task SetMetricTrendWindowSeconds_PersistsNormalizedWindow()
+    {
+        BlockingSettingsPersistenceStore persistenceStore = new(blockFirstSave: true);
+        MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
+
+        try
+        {
+            runtime.SetMetricTrendWindowSeconds(120);
+            await persistenceStore.WaitForFirstSaveStartedAsync();
+
+            runtime.SetMetricTrendWindowSeconds(75);
+            Assert.Equal(60, runtime.CurrentMetricTrendWindowSeconds);
+
+            persistenceStore.ReleaseFirstSave();
+        }
+        finally
+        {
+            runtime.Dispose();
+        }
+
+        IReadOnlyList<UserSettings> saves = persistenceStore.GetSavedSettingsSnapshot();
+        Assert.Equal(2, saves.Count);
+        Assert.Equal(120, saves[0].MetricTrendWindowSeconds);
+        Assert.Equal(60, saves[1].MetricTrendWindowSeconds);
+    }
+
+    [Fact]
+    public void Constructor_WhenPersistedMetricTrendWindowIsInvalid_NormalizesToDefault()
+    {
+        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
+        {
+            MetricTrendWindowSeconds = 7,
+        });
+
+        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
+        Assert.Equal(60, runtime.CurrentMetricTrendWindowSeconds);
+        Assert.Equal(1, persistenceStore.SettingsSaveCount);
+        Assert.Equal(60, persistenceStore.CurrentSettings.MetricTrendWindowSeconds);
+    }
+
+    [Fact]
     public void Tick_PrioritizesCollectorWarningBeforePersistenceWarning()
     {
         using MonitoringRuntime runtime = CreateRuntime(out TestCollector collector, out TestPersistenceStore persistenceStore);
@@ -332,6 +373,7 @@ public class MonitoringRuntimeTests
     {
         private readonly Queue<string> _warnings = [];
         private UserSettings _settings;
+        private int _settingsSaveCount;
 
         public PreloadedSettingsPersistenceStore(UserSettings settings)
         {
@@ -339,6 +381,10 @@ public class MonitoringRuntimeTests
         }
 
         public string BaseDirectory => Path.GetTempPath();
+
+        public int SettingsSaveCount => _settingsSaveCount;
+
+        public UserSettings CurrentSettings => _settings;
 
         public UserSettings? LoadSettings()
         {
@@ -348,6 +394,7 @@ public class MonitoringRuntimeTests
         public Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
         {
             _settings = settings;
+            _settingsSaveCount++;
             return Task.CompletedTask;
         }
 
