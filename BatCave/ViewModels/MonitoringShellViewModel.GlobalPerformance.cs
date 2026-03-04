@@ -30,6 +30,7 @@ public partial class MonitoringShellViewModel
     private static readonly Color NetworkStrokeColor = Color.FromArgb(0xFF, 0xD8, 0x1B, 0x60);
     private static readonly Color NetworkFillColor = Color.FromArgb(0x33, 0xD8, 0x1B, 0x60);
     private static readonly Color NetworkOverlayStrokeColor = Color.FromArgb(0xFF, 0xA1, 0x14, 0x49);
+    private static readonly FixedRingSeries EmptyTrendSeries = new(1);
 
     private readonly ObservableCollection<GlobalResourceRowViewState> _globalResourceRows = [];
     private readonly Dictionary<string, GlobalTrendHistory> _globalTrendByResourceId = new(StringComparer.OrdinalIgnoreCase);
@@ -344,7 +345,12 @@ public partial class MonitoringShellViewModel
         foreach (GlobalResourceDescriptor descriptor in descriptors)
         {
             GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(descriptor.ResourceId);
-            history.Append(descriptor.PrimaryValue, descriptor.SecondaryValue, descriptor.AuxiliaryValue, descriptor.LogicalValues);
+            history.Append(
+                descriptor.PrimaryValue,
+                descriptor.SecondaryValue,
+                descriptor.AuxiliaryValue,
+                descriptor.LogicalValues,
+                descriptor.LogicalKernelValues);
 
             GlobalResourceRowViewState? existing = _globalResourceRows.FirstOrDefault(
                 row => string.Equals(row.ResourceId, descriptor.ResourceId, StringComparison.OrdinalIgnoreCase));
@@ -469,6 +475,7 @@ public partial class MonitoringShellViewModel
                 SecondaryValue: totalRate,
                 AuxiliaryValue: totalRate,
                 LogicalValues: [],
+                LogicalKernelValues: [],
                 MiniScaleMode: MetricTrendScaleMode.CpuPercent,
                 MiniStrokeColor: DiskStrokeColor,
                 MiniFillColor: DiskFillColor,
@@ -497,6 +504,7 @@ public partial class MonitoringShellViewModel
                 SecondaryValue: sendBps * 8d,
                 AuxiliaryValue: 0d,
                 LogicalValues: [],
+                LogicalKernelValues: [],
                 MiniScaleMode: MetricTrendScaleMode.BitsRate,
                 MiniStrokeColor: NetworkStrokeColor,
                 MiniFillColor: NetworkFillColor,
@@ -520,6 +528,7 @@ public partial class MonitoringShellViewModel
             SecondaryValue: sampled.CpuSnapshot?.KernelPct ?? 0d,
             AuxiliaryValue: 0d,
             LogicalValues: sampled.CpuSnapshot?.LogicalProcessorUtilizationPct ?? [],
+            LogicalKernelValues: sampled.CpuSnapshot?.LogicalProcessorKernelPct ?? [],
             MiniScaleMode: MetricTrendScaleMode.CpuPercent,
             MiniStrokeColor: CpuStrokeColor,
             MiniFillColor: CpuFillColor,
@@ -543,6 +552,7 @@ public partial class MonitoringShellViewModel
             SecondaryValue: 0d,
             AuxiliaryValue: 0d,
             LogicalValues: [],
+            LogicalKernelValues: [],
             MiniScaleMode: MetricTrendScaleMode.MemoryBytes,
             MiniStrokeColor: MemoryStrokeColor,
             MiniFillColor: MemoryFillColor,
@@ -658,7 +668,7 @@ public partial class MonitoringShellViewModel
         ApplyGlobalTrendValues(history.Secondary, ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
         ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
 
-        UpdateCpuLogicalRows(history.LogicalByProcessor, MetricTrendWindowSeconds);
+        UpdateCpuLogicalRows(history.LogicalByProcessor, history.LogicalKernelByProcessor, MetricTrendWindowSeconds);
         PopulateCpuStats(cpu);
     }
 
@@ -806,28 +816,34 @@ public partial class MonitoringShellViewModel
         SetGlobalStats(new[] { ("Status", "n/a") });
     }
 
-    private void UpdateCpuLogicalRows(IReadOnlyList<FixedRingSeries> logicalSeries, int visiblePointCount)
+    private void UpdateCpuLogicalRows(
+        IReadOnlyList<FixedRingSeries> logicalSeries,
+        IReadOnlyList<FixedRingSeries> logicalKernelSeries,
+        int visiblePointCount)
     {
-        if (logicalSeries.Count == 0)
+        int rowCount = Math.Max(logicalSeries.Count, logicalKernelSeries.Count);
+        if (rowCount == 0)
         {
             _globalCpuLogicalProcessorRows.Clear();
             return;
         }
 
-        while (_globalCpuLogicalProcessorRows.Count < logicalSeries.Count)
+        while (_globalCpuLogicalProcessorRows.Count < rowCount)
         {
             int index = _globalCpuLogicalProcessorRows.Count;
-            _globalCpuLogicalProcessorRows.Add(new LogicalProcessorTrendViewState($"CPU {index}", []));
+            _globalCpuLogicalProcessorRows.Add(new LogicalProcessorTrendViewState($"CPU {index}", [], []));
         }
 
-        while (_globalCpuLogicalProcessorRows.Count > logicalSeries.Count)
+        while (_globalCpuLogicalProcessorRows.Count > rowCount)
         {
             _globalCpuLogicalProcessorRows.RemoveAt(_globalCpuLogicalProcessorRows.Count - 1);
         }
 
-        for (int index = 0; index < logicalSeries.Count; index++)
+        for (int index = 0; index < rowCount; index++)
         {
-            _globalCpuLogicalProcessorRows[index].UpdateValues(logicalSeries[index], visiblePointCount);
+            FixedRingSeries logical = index < logicalSeries.Count ? logicalSeries[index] : EmptyTrendSeries;
+            FixedRingSeries kernel = index < logicalKernelSeries.Count ? logicalKernelSeries[index] : EmptyTrendSeries;
+            _globalCpuLogicalProcessorRows[index].UpdateValues(logical, kernel, visiblePointCount);
         }
     }
 
@@ -1060,6 +1076,7 @@ public partial class MonitoringShellViewModel
         double SecondaryValue,
         double AuxiliaryValue,
         IReadOnlyList<double> LogicalValues,
+        IReadOnlyList<double> LogicalKernelValues,
         MetricTrendScaleMode MiniScaleMode,
         Color MiniStrokeColor,
         Color MiniFillColor,
@@ -1135,31 +1152,53 @@ public partial class MonitoringShellViewModel
 
         public List<FixedRingSeries> LogicalByProcessor { get; } = [];
 
-        public void Append(double primary, double secondary, double auxiliary, IReadOnlyList<double> logicalValues)
+        public List<FixedRingSeries> LogicalKernelByProcessor { get; } = [];
+
+        public void Append(
+            double primary,
+            double secondary,
+            double auxiliary,
+            IReadOnlyList<double> logicalValues,
+            IReadOnlyList<double> logicalKernelValues)
         {
             Primary.Add(NormalizeSeriesValue(primary));
             Secondary.Add(NormalizeSeriesValue(secondary));
             Auxiliary.Add(NormalizeSeriesValue(auxiliary));
 
-            if (logicalValues.Count == 0)
+            int logicalCount = Math.Max(logicalValues.Count, logicalKernelValues.Count);
+            if (logicalCount == 0)
             {
                 LogicalByProcessor.Clear();
+                LogicalKernelByProcessor.Clear();
                 return;
             }
 
-            while (LogicalByProcessor.Count < logicalValues.Count)
+            while (LogicalByProcessor.Count < logicalCount)
             {
                 LogicalByProcessor.Add(new FixedRingSeries(_capacity));
             }
 
-            while (LogicalByProcessor.Count > logicalValues.Count)
+            while (LogicalByProcessor.Count > logicalCount)
             {
                 LogicalByProcessor.RemoveAt(LogicalByProcessor.Count - 1);
             }
 
-            for (int index = 0; index < logicalValues.Count; index++)
+            while (LogicalKernelByProcessor.Count < logicalCount)
             {
-                LogicalByProcessor[index].Add(NormalizeSeriesValue(logicalValues[index]));
+                LogicalKernelByProcessor.Add(new FixedRingSeries(_capacity));
+            }
+
+            while (LogicalKernelByProcessor.Count > logicalCount)
+            {
+                LogicalKernelByProcessor.RemoveAt(LogicalKernelByProcessor.Count - 1);
+            }
+
+            for (int index = 0; index < logicalCount; index++)
+            {
+                double logicalValue = index < logicalValues.Count ? logicalValues[index] : 0d;
+                double logicalKernelValue = index < logicalKernelValues.Count ? logicalKernelValues[index] : 0d;
+                LogicalByProcessor[index].Add(NormalizeSeriesValue(logicalValue));
+                LogicalKernelByProcessor[index].Add(NormalizeSeriesValue(logicalKernelValue));
             }
         }
 

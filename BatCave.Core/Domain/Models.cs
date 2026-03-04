@@ -182,6 +182,8 @@ public sealed record SystemGlobalCpuSnapshot
     public ulong? UptimeSeconds { get; init; }
 
     public IReadOnlyList<double> LogicalProcessorUtilizationPct { get; init; } = [];
+
+    public IReadOnlyList<double> LogicalProcessorKernelPct { get; init; } = [];
 }
 
 public sealed record SystemGlobalMemorySnapshot

@@ -731,9 +731,12 @@
                                                         <controls:MetricTrendChart
                                                             Height="120"
                                                             Values="{Binding Values, Mode=OneWay}"
+                                                            OverlayValues="{Binding OverlayValues, Mode=OneWay}"
+                                                            ShowOverlay="True"
                                                             ScaleMode="CpuPercent"
                                                             StrokeBrush="#FF0B84D8"
                                                             FillBrush="#330B84D8"
+                                                            OverlayStrokeBrush="#FF075C8F"
                                                             ShowGrid="True"
                                                             IsTabStop="False"
                                                             Background="Transparent" />

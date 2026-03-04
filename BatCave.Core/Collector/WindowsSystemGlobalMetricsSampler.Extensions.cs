@@ -100,6 +100,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     private SystemGlobalCpuSnapshot BuildCpuSnapshot(double? cpuPct, double? kernelPct)
     {
         List<double> logicalUtilization = [];
+        List<double> logicalKernel = [];
         uint? processes = null;
         uint? threads = null;
         uint? handles = null;
@@ -108,7 +109,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
         try
         {
-            using ManagementObjectSearcher processorPerfSearcher = new("SELECT Name, PercentProcessorTime FROM Win32_PerfFormattedData_PerfOS_Processor");
+            using ManagementObjectSearcher processorPerfSearcher = new("SELECT Name, PercentProcessorTime, PercentPrivilegedTime FROM Win32_PerfFormattedData_PerfOS_Processor");
             using ManagementObjectCollection processorRows = processorPerfSearcher.Get();
             foreach (ManagementBaseObject row in processorRows)
             {
@@ -126,12 +127,14 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
                 if (int.TryParse(name, out _))
                 {
                     logicalUtilization.Add(ReadDouble(row["PercentProcessorTime"]) ?? 0d);
+                    logicalKernel.Add(ReadDouble(row["PercentPrivilegedTime"]) ?? 0d);
                 }
             }
         }
         catch
         {
             logicalUtilization = [];
+            logicalKernel = [];
         }
 
         try
@@ -211,6 +214,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             HandleCount = handles,
             UptimeSeconds = uptimeSeconds,
             LogicalProcessorUtilizationPct = logicalUtilization,
+            LogicalProcessorKernelPct = logicalKernel,
         };
     }
 

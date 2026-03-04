@@ -167,11 +167,13 @@ public sealed class GlobalStatItemViewState : ObservableObject
 public sealed class LogicalProcessorTrendViewState : ObservableObject
 {
     private double[] _values;
+    private double[] _overlayValues;
 
-    public LogicalProcessorTrendViewState(string title, double[] values)
+    public LogicalProcessorTrendViewState(string title, double[] values, double[] overlayValues)
     {
         Title = title;
         _values = values;
+        _overlayValues = overlayValues;
     }
 
     public string Title { get; }
@@ -182,16 +184,28 @@ public sealed class LogicalProcessorTrendViewState : ObservableObject
         private set => SetProperty(ref _values, value);
     }
 
+    public double[] OverlayValues
+    {
+        get => _overlayValues;
+        private set => SetProperty(ref _overlayValues, value);
+    }
+
     public void UpdateValues(double[] values)
     {
         Values = values;
     }
 
-    internal void UpdateValues(FixedRingSeries series, int visiblePointCount)
+    internal void UpdateValues(FixedRingSeries series, FixedRingSeries overlaySeries, int visiblePointCount)
     {
-        if (series.CopyLatestInto(ref _values, visiblePointCount))
+        bool changed = series.CopyLatestInto(ref _values, visiblePointCount);
+        if (changed)
         {
             OnPropertyChanged(nameof(Values));
+        }
+
+        if (overlaySeries.CopyLatestInto(ref _overlayValues, visiblePointCount))
+        {
+            OnPropertyChanged(nameof(OverlayValues));
         }
     }
 }

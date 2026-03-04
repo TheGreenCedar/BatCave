@@ -968,6 +968,7 @@ public class MonitoringShellViewModelTests
                 cpuSnapshot: new SystemGlobalCpuSnapshot
                 {
                     LogicalProcessorUtilizationPct = [10, 20, 30, 40],
+                    LogicalProcessorKernelPct = [3, 6, 9, 12],
                 },
                 diskSnapshots:
                 [
@@ -1001,6 +1002,10 @@ public class MonitoringShellViewModelTests
         Assert.Equal(Visibility.Visible, viewModel.GlobalCpuModeToggleVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.GlobalCombinedChartVisibility);
         Assert.Equal(Visibility.Visible, viewModel.GlobalCpuLogicalGridVisibility);
+        Assert.NotEmpty(viewModel.GlobalCpuLogicalProcessorRows);
+        LogicalProcessorTrendViewState logicalRow = viewModel.GlobalCpuLogicalProcessorRows[0];
+        Assert.NotEmpty(logicalRow.Values);
+        Assert.NotEmpty(logicalRow.OverlayValues);
     }
 
     [Fact]
