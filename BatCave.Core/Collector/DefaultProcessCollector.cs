@@ -58,14 +58,17 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
         return _local.CollectTick(seq);
     }
 
-    private static IReadOnlyList<ProcessSample> StampRowsWithTick(IReadOnlyList<ProcessSample> rows, ulong seq)
+    private static List<ProcessSample> StampRowsWithTick(List<ProcessSample> rows, ulong seq)
     {
         ulong timestamp = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        return rows.Select(row => row with
+        return
+        [
+            .. rows.Select(row => row with
         {
             Seq = seq,
             TsMs = timestamp,
-        }).ToList();
+        }),
+        ];
     }
 
     public string? TakeWarning()

@@ -131,6 +131,126 @@ public sealed record SystemGlobalMetricsSample
     public ulong? DiskWriteBps { get; init; }
 
     public ulong? OtherIoBps { get; init; }
+
+    public SystemGlobalCpuSnapshot? CpuSnapshot { get; init; }
+
+    public SystemGlobalMemorySnapshot? MemorySnapshot { get; init; }
+
+    public IReadOnlyList<SystemGlobalDiskSnapshot> DiskSnapshots { get; init; } = [];
+
+    public IReadOnlyList<SystemGlobalNetworkSnapshot> NetworkSnapshots { get; init; } = [];
+}
+
+public sealed record SystemGlobalCpuSnapshot
+{
+    public string? ProcessorName { get; init; }
+
+    public double? KernelPct { get; init; }
+
+    public double? SpeedMHz { get; init; }
+
+    public double? BaseSpeedMHz { get; init; }
+
+    public int? Sockets { get; init; }
+
+    public int? Cores { get; init; }
+
+    public int? LogicalProcessors { get; init; }
+
+    public bool? VirtualizationEnabled { get; init; }
+
+    public ulong? L1CacheBytes { get; init; }
+
+    public ulong? L2CacheBytes { get; init; }
+
+    public ulong? L3CacheBytes { get; init; }
+
+    public uint? ProcessCount { get; init; }
+
+    public uint? ThreadCount { get; init; }
+
+    public uint? HandleCount { get; init; }
+
+    public ulong? UptimeSeconds { get; init; }
+
+    public IReadOnlyList<double> LogicalProcessorUtilizationPct { get; init; } = [];
+}
+
+public sealed record SystemGlobalMemorySnapshot
+{
+    public ulong? TotalBytes { get; init; }
+
+    public ulong? UsedBytes { get; init; }
+
+    public ulong? AvailableBytes { get; init; }
+
+    public ulong? CommittedUsedBytes { get; init; }
+
+    public ulong? CommittedLimitBytes { get; init; }
+
+    public ulong? CachedBytes { get; init; }
+
+    public ulong? PagedPoolBytes { get; init; }
+
+    public ulong? NonPagedPoolBytes { get; init; }
+
+    public uint? SpeedMTps { get; init; }
+
+    public int? SlotsUsed { get; init; }
+
+    public int? SlotsTotal { get; init; }
+
+    public string? FormFactor { get; init; }
+
+    public ulong? HardwareReservedBytes { get; init; }
+}
+
+public sealed record SystemGlobalDiskSnapshot
+{
+    public string DiskId { get; init; } = string.Empty;
+
+    public string DisplayName { get; init; } = string.Empty;
+
+    public string? Model { get; init; }
+
+    public string? TypeLabel { get; init; }
+
+    public double? ActiveTimePct { get; init; }
+
+    public double? AvgResponseMs { get; init; }
+
+    public ulong? ReadBps { get; init; }
+
+    public ulong? WriteBps { get; init; }
+
+    public ulong? CapacityBytes { get; init; }
+
+    public ulong? FormattedBytes { get; init; }
+
+    public bool? IsSystemDisk { get; init; }
+
+    public bool? HasPageFile { get; init; }
+}
+
+public sealed record SystemGlobalNetworkSnapshot
+{
+    public string AdapterId { get; init; } = string.Empty;
+
+    public string DisplayName { get; init; } = string.Empty;
+
+    public string? AdapterName { get; init; }
+
+    public string? ConnectionType { get; init; }
+
+    public string? IPv4Address { get; init; }
+
+    public string? IPv6Address { get; init; }
+
+    public ulong? SendBps { get; init; }
+
+    public ulong? ReceiveBps { get; init; }
+
+    public ulong? LinkSpeedBps { get; init; }
 }
 
 public sealed record RuntimeHealth

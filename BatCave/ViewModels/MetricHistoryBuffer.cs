@@ -5,7 +5,7 @@ using BatCave.Core.Domain;
 
 namespace BatCave.ViewModels;
 
-public sealed class MetricHistoryBuffer
+public sealed partial class MetricHistoryBuffer
 {
     private readonly RingSeries _cpu;
     private readonly RingSeries _memory;
@@ -56,7 +56,7 @@ public sealed class MetricHistoryBuffer
         return [value];
     }
 
-    private sealed class RingSeries : IReadOnlyList<double>
+    private sealed partial class RingSeries : IReadOnlyList<double>
     {
         private readonly double[] _buffer;
         private int _start;

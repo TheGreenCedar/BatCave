@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using BatCave.Converters;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.Input;
@@ -8,6 +9,8 @@ namespace BatCave.ViewModels;
 
 public partial class MonitoringShellViewModel
 {
+    private Task<SystemGlobalMetricsSample>? _globalMetricsSampleTask;
+
     [RelayCommand]
     private void MetricFocusSelected(string? focusTag)
     {
@@ -162,32 +165,7 @@ public partial class MonitoringShellViewModel
     private ProcessSample CreateProjectedGlobalSample()
     {
         ProcessSample previous = _globalSummaryRow;
-        SystemGlobalMetricsSample sampled;
-        try
-        {
-            sampled = _systemGlobalMetricsSampler.Sample();
-        }
-        catch
-        {
-            SetGlobalAvailability(
-                cpu: false,
-                memory: false,
-                ioRead: false,
-                ioWrite: false,
-                otherIo: false);
-
-            return CreateGlobalSummarySample(
-                seq: _summarySeq,
-                tsMs: _summaryTsMs,
-                cpuPct: previous.CpuPct,
-                rssBytes: previous.RssBytes,
-                privateBytes: _summaryPrivateBytes,
-                ioReadBps: previous.IoReadBps,
-                ioWriteBps: previous.IoWriteBps,
-                otherIoBps: previous.OtherIoBps,
-                threads: _summaryThreads,
-                handles: _summaryHandles);
-        }
+        SystemGlobalMetricsSample sampled = SampleGlobalMetricsForUiFrame();
 
         SetGlobalAvailability(
             cpu: sampled.CpuPct.HasValue,
@@ -195,6 +173,7 @@ public partial class MonitoringShellViewModel
             ioRead: sampled.DiskReadBps.HasValue,
             ioWrite: sampled.DiskWriteBps.HasValue,
             otherIo: sampled.OtherIoBps.HasValue);
+        RefreshGlobalPerformanceState(sampled);
 
         ulong projectedTsMs = sampled.TsMs > 0 ? sampled.TsMs : _summaryTsMs;
         double projectedCpuPct = ResolveGlobalMetricForTrend(sampled.CpuPct, previous.CpuPct);
@@ -214,6 +193,31 @@ public partial class MonitoringShellViewModel
             otherIoBps: projectedOtherIo,
             threads: _summaryThreads,
             handles: _summaryHandles);
+    }
+
+    private SystemGlobalMetricsSample SampleGlobalMetricsForUiFrame()
+    {
+        if (_globalMetricsSampleTask is null)
+        {
+            _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
+            return _latestGlobalMetricsSample;
+        }
+
+        if (!_globalMetricsSampleTask.IsCompleted)
+        {
+            return _latestGlobalMetricsSample;
+        }
+
+        if (_globalMetricsSampleTask.IsCompletedSuccessfully)
+        {
+            SystemGlobalMetricsSample sampled = _globalMetricsSampleTask.Result;
+            _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
+            return sampled;
+        }
+
+        _ = _globalMetricsSampleTask.Exception;
+        _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
+        return _latestGlobalMetricsSample;
     }
 
     private static ProcessSample CreateEmptyGlobalSummary()
@@ -275,7 +279,7 @@ public partial class MonitoringShellViewModel
 
     private static double ClampRounded(double value, double maxValue)
     {
-        if (value <= 0)
+        if (!double.IsFinite(value) || value <= 0)
         {
             return 0;
         }

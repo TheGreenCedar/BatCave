@@ -1,0 +1,77 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+namespace BatCave.ViewModels;
+
+internal sealed class FixedRingSeries : IReadOnlyList<double>
+{
+    private readonly double[] _buffer;
+    private int _start;
+    private int _count;
+
+    public FixedRingSeries(int capacity)
+    {
+        _buffer = new double[Math.Max(1, capacity)];
+    }
+
+    public int Count => _count;
+
+    public double this[int index]
+    {
+        get
+        {
+            if ((uint)index >= (uint)_count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
+            }
+
+            return _buffer[(_start + index) % _buffer.Length];
+        }
+    }
+
+    public void Add(double value)
+    {
+        if (_count < _buffer.Length)
+        {
+            _buffer[(_start + _count) % _buffer.Length] = value;
+            _count++;
+            return;
+        }
+
+        _buffer[_start] = value;
+        _start = (_start + 1) % _buffer.Length;
+    }
+
+    public void Clear()
+    {
+        _start = 0;
+        _count = 0;
+    }
+
+    public double[] SliceLatest(int limit)
+    {
+        int take = Math.Min(_count, Math.Max(1, limit));
+        double[] result = new double[take];
+        int sourceStart = _count - take;
+        for (int index = 0; index < take; index++)
+        {
+            result[index] = this[sourceStart + index];
+        }
+
+        return result;
+    }
+
+    public IEnumerator<double> GetEnumerator()
+    {
+        for (int index = 0; index < _count; index++)
+        {
+            yield return this[index];
+        }
+    }
+
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
+    }
+}

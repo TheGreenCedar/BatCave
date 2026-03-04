@@ -41,6 +41,12 @@
                     StrokeLineJoin="Round"
                     StrokeStartLineCap="Round"
                     StrokeEndLineCap="Round" />
+                <Polyline
+                    x:Name="OverlayPolyline"
+                    StrokeLineJoin="Round"
+                    StrokeStartLineCap="Round"
+                    StrokeEndLineCap="Round"
+                    Visibility="Collapsed" />
             </Grid>
         </Border>
 

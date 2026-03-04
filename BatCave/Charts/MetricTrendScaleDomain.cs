@@ -8,6 +8,7 @@ internal static class MetricTrendScaleDomain
     public const double CpuCeilingPercent = 100d;
     public const double MemoryFloorBytes = 256d * 1024d * 1024d;
     public const double IoRateFloorBytes = 1d * 1024d * 1024d;
+    public const double BitsRateFloor = 1d * 1000d * 1000d;
     public const double DefaultPaddingRatio = 1.12d;
     public const double DefaultDecayFactor = 0.08d;
 

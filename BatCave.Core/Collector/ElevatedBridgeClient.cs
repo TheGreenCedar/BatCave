@@ -16,11 +16,11 @@ public sealed record BridgePollResult
 {
     public BridgePollState State { get; init; }
 
-    public IReadOnlyList<ProcessSample> Rows { get; init; } = [];
+    public List<ProcessSample> Rows { get; init; } = [];
 
     public string? Reason { get; init; }
 
-    public static BridgePollResult RowsResult(IReadOnlyList<ProcessSample> rows)
+    public static BridgePollResult RowsResult(List<ProcessSample> rows)
     {
         return new BridgePollResult
         {

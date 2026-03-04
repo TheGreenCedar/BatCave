@@ -33,7 +33,10 @@ public static class SparklineMath
         PointCollection collection = new();
         for (int index = 0; index < points.Count; index++)
         {
-            collection.Add(points[index]);
+            Point point = points[index];
+            double safeX = SanitizeNumericValue(point.X, 0d);
+            double safeY = SanitizeNumericValue(point.Y, 0d);
+            collection.Add(new Point(Math.Round(safeX, 2), Math.Round(safeY, 2)));
         }
 
         return collection;
@@ -56,7 +59,11 @@ public static class SparklineMath
         double minDomain,
         double maxDomain)
     {
-        if (values.Count == 0 || width <= 0 || height <= 0)
+        if (values.Count == 0
+            || !double.IsFinite(width)
+            || !double.IsFinite(height)
+            || width <= 0
+            || height <= 0)
         {
             return [];
         }
@@ -82,12 +89,15 @@ public static class SparklineMath
         for (int index = 0; index < pointCount; index++)
         {
             double value = singleValueSeries ? values[0] : values[index];
-            double clamped = Math.Clamp(value, minDomain, maxDomain);
+            double sanitizedValue = SanitizeNumericValue(value, minDomain);
+            double clamped = Math.Clamp(sanitizedValue, minDomain, maxDomain);
             double x = denominator <= 0
                 ? 0d
                 : (index * width) / denominator;
             double y = verticalPadding + (1d - (clamped - minDomain) / range) * drawableHeight;
-            points.Add(new Point(Math.Round(x, 2), Math.Round(y, 2)));
+            double safeX = SanitizeNumericValue(x, 0d);
+            double safeY = SanitizeNumericValue(y, 0d);
+            points.Add(new Point(Math.Round(safeX, 2), Math.Round(safeY, 2)));
         }
 
         return points;
@@ -109,7 +119,11 @@ public static class SparklineMath
         double width,
         double height)
     {
-        if (linePoints.Count == 0 || width <= 0 || height <= 0)
+        if (linePoints.Count == 0
+            || !double.IsFinite(width)
+            || !double.IsFinite(height)
+            || width <= 0
+            || height <= 0)
         {
             return [];
         }
@@ -210,17 +224,22 @@ public static class SparklineMath
 
     private static bool TryCreateLayout(IReadOnlyList<double> values, double width, double height, out SparklineLayout layout)
     {
-        if (values.Count == 0 || width <= 0 || height <= 0)
+        if (values.Count == 0
+            || !double.IsFinite(width)
+            || !double.IsFinite(height)
+            || width <= 0
+            || height <= 0)
         {
             layout = default;
             return false;
         }
 
-        double max = values[0];
-        double min = values[0];
+        double firstValue = SanitizeNumericValue(values[0], 0d);
+        double max = firstValue;
+        double min = firstValue;
         for (int index = 1; index < values.Count; index++)
         {
-            double value = values[index];
+            double value = SanitizeNumericValue(values[index], 0d);
             if (value > max)
             {
                 max = value;
@@ -246,7 +265,7 @@ public static class SparklineMath
             singleValueSeries,
             pointCount,
             XDenominator: pointCount - 1,
-            SingleValue: values[0]);
+            SingleValue: firstValue);
         return true;
     }
 
@@ -257,13 +276,17 @@ public static class SparklineMath
         in SparklineLayout layout,
         int index)
     {
-        double value = layout.SingleValueSeries ? layout.SingleValue : values[index];
+        double value = layout.SingleValueSeries
+            ? layout.SingleValue
+            : SanitizeNumericValue(values[index], layout.Min);
         double x = (index * width) / layout.XDenominator;
         double y = layout.HasVariance
             ? layout.VerticalPadding + (1d - (value - layout.Min) / (layout.Max - layout.Min)) * layout.DrawableHeight
             : height / 2d;
+        double safeX = SanitizeNumericValue(x, 0d);
+        double safeY = SanitizeNumericValue(y, 0d);
 
-        return new Point(Math.Round(x, 2), Math.Round(y, 2));
+        return new Point(Math.Round(safeX, 2), Math.Round(safeY, 2));
     }
 
     private static void AppendInvariantDouble(StringBuilder builder, double value)
@@ -276,6 +299,11 @@ public static class SparklineMath
         }
 
         builder.Append(value.ToString("F2", CultureInfo.InvariantCulture));
+    }
+
+    private static double SanitizeNumericValue(double value, double fallback)
+    {
+        return double.IsFinite(value) ? value : fallback;
     }
 
     private readonly record struct SparklineLayout(

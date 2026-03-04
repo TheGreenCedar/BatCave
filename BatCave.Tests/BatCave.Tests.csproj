@@ -4,7 +4,7 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-
+	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
@@ -29,14 +29,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\BatCave\Charts\MetricTrendScaleMode.cs" Link="Charts\MetricTrendScaleMode.cs" />
     <Compile Include="..\BatCave\Charts\MetricTrendScaleDomain.cs" Link="Charts\MetricTrendScaleDomain.cs" />
     <Compile Include="..\BatCave\Charts\SparklineMath.cs" Link="Charts\SparklineMath.cs" />
     <Compile Include="..\BatCave\Converters\ValueFormatConverters.cs" Link="Converters\ValueFormatConverters.cs" />
     <Compile Include="..\BatCave\Rendering\TelemetryDeltaAccumulator.cs" Link="Rendering\TelemetryDeltaAccumulator.cs" />
     <Compile Include="..\BatCave\Services\RuntimeGateway.cs" Link="Services\RuntimeGateway.cs" />
+    <Compile Include="..\BatCave\ViewModels\FixedRingSeries.cs" Link="ViewModels\FixedRingSeries.cs" />
+    <Compile Include="..\BatCave\ViewModels\GlobalPerformanceViewStates.cs" Link="ViewModels\GlobalPerformanceViewStates.cs" />
     <Compile Include="..\BatCave\ViewModels\MetricHistoryBuffer.cs" Link="ViewModels\MetricHistoryBuffer.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs" Link="ViewModels\MonitoringShellViewModel.Bootstrap.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.cs" Link="ViewModels\MonitoringShellViewModel.cs" />
+    <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.GlobalPerformance.cs" Link="ViewModels\MonitoringShellViewModel.GlobalPerformance.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Metrics.cs" Link="ViewModels\MonitoringShellViewModel.Metrics.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Selection.cs" Link="ViewModels\MonitoringShellViewModel.Selection.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Sorting.cs" Link="ViewModels\MonitoringShellViewModel.Sorting.cs" />
@@ -45,3 +49,4 @@
   </ItemGroup>
 
 </Project>
+

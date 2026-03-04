@@ -60,6 +60,58 @@ public sealed class SparklineMathTests
     }
 
     [Fact]
+    public void BuildPointsInDomain_NonFiniteValues_ProducesFinitePoints()
+    {
+        IReadOnlyList<Point> points = SparklineMath.BuildPointsInDomain(
+            [double.NaN, double.PositiveInfinity, double.NegativeInfinity],
+            120,
+            24,
+            0,
+            100);
+
+        Assert.Equal(3, points.Count);
+        Assert.All(points, point =>
+        {
+            Assert.True(double.IsFinite(point.X));
+            Assert.True(double.IsFinite(point.Y));
+        });
+    }
+
+    [Fact]
+    public void BuildPointsInDomain_MixedFiniteAndNaN_DoesNotThrow()
+    {
+        Exception? exception = Record.Exception(() => SparklineMath.BuildPointsInDomain(
+            [10d, double.NaN, 55d, double.PositiveInfinity],
+            96,
+            22,
+            0,
+            100));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void BuildPointsInDomain_NonFiniteDimensions_ReturnsEmpty()
+    {
+        IReadOnlyList<Point> points = SparklineMath.BuildPointsInDomain(
+            [1d, 2d, 3d],
+            double.NaN,
+            22d,
+            0d,
+            100d);
+
+        Assert.Empty(points);
+    }
+
+    [Fact]
+    public void BuildPoints_NonFiniteDimensions_ReturnsEmpty()
+    {
+        IReadOnlyList<Point> points = SparklineMath.BuildPoints([1d, 2d], double.NaN, 22d);
+
+        Assert.Empty(points);
+    }
+
+    [Fact]
     public void BuildFillPolygon_ClosesAreaToBaseline()
     {
         IReadOnlyList<Point> line =

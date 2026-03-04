@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -33,6 +34,9 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+        UnhandledException += OnUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnCurrentDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
         _host = CreateHost();
     }
 
@@ -42,7 +46,7 @@ public partial class App : Application
     {
         await _host.StartAsync();
 
-        string[] commandLineArgs = Environment.GetCommandLineArgs().Skip(1).ToArray();
+        string[] commandLineArgs = [.. Environment.GetCommandLineArgs().Skip(1)];
         if (await TryRunCliModeAsync(commandLineArgs))
         {
             return;
@@ -162,5 +166,27 @@ public partial class App : Application
         await _host.StopAsync();
         _host.Dispose();
         Log.CloseAndFlush();
+    }
+
+    private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+    {
+        Log.Error(e.Exception, "Unhandled UI exception: {Message}", e.Message);
+    }
+
+    private static void OnCurrentDomainUnhandledException(object? sender, System.UnhandledExceptionEventArgs e)
+    {
+        if (e.ExceptionObject is Exception exception)
+        {
+            Log.Fatal(exception, "Unhandled domain exception. IsTerminating={IsTerminating}", e.IsTerminating);
+            return;
+        }
+
+        Log.Fatal("Unhandled domain exception object of type {Type}. IsTerminating={IsTerminating}", e.ExceptionObject?.GetType().FullName ?? "unknown", e.IsTerminating);
+    }
+
+    private static void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        Log.Error(e.Exception, "Unobserved task exception.");
+        e.SetObserved();
     }
 }

@@ -4,6 +4,8 @@ using BatCave.Core.Pipeline;
 using BatCave.Core.Runtime;
 using BatCave.Core.Sort;
 using BatCave.Core.State;
+using System.Diagnostics;
+using BatCave.Controls;
 using BatCave.Converters;
 using BatCave.Services;
 using BatCave.Tests.TestSupport;
@@ -431,6 +433,38 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task NoSelection_SlowSampler_FirstFrameDoesNotBlockUiApply()
+    {
+        TestRuntimeEventGateway gateway = new();
+        ManualResetEventSlim releaseSampler = new(initialState: false);
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 100,
+                cpuPct: 42.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 1024UL,
+                diskWriteBps: 2048UL,
+                otherIoBps: 4096UL));
+        sampler.Handler = () =>
+        {
+            releaseSampler.Wait(TimeSpan.FromMilliseconds(800));
+            return sampler.Current;
+        };
+
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        gateway.RaiseDelta(1, [], []);
+        stopwatch.Stop();
+        releaseSampler.Set();
+
+        Assert.True(stopwatch.ElapsedMilliseconds < 400, $"UI apply blocked for {stopwatch.ElapsedMilliseconds} ms");
+        Assert.Equal("Global System Values", viewModel.DetailTitle);
+    }
+
+    [Fact]
     public async Task NoSelection_PerMetricUnavailable_ShowsNaOnlyForUnavailableMetric()
     {
         TestRuntimeEventGateway gateway = new();
@@ -459,6 +493,280 @@ public class MonitoringShellViewModelTests
 
         viewModel.MetricFocusSelectedCommand.Execute("Memory");
         Assert.DoesNotContain("n/a", viewModel.DetailMetricValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GlobalMode_ListsCpuMemoryDiskAndNetworkRows_EvenWhenIdle()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 200,
+                cpuPct: 21.5,
+                memoryUsedBytes: 29 * 1024UL * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0,
+                memorySnapshot: new SystemGlobalMemorySnapshot
+                {
+                    TotalBytes = 64UL * 1024UL * 1024UL * 1024UL,
+                    UsedBytes = 29UL * 1024UL * 1024UL * 1024UL,
+                },
+                diskSnapshots:
+                [
+                    new SystemGlobalDiskSnapshot
+                    {
+                        DiskId = "disk0",
+                        DisplayName = "Disk 0 (C:)",
+                        TypeLabel = "SSD (NVMe)",
+                        ActiveTimePct = 0,
+                        ReadBps = 0,
+                        WriteBps = 0,
+                    },
+                ],
+                networkSnapshots:
+                [
+                    new SystemGlobalNetworkSnapshot
+                    {
+                        AdapterId = "eth0",
+                        DisplayName = "Ethernet",
+                        AdapterName = "Ethernet 2",
+                        ConnectionType = "Ethernet",
+                        SendBps = 0,
+                        ReceiveBps = 0,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+
+        Assert.True(viewModel.IsGlobalPerformanceMode);
+        Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Cpu);
+        Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Memory);
+        Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
+        Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Network);
+    }
+
+    [Fact]
+    public async Task GlobalMode_DiskSelection_PersistsAcrossTransientDiskSnapshotDrop()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 300,
+                cpuPct: 12.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+                diskReadBps: 1000,
+                diskWriteBps: 2000,
+                otherIoBps: 0,
+                diskSnapshots:
+                [
+                    new SystemGlobalDiskSnapshot
+                    {
+                        DiskId = "C:",
+                        DisplayName = "Disk 0 (C:)",
+                        TypeLabel = "SSD (NVMe)",
+                        ActiveTimePct = 7,
+                        ReadBps = 1000,
+                        WriteBps = 2000,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        viewModel.SelectedGlobalResource = diskRow;
+        Assert.Equal("7%", diskRow.ValueText);
+        Assert.Equal("7.0%", viewModel.GlobalDetailCurrentValue);
+
+        sampler.Current = CreateSystemGlobalMetricsSample(
+            tsMs: 301,
+            cpuPct: 13.0,
+            memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0,
+            diskSnapshots: []);
+        gateway.RaiseDelta(2, [], []);
+
+        Assert.NotNull(viewModel.SelectedGlobalResource);
+        Assert.Equal(diskRow.ResourceId, viewModel.SelectedGlobalResource!.ResourceId);
+        Assert.Contains(viewModel.GlobalResourceRows, row => row.ResourceId == diskRow.ResourceId);
+        Assert.Equal("Disk 0 (C:)", viewModel.GlobalDetailTitle);
+    }
+
+    [Fact]
+    public async Task GlobalMode_DiskSelection_NonFiniteActiveTime_UsesNaFallback()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 302,
+                cpuPct: 12.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+                diskReadBps: 1000,
+                diskWriteBps: 2000,
+                otherIoBps: 0,
+                diskSnapshots:
+                [
+                    new SystemGlobalDiskSnapshot
+                    {
+                        DiskId = "C:",
+                        DisplayName = "Disk 0 (C:)",
+                        TypeLabel = "SSD (NVMe)",
+                        ActiveTimePct = double.NaN,
+                        ReadBps = 1000,
+                        WriteBps = 2000,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        Exception? exception = Record.Exception(() => viewModel.SelectedGlobalResource = diskRow);
+
+        Assert.Null(exception);
+        Assert.Equal("n/a", diskRow.ValueText);
+        Assert.Equal("n/a", viewModel.GlobalDetailCurrentValue);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalAuxiliaryChartVisibility);
+        Assert.NotEmpty(viewModel.GlobalAuxiliaryTrendValues);
+        Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Active time" && item.Value == "n/a");
+    }
+
+    [Fact]
+    public async Task GlobalMode_DiskSelection_ShowsFiniteTransferTrend()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 303,
+                cpuPct: 15.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+                diskReadBps: 3000,
+                diskWriteBps: 7000,
+                otherIoBps: 0,
+                diskSnapshots:
+                [
+                    new SystemGlobalDiskSnapshot
+                    {
+                        DiskId = "D:",
+                        DisplayName = "Disk 1 (D:)",
+                        TypeLabel = "SSD",
+                        ActiveTimePct = 21,
+                        ReadBps = 3000,
+                        WriteBps = 7000,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        viewModel.SelectedGlobalResource = diskRow;
+
+        Assert.Equal(Visibility.Visible, viewModel.GlobalAuxiliaryChartVisibility);
+        Assert.NotEmpty(viewModel.GlobalAuxiliaryTrendValues);
+        Assert.All(viewModel.GlobalAuxiliaryTrendValues, value =>
+        {
+            Assert.True(double.IsFinite(value));
+            Assert.True(value >= 0d);
+        });
+    }
+
+    [Fact]
+    public async Task CpuGraphModeLogical_WhenNonCpuSelected_KeepsCombinedChartsVisible()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 201,
+                cpuPct: 30.0,
+                memoryUsedBytes: 10 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0,
+                cpuSnapshot: new SystemGlobalCpuSnapshot
+                {
+                    LogicalProcessorUtilizationPct = [10, 20, 30, 40],
+                },
+                diskSnapshots:
+                [
+                    new SystemGlobalDiskSnapshot
+                    {
+                        DiskId = "disk1",
+                        DisplayName = "Disk 1 (D:)",
+                        TypeLabel = "SSD",
+                        ActiveTimePct = 5,
+                        ReadBps = 10,
+                        WriteBps = 20,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        viewModel.CpuGraphModeSelectedCommand.Execute("LogicalProcessors");
+
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Memory));
+        viewModel.SelectedGlobalResource = memoryRow;
+
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuModeToggleVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCombinedChartVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuLogicalGridVisibility);
+
+        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Cpu));
+        viewModel.SelectedGlobalResource = cpuRow;
+
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCpuModeToggleVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalCombinedChartVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCpuLogicalGridVisibility);
+    }
+
+    [Fact]
+    public async Task GlobalNetworkSelection_UsesBitsScaleAndOverlay()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 202,
+                cpuPct: 9.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0,
+                networkSnapshots:
+                [
+                    new SystemGlobalNetworkSnapshot
+                    {
+                        AdapterId = "eth1",
+                        DisplayName = "Ethernet",
+                        AdapterName = "Ethernet 2",
+                        ConnectionType = "Ethernet",
+                        SendBps = 32_000,
+                        ReceiveBps = 16_000,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        GlobalResourceRowViewState networkRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Network));
+        viewModel.SelectedGlobalResource = networkRow;
+
+        Assert.Equal(MetricTrendScaleMode.BitsRate, viewModel.GlobalPrimaryScaleMode);
+        Assert.True(viewModel.GlobalShowSecondaryOverlay);
     }
 
     [Fact]
@@ -730,7 +1038,13 @@ public class MonitoringShellViewModelTests
             new TestPersistenceStore(settings));
         RuntimeLoopService loopService = new(runtime);
         TestSystemGlobalMetricsSampler sampler = systemGlobalMetricsSampler ?? TestSystemGlobalMetricsSampler.Default;
-        return new MonitoringShellViewModel(gate, runtime, loopService, gateway, metadataProvider, sampler);
+        return new MonitoringShellViewModel(
+            gate,
+            runtime,
+            loopService,
+            gateway,
+            metadataProvider,
+            sampler);
     }
 
     private static async Task<MonitoringShellViewModel> CreateBootstrappedViewModelAsync(
@@ -826,7 +1140,11 @@ public class MonitoringShellViewModelTests
         ulong? memoryUsedBytes,
         ulong? diskReadBps,
         ulong? diskWriteBps,
-        ulong? otherIoBps)
+        ulong? otherIoBps,
+        SystemGlobalCpuSnapshot? cpuSnapshot = null,
+        SystemGlobalMemorySnapshot? memorySnapshot = null,
+        IReadOnlyList<SystemGlobalDiskSnapshot>? diskSnapshots = null,
+        IReadOnlyList<SystemGlobalNetworkSnapshot>? networkSnapshots = null)
     {
         return new SystemGlobalMetricsSample
         {
@@ -836,6 +1154,10 @@ public class MonitoringShellViewModelTests
             DiskReadBps = diskReadBps,
             DiskWriteBps = diskWriteBps,
             OtherIoBps = otherIoBps,
+            CpuSnapshot = cpuSnapshot,
+            MemorySnapshot = memorySnapshot,
+            DiskSnapshots = diskSnapshots ?? [],
+            NetworkSnapshots = networkSnapshots ?? [],
         };
     }
 
@@ -947,6 +1269,8 @@ public class MonitoringShellViewModelTests
                 diskWriteBps: 2048UL,
                 otherIoBps: 4096UL));
 
+        public Func<SystemGlobalMetricsSample>? Handler { get; set; }
+
         public SystemGlobalMetricsSample Current { get; set; }
 
         public TestSystemGlobalMetricsSampler(SystemGlobalMetricsSample sample)
@@ -956,7 +1280,7 @@ public class MonitoringShellViewModelTests
 
         public SystemGlobalMetricsSample Sample()
         {
-            return Current;
+            return Handler?.Invoke() ?? Current;
         }
     }
 

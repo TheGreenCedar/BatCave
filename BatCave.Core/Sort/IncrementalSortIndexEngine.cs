@@ -27,7 +27,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
 
     public QueryResponse Query(QueryRequest request, IReadOnlyList<ProcessSample> rows, ulong seq)
     {
-        IReadOnlyList<ProcessIdentity> ordered = ResolveOrderedRows(request, rows);
+        List<ProcessIdentity> ordered = ResolveOrderedRows(request, rows);
 
         int total = ordered.Count;
         (int start, int count) = SlicePage(request.Offset, request.Limit, total);
@@ -41,7 +41,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         };
     }
 
-    private IReadOnlyList<ProcessIdentity> ResolveOrderedRows(QueryRequest request, IReadOnlyList<ProcessSample> rows)
+    private List<ProcessIdentity> ResolveOrderedRows(QueryRequest request, IReadOnlyList<ProcessSample> rows)
     {
         if (ShouldResetCacheRows(rows))
         {
@@ -83,7 +83,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         return !_cache.Initialized || _cache.SortCol != request.SortCol || _cache.SortDir != request.SortDir;
     }
 
-    private IReadOnlyList<ProcessIdentity> ApplyFilter(string filterText)
+    private List<ProcessIdentity> ApplyFilter(string filterText)
     {
         string filterNeedle = filterText.Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(filterNeedle))
@@ -103,7 +103,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         return _cache.Filtered;
     }
 
-    private List<ProcessSample> BuildPage(IReadOnlyList<ProcessIdentity> ordered, int start, int count)
+    private List<ProcessSample> BuildPage(List<ProcessIdentity> ordered, int start, int count)
     {
         List<ProcessSample> page = new(count);
         int end = start + count;
@@ -176,7 +176,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         return changeCount >= rebuildThreshold;
     }
 
-    private void RemoveChangedIdentitiesFromOrdering(IReadOnlyCollection<ProcessIdentity> pendingUpserts)
+    private void RemoveChangedIdentitiesFromOrdering(List<ProcessIdentity> pendingUpserts)
     {
         if (_cache.ExitsScratch.Count == 0 && pendingUpserts.Count == 0)
         {
@@ -268,7 +268,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
     private static int CompareIdentity(
         ProcessIdentity left,
         ProcessIdentity right,
-        IReadOnlyDictionary<ProcessIdentity, ProcessSample> rows,
+        Dictionary<ProcessIdentity, ProcessSample> rows,
         SortColumn sortCol,
         SortDirection sortDir)
     {

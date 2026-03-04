@@ -61,6 +61,7 @@ public sealed partial class MainWindow : Window
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
         ConfigureMetricChartModes();
+        GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
         _dirtyMetricPlots = MetricPlotDirtyFlags.All;
         ScheduleMetricPlotRefresh();
         ApplyMetricTrendLayoutForWindowWidth(GetWindowWidth());
@@ -187,6 +188,28 @@ public sealed partial class MainWindow : Window
         }
 
         CompleteSelectionSettleProbeIfPending();
+    }
+
+    private void GlobalResourceListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ListView listView)
+        {
+            return;
+        }
+
+        try
+        {
+            GlobalResourceRowViewState? selected = listView.SelectedItem as GlobalResourceRowViewState;
+            if (!ReferenceEquals(ViewModel.SelectedGlobalResource, selected))
+            {
+                ViewModel.SelectedGlobalResource = selected;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[GlobalSelection] Failed to apply selection from list view. {ex}");
+            ViewModel.SelectedGlobalResource = null;
+        }
     }
 
     private void ScheduleMetricPlotRefresh()

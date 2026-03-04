@@ -4,7 +4,7 @@ using BatCave.Core.Domain;
 
 namespace BatCave.Core.Collector;
 
-public sealed class WindowsSystemGlobalMetricsSampler : ISystemGlobalMetricsSampler, IDisposable
+public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMetricsSampler, IDisposable
 {
     private const uint ErrorSuccess = 0;
     private const uint PdhFmtDouble = 0x00000200;
@@ -24,6 +24,8 @@ public sealed class WindowsSystemGlobalMetricsSampler : ISystemGlobalMetricsSamp
     private bool _disposed;
     private ulong? _previousSystemTotal100ns;
     private ulong? _previousIdle100ns;
+    private ulong? _previousKernel100ns;
+    private double? _lastKernelPct;
 
     public WindowsSystemGlobalMetricsSampler()
     {
@@ -36,15 +38,23 @@ public sealed class WindowsSystemGlobalMetricsSampler : ISystemGlobalMetricsSamp
         {
             ThrowIfDisposed();
             (ulong? diskReadBps, ulong? diskWriteBps, ulong? otherIoBps) = SampleRateMetrics();
+            double? cpuPct = SampleCpuPct();
+            ulong? memoryUsedBytes = SampleMemoryUsedBytes();
+            (SystemGlobalCpuSnapshot? cpuSnapshot, SystemGlobalMemorySnapshot? memorySnapshot, IReadOnlyList<SystemGlobalDiskSnapshot> diskSnapshots, IReadOnlyList<SystemGlobalNetworkSnapshot> networkSnapshots) =
+                SampleExtendedSnapshots(cpuPct, memoryUsedBytes);
 
             return new SystemGlobalMetricsSample
             {
                 TsMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                CpuPct = SampleCpuPct(),
-                MemoryUsedBytes = SampleMemoryUsedBytes(),
+                CpuPct = cpuPct,
+                MemoryUsedBytes = memoryUsedBytes,
                 DiskReadBps = diskReadBps,
                 DiskWriteBps = diskWriteBps,
                 OtherIoBps = otherIoBps,
+                CpuSnapshot = cpuSnapshot,
+                MemorySnapshot = memorySnapshot,
+                DiskSnapshots = diskSnapshots,
+                NetworkSnapshots = networkSnapshots,
             };
         }
     }
@@ -62,6 +72,8 @@ public sealed class WindowsSystemGlobalMetricsSampler : ISystemGlobalMetricsSamp
             ClosePdhCounters();
             _previousSystemTotal100ns = null;
             _previousIdle100ns = null;
+            _previousKernel100ns = null;
+            _lastKernelPct = null;
         }
 
         GC.SuppressFinalize(this);
@@ -116,6 +128,8 @@ public sealed class WindowsSystemGlobalMetricsSampler : ISystemGlobalMetricsSamp
         {
             _previousSystemTotal100ns = currentSystemTotal100ns;
             _previousIdle100ns = currentIdle100ns;
+            _previousKernel100ns = FiletimeToU64(kernelTime);
+            _lastKernelPct = null;
             return null;
         }
 
@@ -123,17 +137,24 @@ public sealed class WindowsSystemGlobalMetricsSampler : ISystemGlobalMetricsSamp
             ? currentSystemTotal100ns - previousSystemTotal100ns
             : 0;
         ulong deltaIdle100ns = currentIdle100ns >= previousIdle100ns ? currentIdle100ns - previousIdle100ns : 0;
+        ulong currentKernel100ns = FiletimeToU64(kernelTime);
+        ulong previousKernel100ns = _previousKernel100ns ?? currentKernel100ns;
+        ulong deltaKernel100ns = currentKernel100ns >= previousKernel100ns ? currentKernel100ns - previousKernel100ns : 0;
 
         _previousSystemTotal100ns = currentSystemTotal100ns;
         _previousIdle100ns = currentIdle100ns;
+        _previousKernel100ns = currentKernel100ns;
 
         if (deltaSystem100ns == 0)
         {
+            _lastKernelPct = null;
             return null;
         }
 
         ulong busy100ns = deltaSystem100ns > deltaIdle100ns ? deltaSystem100ns - deltaIdle100ns : 0;
+        ulong kernelBusy100ns = deltaKernel100ns > deltaIdle100ns ? deltaKernel100ns - deltaIdle100ns : 0;
         double cpuPct = (busy100ns * 100.0) / deltaSystem100ns;
+        _lastKernelPct = (kernelBusy100ns * 100.0) / deltaSystem100ns;
         return Math.Clamp(cpuPct, 0, 100);
     }
 

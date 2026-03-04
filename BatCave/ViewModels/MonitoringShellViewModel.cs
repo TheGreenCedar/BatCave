@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -44,11 +45,11 @@ public partial class MonitoringShellViewModel : ObservableObject
     private readonly IProcessMetadataProvider _metadataProvider;
     private readonly ISystemGlobalMetricsSampler _systemGlobalMetricsSampler;
 
-    private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = new();
-    private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = new();
-    private readonly Dictionary<ProcessIdentity, MetricHistoryBuffer> _metricHistory = new();
-    private readonly Dictionary<ProcessIdentity, ulong> _metricHistoryLastSeq = new();
-    private readonly Dictionary<ProcessIdentity, ProcessRowViewState> _visibleRowStateByIdentity = new();
+    private readonly Dictionary<ProcessIdentity, ProcessSample> _allRows = [];
+    private readonly Dictionary<ProcessIdentity, ProcessMetadata?> _metadataCache = [];
+    private readonly Dictionary<ProcessIdentity, MetricHistoryBuffer> _metricHistory = [];
+    private readonly Dictionary<ProcessIdentity, ulong> _metricHistoryLastSeq = [];
+    private readonly Dictionary<ProcessIdentity, ProcessRowViewState> _visibleRowStateByIdentity = [];
     private readonly ObservableCollection<ProcessRowViewState> _rowViewSource = [];
     private readonly MetricHistoryBuffer _globalHistory = new(HistoryLimit);
     private readonly TelemetryDeltaAccumulator _telemetryDeltaAccumulator = new();
@@ -135,9 +136,12 @@ public partial class MonitoringShellViewModel : ObservableObject
         _runtimeEventGateway.RuntimeHealthChanged += OnRuntimeHealthChanged;
         _runtimeEventGateway.CollectorWarningRaised += OnCollectorWarningRaised;
 
-        VisibleRows = new AdvancedCollectionView(_rowViewSource, true);
-        VisibleRows.Filter = ShouldShowRow;
+        VisibleRows = new AdvancedCollectionView(_rowViewSource, true)
+        {
+            Filter = ShouldShowRow
+        };
         ApplySortDescriptions();
+        RefreshGlobalPerformanceState(new SystemGlobalMetricsSample());
     }
 
     public AdvancedCollectionView VisibleRows { get; }
@@ -406,6 +410,7 @@ public partial class MonitoringShellViewModel : ObservableObject
             OnPropertyChanged(nameof(IsTrendWindow60Selected));
             OnPropertyChanged(nameof(IsTrendWindow120Selected));
             RefreshDetailMetrics();
+            QueueGlobalDetailStateRefresh();
         }
     }
 
@@ -555,8 +560,10 @@ public partial class MonitoringShellViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(HasSelection));
         OnPropertyChanged(nameof(DetailTitle));
+        RaiseGlobalModeProperties();
         RaiseMetadataProperties();
         RefreshDetailMetrics();
+        RefreshGlobalDetailState();
     }
 
     private void RaiseSelectedVisibleRowBindingProperty()
