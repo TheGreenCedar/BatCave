@@ -15,6 +15,11 @@
             <StaticResource x:Key="TaskMgrPaneBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <Thickness x:Key="TaskMgrResourceRowPadding">6,4</Thickness>
             <x:Double x:Key="TaskMgrDenseRowMinHeight">46</x:Double>
+            <StaticResource x:Key="BalancedSelectionBackgroundBrush" ResourceKey="AccentFillColorTertiaryBrush" />
+            <StaticResource x:Key="BalancedSelectionBackgroundPointerOverBrush" ResourceKey="AccentFillColorSecondaryBrush" />
+            <StaticResource x:Key="BalancedSelectionBackgroundPressedBrush" ResourceKey="AccentFillColorDefaultBrush" />
+            <StaticResource x:Key="BalancedSelectionForegroundBrush" ResourceKey="TextFillColorPrimaryBrush" />
+            <StaticResource x:Key="BalancedSelectionIndicatorBrush" ResourceKey="AccentFillColorSecondaryBrush" />
 
             <Style x:Key="TaskMgrMetricLabelStyle" TargetType="TextBlock">
                 <Setter Property="FontSize" Value="12" />

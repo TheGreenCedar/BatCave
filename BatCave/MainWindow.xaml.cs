@@ -29,7 +29,6 @@ public sealed partial class MainWindow : Window
     private static readonly Brush IoWriteTrendFillBrush = CreateBrush(0x33, 0xD0, 0x7A, 0x00);
     private static readonly Brush OtherIoTrendStrokeBrush = CreateBrush(0xFF, 0xD1, 0x34, 0x38);
     private static readonly Brush OtherIoTrendFillBrush = CreateBrush(0x33, 0xD1, 0x34, 0x38);
-    private static readonly Brush MetricGridBrush = CreateBrush(0x4C, 0xA0, 0xA8, 0xB8);
     private const double LogicalCpuTileTargetWidth = 170;
     private const double LogicalCpuTileTargetChartHeight = 120;
     private const double LogicalCpuTileLabelReserve = 20;
@@ -345,43 +344,37 @@ public sealed partial class MainWindow : Window
             MetricTrendScaleMode.CpuPercent,
             showGrid: false,
             CpuTrendStrokeBrush,
-            CpuTrendFillBrush,
-            strokeThickness: 1.4);
+            CpuTrendFillBrush);
         ConfigureMetricChart(
             MemoryChipPlot,
             MetricTrendScaleMode.MemoryBytes,
             showGrid: false,
             MemoryTrendStrokeBrush,
-            MemoryTrendFillBrush,
-            strokeThickness: 1.4);
+            MemoryTrendFillBrush);
         ConfigureMetricChart(
             IoReadChipPlot,
             MetricTrendScaleMode.IoRate,
             showGrid: false,
             IoReadTrendStrokeBrush,
-            IoReadTrendFillBrush,
-            strokeThickness: 1.4);
+            IoReadTrendFillBrush);
         ConfigureMetricChart(
             IoWriteChipPlot,
             MetricTrendScaleMode.IoRate,
             showGrid: false,
             IoWriteTrendStrokeBrush,
-            IoWriteTrendFillBrush,
-            strokeThickness: 1.4);
+            IoWriteTrendFillBrush);
         ConfigureMetricChart(
             OtherIoChipPlot,
             MetricTrendScaleMode.IoRate,
             showGrid: false,
             OtherIoTrendStrokeBrush,
-            OtherIoTrendFillBrush,
-            strokeThickness: 1.4);
+            OtherIoTrendFillBrush);
         ConfigureMetricChart(
             ExpandedMetricPlot,
             MetricTrendScaleMode.CpuPercent,
             showGrid: true,
             CpuTrendStrokeBrush,
-            CpuTrendFillBrush,
-            strokeThickness: 1.8);
+            CpuTrendFillBrush);
     }
 
     private IEnumerable<MetricPlotDescriptor> EnumerateMetricPlotDescriptors()
@@ -399,15 +392,12 @@ public sealed partial class MainWindow : Window
         MetricTrendScaleMode scaleMode,
         bool showGrid,
         Brush strokeBrush,
-        Brush fillBrush,
-        double strokeThickness)
+        Brush fillBrush)
     {
         chart.ScaleMode = scaleMode;
         chart.ShowGrid = showGrid;
-        chart.GridBrush = MetricGridBrush;
         chart.StrokeBrush = strokeBrush;
         chart.FillBrush = fillBrush;
-        chart.StrokeThickness = strokeThickness;
     }
 
     private static MetricTrendScaleMode ResolveExpandedScaleMode(DetailMetricFocus metricFocus)

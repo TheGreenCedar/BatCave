@@ -30,6 +30,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private const int HistoryLimit = 120;
     private const ulong RowSparklineStride = 2;
     private const int MaxHeartbeatSparklineRowsPerFrame = 256;
+    private const int RowMiniTrendVisiblePointCount = 60;
     private const double RowSparklineWidth = 96;
     private const double RowSparklineHeight = 22;
 

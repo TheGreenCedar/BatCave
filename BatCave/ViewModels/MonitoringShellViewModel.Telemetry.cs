@@ -119,7 +119,9 @@ public partial class MonitoringShellViewModel
         _metricHistory[identity] = history;
         _metricHistoryLastSeq[identity] = row.Seq;
 
-        ProcessRowViewState rowState = new(row, BuildRowCpuTrendGeometry(identity, row));
+        IReadOnlyList<double> cpuTrend = GetRowCpuTrendSource(identity, row);
+        ProcessRowViewState rowState = new(row, BuildRowCpuTrendGeometry(cpuTrend));
+        rowState.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount);
         _visibleRowStateByIdentity[identity] = rowState;
         _rowViewSource.Edit(updater => updater.AddOrUpdate(rowState));
     }
@@ -160,26 +162,28 @@ public partial class MonitoringShellViewModel
             return existing;
         }
 
-        ProcessRowViewState state = new(sample, BuildRowCpuTrendGeometry(identity, sample));
+        IReadOnlyList<double> cpuTrend = GetRowCpuTrendSource(identity, sample);
+        ProcessRowViewState state = new(sample, BuildRowCpuTrendGeometry(cpuTrend));
+        state.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount);
         _visibleRowStateByIdentity[identity] = state;
         _rowViewSource.Edit(updater => updater.AddOrUpdate(state));
         return state;
     }
 
-    private IReadOnlyList<Point> BuildRowCpuTrendGeometry(ProcessIdentity identity, ProcessSample sample)
+    private IReadOnlyList<double> GetRowCpuTrendSource(ProcessIdentity identity, ProcessSample sample)
     {
-        IReadOnlyList<double> values;
         if (_metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history))
         {
-            values = history.Cpu;
-        }
-        else
-        {
-            MetricHistoryBuffer fallback = new(HistoryLimit);
-            fallback.Append(sample);
-            values = fallback.Cpu;
+            return history.Cpu;
         }
 
+        MetricHistoryBuffer fallback = new(HistoryLimit);
+        fallback.Append(sample);
+        return fallback.Cpu;
+    }
+
+    private static IReadOnlyList<Point> BuildRowCpuTrendGeometry(IReadOnlyList<double> values)
+    {
         return SparklineMath.BuildPointsWithFallback(values, RowSparklineWidth, RowSparklineHeight);
     }
 
@@ -268,7 +272,9 @@ public partial class MonitoringShellViewModel
 
             if (AppendHeartbeatForIdentity(identity, sample, seq))
             {
-                rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(identity, sample));
+                IReadOnlyList<double> cpuTrend = GetRowCpuTrendSource(identity, sample);
+                rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(cpuTrend));
+                rowState.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount);
             }
         }
     }
@@ -342,7 +348,9 @@ public partial class MonitoringShellViewModel
 
         if (ShouldRefreshRowSparkline(previous, upsert) && ShouldShowSample(upsert))
         {
-            rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(identity, upsert));
+            IReadOnlyList<double> cpuTrend = GetRowCpuTrendSource(identity, upsert);
+            rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(cpuTrend));
+            rowState.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount);
         }
 
         return projectionChanged;

@@ -13,16 +13,18 @@ public sealed class ProcessRowViewState : ObservableObject
 
     private ProcessSample _sample;
     private IReadOnlyList<Point> _cpuTrendGeometry;
+    private double[] _cpuTrendValues;
     private string _cpuText;
     private string _rssText;
     private string _ioReadText;
     private string _ioWriteText;
     private string _otherIoText;
 
-    public ProcessRowViewState(ProcessSample sample, IReadOnlyList<Point> cpuTrendGeometry)
+    public ProcessRowViewState(ProcessSample sample, IReadOnlyList<Point> cpuTrendGeometry, double[]? cpuTrendValues = null)
     {
         _sample = sample;
         _cpuTrendGeometry = cpuTrendGeometry;
+        _cpuTrendValues = cpuTrendValues ?? [];
         (_cpuText, _rssText, _ioReadText, _ioWriteText, _otherIoText) = CreateDisplayText(sample);
     }
 
@@ -90,6 +92,8 @@ public sealed class ProcessRowViewState : ObservableObject
         private set => SetProperty(ref _cpuTrendGeometry, value);
     }
 
+    public IReadOnlyList<double> CpuTrendValues => _cpuTrendValues;
+
     public void UpdateSample(ProcessSample sample)
     {
         if (_sample == sample)
@@ -131,6 +135,51 @@ public sealed class ProcessRowViewState : ObservableObject
         }
 
         CpuTrendGeometry = geometry;
+    }
+
+    internal void UpdateCpuTrendValues(IReadOnlyList<double> values, int visiblePointCount)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        int targetCount = Math.Max(1, visiblePointCount);
+        bool changed = false;
+        if (_cpuTrendValues.Length != targetCount)
+        {
+            _cpuTrendValues = new double[targetCount];
+            changed = true;
+        }
+
+        int take = Math.Min(values.Count, targetCount);
+        int sourceStart = values.Count - take;
+        int leadingZeroCount = targetCount - take;
+
+        for (int index = 0; index < leadingZeroCount; index++)
+        {
+            if (_cpuTrendValues[index] == 0d)
+            {
+                continue;
+            }
+
+            _cpuTrendValues[index] = 0d;
+            changed = true;
+        }
+
+        for (int index = 0; index < take; index++)
+        {
+            double next = values[sourceStart + index];
+            int targetIndex = leadingZeroCount + index;
+            if (_cpuTrendValues[targetIndex] == next)
+            {
+                continue;
+            }
+
+            _cpuTrendValues[targetIndex] = next;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            OnPropertyChanged(nameof(CpuTrendValues));
+        }
     }
 
     private static double QuantizeCpu(double cpuPct)

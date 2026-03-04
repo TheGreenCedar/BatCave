@@ -6,7 +6,6 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:controls="using:BatCave.Controls"
-    xmlns:charts="using:BatCave.Charts"
     xmlns:viewModels="using:BatCave.ViewModels"
     mc:Ignorable="d"
     Title="BatCave">
@@ -248,15 +247,19 @@
                                         <TextBlock Grid.Column="6" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind OtherIoText, Mode=OneWay}" TextAlignment="Right" />
                                         <TextBlock Grid.Column="7" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Threads, Mode=OneWay}" TextAlignment="Right" />
                                         <TextBlock Grid.Column="8" FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind Handles, Mode=OneWay}" TextAlignment="Right" />
-                                        <Canvas Grid.Column="9" Width="96" Height="22" HorizontalAlignment="Stretch" IsTabStop="False">
-                                            <Polyline
-                                                Points="{x:Bind charts:SparklineMath.ToPointCollection(CpuTrendGeometry), Mode=OneWay}"
-                                                Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                                StrokeLineJoin="Round"
-                                                StrokeStartLineCap="Round"
-                                                StrokeEndLineCap="Round"
-                                                StrokeThickness="2.5" />
-                                        </Canvas>
+                                        <controls:MetricTrendChart
+                                            Grid.Column="9"
+                                            Width="96"
+                                            Height="22"
+                                            HorizontalAlignment="Stretch"
+                                            Values="{x:Bind CpuTrendValues, Mode=OneWay}"
+                                            VisiblePointCount="60"
+                                            ScaleMode="CpuPercent"
+                                            ShowGrid="False"
+                                            StrokeBrush="#FF0B84D8"
+                                            FillBrush="#330B84D8"
+                                            IsTabStop="False"
+                                            Background="Transparent" />
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -316,6 +319,14 @@
                                         Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
                                         CommandParameter="Cpu"
                                         TabIndex="30">
+                                        <ToggleButton.Resources>
+                                            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="BalancedSelectionBackgroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="BalancedSelectionBackgroundPointerOverBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="BalancedSelectionBackgroundPressedBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="BalancedSelectionForegroundBrush" />
+                                        </ToggleButton.Resources>
                                         <ToggleButton.KeyboardAccelerators>
                                             <KeyboardAccelerator Key="Number1" Modifiers="Control,Shift" />
                                         </ToggleButton.KeyboardAccelerators>
@@ -343,6 +354,14 @@
                                         Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
                                         CommandParameter="Memory"
                                         TabIndex="31">
+                                        <ToggleButton.Resources>
+                                            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="BalancedSelectionBackgroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="BalancedSelectionBackgroundPointerOverBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="BalancedSelectionBackgroundPressedBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="BalancedSelectionForegroundBrush" />
+                                        </ToggleButton.Resources>
                                         <ToggleButton.KeyboardAccelerators>
                                             <KeyboardAccelerator Key="Number2" Modifiers="Control,Shift" />
                                         </ToggleButton.KeyboardAccelerators>
@@ -370,6 +389,14 @@
                                         Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
                                         CommandParameter="IoRead"
                                         TabIndex="32">
+                                        <ToggleButton.Resources>
+                                            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="BalancedSelectionBackgroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="BalancedSelectionBackgroundPointerOverBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="BalancedSelectionBackgroundPressedBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="BalancedSelectionForegroundBrush" />
+                                        </ToggleButton.Resources>
                                         <ToggleButton.KeyboardAccelerators>
                                             <KeyboardAccelerator Key="Number3" Modifiers="Control,Shift" />
                                         </ToggleButton.KeyboardAccelerators>
@@ -397,6 +424,14 @@
                                         Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
                                         CommandParameter="IoWrite"
                                         TabIndex="33">
+                                        <ToggleButton.Resources>
+                                            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="BalancedSelectionBackgroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="BalancedSelectionBackgroundPointerOverBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="BalancedSelectionBackgroundPressedBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="BalancedSelectionForegroundBrush" />
+                                        </ToggleButton.Resources>
                                         <ToggleButton.KeyboardAccelerators>
                                             <KeyboardAccelerator Key="Number4" Modifiers="Control,Shift" />
                                         </ToggleButton.KeyboardAccelerators>
@@ -424,6 +459,14 @@
                                         Command="{x:Bind ViewModel.MetricFocusSelectedCommand}"
                                         CommandParameter="OtherIo"
                                         TabIndex="34">
+                                        <ToggleButton.Resources>
+                                            <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="BalancedSelectionBackgroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="BalancedSelectionBackgroundPointerOverBrush" />
+                                            <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="BalancedSelectionBackgroundPressedBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="BalancedSelectionForegroundBrush" />
+                                            <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="BalancedSelectionForegroundBrush" />
+                                        </ToggleButton.Resources>
                                         <ToggleButton.KeyboardAccelerators>
                                             <KeyboardAccelerator Key="Number5" Modifiers="Control,Shift" />
                                         </ToggleButton.KeyboardAccelerators>
@@ -551,13 +594,16 @@
                                 BorderThickness="1"
                                 Padding="4">
                                 <ListView.Resources>
-                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="SubtleFillColorSecondaryBrush" />
-                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="SubtleFillColorTertiaryBrush" />
-                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="SubtleFillColorSecondaryBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="TextFillColorPrimaryBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="TextFillColorPrimaryBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="TextFillColorPrimaryBrush" />
-                                    <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
+                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="BalancedSelectionBackgroundBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="BalancedSelectionBackgroundPointerOverBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="BalancedSelectionBackgroundPressedBrush" />
+                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="BalancedSelectionForegroundBrush" />
+                                    <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="BalancedSelectionForegroundBrush" />
+                                    <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="BalancedSelectionForegroundBrush" />
+                                    <StaticResource x:Key="ListViewItemSelectionIndicatorBrush" ResourceKey="BalancedSelectionIndicatorBrush" />
+                                    <StaticResource x:Key="ListViewItemSelectionIndicatorPointerOverBrush" ResourceKey="BalancedSelectionIndicatorBrush" />
+                                    <StaticResource x:Key="ListViewItemSelectionIndicatorPressedBrush" ResourceKey="BalancedSelectionIndicatorBrush" />
+                                    <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">True</x:Boolean>
                                 </ListView.Resources>
                                 <ListView.ItemContainerStyle>
                                     <Style TargetType="ListViewItem">

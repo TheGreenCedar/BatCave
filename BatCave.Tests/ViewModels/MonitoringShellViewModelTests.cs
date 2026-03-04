@@ -12,7 +12,6 @@ using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
 using System.Diagnostics;
 using System.Collections.Specialized;
-using Windows.Foundation;
 
 namespace BatCave.Tests.ViewModels;
 
@@ -387,19 +386,23 @@ public class MonitoringShellViewModelTests
         ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 20 };
         gateway.RaiseDelta(2, [varied], []);
         ProcessRowViewState firstVisible = GetVisibleRow(viewModel, 0);
-        IReadOnlyList<Point> beforeTrend = ClonePointCollection(firstVisible.CpuTrendGeometry);
+        double[] beforeTrend = CloneTrendValues(firstVisible.CpuTrendValues);
 
         ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
         gateway.RaiseDelta(3, [heartbeatOnlyUpdate], []);
-        IReadOnlyList<Point> afterOddHeartbeat = ClonePointCollection(firstVisible.CpuTrendGeometry);
+        double[] afterOddHeartbeat = CloneTrendValues(firstVisible.CpuTrendValues);
 
         ProcessSample strideHeartbeat = heartbeatOnlyUpdate with { Seq = 4, TsMs = 4, ParentPid = heartbeatOnlyUpdate.ParentPid + 1 };
         gateway.RaiseDelta(4, [strideHeartbeat], []);
-        IReadOnlyList<Point> afterEvenHeartbeat = ClonePointCollection(firstVisible.CpuTrendGeometry);
+        double[] afterEvenHeartbeat = CloneTrendValues(firstVisible.CpuTrendValues);
 
         Assert.Same(firstVisible, GetVisibleRow(viewModel, 0));
-        AssertPointCollectionsEqual(beforeTrend, afterOddHeartbeat);
-        AssertPointCollectionsNotEqual(beforeTrend, afterEvenHeartbeat);
+        AssertTrendValuesEqual(beforeTrend, afterOddHeartbeat);
+        AssertTrendValuesNotEqual(beforeTrend, afterEvenHeartbeat);
+        Assert.Equal(58, beforeTrend.Count(static value => value == 0d));
+        Assert.Equal(56, afterEvenHeartbeat.Count(static value => value == 0d));
+        Assert.Equal(20d, afterEvenHeartbeat[^1]);
+        Assert.Equal(20d, afterEvenHeartbeat[^2]);
     }
 
     [Fact]
@@ -435,16 +438,20 @@ public class MonitoringShellViewModelTests
         ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 11.0 };
         gateway.RaiseDelta(2, [varied], []);
         ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
-        IReadOnlyList<Point> before = ClonePointCollection(rowState.CpuTrendGeometry);
+        double[] before = CloneTrendValues(rowState.CpuTrendValues);
 
         gateway.RaiseDelta(3, [], []);
-        IReadOnlyList<Point> afterOdd = ClonePointCollection(rowState.CpuTrendGeometry);
+        double[] afterOdd = CloneTrendValues(rowState.CpuTrendValues);
 
         gateway.RaiseDelta(4, [], []);
-        IReadOnlyList<Point> afterEven = ClonePointCollection(rowState.CpuTrendGeometry);
+        double[] afterEven = CloneTrendValues(rowState.CpuTrendValues);
 
-        AssertPointCollectionsEqual(before, afterOdd);
-        AssertPointCollectionsNotEqual(before, afterEven);
+        AssertTrendValuesEqual(before, afterOdd);
+        AssertTrendValuesNotEqual(before, afterEven);
+        Assert.Equal(58, before.Count(static value => value == 0d));
+        Assert.Equal(57, afterEven.Count(static value => value == 0d));
+        Assert.Equal(11d, afterEven[^1]);
+        Assert.Equal(11d, afterEven[^2]);
     }
 
     [Fact]
@@ -456,20 +463,23 @@ public class MonitoringShellViewModelTests
         ProcessSample row = Sample(pid: 192, startTime: 19200, access: AccessState.Full) with { CpuPct = 12.0 };
         gateway.RaiseDelta(1, [row], []);
         ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
-        IReadOnlyList<Point> first = ClonePointCollection(rowState.CpuTrendGeometry);
+        double[] first = CloneTrendValues(rowState.CpuTrendValues);
 
-        Assert.Equal(120, first.Count);
-        Assert.NotEqual(2, first.Count);
-        Assert.True(first[^1].Y < first[^2].Y);
+        Assert.Equal(60, first.Length);
+        Assert.Equal(59, first.Count(static value => value == 0d));
+        Assert.Equal(12d, first[^1]);
 
         gateway.RaiseDelta(2, [], []);
-        IReadOnlyList<Point> afterEvenStride = ClonePointCollection(rowState.CpuTrendGeometry);
+        double[] afterEvenStride = CloneTrendValues(rowState.CpuTrendValues);
 
         gateway.RaiseDelta(3, [], []);
-        IReadOnlyList<Point> afterOddTick = ClonePointCollection(rowState.CpuTrendGeometry);
+        double[] afterOddTick = CloneTrendValues(rowState.CpuTrendValues);
 
-        AssertPointCollectionsNotEqual(first, afterEvenStride);
-        AssertPointCollectionsEqual(afterEvenStride, afterOddTick);
+        AssertTrendValuesNotEqual(first, afterEvenStride);
+        AssertTrendValuesEqual(afterEvenStride, afterOddTick);
+        Assert.Equal(58, afterEvenStride.Count(static value => value == 0d));
+        Assert.Equal(12d, afterEvenStride[^1]);
+        Assert.Equal(12d, afterEvenStride[^2]);
     }
 
     [Fact]
@@ -493,7 +503,10 @@ public class MonitoringShellViewModelTests
         await viewModel.SelectRowAsync(current, CancellationToken.None);
 
         Assert.Single(GetVisibleRows(viewModel));
-        Assert.Equal(120, GetVisibleRow(viewModel, 0).CpuTrendGeometry.Count);
+        ProcessRowViewState visibleRow = GetVisibleRow(viewModel, 0);
+        Assert.Equal(60, visibleRow.CpuTrendValues.Count);
+        Assert.Equal(71d, visibleRow.CpuTrendValues[0]);
+        Assert.Equal(130d, visibleRow.CpuTrendValues[^1]);
         Assert.Equal(60, viewModel.CpuMetricTrendValues.Length);
     }
 
@@ -1372,28 +1385,22 @@ public class MonitoringShellViewModelTests
         return viewModel;
     }
 
-    private static IReadOnlyList<Point> ClonePointCollection(IReadOnlyList<Point> points)
+    private static double[] CloneTrendValues(IReadOnlyList<double> values)
     {
-        List<Point> clone = new(points.Count);
-        foreach (Point point in points)
-        {
-            clone.Add(new Point(point.X, point.Y));
-        }
-
-        return clone;
+        return [.. values];
     }
 
-    private static void AssertPointCollectionsEqual(IReadOnlyList<Point> expected, IReadOnlyList<Point> actual)
+    private static void AssertTrendValuesEqual(IReadOnlyList<double> expected, IReadOnlyList<double> actual)
     {
-        Assert.True(ArePointCollectionsEqual(expected, actual));
+        Assert.True(AreTrendValuesEqual(expected, actual));
     }
 
-    private static void AssertPointCollectionsNotEqual(IReadOnlyList<Point> expected, IReadOnlyList<Point> actual)
+    private static void AssertTrendValuesNotEqual(IReadOnlyList<double> expected, IReadOnlyList<double> actual)
     {
-        Assert.False(ArePointCollectionsEqual(expected, actual));
+        Assert.False(AreTrendValuesEqual(expected, actual));
     }
 
-    private static bool ArePointCollectionsEqual(IReadOnlyList<Point> left, IReadOnlyList<Point> right)
+    private static bool AreTrendValuesEqual(IReadOnlyList<double> left, IReadOnlyList<double> right)
     {
         if (left.Count != right.Count)
         {

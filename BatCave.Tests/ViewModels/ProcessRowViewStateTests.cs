@@ -77,6 +77,47 @@ public sealed class ProcessRowViewStateTests
         Assert.Contains("KB", state.RssText, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void UpdateCpuTrendValues_TargetLengthMatches_UpdatesInPlace()
+    {
+        ProcessRowViewState state = new(
+            Sample(cpuPct: 10, rssBytes: 1000, ioReadBps: 200, ioWriteBps: 300, netBps: 400, threads: 5, handles: 6),
+            CreateTrendGeometry(),
+            cpuTrendValues: [1d, 2d, 3d]);
+
+        IReadOnlyList<double> originalReference = state.CpuTrendValues;
+
+        state.UpdateCpuTrendValues([4d, 5d, 6d], visiblePointCount: 3);
+
+        Assert.Same(originalReference, state.CpuTrendValues);
+        AssertDoubleValues([4d, 5d, 6d], state.CpuTrendValues);
+    }
+
+    [Fact]
+    public void UpdateCpuTrendValues_PropertyChangedForCpuTrendValues_FiresOnlyWhenValuesChanged()
+    {
+        ProcessRowViewState state = new(
+            Sample(cpuPct: 10, rssBytes: 1000, ioReadBps: 200, ioWriteBps: 300, netBps: 400, threads: 5, handles: 6),
+            CreateTrendGeometry(),
+            cpuTrendValues: [1d, 2d, 3d]);
+
+        int cpuTrendChangeCount = 0;
+        state.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(ProcessRowViewState.CpuTrendValues))
+            {
+                cpuTrendChangeCount++;
+            }
+        };
+
+        state.UpdateCpuTrendValues([1d, 2d, 3d], visiblePointCount: 3);
+        state.UpdateCpuTrendValues([1d, 2d, 4d], visiblePointCount: 3);
+        state.UpdateCpuTrendValues([1d, 2d, 4d], visiblePointCount: 3);
+
+        Assert.Equal(1, cpuTrendChangeCount);
+        AssertDoubleValues([1d, 2d, 4d], state.CpuTrendValues);
+    }
+
     private static ProcessSample Sample(
         double cpuPct,
         ulong rssBytes,
@@ -111,5 +152,14 @@ public sealed class ProcessRowViewStateTests
             new Point(0, 0),
             new Point(1, 1),
         };
+    }
+
+    private static void AssertDoubleValues(double[] expected, IReadOnlyList<double> actual)
+    {
+        Assert.Equal(expected.Length, actual.Count);
+        for (int index = 0; index < expected.Length; index++)
+        {
+            Assert.Equal(expected[index], actual[index]);
+        }
     }
 }
