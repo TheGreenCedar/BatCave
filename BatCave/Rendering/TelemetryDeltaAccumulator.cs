@@ -1,7 +1,7 @@
+using BatCave.Core.Domain;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using BatCave.Core.Domain;
 
 namespace BatCave.Rendering;
 

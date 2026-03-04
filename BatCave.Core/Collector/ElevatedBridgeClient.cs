@@ -1,7 +1,7 @@
-using System.Diagnostics;
-using System.Text.Json;
 using BatCave.Core.Domain;
 using BatCave.Core.Persistence;
+using System.Diagnostics;
+using System.Text.Json;
 
 namespace BatCave.Core.Collector;
 

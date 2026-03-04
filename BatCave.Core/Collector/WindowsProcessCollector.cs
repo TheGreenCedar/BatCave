@@ -1,9 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
 
 namespace BatCave.Core.Collector;
 

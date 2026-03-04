@@ -1,8 +1,8 @@
-using System;
-using System.Collections.Generic;
 using BatCave.Converters;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
+using System;
+using System.Collections.Generic;
 using Windows.Foundation;
 
 namespace BatCave.ViewModels;

@@ -1,10 +1,10 @@
-using System.Diagnostics;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Collector;
 using BatCave.Core.Domain;
 using BatCave.Core.Pipeline;
 using BatCave.Core.Sort;
 using BatCave.Core.State;
+using System.Diagnostics;
 
 namespace BatCave.Core.Runtime;
 

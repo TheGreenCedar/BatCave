@@ -1,8 +1,8 @@
+using BatCave.Core.Domain;
+using CommunityToolkit.Mvvm.Input;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using BatCave.Core.Domain;
-using CommunityToolkit.Mvvm.Input;
 
 namespace BatCave.ViewModels;
 

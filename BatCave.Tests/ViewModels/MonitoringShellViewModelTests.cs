@@ -1,16 +1,16 @@
+using BatCave.Controls;
+using BatCave.Converters;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using BatCave.Core.Pipeline;
 using BatCave.Core.Runtime;
 using BatCave.Core.Sort;
 using BatCave.Core.State;
-using System.Diagnostics;
-using BatCave.Controls;
-using BatCave.Converters;
 using BatCave.Services;
 using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
+using System.Diagnostics;
 using Windows.Foundation;
 
 namespace BatCave.Tests.ViewModels;

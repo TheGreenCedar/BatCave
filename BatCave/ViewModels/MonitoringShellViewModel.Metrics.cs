@@ -1,9 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.Threading.Tasks;
 using BatCave.Converters;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.Input;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace BatCave.ViewModels;
 

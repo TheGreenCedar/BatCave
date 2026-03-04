@@ -1,4 +1,3 @@
-using System;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 

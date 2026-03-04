@@ -1,11 +1,11 @@
-using System.CommandLine;
-using System.CommandLine.Parsing;
-using System.Text.Json;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Collector;
 using BatCave.Core.Domain;
 using BatCave.Core.Runtime;
 using BatCave.Core.Serialization;
+using System.CommandLine;
+using System.CommandLine.Parsing;
+using System.Text.Json;
 
 namespace BatCave.Core.Operations;
 

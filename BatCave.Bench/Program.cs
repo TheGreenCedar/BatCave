@@ -1,6 +1,6 @@
-using System.Text.Json;
 using BatCave.Core.Runtime;
 using BatCave.Core.Serialization;
+using System.Text.Json;
 
 namespace BatCave.Bench;
 

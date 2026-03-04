@@ -1,7 +1,7 @@
+using BatCave.Core.Domain;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using BatCave.Core.Domain;
 
 namespace BatCave.ViewModels;
 

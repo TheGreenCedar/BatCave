@@ -1,7 +1,7 @@
-using System.Diagnostics;
-using System.Management;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
+using System.Diagnostics;
+using System.Management;
 
 namespace BatCave.Core.Metadata;
 

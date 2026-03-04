@@ -1,7 +1,7 @@
+using BatCave.Core.Domain;
+using System;
 using System.Collections;
 using System.Collections.Generic;
-using System;
-using BatCave.Core.Domain;
 
 namespace BatCave.ViewModels;
 

@@ -1,7 +1,7 @@
-using System;
 using Humanizer;
-using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Data;
+using Microsoft.UI.Xaml.Media;
+using System;
 using Windows.UI;
 
 namespace BatCave.Converters;

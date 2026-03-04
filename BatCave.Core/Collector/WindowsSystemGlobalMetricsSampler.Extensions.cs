@@ -1,10 +1,9 @@
+using BatCave.Core.Domain;
 using System.Globalization;
 using System.Management;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Linq;
-using BatCave.Core.Domain;
 
 namespace BatCave.Core.Collector;
 
@@ -1161,7 +1160,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
 
         double speedMhz = value.Value;
-        if (speedMhz <= 0d || speedMhz < MinReasonableCpuSpeedMHz || speedMhz > MaxReasonableCpuSpeedMHz)
+        if (speedMhz is <= 0d or < MinReasonableCpuSpeedMHz or > MaxReasonableCpuSpeedMHz)
         {
             return null;
         }

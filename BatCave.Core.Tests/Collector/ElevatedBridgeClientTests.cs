@@ -1,6 +1,6 @@
-using System.Text.Json;
 using BatCave.Core.Collector;
 using BatCave.Core.Tests.TestSupport;
+using System.Text.Json;
 
 namespace BatCave.Core.Tests.Collector;
 

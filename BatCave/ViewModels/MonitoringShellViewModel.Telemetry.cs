@@ -1,10 +1,9 @@
+using BatCave.Charts;
+using BatCave.Core.Domain;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
-using BatCave.Charts;
-using BatCave.Core.Domain;
-using BatCave.Rendering;
 using Windows.Foundation;
 
 namespace BatCave.ViewModels;

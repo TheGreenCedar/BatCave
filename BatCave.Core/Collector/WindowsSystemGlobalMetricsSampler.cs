@@ -1,6 +1,6 @@
-using System.Runtime.InteropServices;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
+using System.Runtime.InteropServices;
 
 namespace BatCave.Core.Collector;
 
@@ -437,7 +437,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             return null;
         }
 
-        if (value.CStatus != PdhCstatusValidData && value.CStatus != PdhCstatusNewData)
+        if (value.CStatus is not PdhCstatusValidData and not PdhCstatusNewData)
         {
             return null;
         }

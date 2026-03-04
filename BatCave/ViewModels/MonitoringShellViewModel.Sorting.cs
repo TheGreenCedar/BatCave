@@ -1,9 +1,9 @@
+using BatCave.Core.Domain;
+using CommunityToolkit.Mvvm.Input;
 using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-using BatCave.Core.Domain;
-using CommunityToolkit.Mvvm.Input;
 using SortDescription = CommunityToolkit.WinUI.Collections.SortDescription;
 
 namespace BatCave.ViewModels;

@@ -1,5 +1,3 @@
-using BatCave.Core.Domain;
-
 namespace BatCave.Core.Domain;
 
 public sealed record TickOutcome

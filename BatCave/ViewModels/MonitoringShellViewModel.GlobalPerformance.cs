@@ -1,3 +1,9 @@
+using BatCave.Controls;
+using BatCave.Converters;
+using BatCave.Core.Domain;
+using CommunityToolkit.Mvvm.Input;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -5,12 +11,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
-using BatCave.Controls;
-using BatCave.Converters;
-using BatCave.Core.Domain;
-using CommunityToolkit.Mvvm.Input;
-using Microsoft.UI.Dispatching;
-using Microsoft.UI.Xaml;
 using Windows.UI;
 
 namespace BatCave.ViewModels;

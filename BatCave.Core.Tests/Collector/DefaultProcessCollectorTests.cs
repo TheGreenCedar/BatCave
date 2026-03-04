@@ -1,6 +1,6 @@
-using System.Reflection;
 using BatCave.Core.Collector;
 using BatCave.Core.Tests.TestSupport;
+using System.Reflection;
 
 namespace BatCave.Core.Tests.Collector;
 

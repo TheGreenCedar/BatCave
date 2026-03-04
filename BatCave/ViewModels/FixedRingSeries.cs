@@ -4,16 +4,11 @@ using System.Collections.Generic;
 
 namespace BatCave.ViewModels;
 
-internal sealed class FixedRingSeries : IReadOnlyList<double>
+internal sealed partial class FixedRingSeries(int capacity) : IReadOnlyList<double>
 {
-    private readonly double[] _buffer;
+    private readonly double[] _buffer = new double[Math.Max(1, capacity)];
     private int _start;
     private int _count;
-
-    public FixedRingSeries(int capacity)
-    {
-        _buffer = new double[Math.Max(1, capacity)];
-    }
 
     public int Count => _count;
 

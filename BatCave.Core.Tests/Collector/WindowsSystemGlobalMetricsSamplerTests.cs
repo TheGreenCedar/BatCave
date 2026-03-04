@@ -1,6 +1,6 @@
-using System.Diagnostics;
-using BatCave.Core.Domain;
 using BatCave.Core.Collector;
+using BatCave.Core.Domain;
+using System.Diagnostics;
 
 namespace BatCave.Core.Tests.Collector;
 
