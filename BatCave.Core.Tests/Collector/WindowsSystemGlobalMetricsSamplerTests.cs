@@ -133,6 +133,47 @@ public class WindowsSystemGlobalMetricsSamplerTests
     }
 
     [Fact]
+    public void MergeCpuSnapshotKernelPct_WhenSnapshotMissing_ReturnsNull()
+    {
+        SystemGlobalCpuSnapshot? merged = WindowsSystemGlobalMetricsSampler.MergeCpuSnapshotKernelPct(snapshot: null, kernelPct: 21.5d);
+        Assert.Null(merged);
+    }
+
+    [Fact]
+    public void MergeCpuSnapshotKernelPct_WhenKernelUnchanged_ReusesSnapshot()
+    {
+        SystemGlobalCpuSnapshot snapshot = new()
+        {
+            ProcessorName = "cpu",
+            KernelPct = 14.25d,
+        };
+
+        SystemGlobalCpuSnapshot? merged = WindowsSystemGlobalMetricsSampler.MergeCpuSnapshotKernelPct(snapshot, 14.25d);
+        Assert.Same(snapshot, merged);
+    }
+
+    [Fact]
+    public void MergeCpuSnapshotKernelPct_WhenKernelUpdated_PreservesMetadataAndUpdatesKernel()
+    {
+        double[] logicalValues = [12d, 34d];
+        SystemGlobalCpuSnapshot snapshot = new()
+        {
+            ProcessorName = "cpu",
+            KernelPct = 6.5d,
+            SpeedMHz = 4200d,
+            LogicalProcessorUtilizationPct = logicalValues,
+        };
+
+        SystemGlobalCpuSnapshot? merged = WindowsSystemGlobalMetricsSampler.MergeCpuSnapshotKernelPct(snapshot, 33.75d);
+
+        Assert.NotNull(merged);
+        Assert.Equal("cpu", merged.ProcessorName);
+        Assert.Equal(4200d, merged.SpeedMHz);
+        Assert.Equal(33.75d, merged.KernelPct);
+        Assert.Same(logicalValues, merged.LogicalProcessorUtilizationPct);
+    }
+
+    [Fact]
     public void ResolveDiskActiveTimePct_WhenBothCountersMissing_ReturnsNull()
     {
         double? resolved = WindowsSystemGlobalMetricsSampler.ResolveDiskActiveTimePct(diskTimePct: null, idleTimePct: null);

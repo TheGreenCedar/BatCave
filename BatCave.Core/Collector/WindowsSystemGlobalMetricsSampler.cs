@@ -87,6 +87,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             double? cpuPct = SampleCpuPct();
             ulong? memoryUsedBytes = SampleMemoryUsedBytes();
             double? kernelPct = _lastKernelPct;
+            SystemGlobalCpuSnapshot? cpuSnapshot = MergeCpuSnapshotKernelPct(_latestCpuSnapshot, kernelPct);
             if (cpuPct.HasValue)
             {
                 _cpuRateWarmed = true;
@@ -106,7 +107,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
                 DiskReadBps = diskReadBps,
                 DiskWriteBps = diskWriteBps,
                 OtherIoBps = otherIoBps,
-                CpuSnapshot = _latestCpuSnapshot,
+                CpuSnapshot = cpuSnapshot,
                 MemorySnapshot = _latestMemorySnapshot,
                 DiskSnapshots = _latestDiskSnapshots,
                 NetworkSnapshots = _latestNetworkSnapshots,
@@ -428,6 +429,16 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             ReadRateCounter(_diskReadCounter),
             ReadRateCounter(_diskWriteCounter),
             ReadRateCounter(_otherIoCounter));
+    }
+
+    internal static SystemGlobalCpuSnapshot? MergeCpuSnapshotKernelPct(SystemGlobalCpuSnapshot? snapshot, double? kernelPct)
+    {
+        if (snapshot is null || Nullable.Equals(snapshot.KernelPct, kernelPct))
+        {
+            return snapshot;
+        }
+
+        return snapshot with { KernelPct = kernelPct };
     }
 
     private static ulong? ReadRateCounter(IntPtr counter)
