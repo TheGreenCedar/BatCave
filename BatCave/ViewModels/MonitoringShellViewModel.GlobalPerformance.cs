@@ -99,6 +99,14 @@ public partial class MonitoringShellViewModel
 
     public Visibility GlobalPerformanceVisibility => IsGlobalPerformanceMode ? Visibility.Visible : Visibility.Collapsed;
 
+    public bool IsGlobalMetricsReady => _latestGlobalMetricsSample.IsReady;
+
+    public Visibility GlobalPerformanceContentVisibility =>
+        IsGlobalPerformanceMode && IsGlobalMetricsReady ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility GlobalPerformanceSkeletonVisibility =>
+        IsGlobalPerformanceMode && !IsGlobalMetricsReady ? Visibility.Visible : Visibility.Collapsed;
+
     public Visibility ProcessDetailVisibility => IsGlobalPerformanceMode ? Visibility.Collapsed : Visibility.Visible;
 
     public string GlobalDetailTitle
@@ -269,6 +277,9 @@ public partial class MonitoringShellViewModel
         RaiseProperties(
             nameof(IsGlobalPerformanceMode),
             nameof(GlobalPerformanceVisibility),
+            nameof(IsGlobalMetricsReady),
+            nameof(GlobalPerformanceContentVisibility),
+            nameof(GlobalPerformanceSkeletonVisibility),
             nameof(ProcessDetailVisibility));
     }
 
@@ -282,6 +293,9 @@ public partial class MonitoringShellViewModel
         }
 
         _latestGlobalMetricsSample = sampled;
+        OnPropertyChanged(nameof(IsGlobalMetricsReady));
+        OnPropertyChanged(nameof(GlobalPerformanceContentVisibility));
+        OnPropertyChanged(nameof(GlobalPerformanceSkeletonVisibility));
         BuildAndAppendResourceRows(sampled);
         QueueGlobalDetailStateRefresh();
     }

@@ -12,6 +12,14 @@ public partial class MonitoringShellViewModel
     private static readonly TimeSpan GlobalMetricsSampleSoftWait = TimeSpan.FromMilliseconds(35);
     private Task<SystemGlobalMetricsSample>? _globalMetricsSampleTask;
 
+    private void EnsureGlobalMetricsSamplingStarted()
+    {
+        if (_globalMetricsSampleTask is null)
+        {
+            _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
+        }
+    }
+
     [RelayCommand]
     private void MetricFocusSelected(string? focusTag)
     {
@@ -198,18 +206,10 @@ public partial class MonitoringShellViewModel
 
     private SystemGlobalMetricsSample SampleGlobalMetricsForUiFrame()
     {
-        if (_globalMetricsSampleTask is null)
-        {
-            _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
-            if (_globalMetricsSampleTask.Wait(GlobalMetricsSampleSoftWait))
-            {
-                return ConsumeGlobalMetricsSampleAndQueueNext();
-            }
+        EnsureGlobalMetricsSamplingStarted();
+        Task<SystemGlobalMetricsSample> sampleTask = _globalMetricsSampleTask!;
 
-            return _latestGlobalMetricsSample;
-        }
-
-        if (!_globalMetricsSampleTask.IsCompleted && !_globalMetricsSampleTask.Wait(GlobalMetricsSampleSoftWait))
+        if (!sampleTask.IsCompleted && !sampleTask.Wait(GlobalMetricsSampleSoftWait))
         {
             return _latestGlobalMetricsSample;
         }

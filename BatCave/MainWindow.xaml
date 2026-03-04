@@ -505,8 +505,44 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
 
+                            <Grid Grid.ColumnSpan="2" Visibility="{Binding GlobalPerformanceSkeletonVisibility, Mode=OneWay}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="248" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border
+                                    Padding="12"
+                                    Background="{StaticResource TaskMgrPaneBackgroundBrush}"
+                                    BorderBrush="{StaticResource TaskMgrPaneBorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="6">
+                                    <StackPanel Spacing="10">
+                                        <ProgressRing IsActive="True" Width="24" Height="24" />
+                                        <TextBlock Style="{StaticResource TaskMgrSectionTitleStyle}" Text="Loading system metrics..." />
+                                        <Rectangle Height="18" RadiusX="3" RadiusY="3" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                        <Rectangle Height="18" RadiusX="3" RadiusY="3" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                        <Rectangle Height="18" RadiusX="3" RadiusY="3" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border
+                                    Grid.Column="1"
+                                    Padding="12"
+                                    Background="{StaticResource TaskMgrPaneBackgroundBrush}"
+                                    BorderBrush="{StaticResource TaskMgrPaneBorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="6">
+                                    <StackPanel Spacing="8">
+                                        <Rectangle Height="22" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                        <Rectangle Height="14" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                        <Rectangle Height="230" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                        <Rectangle Height="80" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
                             <ListView
                                 x:Name="GlobalResourceListView"
+                                Visibility="{Binding GlobalPerformanceContentVisibility, Mode=OneWay}"
                                 ItemsSource="{Binding GlobalResourceRows, Mode=OneWay}"
                                 SelectionChanged="GlobalResourceListView_SelectionChanged"
                                 SelectionMode="Single"
@@ -566,6 +602,7 @@
 
                             <Border
                                 Grid.Column="1"
+                                Visibility="{Binding GlobalPerformanceContentVisibility, Mode=OneWay}"
                                 Padding="10"
                                 Background="{StaticResource TaskMgrPaneBackgroundBrush}"
                                 BorderBrush="{StaticResource TaskMgrPaneBorderBrush}"

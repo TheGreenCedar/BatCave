@@ -118,6 +118,7 @@ public partial class MonitoringShellViewModel
         IsStartupError = false;
         IsBlocked = false;
         IsLive = false;
+        EnsureGlobalMetricsSamplingStarted();
         ResetWarningState();
         StartupErrorMessage = string.Empty;
         ShellHeadline = "Initializing monitor runtime...";

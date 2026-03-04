@@ -139,6 +139,14 @@ public sealed record SystemGlobalMetricsSample
     public IReadOnlyList<SystemGlobalDiskSnapshot> DiskSnapshots { get; init; } = [];
 
     public IReadOnlyList<SystemGlobalNetworkSnapshot> NetworkSnapshots { get; init; } = [];
+
+    public bool CpuRateWarmed { get; init; }
+
+    public bool RateCountersWarmed { get; init; }
+
+    public bool ExtendedProbeCycleCompleted { get; init; }
+
+    public bool IsReady { get; init; }
 }
 
 public sealed record SystemGlobalCpuSnapshot

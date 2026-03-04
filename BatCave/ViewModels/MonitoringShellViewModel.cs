@@ -141,6 +141,7 @@ public partial class MonitoringShellViewModel : ObservableObject
             Filter = ShouldShowRow
         };
         ApplySortDescriptions();
+        EnsureGlobalMetricsSamplingStarted();
         RefreshGlobalPerformanceState(new SystemGlobalMetricsSample());
     }
 

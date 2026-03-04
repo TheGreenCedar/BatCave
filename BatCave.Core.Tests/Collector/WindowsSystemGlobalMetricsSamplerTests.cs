@@ -1,9 +1,137 @@
+using System.Diagnostics;
+using BatCave.Core.Domain;
 using BatCave.Core.Collector;
 
 namespace BatCave.Core.Tests.Collector;
 
 public class WindowsSystemGlobalMetricsSamplerTests
 {
+    [Fact]
+    public void Sample_WhenProbeTimesOut_KeepsLastSuccessfulSectionUntilNextCycle()
+    {
+        int memoryProbeCalls = 0;
+        using WindowsSystemGlobalMetricsSampler sampler = new(
+            cpuSnapshotFactory: (_, _) => new SystemGlobalCpuSnapshot { ProcessorName = "cpu" },
+            memorySnapshotFactory: _ =>
+            {
+                int call = Interlocked.Increment(ref memoryProbeCalls);
+                if (call == 2)
+                {
+                    Thread.Sleep(180);
+                }
+
+                return new SystemGlobalMemorySnapshot
+                {
+                    TotalBytes = (ulong)call,
+                };
+            },
+            diskSnapshotFactory: () => [],
+            networkSnapshotFactory: () => [],
+            metadataRefreshAction: static () => { },
+            extendedProbeSoftTimeout: TimeSpan.FromMilliseconds(40),
+            initializePdhCounters: false);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        _ = sampler.Sample();
+        stopwatch.Stop();
+        Assert.True(stopwatch.ElapsedMilliseconds < 100, $"sample call took {stopwatch.ElapsedMilliseconds}ms");
+
+        Thread.Sleep(120);
+        SystemGlobalMetricsSample afterFirstCycle = sampler.Sample();
+        Assert.Equal(1UL, afterFirstCycle.MemorySnapshot?.TotalBytes);
+
+        _ = sampler.Sample();
+        Thread.Sleep(80);
+        SystemGlobalMetricsSample duringTimedOutCycle = sampler.Sample();
+
+        Assert.Equal(1UL, duringTimedOutCycle.MemorySnapshot?.TotalBytes);
+        Assert.True(duringTimedOutCycle.ExtendedProbeCycleCompleted);
+    }
+
+    [Fact]
+    public void Sample_AfterTimedOutProbe_RetriesOnLaterCycleAndUpdatesSection()
+    {
+        int memoryProbeCalls = 0;
+        using WindowsSystemGlobalMetricsSampler sampler = new(
+            cpuSnapshotFactory: (_, _) => new SystemGlobalCpuSnapshot { ProcessorName = "cpu" },
+            memorySnapshotFactory: _ =>
+            {
+                int call = Interlocked.Increment(ref memoryProbeCalls);
+                if (call == 2)
+                {
+                    Thread.Sleep(180);
+                }
+
+                ulong value = call switch
+                {
+                    1 => 1UL,
+                    2 => 2UL,
+                    _ => 3UL,
+                };
+
+                return new SystemGlobalMemorySnapshot
+                {
+                    TotalBytes = value,
+                };
+            },
+            diskSnapshotFactory: () => [],
+            networkSnapshotFactory: () => [],
+            metadataRefreshAction: static () => { },
+            extendedProbeSoftTimeout: TimeSpan.FromMilliseconds(40),
+            initializePdhCounters: false);
+
+        _ = sampler.Sample();
+        Thread.Sleep(120);
+        _ = sampler.Sample();
+
+        _ = sampler.Sample();
+        Thread.Sleep(260);
+        _ = sampler.Sample();
+        Thread.Sleep(120);
+
+        SystemGlobalMetricsSample afterRetry = sampler.Sample();
+        Assert.Equal(3UL, afterRetry.MemorySnapshot?.TotalBytes);
+        Assert.True(memoryProbeCalls >= 3);
+    }
+
+    [Fact]
+    public void Sample_WhenProbeCompletesAfterTimeout_PromotesLateResult()
+    {
+        int cpuProbeCalls = 0;
+        using WindowsSystemGlobalMetricsSampler sampler = new(
+            cpuSnapshotFactory: (_, _) =>
+            {
+                int call = Interlocked.Increment(ref cpuProbeCalls);
+                if (call == 1)
+                {
+                    Thread.Sleep(180);
+                }
+
+                return new SystemGlobalCpuSnapshot
+                {
+                    ProcessorName = $"cpu-{call}",
+                };
+            },
+            memorySnapshotFactory: _ => new SystemGlobalMemorySnapshot(),
+            diskSnapshotFactory: () => [],
+            networkSnapshotFactory: () => [],
+            metadataRefreshAction: static () => { },
+            extendedProbeSoftTimeout: TimeSpan.FromMilliseconds(40),
+            initializePdhCounters: false);
+
+        _ = sampler.Sample();
+        Thread.Sleep(80);
+
+        SystemGlobalMetricsSample whileTimedOut = sampler.Sample();
+        Assert.Null(whileTimedOut.CpuSnapshot);
+
+        Thread.Sleep(180);
+        SystemGlobalMetricsSample afterLateCompletion = sampler.Sample();
+
+        Assert.Equal("cpu-1", afterLateCompletion.CpuSnapshot?.ProcessorName);
+        Assert.True(cpuProbeCalls >= 1);
+    }
+
     [Fact]
     public void ResolveDiskActiveTimePct_WhenBothCountersMissing_ReturnsNull()
     {

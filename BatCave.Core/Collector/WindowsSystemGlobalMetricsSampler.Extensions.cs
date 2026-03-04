@@ -37,7 +37,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
         try
         {
-            cpuSnapshot = BuildCpuSnapshot(cpuPct);
+            cpuSnapshot = BuildCpuSnapshot(cpuPct, _lastKernelPct);
         }
         catch
         {
@@ -86,6 +86,12 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
 
         _nextMetadataRefreshUtc = now.Add(MetadataRefreshInterval);
+        RefreshMetadataSnapshot();
+    }
+
+    private void RefreshMetadataSnapshot()
+    {
+        // Metadata refresh may fail in parts; retain previous values for any failed section.
 
         try
         {
@@ -93,7 +99,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
         catch
         {
-            _cpuStaticMetadata = CpuStaticMetadata.Empty;
+            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
         }
 
         try
@@ -102,7 +108,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
         catch
         {
-            _memoryStaticMetadata = MemoryStaticMetadata.Empty;
+            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
         }
 
         try
@@ -111,7 +117,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
         catch
         {
-            _diskMetadataByIndex = [];
+            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
         }
 
         try
@@ -120,7 +126,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
         catch
         {
-            _diskIndexByDriveLetter = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
         }
 
         try
@@ -129,7 +135,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
         catch
         {
-            _networkMetadataByNormalizedName = [];
+            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
         }
 
         try
@@ -138,13 +144,13 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
         catch
         {
-            _pageFileDrives = [];
+            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
         }
 
         _systemDriveLetter = GetSystemDriveLetter();
     }
 
-    private SystemGlobalCpuSnapshot BuildCpuSnapshot(double? cpuPct)
+    private SystemGlobalCpuSnapshot BuildCpuSnapshot(double? cpuPct, double? kernelPct)
     {
         List<double> logicalUtilization = [];
         uint? processes = null;
@@ -240,7 +246,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         return new SystemGlobalCpuSnapshot
         {
             ProcessorName = _cpuStaticMetadata.ProcessorName,
-            KernelPct = _lastKernelPct,
+            KernelPct = kernelPct,
             SpeedMHz = ResolveCpuSpeedMHz(
                 dynamicCpuSpeedMHz.ActualFrequencyMHz,
                 dynamicCpuSpeedMHz.ProcessorFrequencyMHz,

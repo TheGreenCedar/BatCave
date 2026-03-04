@@ -55,6 +55,55 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task GlobalPerformance_ShowsSkeletonUntilReadySampleArrives()
+    {
+        TestRuntimeEventGateway gateway = new();
+        SystemGlobalMetricsSample notReady = CreateSystemGlobalMetricsSample(
+            tsMs: 1,
+            cpuPct: null,
+            memoryUsedBytes: null,
+            diskReadBps: null,
+            diskWriteBps: null,
+            otherIoBps: null,
+            cpuRateWarmed: false,
+            rateCountersWarmed: false,
+            extendedProbeCycleCompleted: false,
+            isReady: false);
+        SystemGlobalMetricsSample ready = CreateSystemGlobalMetricsSample(
+            tsMs: 2,
+            cpuPct: 12,
+            memoryUsedBytes: 10 * 1024UL * 1024UL,
+            diskReadBps: 1024UL,
+            diskWriteBps: 2048UL,
+            otherIoBps: 4096UL,
+            cpuRateWarmed: true,
+            rateCountersWarmed: true,
+            extendedProbeCycleCompleted: true,
+            isReady: true);
+
+        bool serveReady = false;
+        TestSystemGlobalMetricsSampler sampler = new(notReady)
+        {
+            Handler = () => serveReady ? ready : notReady,
+        };
+
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        Assert.Equal(Visibility.Visible, viewModel.GlobalPerformanceSkeletonVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalPerformanceContentVisibility);
+
+        serveReady = true;
+        ProcessSample row = Sample(pid: 700, startTime: 7000, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+        gateway.RaiseDelta(2, [row with { Seq = 2, TsMs = 2 }], []);
+
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalPerformanceSkeletonVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalPerformanceContentVisibility);
+    }
+
+    [Fact]
     public async Task AdminToggle_ControlsDeniedVisibilityAndAdminOnlyFilter()
     {
         TestRuntimeEventGateway gateway = new();
@@ -1339,7 +1388,11 @@ public class MonitoringShellViewModelTests
         SystemGlobalCpuSnapshot? cpuSnapshot = null,
         SystemGlobalMemorySnapshot? memorySnapshot = null,
         IReadOnlyList<SystemGlobalDiskSnapshot>? diskSnapshots = null,
-        IReadOnlyList<SystemGlobalNetworkSnapshot>? networkSnapshots = null)
+        IReadOnlyList<SystemGlobalNetworkSnapshot>? networkSnapshots = null,
+        bool cpuRateWarmed = true,
+        bool rateCountersWarmed = true,
+        bool extendedProbeCycleCompleted = true,
+        bool? isReady = null)
     {
         return new SystemGlobalMetricsSample
         {
@@ -1353,6 +1406,10 @@ public class MonitoringShellViewModelTests
             MemorySnapshot = memorySnapshot,
             DiskSnapshots = diskSnapshots ?? [],
             NetworkSnapshots = networkSnapshots ?? [],
+            CpuRateWarmed = cpuRateWarmed,
+            RateCountersWarmed = rateCountersWarmed,
+            ExtendedProbeCycleCompleted = extendedProbeCycleCompleted,
+            IsReady = isReady ?? (cpuRateWarmed && rateCountersWarmed && extendedProbeCycleCompleted),
         };
     }
 
