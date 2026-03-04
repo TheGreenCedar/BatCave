@@ -668,7 +668,7 @@
                                             <TextBlock Style="{StaticResource TaskMgrMetricLabelStyle}" Text="{Binding GlobalPrimaryChartTitle, Mode=OneWay}" />
                                             <controls:MetricTrendChart
                                                 Grid.Row="1"
-                                                MinHeight="220"
+                                                MinHeight="275"
                                                 Values="{Binding GlobalPrimaryTrendValues, Mode=OneWay}"
                                                 OverlayValues="{Binding GlobalSecondaryTrendValues, Mode=OneWay}"
                                                 ShowOverlay="{Binding GlobalShowSecondaryOverlay, Mode=OneWay}"
@@ -694,7 +694,7 @@
                                                 Visibility="{Binding GlobalAuxiliaryChartVisibility, Mode=OneWay}" />
                                             <controls:MetricTrendChart
                                                 Grid.Row="3"
-                                                MinHeight="80"
+                                                MinHeight="100"
                                                 Values="{Binding GlobalAuxiliaryTrendValues, Mode=OneWay}"
                                                 ScaleMode="{Binding GlobalAuxiliaryScaleMode, Mode=OneWay}"
                                                 DomainMaxOverride="{Binding GlobalAuxiliaryDomainMax, Mode=OneWay}"
@@ -713,23 +713,42 @@
                                         </Grid>
 
                                         <GridView
+                                            x:Name="GlobalCpuLogicalGridView"
                                             Visibility="{Binding GlobalCpuLogicalGridVisibility, Mode=OneWay}"
                                             ItemsSource="{Binding GlobalCpuLogicalProcessorRows, Mode=OneWay}"
                                             IsItemClickEnabled="False"
                                             SelectionMode="None"
                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                            ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                            ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                            Loaded="GlobalCpuLogicalGridView_Loaded"
+                                            SizeChanged="GlobalCpuLogicalGridView_SizeChanged">
+                                            <GridView.ItemContainerStyle>
+                                                <Style TargetType="GridViewItem">
+                                                    <Setter Property="Padding" Value="0" />
+                                                    <Setter Property="Margin" Value="2" />
+                                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                    <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                                                </Style>
+                                            </GridView.ItemContainerStyle>
                                             <GridView.ItemsPanel>
                                                 <ItemsPanelTemplate>
-                                                    <ItemsWrapGrid MaximumRowsOrColumns="4" />
+                                                    <ItemsWrapGrid Orientation="Horizontal" />
                                                 </ItemsPanelTemplate>
                                             </GridView.ItemsPanel>
                                             <GridView.ItemTemplate>
                                                 <DataTemplate>
-                                                    <StackPanel Width="190" Spacing="4">
-                                                        <TextBlock Style="{StaticResource TaskMgrMetricLabelStyle}" Text="{Binding Title, Mode=OneWay}" />
+                                                    <Grid RowSpacing="2">
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition Height="Auto" />
+                                                            <RowDefinition Height="*" />
+                                                        </Grid.RowDefinitions>
+                                                        <TextBlock
+                                                            Style="{StaticResource TaskMgrMetricLabelStyle}"
+                                                            Text="{Binding Title, Mode=OneWay}"
+                                                            TextTrimming="CharacterEllipsis" />
                                                         <controls:MetricTrendChart
-                                                            Height="120"
+                                                            Grid.Row="1"
+                                                            MinHeight="12"
                                                             Values="{Binding Values, Mode=OneWay}"
                                                             OverlayValues="{Binding OverlayValues, Mode=OneWay}"
                                                             ShowOverlay="True"
@@ -740,16 +759,21 @@
                                                             ShowGrid="True"
                                                             IsTabStop="False"
                                                             Background="Transparent" />
-                                                    </StackPanel>
+                                                    </Grid>
                                                 </DataTemplate>
                                             </GridView.ItemTemplate>
                                         </GridView>
                                     </Grid>
 
                                     <ItemsControl Grid.Row="2" ItemsSource="{Binding GlobalDetailStats, Mode=OneWay}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <ItemsWrapGrid Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <Grid ColumnSpacing="10" Margin="0,0,0,1">
+                                                <Grid Width="260" ColumnSpacing="10" Margin="0,0,12,2">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="*" />

@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System;
+using System.Collections.Specialized;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -29,12 +30,21 @@ public sealed partial class MainWindow : Window
     private static readonly Brush OtherIoTrendStrokeBrush = CreateBrush(0xFF, 0xD1, 0x34, 0x38);
     private static readonly Brush OtherIoTrendFillBrush = CreateBrush(0x33, 0xD1, 0x34, 0x38);
     private static readonly Brush MetricGridBrush = CreateBrush(0x4C, 0xA0, 0xA8, 0xB8);
+    private const double LogicalCpuTileTargetWidth = 170;
+    private const double LogicalCpuTileTargetChartHeight = 120;
+    private const double LogicalCpuTileLabelReserve = 20;
+    private const double LogicalCpuTileMinWidth = 56;
+    private const double LogicalCpuTileMinHeight = 28;
 
     private bool _bootstrapped;
     private bool _metricPlotRefreshQueued;
     private long _selectionSettleProbeStartedAt;
     private MetricPlotDirtyFlags _dirtyMetricPlots = MetricPlotDirtyFlags.All;
     private bool? _isWideMetricLayoutApplied;
+    private bool _logicalCpuGridLayoutQueued;
+    private int _logicalCpuGridLastCount = -1;
+    private double _logicalCpuGridLastWidth = -1;
+    private double _logicalCpuGridLastHeight = -1;
 
     public MainWindow()
     {
@@ -42,6 +52,7 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+        ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged += GlobalCpuLogicalProcessorRows_CollectionChanged;
         Activated += OnActivated;
         SizeChanged += OnWindowSizeChanged;
         Closed += OnWindowClosed;
@@ -64,6 +75,7 @@ public sealed partial class MainWindow : Window
         _dirtyMetricPlots = MetricPlotDirtyFlags.All;
         ScheduleMetricPlotRefresh();
         ApplyMetricTrendLayoutForWindowWidth(GetWindowWidth());
+        ScheduleLogicalCpuGridLayout();
     }
 
     private async void AdminModeToggle_Toggled(object sender, RoutedEventArgs e)
@@ -142,6 +154,9 @@ public sealed partial class MainWindow : Window
             case nameof(MonitoringShellViewModel.AdminModePending):
             case nameof(MonitoringShellViewModel.AdminModeEnabled):
                 SyncAdminToggleState();
+                break;
+            case nameof(MonitoringShellViewModel.GlobalCpuLogicalGridVisibility):
+                ScheduleLogicalCpuGridLayout();
                 break;
         }
     }
@@ -262,6 +277,7 @@ public sealed partial class MainWindow : Window
     private void OnWindowSizeChanged(object sender, WindowSizeChangedEventArgs args)
     {
         ApplyMetricTrendLayoutForWindowWidth(args.Size.Width);
+        ScheduleLogicalCpuGridLayout();
     }
 
     private double GetWindowWidth()
@@ -434,9 +450,125 @@ public sealed partial class MainWindow : Window
         return new SolidColorBrush(Color.FromArgb(a, r, g, b));
     }
 
+    private void GlobalCpuLogicalGridView_Loaded(object sender, RoutedEventArgs e)
+    {
+        ScheduleLogicalCpuGridLayout();
+    }
+
+    private void GlobalCpuLogicalGridView_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ScheduleLogicalCpuGridLayout();
+    }
+
+    private void GlobalCpuLogicalProcessorRows_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        ScheduleLogicalCpuGridLayout();
+    }
+
+    private void ScheduleLogicalCpuGridLayout()
+    {
+        if (_logicalCpuGridLayoutQueued)
+        {
+            return;
+        }
+
+        _logicalCpuGridLayoutQueued = true;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _logicalCpuGridLayoutQueued = false;
+            ApplyLogicalCpuGridLayout();
+        });
+    }
+
+    private void ApplyLogicalCpuGridLayout()
+    {
+        if (GlobalCpuLogicalGridView.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        if (GlobalCpuLogicalGridView.ItemsPanelRoot is not ItemsWrapGrid itemsWrapGrid)
+        {
+            return;
+        }
+
+        int logicalProcessorCount = ViewModel.GlobalCpuLogicalProcessorRows.Count;
+        if (logicalProcessorCount <= 0)
+        {
+            return;
+        }
+
+        double availableWidth = Math.Max(0, GlobalCpuLogicalGridView.ActualWidth - 4);
+        double availableHeight = Math.Max(0, GlobalCpuLogicalGridView.ActualHeight - 4);
+        if (availableWidth < 1 || availableHeight < 1)
+        {
+            return;
+        }
+
+        if (_logicalCpuGridLastCount == logicalProcessorCount &&
+            Math.Abs(_logicalCpuGridLastWidth - availableWidth) < 0.5 &&
+            Math.Abs(_logicalCpuGridLastHeight - availableHeight) < 0.5)
+        {
+            return;
+        }
+
+        (int rows, double itemWidth, double itemHeight) = ResolveLogicalCpuGridLayout(
+            logicalProcessorCount,
+            availableWidth,
+            availableHeight);
+
+        itemsWrapGrid.MaximumRowsOrColumns = rows;
+        itemsWrapGrid.ItemWidth = itemWidth;
+        itemsWrapGrid.ItemHeight = itemHeight;
+
+        _logicalCpuGridLastCount = logicalProcessorCount;
+        _logicalCpuGridLastWidth = availableWidth;
+        _logicalCpuGridLastHeight = availableHeight;
+    }
+
+    private static (int Rows, double ItemWidth, double ItemHeight) ResolveLogicalCpuGridLayout(
+        int itemCount,
+        double availableWidth,
+        double availableHeight)
+    {
+        int bestRows = itemCount;
+        double bestItemWidth = Math.Max(LogicalCpuTileMinWidth, availableWidth);
+        double bestItemHeight = Math.Max(LogicalCpuTileMinHeight, availableHeight / itemCount);
+        double bestScore = double.NegativeInfinity;
+
+        for (int columns = 1; columns <= itemCount; columns++)
+        {
+            int rows = (itemCount + columns - 1) / columns;
+            double itemWidth = availableWidth / columns;
+            double itemHeight = availableHeight / rows;
+            double chartHeight = itemHeight - LogicalCpuTileLabelReserve;
+            if (itemWidth <= 0 || chartHeight <= 0)
+            {
+                continue;
+            }
+
+            double widthFit = itemWidth / LogicalCpuTileTargetWidth;
+            double heightFit = chartHeight / LogicalCpuTileTargetChartHeight;
+            double score = Math.Min(widthFit, heightFit);
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestRows = rows;
+                bestItemWidth = itemWidth;
+                bestItemHeight = itemHeight;
+            }
+        }
+
+        bestItemWidth = Math.Max(LogicalCpuTileMinWidth, bestItemWidth);
+        bestItemHeight = Math.Max(LogicalCpuTileMinHeight, bestItemHeight);
+        return (bestRows, bestItemWidth, bestItemHeight);
+    }
+
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged -= GlobalCpuLogicalProcessorRows_CollectionChanged;
         SizeChanged -= OnWindowSizeChanged;
         Closed -= OnWindowClosed;
     }
