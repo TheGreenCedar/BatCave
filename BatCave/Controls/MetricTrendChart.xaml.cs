@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Media;
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -118,6 +119,7 @@ public sealed partial class MetricTrendChart : UserControl
     private Geometry? _cachedGridGeometry;
     private int _pendingInvalidationMask = (int)RenderInvalidation.All;
     private int _renderQueued;
+    private INotifyPropertyChanged? _dataContextNotifier;
 
     public MetricTrendChart()
     {
@@ -128,6 +130,8 @@ public sealed partial class MetricTrendChart : UserControl
         OverlayPolyline.StrokeDashArray = _overlayDashArray;
 
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+        DataContextChanged += OnDataContextChanged;
         PlotBorder.SizeChanged += PlotBorder_SizeChanged;
         ScheduleRender();
     }
@@ -224,8 +228,62 @@ public sealed partial class MetricTrendChart : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        AttachDataContextNotifier(DataContext as INotifyPropertyChanged);
         Invalidate(RenderInvalidation.All);
         ScheduleRender();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        AttachDataContextNotifier(null);
+    }
+
+    private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
+    {
+        AttachDataContextNotifier(args.NewValue as INotifyPropertyChanged);
+    }
+
+    private void AttachDataContextNotifier(INotifyPropertyChanged? notifier)
+    {
+        if (ReferenceEquals(_dataContextNotifier, notifier))
+        {
+            return;
+        }
+
+        if (_dataContextNotifier is not null)
+        {
+            _dataContextNotifier.PropertyChanged -= OnDataContextPropertyChanged;
+        }
+
+        _dataContextNotifier = notifier;
+        if (_dataContextNotifier is not null)
+        {
+            _dataContextNotifier.PropertyChanged += OnDataContextPropertyChanged;
+        }
+    }
+
+    private void OnDataContextPropertyChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (!IsTrendDataPropertyChange(args.PropertyName))
+        {
+            return;
+        }
+
+        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
+        ScheduleRender();
+    }
+
+    private static bool IsTrendDataPropertyChange(string? propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            return false;
+        }
+
+        return propertyName.Equals("Values", StringComparison.Ordinal)
+            || propertyName.Equals("OverlayValues", StringComparison.Ordinal)
+            || propertyName.Equals("MiniTrendValues", StringComparison.Ordinal)
+            || propertyName.EndsWith("TrendValues", StringComparison.Ordinal);
     }
 
     private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
