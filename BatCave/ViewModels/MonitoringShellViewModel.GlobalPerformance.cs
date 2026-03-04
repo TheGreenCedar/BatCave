@@ -345,12 +345,12 @@ public partial class MonitoringShellViewModel
         {
             GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(descriptor.ResourceId);
             history.Append(descriptor.PrimaryValue, descriptor.SecondaryValue, descriptor.AuxiliaryValue, descriptor.LogicalValues);
-            double[] miniTrend = history.Primary.SliceLatest(60);
 
             GlobalResourceRowViewState? existing = _globalResourceRows.FirstOrDefault(
                 row => string.Equals(row.ResourceId, descriptor.ResourceId, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
             {
+                double[] miniTrend = history.Primary.SliceLatest(60);
                 _globalResourceRows.Add(new GlobalResourceRowViewState(
                     descriptor.ResourceId,
                     descriptor.Kind,
@@ -368,11 +368,12 @@ public partial class MonitoringShellViewModel
                 existing.Update(
                     descriptor.Subtitle,
                     descriptor.ValueText,
-                    miniTrend,
+                    existing.MiniTrendValues,
                     descriptor.MiniScaleMode,
                     descriptor.MiniStrokeColor,
                     descriptor.MiniFillColor,
                     descriptor.MiniDomainMax);
+                existing.RefreshMiniTrend(history.Primary, 60);
             }
         }
 
@@ -653,9 +654,9 @@ public partial class MonitoringShellViewModel
         GlobalAuxiliaryFillColor = DiskFillColor;
         GlobalPrimaryDomainMax = double.NaN;
         GlobalAuxiliaryDomainMax = double.NaN;
-        GlobalPrimaryTrendValues = history.Primary.SliceLatest(MetricTrendWindowSeconds);
-        GlobalSecondaryTrendValues = history.Secondary.SliceLatest(MetricTrendWindowSeconds);
-        GlobalAuxiliaryTrendValues = [];
+        ApplyGlobalTrendValues(history.Primary, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ApplyGlobalTrendValues(history.Secondary, ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
 
         UpdateCpuLogicalRows(history.LogicalByProcessor, MetricTrendWindowSeconds);
         PopulateCpuStats(cpu);
@@ -690,9 +691,9 @@ public partial class MonitoringShellViewModel
         GlobalAuxiliaryFillColor = DiskFillColor;
         GlobalPrimaryDomainMax = memory?.TotalBytes.HasValue == true && memory.TotalBytes.Value > 0 ? memory.TotalBytes.Value : double.NaN;
         GlobalAuxiliaryDomainMax = double.NaN;
-        GlobalPrimaryTrendValues = history.Primary.SliceLatest(MetricTrendWindowSeconds);
-        GlobalSecondaryTrendValues = [];
-        GlobalAuxiliaryTrendValues = [];
+        ApplyGlobalTrendValues(history.Primary, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
 
         PopulateMemoryStats(memory);
     }
@@ -719,8 +720,9 @@ public partial class MonitoringShellViewModel
         GlobalAuxiliaryChartTitle = "Disk transfer rate";
         GlobalShowSecondaryOverlay = false;
 
-        double[] auxiliaryTrendValues = SanitizeTrendValues(history.Auxiliary.SliceLatest(MetricTrendWindowSeconds));
-        bool canShowAuxiliaryChart = auxiliaryTrendValues.Length > 0;
+        ApplyGlobalTrendValues(history.Primary, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues), sanitize: true);
+        ApplyGlobalTrendValues(history.Auxiliary, ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues), sanitize: true);
+        bool canShowAuxiliaryChart = _globalAuxiliaryTrendValues.Length > 0;
         GlobalShowAuxiliaryChart = canShowAuxiliaryChart;
         GlobalPrimaryStrokeColor = DiskStrokeColor;
         GlobalPrimaryFillColor = DiskFillColor;
@@ -729,9 +731,11 @@ public partial class MonitoringShellViewModel
         GlobalAuxiliaryFillColor = DiskFillColor;
         GlobalPrimaryDomainMax = double.NaN;
         GlobalAuxiliaryDomainMax = double.NaN;
-        GlobalPrimaryTrendValues = SanitizeTrendValues(history.Primary.SliceLatest(MetricTrendWindowSeconds));
-        GlobalSecondaryTrendValues = [];
-        GlobalAuxiliaryTrendValues = canShowAuxiliaryChart ? auxiliaryTrendValues : [];
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        if (!canShowAuxiliaryChart)
+        {
+            ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        }
 
         PopulateDiskStats(disk);
     }
@@ -771,9 +775,9 @@ public partial class MonitoringShellViewModel
         GlobalAuxiliaryFillColor = DiskFillColor;
         GlobalPrimaryDomainMax = double.NaN;
         GlobalAuxiliaryDomainMax = double.NaN;
-        GlobalPrimaryTrendValues = history.Primary.SliceLatest(MetricTrendWindowSeconds);
-        GlobalSecondaryTrendValues = history.Secondary.SliceLatest(MetricTrendWindowSeconds);
-        GlobalAuxiliaryTrendValues = [];
+        ApplyGlobalTrendValues(history.Primary, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ApplyGlobalTrendValues(history.Secondary, ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
 
         PopulateNetworkStats(network);
     }
@@ -796,9 +800,9 @@ public partial class MonitoringShellViewModel
         GlobalAuxiliaryFillColor = DiskFillColor;
         GlobalPrimaryDomainMax = double.NaN;
         GlobalAuxiliaryDomainMax = double.NaN;
-        GlobalPrimaryTrendValues = [];
-        GlobalSecondaryTrendValues = [];
-        GlobalAuxiliaryTrendValues = [];
+        ClearGlobalTrendValues(ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
         SetGlobalStats(new[] { ("Status", "n/a") });
     }
 
@@ -823,8 +827,48 @@ public partial class MonitoringShellViewModel
 
         for (int index = 0; index < logicalSeries.Count; index++)
         {
-            _globalCpuLogicalProcessorRows[index].UpdateValues(logicalSeries[index].SliceLatest(visiblePointCount));
+            _globalCpuLogicalProcessorRows[index].UpdateValues(logicalSeries[index], visiblePointCount);
         }
+    }
+
+    private void ApplyGlobalTrendValues(
+        FixedRingSeries source,
+        ref double[] target,
+        string propertyName,
+        bool sanitize = false)
+    {
+        bool changed = source.CopyLatestInto(ref target, MetricTrendWindowSeconds);
+        if (sanitize)
+        {
+            for (int index = 0; index < target.Length; index++)
+            {
+                double value = target[index];
+                double sanitized = double.IsFinite(value) && value >= 0d ? value : 0d;
+                if (sanitized == value)
+                {
+                    continue;
+                }
+
+                target[index] = sanitized;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            OnPropertyChanged(propertyName);
+        }
+    }
+
+    private void ClearGlobalTrendValues(ref double[] target, string propertyName)
+    {
+        if (target.Length == 0)
+        {
+            return;
+        }
+
+        target = [];
+        OnPropertyChanged(propertyName);
     }
 
     private void PopulateCpuStats(SystemGlobalCpuSnapshot? cpu)
@@ -1069,23 +1113,6 @@ public partial class MonitoringShellViewModel
     {
         double sum = left + right;
         return double.IsFinite(sum) ? sum : double.MaxValue;
-    }
-
-    private static double[] SanitizeTrendValues(IReadOnlyList<double> values)
-    {
-        if (values.Count == 0)
-        {
-            return [];
-        }
-
-        double[] sanitized = new double[values.Count];
-        for (int index = 0; index < values.Count; index++)
-        {
-            double value = values[index];
-            sanitized[index] = double.IsFinite(value) && value >= 0d ? value : 0d;
-        }
-
-        return sanitized;
     }
 
     private sealed class GlobalTrendHistory

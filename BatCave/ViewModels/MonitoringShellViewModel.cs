@@ -1,15 +1,17 @@
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using BatCave.Core.Runtime;
-using BatCave.Rendering;
 using BatCave.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
+using DynamicData;
+using DynamicData.Binding;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Reactive.Subjects;
 using System.Threading;
-using AdvancedCollectionView = CommunityToolkit.WinUI.Collections.AdvancedCollectionView;
 
 namespace BatCave.ViewModels;
 
@@ -27,6 +29,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private const int FilterDebounceMs = 160;
     private const int HistoryLimit = 120;
     private const ulong RowSparklineStride = 2;
+    private const int MaxHeartbeatSparklineRowsPerFrame = 256;
     private const double RowSparklineWidth = 96;
     private const double RowSparklineHeight = 22;
 
@@ -42,13 +45,15 @@ public partial class MonitoringShellViewModel : ObservableObject
     private readonly Dictionary<ProcessIdentity, MetricHistoryBuffer> _metricHistory = [];
     private readonly Dictionary<ProcessIdentity, ulong> _metricHistoryLastSeq = [];
     private readonly Dictionary<ProcessIdentity, ProcessRowViewState> _visibleRowStateByIdentity = [];
-    private readonly ObservableCollection<ProcessRowViewState> _rowViewSource = [];
+    private readonly SourceCache<ProcessRowViewState, ProcessIdentity> _rowViewSource = new(row => row.Identity);
+    private readonly ReadOnlyObservableCollection<ProcessRowViewState> _visibleRows;
+    private readonly BehaviorSubject<Func<ProcessRowViewState, bool>> _rowFilter;
+    private readonly BehaviorSubject<IComparer<ProcessRowViewState>> _rowSorter;
+    private readonly IDisposable _rowShapingSubscription;
     private readonly MetricHistoryBuffer _globalHistory = new(HistoryLimit);
-    private readonly TelemetryDeltaAccumulator _telemetryDeltaAccumulator = new();
 
     private DispatcherQueue? _dispatcherQueue;
     private CancellationTokenSource? _filterDebounceCts;
-    private int _telemetryFrameApplyQueued;
 
     private bool _isLoading = true;
     private bool _isBlocked;
@@ -60,7 +65,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private string _startupErrorMessage = string.Empty;
     private string _filterText = string.Empty;
     private SortColumn _currentSortColumn = SortColumn.CpuPct;
-    private SortDirection _currentSortDirection = SortDirection.Desc;
+    private BatCave.Core.Domain.SortDirection _currentSortDirection = BatCave.Core.Domain.SortDirection.Desc;
     private bool _adminModeEnabled;
     private bool _adminEnabledOnlyFilter;
     private bool _adminModePending;
@@ -108,6 +113,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private bool _isGlobalIoReadAvailable = true;
     private bool _isGlobalIoWriteAvailable = true;
     private bool _isGlobalOtherIoAvailable = true;
+    private int _heartbeatVisibleRowCursor;
 
     public MonitoringShellViewModel(
         ILaunchPolicyGate launchPolicyGate,
@@ -128,16 +134,20 @@ public partial class MonitoringShellViewModel : ObservableObject
         _runtimeEventGateway.RuntimeHealthChanged += OnRuntimeHealthChanged;
         _runtimeEventGateway.CollectorWarningRaised += OnCollectorWarningRaised;
 
-        VisibleRows = new AdvancedCollectionView(_rowViewSource, true)
-        {
-            Filter = ShouldShowRow
-        };
-        ApplySortDescriptions();
+        _rowFilter = new BehaviorSubject<Func<ProcessRowViewState, bool>>(BuildVisibilityFilter());
+        _rowSorter = new BehaviorSubject<IComparer<ProcessRowViewState>>(BuildSortComparer(CurrentSortColumn, CurrentSortDirection));
+        _rowShapingSubscription = _rowViewSource
+            .Connect()
+            .Filter(_rowFilter)
+            .SortAndBind(out _visibleRows, _rowSorter)
+            .Subscribe();
+
+        ApplyCanonicalShaping();
         EnsureGlobalMetricsSamplingStarted();
         RefreshGlobalPerformanceState(new SystemGlobalMetricsSample());
     }
 
-    public AdvancedCollectionView VisibleRows { get; }
+    public IReadOnlyList<ProcessRowViewState> VisibleRows => _visibleRows;
 
     public bool IsLoading
     {
@@ -211,7 +221,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         }
     }
 
-    public SortDirection CurrentSortDirection
+    public BatCave.Core.Domain.SortDirection CurrentSortDirection
     {
         get => _currentSortDirection;
         private set

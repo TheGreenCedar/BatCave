@@ -29,7 +29,7 @@ public partial class MonitoringShellViewModel
 
             CurrentSortColumn = _runtime.CurrentSortColumn;
             CurrentSortDirection = _runtime.CurrentSortDirection;
-            ApplySortDescriptions();
+            ApplyCanonicalShaping();
             AdminModeEnabled = _runtime.IsAdminMode();
             MetricTrendWindowSeconds = _runtime.CurrentMetricTrendWindowSeconds;
 

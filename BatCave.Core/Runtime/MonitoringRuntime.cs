@@ -18,10 +18,10 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private readonly ISortIndexEngine _sortIndexEngine;
     private readonly IPersistenceStore _persistenceStore;
     private readonly CoalescedSettingsWriteQueue _settingsWriteQueue;
+    private readonly CoalescedWarmCacheWriteQueue _warmCacheWriteQueue;
     private readonly ILogger<MonitoringRuntime> _logger;
     private readonly ResourceBudgetGuardian _budgetGuardian = new();
-    private readonly double[] _jitterSamples = new double[JitterWindowSize];
-    private readonly double[] _jitterScratch = new double[JitterWindowSize];
+    private readonly SlidingWindowP95Histogram _jitterHistogram = new(JitterWindowSize, maxBucketInclusive: 4_000);
     private readonly object _runtimeWarningSync = new();
     private readonly Queue<string> _runtimeWarnings = [];
 
@@ -31,8 +31,6 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private UserSettings _settings;
     private bool _effectiveAdminMode;
     private ulong _seq;
-    private int _jitterSampleCount;
-    private int _jitterSampleCursor;
 
     public MonitoringRuntime(
         IProcessCollectorFactory collectorFactory,
@@ -48,6 +46,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _sortIndexEngine = sortIndexEngine;
         _persistenceStore = persistenceStore;
         _settingsWriteQueue = new CoalescedSettingsWriteQueue(_persistenceStore.SaveSettingsAsync);
+        _warmCacheWriteQueue = new CoalescedWarmCacheWriteQueue(_persistenceStore.SaveWarmCacheAsync);
         _logger = logger ?? NullLogger<MonitoringRuntime>.Instance;
 
         _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
@@ -366,20 +365,17 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     private void UpdateJitterSamples(double jitterMs)
     {
-        _jitterSamples[_jitterSampleCursor] = Math.Abs(jitterMs);
-        _jitterSampleCursor = (_jitterSampleCursor + 1) % JitterWindowSize;
-        _jitterSampleCount = Math.Min(_jitterSampleCount + 1, JitterWindowSize);
+        _jitterHistogram.AddSampleMs(Math.Abs(jitterMs));
     }
 
     private void UpdateHealthForCurrentTick(IReadOnlyList<ProcessSample> raw)
     {
         ProcessSample? selfSample = FindSelfSample(raw);
-        CopyJitterWindowToScratch();
         _health = _health with
         {
             Seq = _seq,
             LastTickMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            JitterP95Ms = PercentileMath.Percentile95(_jitterScratch, _jitterSampleCount, _jitterScratch),
+            JitterP95Ms = _jitterHistogram.Percentile95Ms(),
             AppCpuPct = selfSample?.CpuPct ?? _health.AppCpuPct,
             AppRssBytes = selfSample?.RssBytes ?? EstimateRssFromRows(_stateStore.RowCount()),
         };
@@ -408,7 +404,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         }
 
         WarmCache cache = _stateStore.ExportWarmCache(_seq);
-        TryPersist(() => _persistenceStore.SaveWarmCacheAsync(cache, CancellationToken.None));
+        _warmCacheWriteQueue.Enqueue(cache);
     }
 
     public void RecordDroppedTicks(ulong dropped)
@@ -421,44 +417,15 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _logger.LogWarning("runtime_dropped_ticks seq={Seq} dropped_delta={DroppedDelta} dropped_total={DroppedTotal}", _seq, dropped, _health.DroppedTicks);
     }
 
-    private void CopyJitterWindowToScratch()
-    {
-        if (_jitterSampleCount == 0)
-        {
-            return;
-        }
-
-        if (_jitterSampleCount < JitterWindowSize)
-        {
-            Array.Copy(_jitterSamples, 0, _jitterScratch, 0, _jitterSampleCount);
-            return;
-        }
-
-        int tailLength = JitterWindowSize - _jitterSampleCursor;
-        Array.Copy(_jitterSamples, _jitterSampleCursor, _jitterScratch, 0, tailLength);
-        Array.Copy(_jitterSamples, 0, _jitterScratch, tailLength, _jitterSampleCursor);
-    }
-
     private static ulong EstimateRssFromRows(int rowCount)
     {
         const ulong baseline = 48 * 1024 * 1024;
         return baseline + (ulong)Math.Max(0, rowCount) * 2_048;
     }
 
-    private static void TryPersist(Func<Task> saveAction)
-    {
-        try
-        {
-            saveAction().GetAwaiter().GetResult();
-        }
-        catch
-        {
-            // keep runtime resilient if local persistence is temporarily unavailable
-        }
-    }
-
     public void Dispose()
     {
+        _warmCacheWriteQueue.Dispose();
         _settingsWriteQueue.Dispose();
         DisposeCollector(_collector);
     }

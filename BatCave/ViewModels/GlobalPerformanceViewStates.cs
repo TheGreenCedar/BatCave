@@ -130,6 +130,14 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         MiniFillColor = miniFillColor;
         MiniDomainMax = miniDomainMax;
     }
+
+    internal void RefreshMiniTrend(FixedRingSeries series, int visiblePointCount)
+    {
+        if (series.CopyLatestInto(ref _miniTrendValues, visiblePointCount))
+        {
+            OnPropertyChanged(nameof(MiniTrendValues));
+        }
+    }
 }
 
 public sealed class GlobalStatItemViewState : ObservableObject
@@ -177,5 +185,13 @@ public sealed class LogicalProcessorTrendViewState : ObservableObject
     public void UpdateValues(double[] values)
     {
         Values = values;
+    }
+
+    internal void UpdateValues(FixedRingSeries series, int visiblePointCount)
+    {
+        if (series.CopyLatestInto(ref _values, visiblePointCount))
+        {
+            OnPropertyChanged(nameof(Values));
+        }
     }
 }

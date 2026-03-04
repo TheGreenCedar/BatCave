@@ -57,6 +57,32 @@ internal sealed partial class FixedRingSeries(int capacity) : IReadOnlyList<doub
         return result;
     }
 
+    public bool CopyLatestInto(ref double[] destination, int limit)
+    {
+        int take = Math.Min(_count, Math.Max(1, limit));
+        bool changed = false;
+        if (destination.Length != take)
+        {
+            destination = new double[take];
+            changed = true;
+        }
+
+        int sourceStart = _count - take;
+        for (int index = 0; index < take; index++)
+        {
+            double next = this[sourceStart + index];
+            if (destination[index] == next)
+            {
+                continue;
+            }
+
+            destination[index] = next;
+            changed = true;
+        }
+
+        return changed;
+    }
+
     public IEnumerator<double> GetEnumerator()
     {
         for (int index = 0; index < _count; index++)

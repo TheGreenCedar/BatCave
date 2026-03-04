@@ -5,9 +5,11 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
-using Windows.Foundation;
+using System.Runtime.InteropServices;
+using System.Threading;
 using Windows.UI;
 
 namespace BatCave.Controls;
@@ -101,18 +103,33 @@ public sealed partial class MetricTrendChart : UserControl
         typeof(MetricTrendChart),
         new PropertyMetadata(false, OnChartPropertyChanged));
 
-    private double _dynamicDomainMaxRaw;
     private readonly Brush _defaultStrokeBrush = new SolidColorBrush(Colors.DodgerBlue);
     private readonly Brush _defaultFillBrush = new SolidColorBrush(Color.FromArgb(38, 30, 144, 255));
     private readonly Brush _defaultOverlayStrokeBrush = new SolidColorBrush(Color.FromArgb(204, 76, 93, 112));
     private readonly Brush _defaultGridBrush = new SolidColorBrush(Color.FromArgb(36, 140, 148, 163));
+    private readonly PointCollection _linePoints = [];
+    private readonly PointCollection _overlayPoints = [];
+    private readonly PointCollection _areaPoints = [];
+    private readonly DoubleCollection _overlayDashArray = [2, 2];
+
+    private double _dynamicDomainMaxRaw;
+    private double _cachedGridWidth = double.NaN;
+    private double _cachedGridHeight = double.NaN;
+    private Geometry? _cachedGridGeometry;
+    private int _pendingInvalidationMask = (int)RenderInvalidation.All;
+    private int _renderQueued;
 
     public MetricTrendChart()
     {
         InitializeComponent();
+        LinePolyline.Points = _linePoints;
+        OverlayPolyline.Points = _overlayPoints;
+        AreaPolygon.Points = _areaPoints;
+        OverlayPolyline.StrokeDashArray = _overlayDashArray;
+
         Loaded += OnLoaded;
         PlotBorder.SizeChanged += PlotBorder_SizeChanged;
-        RefreshChart();
+        ScheduleRender();
     }
 
     public IReadOnlyList<double> Values
@@ -201,21 +218,52 @@ public sealed partial class MetricTrendChart : UserControl
 
     public void RequestRender()
     {
-        RefreshChart();
+        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
+        ScheduleRender();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        RefreshChart();
+        Invalidate(RenderInvalidation.All);
+        ScheduleRender();
     }
 
     private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        RefreshChart();
+        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
+        ScheduleRender();
     }
 
-    private void RefreshChart()
+    private void Invalidate(RenderInvalidation invalidation)
     {
+        Interlocked.Or(ref _pendingInvalidationMask, (int)invalidation);
+    }
+
+    private void ScheduleRender()
+    {
+        if (DispatcherQueue is { } dispatcherQueue && !dispatcherQueue.HasThreadAccess)
+        {
+            _ = dispatcherQueue.TryEnqueue(ScheduleRender);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _renderQueued, 1) == 1)
+        {
+            return;
+        }
+
+        if (DispatcherQueue is { } queue)
+        {
+            _ = queue.TryEnqueue(ProcessScheduledRender);
+            return;
+        }
+
+        ProcessScheduledRender();
+    }
+
+    private void ProcessScheduledRender()
+    {
+        Interlocked.Exchange(ref _renderQueued, 0);
         if (!TryEnsureUiThreadForRender())
         {
             return;
@@ -226,26 +274,52 @@ public sealed partial class MetricTrendChart : UserControl
             return;
         }
 
-        int visibleCount = NormalizeVisiblePointCount(VisiblePointCount);
-        bool showAxes = ShowGrid;
-        ApplyVisualState(visibleCount, showAxes);
-
-        if (!TryGetRenderSize(out double width, out double height))
+        int invalidationMask = Interlocked.Exchange(ref _pendingInvalidationMask, (int)RenderInvalidation.None);
+        if (invalidationMask == (int)RenderInvalidation.None)
         {
             return;
         }
 
-        ChartRenderData renderData = BuildRenderData(visibleCount, width, height);
-        ApplyAxes(showAxes, width, height, renderData.DomainMax);
-        ApplySeriesGeometry(width, height, renderData);
-        LogSanitizedRenderIfNeeded(renderData);
+        if (!TryGetRenderSize(out double width, out double height))
+        {
+            Interlocked.Or(ref _pendingInvalidationMask, invalidationMask);
+            return;
+        }
+
+        RenderInvalidation invalidation = (RenderInvalidation)invalidationMask;
+        int visibleCount = NormalizeVisiblePointCount(VisiblePointCount);
+        bool showAxes = ShowGrid;
+
+        if ((invalidation & RenderInvalidation.Style) != 0)
+        {
+            ApplyVisualState(visibleCount, showAxes);
+        }
+
+        if ((invalidation & (RenderInvalidation.Geometry | RenderInvalidation.Axes)) == 0)
+        {
+            return;
+        }
+
+        ChartRenderMeta renderMeta = BuildRenderMeta(visibleCount, width, height);
+
+        if ((invalidation & RenderInvalidation.Axes) != 0)
+        {
+            ApplyAxes(showAxes, width, height, renderMeta.DomainMax);
+        }
+
+        if ((invalidation & RenderInvalidation.Geometry) != 0)
+        {
+            ApplySeriesGeometry(height);
+        }
+
+        LogSanitizedRenderIfNeeded(renderMeta);
     }
 
     private bool TryEnsureUiThreadForRender()
     {
         if (DispatcherQueue is { } dispatcherQueue && !dispatcherQueue.HasThreadAccess)
         {
-            _ = dispatcherQueue.TryEnqueue(RefreshChart);
+            _ = dispatcherQueue.TryEnqueue(ProcessScheduledRender);
             return false;
         }
 
@@ -259,13 +333,15 @@ public sealed partial class MetricTrendChart : UserControl
         GridPath.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
         PlotBorder.BorderThickness = showAxes ? new Thickness(0.7) : new Thickness(0);
         TimeWindowLabel.Text = $"{visibleCount} seconds";
+
         LinePolyline.Stroke = StrokeBrush;
-        AreaPolygon.Fill = FillBrush;
+        AreaPolygon.Fill = ShowAreaFill ? FillBrush : null;
         GridPath.Stroke = GridBrush;
         LinePolyline.StrokeThickness = Math.Max(0.6, StrokeThickness);
         OverlayPolyline.Stroke = OverlayStrokeBrush;
         OverlayPolyline.StrokeThickness = Math.Max(0.5, OverlayStrokeThickness);
-        OverlayPolyline.StrokeDashArray = new DoubleCollection { 2, 2 };
+        OverlayPolyline.StrokeDashArray = _overlayDashArray;
+        OverlayPolyline.Visibility = ShowOverlay ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private bool TryGetRenderSize(out double width, out double height)
@@ -285,73 +361,117 @@ public sealed partial class MetricTrendChart : UserControl
         return true;
     }
 
-    private ChartRenderData BuildRenderData(int visibleCount, double width, double height)
+    private ChartRenderMeta BuildRenderMeta(int visibleCount, double width, double height)
     {
-        double[] window = CopyWindow(Values ?? Array.Empty<double>(), visibleCount);
-        double[] overlayWindow = CopyWindow(OverlayValues ?? Array.Empty<double>(), visibleCount);
-        bool nonFiniteSeriesDetected = ContainsNonFinite(window) || ContainsNonFinite(overlayWindow);
-        double maxVisible = Math.Max(ResolveMax(window), ResolveMax(overlayWindow));
-        double domainMax = ResolveDomainMax(maxVisible);
-        (double floor, _) = ResolveDomainPolicy();
-        bool domainFallbackUsed = false;
-        if (!double.IsFinite(domainMax) || domainMax <= 0d)
+        IReadOnlyList<double> values = Values ?? Array.Empty<double>();
+        IReadOnlyList<double> overlayValues = OverlayValues ?? Array.Empty<double>();
+
+        (int lineStart, int lineCount) = ResolveWindow(values, visibleCount);
+        (int overlayStart, int overlayCount) = ResolveWindow(overlayValues, visibleCount);
+
+        double[]? lineLease = null;
+        double[]? overlayLease = null;
+        ReadOnlySpan<double> lineWindow = AcquireWindowSpan(values, lineStart, lineCount, out lineLease);
+        ReadOnlySpan<double> overlayWindow = AcquireWindowSpan(overlayValues, overlayStart, overlayCount, out overlayLease);
+
+        try
         {
-            domainFallbackUsed = true;
-            domainMax = floor;
+            WindowStats lineStats = AnalyzeWindow(lineWindow);
+            WindowStats overlayStats = AnalyzeWindow(overlayWindow);
+            bool nonFiniteSeriesDetected = lineStats.HasNonFinite || overlayStats.HasNonFinite;
+
+            double maxVisible = Math.Max(lineStats.Max, overlayStats.Max);
+            double domainMax = ResolveDomainMax(maxVisible);
+            (double floor, _) = ResolveDomainPolicy();
+            bool domainFallbackUsed = false;
+            if (!double.IsFinite(domainMax) || domainMax <= 0d)
+            {
+                domainFallbackUsed = true;
+                domainMax = floor;
+            }
+
+            bool lineFallbackUsed = SparklineMath.WritePointsInDomainWithFallback(
+                lineWindow,
+                width,
+                height,
+                minDomain: 0d,
+                maxDomain: domainMax,
+                destination: _linePoints);
+
+            bool overlayFallbackUsed = SparklineMath.WritePointsInDomainWithFallback(
+                overlayWindow,
+                width,
+                height,
+                minDomain: 0d,
+                maxDomain: domainMax,
+                destination: _overlayPoints);
+
+            return new ChartRenderMeta(
+                DomainMax: domainMax,
+                MaxVisible: maxVisible,
+                NonFiniteSeriesDetected: nonFiniteSeriesDetected,
+                DomainFallbackUsed: domainFallbackUsed,
+                PointFallbackUsed: lineFallbackUsed || (ShowOverlay && overlayFallbackUsed));
         }
-
-        IReadOnlyList<Point> linePoints = SparklineMath.BuildPointsInDomainWithFallback(window, width, height, minDomain: 0d, maxDomain: domainMax);
-        IReadOnlyList<Point> overlayPoints = SparklineMath.BuildPointsInDomainWithFallback(overlayWindow, width, height, minDomain: 0d, maxDomain: domainMax);
-        bool pointFallbackUsed = IsFlatlineFallback(linePoints)
-            || (ShowOverlay && IsFlatlineFallback(overlayPoints));
-
-        return new ChartRenderData(
-            DomainMax: domainMax,
-            MaxVisible: maxVisible,
-            LinePoints: linePoints,
-            OverlayPoints: overlayPoints,
-            NonFiniteSeriesDetected: nonFiniteSeriesDetected,
-            DomainFallbackUsed: domainFallbackUsed,
-            PointFallbackUsed: pointFallbackUsed);
+        finally
+        {
+            ReturnWindowLease(lineLease);
+            ReturnWindowLease(overlayLease);
+        }
     }
 
     private void ApplyAxes(bool showAxes, double width, double height, double domainMax)
     {
-        if (showAxes)
+        if (!showAxes)
         {
-            TopRightScaleLabel.Text = FormatScaleLabel(domainMax);
-            GridPath.Data = BuildGridGeometry(width, height, verticalDivisions: 12, horizontalDivisions: 8);
+            TopRightScaleLabel.Text = string.Empty;
+            GridPath.Data = null;
             return;
         }
 
-        TopRightScaleLabel.Text = string.Empty;
-        GridPath.Data = null;
+        TopRightScaleLabel.Text = FormatScaleLabel(domainMax);
+        GridPath.Data = GetOrBuildGridGeometry(width, height);
     }
 
-    private void ApplySeriesGeometry(double width, double height, ChartRenderData renderData)
+    private Geometry GetOrBuildGridGeometry(double width, double height)
     {
-        LinePolyline.Points = SparklineMath.ToPointCollection(renderData.LinePoints);
+        double roundedWidth = Math.Round(width, 2);
+        double roundedHeight = Math.Round(height, 2);
+        if (_cachedGridGeometry is not null
+            && _cachedGridWidth == roundedWidth
+            && _cachedGridHeight == roundedHeight)
+        {
+            return _cachedGridGeometry;
+        }
+
+        _cachedGridWidth = roundedWidth;
+        _cachedGridHeight = roundedHeight;
+        _cachedGridGeometry = BuildGridGeometry(roundedWidth, roundedHeight, verticalDivisions: 12, horizontalDivisions: 8);
+        return _cachedGridGeometry;
+    }
+
+    private void ApplySeriesGeometry(double height)
+    {
         if (ShowAreaFill)
         {
-            IReadOnlyList<Point> fillPoints = SparklineMath.BuildFillPolygon(renderData.LinePoints, width, height);
+            SparklineMath.WriteFillPolygon(_linePoints, height, _areaPoints);
             AreaPolygon.Fill = FillBrush;
-            AreaPolygon.Points = SparklineMath.ToPointCollection(fillPoints);
         }
         else
         {
             AreaPolygon.Fill = null;
-            AreaPolygon.Points = new PointCollection();
+            _areaPoints.Clear();
         }
-        OverlayPolyline.Points = SparklineMath.ToPointCollection(renderData.OverlayPoints);
+
         OverlayPolyline.Visibility = ShowOverlay ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void LogSanitizedRenderIfNeeded(ChartRenderData renderData)
+    private void LogSanitizedRenderIfNeeded(ChartRenderMeta renderMeta)
     {
-        if (renderData.NonFiniteSeriesDetected || renderData.DomainFallbackUsed || renderData.PointFallbackUsed)
+        if (renderMeta.NonFiniteSeriesDetected || renderMeta.DomainFallbackUsed || renderMeta.PointFallbackUsed)
         {
             Debug.WriteLine(
-                $"[MetricTrendChart] Sanitized render inputs. scale={ScaleMode}, maxVisible={renderData.MaxVisible}, domainMax={renderData.DomainMax}, fallbackUsed={renderData.DomainFallbackUsed || renderData.PointFallbackUsed}, nonFiniteSeries={renderData.NonFiniteSeriesDetected}");
+                $"[MetricTrendChart] Sanitized render inputs. scale={ScaleMode}, maxVisible={renderMeta.MaxVisible}, domainMax={renderMeta.DomainMax}, fallbackUsed={renderMeta.DomainFallbackUsed || renderMeta.PointFallbackUsed}, nonFiniteSeries={renderMeta.NonFiniteSeriesDetected}");
         }
     }
 
@@ -375,7 +495,35 @@ public sealed partial class MetricTrendChart : UserControl
             _dynamicDomainMaxRaw = 0d;
         }
 
-        RefreshChart();
+        Invalidate(ResolveInvalidation(property));
+        ScheduleRender();
+    }
+
+    private static RenderInvalidation ResolveInvalidation(DependencyProperty property)
+    {
+        if (property == ShowGridProperty)
+        {
+            return RenderInvalidation.Style | RenderInvalidation.Axes;
+        }
+
+        if (property == StrokeBrushProperty
+            || property == FillBrushProperty
+            || property == GridBrushProperty
+            || property == OverlayStrokeBrushProperty
+            || property == StrokeThicknessProperty
+            || property == OverlayStrokeThicknessProperty
+            || property == ShowAreaFillProperty
+            || property == ShowOverlayProperty)
+        {
+            return RenderInvalidation.Style;
+        }
+
+        if (property == VisiblePointCountProperty)
+        {
+            return RenderInvalidation.Style | RenderInvalidation.Geometry | RenderInvalidation.Axes;
+        }
+
+        return RenderInvalidation.Geometry | RenderInvalidation.Axes;
     }
 
     private double ResolveDomainMax(double maxVisible)
@@ -411,36 +559,90 @@ public sealed partial class MetricTrendChart : UserControl
         };
     }
 
-    private static double[] CopyWindow(IReadOnlyList<double> values, int visiblePointCount)
+    private static (int Start, int Count) ResolveWindow(IReadOnlyList<double> values, int visiblePointCount)
     {
-        int take = Math.Min(values.Count, visiblePointCount);
-        if (take <= 0)
+        if (values.Count == 0)
         {
-            return new[] { 0d };
+            return (0, 0);
         }
 
-        double[] result = new double[take];
-        int sourceStart = values.Count - take;
-        for (int index = 0; index < take; index++)
-        {
-            result[index] = values[sourceStart + index];
-        }
-
-        return result;
+        int count = Math.Min(values.Count, visiblePointCount);
+        return (values.Count - count, count);
     }
 
-    private static double ResolveMax(IReadOnlyList<double> values)
+    private static ReadOnlySpan<double> AcquireWindowSpan(
+        IReadOnlyList<double> values,
+        int start,
+        int count,
+        out double[]? lease)
     {
-        double max = 0d;
-        for (int index = 0; index < values.Count; index++)
+        lease = null;
+        if (count <= 0 || values.Count == 0)
         {
-            if (values[index] > max)
+            return ReadOnlySpan<double>.Empty;
+        }
+
+        int safeStart = Math.Max(0, start);
+        int safeCount = Math.Min(count, values.Count - safeStart);
+        if (safeCount <= 0)
+        {
+            return ReadOnlySpan<double>.Empty;
+        }
+
+        if (values is double[] array)
+        {
+            return array.AsSpan(safeStart, safeCount);
+        }
+
+        if (values is List<double> list)
+        {
+            return CollectionsMarshal.AsSpan(list).Slice(safeStart, safeCount);
+        }
+
+        lease = ArrayPool<double>.Shared.Rent(safeCount);
+        for (int index = 0; index < safeCount; index++)
+        {
+            lease[index] = values[safeStart + index];
+        }
+
+        return lease.AsSpan(0, safeCount);
+    }
+
+    private static void ReturnWindowLease(double[]? lease)
+    {
+        if (lease is null)
+        {
+            return;
+        }
+
+        ArrayPool<double>.Shared.Return(lease, clearArray: false);
+    }
+
+    private static WindowStats AnalyzeWindow(ReadOnlySpan<double> values)
+    {
+        if (values.Length == 0)
+        {
+            return new WindowStats(Max: 0d, HasNonFinite: false);
+        }
+
+        double max = 0d;
+        bool hasNonFinite = false;
+        for (int index = 0; index < values.Length; index++)
+        {
+            double value = values[index];
+            if (!double.IsFinite(value))
             {
-                max = values[index];
+                hasNonFinite = true;
+                continue;
+            }
+
+            if (value > max)
+            {
+                max = value;
             }
         }
 
-        return max;
+        return new WindowStats(Max: max, HasNonFinite: hasNonFinite);
     }
 
     private string FormatScaleLabel(double domainMax)
@@ -473,19 +675,6 @@ public sealed partial class MetricTrendChart : UserControl
             : ValueFormat.FormatRate(clamped);
     }
 
-    private static bool ContainsNonFinite(IReadOnlyList<double> values)
-    {
-        for (int index = 0; index < values.Count; index++)
-        {
-            if (!double.IsFinite(values[index]))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private static ulong ClampToUlongNonNegative(double value)
     {
         if (!double.IsFinite(value) || value <= 0d)
@@ -499,19 +688,6 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         return (ulong)Math.Round(value);
-    }
-
-    private static bool IsFlatlineFallback(IReadOnlyList<Point> points)
-    {
-        if (points.Count != 2)
-        {
-            return false;
-        }
-
-        return points[0].X == 0d
-            && points[0].Y == 0d
-            && points[1].X == 1d
-            && points[1].Y == 0d;
     }
 
     private static int NormalizeVisiblePointCount(int candidate)
@@ -532,8 +708,8 @@ public sealed partial class MetricTrendChart : UserControl
             double x = Math.Round((width * index) / verticalDivisions, 2);
             group.Children.Add(new LineGeometry
             {
-                StartPoint = new Point(x, 0),
-                EndPoint = new Point(x, height),
+                StartPoint = new Windows.Foundation.Point(x, 0),
+                EndPoint = new Windows.Foundation.Point(x, height),
             });
         }
 
@@ -542,20 +718,32 @@ public sealed partial class MetricTrendChart : UserControl
             double y = Math.Round((height * index) / horizontalDivisions, 2);
             group.Children.Add(new LineGeometry
             {
-                StartPoint = new Point(0, y),
-                EndPoint = new Point(width, y),
+                StartPoint = new Windows.Foundation.Point(0, y),
+                EndPoint = new Windows.Foundation.Point(width, y),
             });
         }
 
         return group;
     }
 
-    private readonly record struct ChartRenderData(
+    [Flags]
+    private enum RenderInvalidation
+    {
+        None = 0,
+        Style = 1 << 0,
+        Geometry = 1 << 1,
+        Axes = 1 << 2,
+        All = Style | Geometry | Axes,
+    }
+
+    private readonly record struct ChartRenderMeta(
         double DomainMax,
         double MaxVisible,
-        IReadOnlyList<Point> LinePoints,
-        IReadOnlyList<Point> OverlayPoints,
         bool NonFiniteSeriesDetected,
         bool DomainFallbackUsed,
         bool PointFallbackUsed);
+
+    private readonly record struct WindowStats(
+        double Max,
+        bool HasNonFinite);
 }

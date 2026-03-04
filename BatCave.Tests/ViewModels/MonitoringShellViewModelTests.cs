@@ -11,6 +11,7 @@ using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
 using System.Diagnostics;
+using System.Collections.Specialized;
 using Windows.Foundation;
 
 namespace BatCave.Tests.ViewModels;
@@ -320,6 +321,31 @@ public class MonitoringShellViewModelTests
         Assert.Same(midState, GetVisibleRow(viewModel, 0));
         Assert.Same(lowState, GetVisibleRow(viewModel, 1));
         Assert.Same(highState, GetVisibleRow(viewModel, 2));
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_Reorder_DoesNotRaiseCollectionReset()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        List<NotifyCollectionChangedAction> actions = [];
+        ((INotifyCollectionChanged)viewModel.VisibleRows).CollectionChanged += (_, args) =>
+        {
+            actions.Add(args.Action);
+        };
+
+        ProcessSample high = Sample(pid: 170, startTime: 1700, access: AccessState.Full) with { CpuPct = 90 };
+        ProcessSample low = Sample(pid: 171, startTime: 1701, access: AccessState.Full) with { CpuPct = 10 };
+        gateway.RaiseDelta(1, [high, low], []);
+        actions.Clear();
+
+        ProcessSample highNowLow = high with { Seq = 2, TsMs = 2, CpuPct = 5 };
+        ProcessSample lowNowHigh = low with { Seq = 2, TsMs = 2, CpuPct = 95 };
+        gateway.RaiseDelta(2, [highNowLow, lowNowHigh], []);
+
+        Assert.DoesNotContain(NotifyCollectionChangedAction.Reset, actions);
+        Assert.Contains(NotifyCollectionChangedAction.Move, actions);
     }
 
     [Fact]

@@ -49,6 +49,61 @@ public class CliOperationsHostTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_BenchmarkStrict_WithImpossibleSpeedupTarget_ReturnsFailure()
+    {
+        CliOperationsHost host = new(new FixedLaunchPolicyGate(
+            StartupGateStatus.PassedContext(new LaunchContext
+            {
+                Os = "windows",
+                WindowsBuild = 26000,
+            })));
+
+        string baselinePath = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(
+                baselinePath,
+                """
+                {"tick_p95_ms":1.0,"sort_p95_ms":1.0}
+                """);
+
+            int exitCode = await host.ExecuteAsync(
+                [
+                    "--benchmark",
+                    "--ticks", "1",
+                    "--sleep-ms", "0",
+                    "--strict",
+                    "--baseline-json", baselinePath,
+                    "--min-speedup-multiplier", "1000000",
+                ],
+                CancellationToken.None);
+
+            Assert.Equal(2, exitCode);
+        }
+        finally
+        {
+            File.Delete(baselinePath);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Benchmark_WithMinSpeedupButNoBaseline_ReturnsFailure()
+    {
+        CliOperationsHost host = new(new FixedLaunchPolicyGate(
+            StartupGateStatus.PassedContext(new LaunchContext
+            {
+                Os = "windows",
+                WindowsBuild = 26000,
+            })));
+
+        int exitCode = await host.ExecuteAsync(
+            ["--benchmark", "--ticks", "0", "--sleep-ms", "0", "--min-speedup-multiplier", "1.2"],
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_ElevatedHelperMissingArgs_ReturnsFailure()
     {
         CliOperationsHost host = new(new FixedLaunchPolicyGate(

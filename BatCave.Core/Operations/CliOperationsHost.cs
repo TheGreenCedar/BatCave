@@ -5,6 +5,7 @@ using BatCave.Core.Runtime;
 using BatCave.Core.Serialization;
 using System.CommandLine;
 using System.CommandLine.Parsing;
+using System.Globalization;
 using System.Text.Json;
 
 namespace BatCave.Core.Operations;
@@ -17,6 +18,9 @@ public sealed class CliOperationsHost : ICliOperationsHost
     private static readonly Option<bool> StrictOption = new("--strict");
     private static readonly Option<string?> TicksOption = new("--ticks");
     private static readonly Option<string?> SleepMsOption = new("--sleep-ms");
+    private static readonly Option<string?> BaselineJsonOption = new("--baseline-json");
+    private static readonly Option<string?> MinSpeedupMultiplierOption = new("--min-speedup-multiplier");
+    private static readonly Option<string?> MaxP95MsOption = new("--max-p95-ms");
     private static readonly Option<string?> DataFileOption = new("--data-file");
     private static readonly Option<string?> StopFileOption = new("--stop-file");
     private static readonly Option<string?> TokenOption = new("--token");
@@ -69,6 +73,9 @@ public sealed class CliOperationsHost : ICliOperationsHost
         command.Add(StrictOption);
         command.Add(TicksOption);
         command.Add(SleepMsOption);
+        command.Add(BaselineJsonOption);
+        command.Add(MinSpeedupMultiplierOption);
+        command.Add(MaxP95MsOption);
         command.Add(DataFileOption);
         command.Add(StopFileOption);
         command.Add(TokenOption);
@@ -81,10 +88,16 @@ public sealed class CliOperationsHost : ICliOperationsHost
         int sleepMs = ParseOptionInt(parseResult.GetValue(SleepMsOption), 1000);
         bool strict = parseResult.GetValue(StrictOption);
 
-        BenchmarkSummary summary = BenchmarkRunner.Run(ticks, sleepMs, ct);
+        if (!TryBuildGateOptions(parseResult, out BenchmarkGateOptions gateOptions, out string? error))
+        {
+            Console.Error.WriteLine(error);
+            return 2;
+        }
+
+        BenchmarkSummary summary = BenchmarkRunner.Run(ticks, sleepMs, ct, gateOptions);
         WriteJson(summary);
 
-        if (strict && !summary.BudgetPassed)
+        if (strict && !summary.StrictPassed)
         {
             return 2;
         }
@@ -110,6 +123,119 @@ public sealed class CliOperationsHost : ICliOperationsHost
     private static int ParseOptionInt(string? value, int defaultValue)
     {
         return int.TryParse(value, out int parsed) ? parsed : defaultValue;
+    }
+
+    private static bool TryBuildGateOptions(
+        ParseResult parseResult,
+        out BenchmarkGateOptions gateOptions,
+        out string? error)
+    {
+        gateOptions = new BenchmarkGateOptions();
+        error = null;
+
+        string? baselineJsonPath = parseResult.GetValue(BaselineJsonOption);
+
+        if (!TryParseOptionalPositiveDouble(
+                parseResult.GetValue(MinSpeedupMultiplierOption),
+                "--min-speedup-multiplier",
+                out double? minSpeedupMultiplier,
+                out error))
+        {
+            return false;
+        }
+
+        if (!TryParseOptionalPositiveDouble(
+                parseResult.GetValue(MaxP95MsOption),
+                "--max-p95-ms",
+                out double? maxP95Ms,
+                out error))
+        {
+            return false;
+        }
+
+        if (minSpeedupMultiplier.HasValue && string.IsNullOrWhiteSpace(baselineJsonPath))
+        {
+            error = "--min-speedup-multiplier requires --baseline-json.";
+            return false;
+        }
+
+        BenchmarkSummary? baseline = null;
+        if (!string.IsNullOrWhiteSpace(baselineJsonPath)
+            && !TryLoadBaselineSummary(baselineJsonPath, out baseline, out error))
+        {
+            return false;
+        }
+
+        gateOptions = new BenchmarkGateOptions
+        {
+            Baseline = baseline,
+            MinSpeedupMultiplier = minSpeedupMultiplier,
+            MaxP95Ms = maxP95Ms,
+        };
+
+        return true;
+    }
+
+    private static bool TryParseOptionalPositiveDouble(
+        string? rawValue,
+        string optionName,
+        out double? parsed,
+        out string? error)
+    {
+        parsed = null;
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            return true;
+        }
+
+        if (!double.TryParse(
+                rawValue,
+                NumberStyles.Float | NumberStyles.AllowThousands,
+                CultureInfo.InvariantCulture,
+                out double value)
+            || value <= 0d)
+        {
+            error = $"Invalid value for {optionName}. Expected a positive number.";
+            return false;
+        }
+
+        parsed = value;
+        return true;
+    }
+
+    private static bool TryLoadBaselineSummary(
+        string baselineJsonPath,
+        out BenchmarkSummary? baseline,
+        out string? error)
+    {
+        baseline = null;
+        error = null;
+
+        if (!File.Exists(baselineJsonPath))
+        {
+            error = $"Baseline file not found: {baselineJsonPath}";
+            return false;
+        }
+
+        try
+        {
+            string payload = File.ReadAllText(baselineJsonPath);
+            baseline = JsonSerializer.Deserialize<BenchmarkSummary>(payload, JsonDefaults.SnakeCase);
+            if (baseline is null)
+            {
+                error = $"Baseline JSON did not contain a benchmark summary: {baselineJsonPath}";
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to read baseline JSON '{baselineJsonPath}': {ex.GetType().Name}: {ex.Message}";
+            return false;
+        }
+
+        return true;
     }
 
     private static bool TryWriteParseErrors(ParseResult parseResult)

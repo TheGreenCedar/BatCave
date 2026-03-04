@@ -1,10 +1,10 @@
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.Input;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-using SortDescription = CommunityToolkit.WinUI.Collections.SortDescription;
 
 namespace BatCave.ViewModels;
 
@@ -12,7 +12,6 @@ public partial class MonitoringShellViewModel
 {
     private const double InteractionProbeSmoothingFactor = 0.35;
 
-    private long _filterApplyProbeStartedAt = Stopwatch.GetTimestamp();
     private double _filterApplyProbeMs;
     private double _sortCompleteProbeMs;
     private double _selectionSettleProbeMs;
@@ -33,7 +32,7 @@ public partial class MonitoringShellViewModel
         CurrentSortDirection = ResolveNextSortDirection(column);
 
         _runtime.SetSort(CurrentSortColumn, CurrentSortDirection);
-        ApplySortDescriptions();
+        ApplyCanonicalSort();
         ReassertSelectionAfterSort();
 
         RecordTimingProbe(InteractionProbe.SortComplete, Stopwatch.GetTimestamp() - startedAt);
@@ -60,6 +59,67 @@ public partial class MonitoringShellViewModel
         return ShouldShowSample(row.Sample);
     }
 
+    private Func<ProcessRowViewState, bool> BuildVisibilityFilter()
+    {
+        string needle = FilterText.Trim();
+        bool hasFilter = !string.IsNullOrWhiteSpace(needle);
+
+        return row =>
+        {
+            if (IsFilteredByAdminVisibility(row.Sample))
+            {
+                return false;
+            }
+
+            if (!hasFilter)
+            {
+                return true;
+            }
+
+            ProcessSample sample = row.Sample;
+            return sample.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                   || sample.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase);
+        };
+    }
+
+    private IComparer<ProcessRowViewState> BuildSortComparer(SortColumn column, SortDirection direction)
+    {
+        return Comparer<ProcessRowViewState>.Create((left, right) =>
+        {
+            int primary = CompareRowsByColumn(left, right, column);
+            if (primary != 0)
+            {
+                return direction == SortDirection.Asc ? primary : -primary;
+            }
+
+            int pidOrder = left.Pid.CompareTo(right.Pid);
+            if (pidOrder != 0)
+            {
+                return pidOrder;
+            }
+
+            return left.StartTimeMs.CompareTo(right.StartTimeMs);
+        });
+    }
+
+    private static int CompareRowsByColumn(ProcessRowViewState left, ProcessRowViewState right, SortColumn column)
+    {
+        return column switch
+        {
+            SortColumn.Pid => left.Pid.CompareTo(right.Pid),
+            SortColumn.Name => string.Compare(left.Name, right.Name, StringComparison.Ordinal),
+            SortColumn.CpuPct => left.CpuSortBucket.CompareTo(right.CpuSortBucket),
+            SortColumn.RssBytes => left.RssBytes.CompareTo(right.RssBytes),
+            SortColumn.IoReadBps => left.IoReadBps.CompareTo(right.IoReadBps),
+            SortColumn.IoWriteBps => left.IoWriteBps.CompareTo(right.IoWriteBps),
+            SortColumn.OtherIoBps => left.OtherIoBps.CompareTo(right.OtherIoBps),
+            SortColumn.Threads => left.Threads.CompareTo(right.Threads),
+            SortColumn.Handles => left.Handles.CompareTo(right.Handles),
+            SortColumn.StartTimeMs => left.StartTimeMs.CompareTo(right.StartTimeMs),
+            _ => 0,
+        };
+    }
+
     private bool ShouldShowSample(ProcessSample sample)
     {
         if (IsFilteredByAdminVisibility(sample))
@@ -77,30 +137,20 @@ public partial class MonitoringShellViewModel
                || sample.Pid.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void ApplySortDescriptions()
+    private void ApplyCanonicalShaping()
     {
-        string primarySortKey = ResolvePrimarySortKey(CurrentSortColumn);
-        CommunityToolkit.WinUI.Collections.SortDirection direction = ResolveCollectionSortDirection(CurrentSortDirection);
-
-        VisibleRows.SortDescriptions.Clear();
-        VisibleRows.SortDescriptions.Add(new SortDescription(primarySortKey, direction));
-        AddSortTieBreakers(primarySortKey);
+        ApplyCanonicalSort();
+        ApplyCanonicalFilter();
     }
 
-    private void AddSortTieBreakers(string primarySortKey)
+    private void ApplyCanonicalSort()
     {
-        foreach (string tieBreaker in GetSortTieBreakerKeys())
-        {
-            if (string.Equals(primarySortKey, tieBreaker, StringComparison.Ordinal))
-            {
-                continue;
-            }
+        _rowSorter.OnNext(BuildSortComparer(CurrentSortColumn, CurrentSortDirection));
+    }
 
-            VisibleRows.SortDescriptions.Add(
-                new SortDescription(
-                    tieBreaker,
-                    CommunityToolkit.WinUI.Collections.SortDirection.Ascending));
-        }
+    private void ApplyCanonicalFilter()
+    {
+        _rowFilter.OnNext(BuildVisibilityFilter());
     }
 
     private void ScheduleFilterApply(string filterText)
@@ -110,7 +160,6 @@ public partial class MonitoringShellViewModel
 
         CancellationTokenSource cts = new();
         _filterDebounceCts = cts;
-        _filterApplyProbeStartedAt = Stopwatch.GetTimestamp();
         _ = ApplyFilterAfterDelayAsync(filterText, cts.Token);
     }
 
@@ -124,15 +173,12 @@ public partial class MonitoringShellViewModel
                 return;
             }
 
-            long probeStartedAt = _filterApplyProbeStartedAt;
+            long probeStartedAt = Stopwatch.GetTimestamp();
             _runtime.SetFilter(filterText);
             RunOnUiThread(() =>
             {
                 RefreshVisibleRows(refreshFilter: true);
-                if (probeStartedAt > 0)
-                {
-                    RecordTimingProbe(InteractionProbe.FilterApply, Stopwatch.GetTimestamp() - probeStartedAt);
-                }
+                RecordTimingProbe(InteractionProbe.FilterApply, Stopwatch.GetTimestamp() - probeStartedAt);
             });
         }
         catch (OperationCanceledException)
@@ -204,31 +250,6 @@ public partial class MonitoringShellViewModel
         return AdminEnabledOnlyFilter && sample.AccessState != AccessState.Full;
     }
 
-    private static string ResolvePrimarySortKey(SortColumn column)
-    {
-        return column switch
-        {
-            SortColumn.Pid => nameof(ProcessRowViewState.Pid),
-            SortColumn.Name => nameof(ProcessRowViewState.Name),
-            SortColumn.CpuPct => nameof(ProcessRowViewState.CpuSortBucket),
-            SortColumn.RssBytes => nameof(ProcessRowViewState.RssBytes),
-            SortColumn.IoReadBps => nameof(ProcessRowViewState.IoReadBps),
-            SortColumn.IoWriteBps => nameof(ProcessRowViewState.IoWriteBps),
-            SortColumn.OtherIoBps => nameof(ProcessRowViewState.OtherIoBps),
-            SortColumn.Threads => nameof(ProcessRowViewState.Threads),
-            SortColumn.Handles => nameof(ProcessRowViewState.Handles),
-            SortColumn.StartTimeMs => nameof(ProcessRowViewState.StartTimeMs),
-            _ => nameof(ProcessRowViewState.CpuSortBucket),
-        };
-    }
-
-    private static CommunityToolkit.WinUI.Collections.SortDirection ResolveCollectionSortDirection(SortDirection direction)
-    {
-        return direction == SortDirection.Asc
-            ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending
-            : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
-    }
-
     private static string SortDirectionSuffix(SortDirection direction)
     {
         return direction == SortDirection.Desc ? "↓" : "↑";
@@ -244,6 +265,7 @@ public partial class MonitoringShellViewModel
         }
 
         double sampleMs = elapsedTicks * 1000d / Stopwatch.Frequency;
+        RecordInteractionProbeUnsmoothed(probe, sampleMs);
         if (!TryUpdateProbe(probe, sampleMs))
         {
             return;
@@ -281,15 +303,6 @@ public partial class MonitoringShellViewModel
         }
     }
 
-    private static string[] GetSortTieBreakerKeys()
-    {
-        return
-        [
-            nameof(ProcessRowViewState.Pid),
-            nameof(ProcessRowViewState.StartTimeMs),
-        ];
-    }
-
     private static double SmoothInteractionProbeSample(double currentValue, double sample)
     {
         if (currentValue <= 0)
@@ -314,6 +327,8 @@ public partial class MonitoringShellViewModel
     {
         return value <= 0 ? "--" : value.ToString("F1");
     }
+
+    partial void RecordInteractionProbeUnsmoothed(InteractionProbe probe, double sampleMs);
 
     private enum InteractionProbe
     {

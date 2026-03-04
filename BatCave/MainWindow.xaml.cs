@@ -32,11 +32,9 @@ public sealed partial class MainWindow : Window
 
     private bool _bootstrapped;
     private bool _metricPlotRefreshQueued;
-    private bool _syncingSelectionVisual;
-    private bool _selectionSyncQueued;
-    private bool _selectionSyncSecondPass;
     private long _selectionSettleProbeStartedAt;
     private MetricPlotDirtyFlags _dirtyMetricPlots = MetricPlotDirtyFlags.All;
+    private bool? _isWideMetricLayoutApplied;
 
     public MainWindow()
     {
@@ -145,48 +143,7 @@ public sealed partial class MainWindow : Window
             case nameof(MonitoringShellViewModel.AdminModeEnabled):
                 SyncAdminToggleState();
                 break;
-            case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
-                QueueSelectionVisualSync();
-                break;
-            case nameof(MonitoringShellViewModel.CurrentSortColumn):
-            case nameof(MonitoringShellViewModel.CurrentSortDirection):
-                QueueSelectionVisualSync(includeSecondPass: true);
-                break;
         }
-    }
-
-    private void QueueSelectionVisualSync(bool includeSecondPass = false)
-    {
-        if (includeSecondPass)
-        {
-            _selectionSyncSecondPass = true;
-            BeginSelectionSettleProbeIfNeeded();
-        }
-
-        if (_selectionSyncQueued)
-        {
-            return;
-        }
-
-        _selectionSyncQueued = true;
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            _selectionSyncQueued = false;
-            _ = TrySyncSelectionVisual();
-
-            if (_selectionSyncSecondPass)
-            {
-                _selectionSyncSecondPass = false;
-                DispatcherQueue.TryEnqueue(() =>
-                {
-                    _ = TrySyncSelectionVisual();
-                    CompleteSelectionSettleProbeIfPending();
-                });
-                return;
-            }
-
-            CompleteSelectionSettleProbeIfPending();
-        });
     }
 
     private bool CanInteractWithAdminToggle()
@@ -199,9 +156,9 @@ public sealed partial class MainWindow : Window
         AdminModeToggle.IsEnabled = CanInteractWithAdminToggle();
     }
 
-    private async void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_syncingSelectionVisual || sender is not ListView listView)
+        if (sender is not ListView listView)
         {
             return;
         }
@@ -209,8 +166,8 @@ public sealed partial class MainWindow : Window
         if (listView.SelectedItem is ProcessRowViewState selected)
         {
             BeginSelectionSettleProbeIfNeeded();
-            await ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
-            QueueSelectionVisualSync();
+            _ = ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
+            DispatcherQueue.TryEnqueue(CompleteSelectionSettleProbeIfPending);
             return;
         }
 
@@ -218,7 +175,8 @@ public sealed partial class MainWindow : Window
         {
             // Ignore transient null churn from virtualization/sort transitions.
             BeginSelectionSettleProbeIfNeeded();
-            QueueSelectionVisualSync(includeSecondPass: true);
+            ViewModel.SelectedVisibleRowBinding = null;
+            DispatcherQueue.TryEnqueue(CompleteSelectionSettleProbeIfPending);
             return;
         }
 
@@ -319,7 +277,12 @@ public sealed partial class MainWindow : Window
     private void ApplyMetricTrendLayoutForWindowWidth(double windowWidth)
     {
         bool isWide = windowWidth >= WideMetricTrendBreakpoint;
+        if (_isWideMetricLayoutApplied == isWide)
+        {
+            return;
+        }
 
+        _isWideMetricLayoutApplied = isWide;
         ApplyMetricTrendColumnLayout(isWide);
 
         Grid.SetRow(MetricMainHost, isWide ? 0 : 1);
@@ -478,26 +441,6 @@ public sealed partial class MainWindow : Window
         Closed -= OnWindowClosed;
     }
 
-    private bool TrySyncSelectionVisual()
-    {
-        if (_syncingSelectionVisual)
-        {
-            return false;
-        }
-
-        _syncingSelectionVisual = true;
-        try
-        {
-            SyncProcessListSelection();
-        }
-        finally
-        {
-            _syncingSelectionVisual = false;
-        }
-
-        return true;
-    }
-
     private void ApplyMetricTrendColumnLayout(bool isWide)
     {
         MetricSidebarColumn.Width = isWide
@@ -512,14 +455,6 @@ public sealed partial class MainWindow : Window
         MetricMainRow.Height = isWide
             ? new GridLength(0)
             : GridLength.Auto;
-    }
-
-    private void SyncProcessListSelection()
-    {
-        if (!ReferenceEquals(ProcessListView.SelectedItem, ViewModel.SelectedVisibleRowBinding))
-        {
-            ProcessListView.SelectedItem = ViewModel.SelectedVisibleRowBinding;
-        }
     }
 
     private bool TryMarkMetricPlotDirty(string propertyName)

@@ -13,9 +13,11 @@
     <PackageReference Include="CommunityToolkit.WinUI.Collections" Version="8.2.251219" />
     <PackageReference Include="coverlet.collector" Version="6.0.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="DynamicData" Version="9.4.1" />
     <PackageReference Include="Humanizer.Core" Version="3.0.1" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260209005" />
+    <PackageReference Include="System.Reactive" Version="6.0.1" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
   </ItemGroup>
@@ -33,10 +35,10 @@
     <Compile Include="..\BatCave\Charts\MetricTrendScaleDomain.cs" Link="Charts\MetricTrendScaleDomain.cs" />
     <Compile Include="..\BatCave\Charts\SparklineMath.cs" Link="Charts\SparklineMath.cs" />
     <Compile Include="..\BatCave\Converters\ValueFormatConverters.cs" Link="Converters\ValueFormatConverters.cs" />
-    <Compile Include="..\BatCave\Rendering\TelemetryDeltaAccumulator.cs" Link="Rendering\TelemetryDeltaAccumulator.cs" />
     <Compile Include="..\BatCave\Services\RuntimeGateway.cs" Link="Services\RuntimeGateway.cs" />
     <Compile Include="..\BatCave\ViewModels\FixedRingSeries.cs" Link="ViewModels\FixedRingSeries.cs" />
     <Compile Include="..\BatCave\ViewModels\GlobalPerformanceViewStates.cs" Link="ViewModels\GlobalPerformanceViewStates.cs" />
+    <Compile Include="..\BatCave\ViewModels\InteractionProbeRecorder.cs" Link="ViewModels\InteractionProbeRecorder.cs" />
     <Compile Include="..\BatCave\ViewModels\MetricHistoryBuffer.cs" Link="ViewModels\MetricHistoryBuffer.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Bootstrap.cs" Link="ViewModels\MonitoringShellViewModel.Bootstrap.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.cs" Link="ViewModels\MonitoringShellViewModel.cs" />

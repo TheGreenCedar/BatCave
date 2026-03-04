@@ -3,7 +3,6 @@ using BatCave.Core.Domain;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Threading;
 using Windows.Foundation;
 
 namespace BatCave.ViewModels;
@@ -12,35 +11,7 @@ public partial class MonitoringShellViewModel
 {
     private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
     {
-        _telemetryDeltaAccumulator.Enqueue(delta);
-        QueueTelemetryFrameApply();
-    }
-
-    private void QueueTelemetryFrameApply()
-    {
-        if (Interlocked.Exchange(ref _telemetryFrameApplyQueued, 1) == 1)
-        {
-            return;
-        }
-
-        RunOnUiThread(ApplyQueuedTelemetryDeltaFromFrame);
-    }
-
-    private void ApplyQueuedTelemetryDeltaFromFrame()
-    {
-        Interlocked.Exchange(ref _telemetryFrameApplyQueued, 0);
-
-        if (!_telemetryDeltaAccumulator.TryDrain(out ProcessDeltaBatch mergedDelta, out _))
-        {
-            return;
-        }
-
-        ApplyTelemetryDelta(mergedDelta);
-
-        if (_telemetryDeltaAccumulator.PendingBatchCount > 0)
-        {
-            QueueTelemetryFrameApply();
-        }
+        RunOnUiThread(() => ApplyTelemetryDelta(delta));
     }
 
     private void ApplyTelemetryDelta(ProcessDeltaBatch delta)
@@ -57,6 +28,7 @@ public partial class MonitoringShellViewModel
     private bool ApplyUpserts(IReadOnlyList<ProcessSample> upserts)
     {
         bool refreshFilter = false;
+        List<ProcessIdentity>? changedProjectionRows = null;
 
         foreach (ProcessSample upsert in upserts)
         {
@@ -64,8 +36,24 @@ public partial class MonitoringShellViewModel
             bool hadPrevious = _allRows.TryGetValue(identity, out ProcessSample? previous);
             TrackUpsert(identity, upsert, hadPrevious ? previous : null);
 
-            ProcessRowViewState rowState = GetOrCreateVisibleRowState(upsert, out bool created);
-            refreshFilter |= UpdateVisibleRowForUpsert(identity, rowState, upsert, hadPrevious ? previous : null, created);
+            ProcessRowViewState rowState = GetOrCreateVisibleRowState(upsert);
+            bool projectionChanged = UpdateVisibleRowForUpsert(identity, rowState, upsert, hadPrevious ? previous : null);
+            if (projectionChanged)
+            {
+                changedProjectionRows ??= [];
+                changedProjectionRows.Add(identity);
+            }
+        }
+
+        if (changedProjectionRows is { Count: > 0 })
+        {
+            _rowViewSource.Edit(updater =>
+            {
+                foreach (ProcessIdentity changedIdentity in changedProjectionRows)
+                {
+                    updater.Refresh(changedIdentity);
+                }
+            });
         }
 
         return refreshFilter;
@@ -104,7 +92,7 @@ public partial class MonitoringShellViewModel
         _metricHistory.Clear();
         _metricHistoryLastSeq.Clear();
         _visibleRowStateByIdentity.Clear();
-        _rowViewSource.Clear();
+        _rowViewSource.Edit(updater => updater.Clear());
 
         foreach (ProcessSample row in rows)
         {
@@ -133,7 +121,7 @@ public partial class MonitoringShellViewModel
 
         ProcessRowViewState rowState = new(row, BuildRowCpuTrendGeometry(identity, row));
         _visibleRowStateByIdentity[identity] = rowState;
-        _rowViewSource.Add(rowState);
+        _rowViewSource.Edit(updater => updater.AddOrUpdate(rowState));
     }
 
     private void PruneMetadataCache()
@@ -157,26 +145,24 @@ public partial class MonitoringShellViewModel
     {
         if (refreshFilter)
         {
-            VisibleRows.RefreshFilter();
+            ApplyCanonicalFilter();
         }
 
         SelectedVisibleRow = ResolveSelectedVisibleRow();
         RefreshDetailMetrics();
     }
 
-    private ProcessRowViewState GetOrCreateVisibleRowState(ProcessSample sample, out bool created)
+    private ProcessRowViewState GetOrCreateVisibleRowState(ProcessSample sample)
     {
         ProcessIdentity identity = sample.Identity();
         if (_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? existing))
         {
-            created = false;
             return existing;
         }
 
         ProcessRowViewState state = new(sample, BuildRowCpuTrendGeometry(identity, sample));
         _visibleRowStateByIdentity[identity] = state;
-        _rowViewSource.Add(state);
-        created = true;
+        _rowViewSource.Edit(updater => updater.AddOrUpdate(state));
         return state;
     }
 
@@ -200,36 +186,6 @@ public partial class MonitoringShellViewModel
             || current.Threads != next.Threads
             || current.Handles != next.Handles
             || current.AccessState != next.AccessState;
-    }
-
-    private bool RequiresVisibleRefresh(ProcessSample previous, ProcessSample current)
-    {
-        bool wasVisible = ShouldShowSample(previous);
-        bool isVisible = ShouldShowSample(current);
-        if (wasVisible != isVisible)
-        {
-            return true;
-        }
-
-        return IsSortKeyChanged(previous, current);
-    }
-
-    private bool IsSortKeyChanged(ProcessSample previous, ProcessSample current)
-    {
-        return CurrentSortColumn switch
-        {
-            SortColumn.Pid => previous.Pid != current.Pid,
-            SortColumn.Name => !string.Equals(previous.Name, current.Name, StringComparison.Ordinal),
-            SortColumn.CpuPct => ProcessRowViewState.IsCpuSortBucketChanged(previous.CpuPct, current.CpuPct),
-            SortColumn.RssBytes => previous.RssBytes != current.RssBytes,
-            SortColumn.IoReadBps => previous.IoReadBps != current.IoReadBps,
-            SortColumn.IoWriteBps => previous.IoWriteBps != current.IoWriteBps,
-            SortColumn.OtherIoBps => previous.OtherIoBps != current.OtherIoBps,
-            SortColumn.Threads => previous.Threads != current.Threads,
-            SortColumn.Handles => previous.Handles != current.Handles,
-            SortColumn.StartTimeMs => previous.StartTimeMs != current.StartTimeMs,
-            _ => false,
-        };
     }
 
     private static bool ShouldRefreshRowSparkline(ProcessSample? previous, ProcessSample current)
@@ -273,8 +229,25 @@ public partial class MonitoringShellViewModel
 
     private void AppendTableHeartbeatSamples(ulong seq)
     {
-        foreach ((ProcessIdentity identity, ProcessRowViewState rowState) in _visibleRowStateByIdentity)
+        int visibleCount = VisibleRows.Count;
+        if (visibleCount <= 0)
         {
+            return;
+        }
+
+        int rowsToRefresh = Math.Min(visibleCount, MaxHeartbeatSparklineRowsPerFrame);
+        int startIndex = _heartbeatVisibleRowCursor % visibleCount;
+        _heartbeatVisibleRowCursor = (startIndex + rowsToRefresh) % Math.Max(1, visibleCount);
+
+        for (int offset = 0; offset < rowsToRefresh; offset++)
+        {
+            int rowIndex = (startIndex + offset) % visibleCount;
+            if (VisibleRows[rowIndex] is not ProcessRowViewState rowState)
+            {
+                continue;
+            }
+
+            ProcessIdentity identity = rowState.Identity;
             if (!_allRows.TryGetValue(identity, out ProcessSample? sample) || sample is null)
             {
                 continue;
@@ -350,23 +323,21 @@ public partial class MonitoringShellViewModel
         ProcessIdentity identity,
         ProcessRowViewState rowState,
         ProcessSample upsert,
-        ProcessSample? previous,
-        bool created)
+        ProcessSample? previous)
     {
-        ProcessSample priorSample = rowState.Sample;
-        bool shouldRefreshForVisibility = created;
+        bool projectionChanged = false;
         if (ShouldReplaceVisibleRow(rowState.Sample, upsert))
         {
             rowState.UpdateSample(upsert);
-            shouldRefreshForVisibility |= RequiresVisibleRefresh(priorSample, upsert);
+            projectionChanged = true;
         }
 
-        if (ShouldRefreshRowSparkline(previous, upsert))
+        if (ShouldRefreshRowSparkline(previous, upsert) && ShouldShowSample(upsert))
         {
             rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(identity, upsert));
         }
 
-        return shouldRefreshForVisibility;
+        return projectionChanged;
     }
 
     private bool RemoveTrackedIdentity(ProcessIdentity identity)
@@ -389,9 +360,9 @@ public partial class MonitoringShellViewModel
 
     private bool RemoveVisibleRowState(ProcessIdentity identity)
     {
-        if (_visibleRowStateByIdentity.Remove(identity, out ProcessRowViewState? rowState))
+        if (_visibleRowStateByIdentity.Remove(identity, out _))
         {
-            _rowViewSource.Remove(rowState);
+            _rowViewSource.Edit(updater => updater.RemoveKey(identity));
             return true;
         }
 

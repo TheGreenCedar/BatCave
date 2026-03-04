@@ -5,6 +5,7 @@ using BatCave.Core.Runtime;
 using BatCave.Core.Sort;
 using BatCave.Core.State;
 using BatCave.Core.Tests.Runtime.TestSupport;
+using System.Diagnostics;
 
 namespace BatCave.Core.Tests.Runtime;
 
@@ -254,6 +255,48 @@ public class MonitoringRuntimeTests
         Assert.Contains("admin_mode_start_failed", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Tick_WhenWarmCacheSaveIsInFlight_DoesNotBlockTickPath()
+    {
+        BlockingWarmCachePersistenceStore persistenceStore = new();
+        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
+
+        for (int index = 0; index < 5; index++)
+        {
+            runtime.Tick(jitterMs: 0);
+        }
+
+        await persistenceStore.WaitForWarmCacheSaveStartedAsync();
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        runtime.Tick(jitterMs: 0);
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.ElapsedMilliseconds < 100, $"Expected non-blocking tick, observed {stopwatch.ElapsedMilliseconds}ms.");
+
+        persistenceStore.ReleaseWarmCacheSave();
+    }
+
+    [Fact]
+    public void Tick_TracksStreamingJitterP95AcrossRollingWindow()
+    {
+        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), new TestPersistenceStore());
+
+        runtime.Tick(jitterMs: -1);
+        runtime.Tick(jitterMs: 2);
+        runtime.Tick(jitterMs: 3);
+        TickOutcome spiky = runtime.Tick(jitterMs: 120);
+        Assert.Equal(120d, spiky.Health.JitterP95Ms);
+
+        for (int index = 0; index < 120; index++)
+        {
+            runtime.Tick(jitterMs: 2);
+        }
+
+        RuntimeHealth health = runtime.GetRuntimeHealth();
+        Assert.Equal(2d, health.JitterP95Ms);
+    }
+
     private static MonitoringRuntime CreateRuntime(
         out TestCollector collector,
         out TestPersistenceStore persistenceStore,
@@ -398,6 +441,61 @@ public class MonitoringRuntimeTests
             {
                 return _savedSettings.ToArray();
             }
+        }
+    }
+
+    private sealed class BlockingWarmCachePersistenceStore : IPersistenceStore
+    {
+        private readonly Queue<string> _warnings = [];
+        private readonly TaskCompletionSource<bool> _warmCacheSaveStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _releaseWarmCacheSave = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _warmCacheSaveCount;
+
+        public string BaseDirectory => Path.GetTempPath();
+
+        public UserSettings? LoadSettings()
+        {
+            return new UserSettings();
+        }
+
+        public Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public WarmCache? LoadWarmCache()
+        {
+            return null;
+        }
+
+        public async Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
+        {
+            int invocation = Interlocked.Increment(ref _warmCacheSaveCount);
+            if (invocation == 1)
+            {
+                _warmCacheSaveStarted.TrySetResult(true);
+                await _releaseWarmCacheSave.Task.WaitAsync(ct);
+            }
+        }
+
+        public Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public string? TakeWarning()
+        {
+            return _warnings.TryDequeue(out string? warning) ? warning : null;
+        }
+
+        public Task WaitForWarmCacheSaveStartedAsync()
+        {
+            return _warmCacheSaveStarted.Task;
+        }
+
+        public void ReleaseWarmCacheSave()
+        {
+            _releaseWarmCacheSave.TrySetResult(true);
         }
     }
 

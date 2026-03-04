@@ -81,7 +81,7 @@ public partial class App : Application
                 services.AddSingleton<ISystemGlobalMetricsSampler, WindowsSystemGlobalMetricsSampler>();
                 services.AddSingleton<ITelemetryPipeline, DeltaTelemetryPipeline>();
                 services.AddSingleton<IStateStore, InMemoryStateStore>();
-                services.AddSingleton<ISortIndexEngine, IncrementalSortIndexEngine>();
+                services.AddSingleton<ISortIndexEngine, PassThroughSortIndexEngine>();
                 services.AddSingleton<IPersistenceStore, LocalJsonPersistenceStore>();
                 services.AddSingleton<IProcessMetadataProvider, ProcessMetadataProvider>();
 
@@ -132,7 +132,9 @@ public partial class App : Application
             return false;
         }
 
-        int exitCode = await cliOperationsHost.ExecuteAsync(commandLineArgs, CancellationToken.None);
+        int exitCode = WinUiBenchmarkCliRunner.IsBenchmarkCommand(commandLineArgs)
+            ? await WinUiBenchmarkCliRunner.ExecuteAsync(_host.Services, commandLineArgs, CancellationToken.None)
+            : await cliOperationsHost.ExecuteAsync(commandLineArgs, CancellationToken.None);
         await ShutdownHostAsync();
         Environment.Exit(exitCode);
         return true;
