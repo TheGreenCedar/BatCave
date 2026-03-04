@@ -18,6 +18,7 @@ public class LocalJsonPersistenceStoreTests
             SortDir = SortDirection.Asc,
             FilterText = "svc",
             AdminMode = true,
+            AdminPreferenceInitialized = true,
             MetricTrendWindowSeconds = 120,
         };
 
@@ -29,6 +30,7 @@ public class LocalJsonPersistenceStoreTests
         Assert.Equal(settings.SortDir, loaded.SortDir);
         Assert.Equal(settings.FilterText, loaded.FilterText);
         Assert.Equal(settings.AdminMode, loaded.AdminMode);
+        Assert.Equal(settings.AdminPreferenceInitialized, loaded.AdminPreferenceInitialized);
         Assert.Equal(settings.MetricTrendWindowSeconds, loaded.MetricTrendWindowSeconds);
 
         string settingsPath = Path.Combine(baseDir, "settings.json");

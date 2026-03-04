@@ -353,6 +353,8 @@ public sealed record UserSettings
 
     public bool AdminMode { get; init; }
 
+    public bool AdminPreferenceInitialized { get; init; }
+
     public int MetricTrendWindowSeconds { get; init; } = 60;
 }
 

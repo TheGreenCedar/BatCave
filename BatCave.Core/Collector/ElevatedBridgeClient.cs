@@ -307,8 +307,9 @@ public sealed class ElevatedBridgeClient : IDisposable
             string detail = string.IsNullOrWhiteSpace(stderr)
                 ? "unknown elevation start failure"
                 : stderr.Trim();
+            string normalizedDetail = NormalizeElevationFailureDetail(detail);
             throw new InvalidOperationException(
-                $"failed to start elevated helper (packaged={isPackagedProcess}): {detail}");
+                $"failed to start elevated helper (packaged={isPackagedProcess}): {normalizedDetail}");
         }
 
         return ParseHelperPid(stdout);
@@ -345,6 +346,17 @@ public sealed class ElevatedBridgeClient : IDisposable
     private static string EscapePowerShellLiteral(string value)
     {
         return value.Replace("'", "''", StringComparison.Ordinal);
+    }
+
+    private static string NormalizeElevationFailureDetail(string detail)
+    {
+        if (detail.Contains("operation was canceled by the user", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("operation was cancelled by the user", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"elevation canceled by user ({detail})";
+        }
+
+        return detail;
     }
 
     private static bool IsLikelyPackagedProcess()

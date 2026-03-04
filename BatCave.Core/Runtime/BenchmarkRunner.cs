@@ -114,6 +114,7 @@ public static class BenchmarkRunner
             return new UserSettings
             {
                 AdminMode = false,
+                AdminPreferenceInitialized = true,
                 SortCol = SortColumn.CpuPct,
                 SortDir = SortDirection.Desc,
                 FilterText = string.Empty,

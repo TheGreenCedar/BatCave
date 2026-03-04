@@ -72,6 +72,7 @@ public class MonitoringRuntimeTests
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
         {
             MetricTrendWindowSeconds = 7,
+            AdminPreferenceInitialized = true,
         });
 
         using (MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore))
@@ -81,6 +82,42 @@ public class MonitoringRuntimeTests
 
         Assert.Equal(1, persistenceStore.SettingsSaveCount);
         Assert.Equal(60, persistenceStore.CurrentSettings.MetricTrendWindowSeconds);
+    }
+
+    [Fact]
+    public void Constructor_WhenAdminPreferenceUninitialized_DefaultsAdminPreferenceOn()
+    {
+        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
+        {
+            AdminMode = false,
+            AdminPreferenceInitialized = false,
+        });
+
+        using (MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore))
+        {
+            Assert.True(runtime.IsAdminMode());
+        }
+
+        Assert.True(persistenceStore.CurrentSettings.AdminMode);
+        Assert.True(persistenceStore.CurrentSettings.AdminPreferenceInitialized);
+        Assert.Equal(1, persistenceStore.SettingsSaveCount);
+    }
+
+    [Fact]
+    public void Constructor_WhenAdminPreferenceInitializedExplicitOff_RemainsOff()
+    {
+        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
+        {
+            AdminMode = false,
+            AdminPreferenceInitialized = true,
+        });
+
+        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
+
+        Assert.False(runtime.IsAdminMode());
+        Assert.False(persistenceStore.CurrentSettings.AdminMode);
+        Assert.True(persistenceStore.CurrentSettings.AdminPreferenceInitialized);
+        Assert.Equal(0, persistenceStore.SettingsSaveCount);
     }
 
     [Fact]
@@ -180,6 +217,7 @@ public class MonitoringRuntimeTests
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
         {
             AdminMode = true,
+            AdminPreferenceInitialized = true,
         });
 
         using MonitoringRuntime runtime = CreateRuntime(collectorFactory, persistenceStore);
@@ -201,6 +239,7 @@ public class MonitoringRuntimeTests
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
         {
             AdminMode = false,
+            AdminPreferenceInitialized = true,
         });
 
         using MonitoringRuntime runtime = CreateRuntime(collectorFactory, persistenceStore);
@@ -298,7 +337,10 @@ public class MonitoringRuntimeTests
 
         public UserSettings? LoadSettings()
         {
-            return new UserSettings();
+            return new UserSettings
+            {
+                AdminPreferenceInitialized = true,
+            };
         }
 
         public async Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)

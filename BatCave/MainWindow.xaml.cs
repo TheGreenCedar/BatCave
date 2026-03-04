@@ -60,6 +60,7 @@ public sealed partial class MainWindow : Window
 
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
+        SyncAdminToggleState();
         ConfigureMetricChartModes();
         GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
         _dirtyMetricPlots = MetricPlotDirtyFlags.All;
@@ -69,9 +70,28 @@ public sealed partial class MainWindow : Window
 
     private async void AdminModeToggle_Toggled(object sender, RoutedEventArgs e)
     {
-        if (sender is ToggleSwitch toggle)
+        if (sender is not ToggleSwitch toggle)
+        {
+            return;
+        }
+
+        if (!CanInteractWithAdminToggle())
+        {
+            if (toggle.IsOn != ViewModel.AdminModeEnabled)
+            {
+                toggle.IsOn = ViewModel.AdminModeEnabled;
+            }
+
+            return;
+        }
+
+        try
         {
             await ViewModel.ToggleAdminModeAsync(toggle.IsOn, CancellationToken.None);
+        }
+        finally
+        {
+            SyncAdminToggleState();
         }
     }
 
@@ -120,6 +140,11 @@ public sealed partial class MainWindow : Window
 
         switch (e.PropertyName)
         {
+            case nameof(MonitoringShellViewModel.IsLive):
+            case nameof(MonitoringShellViewModel.AdminModePending):
+            case nameof(MonitoringShellViewModel.AdminModeEnabled):
+                SyncAdminToggleState();
+                break;
             case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
                 QueueSelectionVisualSync();
                 break;
@@ -162,6 +187,16 @@ public sealed partial class MainWindow : Window
 
             CompleteSelectionSettleProbeIfPending();
         });
+    }
+
+    private bool CanInteractWithAdminToggle()
+    {
+        return ViewModel.IsLive && !ViewModel.AdminModePending;
+    }
+
+    private void SyncAdminToggleState()
+    {
+        AdminModeToggle.IsEnabled = CanInteractWithAdminToggle();
     }
 
     private async void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)

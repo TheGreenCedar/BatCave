@@ -7,7 +7,10 @@ internal sealed class TestPersistenceStore : IPersistenceStore
 {
     private readonly Queue<string> _warnings = [];
     private readonly List<UserSettings> _savedSettings = [];
-    private UserSettings _settings = new();
+    private UserSettings _settings = new()
+    {
+        AdminPreferenceInitialized = true,
+    };
     private WarmCache? _warmCache;
 
     public bool FailSaveSettings { get; set; }

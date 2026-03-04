@@ -62,22 +62,22 @@ public sealed class GlobalResourceRowViewState : ObservableObject
     public string Subtitle
     {
         get => _subtitle;
-        private set => SetTextWithVisibility(ref _subtitle, value, nameof(SubtitleVisibility));
+        private set => SetTextWithVisibility(ref _subtitle, value, nameof(Subtitle), nameof(SubtitleVisibility));
     }
 
     public string ValueText
     {
         get => _valueText;
-        private set => SetTextWithVisibility(ref _valueText, value, nameof(ValueVisibility));
+        private set => SetTextWithVisibility(ref _valueText, value, nameof(ValueText), nameof(ValueVisibility));
     }
 
     public Visibility SubtitleVisibility => string.IsNullOrWhiteSpace(Subtitle) ? Visibility.Collapsed : Visibility.Visible;
 
     public Visibility ValueVisibility => string.IsNullOrWhiteSpace(ValueText) ? Visibility.Collapsed : Visibility.Visible;
 
-    private void SetTextWithVisibility(ref string field, string value, string visibilityPropertyName)
+    private void SetTextWithVisibility(ref string field, string value, string propertyName, string visibilityPropertyName)
     {
-        if (SetProperty(ref field, value))
+        if (SetProperty(ref field, value, propertyName))
         {
             OnPropertyChanged(visibilityPropertyName);
         }

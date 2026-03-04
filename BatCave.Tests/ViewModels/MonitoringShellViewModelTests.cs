@@ -156,6 +156,7 @@ public class MonitoringShellViewModelTests
             settings: new UserSettings
             {
                 MetricTrendWindowSeconds = 120,
+                AdminPreferenceInitialized = true,
             });
 
         Assert.Equal(120, viewModel.MetricTrendWindowSeconds);
@@ -1316,7 +1317,10 @@ public class MonitoringShellViewModelTests
 
         public TestPersistenceStore(UserSettings? settings = null)
         {
-            _settings = settings ?? new UserSettings();
+            _settings = settings ?? new UserSettings
+            {
+                AdminPreferenceInitialized = true,
+            };
         }
 
         public string BaseDirectory => Path.GetTempPath();

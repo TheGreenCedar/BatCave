@@ -51,6 +51,17 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _logger = logger ?? NullLogger<MonitoringRuntime>.Instance;
 
         _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
+        bool adminPreferenceMigrated = false;
+        if (!_settings.AdminPreferenceInitialized)
+        {
+            _settings = _settings with
+            {
+                AdminMode = true,
+                AdminPreferenceInitialized = true,
+            };
+            adminPreferenceMigrated = true;
+        }
+
         int normalizedMetricTrendWindowSeconds = NormalizeMetricTrendWindowSeconds(_settings.MetricTrendWindowSeconds);
         bool metricTrendWindowNormalized = _settings.MetricTrendWindowSeconds != normalizedMetricTrendWindowSeconds;
         _settings = _settings with
@@ -62,7 +73,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _collector = startupCollector.Collector;
         _effectiveAdminMode = startupCollector.AdminMode;
         EnqueueRuntimeWarning(startupCollector.Warning);
-        if (metricTrendWindowNormalized)
+        if (metricTrendWindowNormalized || adminPreferenceMigrated)
         {
             PersistSettings();
         }
@@ -136,6 +147,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _settings = _settings with
         {
             AdminMode = adminMode,
+            AdminPreferenceInitialized = true,
         };
 
         DisposeCollector(previousCollector);
