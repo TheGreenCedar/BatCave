@@ -87,13 +87,13 @@ public sealed partial class MetricTrendChart : UserControl
         nameof(StrokeThickness),
         typeof(double),
         typeof(MetricTrendChart),
-        new PropertyMetadata(1.6d, OnChartPropertyChanged));
+        new PropertyMetadata(1.15d, OnChartPropertyChanged));
 
     public static readonly DependencyProperty OverlayStrokeThicknessProperty = DependencyProperty.Register(
         nameof(OverlayStrokeThickness),
         typeof(double),
         typeof(MetricTrendChart),
-        new PropertyMetadata(1.2d, OnChartPropertyChanged));
+        new PropertyMetadata(0.85d, OnChartPropertyChanged));
 
     public static readonly DependencyProperty ShowOverlayProperty = DependencyProperty.Register(
         nameof(ShowOverlay),
@@ -103,9 +103,9 @@ public sealed partial class MetricTrendChart : UserControl
 
     private double _dynamicDomainMaxRaw;
     private readonly Brush _defaultStrokeBrush = new SolidColorBrush(Colors.DodgerBlue);
-    private readonly Brush _defaultFillBrush = new SolidColorBrush(Color.FromArgb(51, 30, 144, 255));
-    private readonly Brush _defaultOverlayStrokeBrush = new SolidColorBrush(Colors.DarkSlateGray);
-    private readonly Brush _defaultGridBrush = new SolidColorBrush(Color.FromArgb(64, 140, 148, 163));
+    private readonly Brush _defaultFillBrush = new SolidColorBrush(Color.FromArgb(38, 30, 144, 255));
+    private readonly Brush _defaultOverlayStrokeBrush = new SolidColorBrush(Color.FromArgb(204, 76, 93, 112));
+    private readonly Brush _defaultGridBrush = new SolidColorBrush(Color.FromArgb(36, 140, 148, 163));
 
     public MetricTrendChart()
     {
@@ -232,16 +232,16 @@ public sealed partial class MetricTrendChart : UserControl
         BottomAxisPanel.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
         TopRightScaleLabel.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
         GridPath.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
-        PlotBorder.BorderThickness = showAxes ? new Thickness(1) : new Thickness(0);
+        PlotBorder.BorderThickness = showAxes ? new Thickness(0.7) : new Thickness(0);
 
         TimeWindowLabel.Text = $"{visibleCount} seconds";
         LinePolyline.Stroke = StrokeBrush;
         AreaPolygon.Fill = FillBrush;
         GridPath.Stroke = GridBrush;
-        LinePolyline.StrokeThickness = Math.Max(0.8, StrokeThickness);
+        LinePolyline.StrokeThickness = Math.Max(0.6, StrokeThickness);
         OverlayPolyline.Stroke = OverlayStrokeBrush;
-        OverlayPolyline.StrokeThickness = Math.Max(0.6, OverlayStrokeThickness);
-        OverlayPolyline.StrokeDashArray = new DoubleCollection { 3, 2 };
+        OverlayPolyline.StrokeThickness = Math.Max(0.5, OverlayStrokeThickness);
+        OverlayPolyline.StrokeDashArray = new DoubleCollection { 2, 2 };
 
         double width = PlotBorder.ActualWidth;
         double height = PlotBorder.ActualHeight;

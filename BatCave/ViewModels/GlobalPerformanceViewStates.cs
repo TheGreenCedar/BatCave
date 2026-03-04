@@ -1,5 +1,6 @@
 using BatCave.Controls;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Microsoft.UI.Xaml;
 using Windows.UI;
 
 namespace BatCave.ViewModels;
@@ -61,13 +62,25 @@ public sealed class GlobalResourceRowViewState : ObservableObject
     public string Subtitle
     {
         get => _subtitle;
-        private set => SetProperty(ref _subtitle, value);
+        private set => SetTextWithVisibility(ref _subtitle, value, nameof(SubtitleVisibility));
     }
 
     public string ValueText
     {
         get => _valueText;
-        private set => SetProperty(ref _valueText, value);
+        private set => SetTextWithVisibility(ref _valueText, value, nameof(ValueVisibility));
+    }
+
+    public Visibility SubtitleVisibility => string.IsNullOrWhiteSpace(Subtitle) ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility ValueVisibility => string.IsNullOrWhiteSpace(ValueText) ? Visibility.Collapsed : Visibility.Visible;
+
+    private void SetTextWithVisibility(ref string field, string value, string visibilityPropertyName)
+    {
+        if (SetProperty(ref field, value))
+        {
+            OnPropertyChanged(visibilityPropertyName);
+        }
     }
 
     public double[] MiniTrendValues

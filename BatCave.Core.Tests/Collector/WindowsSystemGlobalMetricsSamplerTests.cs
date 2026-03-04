@@ -59,4 +59,68 @@ public class WindowsSystemGlobalMetricsSamplerTests
         double? resolved = WindowsSystemGlobalMetricsSampler.ResolvePreferredDiskActiveTimePct(primaryPct: double.NaN, fallbackPct: double.PositiveInfinity);
         Assert.Null(resolved);
     }
+
+    [Fact]
+    public void ResolveCpuSpeedMHz_WhenActualFrequencyValid_PrefersActualFrequency()
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.ResolveCpuSpeedMHz(
+            actualFrequencyMHz: 4200,
+            processorFrequencyMHz: 3900,
+            staticCurrentClockSpeedMHz: 3600);
+        Assert.Equal(4200d, resolved);
+    }
+
+    [Fact]
+    public void ResolveCpuSpeedMHz_WhenActualFrequencyInvalid_FallsBackToProcessorFrequency()
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.ResolveCpuSpeedMHz(
+            actualFrequencyMHz: 0,
+            processorFrequencyMHz: 3900,
+            staticCurrentClockSpeedMHz: 3600);
+        Assert.Equal(3900d, resolved);
+    }
+
+    [Fact]
+    public void ResolveCpuSpeedMHz_WhenDynamicValuesInvalid_FallsBackToStaticClockSpeed()
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.ResolveCpuSpeedMHz(
+            actualFrequencyMHz: double.NaN,
+            processorFrequencyMHz: -1,
+            staticCurrentClockSpeedMHz: 3600);
+        Assert.Equal(3600d, resolved);
+    }
+
+    [Fact]
+    public void ResolveCpuSpeedMHz_WhenAllCandidatesInvalid_ReturnsNull()
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.ResolveCpuSpeedMHz(
+            actualFrequencyMHz: double.PositiveInfinity,
+            processorFrequencyMHz: 99,
+            staticCurrentClockSpeedMHz: 25000);
+        Assert.Null(resolved);
+    }
+
+    [Theory]
+    [InlineData(double.NegativeInfinity)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NaN)]
+    [InlineData(0d)]
+    [InlineData(-5d)]
+    [InlineData(99d)]
+    [InlineData(20001d)]
+    public void NormalizeCpuSpeedMHz_WhenValueIsNotReasonable_ReturnsNull(double value)
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.NormalizeCpuSpeedMHz(value);
+        Assert.Null(resolved);
+    }
+
+    [Theory]
+    [InlineData(100d)]
+    [InlineData(3600d)]
+    [InlineData(20000d)]
+    public void NormalizeCpuSpeedMHz_WhenValueIsReasonable_ReturnsValue(double value)
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.NormalizeCpuSpeedMHz(value);
+        Assert.Equal(value, resolved);
+    }
 }

@@ -550,6 +550,117 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task GlobalMode_CpuSpeedChange_UpdatesRowSubtitleAndCpuDetailSpeed()
+    {
+        TestRuntimeEventGateway gateway = new();
+        ManualResetEventSlim firstSampleStarted = new(initialState: false);
+        ManualResetEventSlim firstSampleRelease = new(initialState: false);
+        ManualResetEventSlim firstSampleCompleted = new(initialState: false);
+        ManualResetEventSlim secondSampleStarted = new(initialState: false);
+        ManualResetEventSlim secondSampleRelease = new(initialState: false);
+        ManualResetEventSlim secondSampleCompleted = new(initialState: false);
+
+        SystemGlobalMetricsSample firstSample = CreateSystemGlobalMetricsSample(
+            tsMs: 501,
+            cpuPct: 37.0,
+            memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0,
+            cpuSnapshot: new SystemGlobalCpuSnapshot
+            {
+                ProcessorName = "CPU",
+                SpeedMHz = 3200,
+                BaseSpeedMHz = 3000,
+            });
+        SystemGlobalMetricsSample secondSample = CreateSystemGlobalMetricsSample(
+            tsMs: 502,
+            cpuPct: 63.0,
+            memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0,
+            cpuSnapshot: new SystemGlobalCpuSnapshot
+            {
+                ProcessorName = "CPU",
+                SpeedMHz = 4100,
+                BaseSpeedMHz = 3000,
+            });
+        TestSystemGlobalMetricsSampler sampler = new(firstSample);
+        int sampleCallCount = 0;
+        sampler.Handler = () =>
+        {
+            int call = Interlocked.Increment(ref sampleCallCount);
+            if (call == 1)
+            {
+                firstSampleStarted.Set();
+                if (!firstSampleRelease.Wait(TimeSpan.FromSeconds(2)))
+                {
+                    throw new TimeoutException("Timed out waiting to release first global CPU sample.");
+                }
+
+                firstSampleCompleted.Set();
+                return firstSample;
+            }
+
+            if (call == 2)
+            {
+                secondSampleStarted.Set();
+                if (!secondSampleRelease.Wait(TimeSpan.FromSeconds(2)))
+                {
+                    throw new TimeoutException("Timed out waiting to release second global CPU sample.");
+                }
+
+                secondSampleCompleted.Set();
+                return secondSample;
+            }
+
+            return secondSample;
+        };
+
+        try
+        {
+            MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+                gateway,
+                systemGlobalMetricsSampler: sampler);
+            Assert.True(firstSampleStarted.Wait(TimeSpan.FromSeconds(2)), "First sample task did not start.");
+            firstSampleRelease.Set();
+            Assert.True(firstSampleCompleted.Wait(TimeSpan.FromSeconds(2)), "First sample task did not complete.");
+
+            gateway.RaiseDelta(1, [], []);
+
+            GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Cpu));
+            viewModel.SelectedGlobalResource = cpuRow;
+
+            string firstSpeed = ValueFormat.FormatFrequencyGHz(firstSample.CpuSnapshot?.SpeedMHz);
+            Assert.Equal($"37% {firstSpeed}", cpuRow.Subtitle);
+            Assert.Equal(string.Empty, cpuRow.ValueText);
+            Assert.Equal($"37% {firstSpeed}", viewModel.GlobalDetailCurrentValue);
+            Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Speed" && item.Value == firstSpeed);
+
+            Assert.True(secondSampleStarted.Wait(TimeSpan.FromSeconds(2)), "Second sample task did not start.");
+            secondSampleRelease.Set();
+            Assert.True(secondSampleCompleted.Wait(TimeSpan.FromSeconds(2)), "Second sample task did not complete.");
+
+            gateway.RaiseDelta(2, [], []);
+
+            Assert.Same(cpuRow, Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Cpu)));
+            string secondSpeed = ValueFormat.FormatFrequencyGHz(secondSample.CpuSnapshot?.SpeedMHz);
+            Assert.Equal($"63% {secondSpeed}", cpuRow.Subtitle);
+            Assert.Equal(string.Empty, cpuRow.ValueText);
+            Assert.Equal($"63% {secondSpeed}", viewModel.GlobalDetailCurrentValue);
+            Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Speed" && item.Value == secondSpeed);
+            Assert.DoesNotContain(firstSpeed, viewModel.GlobalDetailCurrentValue, StringComparison.Ordinal);
+            Assert.DoesNotContain(viewModel.GlobalDetailStats, item => item.Label == "Speed" && item.Value == firstSpeed);
+        }
+        finally
+        {
+            firstSampleRelease.Set();
+            secondSampleRelease.Set();
+        }
+    }
+
+    [Fact]
     public async Task GlobalMode_DiskSelection_PersistsAcrossTransientDiskSnapshotDrop()
     {
         TestRuntimeEventGateway gateway = new();

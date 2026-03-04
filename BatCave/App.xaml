@@ -11,6 +11,40 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
                 <!-- Other merged dictionaries here -->
             </ResourceDictionary.MergedDictionaries>
+            <StaticResource x:Key="TaskMgrPaneBackgroundBrush" ResourceKey="CardBackgroundFillColorSecondaryBrush" />
+            <StaticResource x:Key="TaskMgrPaneBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
+            <Thickness x:Key="TaskMgrResourceRowPadding">6,4</Thickness>
+            <x:Double x:Key="TaskMgrDenseRowMinHeight">46</x:Double>
+
+            <Style x:Key="TaskMgrMetricLabelStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="FontWeight" Value="Normal" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Setter Property="Opacity" Value="0.9" />
+                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            </Style>
+
+            <Style x:Key="TaskMgrMetricValueStyle" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="Cascadia Mono" />
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            </Style>
+
+            <Style x:Key="TaskMgrSectionTitleStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="22" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            </Style>
+
+            <Style x:Key="TaskMgrSectionSubtitleStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            </Style>
+
             <converters:CpuPercentConverter x:Key="CpuPercentConverter" />
             <converters:BytesConverter x:Key="BytesConverter" />
             <converters:BytesRateConverter x:Key="BytesRateConverter" />

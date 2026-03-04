@@ -11,6 +11,8 @@ namespace BatCave.Core.Collector;
 public sealed partial class WindowsSystemGlobalMetricsSampler
 {
     private static readonly TimeSpan MetadataRefreshInterval = TimeSpan.FromSeconds(30);
+    private const double MinReasonableCpuSpeedMHz = 100d;
+    private const double MaxReasonableCpuSpeedMHz = 20000d;
 
     private DateTimeOffset _nextMetadataRefreshUtc = DateTimeOffset.MinValue;
     private CpuStaticMetadata _cpuStaticMetadata = CpuStaticMetadata.Empty;
@@ -148,6 +150,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         uint? threads = null;
         uint? handles = null;
         ulong? uptimeSeconds = null;
+        (double? ActualFrequencyMHz, double? ProcessorFrequencyMHz) dynamicCpuSpeedMHz = (null, null);
 
         try
         {
@@ -231,11 +234,16 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             // no-op
         }
 
+        dynamicCpuSpeedMHz = TryReadDynamicCpuSpeedMHz();
+
         return new SystemGlobalCpuSnapshot
         {
             ProcessorName = _cpuStaticMetadata.ProcessorName,
             KernelPct = _lastKernelPct,
-            SpeedMHz = _cpuStaticMetadata.CurrentSpeedMHz,
+            SpeedMHz = ResolveCpuSpeedMHz(
+                dynamicCpuSpeedMHz.ActualFrequencyMHz,
+                dynamicCpuSpeedMHz.ProcessorFrequencyMHz,
+                _cpuStaticMetadata.CurrentSpeedMHz),
             BaseSpeedMHz = _cpuStaticMetadata.BaseSpeedMHz,
             Sockets = _cpuStaticMetadata.Sockets,
             Cores = _cpuStaticMetadata.Cores,
@@ -250,6 +258,37 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             UptimeSeconds = uptimeSeconds,
             LogicalProcessorUtilizationPct = logicalUtilization,
         };
+    }
+
+    private static (double? ActualFrequencyMHz, double? ProcessorFrequencyMHz) ReadDynamicCpuSpeedMHz()
+    {
+        using ManagementObjectSearcher searcher = new(
+            "SELECT Name, ActualFrequency, ProcessorFrequency FROM Win32_PerfFormattedData_Counters_ProcessorInformation");
+        using ManagementObjectCollection rows = searcher.Get();
+
+        ManagementBaseObject? totalRow = rows
+            .Cast<ManagementBaseObject>()
+            .FirstOrDefault(static row => string.Equals(row["Name"] as string, "_Total", StringComparison.OrdinalIgnoreCase));
+        if (totalRow is null)
+        {
+            return (null, null);
+        }
+
+        return (
+            ActualFrequencyMHz: ReadDouble(totalRow["ActualFrequency"]),
+            ProcessorFrequencyMHz: ReadDouble(totalRow["ProcessorFrequency"]));
+    }
+
+    private static (double? ActualFrequencyMHz, double? ProcessorFrequencyMHz) TryReadDynamicCpuSpeedMHz()
+    {
+        try
+        {
+            return ReadDynamicCpuSpeedMHz();
+        }
+        catch
+        {
+            return (null, null);
+        }
     }
 
     private SystemGlobalMemorySnapshot BuildMemorySnapshot(ulong? memoryUsedBytes)
@@ -481,6 +520,13 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
 
         return normalizedPrimary ?? normalizedFallback;
+    }
+
+    internal static double? ResolveCpuSpeedMHz(double? actualFrequencyMHz, double? processorFrequencyMHz, double? staticCurrentClockSpeedMHz)
+    {
+        return NormalizeCpuSpeedMHz(actualFrequencyMHz)
+            ?? NormalizeCpuSpeedMHz(processorFrequencyMHz)
+            ?? NormalizeCpuSpeedMHz(staticCurrentClockSpeedMHz);
     }
 
     private IReadOnlyList<SystemGlobalNetworkSnapshot> BuildNetworkSnapshots()
@@ -927,6 +973,22 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
 
         return Math.Clamp(value.Value, 0d, 100d);
+    }
+
+    internal static double? NormalizeCpuSpeedMHz(double? value)
+    {
+        if (!value.HasValue || !double.IsFinite(value.Value))
+        {
+            return null;
+        }
+
+        double speedMhz = value.Value;
+        if (speedMhz <= 0d || speedMhz < MinReasonableCpuSpeedMHz || speedMhz > MaxReasonableCpuSpeedMHz)
+        {
+            return null;
+        }
+
+        return speedMhz;
     }
 
     private static double? MergeMaxNullable(double? left, double? right)
