@@ -422,6 +422,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
 
         Assert.Null(viewModel.SelectedRow);
         Assert.Equal("Global System Values", viewModel.DetailTitle);
@@ -458,6 +459,7 @@ public class MonitoringShellViewModelTests
 
         Stopwatch stopwatch = Stopwatch.StartNew();
         gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
         stopwatch.Stop();
         releaseSampler.Set();
 
@@ -482,6 +484,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
 
         Assert.Equal("n/a", viewModel.CpuMetricChipValue);
         Assert.Equal(ValueFormat.FormatBytes(12 * 1024UL * 1024UL), viewModel.MemoryMetricChipValue);
@@ -542,6 +545,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
 
         Assert.True(viewModel.IsGlobalPerformanceMode);
         Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Cpu);
@@ -690,6 +694,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
 
         GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
         viewModel.SelectedGlobalResource = diskRow;
@@ -710,6 +715,83 @@ public class MonitoringShellViewModelTests
         Assert.Equal(diskRow.ResourceId, viewModel.SelectedGlobalResource!.ResourceId);
         Assert.Contains(viewModel.GlobalResourceRows, row => row.ResourceId == diskRow.ResourceId);
         Assert.Equal("Disk 0 (C:)", viewModel.GlobalDetailTitle);
+    }
+
+    [Fact]
+    public async Task GlobalMode_DiskSelection_SubOneActiveTimeRowValue_RendersZeroPercentButKeepsDetailPrecision()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 301,
+                cpuPct: 13.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+                diskReadBps: 1200,
+                diskWriteBps: 3400,
+                otherIoBps: 0,
+                diskSnapshots:
+                [
+                    new SystemGlobalDiskSnapshot
+                    {
+                        DiskId = "C:",
+                        DisplayName = "Disk 0 (C:)",
+                        TypeLabel = "SSD (NVMe)",
+                        ActiveTimePct = 0.6,
+                        ReadBps = 1200,
+                        WriteBps = 3400,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
+
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        viewModel.SelectedGlobalResource = diskRow;
+
+        Assert.Equal("0%", diskRow.ValueText);
+        Assert.Equal("0.6%", viewModel.GlobalDetailCurrentValue);
+        Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Active time" && item.Value == "0.6%");
+    }
+
+    [Fact]
+    public async Task GlobalMode_DiskSelection_TinyAverageResponse_StaysVisibleInDiskStats()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 302,
+                cpuPct: 15.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL * 1024UL,
+                diskReadBps: 3000,
+                diskWriteBps: 7000,
+                otherIoBps: 0,
+                diskSnapshots:
+                [
+                    new SystemGlobalDiskSnapshot
+                    {
+                        DiskId = "D:",
+                        DisplayName = "Disk 1 (D:)",
+                        TypeLabel = "SSD",
+                        ActiveTimePct = 21,
+                        AvgResponseMs = 0.0004,
+                        ReadBps = 3000,
+                        WriteBps = 7000,
+                    },
+                ]));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
+
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        viewModel.SelectedGlobalResource = diskRow;
+
+        Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Average response time" && item.Value == "<0.001 ms");
     }
 
     [Fact]
@@ -741,6 +823,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
 
         GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
         Exception? exception = Record.Exception(() => viewModel.SelectedGlobalResource = diskRow);

@@ -18,6 +18,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     private CpuStaticMetadata _cpuStaticMetadata = CpuStaticMetadata.Empty;
     private MemoryStaticMetadata _memoryStaticMetadata = MemoryStaticMetadata.Empty;
     private Dictionary<int, DiskStaticMetadata> _diskMetadataByIndex = [];
+    private Dictionary<int, DiskRawPerformanceSnapshot> _previousPhysicalDiskRawByIndex = [];
     private Dictionary<string, int> _diskIndexByDriveLetter = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, NetworkStaticMetadata> _networkMetadataByNormalizedName = [];
     private HashSet<string> _pageFileDrives = [];
@@ -293,9 +294,8 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
     private SystemGlobalMemorySnapshot BuildMemorySnapshot(ulong? memoryUsedBytes)
     {
-        ulong? totalBytes = null;
+        ulong? visibleTotalBytes = null;
         ulong? availableBytes = null;
-        ulong? hardwareReservedBytes = null;
         ulong? committedBytes = null;
         ulong? commitLimitBytes = null;
         ulong? cacheBytes = null;
@@ -311,7 +311,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
             if (GlobalMemoryStatusEx(ref memoryStatus))
             {
-                totalBytes = memoryStatus.ullTotalPhys;
+                visibleTotalBytes = memoryStatus.ullTotalPhys;
                 availableBytes = memoryStatus.ullAvailPhys;
             }
         }
@@ -340,10 +340,9 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             // no-op
         }
 
-        if (totalBytes.HasValue && _memoryStaticMetadata.TotalPhysicalBytes.HasValue && _memoryStaticMetadata.TotalPhysicalBytes.Value > totalBytes.Value)
-        {
-            hardwareReservedBytes = _memoryStaticMetadata.TotalPhysicalBytes.Value - totalBytes.Value;
-        }
+        ulong? installedTotalBytes = _memoryStaticMetadata.TotalPhysicalBytes;
+        ulong? totalBytes = visibleTotalBytes ?? installedTotalBytes;
+        ulong? hardwareReservedBytes = ResolveHardwareReservedBytes(installedTotalBytes, visibleTotalBytes);
 
         return new SystemGlobalMemorySnapshot
         {
@@ -367,51 +366,30 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     {
         List<SystemGlobalDiskSnapshot> result = [];
         Dictionary<int, DiskPerformanceSnapshot> physicalPerfByIndex = ReadPhysicalDiskPerfByIndex();
-        using ManagementObjectSearcher searcher = new(
-            "SELECT Name, PercentDiskTime, PercentIdleTime, AvgDisksecPerTransfer, DiskReadBytesPersec, DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_LogicalDisk");
-        using ManagementObjectCollection rows = searcher.Get();
-
-        foreach (ManagementBaseObject row in rows)
+        foreach ((int diskIndex, DiskPerformanceSnapshot perf) in physicalPerfByIndex.OrderBy(static pair => pair.Key))
         {
-            string? name = row["Name"] as string;
-            if (string.IsNullOrWhiteSpace(name))
+            IReadOnlyList<string> driveLetters = ResolveDriveLettersForDiskIndex(diskIndex);
+            if (driveLetters.Count == 0)
             {
+                // Hide backing members that do not directly expose a mounted logical drive (e.g., Storage Spaces members).
                 continue;
             }
 
-            string driveLetter = NormalizeDriveLetter(name);
-            if (string.IsNullOrWhiteSpace(driveLetter))
-            {
-                continue;
-            }
-
-            string diskId = driveLetter;
-            int? diskIndex = ResolveDiskIndexForDrive(driveLetter);
-            _diskMetadataByIndex.TryGetValue(diskIndex ?? -1, out DiskStaticMetadata? metadata);
-            physicalPerfByIndex.TryGetValue(diskIndex ?? -1, out DiskPerformanceSnapshot? physicalPerf);
-
-            bool? isSystemDisk = TryResolveDriveFlag(driveLetter, _systemDriveLetter);
-            bool? hasPageFile = TryResolvePageFileFlag(driveLetter);
-            double? avgResponseMs = ReadDouble(row["AvgDisksecPerTransfer"]);
-            if (avgResponseMs.HasValue)
-            {
-                avgResponseMs *= 1000d;
-            }
-
-            ulong? read = ReadULong(row["DiskReadBytesPersec"]);
-            ulong? write = ReadULong(row["DiskWriteBytesPersec"]);
-            double? logicalActiveTimePct = ResolveDiskActiveTimePct(row);
+            string driveLetter = driveLetters[0];
+            _diskMetadataByIndex.TryGetValue(diskIndex, out DiskStaticMetadata? metadata);
+            bool? isSystemDisk = driveLetters.Any(drive => string.Equals(drive, _systemDriveLetter, StringComparison.OrdinalIgnoreCase));
+            bool? hasPageFile = _pageFileDrives.Count == 0 ? null : driveLetters.Any(drive => _pageFileDrives.Contains(drive));
 
             result.Add(new SystemGlobalDiskSnapshot
             {
-                DiskId = diskId,
+                DiskId = driveLetter,
                 DisplayName = BuildDiskDisplayName(diskIndex, driveLetter),
                 Model = metadata?.Model,
                 TypeLabel = ResolveDiskTypeLabel(metadata?.TypeLabel, metadata?.Model),
-                ActiveTimePct = ResolvePreferredDiskActiveTimePct(physicalPerf?.ActiveTimePct, logicalActiveTimePct),
-                AvgResponseMs = avgResponseMs,
-                ReadBps = read,
-                WriteBps = write,
+                ActiveTimePct = perf.ActiveTimePct,
+                AvgResponseMs = perf.AvgResponseMs,
+                ReadBps = perf.ReadBps,
+                WriteBps = perf.WriteBps,
                 CapacityBytes = metadata?.CapacityBytes,
                 FormattedBytes = metadata?.FormattedBytes,
                 IsSystemDisk = isSystemDisk,
@@ -422,14 +400,15 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         return result.OrderBy(static snapshot => snapshot.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    private static Dictionary<int, DiskPerformanceSnapshot> ReadPhysicalDiskPerfByIndex()
+    private Dictionary<int, DiskPerformanceSnapshot> ReadPhysicalDiskPerfByIndex()
     {
         Dictionary<int, DiskPerformanceSnapshot> result = [];
+        Dictionary<int, double?> avgResponseMsByIndex = ResolvePhysicalDiskAvgResponseMsByIndex();
 
         try
         {
             using ManagementObjectSearcher searcher = new(
-                "SELECT Name, PercentDiskTime, PercentIdleTime, AvgDisksecPerTransfer, DiskReadBytesPersec, DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_PhysicalDisk");
+                "SELECT Name, PercentDiskTime, PercentIdleTime, DiskReadBytesPersec, DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_PhysicalDisk");
             using ManagementObjectCollection rows = searcher.Get();
 
             foreach (ManagementBaseObject row in rows)
@@ -440,8 +419,8 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
                     continue;
                 }
 
-                int? index = ParseDiskIndex(name);
-                if (!index.HasValue)
+                int? diskIndex = ParseDiskIndex(name);
+                if (!diskIndex.HasValue)
                 {
                     continue;
                 }
@@ -449,18 +428,14 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
                 double? active = ResolveDiskActiveTimePct(
                     diskTimePct: ReadDouble(row["PercentDiskTime"]),
                     idleTimePct: ReadDouble(row["PercentIdleTime"]));
-                double? avgResponseMs = ReadDouble(row["AvgDisksecPerTransfer"]);
-                if (avgResponseMs.HasValue)
-                {
-                    avgResponseMs *= 1000d;
-                }
+                avgResponseMsByIndex.TryGetValue(diskIndex.Value, out double? avgResponseMs);
 
                 ulong? read = ReadULong(row["DiskReadBytesPersec"]);
                 ulong? write = ReadULong(row["DiskWriteBytesPersec"]);
 
-                if (result.TryGetValue(index.Value, out DiskPerformanceSnapshot? existing))
+                if (result.TryGetValue(diskIndex.Value, out DiskPerformanceSnapshot? existing))
                 {
-                    result[index.Value] = new DiskPerformanceSnapshot
+                    result[diskIndex.Value] = new DiskPerformanceSnapshot
                     {
                         ActiveTimePct = ResolvePreferredDiskActiveTimePct(active, existing.ActiveTimePct),
                         AvgResponseMs = MergeMaxNullable(avgResponseMs, existing.AvgResponseMs),
@@ -470,7 +445,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
                     continue;
                 }
 
-                result[index.Value] = new DiskPerformanceSnapshot
+                result[diskIndex.Value] = new DiskPerformanceSnapshot
                 {
                     ActiveTimePct = active,
                     AvgResponseMs = avgResponseMs,
@@ -482,6 +457,83 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         catch
         {
             return [];
+        }
+
+        return result;
+    }
+
+    private Dictionary<int, double?> ResolvePhysicalDiskAvgResponseMsByIndex()
+    {
+        Dictionary<int, DiskRawPerformanceSnapshot>? rawByIndex = ReadPhysicalDiskRawPerfByIndex();
+        if (rawByIndex is null)
+        {
+            return [];
+        }
+
+        Dictionary<int, double?> result = [];
+        foreach ((int diskIndex, DiskRawPerformanceSnapshot current) in rawByIndex)
+        {
+            _previousPhysicalDiskRawByIndex.TryGetValue(diskIndex, out DiskRawPerformanceSnapshot? previous);
+            result[diskIndex] = ResolveAvgResponseMsFromRawCounters(
+                previousCounterValue: previous?.AvgDiskSecPerTransfer,
+                currentCounterValue: current.AvgDiskSecPerTransfer,
+                previousCounterBase: previous?.AvgDiskSecPerTransferBase,
+                currentCounterBase: current.AvgDiskSecPerTransferBase,
+                frequencyPerfTime: current.FrequencyPerfTime);
+        }
+
+        _previousPhysicalDiskRawByIndex = rawByIndex;
+        return result;
+    }
+
+    private static Dictionary<int, DiskRawPerformanceSnapshot>? ReadPhysicalDiskRawPerfByIndex()
+    {
+        Dictionary<int, DiskRawPerformanceSnapshot> result = [];
+
+        try
+        {
+            using ManagementObjectSearcher searcher = new(
+                "SELECT Name, AvgDiskSecPerTransfer, AvgDiskSecPerTransfer_Base, Frequency_PerfTime FROM Win32_PerfRawData_PerfDisk_PhysicalDisk");
+            using ManagementObjectCollection rows = searcher.Get();
+
+            foreach (ManagementBaseObject row in rows)
+            {
+                string? name = row["Name"] as string;
+                if (string.IsNullOrWhiteSpace(name) || string.Equals(name, "_Total", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                int? diskIndex = ParseDiskIndex(name);
+                if (!diskIndex.HasValue)
+                {
+                    continue;
+                }
+
+                DiskRawPerformanceSnapshot current = new()
+                {
+                    AvgDiskSecPerTransfer = ReadULong(row["AvgDiskSecPerTransfer"]),
+                    AvgDiskSecPerTransferBase = ReadULong(row["AvgDiskSecPerTransfer_Base"]),
+                    FrequencyPerfTime = ReadULong(row["Frequency_PerfTime"]),
+                };
+
+                if (result.TryGetValue(diskIndex.Value, out DiskRawPerformanceSnapshot? existing))
+                {
+                    result[diskIndex.Value] = new DiskRawPerformanceSnapshot
+                    {
+                        AvgDiskSecPerTransfer = SumNullable(existing.AvgDiskSecPerTransfer, current.AvgDiskSecPerTransfer),
+                        AvgDiskSecPerTransferBase = SumNullable(existing.AvgDiskSecPerTransferBase, current.AvgDiskSecPerTransferBase),
+                        FrequencyPerfTime = MergeMaxNullable(existing.FrequencyPerfTime, current.FrequencyPerfTime),
+                    };
+                    continue;
+                }
+
+                result[diskIndex.Value] = current;
+            }
+        }
+        catch
+        {
+            return null;
         }
 
         return result;
@@ -588,6 +640,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
     private CpuStaticMetadata ReadCpuStaticMetadata()
     {
+        (ulong? l1CacheBytes, ulong? l2CacheBytes, ulong? l3CacheBytes) = ReadCpuCacheBytesByLevel();
         using ManagementObjectSearcher processorSearcher = new(
             "SELECT Name, CurrentClockSpeed, MaxClockSpeed, NumberOfCores, NumberOfLogicalProcessors, L2CacheSize, L3CacheSize, VirtualizationFirmwareEnabled FROM Win32_Processor");
         using ManagementObjectCollection rows = processorSearcher.Get();
@@ -607,9 +660,51 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             Cores = ReadInt(row["NumberOfCores"]),
             LogicalProcessors = ReadInt(row["NumberOfLogicalProcessors"]),
             VirtualizationEnabled = ReadBool(row["VirtualizationFirmwareEnabled"]),
-            L2CacheBytes = ScaleKbToBytes(ReadULong(row["L2CacheSize"])),
-            L3CacheBytes = ScaleKbToBytes(ReadULong(row["L3CacheSize"])),
+            L1CacheBytes = l1CacheBytes,
+            L2CacheBytes = l2CacheBytes ?? ScaleKbToBytes(ReadULong(row["L2CacheSize"])),
+            L3CacheBytes = l3CacheBytes ?? ScaleKbToBytes(ReadULong(row["L3CacheSize"])),
         };
+    }
+
+    private static (ulong? L1CacheBytes, ulong? L2CacheBytes, ulong? L3CacheBytes) ReadCpuCacheBytesByLevel()
+    {
+        ulong? l1CacheBytes = null;
+        ulong? l2CacheBytes = null;
+        ulong? l3CacheBytes = null;
+
+        try
+        {
+            using ManagementObjectSearcher cacheSearcher = new("SELECT Level, InstalledSize FROM Win32_CacheMemory");
+            using ManagementObjectCollection cacheRows = cacheSearcher.Get();
+            foreach (ManagementBaseObject row in cacheRows)
+            {
+                byte? cacheTier = ResolveCacheTierFromWmiLevel(ReadUInt(row["Level"]));
+                ulong? cacheBytes = ScaleKbToBytes(ReadULong(row["InstalledSize"]));
+                if (!cacheTier.HasValue || !cacheBytes.HasValue)
+                {
+                    continue;
+                }
+
+                switch (cacheTier.Value)
+                {
+                    case 1:
+                        l1CacheBytes = MergeMaxNullable(l1CacheBytes, cacheBytes);
+                        break;
+                    case 2:
+                        l2CacheBytes = MergeMaxNullable(l2CacheBytes, cacheBytes);
+                        break;
+                    case 3:
+                        l3CacheBytes = MergeMaxNullable(l3CacheBytes, cacheBytes);
+                        break;
+                }
+            }
+        }
+        catch
+        {
+            // no-op
+        }
+
+        return (l1CacheBytes, l2CacheBytes, l3CacheBytes);
     }
 
     private static MemoryStaticMetadata ReadMemoryStaticMetadata()
@@ -619,16 +714,22 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         ManagementBaseObject? computer = computerRows.Cast<ManagementBaseObject>().FirstOrDefault();
 
         ulong? totalBytes = ReadULong(computer?["TotalPhysicalMemory"]);
+        ulong? capacityBytes = null;
         uint? speed = null;
         int slotsUsed = 0;
         int slotsTotal = 0;
         string? formFactor = null;
 
-        using ManagementObjectSearcher physicalMemorySearcher = new("SELECT Speed, FormFactor FROM Win32_PhysicalMemory");
+        using ManagementObjectSearcher physicalMemorySearcher = new("SELECT Capacity, Speed, FormFactor FROM Win32_PhysicalMemory");
         using ManagementObjectCollection physicalRows = physicalMemorySearcher.Get();
         foreach (ManagementBaseObject row in physicalRows)
         {
             slotsTotal++;
+            if (ReadULong(row["Capacity"]) is ulong moduleCapacity && moduleCapacity > 0)
+            {
+                capacityBytes = SumNullable(capacityBytes, moduleCapacity);
+            }
+
             if (ReadUInt(row["Speed"]) is uint moduleSpeed && moduleSpeed > 0)
             {
                 speed = speed is null ? moduleSpeed : Math.Max(speed.Value, moduleSpeed);
@@ -640,6 +741,8 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
                 formFactor = ResolveMemoryFormFactor(formFactorValue);
             }
         }
+
+        totalBytes = capacityBytes ?? totalBytes;
 
         return new MemoryStaticMetadata
         {
@@ -773,10 +876,31 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             : null;
     }
 
+    private IReadOnlyList<string> ResolveDriveLettersForDiskIndex(int diskIndex)
+    {
+        List<string> drives = [];
+        foreach ((string driveLetter, int mappedIndex) in _diskIndexByDriveLetter.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (mappedIndex == diskIndex)
+            {
+                drives.Add(driveLetter);
+            }
+        }
+
+        return drives;
+    }
+
     private static string BuildDiskDisplayName(int? diskIndex, string driveLetter)
     {
-        return diskIndex.HasValue
-            ? $"Disk {diskIndex.Value} ({driveLetter})"
+        if (diskIndex.HasValue)
+        {
+            return string.IsNullOrWhiteSpace(driveLetter)
+                ? $"Disk {diskIndex.Value}"
+                : $"Disk {diskIndex.Value} ({driveLetter})";
+        }
+
+        return string.IsNullOrWhiteSpace(driveLetter)
+            ? "Disk"
             : $"Disk ({driveLetter})";
     }
 
@@ -878,6 +1002,54 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
 
         return valueInKb.Value * 1024UL;
+    }
+
+    internal static byte? ResolveCacheTierFromWmiLevel(uint? level)
+    {
+        return level switch
+        {
+            3 => 1,
+            4 => 2,
+            5 => 3,
+            _ => null,
+        };
+    }
+
+    internal static ulong? ResolveHardwareReservedBytes(ulong? installedBytes, ulong? visibleBytes)
+    {
+        if (!installedBytes.HasValue || !visibleBytes.HasValue)
+        {
+            return null;
+        }
+
+        return installedBytes.Value >= visibleBytes.Value
+            ? installedBytes.Value - visibleBytes.Value
+            : 0UL;
+    }
+
+    internal static double? ResolveAvgResponseMsFromRawCounters(
+        ulong? previousCounterValue,
+        ulong? currentCounterValue,
+        ulong? previousCounterBase,
+        ulong? currentCounterBase,
+        ulong? frequencyPerfTime)
+    {
+        if (!previousCounterValue.HasValue
+            || !currentCounterValue.HasValue
+            || !previousCounterBase.HasValue
+            || !currentCounterBase.HasValue
+            || !frequencyPerfTime.HasValue
+            || frequencyPerfTime.Value == 0
+            || currentCounterValue.Value < previousCounterValue.Value
+            || currentCounterBase.Value <= previousCounterBase.Value)
+        {
+            return null;
+        }
+
+        ulong deltaCounter = currentCounterValue.Value - previousCounterValue.Value;
+        ulong deltaBase = currentCounterBase.Value - previousCounterBase.Value;
+        double responseMs = ((deltaCounter / (double)frequencyPerfTime.Value) / deltaBase) * 1000d;
+        return double.IsFinite(responseMs) && responseMs >= 0d ? responseMs : null;
     }
 
     private static string? ResolveMemoryFormFactor(uint formFactor)
@@ -992,6 +1164,16 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     }
 
     private static double? MergeMaxNullable(double? left, double? right)
+    {
+        if (left.HasValue && right.HasValue)
+        {
+            return Math.Max(left.Value, right.Value);
+        }
+
+        return left ?? right;
+    }
+
+    private static ulong? MergeMaxNullable(ulong? left, ulong? right)
     {
         if (left.HasValue && right.HasValue)
         {
@@ -1158,6 +1340,15 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         public ulong? ReadBps { get; init; }
 
         public ulong? WriteBps { get; init; }
+    }
+
+    private sealed record DiskRawPerformanceSnapshot
+    {
+        public ulong? AvgDiskSecPerTransfer { get; init; }
+
+        public ulong? AvgDiskSecPerTransferBase { get; init; }
+
+        public ulong? FrequencyPerfTime { get; init; }
     }
 
     private sealed record NetworkStaticMetadata

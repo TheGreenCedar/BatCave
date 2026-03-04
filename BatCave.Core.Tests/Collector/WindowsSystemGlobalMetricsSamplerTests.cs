@@ -123,4 +123,102 @@ public class WindowsSystemGlobalMetricsSamplerTests
         double? resolved = WindowsSystemGlobalMetricsSampler.NormalizeCpuSpeedMHz(value);
         Assert.Equal(value, resolved);
     }
+
+    [Fact]
+    public void ResolveHardwareReservedBytes_WhenInstalledOrVisibleMissing_ReturnsNull()
+    {
+        ulong? missingInstalled = WindowsSystemGlobalMetricsSampler.ResolveHardwareReservedBytes(installedBytes: null, visibleBytes: 8_000_000_000UL);
+        ulong? missingVisible = WindowsSystemGlobalMetricsSampler.ResolveHardwareReservedBytes(installedBytes: 8_000_000_000UL, visibleBytes: null);
+
+        Assert.Null(missingInstalled);
+        Assert.Null(missingVisible);
+    }
+
+    [Fact]
+    public void ResolveHardwareReservedBytes_WhenInstalledGreaterThanVisible_ReturnsDifference()
+    {
+        ulong? reserved = WindowsSystemGlobalMetricsSampler.ResolveHardwareReservedBytes(
+            installedBytes: 17_179_869_184UL,
+            visibleBytes: 17_179_344_896UL);
+
+        Assert.Equal(524_288UL, reserved);
+    }
+
+    [Theory]
+    [InlineData(8_000_000_000UL, 8_000_000_000UL)]
+    [InlineData(7_999_000_000UL, 8_000_000_000UL)]
+    public void ResolveHardwareReservedBytes_WhenDifferenceNotPositive_ReturnsZero(ulong installedBytes, ulong visibleBytes)
+    {
+        ulong? reserved = WindowsSystemGlobalMetricsSampler.ResolveHardwareReservedBytes(installedBytes, visibleBytes);
+        Assert.Equal(0UL, reserved);
+    }
+
+    [Theory]
+    [InlineData(3u, 1)]
+    [InlineData(4u, 2)]
+    [InlineData(5u, 3)]
+    public void ResolveCacheTierFromWmiLevel_WhenMappedLevel_ReturnsCacheTier(uint wmiLevel, byte expectedTier)
+    {
+        byte? resolved = WindowsSystemGlobalMetricsSampler.ResolveCacheTierFromWmiLevel(wmiLevel);
+        Assert.Equal(expectedTier, resolved);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0u)]
+    [InlineData(1u)]
+    [InlineData(2u)]
+    [InlineData(6u)]
+    public void ResolveCacheTierFromWmiLevel_WhenUnmappedLevel_ReturnsNull(uint? wmiLevel)
+    {
+        byte? resolved = WindowsSystemGlobalMetricsSampler.ResolveCacheTierFromWmiLevel(wmiLevel);
+        Assert.Null(resolved);
+    }
+
+    [Fact]
+    public void ResolveAvgResponseMsFromRawCounters_WhenValidDelta_ComputesMilliseconds()
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.ResolveAvgResponseMsFromRawCounters(
+            previousCounterValue: 1000,
+            currentCounterValue: 1600,
+            previousCounterBase: 10,
+            currentCounterBase: 20,
+            frequencyPerfTime: 100);
+
+        Assert.Equal(600d, resolved);
+    }
+
+    [Fact]
+    public void ResolveAvgResponseMsFromRawCounters_WhenFirstSample_ReturnsNull()
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.ResolveAvgResponseMsFromRawCounters(
+            previousCounterValue: null,
+            currentCounterValue: 1600,
+            previousCounterBase: null,
+            currentCounterBase: 20,
+            frequencyPerfTime: 100);
+
+        Assert.Null(resolved);
+    }
+
+    [Theory]
+    [InlineData(1000ul, 900ul, 10ul, 20ul, 100ul)]
+    [InlineData(1000ul, 1600ul, 10ul, 10ul, 100ul)]
+    [InlineData(1000ul, 1600ul, 10ul, 20ul, 0ul)]
+    public void ResolveAvgResponseMsFromRawCounters_WhenInvalidDelta_ReturnsNull(
+        ulong previousCounterValue,
+        ulong currentCounterValue,
+        ulong previousCounterBase,
+        ulong currentCounterBase,
+        ulong frequencyPerfTime)
+    {
+        double? resolved = WindowsSystemGlobalMetricsSampler.ResolveAvgResponseMsFromRawCounters(
+            previousCounterValue,
+            currentCounterValue,
+            previousCounterBase,
+            currentCounterBase,
+            frequencyPerfTime);
+
+        Assert.Null(resolved);
+    }
 }

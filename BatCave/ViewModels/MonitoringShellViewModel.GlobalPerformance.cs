@@ -462,15 +462,14 @@ public partial class MonitoringShellViewModel
             .OrderBy(static disk => disk.DisplayName, StringComparer.OrdinalIgnoreCase);
         foreach (SystemGlobalDiskSnapshot disk in disks)
         {
-            double activePct = NormalizeNonNegativeFiniteMetric(disk.ActiveTimePct) ?? 0d;
+            double? activeTimePct = NormalizeNonNegativeFiniteMetric(disk.ActiveTimePct);
+            double activePct = activeTimePct ?? 0d;
             ulong read = disk.ReadBps ?? 0UL;
             ulong write = disk.WriteBps ?? 0UL;
             double totalRate = SumRatesAsDouble(read, write);
             string subtitle = string.IsNullOrWhiteSpace(disk.TypeLabel) ? "Disk" : disk.TypeLabel!;
             string title = string.IsNullOrWhiteSpace(disk.DisplayName) ? disk.DiskId : disk.DisplayName;
-            string activeValueText = NormalizeNonNegativeFiniteMetric(disk.ActiveTimePct).HasValue
-                ? $"{activePct:F0}%"
-                : "n/a";
+            string activeValueText = FormatDiskRowActiveTimePercent(activeTimePct);
             descriptors.Add(new GlobalResourceDescriptor(
                 ResourceId: $"disk:{disk.DiskId}",
                 Kind: GlobalResourceKind.Disk,
@@ -841,7 +840,7 @@ public partial class MonitoringShellViewModel
         SetGlobalStats(new (string, string)[]
         {
             ("Active time", activeTimePct.HasValue ? $"{activeTimePct.Value:F1}%" : "n/a"),
-            ("Average response time", disk?.AvgResponseMs.HasValue == true ? $"{disk.AvgResponseMs.Value:F1} ms" : "n/a"),
+            ("Average response time", FormatDiskAverageResponseTimeMs(disk?.AvgResponseMs)),
             ("Read speed", disk?.ReadBps.HasValue == true ? ValueFormat.FormatRate(disk.ReadBps.Value) : "n/a"),
             ("Write speed", disk?.WriteBps.HasValue == true ? ValueFormat.FormatRate(disk.WriteBps.Value) : "n/a"),
             ("Capacity", FormatBytesNullable(disk?.CapacityBytes)),
@@ -918,6 +917,41 @@ public partial class MonitoringShellViewModel
         }
 
         return $"{ValueFormat.FormatBytes(used.Value)} / {ValueFormat.FormatBytes(limit.Value)}";
+    }
+
+    private static string FormatDiskRowActiveTimePercent(double? value)
+    {
+        if (!value.HasValue)
+        {
+            return "n/a";
+        }
+
+        return value.Value < 1d
+            ? "0%"
+            : $"{value.Value:F0}%";
+    }
+
+    private static string FormatDiskAverageResponseTimeMs(double? value)
+    {
+        double? normalized = NormalizeNonNegativeFiniteMetric(value);
+        if (!normalized.HasValue)
+        {
+            return "n/a";
+        }
+
+        if (normalized.Value == 0d)
+        {
+            return "0.0 ms";
+        }
+
+        if (normalized.Value < 0.001d)
+        {
+            return "<0.001 ms";
+        }
+
+        return normalized.Value < 0.1d
+            ? $"{normalized.Value:F3} ms"
+            : $"{normalized.Value:F1} ms";
     }
 
     private static double? NormalizeNonNegativeFiniteMetric(double? value)

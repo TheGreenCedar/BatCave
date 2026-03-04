@@ -9,6 +9,7 @@ namespace BatCave.ViewModels;
 
 public partial class MonitoringShellViewModel
 {
+    private static readonly TimeSpan GlobalMetricsSampleSoftWait = TimeSpan.FromMilliseconds(35);
     private Task<SystemGlobalMetricsSample>? _globalMetricsSampleTask;
 
     [RelayCommand]
@@ -200,24 +201,41 @@ public partial class MonitoringShellViewModel
         if (_globalMetricsSampleTask is null)
         {
             _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
+            if (_globalMetricsSampleTask.Wait(GlobalMetricsSampleSoftWait))
+            {
+                return ConsumeGlobalMetricsSampleAndQueueNext();
+            }
+
             return _latestGlobalMetricsSample;
         }
 
-        if (!_globalMetricsSampleTask.IsCompleted)
+        if (!_globalMetricsSampleTask.IsCompleted && !_globalMetricsSampleTask.Wait(GlobalMetricsSampleSoftWait))
         {
             return _latestGlobalMetricsSample;
+        }
+
+        return ConsumeGlobalMetricsSampleAndQueueNext();
+    }
+
+    private SystemGlobalMetricsSample ConsumeGlobalMetricsSampleAndQueueNext()
+    {
+        SystemGlobalMetricsSample sampled = _latestGlobalMetricsSample;
+        if (_globalMetricsSampleTask is null)
+        {
+            return sampled;
         }
 
         if (_globalMetricsSampleTask.IsCompletedSuccessfully)
         {
-            SystemGlobalMetricsSample sampled = _globalMetricsSampleTask.Result;
-            _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
-            return sampled;
+            sampled = _globalMetricsSampleTask.Result;
+        }
+        else if (_globalMetricsSampleTask.IsFaulted)
+        {
+            _ = _globalMetricsSampleTask.Exception;
         }
 
-        _ = _globalMetricsSampleTask.Exception;
         _globalMetricsSampleTask = Task.Run(() => _systemGlobalMetricsSampler.Sample());
-        return _latestGlobalMetricsSample;
+        return sampled;
     }
 
     private static ProcessSample CreateEmptyGlobalSummary()
