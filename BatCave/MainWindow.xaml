@@ -633,24 +633,24 @@
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
                                                 <ToggleButton
                                                     Content="60s"
-                                                    IsChecked="{Binding IsTrendWindow60Selected, Mode=OneWay}"
-                                                    Command="{Binding MetricTrendWindowSelectedCommand}"
+                                                    IsChecked="{x:Bind ViewModel.IsTrendWindow60Selected, Mode=OneWay}"
+                                                    Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
                                                     CommandParameter="60" />
                                                 <ToggleButton
                                                     Content="120s"
-                                                    IsChecked="{Binding IsTrendWindow120Selected, Mode=OneWay}"
-                                                    Command="{Binding MetricTrendWindowSelectedCommand}"
+                                                    IsChecked="{x:Bind ViewModel.IsTrendWindow120Selected, Mode=OneWay}"
+                                                    Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
                                                     CommandParameter="120" />
                                                 <StackPanel Orientation="Horizontal" Spacing="6" Visibility="{Binding GlobalCpuModeToggleVisibility, Mode=OneWay}">
                                                     <ToggleButton
                                                         Content="Combined"
-                                                        IsChecked="{Binding IsCpuCombinedMode, Mode=OneWay}"
-                                                        Command="{Binding CpuGraphModeSelectedCommand}"
+                                                        IsChecked="{x:Bind ViewModel.IsCpuCombinedMode, Mode=OneWay}"
+                                                        Command="{x:Bind ViewModel.CpuGraphModeSelectedCommand}"
                                                         CommandParameter="Combined" />
                                                     <ToggleButton
                                                         Content="Logical"
-                                                        IsChecked="{Binding IsCpuLogicalMode, Mode=OneWay}"
-                                                        Command="{Binding CpuGraphModeSelectedCommand}"
+                                                        IsChecked="{x:Bind ViewModel.IsCpuLogicalMode, Mode=OneWay}"
+                                                        Command="{x:Bind ViewModel.CpuGraphModeSelectedCommand}"
                                                         CommandParameter="LogicalProcessors" />
                                                 </StackPanel>
                                             </StackPanel>

@@ -268,7 +268,16 @@ public partial class MonitoringShellViewModel
             return;
         }
 
+        bool changed = CpuGraphMode != parsed;
         CpuGraphMode = parsed;
+        if (!changed)
+        {
+            // ToggleButtons can change local IsChecked state even when the mode is unchanged.
+            // Re-raise mode booleans so bindings snap back to the authoritative enum state.
+            OnPropertyChanged(nameof(IsCpuCombinedMode));
+            OnPropertyChanged(nameof(IsCpuLogicalMode));
+        }
+
         QueueGlobalDetailStateRefresh();
     }
 
