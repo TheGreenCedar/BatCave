@@ -7,6 +7,18 @@ namespace BatCave.Tests.ViewModels;
 public sealed class MetricHistoryBufferTests
 {
     [Fact]
+    public void Constructor_PrefillsSeriesWithZerosUpToLimit()
+    {
+        MetricHistoryBuffer buffer = new(limit: 4);
+
+        Assert.Equal([0d, 0d, 0d, 0d], buffer.Cpu.ToArray());
+        Assert.Equal([0d, 0d, 0d, 0d], buffer.Memory.ToArray());
+        Assert.Equal([0d, 0d, 0d, 0d], buffer.IoRead.ToArray());
+        Assert.Equal([0d, 0d, 0d, 0d], buffer.IoWrite.ToArray());
+        Assert.Equal([0d, 0d, 0d, 0d], buffer.OtherIo.ToArray());
+    }
+
+    [Fact]
     public void Append_WhenExceedingLimit_RetainsNewestValuesInOrder()
     {
         MetricHistoryBuffer buffer = new(limit: 3);

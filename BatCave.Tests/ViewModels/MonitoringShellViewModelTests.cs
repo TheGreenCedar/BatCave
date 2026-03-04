@@ -391,11 +391,11 @@ public class MonitoringShellViewModelTests
 
         ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
         gateway.RaiseDelta(3, [heartbeatOnlyUpdate], []);
-        IReadOnlyList<Point> afterOddHeartbeat = firstVisible.CpuTrendGeometry;
+        IReadOnlyList<Point> afterOddHeartbeat = ClonePointCollection(firstVisible.CpuTrendGeometry);
 
         ProcessSample strideHeartbeat = heartbeatOnlyUpdate with { Seq = 4, TsMs = 4, ParentPid = heartbeatOnlyUpdate.ParentPid + 1 };
         gateway.RaiseDelta(4, [strideHeartbeat], []);
-        IReadOnlyList<Point> afterEvenHeartbeat = firstVisible.CpuTrendGeometry;
+        IReadOnlyList<Point> afterEvenHeartbeat = ClonePointCollection(firstVisible.CpuTrendGeometry);
 
         Assert.Same(firstVisible, GetVisibleRow(viewModel, 0));
         AssertPointCollectionsEqual(beforeTrend, afterOddHeartbeat);
@@ -438,13 +438,38 @@ public class MonitoringShellViewModelTests
         IReadOnlyList<Point> before = ClonePointCollection(rowState.CpuTrendGeometry);
 
         gateway.RaiseDelta(3, [], []);
-        IReadOnlyList<Point> afterOdd = rowState.CpuTrendGeometry;
+        IReadOnlyList<Point> afterOdd = ClonePointCollection(rowState.CpuTrendGeometry);
 
         gateway.RaiseDelta(4, [], []);
-        IReadOnlyList<Point> afterEven = rowState.CpuTrendGeometry;
+        IReadOnlyList<Point> afterEven = ClonePointCollection(rowState.CpuTrendGeometry);
 
         AssertPointCollectionsEqual(before, afterOdd);
         AssertPointCollectionsNotEqual(before, afterEven);
+    }
+
+    [Fact]
+    public async Task TableMiniChart_FirstSampleUsesPrefilledWindowAndAdvancesOnStride()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample row = Sample(pid: 192, startTime: 19200, access: AccessState.Full) with { CpuPct = 12.0 };
+        gateway.RaiseDelta(1, [row], []);
+        ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
+        IReadOnlyList<Point> first = ClonePointCollection(rowState.CpuTrendGeometry);
+
+        Assert.Equal(120, first.Count);
+        Assert.NotEqual(2, first.Count);
+        Assert.True(first[^1].Y < first[^2].Y);
+
+        gateway.RaiseDelta(2, [], []);
+        IReadOnlyList<Point> afterEvenStride = ClonePointCollection(rowState.CpuTrendGeometry);
+
+        gateway.RaiseDelta(3, [], []);
+        IReadOnlyList<Point> afterOddTick = ClonePointCollection(rowState.CpuTrendGeometry);
+
+        AssertPointCollectionsNotEqual(first, afterEvenStride);
+        AssertPointCollectionsEqual(afterEvenStride, afterOddTick);
     }
 
     [Fact]

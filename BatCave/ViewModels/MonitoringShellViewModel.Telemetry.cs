@@ -168,9 +168,17 @@ public partial class MonitoringShellViewModel
 
     private IReadOnlyList<Point> BuildRowCpuTrendGeometry(ProcessIdentity identity, ProcessSample sample)
     {
-        IReadOnlyList<double> values = _metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history)
-            ? history.Cpu
-            : MetricHistoryBuffer.Singleton(sample.CpuPct);
+        IReadOnlyList<double> values;
+        if (_metricHistory.TryGetValue(identity, out MetricHistoryBuffer? history))
+        {
+            values = history.Cpu;
+        }
+        else
+        {
+            MetricHistoryBuffer fallback = new(HistoryLimit);
+            fallback.Append(sample);
+            values = fallback.Cpu;
+        }
 
         return SparklineMath.BuildPointsWithFallback(values, RowSparklineWidth, RowSparklineHeight);
     }
