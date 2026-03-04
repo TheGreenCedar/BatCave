@@ -43,13 +43,23 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
 
     private List<ProcessIdentity> ResolveOrderedRows(QueryRequest request, IReadOnlyList<ProcessSample> rows)
     {
+        ReconcileCacheRowsAndOrdering(request, rows);
+        return BuildFilteredRows(request.FilterText);
+    }
+
+    private void ReconcileCacheRowsAndOrdering(QueryRequest request, IReadOnlyList<ProcessSample> rows)
+    {
         if (ShouldResetCacheRows(rows))
         {
             ResetCacheRows(rows);
         }
 
         EnsureOrdering(request);
-        return ApplyFilter(request.FilterText);
+    }
+
+    private List<ProcessIdentity> BuildFilteredRows(string filterText)
+    {
+        return ApplyFilter(filterText);
     }
 
     private bool ShouldResetCacheRows(IReadOnlyList<ProcessSample> rows)

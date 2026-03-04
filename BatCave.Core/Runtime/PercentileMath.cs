@@ -15,9 +15,7 @@ internal static class PercentileMath
             scratch[index] = values[index];
         }
 
-        Array.Sort(scratch, 0, scratch.Length);
-        int percentileIndex = Math.Min(scratch.Length - 1, Math.Max(0, (int)Math.Ceiling(scratch.Length * 0.95) - 1));
-        return scratch[percentileIndex];
+        return Percentile95FromBuffer(scratch, scratch.Length);
     }
 
     public static double Percentile95(double[] values, int count, double[] scratch)
@@ -38,8 +36,18 @@ internal static class PercentileMath
             scratch[index] = values[index];
         }
 
-        Array.Sort(scratch, 0, copyCount);
-        int percentileIndex = Math.Min(copyCount - 1, Math.Max(0, (int)Math.Ceiling(copyCount * 0.95) - 1));
-        return scratch[percentileIndex];
+        return Percentile95FromBuffer(scratch, copyCount);
+    }
+
+    private static double Percentile95FromBuffer(double[] buffer, int count)
+    {
+        Array.Sort(buffer, 0, count);
+        int percentileIndex = ResolvePercentile95Index(count);
+        return buffer[percentileIndex];
+    }
+
+    private static int ResolvePercentile95Index(int count)
+    {
+        return Math.Min(count - 1, Math.Max(0, (int)Math.Ceiling(count * 0.95) - 1));
     }
 }

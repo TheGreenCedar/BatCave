@@ -285,12 +285,15 @@ public sealed partial class MainWindow : Window
         bool refreshedAny = false;
         int visiblePointCount = ViewModel.MetricTrendWindowSeconds;
         ApplyExpandedMetricStyle();
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Cpu, CpuChipPlot, ViewModel.CpuMetricTrendValues, visiblePointCount);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Memory, MemoryChipPlot, ViewModel.MemoryMetricTrendValues, visiblePointCount);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoRead, IoReadChipPlot, ViewModel.IoReadMetricTrendValues, visiblePointCount);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.IoWrite, IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues, visiblePointCount);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.OtherIo, OtherIoChipPlot, ViewModel.OtherIoMetricTrendValues, visiblePointCount);
-        refreshedAny |= RefreshMetricPlotIfDirty(dirty, MetricPlotDirtyFlags.Expanded, ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues, visiblePointCount);
+        foreach (MetricPlotDescriptor descriptor in EnumerateMetricPlotDescriptors())
+        {
+            refreshedAny |= RefreshMetricPlotIfDirty(
+                dirty,
+                descriptor.DirtyFlag,
+                descriptor.Chart,
+                descriptor.Values,
+                visiblePointCount);
+        }
 
         if (refreshedAny)
         {
@@ -357,50 +360,74 @@ public sealed partial class MainWindow : Window
 
     private void ConfigureMetricChartModes()
     {
-        CpuChipPlot.ScaleMode = MetricTrendScaleMode.CpuPercent;
-        MemoryChipPlot.ScaleMode = MetricTrendScaleMode.MemoryBytes;
-        IoReadChipPlot.ScaleMode = MetricTrendScaleMode.IoRate;
-        IoWriteChipPlot.ScaleMode = MetricTrendScaleMode.IoRate;
-        OtherIoChipPlot.ScaleMode = MetricTrendScaleMode.IoRate;
-        ExpandedMetricPlot.ScaleMode = MetricTrendScaleMode.CpuPercent;
+        ConfigureMetricChart(
+            CpuChipPlot,
+            MetricTrendScaleMode.CpuPercent,
+            showGrid: false,
+            CpuTrendStrokeBrush,
+            CpuTrendFillBrush,
+            strokeThickness: 1.4);
+        ConfigureMetricChart(
+            MemoryChipPlot,
+            MetricTrendScaleMode.MemoryBytes,
+            showGrid: false,
+            MemoryTrendStrokeBrush,
+            MemoryTrendFillBrush,
+            strokeThickness: 1.4);
+        ConfigureMetricChart(
+            IoReadChipPlot,
+            MetricTrendScaleMode.IoRate,
+            showGrid: false,
+            IoReadTrendStrokeBrush,
+            IoReadTrendFillBrush,
+            strokeThickness: 1.4);
+        ConfigureMetricChart(
+            IoWriteChipPlot,
+            MetricTrendScaleMode.IoRate,
+            showGrid: false,
+            IoWriteTrendStrokeBrush,
+            IoWriteTrendFillBrush,
+            strokeThickness: 1.4);
+        ConfigureMetricChart(
+            OtherIoChipPlot,
+            MetricTrendScaleMode.IoRate,
+            showGrid: false,
+            OtherIoTrendStrokeBrush,
+            OtherIoTrendFillBrush,
+            strokeThickness: 1.4);
+        ConfigureMetricChart(
+            ExpandedMetricPlot,
+            MetricTrendScaleMode.CpuPercent,
+            showGrid: true,
+            CpuTrendStrokeBrush,
+            CpuTrendFillBrush,
+            strokeThickness: 1.8);
+    }
 
-        CpuChipPlot.ShowGrid = false;
-        MemoryChipPlot.ShowGrid = false;
-        IoReadChipPlot.ShowGrid = false;
-        IoWriteChipPlot.ShowGrid = false;
-        OtherIoChipPlot.ShowGrid = false;
-        ExpandedMetricPlot.ShowGrid = true;
+    private IEnumerable<MetricPlotDescriptor> EnumerateMetricPlotDescriptors()
+    {
+        yield return new MetricPlotDescriptor(MetricPlotDirtyFlags.Cpu, CpuChipPlot, ViewModel.CpuMetricTrendValues);
+        yield return new MetricPlotDescriptor(MetricPlotDirtyFlags.Memory, MemoryChipPlot, ViewModel.MemoryMetricTrendValues);
+        yield return new MetricPlotDescriptor(MetricPlotDirtyFlags.IoRead, IoReadChipPlot, ViewModel.IoReadMetricTrendValues);
+        yield return new MetricPlotDescriptor(MetricPlotDirtyFlags.IoWrite, IoWriteChipPlot, ViewModel.IoWriteMetricTrendValues);
+        yield return new MetricPlotDescriptor(MetricPlotDirtyFlags.OtherIo, OtherIoChipPlot, ViewModel.OtherIoMetricTrendValues);
+        yield return new MetricPlotDescriptor(MetricPlotDirtyFlags.Expanded, ExpandedMetricPlot, ViewModel.ExpandedMetricTrendValues);
+    }
 
-        CpuChipPlot.GridBrush = MetricGridBrush;
-        MemoryChipPlot.GridBrush = MetricGridBrush;
-        IoReadChipPlot.GridBrush = MetricGridBrush;
-        IoWriteChipPlot.GridBrush = MetricGridBrush;
-        OtherIoChipPlot.GridBrush = MetricGridBrush;
-        ExpandedMetricPlot.GridBrush = MetricGridBrush;
-
-        CpuChipPlot.StrokeBrush = CpuTrendStrokeBrush;
-        CpuChipPlot.FillBrush = CpuTrendFillBrush;
-        CpuChipPlot.StrokeThickness = 1.4;
-
-        MemoryChipPlot.StrokeBrush = MemoryTrendStrokeBrush;
-        MemoryChipPlot.FillBrush = MemoryTrendFillBrush;
-        MemoryChipPlot.StrokeThickness = 1.4;
-
-        IoReadChipPlot.StrokeBrush = IoReadTrendStrokeBrush;
-        IoReadChipPlot.FillBrush = IoReadTrendFillBrush;
-        IoReadChipPlot.StrokeThickness = 1.4;
-
-        IoWriteChipPlot.StrokeBrush = IoWriteTrendStrokeBrush;
-        IoWriteChipPlot.FillBrush = IoWriteTrendFillBrush;
-        IoWriteChipPlot.StrokeThickness = 1.4;
-
-        OtherIoChipPlot.StrokeBrush = OtherIoTrendStrokeBrush;
-        OtherIoChipPlot.FillBrush = OtherIoTrendFillBrush;
-        OtherIoChipPlot.StrokeThickness = 1.4;
-
-        ExpandedMetricPlot.StrokeBrush = CpuTrendStrokeBrush;
-        ExpandedMetricPlot.FillBrush = CpuTrendFillBrush;
-        ExpandedMetricPlot.StrokeThickness = 1.8;
+    private static void ConfigureMetricChart(
+        MetricTrendChart chart,
+        MetricTrendScaleMode scaleMode,
+        bool showGrid,
+        Brush strokeBrush,
+        Brush fillBrush,
+        double strokeThickness)
+    {
+        chart.ScaleMode = scaleMode;
+        chart.ShowGrid = showGrid;
+        chart.GridBrush = MetricGridBrush;
+        chart.StrokeBrush = strokeBrush;
+        chart.FillBrush = fillBrush;
+        chart.StrokeThickness = strokeThickness;
     }
 
     private static MetricTrendScaleMode ResolveExpandedScaleMode(DetailMetricFocus metricFocus)
@@ -556,4 +583,9 @@ public sealed partial class MainWindow : Window
         Expanded = 1 << 5,
         All = Cpu | Memory | IoRead | IoWrite | OtherIo | Expanded,
     }
+
+    private readonly record struct MetricPlotDescriptor(
+        MetricPlotDirtyFlags DirtyFlag,
+        MetricTrendChart Chart,
+        IReadOnlyList<double> Values);
 }

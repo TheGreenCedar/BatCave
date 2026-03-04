@@ -16,6 +16,14 @@ public sealed class ResourceBudgetGuardian
     private const ulong Mb = 1024 * 1024;
     private const double CpuBudgetPct = 1.0;
     private const ulong RssBudgetBytes = 150 * Mb;
+    private const uint DegradeToStrideTwoHighStreakThreshold = 3;
+    private const uint DegradeToStrideFourHighStreakThreshold = 8;
+    private const uint RecoverToStrideOneLowStreakThreshold = 10;
+    private const ulong NormalWarmCacheInterval = 5;
+    private const ulong DegradedWarmCacheInterval = 10;
+    private const ulong SevereWarmCacheInterval = 20;
+    private const int OverRssCompactMaxRows = 3500;
+    private const int DegradedCompactMaxRows = 5000;
 
     private uint _highStreak;
     private uint _lowStreak;
@@ -58,17 +66,17 @@ public sealed class ResourceBudgetGuardian
 
     private static ulong ResolveEmitStride(ulong currentStride, uint highStreak, uint lowStreak)
     {
-        if (highStreak >= 8)
+        if (highStreak >= DegradeToStrideFourHighStreakThreshold)
         {
             return 4;
         }
 
-        if (highStreak >= 3)
+        if (highStreak >= DegradeToStrideTwoHighStreakThreshold)
         {
             return 2;
         }
 
-        if (lowStreak >= 10)
+        if (lowStreak >= RecoverToStrideOneLowStreakThreshold)
         {
             return 1;
         }
@@ -80,22 +88,22 @@ public sealed class ResourceBudgetGuardian
     {
         return emitStride switch
         {
-            1 => 5,
-            2 => 10,
-            _ => 20,
+            1 => NormalWarmCacheInterval,
+            2 => DegradedWarmCacheInterval,
+            _ => SevereWarmCacheInterval,
         };
     }
 
     private static int? ResolveCompactMaxRows(bool overRss, int rowCount, ulong emitStride)
     {
-        if (overRss && rowCount > 3500)
+        if (overRss && rowCount > OverRssCompactMaxRows)
         {
-            return 3500;
+            return OverRssCompactMaxRows;
         }
 
-        if (emitStride > 1 && rowCount > 5000)
+        if (emitStride > 1 && rowCount > DegradedCompactMaxRows)
         {
-            return 5000;
+            return DegradedCompactMaxRows;
         }
 
         return null;

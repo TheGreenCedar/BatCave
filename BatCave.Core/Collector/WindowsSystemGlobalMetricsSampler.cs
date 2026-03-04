@@ -218,13 +218,13 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
         bool completedWithinBudget = ReferenceEquals(completed, allProbeTasks);
 
         ApplyExtendedProbeResults(
-            cpuTask.IsCompletedSuccessfully ? cpuTask.Result : null,
+            GetCompletedTaskResult(cpuTask),
             cpuTask.IsCompletedSuccessfully,
-            memoryTask.IsCompletedSuccessfully ? memoryTask.Result : null,
+            GetCompletedTaskResult(memoryTask),
             memoryTask.IsCompletedSuccessfully,
-            diskTask.IsCompletedSuccessfully ? diskTask.Result : null,
+            GetCompletedTaskResult(diskTask),
             diskTask.IsCompletedSuccessfully,
-            networkTask.IsCompletedSuccessfully ? networkTask.Result : null,
+            GetCompletedTaskResult(networkTask),
             networkTask.IsCompletedSuccessfully,
             markCycleComplete: true);
 
@@ -249,15 +249,20 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
 
         // Promote any probe results that completed after the soft timeout.
         ApplyExtendedProbeResults(
-            cpuTask.IsCompletedSuccessfully ? cpuTask.Result : null,
+            GetCompletedTaskResult(cpuTask),
             cpuTask.IsCompletedSuccessfully,
-            memoryTask.IsCompletedSuccessfully ? memoryTask.Result : null,
+            GetCompletedTaskResult(memoryTask),
             memoryTask.IsCompletedSuccessfully,
-            diskTask.IsCompletedSuccessfully ? diskTask.Result : null,
+            GetCompletedTaskResult(diskTask),
             diskTask.IsCompletedSuccessfully,
-            networkTask.IsCompletedSuccessfully ? networkTask.Result : null,
+            GetCompletedTaskResult(networkTask),
             networkTask.IsCompletedSuccessfully,
             markCycleComplete: false);
+    }
+
+    private static T? GetCompletedTaskResult<T>(Task<T> task)
+    {
+        return task.IsCompletedSuccessfully ? task.Result : default;
     }
 
     private void ApplyExtendedProbeResults(
@@ -432,27 +437,34 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             return null;
         }
 
-        if (PdhGetFormattedCounterValue(counter, PdhFmtDouble, out _, out PDH_FMT_COUNTERVALUE_DOUBLE value) != ErrorSuccess)
+        uint status = PdhGetFormattedCounterValue(counter, PdhFmtDouble, out _, out PDH_FMT_COUNTERVALUE_DOUBLE value);
+        if (status != ErrorSuccess || !IsValidCounterStatus(value.CStatus))
         {
             return null;
         }
 
-        if (value.CStatus is not PdhCstatusValidData and not PdhCstatusNewData)
+        double candidate = value.DoubleValue;
+        if (!IsFiniteNonNegative(candidate))
         {
             return null;
         }
 
-        if (double.IsNaN(value.DoubleValue) || double.IsInfinity(value.DoubleValue) || value.DoubleValue < 0)
-        {
-            return null;
-        }
-
-        if (value.DoubleValue > ulong.MaxValue)
+        if (candidate > ulong.MaxValue)
         {
             return ulong.MaxValue;
         }
 
-        return (ulong)value.DoubleValue;
+        return (ulong)candidate;
+    }
+
+    private static bool IsValidCounterStatus(uint cStatus)
+    {
+        return cStatus is PdhCstatusValidData or PdhCstatusNewData;
+    }
+
+    private static bool IsFiniteNonNegative(double value)
+    {
+        return !double.IsNaN(value) && !double.IsInfinity(value) && value >= 0d;
     }
 
     private void ClosePdhCounters()

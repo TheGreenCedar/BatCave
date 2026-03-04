@@ -113,24 +113,21 @@ public partial class MonitoringShellViewModel
 
     private void ReassertSelectionAfterSort()
     {
-        if (!TrySyncSelectedRowFromTrackedRows(out ProcessIdentity identity))
+        if (!TrySyncSelectedVisibleRowFromTrackedRows(ResolveVisibleSelectionAfterSort, out ProcessIdentity identity))
         {
             return;
         }
 
-        SelectedVisibleRow = ResolveVisibleSelectionAfterSort(identity);
         RaiseSelectedVisibleRowBindingProperty();
         ReassertSelectedVisibleRowBindingOnDispatcher(identity);
     }
 
     private void ReconcileSelectionAfterDelta()
     {
-        if (!TrySyncSelectedRowFromTrackedRows(out ProcessIdentity identity))
+        if (!TrySyncSelectedVisibleRowFromTrackedRows(TryGetVisibleRow, out _))
         {
             return;
         }
-
-        SelectedVisibleRow = TryGetVisibleRow(identity);
     }
 
     private ProcessRowViewState? TryGetVisibleRow(ProcessIdentity identity)
@@ -256,6 +253,19 @@ public partial class MonitoringShellViewModel
         }
 
         SelectedRow = updated;
+        return true;
+    }
+
+    private bool TrySyncSelectedVisibleRowFromTrackedRows(
+        Func<ProcessIdentity, ProcessRowViewState?> resolveVisibleSelection,
+        out ProcessIdentity identity)
+    {
+        if (!TrySyncSelectedRowFromTrackedRows(out identity))
+        {
+            return false;
+        }
+
+        SelectedVisibleRow = resolveVisibleSelection(identity);
         return true;
     }
 

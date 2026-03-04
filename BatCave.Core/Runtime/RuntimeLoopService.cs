@@ -78,7 +78,7 @@ public sealed class RuntimeLoopService
 
         while (!ct.IsCancellationRequested && await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
         {
-            if (Interlocked.Read(ref _generation) != generation)
+            if (ShouldStopLoop(generation))
             {
                 break;
             }
@@ -97,16 +97,41 @@ public sealed class RuntimeLoopService
             }
             catch (Exception ex)
             {
-                int delayMs;
-                consecutiveFaults = ReportFault(generation, ex, consecutiveFaults, out delayMs);
-                if (await DelayBackoffAsync(delayMs, ct).ConfigureAwait(false))
+                (bool shouldStop, DateTimeOffset resumedTick, int updatedFaults) = await HandleFaultAndBackoffAsync(
+                    generation,
+                    ex,
+                    ct,
+                    consecutiveFaults).ConfigureAwait(false);
+                consecutiveFaults = updatedFaults;
+                if (shouldStop)
                 {
                     break;
                 }
 
-                nextTick = _timeProvider.GetUtcNow().Add(_interval);
+                nextTick = resumedTick;
             }
         }
+    }
+
+    private bool ShouldStopLoop(long generation)
+    {
+        return Interlocked.Read(ref _generation) != generation;
+    }
+
+    private async Task<(bool ShouldStop, DateTimeOffset ResumedTick, int UpdatedFaults)> HandleFaultAndBackoffAsync(
+        long generation,
+        Exception exception,
+        CancellationToken ct,
+        int consecutiveFaults)
+    {
+        int delayMs;
+        int updatedFaults = ReportFault(generation, exception, consecutiveFaults, out delayMs);
+        if (await DelayBackoffAsync(delayMs, ct).ConfigureAwait(false))
+        {
+            return (true, default, updatedFaults);
+        }
+
+        return (false, _timeProvider.GetUtcNow().Add(_interval), updatedFaults);
     }
 
     private static double ResolveJitterMs(DateTimeOffset tickStart, DateTimeOffset nextTick)

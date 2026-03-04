@@ -442,43 +442,8 @@ public partial class MonitoringShellViewModel
     private List<GlobalResourceDescriptor> BuildResourceDescriptors(SystemGlobalMetricsSample sampled)
     {
         List<GlobalResourceDescriptor> descriptors = new(capacity: 2 + sampled.DiskSnapshots.Count + sampled.NetworkSnapshots.Count);
-
-        double cpuPct = sampled.CpuPct ?? 0d;
-        string cpuSpeed = ValueFormat.FormatFrequencyGHz(sampled.CpuSnapshot?.SpeedMHz);
-        descriptors.Add(new GlobalResourceDescriptor(
-            ResourceId: CpuGlobalResourceId,
-            Kind: GlobalResourceKind.Cpu,
-            Title: "CPU",
-            Subtitle: cpuSpeed == "n/a" ? $"{cpuPct:F0}%" : $"{cpuPct:F0}% {cpuSpeed}",
-            ValueText: string.Empty,
-            PrimaryValue: cpuPct,
-            SecondaryValue: sampled.CpuSnapshot?.KernelPct ?? 0d,
-            AuxiliaryValue: 0d,
-            LogicalValues: sampled.CpuSnapshot?.LogicalProcessorUtilizationPct ?? [],
-            MiniScaleMode: MetricTrendScaleMode.CpuPercent,
-            MiniStrokeColor: CpuStrokeColor,
-            MiniFillColor: CpuFillColor,
-            MiniDomainMax: double.NaN));
-
-        ulong memoryUsedBytes = sampled.MemorySnapshot?.UsedBytes ?? sampled.MemoryUsedBytes ?? 0UL;
-        ulong memoryTotalBytes = sampled.MemorySnapshot?.TotalBytes ?? 0UL;
-        string memoryValueText = memoryTotalBytes > 0
-            ? $"{ValueFormat.FormatBytes(memoryUsedBytes)} / {ValueFormat.FormatBytes(memoryTotalBytes)} ({(memoryUsedBytes * 100d / memoryTotalBytes):F0}%)"
-            : ValueFormat.FormatBytes(memoryUsedBytes);
-        descriptors.Add(new GlobalResourceDescriptor(
-            ResourceId: MemoryGlobalResourceId,
-            Kind: GlobalResourceKind.Memory,
-            Title: "Memory",
-            Subtitle: memoryValueText,
-            ValueText: string.Empty,
-            PrimaryValue: memoryUsedBytes,
-            SecondaryValue: 0d,
-            AuxiliaryValue: 0d,
-            LogicalValues: [],
-            MiniScaleMode: MetricTrendScaleMode.MemoryBytes,
-            MiniStrokeColor: MemoryStrokeColor,
-            MiniFillColor: MemoryFillColor,
-            MiniDomainMax: memoryTotalBytes > 0 ? memoryTotalBytes : double.NaN));
+        descriptors.Add(BuildCpuDescriptor(sampled));
+        descriptors.Add(BuildMemoryDescriptor(sampled));
 
         IEnumerable<SystemGlobalDiskSnapshot> disks = sampled.DiskSnapshots
             .Where(static disk => !string.Equals(disk.DiskId, "_Total", StringComparison.OrdinalIgnoreCase))
@@ -538,6 +503,49 @@ public partial class MonitoringShellViewModel
         }
 
         return descriptors;
+    }
+
+    private static GlobalResourceDescriptor BuildCpuDescriptor(SystemGlobalMetricsSample sampled)
+    {
+        double cpuPct = sampled.CpuPct ?? 0d;
+        string cpuSpeed = ValueFormat.FormatFrequencyGHz(sampled.CpuSnapshot?.SpeedMHz);
+        return new GlobalResourceDescriptor(
+            ResourceId: CpuGlobalResourceId,
+            Kind: GlobalResourceKind.Cpu,
+            Title: "CPU",
+            Subtitle: cpuSpeed == "n/a" ? $"{cpuPct:F0}%" : $"{cpuPct:F0}% {cpuSpeed}",
+            ValueText: string.Empty,
+            PrimaryValue: cpuPct,
+            SecondaryValue: sampled.CpuSnapshot?.KernelPct ?? 0d,
+            AuxiliaryValue: 0d,
+            LogicalValues: sampled.CpuSnapshot?.LogicalProcessorUtilizationPct ?? [],
+            MiniScaleMode: MetricTrendScaleMode.CpuPercent,
+            MiniStrokeColor: CpuStrokeColor,
+            MiniFillColor: CpuFillColor,
+            MiniDomainMax: double.NaN);
+    }
+
+    private static GlobalResourceDescriptor BuildMemoryDescriptor(SystemGlobalMetricsSample sampled)
+    {
+        ulong memoryUsedBytes = sampled.MemorySnapshot?.UsedBytes ?? sampled.MemoryUsedBytes ?? 0UL;
+        ulong memoryTotalBytes = sampled.MemorySnapshot?.TotalBytes ?? 0UL;
+        string memoryValueText = memoryTotalBytes > 0
+            ? $"{ValueFormat.FormatBytes(memoryUsedBytes)} / {ValueFormat.FormatBytes(memoryTotalBytes)} ({(memoryUsedBytes * 100d / memoryTotalBytes):F0}%)"
+            : ValueFormat.FormatBytes(memoryUsedBytes);
+        return new GlobalResourceDescriptor(
+            ResourceId: MemoryGlobalResourceId,
+            Kind: GlobalResourceKind.Memory,
+            Title: "Memory",
+            Subtitle: memoryValueText,
+            ValueText: string.Empty,
+            PrimaryValue: memoryUsedBytes,
+            SecondaryValue: 0d,
+            AuxiliaryValue: 0d,
+            LogicalValues: [],
+            MiniScaleMode: MetricTrendScaleMode.MemoryBytes,
+            MiniStrokeColor: MemoryStrokeColor,
+            MiniFillColor: MemoryFillColor,
+            MiniDomainMax: memoryTotalBytes > 0 ? memoryTotalBytes : double.NaN);
     }
 
     private static bool IsVisibleNetworkAdapter(SystemGlobalNetworkSnapshot adapter)

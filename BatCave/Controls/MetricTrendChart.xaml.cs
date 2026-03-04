@@ -216,9 +216,8 @@ public sealed partial class MetricTrendChart : UserControl
 
     private void RefreshChart()
     {
-        if (DispatcherQueue is { } dispatcherQueue && !dispatcherQueue.HasThreadAccess)
+        if (!TryEnsureUiThreadForRender())
         {
-            _ = dispatcherQueue.TryEnqueue(RefreshChart);
             return;
         }
 
@@ -229,11 +228,36 @@ public sealed partial class MetricTrendChart : UserControl
 
         int visibleCount = NormalizeVisiblePointCount(VisiblePointCount);
         bool showAxes = ShowGrid;
+        ApplyVisualState(visibleCount, showAxes);
+
+        if (!TryGetRenderSize(out double width, out double height))
+        {
+            return;
+        }
+
+        ChartRenderData renderData = BuildRenderData(visibleCount, width, height);
+        ApplyAxes(showAxes, width, height, renderData.DomainMax);
+        ApplySeriesGeometry(width, height, renderData);
+        LogSanitizedRenderIfNeeded(renderData);
+    }
+
+    private bool TryEnsureUiThreadForRender()
+    {
+        if (DispatcherQueue is { } dispatcherQueue && !dispatcherQueue.HasThreadAccess)
+        {
+            _ = dispatcherQueue.TryEnqueue(RefreshChart);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ApplyVisualState(int visibleCount, bool showAxes)
+    {
         BottomAxisPanel.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
         TopRightScaleLabel.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
         GridPath.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
         PlotBorder.BorderThickness = showAxes ? new Thickness(0.7) : new Thickness(0);
-
         TimeWindowLabel.Text = $"{visibleCount} seconds";
         LinePolyline.Stroke = StrokeBrush;
         AreaPolygon.Fill = FillBrush;
@@ -242,20 +266,28 @@ public sealed partial class MetricTrendChart : UserControl
         OverlayPolyline.Stroke = OverlayStrokeBrush;
         OverlayPolyline.StrokeThickness = Math.Max(0.5, OverlayStrokeThickness);
         OverlayPolyline.StrokeDashArray = new DoubleCollection { 2, 2 };
+    }
 
-        double width = PlotBorder.ActualWidth;
-        double height = PlotBorder.ActualHeight;
+    private bool TryGetRenderSize(out double width, out double height)
+    {
+        width = PlotBorder.ActualWidth;
+        height = PlotBorder.ActualHeight;
         if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 1d || height <= 1d)
         {
             if (!double.IsFinite(width) || !double.IsFinite(height))
             {
                 Debug.WriteLine($"[MetricTrendChart] Skipping render due to non-finite size. scale={ScaleMode}, width={width}, height={height}");
             }
-            return;
+
+            return false;
         }
 
-        IReadOnlyList<double> source = Values ?? Array.Empty<double>();
-        double[] window = CopyWindow(source, visibleCount);
+        return true;
+    }
+
+    private ChartRenderData BuildRenderData(int visibleCount, double width, double height)
+    {
+        double[] window = CopyWindow(Values ?? Array.Empty<double>(), visibleCount);
         double[] overlayWindow = CopyWindow(OverlayValues ?? Array.Empty<double>(), visibleCount);
         bool nonFiniteSeriesDetected = ContainsNonFinite(window) || ContainsNonFinite(overlayWindow);
         double maxVisible = Math.Max(ResolveMax(window), ResolveMax(overlayWindow));
@@ -268,24 +300,40 @@ public sealed partial class MetricTrendChart : UserControl
             domainMax = floor;
         }
 
+        IReadOnlyList<Point> linePoints = SparklineMath.BuildPointsInDomainWithFallback(window, width, height, minDomain: 0d, maxDomain: domainMax);
+        IReadOnlyList<Point> overlayPoints = SparklineMath.BuildPointsInDomainWithFallback(overlayWindow, width, height, minDomain: 0d, maxDomain: domainMax);
+        bool pointFallbackUsed = IsFlatlineFallback(linePoints)
+            || (ShowOverlay && IsFlatlineFallback(overlayPoints));
+
+        return new ChartRenderData(
+            DomainMax: domainMax,
+            MaxVisible: maxVisible,
+            LinePoints: linePoints,
+            OverlayPoints: overlayPoints,
+            NonFiniteSeriesDetected: nonFiniteSeriesDetected,
+            DomainFallbackUsed: domainFallbackUsed,
+            PointFallbackUsed: pointFallbackUsed);
+    }
+
+    private void ApplyAxes(bool showAxes, double width, double height, double domainMax)
+    {
         if (showAxes)
         {
             TopRightScaleLabel.Text = FormatScaleLabel(domainMax);
             GridPath.Data = BuildGridGeometry(width, height, verticalDivisions: 12, horizontalDivisions: 8);
-        }
-        else
-        {
-            TopRightScaleLabel.Text = string.Empty;
-            GridPath.Data = null;
+            return;
         }
 
-        IReadOnlyList<Point> linePoints = SparklineMath.BuildPointsInDomainWithFallback(window, width, height, minDomain: 0d, maxDomain: domainMax);
-        IReadOnlyList<Point> overlayPoints = SparklineMath.BuildPointsInDomainWithFallback(overlayWindow, width, height, minDomain: 0d, maxDomain: domainMax);
+        TopRightScaleLabel.Text = string.Empty;
+        GridPath.Data = null;
+    }
 
-        LinePolyline.Points = SparklineMath.ToPointCollection(linePoints);
+    private void ApplySeriesGeometry(double width, double height, ChartRenderData renderData)
+    {
+        LinePolyline.Points = SparklineMath.ToPointCollection(renderData.LinePoints);
         if (ShowAreaFill)
         {
-            IReadOnlyList<Point> fillPoints = SparklineMath.BuildFillPolygon(linePoints, width, height);
+            IReadOnlyList<Point> fillPoints = SparklineMath.BuildFillPolygon(renderData.LinePoints, width, height);
             AreaPolygon.Fill = FillBrush;
             AreaPolygon.Points = SparklineMath.ToPointCollection(fillPoints);
         }
@@ -294,15 +342,16 @@ public sealed partial class MetricTrendChart : UserControl
             AreaPolygon.Fill = null;
             AreaPolygon.Points = new PointCollection();
         }
-        OverlayPolyline.Points = SparklineMath.ToPointCollection(overlayPoints);
+        OverlayPolyline.Points = SparklineMath.ToPointCollection(renderData.OverlayPoints);
         OverlayPolyline.Visibility = ShowOverlay ? Visibility.Visible : Visibility.Collapsed;
+    }
 
-        bool pointFallbackUsed = IsFlatlineFallback(linePoints)
-            || (ShowOverlay && IsFlatlineFallback(overlayPoints));
-        if (nonFiniteSeriesDetected || domainFallbackUsed || pointFallbackUsed)
+    private void LogSanitizedRenderIfNeeded(ChartRenderData renderData)
+    {
+        if (renderData.NonFiniteSeriesDetected || renderData.DomainFallbackUsed || renderData.PointFallbackUsed)
         {
             Debug.WriteLine(
-                $"[MetricTrendChart] Sanitized render inputs. scale={ScaleMode}, maxVisible={maxVisible}, domainMax={domainMax}, fallbackUsed={domainFallbackUsed || pointFallbackUsed}, nonFiniteSeries={nonFiniteSeriesDetected}");
+                $"[MetricTrendChart] Sanitized render inputs. scale={ScaleMode}, maxVisible={renderData.MaxVisible}, domainMax={renderData.DomainMax}, fallbackUsed={renderData.DomainFallbackUsed || renderData.PointFallbackUsed}, nonFiniteSeries={renderData.NonFiniteSeriesDetected}");
         }
     }
 
@@ -500,4 +549,13 @@ public sealed partial class MetricTrendChart : UserControl
 
         return group;
     }
+
+    private readonly record struct ChartRenderData(
+        double DomainMax,
+        double MaxVisible,
+        IReadOnlyList<Point> LinePoints,
+        IReadOnlyList<Point> OverlayPoints,
+        bool NonFiniteSeriesDetected,
+        bool DomainFallbackUsed,
+        bool PointFallbackUsed);
 }

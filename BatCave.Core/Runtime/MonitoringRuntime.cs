@@ -103,16 +103,16 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     public void SetSort(SortColumn sortCol, SortDirection sortDir)
     {
-        _settings = _settings with { SortCol = sortCol, SortDir = sortDir };
-        _queryRequest = _queryRequest with { SortCol = sortCol, SortDir = sortDir };
-        PersistSettings();
+        UpdateSettingsAndQuery(
+            settings => settings with { SortCol = sortCol, SortDir = sortDir },
+            request => request with { SortCol = sortCol, SortDir = sortDir });
     }
 
     public void SetFilter(string filterText)
     {
-        _settings = _settings with { FilterText = filterText };
-        _queryRequest = _queryRequest with { FilterText = filterText };
-        PersistSettings();
+        UpdateSettingsAndQuery(
+            settings => settings with { FilterText = filterText },
+            request => request with { FilterText = filterText });
     }
 
     public bool IsAdminMode()
@@ -135,6 +135,15 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             MetricTrendWindowSeconds = normalized,
         };
 
+        PersistSettings();
+    }
+
+    private void UpdateSettingsAndQuery(
+        Func<UserSettings, UserSettings> settingsUpdater,
+        Func<QueryRequest, QueryRequest> queryUpdater)
+    {
+        _settings = settingsUpdater(_settings);
+        _queryRequest = queryUpdater(_queryRequest);
         PersistSettings();
     }
 
@@ -261,15 +270,14 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     {
         UpdateJitterSamples(jitterMs);
         UpdateHealthForCurrentTick(raw);
+        return EvaluateAndApplyRuntimePolicy(out rowCount);
+    }
 
+    private RuntimePolicy EvaluateAndApplyRuntimePolicy(out int rowCount)
+    {
         rowCount = _stateStore.RowCount();
         RuntimePolicy policy = _budgetGuardian.Evaluate(_seq, _health, rowCount);
-
-        if (policy.CompactMaxRows is int maxRows)
-        {
-            _stateStore.CompactTo(maxRows);
-            rowCount = _stateStore.RowCount();
-        }
+        rowCount = ApplyCompactionPolicy(policy, rowCount);
 
         _health = _health with
         {
@@ -277,6 +285,17 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         };
 
         return policy;
+    }
+
+    private int ApplyCompactionPolicy(RuntimePolicy policy, int rowCount)
+    {
+        if (policy.CompactMaxRows is not int maxRows)
+        {
+            return rowCount;
+        }
+
+        _stateStore.CompactTo(maxRows);
+        return _stateStore.RowCount();
     }
 
     private CollectorWarning? CaptureRuntimeWarning()

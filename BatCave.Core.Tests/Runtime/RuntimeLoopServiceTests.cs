@@ -59,6 +59,27 @@ public class RuntimeLoopServiceTests
         Assert.Equal(250, delays[2]);
     }
 
+    [Fact]
+    public async Task Start_WithStaleGeneration_DoesNotRunTicks()
+    {
+        SequenceCollector collector = new([_ => []]);
+        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, new TestPersistenceStore());
+        RuntimeLoopService runtimeLoopService = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
+
+        int completedTickCount = 0;
+        runtimeLoopService.TickCompleted += (_, _) => Interlocked.Increment(ref completedTickCount);
+
+        long staleGeneration = runtimeLoopService.CurrentGeneration;
+        runtimeLoopService.StopAndAdvanceGeneration();
+        runtimeLoopService.Start(staleGeneration);
+
+        await Task.Delay(200);
+        runtimeLoopService.StopAndAdvanceGeneration();
+        await Task.Delay(75);
+
+        Assert.Equal(0, completedTickCount);
+    }
+
     private sealed class SequenceCollector : IProcessCollector
     {
         private readonly Queue<Func<ulong, IReadOnlyList<ProcessSample>>> _steps;

@@ -29,49 +29,21 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     {
         RefreshMetadataCacheIfDue();
 
-        SystemGlobalCpuSnapshot? cpuSnapshot = null;
-        SystemGlobalMemorySnapshot? memorySnapshot = null;
-        IReadOnlyList<SystemGlobalDiskSnapshot> diskSnapshots = [];
-        IReadOnlyList<SystemGlobalNetworkSnapshot> networkSnapshots = [];
-
-        try
-        {
-            cpuSnapshot = BuildCpuSnapshot(cpuPct, _lastKernelPct);
-        }
-        catch
-        {
-            cpuSnapshot = null;
-        }
-
-        try
-        {
-            memorySnapshot = BuildMemorySnapshot(memoryUsedBytes);
-        }
-        catch
-        {
-            memorySnapshot = new SystemGlobalMemorySnapshot
+        SystemGlobalCpuSnapshot? cpuSnapshot = TryBuildSnapshot(
+            () => BuildCpuSnapshot(cpuPct, _lastKernelPct),
+            static () => (SystemGlobalCpuSnapshot?)null);
+        SystemGlobalMemorySnapshot? memorySnapshot = TryBuildSnapshot(
+            () => BuildMemorySnapshot(memoryUsedBytes),
+            () => new SystemGlobalMemorySnapshot
             {
                 UsedBytes = memoryUsedBytes,
-            };
-        }
-
-        try
-        {
-            diskSnapshots = BuildDiskSnapshots();
-        }
-        catch
-        {
-            diskSnapshots = [];
-        }
-
-        try
-        {
-            networkSnapshots = BuildNetworkSnapshots();
-        }
-        catch
-        {
-            networkSnapshots = [];
-        }
+            });
+        IReadOnlyList<SystemGlobalDiskSnapshot> diskSnapshots = TryBuildSnapshot(
+            BuildDiskSnapshots,
+            static () => []);
+        IReadOnlyList<SystemGlobalNetworkSnapshot> networkSnapshots = TryBuildSnapshot(
+            BuildNetworkSnapshots,
+            static () => []);
 
         return (cpuSnapshot, memorySnapshot, diskSnapshots, networkSnapshots);
     }
@@ -91,62 +63,38 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     private void RefreshMetadataSnapshot()
     {
         // Metadata refresh may fail in parts; retain previous values for any failed section.
-
-        try
-        {
-            _cpuStaticMetadata = ReadCpuStaticMetadata();
-        }
-        catch
-        {
-            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
-        }
-
-        try
-        {
-            _memoryStaticMetadata = ReadMemoryStaticMetadata();
-        }
-        catch
-        {
-            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
-        }
-
-        try
-        {
-            _diskMetadataByIndex = ReadDiskStaticMetadata();
-        }
-        catch
-        {
-            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
-        }
-
-        try
-        {
-            _diskIndexByDriveLetter = ReadDiskIndexByDriveLetter();
-        }
-        catch
-        {
-            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
-        }
-
-        try
-        {
-            _networkMetadataByNormalizedName = ReadNetworkStaticMetadata();
-        }
-        catch
-        {
-            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
-        }
-
-        try
-        {
-            _pageFileDrives = ReadPageFileDrives();
-        }
-        catch
-        {
-            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
-        }
+        TryRefreshMetadataSection(() => _cpuStaticMetadata = ReadCpuStaticMetadata());
+        TryRefreshMetadataSection(() => _memoryStaticMetadata = ReadMemoryStaticMetadata());
+        TryRefreshMetadataSection(() => _diskMetadataByIndex = ReadDiskStaticMetadata());
+        TryRefreshMetadataSection(() => _diskIndexByDriveLetter = ReadDiskIndexByDriveLetter());
+        TryRefreshMetadataSection(() => _networkMetadataByNormalizedName = ReadNetworkStaticMetadata());
+        TryRefreshMetadataSection(() => _pageFileDrives = ReadPageFileDrives());
 
         _systemDriveLetter = GetSystemDriveLetter();
+    }
+
+    private static T TryBuildSnapshot<T>(Func<T> factory, Func<T> fallbackFactory)
+    {
+        try
+        {
+            return factory();
+        }
+        catch
+        {
+            return fallbackFactory();
+        }
+    }
+
+    private static void TryRefreshMetadataSection(Action refreshSection)
+    {
+        try
+        {
+            refreshSection();
+        }
+        catch
+        {
+            // Keep prior metadata on failures to avoid regressing populated UI fields to n/a.
+        }
     }
 
     private SystemGlobalCpuSnapshot BuildCpuSnapshot(double? cpuPct, double? kernelPct)
@@ -557,26 +505,24 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         double? activeFromIdlePct = idleTimePct.HasValue
             ? NormalizePercent(100d - idleTimePct.Value)
             : null;
-
-        if (normalizedDiskTimePct.HasValue && activeFromIdlePct.HasValue)
-        {
-            return Math.Max(normalizedDiskTimePct.Value, activeFromIdlePct.Value);
-        }
-
-        return normalizedDiskTimePct ?? activeFromIdlePct;
+        return ResolvePreferredPercent(normalizedDiskTimePct, activeFromIdlePct);
     }
 
     internal static double? ResolvePreferredDiskActiveTimePct(double? primaryPct, double? fallbackPct)
     {
         double? normalizedPrimary = NormalizePercent(primaryPct);
         double? normalizedFallback = NormalizePercent(fallbackPct);
+        return ResolvePreferredPercent(normalizedPrimary, normalizedFallback);
+    }
 
-        if (normalizedPrimary.HasValue && normalizedFallback.HasValue)
+    private static double? ResolvePreferredPercent(double? primaryPct, double? fallbackPct)
+    {
+        if (primaryPct.HasValue && fallbackPct.HasValue)
         {
-            return Math.Max(normalizedPrimary.Value, normalizedFallback.Value);
+            return Math.Max(primaryPct.Value, fallbackPct.Value);
         }
 
-        return normalizedPrimary ?? normalizedFallback;
+        return primaryPct ?? fallbackPct;
     }
 
     internal static double? ResolveCpuSpeedMHz(double? actualFrequencyMHz, double? processorFrequencyMHz, double? staticCurrentClockSpeedMHz)
@@ -820,19 +766,24 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             };
 
             string normalizedDescription = NormalizeCounterName(networkInterface.Description);
-            if (!string.IsNullOrWhiteSpace(normalizedDescription))
-            {
-                result[normalizedDescription] = metadata;
-            }
+            TryAddNormalizedNetworkMetadata(result, normalizedDescription, metadata);
 
             string normalizedName = NormalizeCounterName(networkInterface.Name);
-            if (!string.IsNullOrWhiteSpace(normalizedName))
-            {
-                result[normalizedName] = metadata;
-            }
+            TryAddNormalizedNetworkMetadata(result, normalizedName, metadata);
         }
 
         return result;
+    }
+
+    private static void TryAddNormalizedNetworkMetadata(
+        Dictionary<string, NetworkStaticMetadata> target,
+        string normalizedName,
+        NetworkStaticMetadata metadata)
+    {
+        if (!string.IsNullOrWhiteSpace(normalizedName))
+        {
+            target[normalizedName] = metadata;
+        }
     }
 
     private static HashSet<string> ReadPageFileDrives()
