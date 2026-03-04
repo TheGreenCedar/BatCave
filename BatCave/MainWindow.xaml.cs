@@ -35,6 +35,7 @@ public sealed partial class MainWindow : Window
     private const double LogicalCpuTileLabelReserve = 20;
     private const double LogicalCpuTileMinWidth = 56;
     private const double LogicalCpuTileMinHeight = 28;
+    private const double LogicalCpuTileItemMargin = 2;
 
     private bool _bootstrapped;
     private bool _metricPlotRefreshQueued;
@@ -512,12 +513,12 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        (int rows, double itemWidth, double itemHeight) = ResolveLogicalCpuGridLayout(
+        (int columns, double itemWidth, double itemHeight) = ResolveLogicalCpuGridLayout(
             logicalProcessorCount,
             availableWidth,
             availableHeight);
 
-        itemsWrapGrid.MaximumRowsOrColumns = rows;
+        itemsWrapGrid.MaximumRowsOrColumns = columns;
         itemsWrapGrid.ItemWidth = itemWidth;
         itemsWrapGrid.ItemHeight = itemHeight;
 
@@ -526,12 +527,12 @@ public sealed partial class MainWindow : Window
         _logicalCpuGridLastHeight = availableHeight;
     }
 
-    private static (int Rows, double ItemWidth, double ItemHeight) ResolveLogicalCpuGridLayout(
+    private static (int Columns, double ItemWidth, double ItemHeight) ResolveLogicalCpuGridLayout(
         int itemCount,
         double availableWidth,
         double availableHeight)
     {
-        int bestRows = itemCount;
+        int bestColumns = 1;
         double bestItemWidth = Math.Max(LogicalCpuTileMinWidth, availableWidth);
         double bestItemHeight = Math.Max(LogicalCpuTileMinHeight, availableHeight / itemCount);
         double bestScore = double.NegativeInfinity;
@@ -539,8 +540,10 @@ public sealed partial class MainWindow : Window
         for (int columns = 1; columns <= itemCount; columns++)
         {
             int rows = (itemCount + columns - 1) / columns;
-            double itemWidth = availableWidth / columns;
-            double itemHeight = availableHeight / rows;
+            double horizontalMargins = columns * LogicalCpuTileItemMargin * 2d;
+            double verticalMargins = rows * LogicalCpuTileItemMargin * 2d;
+            double itemWidth = (availableWidth - horizontalMargins) / columns;
+            double itemHeight = (availableHeight - verticalMargins) / rows;
             double chartHeight = itemHeight - LogicalCpuTileLabelReserve;
             if (itemWidth <= 0 || chartHeight <= 0)
             {
@@ -554,7 +557,7 @@ public sealed partial class MainWindow : Window
             if (score > bestScore)
             {
                 bestScore = score;
-                bestRows = rows;
+                bestColumns = columns;
                 bestItemWidth = itemWidth;
                 bestItemHeight = itemHeight;
             }
@@ -562,7 +565,7 @@ public sealed partial class MainWindow : Window
 
         bestItemWidth = Math.Max(LogicalCpuTileMinWidth, bestItemWidth);
         bestItemHeight = Math.Max(LogicalCpuTileMinHeight, bestItemHeight);
-        return (bestRows, bestItemWidth, bestItemHeight);
+        return (bestColumns, bestItemWidth, bestItemHeight);
     }
 
     private void OnWindowClosed(object sender, WindowEventArgs args)

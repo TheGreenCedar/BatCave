@@ -185,6 +185,39 @@ public sealed class SparklineMathTests
         }
     }
 
+    [Fact]
+    public void BuildPointsInDomainWithSlotAlignment_ShiftsSeriesIntoRequestedTrailingSlots()
+    {
+        IReadOnlyList<Point> points = SparklineMath.BuildPointsInDomainWithSlotAlignment(
+            [20d, 40d, 60d],
+            totalSlotCount: 6,
+            leadingSlotCount: 3,
+            width: 250d,
+            height: 20d,
+            minDomain: 0d,
+            maxDomain: 100d);
+
+        Assert.Equal(3, points.Count);
+        Assert.Equal(new Point(150d, 15.4d), points[0]);
+        Assert.Equal(new Point(200d, 11.8d), points[1]);
+        Assert.Equal(new Point(250d, 8.2d), points[2]);
+    }
+
+    [Fact]
+    public void BuildPointsInDomainWithSlotAlignment_EmptySeries_ReturnsEmpty()
+    {
+        IReadOnlyList<Point> points = SparklineMath.BuildPointsInDomainWithSlotAlignment(
+            values: [],
+            totalSlotCount: 4,
+            leadingSlotCount: 1,
+            width: 120d,
+            height: 20d,
+            minDomain: 0d,
+            maxDomain: 100d);
+
+        Assert.Empty(points);
+    }
+
     public static TheoryData<double[], double, double> PointFallbackEquivalenceCases =>
         new()
         {

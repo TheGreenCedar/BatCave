@@ -108,6 +108,53 @@ public static class SparklineMath
         return points.Count == 0 ? FlatlineFallbackGeometry : points;
     }
 
+    public static IReadOnlyList<Point> BuildPointsInDomainWithSlotAlignment(
+        IReadOnlyList<double> values,
+        int totalSlotCount,
+        int leadingSlotCount,
+        double width,
+        double height,
+        double minDomain,
+        double maxDomain)
+    {
+        if (values.Count <= 0
+            || totalSlotCount <= 0
+            || !double.IsFinite(width)
+            || width <= 0)
+        {
+            return [];
+        }
+
+        int safeTotalSlotCount = Math.Max(totalSlotCount, values.Count);
+        int maxLeadingSlotCount = Math.Max(0, safeTotalSlotCount - values.Count);
+        int safeLeadingSlotCount = Math.Clamp(leadingSlotCount, 0, maxLeadingSlotCount);
+        if (safeTotalSlotCount <= 1)
+        {
+            return BuildPointsInDomain(values, width, height, minDomain, maxDomain);
+        }
+
+        double slotDenominator = safeTotalSlotCount - 1d;
+        double sourceSlotSpan = values.Count == 1 ? 1d : values.Count - 1d;
+        double scaledWidth = width * (sourceSlotSpan / slotDenominator);
+        IReadOnlyList<Point> points = BuildPointsInDomain(values, scaledWidth, height, minDomain, maxDomain);
+        if (points.Count == 0 || safeLeadingSlotCount == 0)
+        {
+            return points;
+        }
+
+        double xOffset = width * (safeLeadingSlotCount / slotDenominator);
+        List<Point> adjusted = new(points.Count);
+        for (int index = 0; index < points.Count; index++)
+        {
+            Point point = points[index];
+            adjusted.Add(new Point(
+                Math.Round(SanitizeNumericValue(point.X + xOffset, 0d), 2),
+                point.Y));
+        }
+
+        return adjusted;
+    }
+
     public static bool WritePointsInDomainWithFallback(
         IReadOnlyList<double> values,
         int startIndex,
@@ -213,6 +260,62 @@ public static class SparklineMath
             destination[index] = new Point(
                 Math.Round(SanitizeNumericValue(x, 0d), 2),
                 Math.Round(SanitizeNumericValue(y, 0d), 2));
+        }
+
+        return false;
+    }
+
+    public static bool WritePointsInDomainWithSlotAlignment(
+        ReadOnlySpan<double> values,
+        int totalSlotCount,
+        int leadingSlotCount,
+        double width,
+        double height,
+        double minDomain,
+        double maxDomain,
+        PointCollection destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+
+        if (values.Length <= 0
+            || totalSlotCount <= 0
+            || !double.IsFinite(width)
+            || width <= 0)
+        {
+            WriteFlatlineFallback(destination);
+            return true;
+        }
+
+        int safeTotalSlotCount = Math.Max(totalSlotCount, values.Length);
+        int maxLeadingSlotCount = Math.Max(0, safeTotalSlotCount - values.Length);
+        int safeLeadingSlotCount = Math.Clamp(leadingSlotCount, 0, maxLeadingSlotCount);
+        if (safeTotalSlotCount <= 1)
+        {
+            return WritePointsInDomainWithFallback(values, width, height, minDomain, maxDomain, destination);
+        }
+
+        double slotDenominator = safeTotalSlotCount - 1d;
+        double sourceSlotSpan = values.Length == 1 ? 1d : values.Length - 1d;
+        double scaledWidth = width * (sourceSlotSpan / slotDenominator);
+        bool fallbackUsed = WritePointsInDomainWithFallback(
+            values,
+            scaledWidth,
+            height,
+            minDomain,
+            maxDomain,
+            destination);
+        if (fallbackUsed || safeLeadingSlotCount == 0)
+        {
+            return fallbackUsed;
+        }
+
+        double xOffset = width * (safeLeadingSlotCount / slotDenominator);
+        for (int index = 0; index < destination.Count; index++)
+        {
+            Point point = destination[index];
+            destination[index] = new Point(
+                Math.Round(SanitizeNumericValue(point.X + xOffset, 0d), 2),
+                point.Y);
         }
 
         return false;

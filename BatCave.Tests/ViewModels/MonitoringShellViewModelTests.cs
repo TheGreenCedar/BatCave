@@ -237,7 +237,10 @@ public class MonitoringShellViewModelTests
         Assert.Equal(60, viewModel.CpuMetricTrendValues.Length);
         viewModel.MetricTrendWindowSelectedCommand.Execute("120");
         Assert.Equal(120, viewModel.MetricTrendWindowSeconds);
-        Assert.Equal(90, viewModel.CpuMetricTrendValues.Length);
+        Assert.Equal(120, viewModel.CpuMetricTrendValues.Length);
+        Assert.All(viewModel.CpuMetricTrendValues.Take(30), value => Assert.Equal(0d, value));
+        Assert.Equal(1d, viewModel.CpuMetricTrendValues[30]);
+        Assert.Equal(90d, viewModel.CpuMetricTrendValues[^1]);
         Assert.True(viewModel.IsTrendWindow120Selected);
     }
 
@@ -408,13 +411,17 @@ public class MonitoringShellViewModelTests
         ProcessSample row = Sample(pid: 90, startTime: 9000, access: AccessState.Full) with { CpuPct = 3.25 };
         gateway.RaiseDelta(1, [row], []);
         viewModel.SelectedVisibleRowBinding = GetVisibleRow(viewModel, 0);
-        int before = viewModel.CpuMetricTrendValues.Length;
+        double[] before = [.. viewModel.CpuMetricTrendValues];
 
         gateway.RaiseDelta(2, [], []);
-        int after = viewModel.CpuMetricTrendValues.Length;
+        double[] after = viewModel.CpuMetricTrendValues;
 
-        Assert.True(after > before);
-        Assert.All(viewModel.CpuMetricTrendValues, value => Assert.Equal(3.25, value, 2));
+        Assert.Equal(60, before.Length);
+        Assert.Equal(before.Length, after.Length);
+        Assert.Equal(59, before.Count(static value => value == 0d));
+        Assert.Equal(58, after.Count(static value => value == 0d));
+        Assert.Equal(3.25, after[^2], 2);
+        Assert.Equal(3.25, after[^1], 2);
     }
 
     [Fact]

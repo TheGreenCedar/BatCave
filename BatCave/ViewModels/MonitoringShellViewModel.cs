@@ -94,12 +94,12 @@ public partial class MonitoringShellViewModel : ObservableObject
     private double _summaryHandles;
     private ProcessSample _globalSummaryRow = CreateEmptyGlobalSummary();
 
-    private double[] _cpuMetricTrendValues = [];
-    private double[] _memoryMetricTrendValues = [];
-    private double[] _ioReadMetricTrendValues = [];
-    private double[] _ioWriteMetricTrendValues = [];
-    private double[] _otherIoMetricTrendValues = [];
-    private double[] _expandedMetricTrendValues = [];
+    private double[] _cpuMetricTrendValues = new double[60];
+    private double[] _memoryMetricTrendValues = new double[60];
+    private double[] _ioReadMetricTrendValues = new double[60];
+    private double[] _ioWriteMetricTrendValues = new double[60];
+    private double[] _otherIoMetricTrendValues = new double[60];
+    private double[] _expandedMetricTrendValues = new double[60];
 
     private string _cpuMetricChipValue = "0.00%";
     private string _memoryMetricChipValue = "0 B";

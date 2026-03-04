@@ -101,6 +101,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     {
         List<double> logicalUtilization = [];
         List<double> logicalKernel = [];
+        List<(int ProcessorIndex, double UtilizationPct, double KernelPct)> logicalSamples = [];
         uint? processes = null;
         uint? threads = null;
         uint? handles = null;
@@ -124,11 +125,20 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
                     continue;
                 }
 
-                if (int.TryParse(name, out _))
+                if (int.TryParse(name, out int processorIndex))
                 {
-                    logicalUtilization.Add(ReadDouble(row["PercentProcessorTime"]) ?? 0d);
-                    logicalKernel.Add(ReadDouble(row["PercentPrivilegedTime"]) ?? 0d);
+                    logicalSamples.Add((
+                        ProcessorIndex: processorIndex,
+                        UtilizationPct: ReadDouble(row["PercentProcessorTime"]) ?? 0d,
+                        KernelPct: ReadDouble(row["PercentPrivilegedTime"]) ?? 0d));
                 }
+            }
+
+            logicalSamples.Sort(static (left, right) => left.ProcessorIndex.CompareTo(right.ProcessorIndex));
+            foreach ((_, double utilization, double kernel) in logicalSamples)
+            {
+                logicalUtilization.Add(utilization);
+                logicalKernel.Add(kernel);
             }
         }
         catch

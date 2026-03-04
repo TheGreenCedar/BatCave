@@ -53,9 +53,9 @@ public partial class MonitoringShellViewModel
     private bool _globalShowAuxiliaryChart;
     private MetricTrendScaleMode _globalPrimaryScaleMode = MetricTrendScaleMode.CpuPercent;
     private MetricTrendScaleMode _globalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
-    private double[] _globalPrimaryTrendValues = [];
-    private double[] _globalSecondaryTrendValues = [];
-    private double[] _globalAuxiliaryTrendValues = [];
+    private double[] _globalPrimaryTrendValues = new double[60];
+    private double[] _globalSecondaryTrendValues = new double[60];
+    private double[] _globalAuxiliaryTrendValues = new double[60];
     private Color _globalPrimaryStrokeColor = CpuStrokeColor;
     private Color _globalPrimaryFillColor = CpuFillColor;
     private Color _globalSecondaryStrokeColor = CpuKernelStrokeColor;
@@ -356,7 +356,8 @@ public partial class MonitoringShellViewModel
                 row => string.Equals(row.ResourceId, descriptor.ResourceId, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
             {
-                double[] miniTrend = history.Primary.SliceLatest(60);
+                double[] miniTrend = [];
+                _ = history.Primary.CopyLatestInto(ref miniTrend, 60);
                 _globalResourceRows.Add(new GlobalResourceRowViewState(
                     descriptor.ResourceId,
                     descriptor.Kind,

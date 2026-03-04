@@ -381,8 +381,10 @@ public partial class MonitoringShellViewModel
 
     private bool ApplyMetricTrendValues(IReadOnlyList<double> source, ref double[] target, string propertyName)
     {
-        int visiblePointCount = Math.Min(source.Count, MetricTrendWindowSeconds);
-        int sourceStartIndex = source.Count - visiblePointCount;
+        int visiblePointCount = MetricTrendWindowSeconds;
+        int take = Math.Min(source.Count, visiblePointCount);
+        int sourceStartIndex = source.Count - take;
+        int leadingZeroCount = visiblePointCount - take;
         bool changed = false;
         if (target.Length != visiblePointCount)
         {
@@ -390,15 +392,27 @@ public partial class MonitoringShellViewModel
             changed = true;
         }
 
-        for (int index = 0; index < visiblePointCount; index++)
+        for (int index = 0; index < leadingZeroCount; index++)
         {
-            double next = source[sourceStartIndex + index];
-            if (target[index] == next)
+            if (target[index] == 0d)
             {
                 continue;
             }
 
-            target[index] = next;
+            target[index] = 0d;
+            changed = true;
+        }
+
+        for (int index = 0; index < take; index++)
+        {
+            double next = source[sourceStartIndex + index];
+            int targetIndex = leadingZeroCount + index;
+            if (target[targetIndex] == next)
+            {
+                continue;
+            }
+
+            target[targetIndex] = next;
             changed = true;
         }
 

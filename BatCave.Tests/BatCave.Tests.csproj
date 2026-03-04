@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <Compile Include="..\BatCave\Charts\MetricTrendScaleMode.cs" Link="Charts\MetricTrendScaleMode.cs" />
+    <Compile Include="..\BatCave\Charts\MetricTrendTransitionMath.cs" Link="Charts\MetricTrendTransitionMath.cs" />
     <Compile Include="..\BatCave\Charts\MetricTrendScaleDomain.cs" Link="Charts\MetricTrendScaleDomain.cs" />
     <Compile Include="..\BatCave\Charts\SparklineMath.cs" Link="Charts\SparklineMath.cs" />
     <Compile Include="..\BatCave\Converters\ValueFormatConverters.cs" Link="Converters\ValueFormatConverters.cs" />
