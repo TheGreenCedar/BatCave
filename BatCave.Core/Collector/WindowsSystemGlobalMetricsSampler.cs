@@ -276,30 +276,30 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
         public double DoubleValue;
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetSystemTimes(out FILETIME idleTime, out FILETIME kernelTime, out FILETIME userTime);
+    private static partial bool GetSystemTimes(out FILETIME idleTime, out FILETIME kernelTime, out FILETIME userTime);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX buffer);
+    private static partial bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX buffer);
 
-    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
-    private static extern uint PdhOpenQueryW(string? dataSource, IntPtr userData, out IntPtr query);
+    [LibraryImport("pdh.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint PdhOpenQueryW(string? dataSource, IntPtr userData, out IntPtr query);
 
-    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
-    private static extern uint PdhAddEnglishCounterW(IntPtr query, string fullCounterPath, IntPtr userData, out IntPtr counter);
+    [LibraryImport("pdh.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint PdhAddEnglishCounterW(IntPtr query, string fullCounterPath, IntPtr userData, out IntPtr counter);
 
-    [DllImport("pdh.dll")]
-    private static extern uint PdhCollectQueryData(IntPtr query);
+    [LibraryImport("pdh.dll")]
+    private static partial uint PdhCollectQueryData(IntPtr query);
 
-    [DllImport("pdh.dll")]
-    private static extern uint PdhGetFormattedCounterValue(
+    [LibraryImport("pdh.dll")]
+    private static partial uint PdhGetFormattedCounterValue(
         IntPtr counter,
         uint format,
         out uint type,
         out PDH_FMT_COUNTERVALUE_DOUBLE value);
 
-    [DllImport("pdh.dll")]
-    private static extern uint PdhCloseQuery(IntPtr query);
+    [LibraryImport("pdh.dll")]
+    private static partial uint PdhCloseQuery(IntPtr query);
 }

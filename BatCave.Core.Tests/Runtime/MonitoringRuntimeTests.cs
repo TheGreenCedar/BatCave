@@ -74,8 +74,11 @@ public class MonitoringRuntimeTests
             MetricTrendWindowSeconds = 7,
         });
 
-        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
-        Assert.Equal(60, runtime.CurrentMetricTrendWindowSeconds);
+        using (MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore))
+        {
+            Assert.Equal(60, runtime.CurrentMetricTrendWindowSeconds);
+        }
+
         Assert.Equal(1, persistenceStore.SettingsSaveCount);
         Assert.Equal(60, persistenceStore.CurrentSettings.MetricTrendWindowSeconds);
     }
@@ -185,6 +188,8 @@ public class MonitoringRuntimeTests
 
         Assert.Equal([true, false], collectorFactory.RequestedModes);
         Assert.False(runtime.IsAdminMode());
+        Assert.True(persistenceStore.CurrentSettings.AdminMode);
+        Assert.Equal(0, persistenceStore.SettingsSaveCount);
         Assert.NotNull(outcome.Warning);
         Assert.Contains("admin_mode_start_failed", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -205,6 +210,7 @@ public class MonitoringRuntimeTests
 
         Assert.Equal([false, true, false], collectorFactory.RequestedModes);
         Assert.False(runtime.IsAdminMode());
+        Assert.True(persistenceStore.CurrentSettings.AdminMode);
         Assert.NotNull(outcome.Warning);
         Assert.Contains("admin_mode_start_failed", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
     }

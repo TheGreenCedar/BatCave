@@ -7,7 +7,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace BatCave.Core.Collector;
 
-public sealed class WindowsProcessCollector : IProcessCollector
+public sealed partial class WindowsProcessCollector : IProcessCollector
 {
     private const ulong WindowsToUnixEpoch100ns = 116_444_736_000_000_000;
     private const ulong HandleRetryBackoffMs = 5_000;
@@ -99,7 +99,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
             if (pid != 0)
             {
                 seenPids.Add(pid);
-                ProcessRowCapture capture = CaptureProcessRow(processEntry, seq, now, elapsedMs, systemDelta100ns);
+                ProcessRowCapture capture = CaptureProcessRow(ref processEntry, seq, now, elapsedMs, systemDelta100ns);
                 currentSnapshot[capture.Identity] = capture.Counters;
                 rows.Add(capture.Sample);
             }
@@ -120,14 +120,14 @@ public sealed class WindowsProcessCollector : IProcessCollector
     }
 
     private ProcessRowCapture CaptureProcessRow(
-        PROCESSENTRY32 processEntry,
+        ref PROCESSENTRY32 processEntry,
         ulong seq,
         ulong now,
         ulong elapsedMs,
         ulong? systemDelta100ns)
     {
         uint pid = processEntry.th32ProcessID;
-        ProcessSample sample = CreateBaseSample(processEntry, seq, now);
+        ProcessSample sample = CreateBaseSample(ref processEntry, seq, now);
         ProcessCounterSnapshot counters = default;
 
         IntPtr processHandle = EnsureProcessHandle(pid, now);
@@ -178,7 +178,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
         return new ProcessRowCapture(identity, sample, counters);
     }
 
-    private static ProcessSample CreateBaseSample(PROCESSENTRY32 processEntry, ulong seq, ulong now)
+    private static ProcessSample CreateBaseSample(ref PROCESSENTRY32 processEntry, ulong seq, ulong now)
     {
         return new ProcessSample
         {
@@ -187,7 +187,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
             Pid = processEntry.th32ProcessID,
             ParentPid = processEntry.th32ParentProcessID,
             StartTimeMs = 0,
-            Name = processEntry.szExeFile,
+            Name = ReadProcessEntryExecutableName(ref processEntry),
             CpuPct = 0,
             RssBytes = 0,
             PrivateBytes = 0,
@@ -198,6 +198,14 @@ public sealed class WindowsProcessCollector : IProcessCollector
             Handles = 0,
             AccessState = AccessState.Denied,
         };
+    }
+
+    private static unsafe string ReadProcessEntryExecutableName(ref PROCESSENTRY32 processEntry)
+    {
+        fixed (char* executableName = processEntry.szExeFile)
+        {
+            return new string(executableName);
+        }
     }
 
     private static void CaptureTimesAndIo(
@@ -599,8 +607,8 @@ public sealed class WindowsProcessCollector : IProcessCollector
         }
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct PROCESSENTRY32
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct PROCESSENTRY32
     {
         public uint dwSize;
         public uint cntUsage;
@@ -611,8 +619,7 @@ public sealed class WindowsProcessCollector : IProcessCollector
         public uint th32ParentProcessID;
         public int pcPriClassBase;
         public uint dwFlags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-        public string szExeFile;
+        public fixed char szExeFile[260];
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -649,49 +656,49 @@ public sealed class WindowsProcessCollector : IProcessCollector
         public nuint PrivateUsage;
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Process32FirstW(IntPtr snapshotHandle, ref PROCESSENTRY32 processEntry);
+    private static partial bool Process32FirstW(IntPtr snapshotHandle, ref PROCESSENTRY32 processEntry);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Process32NextW(IntPtr snapshotHandle, ref PROCESSENTRY32 processEntry);
+    private static partial bool Process32NextW(IntPtr snapshotHandle, ref PROCESSENTRY32 processEntry);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr handle);
+    private static partial bool CloseHandle(IntPtr handle);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial IntPtr OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetProcessTimes(
+    private static partial bool GetProcessTimes(
         IntPtr processHandle,
         out FILETIME creationTime,
         out FILETIME exitTime,
         out FILETIME kernelTime,
         out FILETIME userTime);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetProcessIoCounters(IntPtr processHandle, out IO_COUNTERS ioCounters);
+    private static partial bool GetProcessIoCounters(IntPtr processHandle, out IO_COUNTERS ioCounters);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetProcessHandleCount(IntPtr processHandle, out uint handleCount);
+    private static partial bool GetProcessHandleCount(IntPtr processHandle, out uint handleCount);
 
-    [DllImport("psapi.dll", SetLastError = true)]
+    [LibraryImport("psapi.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetProcessMemoryInfo(IntPtr processHandle, out PROCESS_MEMORY_COUNTERS_EX counters, uint size);
+    private static partial bool GetProcessMemoryInfo(IntPtr processHandle, out PROCESS_MEMORY_COUNTERS_EX counters, uint size);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetSystemTimes(out FILETIME idleTime, out FILETIME kernelTime, out FILETIME userTime);
+    private static partial bool GetSystemTimes(out FILETIME idleTime, out FILETIME kernelTime, out FILETIME userTime);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 }

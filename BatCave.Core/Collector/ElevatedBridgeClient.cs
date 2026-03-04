@@ -270,11 +270,6 @@ public sealed class ElevatedBridgeClient : IDisposable
         CancellationToken ct)
     {
         bool isPackagedProcess = IsLikelyPackagedProcess();
-        if (isPackagedProcess)
-        {
-            throw new InvalidOperationException(
-                "admin mode is unavailable in packaged runs. use an unpackaged launch profile or unpackaged publish profile.");
-        }
 
         string? executable = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executable))

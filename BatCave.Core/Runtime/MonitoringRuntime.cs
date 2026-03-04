@@ -29,6 +29,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private QueryRequest _queryRequest;
     private RuntimeHealth _health = new();
     private UserSettings _settings;
+    private bool _effectiveAdminMode;
     private ulong _seq;
     private int _jitterSampleCount;
     private int _jitterSampleCursor;
@@ -59,12 +60,9 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         bool requestedStartupAdminMode = _settings.AdminMode;
         CollectorActivationResult startupCollector = ActivateCollector(requestedStartupAdminMode);
         _collector = startupCollector.Collector;
-        _settings = _settings with
-        {
-            AdminMode = startupCollector.AdminMode,
-        };
+        _effectiveAdminMode = startupCollector.AdminMode;
         EnqueueRuntimeWarning(startupCollector.Warning);
-        if (startupCollector.AdminMode != requestedStartupAdminMode || metricTrendWindowNormalized)
+        if (metricTrendWindowNormalized)
         {
             PersistSettings();
         }
@@ -108,7 +106,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     public bool IsAdminMode()
     {
-        return _settings.AdminMode;
+        return _effectiveAdminMode;
     }
 
     public int CurrentMetricTrendWindowSeconds => _settings.MetricTrendWindowSeconds;
@@ -134,9 +132,10 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         CollectorActivationResult nextCollector = ActivateCollector(adminMode);
         IProcessCollector previousCollector = _collector;
         _collector = nextCollector.Collector;
+        _effectiveAdminMode = nextCollector.AdminMode;
         _settings = _settings with
         {
-            AdminMode = nextCollector.AdminMode,
+            AdminMode = adminMode,
         };
 
         DisposeCollector(previousCollector);
@@ -148,7 +147,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _logger.LogInformation(
             "runtime_restart requested_admin_mode={RequestedAdminMode} effective_admin_mode={EffectiveAdminMode} seq={Seq}",
             adminMode,
-            nextCollector.AdminMode,
+            _effectiveAdminMode,
             _seq);
     }
 
@@ -229,12 +228,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private void LogStartup(WarmCache? warmCache)
     {
         _logger.LogInformation(
-            "runtime_startup warm_cache_rows={WarmCacheRows} sort_col={SortCol} sort_dir={SortDir} filter_text={FilterText} admin_mode={AdminMode}",
+            "runtime_startup warm_cache_rows={WarmCacheRows} sort_col={SortCol} sort_dir={SortDir} filter_text={FilterText} requested_admin_mode={RequestedAdminMode} effective_admin_mode={EffectiveAdminMode}",
             warmCache?.Rows.Count ?? 0,
             _settings.SortCol,
             _settings.SortDir,
             _settings.FilterText,
-            _settings.AdminMode);
+            _settings.AdminMode,
+            _effectiveAdminMode);
     }
 
     private ProcessDeltaBatch ApplyRawDelta(IReadOnlyList<ProcessSample> raw)
@@ -318,7 +318,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             _health.DegradeMode,
             _health.JitterP95Ms,
             _health.DroppedTicks,
-            _settings.AdminMode);
+            _effectiveAdminMode);
 
         if (_seq % TickHealthSummaryInterval == 0)
         {
