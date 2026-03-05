@@ -33,6 +33,27 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("ThemeResource ChartCpuStrokeBrush", xaml, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MainWindowXaml_UsesCompactResponsiveHeaderControls()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"HeaderControlsInline\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderControlsPhone\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"FilterTextBox\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"AdminModeToggle\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_DoesNotExposeAdminWarningBanner()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.DoesNotContain("AutomationProperties.Name=\"Runtime Warning Banner\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.AdminModeError", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.AdminErrorVisibility", xaml, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

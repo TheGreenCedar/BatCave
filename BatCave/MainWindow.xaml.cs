@@ -96,6 +96,11 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (toggle.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
         if (!CanInteractWithAdminToggle())
         {
             if (toggle.IsOn != ViewModel.AdminModeEnabled)
@@ -119,8 +124,11 @@ public sealed partial class MainWindow : Window
     private void FocusFilterAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
-        FilterTextBox.Focus(FocusState.Programmatic);
-        FilterTextBox.SelectAll();
+        TextBox target = HeaderControlsPhone.Visibility == Visibility.Visible
+            ? FilterTextBoxPhone
+            : FilterTextBox;
+        target.Focus(FocusState.Programmatic);
+        target.SelectAll();
     }
 
     private async void RetryAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
@@ -175,7 +183,9 @@ public sealed partial class MainWindow : Window
 
     private void SyncAdminToggleState()
     {
-        AdminModeToggle.IsEnabled = CanInteractWithAdminToggle();
+        bool canInteract = CanInteractWithAdminToggle();
+        AdminModeToggle.IsEnabled = canInteract;
+        AdminModeTogglePhone.IsEnabled = canInteract;
     }
 
     private void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)

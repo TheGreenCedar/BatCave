@@ -30,6 +30,8 @@
                         <Setter Target="HeaderRegion.Padding" Value="16" />
                         <Setter Target="ContentRegion.Padding" Value="16" />
                         <Setter Target="FooterRegion.Padding" Value="12" />
+                        <Setter Target="HeaderControlsInline.Visibility" Value="Visible" />
+                        <Setter Target="HeaderControlsPhone.Visibility" Value="Collapsed" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="MediumState">
@@ -40,6 +42,8 @@
                         <Setter Target="HeaderRegion.Padding" Value="12" />
                         <Setter Target="ContentRegion.Padding" Value="12" />
                         <Setter Target="FooterRegion.Padding" Value="10" />
+                        <Setter Target="HeaderControlsInline.Visibility" Value="Visible" />
+                        <Setter Target="HeaderControlsPhone.Visibility" Value="Collapsed" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="PhoneState">
@@ -47,6 +51,8 @@
                         <Setter Target="HeaderRegion.Padding" Value="8" />
                         <Setter Target="ContentRegion.Padding" Value="8" />
                         <Setter Target="FooterRegion.Padding" Value="8" />
+                        <Setter Target="HeaderControlsInline.Visibility" Value="Collapsed" />
+                        <Setter Target="HeaderControlsPhone.Visibility" Value="Visible" />
                     </VisualState.Setters>
                 </VisualState>
             </VisualStateGroup>
@@ -66,25 +72,41 @@
             <StackPanel Spacing="10">
                 <TextBlock FontSize="28" FontWeight="SemiBold" Text="{ThemeResource ShellTitleText}" />
                 <TextBlock Opacity="0.8" Text="{ThemeResource ShellSubtitleText}" />
-                <TextBox
-                    x:Name="FilterTextBox"
-                    AccessKey="F"
-                    AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
-                    AutomationProperties.Name="Process Filter"
-                    PlaceholderText="{ThemeResource FilterPlaceholderText}"
-                    TabIndex="1"
-                    Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                <StackPanel Orientation="Horizontal" Spacing="12">
-                    <ToggleSwitch
-                        x:Name="AdminModeToggle"
-                        AccessKey="A"
-                        AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
-                        AutomationProperties.Name="Admin Mode Toggle"
-                        Header="Admin Mode"
-                        IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
-                        TabIndex="2"
-                        Toggled="AdminModeToggle_Toggled" />
+                <Grid x:Name="HeaderControlsInline" ColumnSpacing="12" Visibility="Visible">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox
+                        x:Name="FilterTextBox"
+                        Grid.Column="0"
+                        Width="420"
+                        MinWidth="280"
+                        MaxWidth="520"
+                        HorizontalAlignment="Left"
+                        AccessKey="F"
+                        AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
+                        AutomationProperties.Name="Process Filter"
+                        PlaceholderText="{ThemeResource FilterPlaceholderText}"
+                        TabIndex="1"
+                        Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <TextBlock VerticalAlignment="Center" Text="Admin Mode" />
+                        <ToggleSwitch
+                            x:Name="AdminModeToggle"
+                            AccessKey="A"
+                            AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
+                            AutomationProperties.Name="Admin Mode Toggle"
+                            Header=""
+                            OnContent=""
+                            OffContent=""
+                            IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
+                            TabIndex="2"
+                            Toggled="AdminModeToggle_Toggled" />
+                    </StackPanel>
                     <CheckBox
+                        Grid.Column="2"
                         AccessKey="E"
                         AutomationProperties.HelpText="{ThemeResource AdminEnabledOnlyHelpText}"
                         AutomationProperties.Name="Admin Enabled Only Filter"
@@ -93,14 +115,44 @@
                         Content="Admin-enabled only"
                         IsChecked="{x:Bind ViewModel.AdminEnabledOnlyFilter, Mode=TwoWay}"
                         IsEnabled="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}" />
-                </StackPanel>
-                <TextBlock
-                    AutomationProperties.LiveSetting="Assertive"
-                    AutomationProperties.Name="Runtime Warning Banner"
-                    Foreground="{ThemeResource SystemFillColorCriticalBrush}"
-                    Text="{x:Bind ViewModel.AdminModeError, Mode=OneWay}"
-                    TextWrapping="Wrap"
-                    Visibility="{x:Bind ViewModel.AdminErrorVisibility, Mode=OneWay}" />
+                </Grid>
+                <Grid x:Name="HeaderControlsPhone" RowSpacing="8" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBox
+                        x:Name="FilterTextBoxPhone"
+                        AccessKey="F"
+                        AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
+                        AutomationProperties.Name="Process Filter"
+                        PlaceholderText="{ThemeResource FilterPlaceholderText}"
+                        TabIndex="1"
+                        Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="12">
+                        <TextBlock VerticalAlignment="Center" Text="Admin Mode" />
+                        <ToggleSwitch
+                            x:Name="AdminModeTogglePhone"
+                            AccessKey="A"
+                            AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
+                            AutomationProperties.Name="Admin Mode Toggle"
+                            Header=""
+                            OnContent=""
+                            OffContent=""
+                            IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
+                            TabIndex="2"
+                            Toggled="AdminModeToggle_Toggled" />
+                        <CheckBox
+                            AccessKey="E"
+                            AutomationProperties.HelpText="{ThemeResource AdminEnabledOnlyHelpText}"
+                            AutomationProperties.Name="Admin Enabled Only Filter"
+                            TabIndex="3"
+                            VerticalAlignment="Center"
+                            Content="Admin-enabled only"
+                            IsChecked="{x:Bind ViewModel.AdminEnabledOnlyFilter, Mode=TwoWay}"
+                            IsEnabled="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}" />
+                    </StackPanel>
+                </Grid>
             </StackPanel>
         </Border>
 
@@ -929,6 +981,3 @@
         </Border>
     </Grid>
 </Window>
-
-
-
