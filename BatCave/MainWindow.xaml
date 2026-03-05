@@ -106,19 +106,24 @@
                             TabIndex="2"
                             Toggled="AdminModeToggle_Toggled" />
                     </StackPanel>
-                    <CheckBox
-                        Grid.Column="2"
-                        AccessKey="E"
-                        AutomationProperties.HelpText="{ThemeResource AdminEnabledOnlyHelpText}"
-                        AutomationProperties.Name="Admin Enabled Only Filter"
-                        TabIndex="3"
-                        VerticalAlignment="Center"
-                        Content="Admin-enabled only"
-                        IsChecked="{x:Bind ViewModel.AdminEnabledOnlyFilter, Mode=TwoWay}"
-                        IsEnabled="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}" />
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <TextBlock VerticalAlignment="Center" Text="Advanced Columns" />
+                        <ToggleSwitch
+                            x:Name="ProcessTableModeToggle"
+                            AccessKey="V"
+                            AutomationProperties.Name="Advanced process columns toggle"
+                            AutomationProperties.HelpText="Switch between compact and advanced process table columns."
+                            Header=""
+                            OnContent=""
+                            OffContent=""
+                            IsOn="{x:Bind ViewModel.IsAdvancedProcessTableMode, Mode=OneWay}"
+                            TabIndex="3"
+                            Toggled="ProcessTableModeToggle_Toggled" />
+                    </StackPanel>
                 </Grid>
                 <Grid x:Name="HeaderControlsPhone" RowSpacing="8" Visibility="Collapsed">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
@@ -143,15 +148,19 @@
                             IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
                             TabIndex="2"
                             Toggled="AdminModeToggle_Toggled" />
-                        <CheckBox
-                            AccessKey="E"
-                            AutomationProperties.HelpText="{ThemeResource AdminEnabledOnlyHelpText}"
-                            AutomationProperties.Name="Admin Enabled Only Filter"
+                    </StackPanel>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12">
+                        <TextBlock VerticalAlignment="Center" Text="Advanced Columns" />
+                        <ToggleSwitch
+                            AccessKey="V"
+                            AutomationProperties.Name="Advanced process columns toggle"
+                            AutomationProperties.HelpText="Switch between compact and advanced process table columns."
+                            Header=""
+                            OnContent=""
+                            OffContent=""
+                            IsOn="{x:Bind ViewModel.IsAdvancedProcessTableMode, Mode=OneWay}"
                             TabIndex="3"
-                            VerticalAlignment="Center"
-                            Content="Admin-enabled only"
-                            IsChecked="{x:Bind ViewModel.AdminEnabledOnlyFilter, Mode=TwoWay}"
-                            IsEnabled="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}" />
+                            Toggled="ProcessTableModeToggle_Toggled" />
                     </StackPanel>
                 </Grid>
             </StackPanel>
@@ -182,25 +191,6 @@
                         </Grid.RowDefinitions>
 
                         <Grid Grid.Row="0" RowSpacing="8">
-                            <Grid ColumnSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock
-                                    VerticalAlignment="Center"
-                                    FontWeight="SemiBold"
-                                    Text="Task Manager Table" />
-                                <ToggleSwitch
-                                    x:Name="ProcessTableModeToggle"
-                                    Grid.Column="1"
-                                    AccessKey="V"
-                                    AutomationProperties.Name="Advanced process columns toggle"
-                                    AutomationProperties.HelpText="Switch between compact and advanced process table columns."
-                                    Header="Advanced Columns"
-                                    IsOn="{x:Bind ViewModel.IsAdvancedProcessTableMode, Mode=OneWay}"
-                                    Toggled="ProcessTableModeToggle_Toggled" />
-                            </Grid>
                             <TextBlock
                                 AutomationProperties.Name="Hidden compact sort indicator"
                                 AutomationProperties.HelpText="Shows when the active sort column is only visible in advanced mode."
@@ -388,9 +378,9 @@
                             TabIndex="19"
                             Visibility="{x:Bind ViewModel.AdvancedProcessTableVisibility, Mode=OneWay}">
                             <ListView.Resources>
-                                <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="AccentFillColorSecondaryBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="AccentFillColorDefaultBrush" />
                                 <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="AccentFillColorDefaultBrush" />
-                                <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="AccentFillColorTertiaryBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="AccentFillColorSecondaryBrush" />
                                 <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
                                 <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
                                 <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
@@ -409,6 +399,7 @@
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                                     <Setter Property="MinHeight" Value="30" />
                                     <Setter Property="Padding" Value="3,2" />
+                                    <Setter Property="Margin" Value="0,1" />
                                 </Style>
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
@@ -468,11 +459,29 @@
                             TabIndex="19"
                             Background="Transparent"
                             Visibility="{x:Bind ViewModel.CompactProcessTableVisibility, Mode=OneWay}">
+                            <ListView.Resources>
+                                <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="AccentFillColorSecondaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorBrush" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorPointerOverBrush" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorPressedBrush" ResourceKey="AccentFillColorDefaultBrush" />
+                                <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">True</x:Boolean>
+                            </ListView.Resources>
+                            <ListView.ItemContainerTransitions>
+                                <TransitionCollection>
+                                    <RepositionThemeTransition IsStaggeringEnabled="False" />
+                                </TransitionCollection>
+                            </ListView.ItemContainerTransitions>
                             <ListView.ItemContainerStyle>
                                 <Style TargetType="ListViewItem">
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                                     <Setter Property="MinHeight" Value="30" />
                                     <Setter Property="Padding" Value="3,2" />
+                                    <Setter Property="Margin" Value="0,1" />
                                 </Style>
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>

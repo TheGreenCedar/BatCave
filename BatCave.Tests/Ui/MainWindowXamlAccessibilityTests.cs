@@ -68,14 +68,40 @@ public class MainWindowXamlAccessibilityTests
     }
 
     [Fact]
+    public void MainWindowXaml_CompactProcessTable_HasSmoothRepositionAndStrongerSelectionVisuals()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        int compactListIndex = xaml.IndexOf("x:Name=\"CompactProcessListView\"", StringComparison.Ordinal);
+        Assert.True(compactListIndex >= 0, "Compact process ListView definition not found.");
+
+        string compactSection = xaml[compactListIndex..];
+        Assert.Contains("<ListView.ItemContainerTransitions>", compactSection, StringComparison.Ordinal);
+        Assert.Contains("<RepositionThemeTransition IsStaggeringEnabled=\"False\" />", compactSection, StringComparison.Ordinal);
+        Assert.Contains("ListViewItemBackgroundSelected\" ResourceKey=\"AccentFillColorDefaultBrush\"", compactSection, StringComparison.Ordinal);
+        Assert.Contains("ListViewItemForegroundSelected\" ResourceKey=\"TextOnAccentFillColorPrimaryBrush\"", compactSection, StringComparison.Ordinal);
+        Assert.Contains("ListViewItemSelectionIndicatorVisualEnabled\">True", compactSection, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MainWindowXaml_HasProcessTableModeToggleAndHiddenSortIndicator()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("x:Name=\"ProcessTableModeToggle\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Header=\"Advanced Columns\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"Advanced Columns\"", xaml, StringComparison.Ordinal);
         Assert.Contains("AutomationProperties.Name=\"Advanced process columns toggle\"", xaml, StringComparison.Ordinal);
         Assert.Contains("AutomationProperties.Name=\"Hidden compact sort indicator\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_RemovesAdminEnabledOnlyFilterAndTaskTableTitle()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.DoesNotContain("Admin Enabled Only Filter", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Admin-enabled only", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task Manager Table", xaml, StringComparison.Ordinal);
     }
 
     private static string ResolveRepoPath(params string[] relativeSegments)
