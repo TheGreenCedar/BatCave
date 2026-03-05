@@ -129,7 +129,8 @@ public static class BenchmarkRunner
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
-            new BenchmarkPersistenceStore());
+            new BenchmarkPersistenceStore(),
+            new RuntimeHostOptions());
         runtime.GetSnapshot();
         startupStopwatch.Stop();
 

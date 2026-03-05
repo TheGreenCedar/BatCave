@@ -11,10 +11,56 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
                 <!-- Other merged dictionaries here -->
             </ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Default">
+                    <Color x:Key="ChartCpuStrokeColor">#FF0B84D8</Color>
+                    <Color x:Key="ChartCpuFillColor">#330B84D8</Color>
+                    <Color x:Key="ChartCpuKernelStrokeColor">#FF075C8F</Color>
+                    <Color x:Key="ChartMemoryStrokeColor">#FF2563EB</Color>
+                    <Color x:Key="ChartMemoryFillColor">#332563EB</Color>
+                    <Color x:Key="ChartIoReadStrokeColor">#FF6A9F2A</Color>
+                    <Color x:Key="ChartIoReadFillColor">#336A9F2A</Color>
+                    <Color x:Key="ChartIoWriteStrokeColor">#FFD07A00</Color>
+                    <Color x:Key="ChartIoWriteFillColor">#33D07A00</Color>
+                    <Color x:Key="ChartOtherIoStrokeColor">#FFD13438</Color>
+                    <Color x:Key="ChartOtherIoFillColor">#33D13438</Color>
+                    <Color x:Key="ChartNetworkStrokeColor">#FFD81B60</Color>
+                    <Color x:Key="ChartNetworkFillColor">#33D81B60</Color>
+                    <Color x:Key="ChartNetworkOverlayStrokeColor">#FFA11449</Color>
+
+                    <SolidColorBrush x:Key="ChartCpuStrokeBrush" Color="{StaticResource ChartCpuStrokeColor}" />
+                    <SolidColorBrush x:Key="ChartCpuFillBrush" Color="{StaticResource ChartCpuFillColor}" />
+                    <SolidColorBrush x:Key="ChartCpuKernelStrokeBrush" Color="{StaticResource ChartCpuKernelStrokeColor}" />
+                    <SolidColorBrush x:Key="ChartMemoryStrokeBrush" Color="{StaticResource ChartMemoryStrokeColor}" />
+                    <SolidColorBrush x:Key="ChartMemoryFillBrush" Color="{StaticResource ChartMemoryFillColor}" />
+                    <SolidColorBrush x:Key="ChartIoReadStrokeBrush" Color="{StaticResource ChartIoReadStrokeColor}" />
+                    <SolidColorBrush x:Key="ChartIoReadFillBrush" Color="{StaticResource ChartIoReadFillColor}" />
+                    <SolidColorBrush x:Key="ChartIoWriteStrokeBrush" Color="{StaticResource ChartIoWriteStrokeColor}" />
+                    <SolidColorBrush x:Key="ChartIoWriteFillBrush" Color="{StaticResource ChartIoWriteFillColor}" />
+                    <SolidColorBrush x:Key="ChartOtherIoStrokeBrush" Color="{StaticResource ChartOtherIoStrokeColor}" />
+                    <SolidColorBrush x:Key="ChartOtherIoFillBrush" Color="{StaticResource ChartOtherIoFillColor}" />
+                    <SolidColorBrush x:Key="ChartNetworkStrokeBrush" Color="{StaticResource ChartNetworkStrokeColor}" />
+                    <SolidColorBrush x:Key="ChartNetworkFillBrush" Color="{StaticResource ChartNetworkFillColor}" />
+                    <SolidColorBrush x:Key="ChartNetworkOverlayStrokeBrush" Color="{StaticResource ChartNetworkOverlayStrokeColor}" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
             <StaticResource x:Key="TaskMgrPaneBackgroundBrush" ResourceKey="CardBackgroundFillColorSecondaryBrush" />
             <StaticResource x:Key="TaskMgrPaneBorderBrush" ResourceKey="CardStrokeColorDefaultBrush" />
             <Thickness x:Key="TaskMgrResourceRowPadding">6,4</Thickness>
             <x:Double x:Key="TaskMgrDenseRowMinHeight">46</x:Double>
+            <Thickness x:Key="ShellHeaderPadding">16</Thickness>
+            <Thickness x:Key="ShellContentPadding">16</Thickness>
+            <Thickness x:Key="ShellFooterPadding">12</Thickness>
+            <x:String x:Key="ShellTitleText">BatCave Monitor</x:String>
+            <x:String x:Key="ShellSubtitleText">Windows-native process telemetry with runtime parity.</x:String>
+            <x:String x:Key="FilterPlaceholderText">Filter by name or PID</x:String>
+            <x:String x:Key="ProcessFilterHelpText">Type to filter by process name or process id.</x:String>
+            <x:String x:Key="AdminToggleHelpText">Toggle elevated bridge mode.</x:String>
+            <x:String x:Key="AdminEnabledOnlyHelpText">Show only processes with full access when admin mode is enabled.</x:String>
+            <x:String x:Key="StartupLoadingText">Starting monitoring runtime...</x:String>
+            <x:String x:Key="StartupBlockedTitleText">Startup Blocked</x:String>
+            <x:String x:Key="StartupErrorTitleText">Startup Error</x:String>
+            <x:String x:Key="RetryButtonText">Retry</x:String>
             <StaticResource x:Key="BalancedSelectionBackgroundBrush" ResourceKey="AccentFillColorTertiaryBrush" />
             <StaticResource x:Key="BalancedSelectionBackgroundPointerOverBrush" ResourceKey="AccentFillColorSecondaryBrush" />
             <StaticResource x:Key="BalancedSelectionBackgroundPressedBrush" ResourceKey="AccentFillColorDefaultBrush" />

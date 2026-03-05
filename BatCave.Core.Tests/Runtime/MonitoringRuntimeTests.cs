@@ -86,6 +86,21 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
+    public void Constructor_WhenPersistedSortColumnIsInvalid_FailsFast()
+    {
+        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
+        {
+            SortCol = (SortColumn)987,
+            AdminPreferenceInitialized = true,
+        });
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => CreateRuntime(new TestCollector(), persistenceStore));
+
+        Assert.Contains("invalid sort column", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Constructor_WhenAdminPreferenceUninitialized_DefaultsAdminPreferenceOn()
     {
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
@@ -322,7 +337,8 @@ public class MonitoringRuntimeTests
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
-            persistenceStore);
+            persistenceStore,
+            new RuntimeHostOptions());
     }
 
     private static TickOutcome TickUntilWarning(MonitoringRuntime runtime, int maxAttempts = 10)

@@ -1,4 +1,6 @@
 using BatCave.Controls;
+using BatCave.Layouts;
+using BatCave.Styling;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
@@ -6,8 +8,8 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System;
-using System.Collections.Specialized;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Threading;
@@ -17,18 +19,7 @@ namespace BatCave;
 
 public sealed partial class MainWindow : Window
 {
-    private const double WideMetricTrendBreakpoint = 1200;
     private const double WideMetricSidebarWidth = 248;
-    private static readonly Brush CpuTrendStrokeBrush = CreateBrush(0xFF, 0x0B, 0x84, 0xD8);
-    private static readonly Brush CpuTrendFillBrush = CreateBrush(0x33, 0x0B, 0x84, 0xD8);
-    private static readonly Brush MemoryTrendStrokeBrush = CreateBrush(0xFF, 0x25, 0x63, 0xEB);
-    private static readonly Brush MemoryTrendFillBrush = CreateBrush(0x33, 0x25, 0x63, 0xEB);
-    private static readonly Brush IoReadTrendStrokeBrush = CreateBrush(0xFF, 0x6A, 0x9F, 0x2A);
-    private static readonly Brush IoReadTrendFillBrush = CreateBrush(0x33, 0x6A, 0x9F, 0x2A);
-    private static readonly Brush IoWriteTrendStrokeBrush = CreateBrush(0xFF, 0xD0, 0x7A, 0x00);
-    private static readonly Brush IoWriteTrendFillBrush = CreateBrush(0x33, 0xD0, 0x7A, 0x00);
-    private static readonly Brush OtherIoTrendStrokeBrush = CreateBrush(0xFF, 0xD1, 0x34, 0x38);
-    private static readonly Brush OtherIoTrendFillBrush = CreateBrush(0x33, 0xD1, 0x34, 0x38);
     private const double LogicalCpuTileTargetWidth = 170;
     private const double LogicalCpuTileTargetChartHeight = 120;
     private const double LogicalCpuTileLabelReserve = 20;
@@ -40,15 +31,35 @@ public sealed partial class MainWindow : Window
     private bool _metricPlotRefreshQueued;
     private long _selectionSettleProbeStartedAt;
     private MetricPlotDirtyFlags _dirtyMetricPlots = MetricPlotDirtyFlags.All;
-    private bool? _isWideMetricLayoutApplied;
+    private ShellAdaptiveMode? _appliedShellAdaptiveMode;
     private bool _logicalCpuGridLayoutQueued;
     private int _logicalCpuGridLastCount = -1;
     private double _logicalCpuGridLastWidth = -1;
     private double _logicalCpuGridLastHeight = -1;
+    private readonly Brush _cpuTrendStrokeBrush;
+    private readonly Brush _cpuTrendFillBrush;
+    private readonly Brush _memoryTrendStrokeBrush;
+    private readonly Brush _memoryTrendFillBrush;
+    private readonly Brush _ioReadTrendStrokeBrush;
+    private readonly Brush _ioReadTrendFillBrush;
+    private readonly Brush _ioWriteTrendStrokeBrush;
+    private readonly Brush _ioWriteTrendFillBrush;
+    private readonly Brush _otherIoTrendStrokeBrush;
+    private readonly Brush _otherIoTrendFillBrush;
 
     public MainWindow()
     {
         ViewModel = App.Services.GetRequiredService<MonitoringShellViewModel>();
+        _cpuTrendStrokeBrush = AppThemeTokens.ResolveBrush("ChartCpuStrokeBrush", Color.FromArgb(0xFF, 0x0B, 0x84, 0xD8));
+        _cpuTrendFillBrush = AppThemeTokens.ResolveBrush("ChartCpuFillBrush", Color.FromArgb(0x33, 0x0B, 0x84, 0xD8));
+        _memoryTrendStrokeBrush = AppThemeTokens.ResolveBrush("ChartMemoryStrokeBrush", Color.FromArgb(0xFF, 0x25, 0x63, 0xEB));
+        _memoryTrendFillBrush = AppThemeTokens.ResolveBrush("ChartMemoryFillBrush", Color.FromArgb(0x33, 0x25, 0x63, 0xEB));
+        _ioReadTrendStrokeBrush = AppThemeTokens.ResolveBrush("ChartIoReadStrokeBrush", Color.FromArgb(0xFF, 0x6A, 0x9F, 0x2A));
+        _ioReadTrendFillBrush = AppThemeTokens.ResolveBrush("ChartIoReadFillBrush", Color.FromArgb(0x33, 0x6A, 0x9F, 0x2A));
+        _ioWriteTrendStrokeBrush = AppThemeTokens.ResolveBrush("ChartIoWriteStrokeBrush", Color.FromArgb(0xFF, 0xD0, 0x7A, 0x00));
+        _ioWriteTrendFillBrush = AppThemeTokens.ResolveBrush("ChartIoWriteFillBrush", Color.FromArgb(0x33, 0xD0, 0x7A, 0x00));
+        _otherIoTrendStrokeBrush = AppThemeTokens.ResolveBrush("ChartOtherIoStrokeBrush", Color.FromArgb(0xFF, 0xD1, 0x34, 0x38));
+        _otherIoTrendFillBrush = AppThemeTokens.ResolveBrush("ChartOtherIoFillBrush", Color.FromArgb(0x33, 0xD1, 0x34, 0x38));
         InitializeComponent();
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
@@ -105,11 +116,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void RetryBootstrap_Click(object sender, RoutedEventArgs e)
-    {
-        await ViewModel.RetryBootstrapAsync(CancellationToken.None);
-    }
-
     private void FocusFilterAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
@@ -120,9 +126,10 @@ public sealed partial class MainWindow : Window
     private async void RetryAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
-        if (RetryBootstrapButton.Visibility == Visibility.Visible && RetryBootstrapButton.IsEnabled)
+        if (ViewModel.StartupErrorVisibility == Visibility.Visible
+            && ViewModel.RetryBootstrapRequestedCommand.CanExecute(null))
         {
-            await ViewModel.RetryBootstrapAsync(CancellationToken.None);
+            await ViewModel.RetryBootstrapRequestedCommand.ExecuteAsync(null);
         }
     }
 
@@ -292,13 +299,14 @@ public sealed partial class MainWindow : Window
 
     private void ApplyMetricTrendLayoutForWindowWidth(double windowWidth)
     {
-        bool isWide = windowWidth >= WideMetricTrendBreakpoint;
-        if (_isWideMetricLayoutApplied == isWide)
+        ShellAdaptiveMode adaptiveMode = ShellAdaptiveLayout.Resolve(windowWidth);
+        if (_appliedShellAdaptiveMode == adaptiveMode)
         {
             return;
         }
 
-        _isWideMetricLayoutApplied = isWide;
+        _appliedShellAdaptiveMode = adaptiveMode;
+        bool isWide = adaptiveMode == ShellAdaptiveMode.Wide;
         ApplyMetricTrendColumnLayout(isWide);
 
         Grid.SetRow(MetricMainHost, isWide ? 0 : 1);
@@ -343,38 +351,38 @@ public sealed partial class MainWindow : Window
             CpuChipPlot,
             MetricTrendScaleMode.CpuPercent,
             showGrid: false,
-            CpuTrendStrokeBrush,
-            CpuTrendFillBrush);
+            _cpuTrendStrokeBrush,
+            _cpuTrendFillBrush);
         ConfigureMetricChart(
             MemoryChipPlot,
             MetricTrendScaleMode.MemoryBytes,
             showGrid: false,
-            MemoryTrendStrokeBrush,
-            MemoryTrendFillBrush);
+            _memoryTrendStrokeBrush,
+            _memoryTrendFillBrush);
         ConfigureMetricChart(
             IoReadChipPlot,
             MetricTrendScaleMode.IoRate,
             showGrid: false,
-            IoReadTrendStrokeBrush,
-            IoReadTrendFillBrush);
+            _ioReadTrendStrokeBrush,
+            _ioReadTrendFillBrush);
         ConfigureMetricChart(
             IoWriteChipPlot,
             MetricTrendScaleMode.IoRate,
             showGrid: false,
-            IoWriteTrendStrokeBrush,
-            IoWriteTrendFillBrush);
+            _ioWriteTrendStrokeBrush,
+            _ioWriteTrendFillBrush);
         ConfigureMetricChart(
             OtherIoChipPlot,
             MetricTrendScaleMode.IoRate,
             showGrid: false,
-            OtherIoTrendStrokeBrush,
-            OtherIoTrendFillBrush);
+            _otherIoTrendStrokeBrush,
+            _otherIoTrendFillBrush);
         ConfigureMetricChart(
             ExpandedMetricPlot,
             MetricTrendScaleMode.CpuPercent,
             showGrid: true,
-            CpuTrendStrokeBrush,
-            CpuTrendFillBrush);
+            _cpuTrendStrokeBrush,
+            _cpuTrendFillBrush);
     }
 
     private IEnumerable<MetricPlotDescriptor> EnumerateMetricPlotDescriptors()
@@ -416,11 +424,11 @@ public sealed partial class MainWindow : Window
     {
         return metricFocus switch
         {
-            DetailMetricFocus.Memory => MemoryTrendStrokeBrush,
-            DetailMetricFocus.IoRead => IoReadTrendStrokeBrush,
-            DetailMetricFocus.IoWrite => IoWriteTrendStrokeBrush,
-            DetailMetricFocus.OtherIo => OtherIoTrendStrokeBrush,
-            _ => CpuTrendStrokeBrush,
+            DetailMetricFocus.Memory => _memoryTrendStrokeBrush,
+            DetailMetricFocus.IoRead => _ioReadTrendStrokeBrush,
+            DetailMetricFocus.IoWrite => _ioWriteTrendStrokeBrush,
+            DetailMetricFocus.OtherIo => _otherIoTrendStrokeBrush,
+            _ => _cpuTrendStrokeBrush,
         };
     }
 
@@ -428,17 +436,12 @@ public sealed partial class MainWindow : Window
     {
         return metricFocus switch
         {
-            DetailMetricFocus.Memory => MemoryTrendFillBrush,
-            DetailMetricFocus.IoRead => IoReadTrendFillBrush,
-            DetailMetricFocus.IoWrite => IoWriteTrendFillBrush,
-            DetailMetricFocus.OtherIo => OtherIoTrendFillBrush,
-            _ => CpuTrendFillBrush,
+            DetailMetricFocus.Memory => _memoryTrendFillBrush,
+            DetailMetricFocus.IoRead => _ioReadTrendFillBrush,
+            DetailMetricFocus.IoWrite => _ioWriteTrendFillBrush,
+            DetailMetricFocus.OtherIo => _otherIoTrendFillBrush,
+            _ => _cpuTrendFillBrush,
         };
-    }
-
-    private static Brush CreateBrush(byte a, byte r, byte g, byte b)
-    {
-        return new SolidColorBrush(Color.FromArgb(a, r, g, b));
     }
 
     private void GlobalCpuLogicalGridView_Loaded(object sender, RoutedEventArgs e)

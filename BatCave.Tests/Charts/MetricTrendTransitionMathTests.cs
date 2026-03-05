@@ -1,6 +1,5 @@
 using BatCave.Charts;
 using BatCave.Controls;
-using System;
 using Windows.Foundation;
 
 namespace BatCave.Tests.Charts;

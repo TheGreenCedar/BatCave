@@ -1,5 +1,5 @@
-using System;
 using BatCave.Controls;
+using System;
 using Windows.Foundation;
 
 namespace BatCave.Charts;

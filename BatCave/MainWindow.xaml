@@ -14,12 +14,43 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid>
+    <Grid x:Name="ShellRoot">
         <Grid.KeyboardAccelerators>
             <KeyboardAccelerator Key="F" Modifiers="Control" Invoked="FocusFilterAccelerator_Invoked" />
             <KeyboardAccelerator Key="R" Modifiers="Control" Invoked="RetryAccelerator_Invoked" />
             <KeyboardAccelerator Key="L" Modifiers="Control" Invoked="ClearSelectionAccelerator_Invoked" />
         </Grid.KeyboardAccelerators>
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="WindowWidthStates">
+                <VisualState x:Name="WideState">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="1200" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="HeaderRegion.Padding" Value="16" />
+                        <Setter Target="ContentRegion.Padding" Value="16" />
+                        <Setter Target="FooterRegion.Padding" Value="12" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="MediumState">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="760" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="HeaderRegion.Padding" Value="12" />
+                        <Setter Target="ContentRegion.Padding" Value="12" />
+                        <Setter Target="FooterRegion.Padding" Value="10" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="PhoneState">
+                    <VisualState.Setters>
+                        <Setter Target="HeaderRegion.Padding" Value="8" />
+                        <Setter Target="ContentRegion.Padding" Value="8" />
+                        <Setter Target="FooterRegion.Padding" Value="8" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
 
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -28,25 +59,26 @@
         </Grid.RowDefinitions>
 
         <Border
+            x:Name="HeaderRegion"
             Grid.Row="0"
-            Padding="16"
+            Padding="{ThemeResource ShellHeaderPadding}"
             BorderThickness="0,0,0,1">
             <StackPanel Spacing="10">
-                <TextBlock FontSize="28" FontWeight="SemiBold" Text="BatCave Monitor" />
-                <TextBlock Opacity="0.8" Text="Windows-native process telemetry with runtime parity." />
+                <TextBlock FontSize="28" FontWeight="SemiBold" Text="{ThemeResource ShellTitleText}" />
+                <TextBlock Opacity="0.8" Text="{ThemeResource ShellSubtitleText}" />
                 <TextBox
                     x:Name="FilterTextBox"
                     AccessKey="F"
-                    AutomationProperties.HelpText="Type to filter by process name or process id."
+                    AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
                     AutomationProperties.Name="Process Filter"
-                    PlaceholderText="Filter by name or PID"
+                    PlaceholderText="{ThemeResource FilterPlaceholderText}"
                     TabIndex="1"
                     Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                 <StackPanel Orientation="Horizontal" Spacing="12">
                     <ToggleSwitch
                         x:Name="AdminModeToggle"
                         AccessKey="A"
-                        AutomationProperties.HelpText="Toggle elevated bridge mode."
+                        AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
                         AutomationProperties.Name="Admin Mode Toggle"
                         Header="Admin Mode"
                         IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
@@ -54,7 +86,7 @@
                         Toggled="AdminModeToggle_Toggled" />
                     <CheckBox
                         AccessKey="E"
-                        AutomationProperties.HelpText="Show only processes with full access when admin mode is enabled."
+                        AutomationProperties.HelpText="{ThemeResource AdminEnabledOnlyHelpText}"
                         AutomationProperties.Name="Admin Enabled Only Filter"
                         TabIndex="3"
                         VerticalAlignment="Center"
@@ -72,41 +104,8 @@
             </StackPanel>
         </Border>
 
-        <Grid Grid.Row="1" Padding="16">
-            <StackPanel
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                Spacing="8"
-                Visibility="{x:Bind ViewModel.LoadingVisibility, Mode=OneWay}">
-                <ProgressRing IsActive="True" />
-                <TextBlock Text="Starting monitoring runtime..." />
-            </StackPanel>
-
-            <StackPanel
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                Spacing="8"
-                Visibility="{x:Bind ViewModel.BlockedVisibility, Mode=OneWay}">
-                <TextBlock FontSize="20" FontWeight="SemiBold" Text="Startup Blocked" />
-                <TextBlock MaxWidth="760" Text="{x:Bind ViewModel.BlockedReasonMessage, Mode=OneWay}" TextWrapping="Wrap" />
-            </StackPanel>
-
-            <StackPanel
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                Spacing="8"
-                Visibility="{x:Bind ViewModel.StartupErrorVisibility, Mode=OneWay}">
-                <TextBlock FontSize="20" FontWeight="SemiBold" Text="Startup Error" />
-                <TextBlock MaxWidth="760" Text="{x:Bind ViewModel.StartupErrorMessage, Mode=OneWay}" TextWrapping="Wrap" />
-                <Button
-                    x:Name="RetryBootstrapButton"
-                    AccessKey="R"
-                    AutomationProperties.HelpText="Retry startup after an error."
-                    AutomationProperties.Name="Retry Startup"
-                    Click="RetryBootstrap_Click"
-                    Content="Retry"
-                    TabIndex="4" />
-            </StackPanel>
+        <Grid x:Name="ContentRegion" Grid.Row="1" Padding="{ThemeResource ShellContentPadding}">
+            <controls:StartupStatePanel DataContext="{x:Bind ViewModel, Mode=OneWay}" />
 
             <Grid Visibility="{x:Bind ViewModel.LiveVisibility, Mode=OneWay}">
                 <Grid.ColumnDefinitions>
@@ -256,8 +255,10 @@
                                             VisiblePointCount="60"
                                             ScaleMode="CpuPercent"
                                             ShowGrid="False"
-                                            StrokeBrush="#FF0B84D8"
-                                            FillBrush="#330B84D8"
+                                            StrokeBrush="{ThemeResource ChartCpuStrokeBrush}"
+                                            FillBrush="{ThemeResource ChartCpuFillBrush}"
+                                            AutomationProperties.Name="Process CPU trend sparkline"
+                                            AutomationProperties.HelpText="CPU trend for the listed process."
                                             IsTabStop="False"
                                             Background="Transparent" />
                                     </Grid>
@@ -283,17 +284,30 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
-                            <StackPanel Grid.Row="0" HorizontalAlignment="Stretch" Spacing="10">
+                            <Grid Grid.Row="0" RowSpacing="8">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
                                 <TextBlock FontSize="24" FontWeight="SemiBold" Text="{x:Bind ViewModel.DetailTitle, Mode=OneWay}" />
-                                <Button
-                                    x:Name="ClearSelectionButton"
-                                    AccessKey="L"
-                                    AutomationProperties.Name="Clear process selection"
-                                    Command="{x:Bind ViewModel.ClearSelectionRequestedCommand}"
-                                    Content="Clear Selection"
-                                    IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}"
-                                    TabIndex="20" />
-                            </StackPanel>
+                                <CommandBar
+                                    Grid.Row="1"
+                                    DefaultLabelPosition="Right"
+                                    IsOpen="False">
+                                    <AppBarButton
+                                        x:Name="ClearSelectionButton"
+                                        AccessKey="L"
+                                        AutomationProperties.Name="Clear process selection"
+                                        Command="{x:Bind ViewModel.ClearSelectionRequestedCommand}"
+                                        IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}"
+                                        Label="Clear Selection"
+                                        TabIndex="20">
+                                        <AppBarButton.Icon>
+                                            <SymbolIcon Symbol="ClearSelection" />
+                                        </AppBarButton.Icon>
+                                    </AppBarButton>
+                                </CommandBar>
+                            </Grid>
 
                             <Grid x:Name="MetricTrendSplitGrid" Grid.Row="1" ColumnSpacing="6" RowSpacing="12">
                                 <Grid.ColumnDefinitions>
@@ -339,7 +353,16 @@
                                                 <TextBlock FontWeight="SemiBold" Text="CPU" />
                                                 <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.CpuMetricChipValue, Mode=OneWay}" />
                                             </StackPanel>
-                                            <controls:MetricTrendChart x:Name="CpuChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                            <controls:MetricTrendChart
+                                                x:Name="CpuChipPlot"
+                                                Grid.Column="1"
+                                                MinWidth="120"
+                                                Height="36"
+                                                HorizontalAlignment="Stretch"
+                                                AutomationProperties.Name="CPU metric trend chart"
+                                                AutomationProperties.HelpText="Small CPU trend chart for selected process."
+                                                Background="Transparent"
+                                                IsTabStop="False" />
                                         </Grid>
                                     </ToggleButton>
 
@@ -374,7 +397,16 @@
                                                 <TextBlock FontWeight="SemiBold" Text="Memory" />
                                                 <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.MemoryMetricChipValue, Mode=OneWay}" />
                                             </StackPanel>
-                                            <controls:MetricTrendChart x:Name="MemoryChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                            <controls:MetricTrendChart
+                                                x:Name="MemoryChipPlot"
+                                                Grid.Column="1"
+                                                MinWidth="120"
+                                                Height="36"
+                                                HorizontalAlignment="Stretch"
+                                                AutomationProperties.Name="Memory metric trend chart"
+                                                AutomationProperties.HelpText="Small memory trend chart for selected process."
+                                                Background="Transparent"
+                                                IsTabStop="False" />
                                         </Grid>
                                     </ToggleButton>
 
@@ -409,7 +441,16 @@
                                                 <TextBlock FontWeight="SemiBold" Text="Disk Read" />
                                                 <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoReadMetricChipValue, Mode=OneWay}" />
                                             </StackPanel>
-                                            <controls:MetricTrendChart x:Name="IoReadChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                            <controls:MetricTrendChart
+                                                x:Name="IoReadChipPlot"
+                                                Grid.Column="1"
+                                                MinWidth="120"
+                                                Height="36"
+                                                HorizontalAlignment="Stretch"
+                                                AutomationProperties.Name="Disk read metric trend chart"
+                                                AutomationProperties.HelpText="Small disk read trend chart for selected process."
+                                                Background="Transparent"
+                                                IsTabStop="False" />
                                         </Grid>
                                     </ToggleButton>
 
@@ -444,7 +485,16 @@
                                                 <TextBlock FontWeight="SemiBold" Text="Disk Write" />
                                                 <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.IoWriteMetricChipValue, Mode=OneWay}" />
                                             </StackPanel>
-                                            <controls:MetricTrendChart x:Name="IoWriteChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                            <controls:MetricTrendChart
+                                                x:Name="IoWriteChipPlot"
+                                                Grid.Column="1"
+                                                MinWidth="120"
+                                                Height="36"
+                                                HorizontalAlignment="Stretch"
+                                                AutomationProperties.Name="Disk write metric trend chart"
+                                                AutomationProperties.HelpText="Small disk write trend chart for selected process."
+                                                Background="Transparent"
+                                                IsTabStop="False" />
                                         </Grid>
                                     </ToggleButton>
 
@@ -479,7 +529,16 @@
                                                 <TextBlock FontWeight="SemiBold" Text="Other I/O" />
                                                 <TextBlock FontFamily="Cascadia Mono" Text="{x:Bind ViewModel.OtherIoMetricChipValue, Mode=OneWay}" />
                                             </StackPanel>
-                                            <controls:MetricTrendChart x:Name="OtherIoChipPlot" Grid.Column="1" MinWidth="120" Height="36" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                            <controls:MetricTrendChart
+                                                x:Name="OtherIoChipPlot"
+                                                Grid.Column="1"
+                                                MinWidth="120"
+                                                Height="36"
+                                                HorizontalAlignment="Stretch"
+                                                AutomationProperties.Name="Other input output metric trend chart"
+                                                AutomationProperties.HelpText="Small chart for other input output transfer activity."
+                                                Background="Transparent"
+                                                IsTabStop="False" />
                                         </Grid>
                                     </ToggleButton>
                                 </StackPanel>
@@ -519,7 +578,16 @@
                                                 </StackPanel>
                                             </StackPanel>
                                         </Grid>
-                                        <controls:MetricTrendChart x:Name="ExpandedMetricPlot" Grid.Row="1" MinHeight="220" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Background="Transparent" IsTabStop="False" />
+                                        <controls:MetricTrendChart
+                                            x:Name="ExpandedMetricPlot"
+                                            Grid.Row="1"
+                                            MinHeight="220"
+                                            VerticalAlignment="Stretch"
+                                            HorizontalAlignment="Stretch"
+                                            AutomationProperties.Name="Expanded metric trend chart"
+                                            AutomationProperties.HelpText="Detailed trend chart for the selected metric."
+                                            Background="Transparent"
+                                            IsTabStop="False" />
                                     </Grid>
                                 </Border>
                             </Grid>
@@ -627,6 +695,8 @@
                                                 ScaleMode="{Binding MiniScaleMode, Mode=OneWay}"
                                                 DomainMaxOverride="{Binding MiniDomainMax, Mode=OneWay}"
                                                 ShowGrid="False"
+                                                AutomationProperties.Name="Global resource mini trend chart"
+                                                AutomationProperties.HelpText="Mini trend chart for a global resource."
                                                 IsTabStop="False"
                                                 Background="Transparent">
                                                 <controls:MetricTrendChart.StrokeBrush>
@@ -721,6 +791,8 @@
                                                 ScaleMode="{Binding GlobalPrimaryScaleMode, Mode=OneWay}"
                                                 DomainMaxOverride="{Binding GlobalPrimaryDomainMax, Mode=OneWay}"
                                                 ShowGrid="True"
+                                                AutomationProperties.Name="Global primary trend chart"
+                                                AutomationProperties.HelpText="Primary global metrics trend chart."
                                                 IsTabStop="False"
                                                 Background="Transparent">
                                                 <controls:MetricTrendChart.StrokeBrush>
@@ -746,6 +818,8 @@
                                                 DomainMaxOverride="{Binding GlobalAuxiliaryDomainMax, Mode=OneWay}"
                                                 ShowGrid="False"
                                                 ShowAreaFill="False"
+                                                AutomationProperties.Name="Global auxiliary trend chart"
+                                                AutomationProperties.HelpText="Auxiliary global metrics trend chart."
                                                 IsTabStop="False"
                                                 Background="Transparent"
                                                 Visibility="{Binding GlobalAuxiliaryChartVisibility, Mode=OneWay}">
@@ -799,9 +873,11 @@
                                                             OverlayValues="{Binding OverlayValues, Mode=OneWay}"
                                                             ShowOverlay="True"
                                                             ScaleMode="CpuPercent"
-                                                            StrokeBrush="#FF0B84D8"
-                                                            FillBrush="#330B84D8"
-                                                            OverlayStrokeBrush="#FF075C8F"
+                                                            StrokeBrush="{ThemeResource ChartCpuStrokeBrush}"
+                                                            FillBrush="{ThemeResource ChartCpuFillBrush}"
+                                                            OverlayStrokeBrush="{ThemeResource ChartCpuKernelStrokeBrush}"
+                                                            AutomationProperties.Name="Logical CPU trend chart"
+                                                            AutomationProperties.HelpText="Utilization trend for a logical processor."
                                                             ShowGrid="True"
                                                             IsTabStop="False"
                                                             Background="Transparent" />
@@ -845,26 +921,11 @@
         </Grid>
 
         <Border
+            x:Name="FooterRegion"
             Grid.Row="2"
-            Padding="12"
+            Padding="{ThemeResource ShellFooterPadding}"
             BorderThickness="0,1,0,0">
-            <StackPanel Spacing="4">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock FontWeight="SemiBold" Text="Runtime Health:" />
-                    <TextBlock
-                        AutomationProperties.LiveSetting="Polite"
-                        AutomationProperties.Name="Runtime Health Status"
-                        Text="{x:Bind ViewModel.RuntimeHealthStatus, Mode=OneWay}"
-                        TextWrapping="Wrap" />
-                </StackPanel>
-                <TextBlock
-                    AutomationProperties.LiveSetting="Polite"
-                    AutomationProperties.Name="Interaction Timing Probe"
-                    FontFamily="Cascadia Mono"
-                    Opacity="0.8"
-                    Text="{x:Bind ViewModel.InteractionTimingProbe, Mode=OneWay}"
-                    TextWrapping="WrapWholeWords" />
-            </StackPanel>
+            <controls:RuntimeStatusFooter DataContext="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
     </Grid>
 </Window>

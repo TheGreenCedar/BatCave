@@ -1,6 +1,7 @@
 using BatCave.Controls;
 using BatCave.Converters;
 using BatCave.Core.Domain;
+using BatCave.Styling;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -20,17 +21,17 @@ public partial class MonitoringShellViewModel
     private const string CpuGlobalResourceId = "cpu";
     private const string MemoryGlobalResourceId = "memory";
     private static readonly TimeSpan GlobalResourceStaleRetention = TimeSpan.FromMinutes(5);
-    private static readonly Color CpuStrokeColor = Color.FromArgb(0xFF, 0x0B, 0x84, 0xD8);
-    private static readonly Color CpuFillColor = Color.FromArgb(0x33, 0x0B, 0x84, 0xD8);
-    private static readonly Color CpuKernelStrokeColor = Color.FromArgb(0xFF, 0x07, 0x5C, 0x8F);
-    private static readonly Color MemoryStrokeColor = Color.FromArgb(0xFF, 0x25, 0x63, 0xEB);
-    private static readonly Color MemoryFillColor = Color.FromArgb(0x33, 0x25, 0x63, 0xEB);
-    private static readonly Color DiskStrokeColor = Color.FromArgb(0xFF, 0x6A, 0x9F, 0x2A);
-    private static readonly Color DiskFillColor = Color.FromArgb(0x33, 0x6A, 0x9F, 0x2A);
-    private static readonly Color NetworkStrokeColor = Color.FromArgb(0xFF, 0xD8, 0x1B, 0x60);
-    private static readonly Color NetworkFillColor = Color.FromArgb(0x33, 0xD8, 0x1B, 0x60);
-    private static readonly Color NetworkOverlayStrokeColor = Color.FromArgb(0xFF, 0xA1, 0x14, 0x49);
     private static readonly FixedRingSeries EmptyTrendSeries = new(1);
+    private static Color CpuStrokeColor => AppThemeTokens.ResolveColor("ChartCpuStrokeColor", Color.FromArgb(0xFF, 0x0B, 0x84, 0xD8));
+    private static Color CpuFillColor => AppThemeTokens.ResolveColor("ChartCpuFillColor", Color.FromArgb(0x33, 0x0B, 0x84, 0xD8));
+    private static Color CpuKernelStrokeColor => AppThemeTokens.ResolveColor("ChartCpuKernelStrokeColor", Color.FromArgb(0xFF, 0x07, 0x5C, 0x8F));
+    private static Color MemoryStrokeColor => AppThemeTokens.ResolveColor("ChartMemoryStrokeColor", Color.FromArgb(0xFF, 0x25, 0x63, 0xEB));
+    private static Color MemoryFillColor => AppThemeTokens.ResolveColor("ChartMemoryFillColor", Color.FromArgb(0x33, 0x25, 0x63, 0xEB));
+    private static Color DiskStrokeColor => AppThemeTokens.ResolveColor("ChartIoReadStrokeColor", Color.FromArgb(0xFF, 0x6A, 0x9F, 0x2A));
+    private static Color DiskFillColor => AppThemeTokens.ResolveColor("ChartIoReadFillColor", Color.FromArgb(0x33, 0x6A, 0x9F, 0x2A));
+    private static Color NetworkStrokeColor => AppThemeTokens.ResolveColor("ChartNetworkStrokeColor", Color.FromArgb(0xFF, 0xD8, 0x1B, 0x60));
+    private static Color NetworkFillColor => AppThemeTokens.ResolveColor("ChartNetworkFillColor", Color.FromArgb(0x33, 0xD8, 0x1B, 0x60));
+    private static Color NetworkOverlayStrokeColor => AppThemeTokens.ResolveColor("ChartNetworkOverlayStrokeColor", Color.FromArgb(0xFF, 0xA1, 0x14, 0x49));
 
     private readonly ObservableCollection<GlobalResourceRowViewState> _globalResourceRows = [];
     private readonly Dictionary<string, GlobalTrendHistory> _globalTrendByResourceId = new(StringComparer.OrdinalIgnoreCase);

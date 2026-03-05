@@ -1,0 +1,45 @@
+<UserControl
+    x:Class="BatCave.Controls.StartupStatePanel"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid>
+        <StackPanel
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Spacing="8"
+            Visibility="{Binding LoadingVisibility, Mode=OneWay}">
+            <ProgressRing IsActive="True" />
+            <TextBlock Text="{ThemeResource StartupLoadingText}" />
+        </StackPanel>
+
+        <StackPanel
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Spacing="8"
+            Visibility="{Binding BlockedVisibility, Mode=OneWay}">
+            <TextBlock FontSize="20" FontWeight="SemiBold" Text="{ThemeResource StartupBlockedTitleText}" />
+            <TextBlock MaxWidth="760" Text="{Binding BlockedReasonMessage, Mode=OneWay}" TextWrapping="Wrap" />
+        </StackPanel>
+
+        <StackPanel
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Spacing="8"
+            Visibility="{Binding StartupErrorVisibility, Mode=OneWay}">
+            <TextBlock FontSize="20" FontWeight="SemiBold" Text="{ThemeResource StartupErrorTitleText}" />
+            <TextBlock MaxWidth="760" Text="{Binding StartupErrorMessage, Mode=OneWay}" TextWrapping="Wrap" />
+            <Button
+                x:Name="RetryBootstrapButton"
+                AccessKey="R"
+                AutomationProperties.HelpText="Retry startup after an error."
+                AutomationProperties.Name="Retry Startup"
+                Command="{Binding RetryBootstrapRequestedCommand, Mode=OneWay}"
+                Content="{ThemeResource RetryButtonText}"
+                TabIndex="4" />
+        </StackPanel>
+    </Grid>
+</UserControl>

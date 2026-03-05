@@ -9,14 +9,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 {
     private const int JitterWindowSize = 120;
     private const ulong TickHealthSummaryInterval = 30;
-    private const int DefaultMetricTrendWindowSeconds = 60;
-    private const int ExtendedMetricTrendWindowSeconds = 120;
 
     private readonly IProcessCollectorFactory _collectorFactory;
     private readonly ITelemetryPipeline _pipeline;
     private readonly IStateStore _stateStore;
     private readonly ISortIndexEngine _sortIndexEngine;
     private readonly IPersistenceStore _persistenceStore;
+    private readonly RuntimeHostOptions _runtimeHostOptions;
     private readonly CoalescedSettingsWriteQueue _settingsWriteQueue;
     private readonly CoalescedWarmCacheWriteQueue _warmCacheWriteQueue;
     private readonly ILogger<MonitoringRuntime> _logger;
@@ -38,6 +37,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         IStateStore stateStore,
         ISortIndexEngine sortIndexEngine,
         IPersistenceStore persistenceStore,
+        RuntimeHostOptions runtimeHostOptions,
         ILogger<MonitoringRuntime>? logger = null)
     {
         _collectorFactory = collectorFactory;
@@ -45,17 +45,19 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _stateStore = stateStore;
         _sortIndexEngine = sortIndexEngine;
         _persistenceStore = persistenceStore;
+        _runtimeHostOptions = RuntimeHostOptionsValidator.Validate(runtimeHostOptions);
         _settingsWriteQueue = new CoalescedSettingsWriteQueue(_persistenceStore.SaveSettingsAsync);
         _warmCacheWriteQueue = new CoalescedWarmCacheWriteQueue(_persistenceStore.SaveWarmCacheAsync);
         _logger = logger ?? NullLogger<MonitoringRuntime>.Instance;
 
-        _settings = _persistenceStore.LoadSettings() ?? new UserSettings();
+        _settings = _persistenceStore.LoadSettings() ?? BuildDefaultSettings();
+        RuntimeHostOptionsValidator.ValidatePersistedSettings(_settings);
         bool adminPreferenceMigrated = false;
         if (!_settings.AdminPreferenceInitialized)
         {
             _settings = _settings with
             {
-                AdminMode = true,
+                AdminMode = _runtimeHostOptions.DefaultAdminMode,
                 AdminPreferenceInitialized = true,
             };
             adminPreferenceMigrated = true;
@@ -226,9 +228,22 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     private static int NormalizeMetricTrendWindowSeconds(int seconds)
     {
-        return seconds >= ExtendedMetricTrendWindowSeconds
-            ? ExtendedMetricTrendWindowSeconds
-            : DefaultMetricTrendWindowSeconds;
+        return RuntimeHostOptionsValidator.IsSupportedMetricTrendWindowSeconds(seconds)
+            ? seconds
+            : 60;
+    }
+
+    private UserSettings BuildDefaultSettings()
+    {
+        return new UserSettings
+        {
+            SortCol = _runtimeHostOptions.DefaultSortColumn,
+            SortDir = _runtimeHostOptions.DefaultSortDirection,
+            FilterText = _runtimeHostOptions.DefaultFilterText,
+            AdminMode = _runtimeHostOptions.DefaultAdminMode,
+            AdminPreferenceInitialized = true,
+            MetricTrendWindowSeconds = _runtimeHostOptions.DefaultMetricTrendWindowSeconds,
+        };
     }
 
     private WarmCache? LoadWarmCache()

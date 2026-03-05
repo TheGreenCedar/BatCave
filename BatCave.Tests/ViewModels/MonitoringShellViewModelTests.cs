@@ -10,8 +10,8 @@ using BatCave.Services;
 using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
-using System.Diagnostics;
 using System.Collections.Specialized;
+using System.Diagnostics;
 
 namespace BatCave.Tests.ViewModels;
 
@@ -1355,14 +1355,17 @@ public class MonitoringShellViewModelTests
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
-            new TestPersistenceStore(settings));
+            new TestPersistenceStore(settings),
+            new RuntimeHostOptions());
         RuntimeLoopService loopService = new(runtime);
+        RuntimeHealthService runtimeHealthService = new();
         TestSystemGlobalMetricsSampler sampler = systemGlobalMetricsSampler ?? TestSystemGlobalMetricsSampler.Default;
         return new MonitoringShellViewModel(
             gate,
             runtime,
             loopService,
             gateway,
+            runtimeHealthService,
             metadataProvider,
             sampler);
     }

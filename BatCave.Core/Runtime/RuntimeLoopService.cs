@@ -17,7 +17,7 @@ public sealed class TickFaultedEventArgs : EventArgs
     public ulong TsMs { get; init; }
 }
 
-public sealed class RuntimeLoopService
+public sealed class RuntimeLoopService : IRuntimeLoopController
 {
     private const int BaseBackoffMs = 250;
     private const int MaxBackoffMs = 8_000;

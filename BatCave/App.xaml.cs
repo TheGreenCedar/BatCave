@@ -1,23 +1,19 @@
-using BatCave.Core.Abstractions;
-using BatCave.Core.Collector;
-using BatCave.Core.Domain;
-using BatCave.Core.Metadata;
 using BatCave.Core.Operations;
 using BatCave.Core.Persistence;
-using BatCave.Core.Pipeline;
-using BatCave.Core.Policy;
 using BatCave.Core.Runtime;
-using BatCave.Core.Sort;
-using BatCave.Core.State;
+using BatCave.Core.Serialization;
+using BatCave.Hosting;
 using BatCave.Services;
-using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Serilog;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -25,37 +21,68 @@ namespace BatCave;
 
 public partial class App : Application
 {
-    private readonly IHost _host;
+    private static readonly HashSet<string> CliModeFlags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "--print-gate-status",
+        "--benchmark",
+        "--elevated-helper",
+        "--print-runtime-health",
+    };
+
+    private IHost? _host;
     private Window? _window;
     private bool _hostStopped;
-    private bool _runtimeLoopWired;
 
     public App()
     {
         InitializeComponent();
         UnhandledException += OnUnhandledException;
-        AppDomain.CurrentDomain.UnhandledException += OnCurrentDomainUnhandledException;
-        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
-        _host = CreateHost();
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => OnCurrentDomainUnhandledException(eventArgs);
+        TaskScheduler.UnobservedTaskException += (_, eventArgs) => OnUnobservedTaskException(eventArgs);
     }
 
-    public static IServiceProvider Services => ((App)Current)._host.Services;
+    public static IServiceProvider Services
+    {
+        get
+        {
+            App app = (App)Current;
+            return app._host?.Services
+                   ?? throw new InvalidOperationException("Application host has not been initialized.");
+        }
+    }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        string[] commandLineArgs = [.. Environment.GetCommandLineArgs().Skip(1)];
+        bool cliMode = IsCliMode(commandLineArgs);
+
+        _host = CreateHost(CreateRuntimeHostOptions(cliMode));
         await _host.StartAsync();
 
-        string[] commandLineArgs = [.. Environment.GetCommandLineArgs().Skip(1)];
-        if (await TryRunCliModeAsync(commandLineArgs))
+        if (await TryRunCliModeAsync(commandLineArgs, cliMode))
         {
             return;
         }
 
-        StartRuntimeLoopIfAllowed();
         ActivateMainWindow();
     }
 
-    private static IHost CreateHost()
+    private static RuntimeHostOptions CreateRuntimeHostOptions(bool cliMode)
+    {
+        RuntimeHostOptions options = new()
+        {
+            EnableRuntimeLoop = !cliMode,
+            DefaultAdminMode = true,
+            DefaultSortColumn = Core.Domain.SortColumn.CpuPct,
+            DefaultSortDirection = Core.Domain.SortDirection.Desc,
+            DefaultFilterText = string.Empty,
+            DefaultMetricTrendWindowSeconds = 60,
+        };
+
+        return RuntimeHostOptionsValidator.Validate(options);
+    }
+
+    private static IHost CreateHost(RuntimeHostOptions runtimeHostOptions)
     {
         string logDirectory = Path.Combine(LocalJsonPersistenceStore.DefaultBaseDirectory(), "logs");
         Directory.CreateDirectory(logDirectory);
@@ -74,74 +101,52 @@ public partial class App : Application
             .UseSerilog()
             .ConfigureServices(services =>
             {
-                services.AddSingleton<ICliOperationsHost, CliOperationsHost>();
-                services.AddSingleton<ILaunchPolicyGate, WindowsLaunchPolicyGate>();
-
-                services.AddSingleton<IProcessCollectorFactory, DefaultProcessCollectorFactory>();
-                services.AddSingleton<ISystemGlobalMetricsSampler, WindowsSystemGlobalMetricsSampler>();
-                services.AddSingleton<ITelemetryPipeline, DeltaTelemetryPipeline>();
-                services.AddSingleton<IStateStore, InMemoryStateStore>();
-                services.AddSingleton<ISortIndexEngine, PassThroughSortIndexEngine>();
-                services.AddSingleton<IPersistenceStore, LocalJsonPersistenceStore>();
-                services.AddSingleton<IProcessMetadataProvider, ProcessMetadataProvider>();
-
-                services.AddSingleton<MonitoringRuntime>();
-                services.AddSingleton(TimeProvider.System);
-                services.AddSingleton<RuntimeLoopService>();
-                services.AddSingleton<IRuntimeEventGateway, RuntimeGateway>();
-
-                services.AddSingleton<MonitoringShellViewModel>();
-                services.AddSingleton<MainWindow>();
+                services.AddBatCaveRuntimeServices(runtimeHostOptions);
+                services.AddBatCaveUiServices();
             })
             .Build();
     }
 
-    private void StartRuntimeLoopIfAllowed()
+    private async Task<bool> TryRunCliModeAsync(string[] commandLineArgs, bool cliMode)
     {
-        if (_runtimeLoopWired)
-        {
-            return;
-        }
-
-        StartupGateStatus status = _host.Services.GetRequiredService<ILaunchPolicyGate>().Enforce();
-        if (!status.Passed)
-        {
-            return;
-        }
-
-        RuntimeLoopService runtimeLoopService = _host.Services.GetRequiredService<RuntimeLoopService>();
-        IRuntimeEventGateway runtimeEventGateway = _host.Services.GetRequiredService<IRuntimeEventGateway>();
-
-        runtimeLoopService.TickCompleted += (_, outcome) => runtimeEventGateway.Publish(outcome);
-        runtimeLoopService.TickFaulted += (_, fault) => runtimeEventGateway.PublishWarning(new CollectorWarning
-        {
-            Seq = 0,
-            Message =
-                $"runtime loop fault ({fault.ExceptionType}): {fault.Message}. retry in {fault.DelayMs} ms (streak {fault.ConsecutiveFaults}, generation {fault.Generation})",
-        });
-        runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
-
-        _runtimeLoopWired = true;
-    }
-
-    private async Task<bool> TryRunCliModeAsync(string[] commandLineArgs)
-    {
-        ICliOperationsHost cliOperationsHost = _host.Services.GetRequiredService<ICliOperationsHost>();
-        if (!cliOperationsHost.IsCliMode(commandLineArgs))
+        if (!cliMode || _host is null)
         {
             return false;
         }
 
-        int exitCode = WinUiBenchmarkCliRunner.IsBenchmarkCommand(commandLineArgs)
-            ? await WinUiBenchmarkCliRunner.ExecuteAsync(_host.Services, commandLineArgs, CancellationToken.None)
-            : await cliOperationsHost.ExecuteAsync(commandLineArgs, CancellationToken.None);
+        ICliOperationsHost cliOperationsHost = _host.Services.GetRequiredService<ICliOperationsHost>();
+        int exitCode;
+        if (commandLineArgs.Any(argument => string.Equals(argument, "--print-runtime-health", StringComparison.OrdinalIgnoreCase)))
+        {
+            RuntimeHealthSnapshot snapshot = _host.Services.GetRequiredService<IRuntimeHealthService>().Snapshot();
+            Console.WriteLine(JsonSerializer.Serialize(snapshot, JsonDefaults.SnakeCase));
+            exitCode = 0;
+        }
+        else
+        {
+            exitCode = WinUiBenchmarkCliRunner.IsBenchmarkCommand(commandLineArgs)
+                ? await WinUiBenchmarkCliRunner.ExecuteAsync(_host.Services, commandLineArgs, CancellationToken.None)
+                : await cliOperationsHost.ExecuteAsync(commandLineArgs, CancellationToken.None);
+        }
+
         await ShutdownHostAsync();
-        Environment.Exit(exitCode);
+        Environment.ExitCode = exitCode;
+        Exit();
         return true;
+    }
+
+    private static bool IsCliMode(string[] args)
+    {
+        return args.Any(CliModeFlags.Contains);
     }
 
     private void ActivateMainWindow()
     {
+        if (_host is null)
+        {
+            throw new InvalidOperationException("Application host has not been initialized.");
+        }
+
         _window = _host.Services.GetRequiredService<MainWindow>();
         _window.Closed += OnWindowClosed;
         _window.Activate();
@@ -161,33 +166,74 @@ public partial class App : Application
 
         _hostStopped = true;
 
-        RuntimeLoopService? runtimeLoopService = _host.Services.GetService<RuntimeLoopService>();
-        runtimeLoopService?.StopAndAdvanceGeneration();
+        IHost? host = _host;
+        _host = null;
+        if (host is not null)
+        {
+            await host.StopAsync();
+            host.Dispose();
+        }
 
-        await _host.StopAsync();
-        _host.Dispose();
         Log.CloseAndFlush();
     }
 
     private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
     {
-        Log.Error(e.Exception, "Unhandled UI exception: {Message}", e.Message);
-    }
-
-    private static void OnCurrentDomainUnhandledException(object? sender, System.UnhandledExceptionEventArgs e)
-    {
-        if (e.ExceptionObject is Exception exception)
+        ILogger<App>? logger = _host?.Services.GetService<ILogger<App>>();
+        if (logger is not null)
         {
-            Log.Fatal(exception, "Unhandled domain exception. IsTerminating={IsTerminating}", e.IsTerminating);
+            logger.LogError(e.Exception, "Unhandled UI exception: {Message}", e.Message);
             return;
         }
 
-        Log.Fatal("Unhandled domain exception object of type {Type}. IsTerminating={IsTerminating}", e.ExceptionObject?.GetType().FullName ?? "unknown", e.IsTerminating);
+        Log.Error(e.Exception, "Unhandled UI exception: {Message}", e.Message);
     }
 
-    private static void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    private void OnCurrentDomainUnhandledException(System.UnhandledExceptionEventArgs e)
     {
-        Log.Error(e.Exception, "Unobserved task exception.");
+        ILogger<App>? logger = _host?.Services.GetService<ILogger<App>>();
+        if (e.ExceptionObject is Exception exception)
+        {
+            if (logger is not null)
+            {
+                logger.LogCritical(exception, "Unhandled domain exception. IsTerminating={IsTerminating}", e.IsTerminating);
+            }
+            else
+            {
+                Log.Fatal(exception, "Unhandled domain exception. IsTerminating={IsTerminating}", e.IsTerminating);
+            }
+
+            return;
+        }
+
+        if (logger is not null)
+        {
+            logger.LogCritical(
+                "Unhandled domain exception object of type {Type}. IsTerminating={IsTerminating}",
+                e.ExceptionObject?.GetType().FullName ?? "unknown",
+                e.IsTerminating);
+        }
+        else
+        {
+            Log.Fatal(
+                "Unhandled domain exception object of type {Type}. IsTerminating={IsTerminating}",
+                e.ExceptionObject?.GetType().FullName ?? "unknown",
+                e.IsTerminating);
+        }
+    }
+
+    private void OnUnobservedTaskException(UnobservedTaskExceptionEventArgs e)
+    {
+        ILogger<App>? logger = _host?.Services.GetService<ILogger<App>>();
+        if (logger is not null)
+        {
+            logger.LogError(e.Exception, "Unobserved task exception.");
+        }
+        else
+        {
+            Log.Error(e.Exception, "Unobserved task exception.");
+        }
+
         e.SetObserved();
     }
 }

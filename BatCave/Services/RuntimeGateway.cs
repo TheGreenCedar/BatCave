@@ -26,6 +26,7 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
     private const int TelemetryChannelCapacity = 64;
     private static readonly TimeSpan TelemetryFrameWindow = TimeSpan.FromMilliseconds(33);
 
+    private readonly IRuntimeHealthService _runtimeHealthService;
     private readonly Dictionary<ProcessIdentity, ProcessSample> _pendingUpserts = new();
     private readonly HashSet<ProcessIdentity> _pendingExits = [];
     private readonly Channel<ProcessDeltaBatch> _telemetryChannel;
@@ -35,8 +36,9 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
     private bool _hasPendingTelemetry;
     private int _disposeSignaled;
 
-    public RuntimeGateway()
+    public RuntimeGateway(IRuntimeHealthService runtimeHealthService)
     {
+        _runtimeHealthService = runtimeHealthService;
         _telemetryChannel = Channel.CreateBounded<ProcessDeltaBatch>(new BoundedChannelOptions(TelemetryChannelCapacity)
         {
             SingleReader = true,
@@ -55,20 +57,22 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
 
     public void Publish(TickOutcome outcome)
     {
-        if (ShouldEmitTelemetryDelta(outcome))
-        {
-            TryQueueTelemetryDelta(outcome.Delta);
-        }
-
         if (Volatile.Read(ref _disposeSignaled) == 1)
         {
             return;
         }
 
+        if (ShouldEmitTelemetryDelta(outcome))
+        {
+            TryQueueTelemetryDelta(outcome.Delta);
+        }
+
+        _runtimeHealthService.ReportHealth(outcome.Health);
         RuntimeHealthChanged?.Invoke(this, outcome.Health);
 
         if (outcome.Warning is not null)
         {
+            _runtimeHealthService.ReportWarning(outcome.Warning);
             CollectorWarningRaised?.Invoke(this, outcome.Warning);
         }
     }
@@ -80,6 +84,7 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
             return;
         }
 
+        _runtimeHealthService.ReportWarning(warning);
         CollectorWarningRaised?.Invoke(this, warning);
     }
 

@@ -15,7 +15,8 @@ internal static class RuntimeTestHarness
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
-            persistenceStore);
+            persistenceStore,
+            new RuntimeHostOptions());
     }
 
     private sealed class DelegatingCollectorFactory : IProcessCollectorFactory

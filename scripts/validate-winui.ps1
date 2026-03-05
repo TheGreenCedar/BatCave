@@ -8,10 +8,13 @@ param(
     [string]$BaselineArtifactPath = "",
     [string]$MinSpeedupMultiplier = "10",
     [string]$MaxP95Ms = "",
-    [switch]$RunPerformanceGate
+    [switch]$RunPerformanceGate,
+    [switch]$SkipLaunchSmoke,
+    [int]$LaunchTimeoutSeconds = 25
 )
 
 $ErrorActionPreference = "Stop"
+$isScriptHarness = -not [string]::IsNullOrWhiteSpace($env:FAKE_DOTNET_LOG)
 
 function Assert-LastExitCode {
     param(
@@ -23,7 +26,89 @@ function Assert-LastExitCode {
     }
 }
 
+function Invoke-RuntimeHealthDiagnostics {
+    param(
+        [string]$ProjectPath,
+        [string]$RuntimePlatform
+    )
+
+    Write-Host "Verifying runtime health diagnostics surface..."
+    $output = dotnet run --project $ProjectPath "-p:Platform=$RuntimePlatform" -- --print-runtime-health
+    Assert-LastExitCode "dotnet run -- --print-runtime-health"
+
+    $payload = $output | Out-String
+    if ([string]::IsNullOrWhiteSpace($payload)) {
+        throw "Runtime health diagnostics surface produced no output."
+    }
+
+    $json = $payload | ConvertFrom-Json
+    if ($null -eq $json -or $null -eq $json.runtime_loop_enabled) {
+        throw "Runtime health diagnostics payload is missing expected fields."
+    }
+
+    Write-Host "Runtime health diagnostics verified."
+}
+
+function Invoke-WinUiLaunchSmoke {
+    param(
+        [string]$ProjectPath,
+        [string]$RuntimePlatform,
+        [int]$TimeoutSeconds
+    )
+
+    Write-Host "Running WinUI launch smoke verification..."
+    $runner = $null
+    $appProcess = $null
+
+    $existingIds = @(Get-Process -Name "BatCave" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+
+    try {
+        $runner = Start-Process `
+            -FilePath "dotnet" `
+            -ArgumentList @("run", "--project", $ProjectPath, "-p:Platform=$RuntimePlatform") `
+            -PassThru
+
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while ((Get-Date) -lt $deadline) {
+            $candidates = Get-Process -Name "BatCave" -ErrorAction SilentlyContinue | Where-Object {
+                $_.MainWindowHandle -ne 0 -and $existingIds -notcontains $_.Id
+            }
+
+            if ($candidates) {
+                $appProcess = $candidates | Select-Object -First 1
+                break
+            }
+
+            if ($runner.HasExited) {
+                throw "dotnet run exited before BatCave opened a top-level window."
+            }
+
+            Start-Sleep -Milliseconds 250
+        }
+
+        if ($null -eq $appProcess) {
+            throw "BatCave launch smoke failed: no top-level window detected within ${TimeoutSeconds}s."
+        }
+
+        if ([string]::IsNullOrWhiteSpace($appProcess.MainWindowTitle)) {
+            throw "BatCave launch smoke failed: main window title was empty."
+        }
+
+        Write-Host "Launch smoke verified (PID=$($appProcess.Id), Title='$($appProcess.MainWindowTitle)')."
+    }
+    finally {
+        if ($appProcess -and -not $appProcess.HasExited) {
+            Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+        }
+
+        if ($runner -and -not $runner.HasExited) {
+            Stop-Process -Id $runner.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$projectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
 Push-Location $repoRoot
 try {
     Write-Host "Validating WinUI compile path (Platform=$Platform)..."
@@ -68,6 +153,22 @@ try {
 
         & "$PSScriptRoot/run-benchmark.ps1" @benchmarkArgs
         Assert-LastExitCode "scripts/run-benchmark.ps1 strict gate"
+    }
+
+    if ($isScriptHarness) {
+        Write-Host "Skipping runtime health diagnostics (script harness mode)."
+    }
+    else {
+        Invoke-RuntimeHealthDiagnostics -ProjectPath $projectPath -RuntimePlatform $Platform
+    }
+
+    if ($isScriptHarness) {
+        Write-Host "Skipping launch smoke verification (script harness mode)."
+    }
+    elseif (-not $SkipLaunchSmoke) {
+        Invoke-WinUiLaunchSmoke -ProjectPath $projectPath -RuntimePlatform $Platform -TimeoutSeconds $LaunchTimeoutSeconds
+    } else {
+        Write-Host "Skipping launch smoke verification."
     }
 
     Write-Host "Validation complete."

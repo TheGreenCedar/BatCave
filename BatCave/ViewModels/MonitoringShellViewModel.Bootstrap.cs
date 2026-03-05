@@ -1,4 +1,6 @@
 using BatCave.Core.Domain;
+using BatCave.Services;
+using CommunityToolkit.Mvvm.Input;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -55,6 +57,12 @@ public partial class MonitoringShellViewModel
     public Task RetryBootstrapAsync(CancellationToken ct)
     {
         return BootstrapAsync(ct);
+    }
+
+    [RelayCommand]
+    private Task RetryBootstrapRequestedAsync()
+    {
+        return RetryBootstrapAsync(CancellationToken.None);
     }
 
     public async Task ToggleAdminModeAsync(bool nextAdminMode, CancellationToken ct)
@@ -114,6 +122,7 @@ public partial class MonitoringShellViewModel
 
     private void InitializeBootstrapState()
     {
+        RuntimeHealthSnapshot healthSnapshot = _runtimeHealthService.Snapshot();
         IsLoading = true;
         IsStartupError = false;
         IsBlocked = false;
@@ -123,6 +132,7 @@ public partial class MonitoringShellViewModel
         StartupErrorMessage = string.Empty;
         ShellHeadline = "Initializing monitor runtime...";
         ShellBody = "Starting monitoring services.";
+        RuntimeHealthStatus = healthSnapshot.StatusSummary;
     }
 
     private void ApplyBlockedStartupState(StartupGateStatus startupGateStatus)

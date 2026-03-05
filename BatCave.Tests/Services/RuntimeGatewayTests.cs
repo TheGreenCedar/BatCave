@@ -10,7 +10,7 @@ public class RuntimeGatewayTests
     [Fact]
     public async Task Publish_WhenSuppressedAndDeltaIsEmpty_DoesNotRaiseTelemetryDelta_ButRaisesHealth()
     {
-        using RuntimeGateway gateway = new();
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
         int telemetryRaised = 0;
         int healthRaised = 0;
 
@@ -38,7 +38,7 @@ public class RuntimeGatewayTests
     [Fact]
     public async Task Publish_WhenSuppressedButDeltaHasChanges_EmitsEventually()
     {
-        using RuntimeGateway gateway = new();
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
         TaskCompletionSource<ProcessDeltaBatch> emitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         gateway.TelemetryDelta += (_, delta) => emitted.TrySetResult(delta);
@@ -67,7 +67,7 @@ public class RuntimeGatewayTests
     [Fact]
     public async Task Publish_WhenRapidDeltasArrive_CoalescesToLatestState()
     {
-        using RuntimeGateway gateway = new();
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
         List<ProcessDeltaBatch> emitted = [];
         object sync = new();
 
@@ -140,7 +140,7 @@ public class RuntimeGatewayTests
     [Fact]
     public async Task Publish_BurstingTelemetry_EmitsAtFrameCadence()
     {
-        using RuntimeGateway gateway = new();
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
         List<long> emissionMs = [];
         object sync = new();
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -189,7 +189,7 @@ public class RuntimeGatewayTests
     [Fact]
     public async Task Publish_WhenQueueOverflows_PreservesLatestTruthWithExitSupersedingUpsert()
     {
-        using RuntimeGateway gateway = new();
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
         TaskCompletionSource<ProcessDeltaBatch> emitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         ProcessIdentity identity = Sample(pid: 900, seq: 1).Identity();
 
@@ -238,7 +238,7 @@ public class RuntimeGatewayTests
     [Fact]
     public void Publish_HealthAndWarningRemainImmediateAndIndependent()
     {
-        using RuntimeGateway gateway = new();
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
         int healthRaised = 0;
         int warningRaised = 0;
 
@@ -278,7 +278,7 @@ public class RuntimeGatewayTests
     [Fact]
     public async Task Dispose_CancelsCoalescerAndDrainsPendingTelemetry()
     {
-        RuntimeGateway gateway = new();
+        RuntimeGateway gateway = new(new RuntimeHealthService());
         TaskCompletionSource<ProcessDeltaBatch> emitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         gateway.TelemetryDelta += (_, delta) => emitted.TrySetResult(delta);
@@ -305,7 +305,7 @@ public class RuntimeGatewayTests
     [Fact]
     public void PublishWarning_RaisesCollectorWarningEvent()
     {
-        using RuntimeGateway gateway = new();
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
         CollectorWarning? captured = null;
 
         gateway.CollectorWarningRaised += (_, warning) => captured = warning;

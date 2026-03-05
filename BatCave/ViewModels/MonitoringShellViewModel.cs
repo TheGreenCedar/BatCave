@@ -4,7 +4,6 @@ using BatCave.Core.Runtime;
 using BatCave.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DynamicData;
-using DynamicData.Binding;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using System;
@@ -38,6 +37,7 @@ public partial class MonitoringShellViewModel : ObservableObject
     private readonly MonitoringRuntime _runtime;
     private readonly RuntimeLoopService _runtimeLoopService;
     private readonly IRuntimeEventGateway _runtimeEventGateway;
+    private readonly IRuntimeHealthService _runtimeHealthService;
     private readonly IProcessMetadataProvider _metadataProvider;
     private readonly ISystemGlobalMetricsSampler _systemGlobalMetricsSampler;
 
@@ -121,6 +121,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         MonitoringRuntime runtime,
         RuntimeLoopService runtimeLoopService,
         IRuntimeEventGateway runtimeEventGateway,
+        IRuntimeHealthService runtimeHealthService,
         IProcessMetadataProvider metadataProvider,
         ISystemGlobalMetricsSampler systemGlobalMetricsSampler)
     {
@@ -128,6 +129,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         _runtime = runtime;
         _runtimeLoopService = runtimeLoopService;
         _runtimeEventGateway = runtimeEventGateway;
+        _runtimeHealthService = runtimeHealthService;
         _metadataProvider = metadataProvider;
         _systemGlobalMetricsSampler = systemGlobalMetricsSampler;
 
@@ -146,6 +148,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         ApplyCanonicalShaping();
         EnsureGlobalMetricsSamplingStarted();
         RefreshGlobalPerformanceState(new SystemGlobalMetricsSample());
+        RuntimeHealthStatus = _runtimeHealthService.Snapshot().StatusSummary;
     }
 
     public IReadOnlyList<ProcessRowViewState> VisibleRows => _visibleRows;

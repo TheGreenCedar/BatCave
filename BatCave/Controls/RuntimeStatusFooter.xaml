@@ -1,0 +1,26 @@
+<UserControl
+    x:Class="BatCave.Controls.RuntimeStatusFooter"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <StackPanel Spacing="4">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock FontWeight="SemiBold" Text="Runtime Health:" />
+            <TextBlock
+                AutomationProperties.LiveSetting="Polite"
+                AutomationProperties.Name="Runtime Health Status"
+                Text="{Binding RuntimeHealthStatus, Mode=OneWay}"
+                TextWrapping="Wrap" />
+        </StackPanel>
+        <TextBlock
+            AutomationProperties.LiveSetting="Polite"
+            AutomationProperties.Name="Interaction Timing Probe"
+            FontFamily="Cascadia Mono"
+            Opacity="0.8"
+            Text="{Binding InteractionTimingProbe, Mode=OneWay}"
+            TextWrapping="WrapWholeWords" />
+    </StackPanel>
+</UserControl>

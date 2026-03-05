@@ -69,5 +69,6 @@
     <Authors>TheGreenCedar</Authors>
     <PackageIcon>Square150x150Logo.scale-200.png</PackageIcon>
     <RepositoryType>git</RepositoryType>
+    <ApplicationIcon>Assets\BatCaveLogo.ico</ApplicationIcon>
   </PropertyGroup>
 </Project>
