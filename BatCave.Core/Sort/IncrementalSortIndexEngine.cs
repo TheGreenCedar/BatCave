@@ -318,6 +318,7 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
             SortColumn.IoReadBps => left.IoReadBps.CompareTo(right.IoReadBps),
             SortColumn.IoWriteBps => left.IoWriteBps.CompareTo(right.IoWriteBps),
             SortColumn.OtherIoBps => left.OtherIoBps.CompareTo(right.OtherIoBps),
+            SortColumn.DiskBps => SaturatingSum(left.IoReadBps, left.IoWriteBps).CompareTo(SaturatingSum(right.IoReadBps, right.IoWriteBps)),
             SortColumn.Threads => left.Threads.CompareTo(right.Threads),
             SortColumn.Handles => left.Handles.CompareTo(right.Handles),
             SortColumn.StartTimeMs => left.StartTimeMs.CompareTo(right.StartTimeMs),
@@ -325,6 +326,11 @@ public sealed class IncrementalSortIndexEngine : ISortIndexEngine
         };
 
         return sortDir == SortDirection.Asc ? ordering : -ordering;
+    }
+
+    private static ulong SaturatingSum(ulong left, ulong right)
+    {
+        return ulong.MaxValue - left < right ? ulong.MaxValue : left + right;
     }
 
     private sealed class SortCache

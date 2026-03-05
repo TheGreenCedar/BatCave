@@ -307,6 +307,7 @@ public partial class MonitoringShellViewModel
         OnPropertyChanged(nameof(IsGlobalMetricsReady));
         OnPropertyChanged(nameof(GlobalPerformanceContentVisibility));
         OnPropertyChanged(nameof(GlobalPerformanceSkeletonVisibility));
+        RaiseCompactTableProperties();
         BuildAndAppendResourceRows(sampled);
         QueueGlobalDetailStateRefresh();
     }

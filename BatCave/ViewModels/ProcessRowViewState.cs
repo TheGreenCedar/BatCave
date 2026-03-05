@@ -19,13 +19,15 @@ public sealed class ProcessRowViewState : ObservableObject
     private string _ioReadText;
     private string _ioWriteText;
     private string _otherIoText;
+    private string _diskText;
+    private string _networkText;
 
     public ProcessRowViewState(ProcessSample sample, IReadOnlyList<Point> cpuTrendGeometry, double[]? cpuTrendValues = null)
     {
         _sample = sample;
         _cpuTrendGeometry = cpuTrendGeometry;
         _cpuTrendValues = cpuTrendValues ?? [];
-        (_cpuText, _rssText, _ioReadText, _ioWriteText, _otherIoText) = CreateDisplayText(sample);
+        (_cpuText, _rssText, _ioReadText, _ioWriteText, _otherIoText, _diskText, _networkText) = CreateDisplayText(sample);
     }
 
     public ProcessSample Sample => _sample;
@@ -49,6 +51,8 @@ public sealed class ProcessRowViewState : ObservableObject
     public ulong IoWriteBps => _sample.IoWriteBps;
 
     public ulong OtherIoBps => _sample.OtherIoBps;
+
+    public ulong DiskBps => SaturatingAdd(_sample.IoReadBps, _sample.IoWriteBps);
 
     public string CpuText
     {
@@ -78,6 +82,18 @@ public sealed class ProcessRowViewState : ObservableObject
     {
         get => _otherIoText;
         private set => SetProperty(ref _otherIoText, value);
+    }
+
+    public string DiskText
+    {
+        get => _diskText;
+        private set => SetProperty(ref _diskText, value);
+    }
+
+    public string NetworkText
+    {
+        get => _networkText;
+        private set => SetProperty(ref _networkText, value);
     }
 
     public uint Threads => _sample.Threads;
@@ -197,14 +213,16 @@ public sealed class ProcessRowViewState : ObservableObject
         return $"{cpuPct:F2}%";
     }
 
-    private static (string Cpu, string Rss, string IoRead, string IoWrite, string OtherIo) CreateDisplayText(ProcessSample sample)
+    private static (string Cpu, string Rss, string IoRead, string IoWrite, string OtherIo, string Disk, string Network) CreateDisplayText(ProcessSample sample)
     {
         return (
             FormatCpu(sample.CpuPct),
             ValueFormat.FormatBytes(sample.RssBytes),
             ValueFormat.FormatRate(sample.IoReadBps),
             ValueFormat.FormatRate(sample.IoWriteBps),
-            ValueFormat.FormatRate(sample.OtherIoBps));
+            ValueFormat.FormatRate(sample.OtherIoBps),
+            ValueFormat.FormatRate(SaturatingAdd(sample.IoReadBps, sample.IoWriteBps)),
+            ValueFormat.FormatBitsRateFromBytes(sample.OtherIoBps));
     }
 
     private void RaiseSamplePropertyChanges(ProcessSample previous, ProcessSample current)
@@ -226,9 +244,30 @@ public sealed class ProcessRowViewState : ObservableObject
         }
 
         UpdateFormattedMetricIfChanged(previous.RssBytes, current.RssBytes, nameof(RssBytes), value => RssText = value, ValueFormat.FormatBytes);
-        UpdateFormattedMetricIfChanged(previous.IoReadBps, current.IoReadBps, nameof(IoReadBps), value => IoReadText = value, ValueFormat.FormatRate);
-        UpdateFormattedMetricIfChanged(previous.IoWriteBps, current.IoWriteBps, nameof(IoWriteBps), value => IoWriteText = value, ValueFormat.FormatRate);
-        UpdateFormattedMetricIfChanged(previous.OtherIoBps, current.OtherIoBps, nameof(OtherIoBps), value => OtherIoText = value, ValueFormat.FormatRate);
+        bool ioReadChanged = RaiseIfChanged(previous.IoReadBps, current.IoReadBps, nameof(IoReadBps));
+        if (ioReadChanged)
+        {
+            IoReadText = ValueFormat.FormatRate(current.IoReadBps);
+        }
+
+        bool ioWriteChanged = RaiseIfChanged(previous.IoWriteBps, current.IoWriteBps, nameof(IoWriteBps));
+        if (ioWriteChanged)
+        {
+            IoWriteText = ValueFormat.FormatRate(current.IoWriteBps);
+        }
+
+        if (ioReadChanged || ioWriteChanged)
+        {
+            OnPropertyChanged(nameof(DiskBps));
+            DiskText = ValueFormat.FormatRate(SaturatingAdd(current.IoReadBps, current.IoWriteBps));
+        }
+
+        bool otherIoChanged = RaiseIfChanged(previous.OtherIoBps, current.OtherIoBps, nameof(OtherIoBps));
+        if (otherIoChanged)
+        {
+            OtherIoText = ValueFormat.FormatRate(current.OtherIoBps);
+            NetworkText = ValueFormat.FormatBitsRateFromBytes(current.OtherIoBps);
+        }
 
         RaiseIfChanged(previous.Threads, current.Threads, nameof(Threads));
         RaiseIfChanged(previous.Handles, current.Handles, nameof(Handles));
@@ -257,5 +296,11 @@ public sealed class ProcessRowViewState : ObservableObject
         }
 
         return false;
+    }
+
+    private static ulong SaturatingAdd(ulong left, ulong right)
+    {
+        ulong maxAdd = ulong.MaxValue - left;
+        return right > maxAdd ? ulong.MaxValue : left + right;
     }
 }

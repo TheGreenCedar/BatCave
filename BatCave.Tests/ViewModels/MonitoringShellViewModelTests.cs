@@ -214,6 +214,167 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task Bootstrap_LoadsPersistedProcessTableModeSetting()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            settings: new UserSettings
+            {
+                ProcessTableAdvancedMode = true,
+                AdminPreferenceInitialized = true,
+            });
+
+        Assert.True(viewModel.IsAdvancedProcessTableMode);
+        Assert.False(viewModel.IsCompactProcessTableMode);
+        Assert.Equal(Visibility.Visible, viewModel.AdvancedProcessTableVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.CompactProcessTableVisibility);
+    }
+
+    [Fact]
+    public async Task ProcessTableModeToggled_PersistsThroughRuntimeSettings()
+    {
+        TestPersistenceStore store = new(new UserSettings
+        {
+            AdminPreferenceInitialized = true,
+            ProcessTableAdvancedMode = false,
+        });
+        MonitoringRuntime runtime = new(
+            new TestCollectorFactory(),
+            new DeltaTelemetryPipeline(),
+            new InMemoryStateStore(),
+            new IncrementalSortIndexEngine(),
+            store,
+            new RuntimeHostOptions());
+        RuntimeLoopService loopService = new(runtime);
+        RuntimeHealthService runtimeHealthService = new();
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = new(
+            CreatePassedGate(),
+            runtime,
+            loopService,
+            gateway,
+            runtimeHealthService,
+            CreateNullMetadataProvider(),
+            TestSystemGlobalMetricsSampler.Default);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+        Assert.False(viewModel.IsAdvancedProcessTableMode);
+
+        viewModel.ProcessTableModeToggledCommand.Execute(true);
+        Assert.True(viewModel.IsAdvancedProcessTableMode);
+        Assert.True(runtime.CurrentProcessTableAdvancedMode);
+
+        viewModel.ProcessTableModeToggledCommand.Execute(false);
+        Assert.False(viewModel.IsAdvancedProcessTableMode);
+        Assert.False(runtime.CurrentProcessTableAdvancedMode);
+    }
+
+    [Fact]
+    public async Task CompactSortState_HiddenAdvancedSort_IsSurfacedWithoutFallback()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        viewModel.ChangeSort(SortColumn.Handles);
+
+        Assert.Equal(SortColumn.Handles, viewModel.CurrentSortColumn);
+        Assert.True(viewModel.IsCompactHiddenSortActive);
+        Assert.Equal(Visibility.Visible, viewModel.CompactHiddenSortActiveVisibility);
+        Assert.Contains("Handles", viewModel.CompactHiddenSortActiveLabel, StringComparison.Ordinal);
+        Assert.False(viewModel.IsCompactNameSortActive);
+        Assert.False(viewModel.IsCompactCpuSortActive);
+        Assert.False(viewModel.IsCompactMemorySortActive);
+        Assert.False(viewModel.IsCompactDiskSortActive);
+        Assert.False(viewModel.IsCompactNetworkSortActive);
+    }
+
+    [Fact]
+    public async Task CompactSortHeader_DiskUsesDiskBpsSortColumn()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        viewModel.CompactSortHeaderCommand.Execute("DiskBps");
+
+        Assert.Equal(SortColumn.DiskBps, viewModel.CurrentSortColumn);
+        Assert.True(viewModel.IsCompactDiskSortActive);
+        Assert.False(viewModel.IsCompactHiddenSortActive);
+    }
+
+    [Fact]
+    public async Task CompactTableTotals_UseGlobalPercentagesAndRowDiskNetworkFormatting()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(CreateSystemGlobalMetricsSample(
+            tsMs: 100,
+            cpuPct: 34.2,
+            memoryUsedBytes: 58 * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0,
+            memorySnapshot: new SystemGlobalMemorySnapshot
+            {
+                UsedBytes = 58 * 1024UL * 1024UL,
+                TotalBytes = 100 * 1024UL * 1024UL,
+            },
+            diskSnapshots:
+            [
+                new SystemGlobalDiskSnapshot
+                {
+                    DiskId = "d0",
+                    DisplayName = "Disk 0",
+                    ActiveTimePct = 24.4,
+                },
+            ],
+            networkSnapshots:
+            [
+                new SystemGlobalNetworkSnapshot
+                {
+                    AdapterId = "n0",
+                    DisplayName = "Ethernet",
+                    SendBps = 20_000_000UL,
+                    ReceiveBps = 40_000_000UL,
+                    LinkSpeedBps = 1_000_000_000UL,
+                },
+            ]));
+
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        ProcessSample first = Sample(pid: 210, startTime: 2100, access: AccessState.Full) with
+        {
+            CpuPct = 4.5,
+            RssBytes = 2 * 1024UL * 1024UL,
+            IoReadBps = 4000UL,
+            IoWriteBps = 1000UL,
+            OtherIoBps = 2500UL,
+        };
+        ProcessSample second = Sample(pid: 211, startTime: 2110, access: AccessState.Full) with
+        {
+            CpuPct = 10.25,
+            RssBytes = 3 * 1024UL * 1024UL,
+            IoReadBps = 3000UL,
+            IoWriteBps = 2000UL,
+            OtherIoBps = 3500UL,
+        };
+
+        gateway.RaiseDelta(1, [first, second], []);
+        gateway.RaiseDelta(2, [first with { Seq = 2, TsMs = 2 }, second with { Seq = 2, TsMs = 2 }], []);
+
+        Assert.Equal("2 processes", viewModel.CompactNameTotalLabel);
+        Assert.Equal("34%", viewModel.CompactCpuTotalLabel);
+        Assert.Equal("58%", viewModel.CompactMemoryTotalLabel);
+        Assert.Equal("24%", viewModel.CompactDiskTotalLabel);
+        Assert.Equal("6%", viewModel.CompactNetworkTotalLabel);
+
+        ProcessRowViewState firstRow = GetVisibleRows(viewModel).Single(row => row.Pid == first.Pid);
+        Assert.Equal(ValueFormat.FormatRate(first.IoReadBps + first.IoWriteBps), firstRow.DiskText);
+        Assert.Equal(ValueFormat.FormatBitsRateFromBytes(first.OtherIoBps), firstRow.NetworkText);
+    }
+
+    [Fact]
     public async Task MetricTrendWindowSelected_SwitchesDisplayedTrendLength()
     {
         TestRuntimeEventGateway gateway = new();

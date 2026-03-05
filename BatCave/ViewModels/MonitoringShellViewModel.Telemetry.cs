@@ -152,6 +152,7 @@ public partial class MonitoringShellViewModel
 
         SelectedVisibleRow = ResolveSelectedVisibleRow();
         RefreshDetailMetrics();
+        RaiseCompactTableProperties();
     }
 
     private ProcessRowViewState GetOrCreateVisibleRowState(ProcessSample sample)

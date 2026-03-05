@@ -88,6 +88,7 @@ public enum SortColumn
     Threads,
     Handles,
     StartTimeMs,
+    DiskBps,
 }
 
 public enum SortDirection
@@ -366,6 +367,8 @@ public sealed record UserSettings
     public bool AdminPreferenceInitialized { get; init; }
 
     public int MetricTrendWindowSeconds { get; init; } = 60;
+
+    public bool ProcessTableAdvancedMode { get; init; } = false;
 }
 
 public sealed record WarmCache

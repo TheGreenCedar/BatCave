@@ -81,6 +81,10 @@ public interface IMonitoringRuntime
 
     void SetMetricTrendWindowSeconds(int seconds);
 
+    bool CurrentProcessTableAdvancedMode { get; }
+
+    void SetProcessTableAdvancedMode(bool enabled);
+
     Task RestartAsync(bool adminMode, CancellationToken ct);
 
     void RecordDroppedTicks(ulong dropped);

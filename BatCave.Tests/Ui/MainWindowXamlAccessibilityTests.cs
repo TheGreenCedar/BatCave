@@ -54,6 +54,30 @@ public class MainWindowXamlAccessibilityTests
         Assert.DoesNotContain("ViewModel.AdminErrorVisibility", xaml, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MainWindowXaml_CompactProcessTable_UsesTaskManagerColumnsAndDiskBpsSort()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"CompactProcessListView\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"Compact Process Table\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Command=\"{x:Bind ViewModel.CompactSortHeaderCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("CommandParameter=\"DiskBps\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{x:Bind DiskText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{x:Bind NetworkText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_HasProcessTableModeToggleAndHiddenSortIndicator()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"ProcessTableModeToggle\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"Advanced Columns\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"Advanced process columns toggle\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"Hidden compact sort indicator\"", xaml, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

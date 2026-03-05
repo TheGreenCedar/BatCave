@@ -139,6 +139,23 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         PersistSettings();
     }
 
+    public bool CurrentProcessTableAdvancedMode => _settings.ProcessTableAdvancedMode;
+
+    public void SetProcessTableAdvancedMode(bool enabled)
+    {
+        if (_settings.ProcessTableAdvancedMode == enabled)
+        {
+            return;
+        }
+
+        _settings = _settings with
+        {
+            ProcessTableAdvancedMode = enabled,
+        };
+
+        PersistSettings();
+    }
+
     private void UpdateSettingsAndQuery(
         Func<UserSettings, UserSettings> settingsUpdater,
         Func<QueryRequest, QueryRequest> queryUpdater)
@@ -243,6 +260,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             AdminMode = _runtimeHostOptions.DefaultAdminMode,
             AdminPreferenceInitialized = true,
             MetricTrendWindowSeconds = _runtimeHostOptions.DefaultMetricTrendWindowSeconds,
+            ProcessTableAdvancedMode = _runtimeHostOptions.DefaultProcessTableAdvancedMode,
         };
     }
 

@@ -74,6 +74,8 @@ public sealed class ProcessRowViewStateTests
         Assert.EndsWith("/s", state.IoReadText, StringComparison.Ordinal);
         Assert.EndsWith("/s", state.IoWriteText, StringComparison.Ordinal);
         Assert.EndsWith("/s", state.OtherIoText, StringComparison.Ordinal);
+        Assert.Equal("9.0 KB/s", state.DiskText);
+        Assert.Equal("49.2 Kbps", state.NetworkText);
         Assert.Contains("KB", state.RssText, StringComparison.Ordinal);
     }
 
