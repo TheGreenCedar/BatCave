@@ -37,7 +37,7 @@ public partial class MonitoringShellViewModel
             TrackUpsert(identity, upsert, hadPrevious ? previous : null);
 
             ProcessRowViewState rowState = GetOrCreateVisibleRowState(upsert);
-            bool projectionChanged = UpdateVisibleRowForUpsert(identity, rowState, upsert);
+            bool projectionChanged = UpdateVisibleRowForUpsert(identity, rowState, upsert, hadPrevious ? previous : null);
             if (projectionChanged)
             {
                 changedProjectionRows ??= [];
@@ -201,6 +201,17 @@ public partial class MonitoringShellViewModel
             || current.AccessState != next.AccessState;
     }
 
+    private static bool ShouldRefreshRowSparkline(ProcessSample? previous, ProcessSample current)
+    {
+        if (previous is null)
+        {
+            return true;
+        }
+
+        return ProcessRowViewState.IsCpuSortBucketChanged(previous.CpuPct, current.CpuPct)
+               || current.Seq % RowSparklineStride == 0;
+    }
+
     private void AppendHeartbeatSamplesIfNeeded(ulong seq)
     {
         AppendSelectedHeartbeatSample(seq);
@@ -264,7 +275,7 @@ public partial class MonitoringShellViewModel
             {
                 IReadOnlyList<double> cpuTrend = GetRowCpuTrendSource(identity, sample);
                 rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(cpuTrend));
-                rowState.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount, forceRenderTick: true);
+                rowState.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount);
             }
         }
     }
@@ -326,7 +337,8 @@ public partial class MonitoringShellViewModel
     private bool UpdateVisibleRowForUpsert(
         ProcessIdentity identity,
         ProcessRowViewState rowState,
-        ProcessSample upsert)
+        ProcessSample upsert,
+        ProcessSample? previous)
     {
         bool projectionChanged = false;
         if (ShouldReplaceVisibleRow(rowState.Sample, upsert))
@@ -335,11 +347,11 @@ public partial class MonitoringShellViewModel
             projectionChanged = true;
         }
 
-        if (ShouldShowSample(upsert))
+        if (ShouldRefreshRowSparkline(previous, upsert) && ShouldShowSample(upsert))
         {
             IReadOnlyList<double> cpuTrend = GetRowCpuTrendSource(identity, upsert);
             rowState.UpdateCpuTrendGeometry(BuildRowCpuTrendGeometry(cpuTrend));
-            rowState.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount, forceRenderTick: true);
+            rowState.UpdateCpuTrendValues(cpuTrend, RowMiniTrendVisiblePointCount);
         }
 
         return projectionChanged;

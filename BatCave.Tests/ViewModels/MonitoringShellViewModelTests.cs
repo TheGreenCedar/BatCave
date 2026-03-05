@@ -537,7 +537,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task TelemetryDelta_RowMiniChart_AdvancesOnConsecutiveUpsertsWithoutStrideGate()
+    public async Task TelemetryDelta_HeartbeatOnly_RespectsSparklineStrideAndKeepsRowInstance()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -549,60 +549,21 @@ public class MonitoringShellViewModelTests
         ProcessRowViewState firstVisible = GetVisibleRow(viewModel, 0);
         double[] beforeTrend = CloneTrendValues(firstVisible.CpuTrendValues);
 
-        ProcessSample oddSequenceUpsert = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
-        gateway.RaiseDelta(3, [oddSequenceUpsert], []);
-        double[] afterThirdUpsert = CloneTrendValues(firstVisible.CpuTrendValues);
+        ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
+        gateway.RaiseDelta(3, [heartbeatOnlyUpdate], []);
+        double[] afterOddHeartbeat = CloneTrendValues(firstVisible.CpuTrendValues);
 
-        ProcessSample evenSequenceUpsert = oddSequenceUpsert with { Seq = 4, TsMs = 4, ParentPid = oddSequenceUpsert.ParentPid + 1 };
-        gateway.RaiseDelta(4, [evenSequenceUpsert], []);
-        double[] afterFourthUpsert = CloneTrendValues(firstVisible.CpuTrendValues);
+        ProcessSample strideHeartbeat = heartbeatOnlyUpdate with { Seq = 4, TsMs = 4, ParentPid = heartbeatOnlyUpdate.ParentPid + 1 };
+        gateway.RaiseDelta(4, [strideHeartbeat], []);
+        double[] afterEvenHeartbeat = CloneTrendValues(firstVisible.CpuTrendValues);
 
         Assert.Same(firstVisible, GetVisibleRow(viewModel, 0));
-        AssertTrendValuesNotEqual(beforeTrend, afterThirdUpsert);
-        AssertTrendValuesNotEqual(afterThirdUpsert, afterFourthUpsert);
+        AssertTrendValuesEqual(beforeTrend, afterOddHeartbeat);
+        AssertTrendValuesNotEqual(beforeTrend, afterEvenHeartbeat);
         Assert.Equal(58, beforeTrend.Count(static value => value == 0d));
-        Assert.Equal(57, afterThirdUpsert.Count(static value => value == 0d));
-        Assert.Equal(56, afterFourthUpsert.Count(static value => value == 0d));
-        Assert.Equal(20d, afterThirdUpsert[^1]);
-        Assert.Equal(20d, afterFourthUpsert[^1]);
-        Assert.Equal(20d, afterFourthUpsert[^2]);
-    }
-
-    [Fact]
-    public async Task TelemetryDelta_RowMiniChart_AdvancesWithoutSortMovement()
-    {
-        TestRuntimeEventGateway gateway = new();
-        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
-
-        List<NotifyCollectionChangedAction> actions = [];
-        ((INotifyCollectionChanged)viewModel.VisibleRows).CollectionChanged += (_, args) =>
-        {
-            actions.Add(args.Action);
-        };
-
-        ProcessSample high = Sample(pid: 121, startTime: 1210, access: AccessState.Full) with { CpuPct = 50 };
-        ProcessSample low = Sample(pid: 122, startTime: 1220, access: AccessState.Full) with { CpuPct = 5 };
-        gateway.RaiseDelta(1, [high, low], []);
-        actions.Clear();
-
-        ProcessRowViewState highRow = GetVisibleRows(viewModel).Single(row => row.Pid == high.Pid);
-        double[] before = CloneTrendValues(highRow.CpuTrendValues);
-
-        ProcessSample secondUpsert = high with { Seq = 2, TsMs = 2, ParentPid = high.ParentPid + 1, PrivateBytes = high.PrivateBytes + 1 };
-        gateway.RaiseDelta(2, [secondUpsert], []);
-        double[] afterSecond = CloneTrendValues(highRow.CpuTrendValues);
-
-        ProcessSample thirdUpsert = secondUpsert with { Seq = 3, TsMs = 3, ParentPid = secondUpsert.ParentPid + 1, PrivateBytes = secondUpsert.PrivateBytes + 1 };
-        gateway.RaiseDelta(3, [thirdUpsert], []);
-        double[] afterThird = CloneTrendValues(highRow.CpuTrendValues);
-
-        Assert.Equal(high.Pid, GetVisibleRow(viewModel, 0).Pid);
-        Assert.DoesNotContain(NotifyCollectionChangedAction.Move, actions);
-        AssertTrendValuesNotEqual(before, afterSecond);
-        AssertTrendValuesNotEqual(afterSecond, afterThird);
-        Assert.Equal(59, before.Count(static value => value == 0d));
-        Assert.Equal(58, afterSecond.Count(static value => value == 0d));
-        Assert.Equal(57, afterThird.Count(static value => value == 0d));
+        Assert.Equal(56, afterEvenHeartbeat.Count(static value => value == 0d));
+        Assert.Equal(20d, afterEvenHeartbeat[^1]);
+        Assert.Equal(20d, afterEvenHeartbeat[^2]);
     }
 
     [Fact]
@@ -653,6 +614,7 @@ public class MonitoringShellViewModelTests
         Assert.Equal(11d, afterEven[^1]);
         Assert.Equal(11d, afterEven[^2]);
     }
+
     [Fact]
     public async Task TableMiniChart_FirstSampleUsesPrefilledWindowAndAdvancesOnStride()
     {
@@ -680,52 +642,7 @@ public class MonitoringShellViewModelTests
         Assert.Equal(12d, afterEvenStride[^1]);
         Assert.Equal(12d, afterEvenStride[^2]);
     }
-    [Fact]
-    public async Task TableMiniChart_HeartbeatBackfill_RespectsPerFrameCap()
-    {
-        const int rowCount = 260;
 
-        TestRuntimeEventGateway gateway = new();
-        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
-
-        List<ProcessSample> upserts = [];
-        for (uint pid = 1; pid <= rowCount; pid++)
-        {
-            upserts.Add(Sample(pid: pid, startTime: 20_000 + pid, access: AccessState.Full) with { CpuPct = rowCount - pid });
-        }
-
-        gateway.RaiseDelta(1, upserts, []);
-        Assert.Equal(rowCount, GetVisibleRows(viewModel).Count);
-
-        Dictionary<uint, double[]> baseline = GetVisibleRows(viewModel)
-            .ToDictionary(row => row.Pid, row => CloneTrendValues(row.CpuTrendValues));
-
-        gateway.RaiseDelta(2, [], []);
-        Dictionary<uint, double[]> afterFirstStride = GetVisibleRows(viewModel)
-            .ToDictionary(row => row.Pid, row => CloneTrendValues(row.CpuTrendValues));
-
-        int firstStrideChangedRows = baseline.Count(pair => !AreTrendValuesEqual(pair.Value, afterFirstStride[pair.Key]));
-        Assert.InRange(firstStrideChangedRows, 255, 256);
-
-        gateway.RaiseDelta(3, [], []);
-        Dictionary<uint, double[]> afterOddTick = GetVisibleRows(viewModel)
-            .ToDictionary(row => row.Pid, row => CloneTrendValues(row.CpuTrendValues));
-
-        int oddTickChangedRows = afterFirstStride.Count(pair => !AreTrendValuesEqual(pair.Value, afterOddTick[pair.Key]));
-        Assert.Equal(0, oddTickChangedRows);
-
-        gateway.RaiseDelta(4, [], []);
-        Dictionary<uint, double[]> afterSecondStride = GetVisibleRows(viewModel)
-            .ToDictionary(row => row.Pid, row => CloneTrendValues(row.CpuTrendValues));
-
-        int secondStrideChangedRows = afterFirstStride.Count(pair => !AreTrendValuesEqual(pair.Value, afterSecondStride[pair.Key]));
-        Assert.InRange(secondStrideChangedRows, 255, 256);
-
-        int newlyBackfilledRows = baseline.Keys.Count(pid =>
-            AreTrendValuesEqual(baseline[pid], afterFirstStride[pid])
-            && !AreTrendValuesEqual(afterFirstStride[pid], afterSecondStride[pid]));
-        Assert.InRange(newlyBackfilledRows, 3, 4);
-    }
     [Fact]
     public async Task MetricHistory_CapsAtConfiguredLimit()
     {

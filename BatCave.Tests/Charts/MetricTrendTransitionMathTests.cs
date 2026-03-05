@@ -55,47 +55,37 @@ public sealed class MetricTrendTransitionMathTests
     }
 
     [Fact]
-    public void ResolveTransitionMode_SteadyWindow_ReturnsSlideLeft()
+    public void CanAnimateTransition_TrueWhenCompatible()
     {
-        MetricTrendTransitionSnapshot previous = BuildSnapshot(linePointCount: 60, overlayPointCount: 60);
-        MetricTrendTransitionSnapshot next = previous with
-        {
-            DomainMaxOverride = 4096d,
-            FallbackUsed = true,
-        };
+        MetricTrendTransitionSnapshot previous = new(
+            VisiblePointCount: 60,
+            ScaleMode: MetricTrendScaleMode.CpuPercent,
+            DomainMaxOverride: double.NaN,
+            Width: 120d,
+            Height: 36d,
+            LinePointCount: 60,
+            OverlayPointCount: 60,
+            FallbackUsed: false);
+        MetricTrendTransitionSnapshot next = previous with { FallbackUsed = false };
 
-        MetricTrendTransitionMode mode = MetricTrendTransitionMath.ResolveTransitionMode(
+        bool canAnimate = MetricTrendTransitionMath.CanAnimateTransition(
             enableTransitions: true,
             hasPreviousFrame: true,
             previous,
             next);
 
-        Assert.Equal(MetricTrendTransitionMode.SlideLeft, mode);
-    }
-
-    [Fact]
-    public void ResolveTransitionMode_SinglePoint_ReturnsInterpolate()
-    {
-        MetricTrendTransitionSnapshot previous = BuildSnapshot(linePointCount: 1, overlayPointCount: 0);
-        MetricTrendTransitionSnapshot next = previous with { FallbackUsed = true };
-
-        MetricTrendTransitionMode mode = MetricTrendTransitionMath.ResolveTransitionMode(
-            enableTransitions: true,
-            hasPreviousFrame: true,
-            previous,
-            next);
-
-        Assert.Equal(MetricTrendTransitionMode.Interpolate, mode);
+        Assert.True(canAnimate);
     }
 
     [Theory]
-    [InlineData(false, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 36)]
-    [InlineData(true, false, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 36)]
-    [InlineData(true, true, 60, 120, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 36)]
-    [InlineData(true, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.MemoryBytes, 120, 120, 36, 36)]
-    [InlineData(true, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 128, 36, 36)]
-    [InlineData(true, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 40)]
-    public void ResolveTransitionMode_ReturnsInstantForGuards(
+    [InlineData(false, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 36, false)]
+    [InlineData(true, false, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 36, false)]
+    [InlineData(true, true, 60, 120, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 36, false)]
+    [InlineData(true, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.MemoryBytes, 120, 120, 36, 36, false)]
+    [InlineData(true, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 128, 36, 36, false)]
+    [InlineData(true, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 40, false)]
+    [InlineData(true, true, 60, 60, MetricTrendScaleMode.CpuPercent, MetricTrendScaleMode.CpuPercent, 120, 120, 36, 36, true)]
+    public void CanAnimateTransition_ReturnsFalseForGuards(
         bool enableTransitions,
         bool hasPreviousFrame,
         int previousVisibleCount,
@@ -105,68 +95,34 @@ public sealed class MetricTrendTransitionMathTests
         double previousWidth,
         double nextWidth,
         double previousHeight,
-        double nextHeight)
+        double nextHeight,
+        bool nextFallbackUsed)
     {
-        MetricTrendTransitionSnapshot previous = BuildSnapshot(
-            visiblePointCount: previousVisibleCount,
-            scaleMode: previousScaleMode,
-            width: previousWidth,
-            height: previousHeight,
-            linePointCount: 60,
-            overlayPointCount: 60);
+        MetricTrendTransitionSnapshot previous = new(
+            VisiblePointCount: previousVisibleCount,
+            ScaleMode: previousScaleMode,
+            DomainMaxOverride: double.NaN,
+            Width: previousWidth,
+            Height: previousHeight,
+            LinePointCount: 60,
+            OverlayPointCount: 60,
+            FallbackUsed: false);
+        MetricTrendTransitionSnapshot next = new(
+            VisiblePointCount: nextVisibleCount,
+            ScaleMode: nextScaleMode,
+            DomainMaxOverride: double.NaN,
+            Width: nextWidth,
+            Height: nextHeight,
+            LinePointCount: 60,
+            OverlayPointCount: 60,
+            FallbackUsed: nextFallbackUsed);
 
-        MetricTrendTransitionSnapshot next = BuildSnapshot(
-            visiblePointCount: nextVisibleCount,
-            scaleMode: nextScaleMode,
-            width: nextWidth,
-            height: nextHeight,
-            linePointCount: 60,
-            overlayPointCount: 60);
-
-        MetricTrendTransitionMode mode = MetricTrendTransitionMath.ResolveTransitionMode(
+        bool canAnimate = MetricTrendTransitionMath.CanAnimateTransition(
             enableTransitions,
             hasPreviousFrame,
             previous,
             next);
 
-        Assert.Equal(MetricTrendTransitionMode.Instant, mode);
-        Assert.False(MetricTrendTransitionMath.CanAnimateTransition(enableTransitions, hasPreviousFrame, previous, next));
-    }
-
-    [Fact]
-    public void ComputeSlideOffset_DecreasesMonotonicallyAndClamps()
-    {
-        double start = MetricTrendTransitionMath.ComputeSlideOffset(8d, 0d);
-        double mid = MetricTrendTransitionMath.ComputeSlideOffset(8d, 0.5d);
-        double end = MetricTrendTransitionMath.ComputeSlideOffset(8d, 1d);
-        double over = MetricTrendTransitionMath.ComputeSlideOffset(8d, 2d);
-        double under = MetricTrendTransitionMath.ComputeSlideOffset(8d, -1d);
-
-        Assert.True(start >= mid);
-        Assert.True(mid >= end);
-        Assert.Equal(0d, end, 6);
-        Assert.Equal(0d, over, 6);
-        Assert.Equal(start, under, 6);
-    }
-
-    private static MetricTrendTransitionSnapshot BuildSnapshot(
-        int visiblePointCount = 60,
-        MetricTrendScaleMode scaleMode = MetricTrendScaleMode.CpuPercent,
-        double domainMaxOverride = double.NaN,
-        double width = 120d,
-        double height = 36d,
-        int linePointCount = 60,
-        int overlayPointCount = 60,
-        bool fallbackUsed = false)
-    {
-        return new MetricTrendTransitionSnapshot(
-            VisiblePointCount: visiblePointCount,
-            ScaleMode: scaleMode,
-            DomainMaxOverride: domainMaxOverride,
-            Width: width,
-            Height: height,
-            LinePointCount: linePointCount,
-            OverlayPointCount: overlayPointCount,
-            FallbackUsed: fallbackUsed);
+        Assert.False(canAnimate);
     }
 }

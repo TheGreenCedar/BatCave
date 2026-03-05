@@ -4,13 +4,6 @@ using Windows.Foundation;
 
 namespace BatCave.Charts;
 
-public enum MetricTrendTransitionMode
-{
-    Instant,
-    Interpolate,
-    SlideLeft,
-}
-
 public static class MetricTrendTransitionMath
 {
     public const int DefaultDurationMs = 120;
@@ -55,59 +48,36 @@ public static class MetricTrendTransitionMath
         in MetricTrendTransitionSnapshot previous,
         in MetricTrendTransitionSnapshot next)
     {
-        return ResolveTransitionMode(enableTransitions, hasPreviousFrame, previous, next) != MetricTrendTransitionMode.Instant;
-    }
-
-    public static MetricTrendTransitionMode ResolveTransitionMode(
-        bool enableTransitions,
-        bool hasPreviousFrame,
-        in MetricTrendTransitionSnapshot previous,
-        in MetricTrendTransitionSnapshot next)
-    {
         if (!enableTransitions
             || !hasPreviousFrame
-            || previous.LinePointCount <= 0
+            || next.FallbackUsed
             || next.LinePointCount <= 0)
         {
-            return MetricTrendTransitionMode.Instant;
+            return false;
         }
 
-        if (previous.LinePointCount != next.LinePointCount
+        if (previous.LinePointCount <= 0
+            || previous.LinePointCount != next.LinePointCount
             || previous.OverlayPointCount != next.OverlayPointCount)
         {
-            return MetricTrendTransitionMode.Instant;
+            return false;
         }
 
         if (previous.VisiblePointCount != next.VisiblePointCount
-            || previous.ScaleMode != next.ScaleMode)
+            || previous.ScaleMode != next.ScaleMode
+            || !AreDomainOverridesEquivalent(previous.DomainMaxOverride, next.DomainMaxOverride))
         {
-            return MetricTrendTransitionMode.Instant;
+            return false;
         }
 
-        if (!AreSizesEquivalent(previous.Width, next.Width)
-            || !AreSizesEquivalent(previous.Height, next.Height))
-        {
-            return MetricTrendTransitionMode.Instant;
-        }
-
-        if (next.LinePointCount >= 2)
-        {
-            return MetricTrendTransitionMode.SlideLeft;
-        }
-
-        return MetricTrendTransitionMode.Interpolate;
+        return AreSizesEquivalent(previous.Width, next.Width)
+               && AreSizesEquivalent(previous.Height, next.Height);
     }
 
-    public static double ComputeSlideOffset(double slotWidth, double easedProgress)
+    private static bool AreDomainOverridesEquivalent(double left, double right)
     {
-        if (!double.IsFinite(slotWidth) || slotWidth <= 0d)
-        {
-            return 0d;
-        }
-
-        double clamped = Math.Clamp(easedProgress, 0d, 1d);
-        double offset = slotWidth * (1d - clamped);
-        return Math.Round(Math.Max(0d, offset), 2);
+        return left.Equals(right)
+               || (double.IsNaN(left) && double.IsNaN(right));
     }
 
     private static bool AreSizesEquivalent(double left, double right)

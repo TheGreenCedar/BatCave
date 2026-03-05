@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Media;
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -129,9 +130,6 @@ public sealed partial class MetricTrendChart : UserControl
     private readonly PointCollection _animationStartLinePoints = [];
     private readonly PointCollection _animationStartOverlayPoints = [];
     private readonly DoubleCollection _overlayDashArray = [2, 2];
-    private readonly TranslateTransform _lineTranslateTransform = new();
-    private readonly TranslateTransform _overlayTranslateTransform = new();
-    private readonly TranslateTransform _areaTranslateTransform = new();
 
     private double _dynamicDomainMaxRaw;
     private double _cachedGridWidth = double.NaN;
@@ -140,25 +138,20 @@ public sealed partial class MetricTrendChart : UserControl
     private DispatcherQueueTimer? _transitionTimer;
     private DateTimeOffset _transitionStartedAt;
     private double _transitionPlotHeight;
-    private double _transitionSlideStartOffset;
-    private MetricTrendTransitionMode _activeTransitionMode = MetricTrendTransitionMode.Instant;
     private bool _isTransitionRunning;
     private bool _hasTransitionSnapshot;
     private MetricTrendTransitionSnapshot _transitionSnapshot;
     private int _pendingInvalidationMask = (int)RenderInvalidation.All;
     private int _renderQueued;
+    private INotifyPropertyChanged? _dataContextNotifier;
 
     public MetricTrendChart()
     {
         InitializeComponent();
         LinePolyline.Points = _linePoints;
-        LinePolyline.RenderTransform = _lineTranslateTransform;
         OverlayPolyline.Points = _overlayPoints;
-        OverlayPolyline.RenderTransform = _overlayTranslateTransform;
         AreaPolygon.Points = _areaPoints;
-        AreaPolygon.RenderTransform = _areaTranslateTransform;
         OverlayPolyline.StrokeDashArray = _overlayDashArray;
-        SetSeriesTranslateX(0d);
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -273,6 +266,7 @@ public sealed partial class MetricTrendChart : UserControl
     {
         StopTransition();
         _hasTransitionSnapshot = false;
+        AttachDataContextNotifier(DataContext as INotifyPropertyChanged);
         Invalidate(RenderInvalidation.All);
         ScheduleRender();
     }
@@ -281,14 +275,55 @@ public sealed partial class MetricTrendChart : UserControl
     {
         StopTransition();
         _hasTransitionSnapshot = false;
+        AttachDataContextNotifier(null);
     }
 
     private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
     {
-        StopTransition();
-        _hasTransitionSnapshot = false;
+        AttachDataContextNotifier(args.NewValue as INotifyPropertyChanged);
+    }
+
+    private void AttachDataContextNotifier(INotifyPropertyChanged? notifier)
+    {
+        if (ReferenceEquals(_dataContextNotifier, notifier))
+        {
+            return;
+        }
+
+        if (_dataContextNotifier is not null)
+        {
+            _dataContextNotifier.PropertyChanged -= OnDataContextPropertyChanged;
+        }
+
+        _dataContextNotifier = notifier;
+        if (_dataContextNotifier is not null)
+        {
+            _dataContextNotifier.PropertyChanged += OnDataContextPropertyChanged;
+        }
+    }
+
+    private void OnDataContextPropertyChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (!IsTrendDataPropertyChange(args.PropertyName))
+        {
+            return;
+        }
+
         Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
         ScheduleRender();
+    }
+
+    private static bool IsTrendDataPropertyChange(string? propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            return false;
+        }
+
+        return propertyName.Equals("Values", StringComparison.Ordinal)
+            || propertyName.Equals("OverlayValues", StringComparison.Ordinal)
+            || propertyName.Equals("MiniTrendValues", StringComparison.Ordinal)
+            || propertyName.EndsWith("TrendValues", StringComparison.Ordinal);
     }
 
     private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -444,7 +479,7 @@ public sealed partial class MetricTrendChart : UserControl
             bool nonFiniteSeriesDetected = lineStats.HasNonFinite || overlayStats.HasNonFinite;
 
             double maxVisible = Math.Max(lineStats.Max, overlayStats.Max);
-            double domainMax = ResolveDomainMax(maxVisible, height);
+            double domainMax = ResolveDomainMax(maxVisible);
             (double floor, _) = ResolveDomainPolicy();
             bool domainFallbackUsed = false;
             if (!double.IsFinite(domainMax) || domainMax <= 0d)
@@ -537,70 +572,31 @@ public sealed partial class MetricTrendChart : UserControl
             OverlayPointCount: renderMeta.OverlayPointCount,
             FallbackUsed: renderMeta.PointFallbackUsed);
 
-        MetricTrendTransitionMode transitionMode = MetricTrendTransitionMath.ResolveTransitionMode(
+        bool canAnimate = MetricTrendTransitionMath.CanAnimateTransition(
             enableTransitions: EnableSmoothPointTransitions,
             hasPreviousFrame: _hasTransitionSnapshot,
             previous: _transitionSnapshot,
             next: nextSnapshot);
 
-        switch (transitionMode)
+        if (canAnimate)
         {
-            case MetricTrendTransitionMode.SlideLeft:
-                StartOrRetargetSlideTransition(renderMeta.LinePointCount, width, height);
-                break;
-            case MetricTrendTransitionMode.Interpolate:
-                StartOrRetargetInterpolateTransition(height);
-                break;
-            default:
-                StopTransition();
-                ApplyTargetPointsInstant(height);
-                break;
+            StartOrRetargetTransition(height);
+        }
+        else
+        {
+            StopTransition();
+            ApplyTargetPointsInstant(height);
         }
 
         _transitionSnapshot = nextSnapshot;
         _hasTransitionSnapshot = true;
     }
 
-    private void StartOrRetargetSlideTransition(int linePointCount, double width, double height)
-    {
-        if (linePointCount < 2)
-        {
-            StartOrRetargetInterpolateTransition(height);
-            return;
-        }
-
-        double slotWidth = width / Math.Max(1d, linePointCount - 1d);
-        if (!double.IsFinite(slotWidth) || slotWidth <= 0d)
-        {
-            StopTransition();
-            ApplyTargetPointsInstant(height);
-            return;
-        }
-
-        _transitionPlotHeight = height;
-        _transitionSlideStartOffset = slotWidth;
-        _transitionStartedAt = DateTimeOffset.UtcNow;
-        _activeTransitionMode = MetricTrendTransitionMode.SlideLeft;
-        _isTransitionRunning = true;
-        EnsureTransitionTimer();
-        if (_transitionTimer is null)
-        {
-            _isTransitionRunning = false;
-            _activeTransitionMode = MetricTrendTransitionMode.Instant;
-            ApplyTargetPointsInstant(height);
-            return;
-        }
-        SetSeriesTranslateX(_transitionSlideStartOffset);
-        ApplyTargetPoints(height, resetTranslate: false);
-        _transitionTimer.Start();
-    }
-
-    private void StartOrRetargetInterpolateTransition(double height)
+    private void StartOrRetargetTransition(double height)
     {
         if (_linePoints.Count != _targetLinePoints.Count
             || (ShowOverlay && _overlayPoints.Count != _targetOverlayPoints.Count))
         {
-            StopTransition();
             ApplyTargetPointsInstant(height);
             return;
         }
@@ -617,14 +613,11 @@ public sealed partial class MetricTrendChart : UserControl
 
         _transitionPlotHeight = height;
         _transitionStartedAt = DateTimeOffset.UtcNow;
-        _transitionSlideStartOffset = 0d;
-        _activeTransitionMode = MetricTrendTransitionMode.Interpolate;
         _isTransitionRunning = true;
         EnsureTransitionTimer();
         if (_transitionTimer is null)
         {
             _isTransitionRunning = false;
-            _activeTransitionMode = MetricTrendTransitionMode.Instant;
             ApplyTargetPointsInstant(height);
             return;
         }
@@ -662,26 +655,16 @@ public sealed partial class MetricTrendChart : UserControl
         if (progress >= 1d)
         {
             _isTransitionRunning = false;
-            _activeTransitionMode = MetricTrendTransitionMode.Instant;
-            SetSeriesTranslateX(0d);
             sender.Stop();
         }
     }
 
     private void ApplyTransitionFrame(double easedProgress)
     {
-        if (_activeTransitionMode == MetricTrendTransitionMode.SlideLeft)
-        {
-            double offset = MetricTrendTransitionMath.ComputeSlideOffset(_transitionSlideStartOffset, easedProgress);
-            SetSeriesTranslateX(offset);
-            return;
-        }
-
         if (_animationStartLinePoints.Count != _targetLinePoints.Count
             || (ShowOverlay && _animationStartOverlayPoints.Count != _targetOverlayPoints.Count))
         {
             _isTransitionRunning = false;
-            _activeTransitionMode = MetricTrendTransitionMode.Instant;
             ApplyTargetPointsInstant(_transitionPlotHeight);
             return;
         }
@@ -697,15 +680,9 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         UpdateAreaGeometry(_transitionPlotHeight);
-        SetSeriesTranslateX(0d);
     }
 
     private void ApplyTargetPointsInstant(double height)
-    {
-        ApplyTargetPoints(height, resetTranslate: true);
-    }
-
-    private void ApplyTargetPoints(double height, bool resetTranslate)
     {
         CopyPointCollection(_targetLinePoints, _linePoints);
         if (ShowOverlay)
@@ -718,10 +695,6 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         UpdateAreaGeometry(height);
-        if (resetTranslate)
-        {
-            SetSeriesTranslateX(0d);
-        }
     }
 
     private void UpdateAreaGeometry(double height)
@@ -743,17 +716,7 @@ public sealed partial class MetricTrendChart : UserControl
     private void StopTransition()
     {
         _isTransitionRunning = false;
-        _activeTransitionMode = MetricTrendTransitionMode.Instant;
         _transitionTimer?.Stop();
-        SetSeriesTranslateX(0d);
-    }
-
-    private void SetSeriesTranslateX(double offset)
-    {
-        double safeOffset = double.IsFinite(offset) ? Math.Round(offset, 2) : 0d;
-        _lineTranslateTransform.X = safeOffset;
-        _overlayTranslateTransform.X = safeOffset;
-        _areaTranslateTransform.X = safeOffset;
     }
 
     private static void InterpolatePointCollection(
@@ -880,27 +843,22 @@ public sealed partial class MetricTrendChart : UserControl
         return RenderInvalidation.Geometry | RenderInvalidation.Axes;
     }
 
-    private double ResolveDomainMax(double maxVisible, double height)
+    private double ResolveDomainMax(double maxVisible)
     {
         (double floor, double? ceiling) = ResolveDomainPolicy();
-        bool useMiniCpuProfile = ScaleMode == MetricTrendScaleMode.CpuPercent
-            && !ShowGrid
-            && double.IsFinite(height)
-            && height <= 24d;
 
         _dynamicDomainMaxRaw = MetricTrendScaleDomain.ResolveNextRawDomainMax(
             previousRawDomainMax: _dynamicDomainMaxRaw,
             maxVisible: maxVisible,
             floor: floor,
             ceiling: ceiling,
-            paddingRatio: useMiniCpuProfile ? MetricTrendScaleDomain.CpuPaddingRatio : MetricTrendScaleDomain.DefaultPaddingRatio,
-            decayFactor: useMiniCpuProfile ? MetricTrendScaleDomain.CpuDecayFactor : MetricTrendScaleDomain.DefaultDecayFactor);
+            paddingRatio: MetricTrendScaleDomain.DefaultPaddingRatio,
+            decayFactor: MetricTrendScaleDomain.DefaultDecayFactor);
 
         return MetricTrendScaleDomain.ResolveRenderedDomainMax(
             rawDomainMax: _dynamicDomainMaxRaw,
             floor: floor,
-            ceiling: ceiling,
-            roundUpToNice: !useMiniCpuProfile);
+            ceiling: ceiling);
     }
 
     private (double Floor, double? Ceiling) ResolveDomainPolicy()

@@ -6,8 +6,6 @@ internal static class MetricTrendScaleDomain
 {
     public const double CpuFloorPercent = 5d;
     public const double CpuCeilingPercent = 100d;
-    public const double CpuPaddingRatio = 1.08d;
-    public const double CpuDecayFactor = 0.03d;
     public const double MemoryFloorBytes = 256d * 1024d * 1024d;
     public const double IoRateFloorBytes = 1d * 1024d * 1024d;
     public const double BitsRateFloor = 1d * 1000d * 1000d;
@@ -65,18 +63,12 @@ internal static class MetricTrendScaleDomain
     public static double ResolveRenderedDomainMax(
         double rawDomainMax,
         double floor,
-        double? ceiling,
-        bool roundUpToNice = true)
+        double? ceiling)
     {
         double clamped = Clamp(rawDomainMax, floor, ceiling);
         if (clamped <= floor)
         {
             return floor;
-        }
-
-        if (!roundUpToNice)
-        {
-            return clamped;
         }
 
         double rounded = SparklineMath.RoundUpToNice(clamped);

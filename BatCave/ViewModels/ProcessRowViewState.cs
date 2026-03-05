@@ -153,54 +153,49 @@ public sealed class ProcessRowViewState : ObservableObject
         CpuTrendGeometry = geometry;
     }
 
-    internal void UpdateCpuTrendValues(IReadOnlyList<double> values, int visiblePointCount, bool forceRenderTick = false)
+    internal void UpdateCpuTrendValues(IReadOnlyList<double> values, int visiblePointCount)
     {
         ArgumentNullException.ThrowIfNull(values);
         int targetCount = Math.Max(1, visiblePointCount);
+        bool changed = false;
+        if (_cpuTrendValues.Length != targetCount)
+        {
+            _cpuTrendValues = new double[targetCount];
+            changed = true;
+        }
+
         int take = Math.Min(values.Count, targetCount);
         int sourceStart = values.Count - take;
         int leadingZeroCount = targetCount - take;
 
-        bool changed = _cpuTrendValues.Length != targetCount;
-        if (!changed)
+        for (int index = 0; index < leadingZeroCount; index++)
         {
-            for (int index = 0; index < leadingZeroCount; index++)
+            if (_cpuTrendValues[index] == 0d)
             {
-                if (_cpuTrendValues[index] != 0d)
-                {
-                    changed = true;
-                    break;
-                }
+                continue;
             }
 
-            if (!changed)
-            {
-                for (int index = 0; index < take; index++)
-                {
-                    double next = values[sourceStart + index];
-                    int targetIndex = leadingZeroCount + index;
-                    if (_cpuTrendValues[targetIndex] != next)
-                    {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
+            _cpuTrendValues[index] = 0d;
+            changed = true;
         }
 
-        if (!changed && !forceRenderTick)
-        {
-            return;
-        }
-
-        double[] updated = new double[targetCount];
         for (int index = 0; index < take; index++)
         {
-            updated[leadingZeroCount + index] = values[sourceStart + index];
+            double next = values[sourceStart + index];
+            int targetIndex = leadingZeroCount + index;
+            if (_cpuTrendValues[targetIndex] == next)
+            {
+                continue;
+            }
+
+            _cpuTrendValues[targetIndex] = next;
+            changed = true;
         }
 
-        _cpuTrendValues = updated;
-        OnPropertyChanged(nameof(CpuTrendValues));
+        if (changed)
+        {
+            OnPropertyChanged(nameof(CpuTrendValues));
+        }
     }
 
     private static double QuantizeCpu(double cpuPct)
@@ -309,4 +304,3 @@ public sealed class ProcessRowViewState : ObservableObject
         return right > maxAdd ? ulong.MaxValue : left + right;
     }
 }
-
