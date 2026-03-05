@@ -313,5 +313,6 @@ public partial class MonitoringShellViewModel
         }
 
         IsMetadataLoading = false;
+        QueueGlobalDetailStateRefresh();
     }
 }

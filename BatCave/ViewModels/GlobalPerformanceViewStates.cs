@@ -11,6 +11,7 @@ public enum GlobalResourceKind
     Memory,
     Disk,
     Network,
+    OtherIo,
 }
 
 public enum CpuGraphMode

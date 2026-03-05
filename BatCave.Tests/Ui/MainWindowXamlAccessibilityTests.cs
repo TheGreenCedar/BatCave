@@ -19,7 +19,7 @@ public class MainWindowXamlAccessibilityTests
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
-        Assert.Contains("AutomationProperties.Name=\"Expanded metric trend chart\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"Global resource mini trend chart\"", xaml, StringComparison.Ordinal);
         Assert.Contains("AutomationProperties.Name=\"Global primary trend chart\"", xaml, StringComparison.Ordinal);
         Assert.Contains("AutomationProperties.Name=\"Logical CPU trend chart\"", xaml, StringComparison.Ordinal);
     }

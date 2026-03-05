@@ -20,6 +20,11 @@ public partial class MonitoringShellViewModel
 {
     private const string CpuGlobalResourceId = "cpu";
     private const string MemoryGlobalResourceId = "memory";
+    private const string ProcessCpuResourceId = "proc:cpu";
+    private const string ProcessMemoryResourceId = "proc:memory";
+    private const string ProcessDiskResourceId = "proc:disk";
+    private const string ProcessNetworkResourceId = "proc:network";
+    private const string ProcessOtherIoResourceId = "proc:otherio";
     private static readonly TimeSpan GlobalResourceStaleRetention = TimeSpan.FromMinutes(5);
     private static readonly FixedRingSeries EmptyTrendSeries = new(1);
     private static Color CpuStrokeColor => AppThemeTokens.ResolveColor("ChartCpuStrokeColor", Color.FromArgb(0xFF, 0x0B, 0x84, 0xD8));
@@ -29,6 +34,8 @@ public partial class MonitoringShellViewModel
     private static Color MemoryFillColor => AppThemeTokens.ResolveColor("ChartMemoryFillColor", Color.FromArgb(0x33, 0x25, 0x63, 0xEB));
     private static Color DiskStrokeColor => AppThemeTokens.ResolveColor("ChartIoReadStrokeColor", Color.FromArgb(0xFF, 0x6A, 0x9F, 0x2A));
     private static Color DiskFillColor => AppThemeTokens.ResolveColor("ChartIoReadFillColor", Color.FromArgb(0x33, 0x6A, 0x9F, 0x2A));
+    private static Color OtherIoStrokeColor => AppThemeTokens.ResolveColor("ChartOtherIoStrokeColor", Color.FromArgb(0xFF, 0xD1, 0x34, 0x38));
+    private static Color OtherIoFillColor => AppThemeTokens.ResolveColor("ChartOtherIoFillColor", Color.FromArgb(0x33, 0xD1, 0x34, 0x38));
     private static Color NetworkStrokeColor => AppThemeTokens.ResolveColor("ChartNetworkStrokeColor", Color.FromArgb(0xFF, 0xD8, 0x1B, 0x60));
     private static Color NetworkFillColor => AppThemeTokens.ResolveColor("ChartNetworkFillColor", Color.FromArgb(0x33, 0xD8, 0x1B, 0x60));
     private static Color NetworkOverlayStrokeColor => AppThemeTokens.ResolveColor("ChartNetworkOverlayStrokeColor", Color.FromArgb(0xFF, 0xA1, 0x14, 0x49));
@@ -41,6 +48,8 @@ public partial class MonitoringShellViewModel
 
     private SystemGlobalMetricsSample _latestGlobalMetricsSample = new();
     private GlobalResourceRowViewState? _selectedGlobalResource;
+    private string _lastSelectedGlobalResourceId = CpuGlobalResourceId;
+    private string _lastSelectedProcessResourceId = ProcessCpuResourceId;
     private CpuGraphMode _cpuGraphMode = CpuGraphMode.Combined;
     private bool _isRefreshingGlobalDetailState;
     private int _globalDetailRefreshQueued;
@@ -79,10 +88,23 @@ public partial class MonitoringShellViewModel
 
             try
             {
+                if (!string.IsNullOrWhiteSpace(value?.ResourceId))
+                {
+                    if (IsGlobalPerformanceMode)
+                    {
+                        _lastSelectedGlobalResourceId = value.ResourceId;
+                    }
+                    else
+                    {
+                        _lastSelectedProcessResourceId = value.ResourceId;
+                    }
+                }
+
                 OnPropertyChanged(nameof(IsCpuResourceSelected));
                 OnPropertyChanged(nameof(GlobalCpuModeToggleVisibility));
                 OnPropertyChanged(nameof(GlobalCombinedChartVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalGridVisibility));
+                OnPropertyChanged(nameof(GlobalCpuLogicalPlaceholderVisibility));
                 QueueGlobalDetailStateRefresh();
             }
             catch (Exception ex)
@@ -99,12 +121,14 @@ public partial class MonitoringShellViewModel
 
     public bool IsGlobalPerformanceMode => SelectedRow is null;
 
-    public Visibility GlobalPerformanceVisibility => IsGlobalPerformanceMode ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility GlobalPerformanceVisibility => Visibility.Visible;
 
     public bool IsGlobalMetricsReady => _latestGlobalMetricsSample.IsReady;
 
     public Visibility GlobalPerformanceContentVisibility =>
-        IsGlobalPerformanceMode && IsGlobalMetricsReady ? Visibility.Visible : Visibility.Collapsed;
+        IsGlobalPerformanceMode
+            ? (IsGlobalMetricsReady ? Visibility.Visible : Visibility.Collapsed)
+            : Visibility.Visible;
 
     public Visibility GlobalPerformanceSkeletonVisibility =>
         IsGlobalPerformanceMode && !IsGlobalMetricsReady ? Visibility.Visible : Visibility.Collapsed;
@@ -246,6 +270,7 @@ public partial class MonitoringShellViewModel
                 OnPropertyChanged(nameof(GlobalCpuModeToggleVisibility));
                 OnPropertyChanged(nameof(GlobalCombinedChartVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalGridVisibility));
+                OnPropertyChanged(nameof(GlobalCpuLogicalPlaceholderVisibility));
             }
         }
     }
@@ -260,7 +285,11 @@ public partial class MonitoringShellViewModel
 
     public Visibility GlobalCombinedChartVisibility => IsCpuResourceSelected && IsCpuLogicalMode ? Visibility.Collapsed : Visibility.Visible;
 
-    public Visibility GlobalCpuLogicalGridVisibility => IsCpuResourceSelected && IsCpuLogicalMode ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility GlobalCpuLogicalGridVisibility =>
+        IsGlobalPerformanceMode && IsCpuResourceSelected && IsCpuLogicalMode ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility GlobalCpuLogicalPlaceholderVisibility =>
+        !IsGlobalPerformanceMode && IsCpuResourceSelected && IsCpuLogicalMode ? Visibility.Visible : Visibility.Collapsed;
 
     [RelayCommand]
     private void CpuGraphModeSelected(string? modeTag)
@@ -291,7 +320,9 @@ public partial class MonitoringShellViewModel
             nameof(IsGlobalMetricsReady),
             nameof(GlobalPerformanceContentVisibility),
             nameof(GlobalPerformanceSkeletonVisibility),
-            nameof(ProcessDetailVisibility));
+            nameof(ProcessDetailVisibility),
+            nameof(GlobalCpuLogicalGridVisibility),
+            nameof(GlobalCpuLogicalPlaceholderVisibility));
     }
 
     private void RefreshGlobalPerformanceState(SystemGlobalMetricsSample sampled)
@@ -314,8 +345,14 @@ public partial class MonitoringShellViewModel
 
     private void BuildAndAppendResourceRows(SystemGlobalMetricsSample sampled)
     {
+        if (!IsGlobalPerformanceMode)
+        {
+            BuildAndAppendProcessResourceRows();
+            return;
+        }
+
         string? selectedResourceId = SelectedGlobalResource?.ResourceId;
-        List<GlobalResourceDescriptor> descriptors = BuildResourceDescriptors(sampled);
+        List<GlobalResourceDescriptor> descriptors = BuildGlobalResourceDescriptors(sampled);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         HashSet<string> currentIds = descriptors
             .Select(static d => d.ResourceId)
@@ -389,6 +426,175 @@ public partial class MonitoringShellViewModel
         ReconcileSelectedGlobalResource(selectedResourceId);
     }
 
+    private void BuildAndAppendProcessResourceRows()
+    {
+        ProcessSample? selected = SelectedRow;
+        if (selected is null)
+        {
+            _globalResourceRows.Clear();
+            _globalCpuLogicalProcessorRows.Clear();
+            return;
+        }
+
+        string? selectedResourceId = SelectedGlobalResource?.ResourceId;
+        List<ProcessResourceDescriptor> descriptors = BuildProcessResourceDescriptors(selected);
+        HashSet<string> currentIds = descriptors
+            .Select(static descriptor => descriptor.ResourceId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        for (int index = _globalResourceRows.Count - 1; index >= 0; index--)
+        {
+            if (currentIds.Contains(_globalResourceRows[index].ResourceId))
+            {
+                continue;
+            }
+
+            _globalResourceRows.RemoveAt(index);
+        }
+
+        foreach (ProcessResourceDescriptor descriptor in descriptors)
+        {
+            GlobalResourceRowViewState? existing = _globalResourceRows.FirstOrDefault(
+                row => string.Equals(row.ResourceId, descriptor.ResourceId, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+            {
+                _globalResourceRows.Add(new GlobalResourceRowViewState(
+                    descriptor.ResourceId,
+                    descriptor.Kind,
+                    descriptor.Title,
+                    descriptor.Subtitle,
+                    descriptor.ValueText,
+                    descriptor.MiniTrendValues,
+                    descriptor.MiniScaleMode,
+                    descriptor.MiniStrokeColor,
+                    descriptor.MiniFillColor,
+                    descriptor.MiniDomainMax));
+            }
+            else
+            {
+                existing.Update(
+                    descriptor.Subtitle,
+                    descriptor.ValueText,
+                    descriptor.MiniTrendValues,
+                    descriptor.MiniScaleMode,
+                    descriptor.MiniStrokeColor,
+                    descriptor.MiniFillColor,
+                    descriptor.MiniDomainMax);
+            }
+        }
+
+        ReconcileSelectedGlobalResource(selectedResourceId);
+    }
+
+    private List<ProcessResourceDescriptor> BuildProcessResourceDescriptors(ProcessSample selected)
+    {
+        MetricHistoryBuffer history = ResolveProcessHistory(selected);
+        ulong diskRate = SaturatingAddRates(selected.IoReadBps, selected.IoWriteBps);
+
+        return
+        [
+            new ProcessResourceDescriptor(
+                ResourceId: ProcessCpuResourceId,
+                Kind: GlobalResourceKind.Cpu,
+                Title: "CPU",
+                Subtitle: selected.Name,
+                ValueText: $"{selected.CpuPct:F1}%",
+                MiniTrendValues: SnapshotSeries(history.Cpu, 60),
+                MiniScaleMode: MetricTrendScaleMode.CpuPercent,
+                MiniStrokeColor: CpuStrokeColor,
+                MiniFillColor: CpuFillColor,
+                MiniDomainMax: double.NaN),
+            new ProcessResourceDescriptor(
+                ResourceId: ProcessMemoryResourceId,
+                Kind: GlobalResourceKind.Memory,
+                Title: "Memory",
+                Subtitle: selected.Name,
+                ValueText: ValueFormat.FormatBytes(selected.RssBytes),
+                MiniTrendValues: SnapshotSeries(history.Memory, 60),
+                MiniScaleMode: MetricTrendScaleMode.MemoryBytes,
+                MiniStrokeColor: MemoryStrokeColor,
+                MiniFillColor: MemoryFillColor,
+                MiniDomainMax: double.NaN),
+            new ProcessResourceDescriptor(
+                ResourceId: ProcessDiskResourceId,
+                Kind: GlobalResourceKind.Disk,
+                Title: "Disk",
+                Subtitle: "Read + Write",
+                ValueText: ValueFormat.FormatRate(diskRate),
+                MiniTrendValues: SnapshotCombinedSeries(history.IoRead, history.IoWrite, 60),
+                MiniScaleMode: MetricTrendScaleMode.IoRate,
+                MiniStrokeColor: DiskStrokeColor,
+                MiniFillColor: DiskFillColor,
+                MiniDomainMax: double.NaN),
+            new ProcessResourceDescriptor(
+                ResourceId: ProcessNetworkResourceId,
+                Kind: GlobalResourceKind.Network,
+                Title: "Network",
+                Subtitle: "Derived from Other I/O",
+                ValueText: ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps),
+                MiniTrendValues: SnapshotSeries(history.OtherIo, 60, static value => value * 8d),
+                MiniScaleMode: MetricTrendScaleMode.BitsRate,
+                MiniStrokeColor: NetworkStrokeColor,
+                MiniFillColor: NetworkFillColor,
+                MiniDomainMax: double.NaN),
+            new ProcessResourceDescriptor(
+                ResourceId: ProcessOtherIoResourceId,
+                Kind: GlobalResourceKind.OtherIo,
+                Title: "Other I/O",
+                Subtitle: selected.Name,
+                ValueText: ValueFormat.FormatRate(selected.OtherIoBps),
+                MiniTrendValues: SnapshotSeries(history.OtherIo, 60),
+                MiniScaleMode: MetricTrendScaleMode.IoRate,
+                MiniStrokeColor: OtherIoStrokeColor,
+                MiniFillColor: OtherIoFillColor,
+                MiniDomainMax: double.NaN),
+        ];
+    }
+
+    private MetricHistoryBuffer ResolveProcessHistory(ProcessSample selected)
+    {
+        if (_metricHistory.TryGetValue(selected.Identity(), out MetricHistoryBuffer? history))
+        {
+            return history;
+        }
+
+        MetricHistoryBuffer fallback = new(HistoryLimit);
+        fallback.Append(selected);
+        return fallback;
+    }
+
+    private static double[] SnapshotSeries(IReadOnlyList<double> source, int visiblePointCount, Func<double, double>? map = null)
+    {
+        int count = Math.Max(1, visiblePointCount);
+        double[] result = new double[count];
+        int take = Math.Min(source.Count, count);
+        int sourceStart = source.Count - take;
+        int destinationStart = count - take;
+        for (int index = 0; index < take; index++)
+        {
+            double value = source[sourceStart + index];
+            result[destinationStart + index] = map is null ? value : map(value);
+        }
+
+        return result;
+    }
+
+    private static double[] SnapshotCombinedSeries(IReadOnlyList<double> left, IReadOnlyList<double> right, int visiblePointCount)
+    {
+        int count = Math.Max(1, visiblePointCount);
+        double[] result = new double[count];
+        for (int outputIndex = 0; outputIndex < count; outputIndex++)
+        {
+            int leftIndex = left.Count - count + outputIndex;
+            int rightIndex = right.Count - count + outputIndex;
+            double leftValue = leftIndex >= 0 && leftIndex < left.Count ? left[leftIndex] : 0d;
+            double rightValue = rightIndex >= 0 && rightIndex < right.Count ? right[rightIndex] : 0d;
+            result[outputIndex] = leftValue + rightValue;
+        }
+
+        return result;
+    }
+
     private void QueueGlobalDetailStateRefresh()
     {
         if (Interlocked.Exchange(ref _globalDetailRefreshQueued, 1) == 1)
@@ -428,8 +634,22 @@ public partial class MonitoringShellViewModel
     {
         if (!string.IsNullOrWhiteSpace(preferredResourceId))
         {
+            bool expectedProcessPrefix = !IsGlobalPerformanceMode;
+            bool hasProcessPrefix = preferredResourceId.StartsWith("proc:", StringComparison.OrdinalIgnoreCase);
+            if (expectedProcessPrefix != hasProcessPrefix)
+            {
+                preferredResourceId = null;
+            }
+        }
+
+        string? effectivePreferredResourceId = !string.IsNullOrWhiteSpace(preferredResourceId)
+            ? preferredResourceId
+            : (IsGlobalPerformanceMode ? _lastSelectedGlobalResourceId : _lastSelectedProcessResourceId);
+
+        if (!string.IsNullOrWhiteSpace(effectivePreferredResourceId))
+        {
             GlobalResourceRowViewState? preserved = _globalResourceRows.FirstOrDefault(
-                row => string.Equals(row.ResourceId, preferredResourceId, StringComparison.OrdinalIgnoreCase));
+                row => string.Equals(row.ResourceId, effectivePreferredResourceId, StringComparison.OrdinalIgnoreCase));
             if (preserved is not null)
             {
                 if (!ReferenceEquals(SelectedGlobalResource, preserved))
@@ -441,7 +661,8 @@ public partial class MonitoringShellViewModel
             }
         }
 
-        GlobalResourceRowViewState? fallback = _globalResourceRows.FirstOrDefault(row => row.ResourceId == CpuGlobalResourceId)
+        string fallbackResourceId = IsGlobalPerformanceMode ? CpuGlobalResourceId : ProcessCpuResourceId;
+        GlobalResourceRowViewState? fallback = _globalResourceRows.FirstOrDefault(row => row.ResourceId == fallbackResourceId)
             ?? _globalResourceRows.FirstOrDefault();
         if (!ReferenceEquals(SelectedGlobalResource, fallback))
         {
@@ -449,7 +670,7 @@ public partial class MonitoringShellViewModel
         }
     }
 
-    private List<GlobalResourceDescriptor> BuildResourceDescriptors(SystemGlobalMetricsSample sampled)
+    private List<GlobalResourceDescriptor> BuildGlobalResourceDescriptors(SystemGlobalMetricsSample sampled)
     {
         List<GlobalResourceDescriptor> descriptors = new(capacity: 2 + sampled.DiskSnapshots.Count + sampled.NetworkSnapshots.Count);
         descriptors.Add(BuildCpuDescriptor(sampled));
@@ -591,11 +812,6 @@ public partial class MonitoringShellViewModel
 
     private void RefreshGlobalDetailState()
     {
-        if (!IsGlobalPerformanceMode)
-        {
-            return;
-        }
-
         if (_isRefreshingGlobalDetailState)
         {
             return;
@@ -612,20 +828,44 @@ public partial class MonitoringShellViewModel
                 return;
             }
 
-            switch (selected.Kind)
+            if (IsGlobalPerformanceMode)
             {
-                case GlobalResourceKind.Memory:
-                    ApplyMemoryDetailState();
-                    break;
-                case GlobalResourceKind.Disk:
-                    ApplyDiskDetailState(selected.ResourceId);
-                    break;
-                case GlobalResourceKind.Network:
-                    ApplyNetworkDetailState(selected.ResourceId);
-                    break;
-                default:
-                    ApplyCpuDetailState();
-                    break;
+                switch (selected.Kind)
+                {
+                    case GlobalResourceKind.Memory:
+                        ApplyMemoryDetailState();
+                        break;
+                    case GlobalResourceKind.Disk:
+                        ApplyDiskDetailState(selected.ResourceId);
+                        break;
+                    case GlobalResourceKind.Network:
+                        ApplyNetworkDetailState(selected.ResourceId);
+                        break;
+                    default:
+                        ApplyCpuDetailState();
+                        break;
+                }
+            }
+            else
+            {
+                switch (selected.Kind)
+                {
+                    case GlobalResourceKind.Memory:
+                        ApplyProcessMemoryDetailState();
+                        break;
+                    case GlobalResourceKind.Disk:
+                        ApplyProcessDiskDetailState();
+                        break;
+                    case GlobalResourceKind.Network:
+                        ApplyProcessNetworkDetailState();
+                        break;
+                    case GlobalResourceKind.OtherIo:
+                        ApplyProcessOtherIoDetailState();
+                        break;
+                    default:
+                        ApplyProcessCpuDetailState();
+                        break;
+                }
             }
         }
         catch (Exception ex)
@@ -795,6 +1035,185 @@ public partial class MonitoringShellViewModel
         PopulateNetworkStats(network);
     }
 
+    private bool TryResolveSelectedProcessForDetail(out ProcessSample selected, out MetricHistoryBuffer history)
+    {
+        if (SelectedRow is not ProcessSample row)
+        {
+            selected = _globalSummaryRow;
+            history = new MetricHistoryBuffer(HistoryLimit);
+            return false;
+        }
+
+        selected = row;
+        history = ResolveProcessHistory(row);
+        return true;
+    }
+
+    private void ApplyProcessCpuDetailState()
+    {
+        if (!TryResolveSelectedProcessForDetail(out ProcessSample selected, out MetricHistoryBuffer history))
+        {
+            ApplyDetailFallbackState(SelectedGlobalResource);
+            return;
+        }
+
+        GlobalDetailTitle = "CPU";
+        GlobalDetailSubtitle = $"{selected.Name} ({selected.Pid})";
+        GlobalDetailCurrentValue = $"{selected.CpuPct:F1}%";
+
+        GlobalPrimaryScaleMode = MetricTrendScaleMode.CpuPercent;
+        GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalPrimaryChartTitle = "Utilization";
+        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalShowSecondaryOverlay = false;
+        GlobalShowAuxiliaryChart = false;
+        GlobalPrimaryStrokeColor = CpuStrokeColor;
+        GlobalPrimaryFillColor = CpuFillColor;
+        GlobalSecondaryStrokeColor = CpuKernelStrokeColor;
+        GlobalAuxiliaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryFillColor = DiskFillColor;
+        GlobalPrimaryDomainMax = double.NaN;
+        GlobalAuxiliaryDomainMax = double.NaN;
+
+        ApplyGlobalTrendValuesFromSource(history.Cpu, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        _globalCpuLogicalProcessorRows.Clear();
+        PopulateProcessStats(selected);
+    }
+
+    private void ApplyProcessMemoryDetailState()
+    {
+        if (!TryResolveSelectedProcessForDetail(out ProcessSample selected, out MetricHistoryBuffer history))
+        {
+            ApplyDetailFallbackState(SelectedGlobalResource);
+            return;
+        }
+
+        GlobalDetailTitle = "Memory";
+        GlobalDetailSubtitle = $"{selected.Name} ({selected.Pid})";
+        GlobalDetailCurrentValue = ValueFormat.FormatBytes(selected.RssBytes);
+
+        GlobalPrimaryScaleMode = MetricTrendScaleMode.MemoryBytes;
+        GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalPrimaryChartTitle = "Memory usage";
+        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalShowSecondaryOverlay = false;
+        GlobalShowAuxiliaryChart = false;
+        GlobalPrimaryStrokeColor = MemoryStrokeColor;
+        GlobalPrimaryFillColor = MemoryFillColor;
+        GlobalSecondaryStrokeColor = MemoryStrokeColor;
+        GlobalAuxiliaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryFillColor = DiskFillColor;
+        GlobalPrimaryDomainMax = double.NaN;
+        GlobalAuxiliaryDomainMax = double.NaN;
+
+        ApplyGlobalTrendValuesFromSource(history.Memory, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        _globalCpuLogicalProcessorRows.Clear();
+        PopulateProcessStats(selected);
+    }
+
+    private void ApplyProcessDiskDetailState()
+    {
+        if (!TryResolveSelectedProcessForDetail(out ProcessSample selected, out MetricHistoryBuffer history))
+        {
+            ApplyDetailFallbackState(SelectedGlobalResource);
+            return;
+        }
+
+        GlobalDetailTitle = "Disk";
+        GlobalDetailSubtitle = $"{selected.Name} ({selected.Pid})";
+        GlobalDetailCurrentValue = ValueFormat.FormatRate(SaturatingAddRates(selected.IoReadBps, selected.IoWriteBps));
+
+        GlobalPrimaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalPrimaryChartTitle = "Read + write throughput";
+        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalShowSecondaryOverlay = false;
+        GlobalShowAuxiliaryChart = false;
+        GlobalPrimaryStrokeColor = DiskStrokeColor;
+        GlobalPrimaryFillColor = DiskFillColor;
+        GlobalSecondaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryFillColor = DiskFillColor;
+        GlobalPrimaryDomainMax = double.NaN;
+        GlobalAuxiliaryDomainMax = double.NaN;
+
+        ApplyGlobalCombinedTrendValues(history.IoRead, history.IoWrite, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        _globalCpuLogicalProcessorRows.Clear();
+        PopulateProcessStats(selected);
+    }
+
+    private void ApplyProcessNetworkDetailState()
+    {
+        if (!TryResolveSelectedProcessForDetail(out ProcessSample selected, out MetricHistoryBuffer history))
+        {
+            ApplyDetailFallbackState(SelectedGlobalResource);
+            return;
+        }
+
+        GlobalDetailTitle = "Network";
+        GlobalDetailSubtitle = $"{selected.Name} ({selected.Pid})";
+        GlobalDetailCurrentValue = ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps);
+
+        GlobalPrimaryScaleMode = MetricTrendScaleMode.BitsRate;
+        GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalPrimaryChartTitle = "Derived throughput";
+        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalShowSecondaryOverlay = false;
+        GlobalShowAuxiliaryChart = false;
+        GlobalPrimaryStrokeColor = NetworkStrokeColor;
+        GlobalPrimaryFillColor = NetworkFillColor;
+        GlobalSecondaryStrokeColor = NetworkOverlayStrokeColor;
+        GlobalAuxiliaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryFillColor = DiskFillColor;
+        GlobalPrimaryDomainMax = double.NaN;
+        GlobalAuxiliaryDomainMax = double.NaN;
+
+        ApplyGlobalTrendValuesFromSource(history.OtherIo, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues), static value => value * 8d);
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        _globalCpuLogicalProcessorRows.Clear();
+        PopulateProcessStats(selected);
+    }
+
+    private void ApplyProcessOtherIoDetailState()
+    {
+        if (!TryResolveSelectedProcessForDetail(out ProcessSample selected, out MetricHistoryBuffer history))
+        {
+            ApplyDetailFallbackState(SelectedGlobalResource);
+            return;
+        }
+
+        GlobalDetailTitle = "Other I/O";
+        GlobalDetailSubtitle = $"{selected.Name} ({selected.Pid})";
+        GlobalDetailCurrentValue = ValueFormat.FormatRate(selected.OtherIoBps);
+
+        GlobalPrimaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalPrimaryChartTitle = "Transfer rate";
+        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalShowSecondaryOverlay = false;
+        GlobalShowAuxiliaryChart = false;
+        GlobalPrimaryStrokeColor = OtherIoStrokeColor;
+        GlobalPrimaryFillColor = OtherIoFillColor;
+        GlobalSecondaryStrokeColor = OtherIoStrokeColor;
+        GlobalAuxiliaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryFillColor = DiskFillColor;
+        GlobalPrimaryDomainMax = double.NaN;
+        GlobalAuxiliaryDomainMax = double.NaN;
+
+        ApplyGlobalTrendValuesFromSource(history.OtherIo, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        _globalCpuLogicalProcessorRows.Clear();
+        PopulateProcessStats(selected);
+    }
+
     private void ApplyDetailFallbackState(GlobalResourceRowViewState? selected)
     {
         GlobalDetailTitle = selected?.Title ?? "Performance";
@@ -871,6 +1290,89 @@ public partial class MonitoringShellViewModel
                 target[index] = sanitized;
                 changed = true;
             }
+        }
+
+        if (changed)
+        {
+            OnPropertyChanged(propertyName);
+        }
+    }
+
+    private void ApplyGlobalTrendValuesFromSource(
+        IReadOnlyList<double> source,
+        ref double[] target,
+        string propertyName,
+        Func<double, double>? map = null)
+    {
+        int visiblePointCount = Math.Max(1, MetricTrendWindowSeconds);
+        bool changed = target.Length != visiblePointCount;
+        if (changed)
+        {
+            target = new double[visiblePointCount];
+        }
+
+        int take = Math.Min(source.Count, visiblePointCount);
+        int sourceStart = source.Count - take;
+        int destinationStart = visiblePointCount - take;
+
+        for (int index = 0; index < destinationStart; index++)
+        {
+            if (target[index] == 0d)
+            {
+                continue;
+            }
+
+            target[index] = 0d;
+            changed = true;
+        }
+
+        for (int index = 0; index < take; index++)
+        {
+            double next = source[sourceStart + index];
+            next = map is null ? next : map(next);
+            int destinationIndex = destinationStart + index;
+            if (target[destinationIndex] == next)
+            {
+                continue;
+            }
+
+            target[destinationIndex] = next;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            OnPropertyChanged(propertyName);
+        }
+    }
+
+    private void ApplyGlobalCombinedTrendValues(
+        IReadOnlyList<double> left,
+        IReadOnlyList<double> right,
+        ref double[] target,
+        string propertyName)
+    {
+        int visiblePointCount = Math.Max(1, MetricTrendWindowSeconds);
+        bool changed = target.Length != visiblePointCount;
+        if (changed)
+        {
+            target = new double[visiblePointCount];
+        }
+
+        for (int index = 0; index < visiblePointCount; index++)
+        {
+            int leftIndex = left.Count - visiblePointCount + index;
+            int rightIndex = right.Count - visiblePointCount + index;
+            double leftValue = leftIndex >= 0 && leftIndex < left.Count ? left[leftIndex] : 0d;
+            double rightValue = rightIndex >= 0 && rightIndex < right.Count ? right[rightIndex] : 0d;
+            double next = leftValue + rightValue;
+            if (target[index] == next)
+            {
+                continue;
+            }
+
+            target[index] = next;
+            changed = true;
         }
 
         if (changed)
@@ -956,6 +1458,26 @@ public partial class MonitoringShellViewModel
             ("IPv4 address", string.IsNullOrWhiteSpace(network?.IPv4Address) ? "n/a" : network.IPv4Address!),
             ("IPv6 address", string.IsNullOrWhiteSpace(network?.IPv6Address) ? "n/a" : network.IPv6Address!),
             ("Link speed", network?.LinkSpeedBps.HasValue == true ? ValueFormat.FormatBitsRate(network.LinkSpeedBps.Value) : "n/a"),
+        });
+    }
+
+    private void PopulateProcessStats(ProcessSample selected)
+    {
+        SetGlobalStats(new (string, string)[]
+        {
+            ("Process", selected.Name),
+            ("PID", selected.Pid.ToString(CultureInfo.InvariantCulture)),
+            ("CPU", $"{selected.CpuPct:F2}%"),
+            ("Memory", ValueFormat.FormatBytes(selected.RssBytes)),
+            ("Disk read", ValueFormat.FormatRate(selected.IoReadBps)),
+            ("Disk write", ValueFormat.FormatRate(selected.IoWriteBps)),
+            ("Disk total", ValueFormat.FormatRate(SaturatingAddRates(selected.IoReadBps, selected.IoWriteBps))),
+            ("Network", ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps)),
+            ("Other I/O", ValueFormat.FormatRate(selected.OtherIoBps)),
+            ("Metadata", MetadataStatus),
+            ("Parent PID", MetadataParentPid),
+            ("Executable path", MetadataExecutablePath),
+            ("Command line", MetadataCommandLine),
         });
     }
 
@@ -1085,6 +1607,18 @@ public partial class MonitoringShellViewModel
         Color MiniFillColor,
         double MiniDomainMax);
 
+    private readonly record struct ProcessResourceDescriptor(
+        string ResourceId,
+        GlobalResourceKind Kind,
+        string Title,
+        string Subtitle,
+        string ValueText,
+        double[] MiniTrendValues,
+        MetricTrendScaleMode MiniScaleMode,
+        Color MiniStrokeColor,
+        Color MiniFillColor,
+        double MiniDomainMax);
+
     private static bool TryParseResourceId(string resourceId, string prefix, out string id)
     {
         id = string.Empty;
@@ -1133,6 +1667,12 @@ public partial class MonitoringShellViewModel
     {
         double sum = left + right;
         return double.IsFinite(sum) ? sum : double.MaxValue;
+    }
+
+    private static ulong SaturatingAddRates(ulong left, ulong right)
+    {
+        ulong result = left + right;
+        return result < left ? ulong.MaxValue : result;
     }
 
     private sealed class GlobalTrendHistory

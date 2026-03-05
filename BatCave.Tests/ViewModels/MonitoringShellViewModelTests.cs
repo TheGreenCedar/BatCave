@@ -1201,6 +1201,124 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task SelectedRow_UsesUnifiedProcessResourceRows_WithHybridMetricSet()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 250,
+                cpuPct: 10.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        ProcessSample row = Sample(pid: 250, startTime: 25_000, access: AccessState.Full) with
+        {
+            CpuPct = 12.5,
+            RssBytes = 32 * 1024UL * 1024UL,
+            IoReadBps = 1_500UL,
+            IoWriteBps = 2_500UL,
+            OtherIoBps = 3_000UL,
+        };
+        gateway.RaiseDelta(1, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.False(viewModel.IsGlobalPerformanceMode);
+        Assert.Equal(5, viewModel.GlobalResourceRows.Count);
+        Assert.Contains(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Cpu);
+        Assert.Contains(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Memory);
+        Assert.Contains(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Disk);
+        Assert.Contains(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Network);
+        Assert.Contains(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.OtherIo);
+        Assert.Equal(GlobalResourceKind.Cpu, viewModel.SelectedGlobalResource?.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessMode_CpuLogicalSelection_ShowsPlaceholderInsteadOfLogicalGrid()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample row = Sample(pid: 260, startTime: 26_000, access: AccessState.Full) with
+        {
+            CpuPct = 21.5,
+        };
+        gateway.RaiseDelta(1, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        viewModel.CpuGraphModeSelectedCommand.Execute("LogicalProcessors");
+        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Cpu));
+        viewModel.SelectedGlobalResource = cpuRow;
+
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuLogicalGridVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCpuLogicalPlaceholderVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalCombinedChartVisibility);
+    }
+
+    [Fact]
+    public async Task ModeSwitch_RestoresLastSelectionPerGlobalAndProcessContexts()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 270,
+                cpuPct: 40.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 1000UL,
+                diskWriteBps: 2000UL,
+                otherIoBps: 0));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        GlobalResourceRowViewState globalMemory = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Memory));
+        viewModel.SelectedGlobalResource = globalMemory;
+
+        ProcessSample row = Sample(pid: 270, startTime: 27_000, access: AccessState.Full) with
+        {
+            OtherIoBps = 4_000UL,
+        };
+        gateway.RaiseDelta(2, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+        GlobalResourceRowViewState processOtherIo = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.OtherIo));
+        viewModel.SelectedGlobalResource = processOtherIo;
+
+        viewModel.ClearSelection();
+        Assert.True(viewModel.IsGlobalPerformanceMode);
+        Assert.Equal(GlobalResourceKind.Memory, viewModel.SelectedGlobalResource?.Kind);
+
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+        Assert.Equal(GlobalResourceKind.OtherIo, viewModel.SelectedGlobalResource?.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessMode_StatsIncludeMetadataFields()
+    {
+        TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
+        {
+            Pid = pid,
+            ParentPid = 42,
+            ExecutablePath = @"C:\\Apps\\demo.exe",
+            CommandLine = "demo --flag",
+        }));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway, metadataProvider: metadata);
+
+        ProcessSample row = Sample(pid: 280, startTime: 28_000, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Parent PID" && item.Value == "42");
+        Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Executable path" && item.Value.Contains("demo.exe", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Command line" && item.Value.Contains("demo --flag", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task SelectedRow_ProcessMetricsRemainUnchangedWhenSamplerPresent()
     {
         TestRuntimeEventGateway gateway = new();
