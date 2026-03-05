@@ -80,7 +80,7 @@ public sealed class ProcessRowViewStateTests
     }
 
     [Fact]
-    public void UpdateCpuTrendValues_TargetLengthMatches_UpdatesInPlace()
+    public void UpdateCpuTrendValues_TargetLengthMatches_ReplacesValuesInstanceWhenChanged()
     {
         ProcessRowViewState state = new(
             Sample(cpuPct: 10, rssBytes: 1000, ioReadBps: 200, ioWriteBps: 300, netBps: 400, threads: 5, handles: 6),
@@ -91,7 +91,7 @@ public sealed class ProcessRowViewStateTests
 
         state.UpdateCpuTrendValues([4d, 5d, 6d], visiblePointCount: 3);
 
-        Assert.Same(originalReference, state.CpuTrendValues);
+        Assert.NotSame(originalReference, state.CpuTrendValues);
         AssertDoubleValues([4d, 5d, 6d], state.CpuTrendValues);
     }
 
@@ -118,6 +118,29 @@ public sealed class ProcessRowViewStateTests
 
         Assert.Equal(1, cpuTrendChangeCount);
         AssertDoubleValues([1d, 2d, 4d], state.CpuTrendValues);
+    }
+
+    [Fact]
+    public void UpdateCpuTrendValues_ForceRenderTick_RaisesCpuTrendValuesEvenWhenSequenceMatches()
+    {
+        ProcessRowViewState state = new(
+            Sample(cpuPct: 10, rssBytes: 1000, ioReadBps: 200, ioWriteBps: 300, netBps: 400, threads: 5, handles: 6),
+            CreateTrendGeometry(),
+            cpuTrendValues: [1d, 2d, 3d]);
+
+        int cpuTrendChangeCount = 0;
+        state.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(ProcessRowViewState.CpuTrendValues))
+            {
+                cpuTrendChangeCount++;
+            }
+        };
+
+        state.UpdateCpuTrendValues([1d, 2d, 3d], visiblePointCount: 3, forceRenderTick: true);
+
+        Assert.Equal(1, cpuTrendChangeCount);
+        AssertDoubleValues([1d, 2d, 3d], state.CpuTrendValues);
     }
 
     private static ProcessSample Sample(
@@ -165,3 +188,4 @@ public sealed class ProcessRowViewStateTests
         }
     }
 }
+

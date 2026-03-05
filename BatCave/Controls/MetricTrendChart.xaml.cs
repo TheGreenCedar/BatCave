@@ -162,6 +162,7 @@ public sealed partial class MetricTrendChart : UserControl
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        DataContextChanged += OnDataContextChanged;
         PlotBorder.SizeChanged += PlotBorder_SizeChanged;
         ScheduleRender();
     }
@@ -280,6 +281,14 @@ public sealed partial class MetricTrendChart : UserControl
     {
         StopTransition();
         _hasTransitionSnapshot = false;
+    }
+
+    private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
+    {
+        StopTransition();
+        _hasTransitionSnapshot = false;
+        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
+        ScheduleRender();
     }
 
     private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -435,7 +444,7 @@ public sealed partial class MetricTrendChart : UserControl
             bool nonFiniteSeriesDetected = lineStats.HasNonFinite || overlayStats.HasNonFinite;
 
             double maxVisible = Math.Max(lineStats.Max, overlayStats.Max);
-            double domainMax = ResolveDomainMax(maxVisible);
+            double domainMax = ResolveDomainMax(maxVisible, height);
             (double floor, _) = ResolveDomainPolicy();
             bool domainFallbackUsed = false;
             if (!double.IsFinite(domainMax) || domainMax <= 0d)
@@ -581,9 +590,8 @@ public sealed partial class MetricTrendChart : UserControl
             ApplyTargetPointsInstant(height);
             return;
         }
-
-        ApplyTargetPointsInstant(height);
-        ApplyTransitionFrame(easedProgress: 0d);
+        SetSeriesTranslateX(_transitionSlideStartOffset);
+        ApplyTargetPoints(height, resetTranslate: false);
         _transitionTimer.Start();
     }
 
@@ -694,6 +702,11 @@ public sealed partial class MetricTrendChart : UserControl
 
     private void ApplyTargetPointsInstant(double height)
     {
+        ApplyTargetPoints(height, resetTranslate: true);
+    }
+
+    private void ApplyTargetPoints(double height, bool resetTranslate)
+    {
         CopyPointCollection(_targetLinePoints, _linePoints);
         if (ShowOverlay)
         {
@@ -705,7 +718,10 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         UpdateAreaGeometry(height);
-        SetSeriesTranslateX(0d);
+        if (resetTranslate)
+        {
+            SetSeriesTranslateX(0d);
+        }
     }
 
     private void UpdateAreaGeometry(double height)
@@ -864,22 +880,27 @@ public sealed partial class MetricTrendChart : UserControl
         return RenderInvalidation.Geometry | RenderInvalidation.Axes;
     }
 
-    private double ResolveDomainMax(double maxVisible)
+    private double ResolveDomainMax(double maxVisible, double height)
     {
         (double floor, double? ceiling) = ResolveDomainPolicy();
+        bool useMiniCpuProfile = ScaleMode == MetricTrendScaleMode.CpuPercent
+            && !ShowGrid
+            && double.IsFinite(height)
+            && height <= 24d;
 
         _dynamicDomainMaxRaw = MetricTrendScaleDomain.ResolveNextRawDomainMax(
             previousRawDomainMax: _dynamicDomainMaxRaw,
             maxVisible: maxVisible,
             floor: floor,
             ceiling: ceiling,
-            paddingRatio: MetricTrendScaleDomain.DefaultPaddingRatio,
-            decayFactor: MetricTrendScaleDomain.DefaultDecayFactor);
+            paddingRatio: useMiniCpuProfile ? MetricTrendScaleDomain.CpuPaddingRatio : MetricTrendScaleDomain.DefaultPaddingRatio,
+            decayFactor: useMiniCpuProfile ? MetricTrendScaleDomain.CpuDecayFactor : MetricTrendScaleDomain.DefaultDecayFactor);
 
         return MetricTrendScaleDomain.ResolveRenderedDomainMax(
             rawDomainMax: _dynamicDomainMaxRaw,
             floor: floor,
-            ceiling: ceiling);
+            ceiling: ceiling,
+            roundUpToNice: !useMiniCpuProfile);
     }
 
     private (double Floor, double? Ceiling) ResolveDomainPolicy()
@@ -1087,5 +1108,3 @@ public sealed partial class MetricTrendChart : UserControl
         double Max,
         bool HasNonFinite);
 }
-
-
