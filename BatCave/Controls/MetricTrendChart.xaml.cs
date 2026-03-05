@@ -8,7 +8,6 @@ using Microsoft.UI.Xaml.Media;
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -130,6 +129,9 @@ public sealed partial class MetricTrendChart : UserControl
     private readonly PointCollection _animationStartLinePoints = [];
     private readonly PointCollection _animationStartOverlayPoints = [];
     private readonly DoubleCollection _overlayDashArray = [2, 2];
+    private readonly TranslateTransform _lineTranslateTransform = new();
+    private readonly TranslateTransform _overlayTranslateTransform = new();
+    private readonly TranslateTransform _areaTranslateTransform = new();
 
     private double _dynamicDomainMaxRaw;
     private double _cachedGridWidth = double.NaN;
@@ -138,24 +140,28 @@ public sealed partial class MetricTrendChart : UserControl
     private DispatcherQueueTimer? _transitionTimer;
     private DateTimeOffset _transitionStartedAt;
     private double _transitionPlotHeight;
+    private double _transitionSlideStartOffset;
+    private MetricTrendTransitionMode _activeTransitionMode = MetricTrendTransitionMode.Instant;
     private bool _isTransitionRunning;
     private bool _hasTransitionSnapshot;
     private MetricTrendTransitionSnapshot _transitionSnapshot;
     private int _pendingInvalidationMask = (int)RenderInvalidation.All;
     private int _renderQueued;
-    private INotifyPropertyChanged? _dataContextNotifier;
 
     public MetricTrendChart()
     {
         InitializeComponent();
         LinePolyline.Points = _linePoints;
+        LinePolyline.RenderTransform = _lineTranslateTransform;
         OverlayPolyline.Points = _overlayPoints;
+        OverlayPolyline.RenderTransform = _overlayTranslateTransform;
         AreaPolygon.Points = _areaPoints;
+        AreaPolygon.RenderTransform = _areaTranslateTransform;
         OverlayPolyline.StrokeDashArray = _overlayDashArray;
+        SetSeriesTranslateX(0d);
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
-        DataContextChanged += OnDataContextChanged;
         PlotBorder.SizeChanged += PlotBorder_SizeChanged;
         ScheduleRender();
     }
@@ -266,7 +272,6 @@ public sealed partial class MetricTrendChart : UserControl
     {
         StopTransition();
         _hasTransitionSnapshot = false;
-        AttachDataContextNotifier(DataContext as INotifyPropertyChanged);
         Invalidate(RenderInvalidation.All);
         ScheduleRender();
     }
@@ -275,55 +280,6 @@ public sealed partial class MetricTrendChart : UserControl
     {
         StopTransition();
         _hasTransitionSnapshot = false;
-        AttachDataContextNotifier(null);
-    }
-
-    private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
-    {
-        AttachDataContextNotifier(args.NewValue as INotifyPropertyChanged);
-    }
-
-    private void AttachDataContextNotifier(INotifyPropertyChanged? notifier)
-    {
-        if (ReferenceEquals(_dataContextNotifier, notifier))
-        {
-            return;
-        }
-
-        if (_dataContextNotifier is not null)
-        {
-            _dataContextNotifier.PropertyChanged -= OnDataContextPropertyChanged;
-        }
-
-        _dataContextNotifier = notifier;
-        if (_dataContextNotifier is not null)
-        {
-            _dataContextNotifier.PropertyChanged += OnDataContextPropertyChanged;
-        }
-    }
-
-    private void OnDataContextPropertyChanged(object? sender, PropertyChangedEventArgs args)
-    {
-        if (!IsTrendDataPropertyChange(args.PropertyName))
-        {
-            return;
-        }
-
-        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
-        ScheduleRender();
-    }
-
-    private static bool IsTrendDataPropertyChange(string? propertyName)
-    {
-        if (string.IsNullOrWhiteSpace(propertyName))
-        {
-            return false;
-        }
-
-        return propertyName.Equals("Values", StringComparison.Ordinal)
-            || propertyName.Equals("OverlayValues", StringComparison.Ordinal)
-            || propertyName.Equals("MiniTrendValues", StringComparison.Ordinal)
-            || propertyName.EndsWith("TrendValues", StringComparison.Ordinal);
     }
 
     private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -572,31 +528,71 @@ public sealed partial class MetricTrendChart : UserControl
             OverlayPointCount: renderMeta.OverlayPointCount,
             FallbackUsed: renderMeta.PointFallbackUsed);
 
-        bool canAnimate = MetricTrendTransitionMath.CanAnimateTransition(
+        MetricTrendTransitionMode transitionMode = MetricTrendTransitionMath.ResolveTransitionMode(
             enableTransitions: EnableSmoothPointTransitions,
             hasPreviousFrame: _hasTransitionSnapshot,
             previous: _transitionSnapshot,
             next: nextSnapshot);
 
-        if (canAnimate)
+        switch (transitionMode)
         {
-            StartOrRetargetTransition(height);
-        }
-        else
-        {
-            StopTransition();
-            ApplyTargetPointsInstant(height);
+            case MetricTrendTransitionMode.SlideLeft:
+                StartOrRetargetSlideTransition(renderMeta.LinePointCount, width, height);
+                break;
+            case MetricTrendTransitionMode.Interpolate:
+                StartOrRetargetInterpolateTransition(height);
+                break;
+            default:
+                StopTransition();
+                ApplyTargetPointsInstant(height);
+                break;
         }
 
         _transitionSnapshot = nextSnapshot;
         _hasTransitionSnapshot = true;
     }
 
-    private void StartOrRetargetTransition(double height)
+    private void StartOrRetargetSlideTransition(int linePointCount, double width, double height)
+    {
+        if (linePointCount < 2)
+        {
+            StartOrRetargetInterpolateTransition(height);
+            return;
+        }
+
+        double slotWidth = width / Math.Max(1d, linePointCount - 1d);
+        if (!double.IsFinite(slotWidth) || slotWidth <= 0d)
+        {
+            StopTransition();
+            ApplyTargetPointsInstant(height);
+            return;
+        }
+
+        _transitionPlotHeight = height;
+        _transitionSlideStartOffset = slotWidth;
+        _transitionStartedAt = DateTimeOffset.UtcNow;
+        _activeTransitionMode = MetricTrendTransitionMode.SlideLeft;
+        _isTransitionRunning = true;
+        EnsureTransitionTimer();
+        if (_transitionTimer is null)
+        {
+            _isTransitionRunning = false;
+            _activeTransitionMode = MetricTrendTransitionMode.Instant;
+            ApplyTargetPointsInstant(height);
+            return;
+        }
+
+        ApplyTargetPointsInstant(height);
+        ApplyTransitionFrame(easedProgress: 0d);
+        _transitionTimer.Start();
+    }
+
+    private void StartOrRetargetInterpolateTransition(double height)
     {
         if (_linePoints.Count != _targetLinePoints.Count
             || (ShowOverlay && _overlayPoints.Count != _targetOverlayPoints.Count))
         {
+            StopTransition();
             ApplyTargetPointsInstant(height);
             return;
         }
@@ -613,11 +609,14 @@ public sealed partial class MetricTrendChart : UserControl
 
         _transitionPlotHeight = height;
         _transitionStartedAt = DateTimeOffset.UtcNow;
+        _transitionSlideStartOffset = 0d;
+        _activeTransitionMode = MetricTrendTransitionMode.Interpolate;
         _isTransitionRunning = true;
         EnsureTransitionTimer();
         if (_transitionTimer is null)
         {
             _isTransitionRunning = false;
+            _activeTransitionMode = MetricTrendTransitionMode.Instant;
             ApplyTargetPointsInstant(height);
             return;
         }
@@ -655,16 +654,26 @@ public sealed partial class MetricTrendChart : UserControl
         if (progress >= 1d)
         {
             _isTransitionRunning = false;
+            _activeTransitionMode = MetricTrendTransitionMode.Instant;
+            SetSeriesTranslateX(0d);
             sender.Stop();
         }
     }
 
     private void ApplyTransitionFrame(double easedProgress)
     {
+        if (_activeTransitionMode == MetricTrendTransitionMode.SlideLeft)
+        {
+            double offset = MetricTrendTransitionMath.ComputeSlideOffset(_transitionSlideStartOffset, easedProgress);
+            SetSeriesTranslateX(offset);
+            return;
+        }
+
         if (_animationStartLinePoints.Count != _targetLinePoints.Count
             || (ShowOverlay && _animationStartOverlayPoints.Count != _targetOverlayPoints.Count))
         {
             _isTransitionRunning = false;
+            _activeTransitionMode = MetricTrendTransitionMode.Instant;
             ApplyTargetPointsInstant(_transitionPlotHeight);
             return;
         }
@@ -680,6 +689,7 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         UpdateAreaGeometry(_transitionPlotHeight);
+        SetSeriesTranslateX(0d);
     }
 
     private void ApplyTargetPointsInstant(double height)
@@ -695,6 +705,7 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         UpdateAreaGeometry(height);
+        SetSeriesTranslateX(0d);
     }
 
     private void UpdateAreaGeometry(double height)
@@ -716,7 +727,17 @@ public sealed partial class MetricTrendChart : UserControl
     private void StopTransition()
     {
         _isTransitionRunning = false;
+        _activeTransitionMode = MetricTrendTransitionMode.Instant;
         _transitionTimer?.Stop();
+        SetSeriesTranslateX(0d);
+    }
+
+    private void SetSeriesTranslateX(double offset)
+    {
+        double safeOffset = double.IsFinite(offset) ? Math.Round(offset, 2) : 0d;
+        _lineTranslateTransform.X = safeOffset;
+        _overlayTranslateTransform.X = safeOffset;
+        _areaTranslateTransform.X = safeOffset;
     }
 
     private static void InterpolatePointCollection(
@@ -1066,3 +1087,5 @@ public sealed partial class MetricTrendChart : UserControl
         double Max,
         bool HasNonFinite);
 }
+
+

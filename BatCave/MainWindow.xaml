@@ -433,6 +433,8 @@
                                             HorizontalAlignment="Stretch"
                                             Values="{x:Bind CpuTrendValues, Mode=OneWay}"
                                             VisiblePointCount="60"
+                                            EnableSmoothPointTransitions="True"
+                                            PointTransitionDurationMs="180"
                                             ScaleMode="CpuPercent"
                                             ShowGrid="False"
                                             StrokeBrush="{ThemeResource ChartCpuStrokeBrush}"
