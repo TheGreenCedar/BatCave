@@ -21,6 +21,7 @@ internal static class WinUiBenchmarkCliRunner
     [
         SortColumn.CpuPct,
         SortColumn.RssBytes,
+        SortColumn.DiskBps,
         SortColumn.IoReadBps,
         SortColumn.IoWriteBps,
         SortColumn.OtherIoBps,

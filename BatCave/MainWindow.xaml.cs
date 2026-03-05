@@ -116,6 +116,19 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void ProcessTableModeToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleSwitch toggle)
+        {
+            return;
+        }
+
+        if (ViewModel.ProcessTableModeToggledCommand.CanExecute(toggle.IsOn))
+        {
+            ViewModel.ProcessTableModeToggledCommand.Execute(toggle.IsOn);
+        }
+    }
+
     private void FocusFilterAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;

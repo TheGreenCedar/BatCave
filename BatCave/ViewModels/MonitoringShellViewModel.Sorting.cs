@@ -113,6 +113,7 @@ public partial class MonitoringShellViewModel
             SortColumn.IoReadBps => left.IoReadBps.CompareTo(right.IoReadBps),
             SortColumn.IoWriteBps => left.IoWriteBps.CompareTo(right.IoWriteBps),
             SortColumn.OtherIoBps => left.OtherIoBps.CompareTo(right.OtherIoBps),
+            SortColumn.DiskBps => left.DiskBps.CompareTo(right.DiskBps),
             SortColumn.Threads => left.Threads.CompareTo(right.Threads),
             SortColumn.Handles => left.Handles.CompareTo(right.Handles),
             SortColumn.StartTimeMs => left.StartTimeMs.CompareTo(right.StartTimeMs),
@@ -231,6 +232,7 @@ public partial class MonitoringShellViewModel
             nameof(OtherIoSortLabel),
             nameof(ThreadsSortLabel),
             nameof(HandlesSortLabel));
+        RaiseCompactTableProperties();
     }
 
     private SortDirection ResolveNextSortDirection(SortColumn column)

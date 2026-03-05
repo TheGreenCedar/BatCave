@@ -20,6 +20,7 @@ public class LocalJsonPersistenceStoreTests
             AdminMode = true,
             AdminPreferenceInitialized = true,
             MetricTrendWindowSeconds = 120,
+            ProcessTableAdvancedMode = true,
         };
 
         await store.SaveSettingsAsync(settings, CancellationToken.None);
@@ -31,11 +32,15 @@ public class LocalJsonPersistenceStoreTests
         Assert.Equal(settings.FilterText, loaded.FilterText);
         Assert.Equal(settings.AdminMode, loaded.AdminMode);
         Assert.Equal(settings.AdminPreferenceInitialized, loaded.AdminPreferenceInitialized);
+        Assert.True(loaded.ProcessTableAdvancedMode);
         Assert.Equal(settings.MetricTrendWindowSeconds, loaded.MetricTrendWindowSeconds);
 
         string settingsPath = Path.Combine(baseDir, "settings.json");
         Assert.True(File.Exists(settingsPath));
         Assert.StartsWith(baseDir, settingsPath, StringComparison.OrdinalIgnoreCase);
+
+        string persistedJson = await File.ReadAllTextAsync(settingsPath);
+        Assert.Contains("process_table_advanced_mode", persistedJson, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -106,6 +111,26 @@ public class LocalJsonPersistenceStoreTests
         Assert.Null(loaded);
         Assert.NotNull(warning);
         Assert.Contains("persistence_load_json_failed", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(store.TakeWarning());
+    }
+
+    [Fact]
+    public void LoadSettings_WhenLegacyJsonOmitsProcessTableAdvancedMode_DefaultsToFalseWithoutWarning()
+    {
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-core-tests");
+        string baseDir = tempDir.DirectoryPath;
+        string settingsPath = Path.Combine(baseDir, "settings.json");
+        Directory.CreateDirectory(baseDir);
+        File.WriteAllText(
+            settingsPath,
+            """{"sort_col":2,"sort_dir":1,"filter_text":"svc","admin_mode":false,"admin_preference_initialized":true,"metric_trend_window_seconds":60}""");
+
+        LocalJsonPersistenceStore store = new(baseDir);
+
+        UserSettings? loaded = store.LoadSettings();
+
+        Assert.NotNull(loaded);
+        Assert.False(loaded!.ProcessTableAdvancedMode);
         Assert.Null(store.TakeWarning());
     }
 }

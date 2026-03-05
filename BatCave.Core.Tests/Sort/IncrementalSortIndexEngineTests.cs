@@ -108,6 +108,57 @@ public class IncrementalSortIndexEngineTests
         Assert.Equal(12U, response.Rows[0].Pid);
     }
 
+    [Fact]
+    public void DiskBpsSort_OrdersByReadPlusWrite()
+    {
+        IncrementalSortIndexEngine engine = new();
+        QueryRequest request = new()
+        {
+            SortCol = SortColumn.DiskBps,
+            SortDir = SortDirection.Desc,
+            Limit = 10,
+        };
+
+        ProcessSample low = Sample(pid: 1, "low", cpu: 1, rss: 1) with { IoReadBps = 100, IoWriteBps = 10 };
+        ProcessSample mid = Sample(pid: 2, "mid", cpu: 1, rss: 1) with { IoReadBps = 50, IoWriteBps = 200 };
+        ProcessSample high = Sample(pid: 3, "high", cpu: 1, rss: 1) with { IoReadBps = 300, IoWriteBps = 0 };
+
+        engine.OnDelta(new ProcessDeltaBatch
+        {
+            Seq = 1,
+            Upserts = [low, mid, high],
+            Exits = [],
+        });
+
+        QueryResponse response = engine.Query(request, [low, mid, high], 1);
+        Assert.Equal(new uint[] { 3, 2, 1 }, response.Rows.Select(row => row.Pid).ToArray());
+    }
+
+    [Fact]
+    public void DiskBpsSort_SaturatesOnOverflow()
+    {
+        IncrementalSortIndexEngine engine = new();
+        QueryRequest request = new()
+        {
+            SortCol = SortColumn.DiskBps,
+            SortDir = SortDirection.Desc,
+            Limit = 10,
+        };
+
+        ProcessSample overflow = Sample(pid: 10, "overflow", cpu: 1, rss: 1) with { IoReadBps = ulong.MaxValue, IoWriteBps = 1 };
+        ProcessSample nearMax = Sample(pid: 20, "nearMax", cpu: 1, rss: 1) with { IoReadBps = ulong.MaxValue - 2, IoWriteBps = 1 };
+
+        engine.OnDelta(new ProcessDeltaBatch
+        {
+            Seq = 1,
+            Upserts = [overflow, nearMax],
+            Exits = [],
+        });
+
+        QueryResponse response = engine.Query(request, [overflow, nearMax], 1);
+        Assert.Equal(new uint[] { 10, 20 }, response.Rows.Select(row => row.Pid).ToArray());
+    }
+
     private static ProcessSample Sample(uint pid, string name, double cpu, ulong rss)
     {
         return new ProcessSample

@@ -68,6 +68,33 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
+    public async Task SetProcessTableAdvancedMode_PersistsLatestValue()
+    {
+        BlockingSettingsPersistenceStore persistenceStore = new(blockFirstSave: true);
+        MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
+
+        try
+        {
+            runtime.SetProcessTableAdvancedMode(enabled: true);
+            await persistenceStore.WaitForFirstSaveStartedAsync();
+
+            runtime.SetProcessTableAdvancedMode(enabled: false);
+            Assert.False(runtime.CurrentProcessTableAdvancedMode);
+
+            persistenceStore.ReleaseFirstSave();
+        }
+        finally
+        {
+            runtime.Dispose();
+        }
+
+        IReadOnlyList<UserSettings> saves = persistenceStore.GetSavedSettingsSnapshot();
+        Assert.Equal(2, saves.Count);
+        Assert.True(saves[0].ProcessTableAdvancedMode);
+        Assert.False(saves[1].ProcessTableAdvancedMode);
+    }
+
+    [Fact]
     public void Constructor_WhenPersistedMetricTrendWindowIsInvalid_NormalizesToDefault()
     {
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
@@ -83,6 +110,35 @@ public class MonitoringRuntimeTests
 
         Assert.Equal(1, persistenceStore.SettingsSaveCount);
         Assert.Equal(60, persistenceStore.CurrentSettings.MetricTrendWindowSeconds);
+    }
+
+    [Fact]
+    public void Constructor_WhenPersistedSettingsDoNotSpecifyProcessTableAdvancedMode_DefaultsFalseWithoutMigration()
+    {
+        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
+        {
+            AdminPreferenceInitialized = true,
+        });
+
+        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
+
+        Assert.False(runtime.CurrentProcessTableAdvancedMode);
+        Assert.False(persistenceStore.CurrentSettings.ProcessTableAdvancedMode);
+        Assert.Equal(0, persistenceStore.SettingsSaveCount);
+    }
+
+    [Fact]
+    public void Constructor_WhenNoPersistedSettings_UsesRuntimeHostOptionsDefaultProcessTableAdvancedMode()
+    {
+        NullSettingsPersistenceStore persistenceStore = new();
+        RuntimeHostOptions options = new()
+        {
+            DefaultProcessTableAdvancedMode = true,
+        };
+
+        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore, options);
+
+        Assert.True(runtime.CurrentProcessTableAdvancedMode);
     }
 
     [Fact]
@@ -327,7 +383,21 @@ public class MonitoringRuntimeTests
 
     private static MonitoringRuntime CreateRuntime(IProcessCollector collector, IPersistenceStore persistenceStore)
     {
-        return RuntimeTestHarness.CreateRuntime(collector, persistenceStore);
+        return CreateRuntime(collector, persistenceStore, new RuntimeHostOptions());
+    }
+
+    private static MonitoringRuntime CreateRuntime(
+        IProcessCollector collector,
+        IPersistenceStore persistenceStore,
+        RuntimeHostOptions runtimeHostOptions)
+    {
+        return new MonitoringRuntime(
+            new DelegatingCollectorFactory(collector),
+            new DeltaTelemetryPipeline(),
+            new InMemoryStateStore(),
+            new IncrementalSortIndexEngine(),
+            persistenceStore,
+            runtimeHostOptions);
     }
 
     private static MonitoringRuntime CreateRuntime(IProcessCollectorFactory collectorFactory, IPersistenceStore persistenceStore)
@@ -528,6 +598,56 @@ public class MonitoringRuntimeTests
             }
 
             return new TestCollector();
+        }
+    }
+
+    private sealed class NullSettingsPersistenceStore : IPersistenceStore
+    {
+        public string BaseDirectory => Path.GetTempPath();
+
+        public UserSettings? LoadSettings()
+        {
+            return null;
+        }
+
+        public Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public WarmCache? LoadWarmCache()
+        {
+            return null;
+        }
+
+        public Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public string? TakeWarning()
+        {
+            return null;
+        }
+    }
+
+    private sealed class DelegatingCollectorFactory : IProcessCollectorFactory
+    {
+        private readonly IProcessCollector _collector;
+
+        public DelegatingCollectorFactory(IProcessCollector collector)
+        {
+            _collector = collector;
+        }
+
+        public IProcessCollector Create(bool _)
+        {
+            return _collector;
         }
     }
 
