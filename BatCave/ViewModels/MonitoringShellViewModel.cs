@@ -448,24 +448,6 @@ public partial class MonitoringShellViewModel : ObservableObject
             ? "n/a"
             : SelectedMetadata.ExecutablePath!;
 
-    public string NameSortLabel => SortLabel("Name", SortColumn.Name);
-
-    public string PidSortLabel => SortLabel("PID", SortColumn.Pid);
-
-    public string CpuSortLabel => SortLabel("CPU", SortColumn.CpuPct);
-
-    public string MemorySortLabel => SortLabel("Memory", SortColumn.RssBytes);
-
-    public string IoReadSortLabel => SortLabel("IO Read", SortColumn.IoReadBps);
-
-    public string IoWriteSortLabel => SortLabel("IO Write", SortColumn.IoWriteBps);
-
-    public string OtherIoSortLabel => SortLabel("Other I/O", SortColumn.OtherIoBps);
-
-    public string ThreadsSortLabel => SortLabel("Threads", SortColumn.Threads);
-
-    public string HandlesSortLabel => SortLabel("Handles", SortColumn.Handles);
-
     public double[] CpuMetricTrendValues
     {
         get => _cpuMetricTrendValues;

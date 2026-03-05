@@ -214,79 +214,30 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task Bootstrap_LoadsPersistedProcessTableModeSetting()
+    public async Task Bootstrap_NormalizesCompactSortState_WhenPersistedSortColumnIsNonCompact()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
             gateway,
             settings: new UserSettings
             {
-                ProcessTableAdvancedMode = true,
+                SortCol = SortColumn.Handles,
+                SortDir = SortDirection.Asc,
                 AdminPreferenceInitialized = true,
             });
 
-        Assert.True(viewModel.IsAdvancedProcessTableMode);
-        Assert.False(viewModel.IsCompactProcessTableMode);
-        Assert.Equal(Visibility.Visible, viewModel.AdvancedProcessTableVisibility);
-        Assert.Equal(Visibility.Collapsed, viewModel.CompactProcessTableVisibility);
-    }
-
-    [Fact]
-    public async Task ProcessTableModeToggled_PersistsThroughRuntimeSettings()
-    {
-        TestPersistenceStore store = new(new UserSettings
-        {
-            AdminPreferenceInitialized = true,
-            ProcessTableAdvancedMode = false,
-        });
-        MonitoringRuntime runtime = new(
-            new TestCollectorFactory(),
-            new DeltaTelemetryPipeline(),
-            new InMemoryStateStore(),
-            new IncrementalSortIndexEngine(),
-            store,
-            new RuntimeHostOptions());
-        RuntimeLoopService loopService = new(runtime);
-        RuntimeHealthService runtimeHealthService = new();
-        TestRuntimeEventGateway gateway = new();
-        MonitoringShellViewModel viewModel = new(
-            CreatePassedGate(),
-            runtime,
-            loopService,
-            gateway,
-            runtimeHealthService,
-            CreateNullMetadataProvider(),
-            TestSystemGlobalMetricsSampler.Default);
-
-        await viewModel.BootstrapAsync(CancellationToken.None);
-        Assert.False(viewModel.IsAdvancedProcessTableMode);
-
-        viewModel.ProcessTableModeToggledCommand.Execute(true);
-        Assert.True(viewModel.IsAdvancedProcessTableMode);
-        Assert.True(runtime.CurrentProcessTableAdvancedMode);
-
-        viewModel.ProcessTableModeToggledCommand.Execute(false);
-        Assert.False(viewModel.IsAdvancedProcessTableMode);
-        Assert.False(runtime.CurrentProcessTableAdvancedMode);
-    }
-
-    [Fact]
-    public async Task CompactSortState_HiddenAdvancedSort_IsSurfacedWithoutFallback()
-    {
-        TestRuntimeEventGateway gateway = new();
-        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
-
-        viewModel.ChangeSort(SortColumn.Handles);
-
-        Assert.Equal(SortColumn.Handles, viewModel.CurrentSortColumn);
-        Assert.True(viewModel.IsCompactHiddenSortActive);
-        Assert.Equal(Visibility.Visible, viewModel.CompactHiddenSortActiveVisibility);
-        Assert.Contains("Handles", viewModel.CompactHiddenSortActiveLabel, StringComparison.Ordinal);
+        Assert.Equal(SortColumn.CpuPct, viewModel.CurrentSortColumn);
+        Assert.Equal(SortDirection.Asc, viewModel.CurrentSortDirection);
         Assert.False(viewModel.IsCompactNameSortActive);
-        Assert.False(viewModel.IsCompactCpuSortActive);
+        Assert.True(viewModel.IsCompactCpuSortActive);
         Assert.False(viewModel.IsCompactMemorySortActive);
         Assert.False(viewModel.IsCompactDiskSortActive);
         Assert.False(viewModel.IsCompactNetworkSortActive);
+
+        viewModel.CompactSortHeaderCommand.Execute("DiskBps");
+
+        Assert.Equal(SortColumn.DiskBps, viewModel.CurrentSortColumn);
+        Assert.True(viewModel.IsCompactDiskSortActive);
     }
 
     [Fact]
@@ -299,7 +250,6 @@ public class MonitoringShellViewModelTests
 
         Assert.Equal(SortColumn.DiskBps, viewModel.CurrentSortColumn);
         Assert.True(viewModel.IsCompactDiskSortActive);
-        Assert.False(viewModel.IsCompactHiddenSortActive);
     }
 
     [Fact]

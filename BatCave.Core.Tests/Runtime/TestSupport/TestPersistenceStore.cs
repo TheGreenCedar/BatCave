@@ -10,7 +10,6 @@ internal sealed class TestPersistenceStore : IPersistenceStore
     private UserSettings _settings = new()
     {
         AdminPreferenceInitialized = true,
-        ProcessTableAdvancedMode = false,
     };
     private WarmCache? _warmCache;
 

@@ -34,7 +34,6 @@ public partial class MonitoringShellViewModel
             ApplyCanonicalShaping();
             AdminModeEnabled = _runtime.IsAdminMode();
             MetricTrendWindowSeconds = _runtime.CurrentMetricTrendWindowSeconds;
-            IsAdvancedProcessTableMode = _runtime.CurrentProcessTableAdvancedMode;
 
             RefreshRuntimeSnapshot();
 

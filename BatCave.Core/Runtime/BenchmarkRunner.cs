@@ -388,7 +388,6 @@ public static class BenchmarkRunner
                 SortCol = SortColumn.CpuPct,
                 SortDir = SortDirection.Desc,
                 FilterText = string.Empty,
-                ProcessTableAdvancedMode = false,
             };
         }
 

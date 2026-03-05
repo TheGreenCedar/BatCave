@@ -15,8 +15,6 @@ public sealed class RuntimeHostOptions
     public bool DefaultAdminMode { get; init; } = true;
 
     public int DefaultMetricTrendWindowSeconds { get; init; } = 60;
-
-    public bool DefaultProcessTableAdvancedMode { get; init; } = false;
 }
 
 public static class RuntimeHostOptionsValidator
@@ -57,7 +55,6 @@ public static class RuntimeHostOptionsValidator
             DefaultFilterText = options.DefaultFilterText.Trim(),
             DefaultAdminMode = options.DefaultAdminMode,
             DefaultMetricTrendWindowSeconds = options.DefaultMetricTrendWindowSeconds,
-            DefaultProcessTableAdvancedMode = options.DefaultProcessTableAdvancedMode,
         };
     }
 

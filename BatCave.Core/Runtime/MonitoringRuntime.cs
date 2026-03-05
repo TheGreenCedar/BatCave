@@ -63,6 +63,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             adminPreferenceMigrated = true;
         }
 
+        SortColumn normalizedSortColumn = NormalizeProcessTableSortColumn(_settings.SortCol);
+        bool sortColumnNormalized = _settings.SortCol != normalizedSortColumn;
+        _settings = _settings with
+        {
+            SortCol = normalizedSortColumn,
+        };
+
         int normalizedMetricTrendWindowSeconds = NormalizeMetricTrendWindowSeconds(_settings.MetricTrendWindowSeconds);
         bool metricTrendWindowNormalized = _settings.MetricTrendWindowSeconds != normalizedMetricTrendWindowSeconds;
         _settings = _settings with
@@ -74,7 +81,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _collector = startupCollector.Collector;
         _effectiveAdminMode = startupCollector.AdminMode;
         EnqueueRuntimeWarning(startupCollector.Warning);
-        if (metricTrendWindowNormalized || adminPreferenceMigrated)
+        if (metricTrendWindowNormalized || adminPreferenceMigrated || sortColumnNormalized)
         {
             PersistSettings();
         }
@@ -134,23 +141,6 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _settings = _settings with
         {
             MetricTrendWindowSeconds = normalized,
-        };
-
-        PersistSettings();
-    }
-
-    public bool CurrentProcessTableAdvancedMode => _settings.ProcessTableAdvancedMode;
-
-    public void SetProcessTableAdvancedMode(bool enabled)
-    {
-        if (_settings.ProcessTableAdvancedMode == enabled)
-        {
-            return;
-        }
-
-        _settings = _settings with
-        {
-            ProcessTableAdvancedMode = enabled,
         };
 
         PersistSettings();
@@ -250,6 +240,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             : 60;
     }
 
+    private static SortColumn NormalizeProcessTableSortColumn(SortColumn sortColumn)
+    {
+        return sortColumn is SortColumn.Name or SortColumn.CpuPct or SortColumn.RssBytes or SortColumn.DiskBps or SortColumn.OtherIoBps
+            ? sortColumn
+            : SortColumn.CpuPct;
+    }
+
     private UserSettings BuildDefaultSettings()
     {
         return new UserSettings
@@ -260,7 +257,6 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             AdminMode = _runtimeHostOptions.DefaultAdminMode,
             AdminPreferenceInitialized = true,
             MetricTrendWindowSeconds = _runtimeHostOptions.DefaultMetricTrendWindowSeconds,
-            ProcessTableAdvancedMode = _runtimeHostOptions.DefaultProcessTableAdvancedMode,
         };
     }
 

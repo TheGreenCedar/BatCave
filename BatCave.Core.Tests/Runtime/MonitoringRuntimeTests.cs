@@ -68,33 +68,6 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
-    public async Task SetProcessTableAdvancedMode_PersistsLatestValue()
-    {
-        BlockingSettingsPersistenceStore persistenceStore = new(blockFirstSave: true);
-        MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
-
-        try
-        {
-            runtime.SetProcessTableAdvancedMode(enabled: true);
-            await persistenceStore.WaitForFirstSaveStartedAsync();
-
-            runtime.SetProcessTableAdvancedMode(enabled: false);
-            Assert.False(runtime.CurrentProcessTableAdvancedMode);
-
-            persistenceStore.ReleaseFirstSave();
-        }
-        finally
-        {
-            runtime.Dispose();
-        }
-
-        IReadOnlyList<UserSettings> saves = persistenceStore.GetSavedSettingsSnapshot();
-        Assert.Equal(2, saves.Count);
-        Assert.True(saves[0].ProcessTableAdvancedMode);
-        Assert.False(saves[1].ProcessTableAdvancedMode);
-    }
-
-    [Fact]
     public void Constructor_WhenPersistedMetricTrendWindowIsInvalid_NormalizesToDefault()
     {
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
@@ -113,35 +86,6 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
-    public void Constructor_WhenPersistedSettingsDoNotSpecifyProcessTableAdvancedMode_DefaultsFalseWithoutMigration()
-    {
-        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
-        {
-            AdminPreferenceInitialized = true,
-        });
-
-        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore);
-
-        Assert.False(runtime.CurrentProcessTableAdvancedMode);
-        Assert.False(persistenceStore.CurrentSettings.ProcessTableAdvancedMode);
-        Assert.Equal(0, persistenceStore.SettingsSaveCount);
-    }
-
-    [Fact]
-    public void Constructor_WhenNoPersistedSettings_UsesRuntimeHostOptionsDefaultProcessTableAdvancedMode()
-    {
-        NullSettingsPersistenceStore persistenceStore = new();
-        RuntimeHostOptions options = new()
-        {
-            DefaultProcessTableAdvancedMode = true,
-        };
-
-        using MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore, options);
-
-        Assert.True(runtime.CurrentProcessTableAdvancedMode);
-    }
-
-    [Fact]
     public void Constructor_WhenPersistedSortColumnIsInvalid_FailsFast()
     {
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
@@ -154,6 +98,28 @@ public class MonitoringRuntimeTests
             () => CreateRuntime(new TestCollector(), persistenceStore));
 
         Assert.Contains("invalid sort column", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Constructor_WhenPersistedSortColumnIsHidden_NormalizesToCpuPctPreservingDirectionAndPersistsOnce()
+    {
+        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
+        {
+            SortCol = SortColumn.Handles,
+            SortDir = SortDirection.Asc,
+            AdminPreferenceInitialized = true,
+            MetricTrendWindowSeconds = 60,
+        });
+
+        using (MonitoringRuntime runtime = CreateRuntime(new TestCollector(), persistenceStore))
+        {
+            Assert.Equal(SortColumn.CpuPct, runtime.CurrentSortColumn);
+            Assert.Equal(SortDirection.Asc, runtime.CurrentSortDirection);
+        }
+
+        Assert.Equal(SortColumn.CpuPct, persistenceStore.CurrentSettings.SortCol);
+        Assert.Equal(SortDirection.Asc, persistenceStore.CurrentSettings.SortDir);
+        Assert.Equal(1, persistenceStore.SettingsSaveCount);
     }
 
     [Fact]

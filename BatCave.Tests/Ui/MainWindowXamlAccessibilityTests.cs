@@ -84,14 +84,18 @@ public class MainWindowXamlAccessibilityTests
     }
 
     [Fact]
-    public void MainWindowXaml_HasProcessTableModeToggleAndHiddenSortIndicator()
+    public void MainWindowXaml_DoesNotExposeAdvancedProcessTableArtifacts_AndKeepsCompactTable()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
-        Assert.Contains("x:Name=\"ProcessTableModeToggle\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"Advanced Columns\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("AutomationProperties.Name=\"Advanced process columns toggle\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("AutomationProperties.Name=\"Hidden compact sort indicator\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("x:Name=\"ProcessTableModeToggle\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"Advanced Columns\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("AutomationProperties.Name=\"Advanced process columns toggle\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("AutomationProperties.Name=\"Hidden compact sort indicator\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.AdvancedProcessTableVisibility", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.CompactHiddenSortActiveVisibility", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"CompactProcessListView\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"Compact Process Table\"", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

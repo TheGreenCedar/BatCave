@@ -6,29 +6,6 @@ namespace BatCave.Core.Tests.Runtime;
 public class RuntimeHostOptionsValidatorTests
 {
     [Fact]
-    public void Validate_WhenProcessTableAdvancedModeDefaultIsNotConfigured_DefaultsToFalse()
-    {
-        RuntimeHostOptions validated = RuntimeHostOptionsValidator.Validate(new RuntimeHostOptions());
-
-        Assert.False(validated.DefaultProcessTableAdvancedMode);
-    }
-
-    [Fact]
-    public void Validate_WhenProcessTableAdvancedModeDefaultIsConfigured_PropagatesToValidatedOptions()
-    {
-        RuntimeHostOptions options = new()
-        {
-            DefaultProcessTableAdvancedMode = true,
-            DefaultFilterText = " svc ",
-        };
-
-        RuntimeHostOptions validated = RuntimeHostOptionsValidator.Validate(options);
-
-        Assert.True(validated.DefaultProcessTableAdvancedMode);
-        Assert.Equal("svc", validated.DefaultFilterText);
-    }
-
-    [Fact]
     public void Validate_WhenMetricTrendWindowDefaultIsUnsupported_Throws()
     {
         RuntimeHostOptions options = new()

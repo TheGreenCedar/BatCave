@@ -77,7 +77,6 @@ public partial class App : Application
             DefaultSortDirection = Core.Domain.SortDirection.Desc,
             DefaultFilterText = string.Empty,
             DefaultMetricTrendWindowSeconds = 60,
-            DefaultProcessTableAdvancedMode = false,
         };
 
         return RuntimeHostOptionsValidator.Validate(options);

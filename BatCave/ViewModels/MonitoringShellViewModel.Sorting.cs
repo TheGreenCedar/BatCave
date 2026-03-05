@@ -222,16 +222,6 @@ public partial class MonitoringShellViewModel
 
     private void RaiseSortHeaderLabels()
     {
-        RaiseProperties(
-            nameof(NameSortLabel),
-            nameof(PidSortLabel),
-            nameof(CpuSortLabel),
-            nameof(MemorySortLabel),
-            nameof(IoReadSortLabel),
-            nameof(IoWriteSortLabel),
-            nameof(OtherIoSortLabel),
-            nameof(ThreadsSortLabel),
-            nameof(HandlesSortLabel));
         RaiseCompactTableProperties();
     }
 

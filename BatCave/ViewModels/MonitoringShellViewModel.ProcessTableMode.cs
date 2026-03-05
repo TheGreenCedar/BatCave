@@ -1,7 +1,6 @@
 using BatCave.Core.Domain;
 using BatCave.Styling;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using System;
 using System.Runtime.InteropServices;
@@ -11,29 +10,6 @@ namespace BatCave.ViewModels;
 
 public partial class MonitoringShellViewModel
 {
-    private bool _isAdvancedProcessTableMode;
-
-    public bool IsAdvancedProcessTableMode
-    {
-        get => _isAdvancedProcessTableMode;
-        private set
-        {
-            if (!SetProperty(ref _isAdvancedProcessTableMode, value))
-            {
-                return;
-            }
-
-            RaiseProcessTableModeProperties();
-            RaiseCompactTableProperties();
-        }
-    }
-
-    public bool IsCompactProcessTableMode => !IsAdvancedProcessTableMode;
-
-    public Visibility AdvancedProcessTableVisibility => IsAdvancedProcessTableMode ? Visibility.Visible : Visibility.Collapsed;
-
-    public Visibility CompactProcessTableVisibility => IsCompactProcessTableMode ? Visibility.Visible : Visibility.Collapsed;
-
     public string CompactNameSortLabel => SortLabel("Name", SortColumn.Name);
 
     public string CompactCpuSortLabel => SortLabel("CPU", SortColumn.CpuPct);
@@ -64,15 +40,6 @@ public partial class MonitoringShellViewModel
 
     public bool IsCompactNetworkSortActive => CurrentSortColumn == SortColumn.OtherIoBps;
 
-    public bool IsCompactHiddenSortActive => IsCompactProcessTableMode && !IsCompactVisibleSortColumn(CurrentSortColumn);
-
-    public Visibility CompactHiddenSortActiveVisibility => IsCompactHiddenSortActive ? Visibility.Visible : Visibility.Collapsed;
-
-    public string CompactHiddenSortActiveLabel =>
-        IsCompactHiddenSortActive
-            ? $"Sorted by {ResolveSortColumnLabel(CurrentSortColumn)} {SortDirectionSuffix(CurrentSortDirection)} (advanced column hidden)."
-            : string.Empty;
-
     public Brush? CompactNameSortForeground => ResolveCompactSortForeground(IsCompactNameSortActive);
 
     public Brush? CompactCpuSortForeground => ResolveCompactSortForeground(IsCompactCpuSortActive);
@@ -94,19 +61,6 @@ public partial class MonitoringShellViewModel
     public Brush? CompactNetworkColumnBackground => ResolveCompactColumnBackground(IsCompactNetworkSortActive);
 
     [RelayCommand]
-    private void ProcessTableModeToggled(bool? isOn)
-    {
-        bool next = isOn ?? !IsAdvancedProcessTableMode;
-        if (next == IsAdvancedProcessTableMode)
-        {
-            return;
-        }
-
-        IsAdvancedProcessTableMode = next;
-        _runtime.SetProcessTableAdvancedMode(next);
-    }
-
-    [RelayCommand]
     private void CompactSortHeader(string? sortTag)
     {
         if (!Enum.TryParse(sortTag, out SortColumn column))
@@ -115,14 +69,6 @@ public partial class MonitoringShellViewModel
         }
 
         ChangeSort(column);
-    }
-
-    private void RaiseProcessTableModeProperties()
-    {
-        RaiseProperties(
-            nameof(IsCompactProcessTableMode),
-            nameof(AdvancedProcessTableVisibility),
-            nameof(CompactProcessTableVisibility));
     }
 
     private void RaiseCompactTableProperties()
@@ -143,9 +89,6 @@ public partial class MonitoringShellViewModel
             nameof(IsCompactMemorySortActive),
             nameof(IsCompactDiskSortActive),
             nameof(IsCompactNetworkSortActive),
-            nameof(IsCompactHiddenSortActive),
-            nameof(CompactHiddenSortActiveVisibility),
-            nameof(CompactHiddenSortActiveLabel),
             nameof(CompactNameSortForeground),
             nameof(CompactCpuSortForeground),
             nameof(CompactMemorySortForeground),
@@ -156,34 +99,6 @@ public partial class MonitoringShellViewModel
             nameof(CompactMemoryColumnBackground),
             nameof(CompactDiskColumnBackground),
             nameof(CompactNetworkColumnBackground));
-    }
-
-    private static bool IsCompactVisibleSortColumn(SortColumn sortColumn)
-    {
-        return sortColumn is SortColumn.Name
-            or SortColumn.CpuPct
-            or SortColumn.RssBytes
-            or SortColumn.DiskBps
-            or SortColumn.OtherIoBps;
-    }
-
-    private static string ResolveSortColumnLabel(SortColumn sortColumn)
-    {
-        return sortColumn switch
-        {
-            SortColumn.Pid => "PID",
-            SortColumn.Name => "Name",
-            SortColumn.CpuPct => "CPU",
-            SortColumn.RssBytes => "Memory",
-            SortColumn.IoReadBps => "Disk Read",
-            SortColumn.IoWriteBps => "Disk Write",
-            SortColumn.OtherIoBps => "Network",
-            SortColumn.DiskBps => "Disk",
-            SortColumn.Threads => "Threads",
-            SortColumn.Handles => "Handles",
-            SortColumn.StartTimeMs => "Start Time",
-            _ => "Column",
-        };
     }
 
     private static string BuildProcessCountLabel(int processCount)
