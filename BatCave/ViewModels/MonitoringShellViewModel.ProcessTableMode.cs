@@ -71,7 +71,7 @@ public partial class MonitoringShellViewModel
         ChangeSort(column);
     }
 
-    private void RaiseCompactTableProperties()
+    private void RaiseCompactSortVisualProperties()
     {
         RaiseProperties(
             nameof(CompactNameSortLabel),
@@ -79,11 +79,6 @@ public partial class MonitoringShellViewModel
             nameof(CompactMemorySortLabel),
             nameof(CompactDiskSortLabel),
             nameof(CompactNetworkSortLabel),
-            nameof(CompactNameTotalLabel),
-            nameof(CompactCpuTotalLabel),
-            nameof(CompactMemoryTotalLabel),
-            nameof(CompactDiskTotalLabel),
-            nameof(CompactNetworkTotalLabel),
             nameof(IsCompactNameSortActive),
             nameof(IsCompactCpuSortActive),
             nameof(IsCompactMemorySortActive),
@@ -99,6 +94,16 @@ public partial class MonitoringShellViewModel
             nameof(CompactMemoryColumnBackground),
             nameof(CompactDiskColumnBackground),
             nameof(CompactNetworkColumnBackground));
+    }
+
+    private void RaiseCompactTotalsProperties()
+    {
+        RaiseProperties(
+            nameof(CompactNameTotalLabel),
+            nameof(CompactCpuTotalLabel),
+            nameof(CompactMemoryTotalLabel),
+            nameof(CompactDiskTotalLabel),
+            nameof(CompactNetworkTotalLabel));
     }
 
     private static string BuildProcessCountLabel(int processCount)

@@ -222,7 +222,7 @@ public partial class MonitoringShellViewModel
 
     private void RaiseSortHeaderLabels()
     {
-        RaiseCompactTableProperties();
+        RaiseCompactSortVisualProperties();
     }
 
     private SortDirection ResolveNextSortDirection(SortColumn column)

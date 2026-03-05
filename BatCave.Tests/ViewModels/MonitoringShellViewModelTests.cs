@@ -325,6 +325,54 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task TelemetryDelta_DoesNotRaiseCompactSortVisualProperties()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        HashSet<string> compactSortVisualProperties =
+        [
+            nameof(MonitoringShellViewModel.CompactNameSortLabel),
+            nameof(MonitoringShellViewModel.CompactCpuSortLabel),
+            nameof(MonitoringShellViewModel.CompactMemorySortLabel),
+            nameof(MonitoringShellViewModel.CompactDiskSortLabel),
+            nameof(MonitoringShellViewModel.CompactNetworkSortLabel),
+            nameof(MonitoringShellViewModel.IsCompactNameSortActive),
+            nameof(MonitoringShellViewModel.IsCompactCpuSortActive),
+            nameof(MonitoringShellViewModel.IsCompactMemorySortActive),
+            nameof(MonitoringShellViewModel.IsCompactDiskSortActive),
+            nameof(MonitoringShellViewModel.IsCompactNetworkSortActive),
+            nameof(MonitoringShellViewModel.CompactNameSortForeground),
+            nameof(MonitoringShellViewModel.CompactCpuSortForeground),
+            nameof(MonitoringShellViewModel.CompactMemorySortForeground),
+            nameof(MonitoringShellViewModel.CompactDiskSortForeground),
+            nameof(MonitoringShellViewModel.CompactNetworkSortForeground),
+            nameof(MonitoringShellViewModel.CompactNameColumnBackground),
+            nameof(MonitoringShellViewModel.CompactCpuColumnBackground),
+            nameof(MonitoringShellViewModel.CompactMemoryColumnBackground),
+            nameof(MonitoringShellViewModel.CompactDiskColumnBackground),
+            nameof(MonitoringShellViewModel.CompactNetworkColumnBackground),
+        ];
+
+        List<string> raised = [];
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (!string.IsNullOrWhiteSpace(args.PropertyName))
+            {
+                raised.Add(args.PropertyName!);
+            }
+        };
+
+        ProcessSample row = Sample(pid: 990, startTime: 9900, access: AccessState.Full) with { CpuPct = 10 };
+        gateway.RaiseDelta(1, [row], []);
+        raised.Clear();
+
+        gateway.RaiseDelta(2, [row with { Seq = 2, TsMs = 2, CpuPct = 20 }], []);
+
+        Assert.DoesNotContain(raised, compactSortVisualProperties.Contains);
+    }
+
+    [Fact]
     public async Task MetricTrendWindowSelected_SwitchesDisplayedTrendLength()
     {
         TestRuntimeEventGateway gateway = new();
@@ -487,7 +535,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task TelemetryDelta_HeartbeatOnly_RespectsSparklineStrideAndKeepsRowInstance()
+    public async Task TelemetryDelta_HeartbeatOnly_DoesNotMaintainRowMiniTrendAndKeepsRowInstance()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -497,23 +545,17 @@ public class MonitoringShellViewModelTests
         ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 20 };
         gateway.RaiseDelta(2, [varied], []);
         ProcessRowViewState firstVisible = GetVisibleRow(viewModel, 0);
-        double[] beforeTrend = CloneTrendValues(firstVisible.CpuTrendValues);
+        Assert.Empty(firstVisible.CpuTrendValues);
 
         ProcessSample heartbeatOnlyUpdate = varied with { Seq = 3, TsMs = 3, ParentPid = varied.ParentPid + 1, PrivateBytes = varied.PrivateBytes + 1 };
         gateway.RaiseDelta(3, [heartbeatOnlyUpdate], []);
-        double[] afterOddHeartbeat = CloneTrendValues(firstVisible.CpuTrendValues);
+        Assert.Empty(firstVisible.CpuTrendValues);
 
         ProcessSample strideHeartbeat = heartbeatOnlyUpdate with { Seq = 4, TsMs = 4, ParentPid = heartbeatOnlyUpdate.ParentPid + 1 };
         gateway.RaiseDelta(4, [strideHeartbeat], []);
-        double[] afterEvenHeartbeat = CloneTrendValues(firstVisible.CpuTrendValues);
+        Assert.Empty(firstVisible.CpuTrendValues);
 
         Assert.Same(firstVisible, GetVisibleRow(viewModel, 0));
-        AssertTrendValuesEqual(beforeTrend, afterOddHeartbeat);
-        AssertTrendValuesNotEqual(beforeTrend, afterEvenHeartbeat);
-        Assert.Equal(58, beforeTrend.Count(static value => value == 0d));
-        Assert.Equal(56, afterEvenHeartbeat.Count(static value => value == 0d));
-        Assert.Equal(20d, afterEvenHeartbeat[^1]);
-        Assert.Equal(20d, afterEvenHeartbeat[^2]);
     }
 
     [Fact]
@@ -539,7 +581,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task TableMiniChart_AdvancesOnStrideWhenNoUpsertArrives()
+    public async Task TableMiniChart_WhenNoLongerRendered_RemainsUnmaintained()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -549,24 +591,17 @@ public class MonitoringShellViewModelTests
         ProcessSample varied = row with { Seq = 2, TsMs = 2, CpuPct = 11.0 };
         gateway.RaiseDelta(2, [varied], []);
         ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
-        double[] before = CloneTrendValues(rowState.CpuTrendValues);
+        Assert.Empty(rowState.CpuTrendValues);
 
         gateway.RaiseDelta(3, [], []);
-        double[] afterOdd = CloneTrendValues(rowState.CpuTrendValues);
+        Assert.Empty(rowState.CpuTrendValues);
 
         gateway.RaiseDelta(4, [], []);
-        double[] afterEven = CloneTrendValues(rowState.CpuTrendValues);
-
-        AssertTrendValuesEqual(before, afterOdd);
-        AssertTrendValuesNotEqual(before, afterEven);
-        Assert.Equal(58, before.Count(static value => value == 0d));
-        Assert.Equal(57, afterEven.Count(static value => value == 0d));
-        Assert.Equal(11d, afterEven[^1]);
-        Assert.Equal(11d, afterEven[^2]);
+        Assert.Empty(rowState.CpuTrendValues);
     }
 
     [Fact]
-    public async Task TableMiniChart_FirstSampleUsesPrefilledWindowAndAdvancesOnStride()
+    public async Task TableMiniChart_FirstSample_NoLongerPrefillsMiniTrendWindow()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -574,23 +609,13 @@ public class MonitoringShellViewModelTests
         ProcessSample row = Sample(pid: 192, startTime: 19200, access: AccessState.Full) with { CpuPct = 12.0 };
         gateway.RaiseDelta(1, [row], []);
         ProcessRowViewState rowState = GetVisibleRow(viewModel, 0);
-        double[] first = CloneTrendValues(rowState.CpuTrendValues);
-
-        Assert.Equal(60, first.Length);
-        Assert.Equal(59, first.Count(static value => value == 0d));
-        Assert.Equal(12d, first[^1]);
+        Assert.Empty(rowState.CpuTrendValues);
 
         gateway.RaiseDelta(2, [], []);
-        double[] afterEvenStride = CloneTrendValues(rowState.CpuTrendValues);
+        Assert.Empty(rowState.CpuTrendValues);
 
         gateway.RaiseDelta(3, [], []);
-        double[] afterOddTick = CloneTrendValues(rowState.CpuTrendValues);
-
-        AssertTrendValuesNotEqual(first, afterEvenStride);
-        AssertTrendValuesEqual(afterEvenStride, afterOddTick);
-        Assert.Equal(58, afterEvenStride.Count(static value => value == 0d));
-        Assert.Equal(12d, afterEvenStride[^1]);
-        Assert.Equal(12d, afterEvenStride[^2]);
+        Assert.Empty(rowState.CpuTrendValues);
     }
 
     [Fact]
@@ -614,10 +639,7 @@ public class MonitoringShellViewModelTests
         await viewModel.SelectRowAsync(current, CancellationToken.None);
 
         Assert.Single(GetVisibleRows(viewModel));
-        ProcessRowViewState visibleRow = GetVisibleRow(viewModel, 0);
-        Assert.Equal(60, visibleRow.CpuTrendValues.Count);
-        Assert.Equal(71d, visibleRow.CpuTrendValues[0]);
-        Assert.Equal(130d, visibleRow.CpuTrendValues[^1]);
+        Assert.Empty(GetVisibleRow(viewModel, 0).CpuTrendValues);
         Assert.Equal(60, viewModel.CpuMetricTrendValues.Length);
     }
 
@@ -1615,39 +1637,6 @@ public class MonitoringShellViewModelTests
 
         await viewModel.BootstrapAsync(CancellationToken.None);
         return viewModel;
-    }
-
-    private static double[] CloneTrendValues(IReadOnlyList<double> values)
-    {
-        return [.. values];
-    }
-
-    private static void AssertTrendValuesEqual(IReadOnlyList<double> expected, IReadOnlyList<double> actual)
-    {
-        Assert.True(AreTrendValuesEqual(expected, actual));
-    }
-
-    private static void AssertTrendValuesNotEqual(IReadOnlyList<double> expected, IReadOnlyList<double> actual)
-    {
-        Assert.False(AreTrendValuesEqual(expected, actual));
-    }
-
-    private static bool AreTrendValuesEqual(IReadOnlyList<double> left, IReadOnlyList<double> right)
-    {
-        if (left.Count != right.Count)
-        {
-            return false;
-        }
-
-        for (int index = 0; index < left.Count; index++)
-        {
-            if (left[index] != right[index])
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static IReadOnlyList<ProcessRowViewState> GetVisibleRows(MonitoringShellViewModel viewModel)
