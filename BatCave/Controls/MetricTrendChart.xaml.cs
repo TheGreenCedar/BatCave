@@ -6,11 +6,9 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Windows.Foundation;
 using Windows.UI;
@@ -19,9 +17,6 @@ namespace BatCave.Controls;
 
 public sealed partial class MetricTrendChart : UserControl
 {
-    private const int MinVisiblePointCount = 60;
-    private const int MaxVisiblePointCount = 120;
-
     public static readonly DependencyProperty ValuesProperty = DependencyProperty.Register(
         nameof(Values),
         typeof(IReadOnlyList<double>),
@@ -38,7 +33,7 @@ public sealed partial class MetricTrendChart : UserControl
         nameof(VisiblePointCount),
         typeof(int),
         typeof(MetricTrendChart),
-        new PropertyMetadata(MinVisiblePointCount, OnChartPropertyChanged));
+        new PropertyMetadata(MetricTrendChartRenderPlanner.MinVisiblePointCount, OnChartPropertyChanged));
 
     public static readonly DependencyProperty ScaleModeProperty = DependencyProperty.Register(
         nameof(ScaleMode),
@@ -385,7 +380,7 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         RenderInvalidation invalidation = (RenderInvalidation)invalidationMask;
-        int visibleCount = NormalizeVisiblePointCount(VisiblePointCount);
+        int visibleCount = MetricTrendChartRenderPlanner.NormalizeVisiblePointCount(VisiblePointCount);
         bool showAxes = ShowGrid;
 
         if ((invalidation & RenderInvalidation.Style) != 0)
@@ -461,73 +456,28 @@ public sealed partial class MetricTrendChart : UserControl
 
     private ChartRenderMeta BuildRenderMeta(int visibleCount, double width, double height)
     {
-        IReadOnlyList<double> values = Values ?? Array.Empty<double>();
-        IReadOnlyList<double> overlayValues = OverlayValues ?? Array.Empty<double>();
+        MetricTrendChartRenderPlan plan = MetricTrendChartRenderPlanner.CreatePlan(new MetricTrendChartRenderRequest(
+            Values ?? Array.Empty<double>(),
+            OverlayValues ?? Array.Empty<double>(),
+            visibleCount,
+            width,
+            height,
+            ScaleMode,
+            DomainMaxOverride,
+            _dynamicDomainMaxRaw));
 
-        (int lineStart, int lineCount) = ResolveWindow(values, visibleCount);
-        (int overlayStart, int overlayCount) = ResolveWindow(overlayValues, visibleCount);
+        _dynamicDomainMaxRaw = plan.NextRawDomainMax;
+        CopyPointCollection(plan.LinePoints, _targetLinePoints);
+        CopyPointCollection(plan.OverlayPoints, _targetOverlayPoints);
 
-        double[]? lineLease = null;
-        double[]? overlayLease = null;
-        ReadOnlySpan<double> lineWindow = AcquireWindowSpan(values, lineStart, lineCount, out lineLease);
-        ReadOnlySpan<double> overlayWindow = AcquireWindowSpan(overlayValues, overlayStart, overlayCount, out overlayLease);
-
-        try
-        {
-            WindowStats lineStats = AnalyzeWindow(lineWindow);
-            WindowStats overlayStats = AnalyzeWindow(overlayWindow);
-            bool nonFiniteSeriesDetected = lineStats.HasNonFinite || overlayStats.HasNonFinite;
-
-            double maxVisible = Math.Max(lineStats.Max, overlayStats.Max);
-            double domainMax = ResolveDomainMax(maxVisible);
-            (double floor, _) = ResolveDomainPolicy();
-            bool domainFallbackUsed = false;
-            if (!double.IsFinite(domainMax) || domainMax <= 0d)
-            {
-                domainFallbackUsed = true;
-                domainMax = floor;
-            }
-
-            int alignedSlotCount = Math.Max(lineWindow.Length, overlayWindow.Length);
-            int lineLeadingSlots = Math.Max(0, alignedSlotCount - lineWindow.Length);
-            int overlayLeadingSlots = Math.Max(0, alignedSlotCount - overlayWindow.Length);
-
-            bool lineFallbackUsed = SparklineMath.WritePointsInDomainWithSlotAlignment(
-                lineWindow,
-                alignedSlotCount,
-                lineLeadingSlots,
-                width,
-                height,
-                minDomain: 0d,
-                maxDomain: domainMax,
-                destination: _targetLinePoints);
-
-            bool overlayFallbackUsed = SparklineMath.WritePointsInDomainWithSlotAlignment(
-                overlayWindow,
-                alignedSlotCount,
-                overlayLeadingSlots,
-                width,
-                height,
-                minDomain: 0d,
-                maxDomain: domainMax,
-                destination: _targetOverlayPoints);
-
-            bool fallbackUsed = lineFallbackUsed || (ShowOverlay && overlayFallbackUsed);
-
-            return new ChartRenderMeta(
-                DomainMax: domainMax,
-                MaxVisible: maxVisible,
-                NonFiniteSeriesDetected: nonFiniteSeriesDetected,
-                DomainFallbackUsed: domainFallbackUsed,
-                PointFallbackUsed: fallbackUsed,
-                LinePointCount: _targetLinePoints.Count,
-                OverlayPointCount: ShowOverlay ? _targetOverlayPoints.Count : 0);
-        }
-        finally
-        {
-            ReturnWindowLease(lineLease);
-            ReturnWindowLease(overlayLease);
-        }
+        return new ChartRenderMeta(
+            DomainMax: plan.DomainMax,
+            MaxVisible: plan.MaxVisible,
+            NonFiniteSeriesDetected: plan.NonFiniteSeriesDetected,
+            DomainFallbackUsed: plan.DomainFallbackUsed,
+            PointFallbackUsed: plan.LineFallbackUsed || (ShowOverlay && plan.OverlayFallbackUsed),
+            LinePointCount: _targetLinePoints.Count,
+            OverlayPointCount: ShowOverlay ? _targetOverlayPoints.Count : 0);
     }
 
     private void ApplyAxes(bool showAxes, double width, double height, double domainMax)
@@ -738,6 +688,15 @@ public sealed partial class MetricTrendChart : UserControl
         }
     }
 
+    private static void CopyPointCollection(IReadOnlyList<Point> source, PointCollection destination)
+    {
+        EnsurePointCollectionSize(destination, source.Count);
+        for (int index = 0; index < source.Count; index++)
+        {
+            destination[index] = source[index];
+        }
+    }
+
     private static void CopyPointCollection(IList<Point> source, PointCollection destination)
     {
         EnsurePointCollectionSize(destination, source.Count);
@@ -843,124 +802,6 @@ public sealed partial class MetricTrendChart : UserControl
         return RenderInvalidation.Geometry | RenderInvalidation.Axes;
     }
 
-    private double ResolveDomainMax(double maxVisible)
-    {
-        (double floor, double? ceiling) = ResolveDomainPolicy();
-
-        _dynamicDomainMaxRaw = MetricTrendScaleDomain.ResolveNextRawDomainMax(
-            previousRawDomainMax: _dynamicDomainMaxRaw,
-            maxVisible: maxVisible,
-            floor: floor,
-            ceiling: ceiling,
-            paddingRatio: MetricTrendScaleDomain.DefaultPaddingRatio,
-            decayFactor: MetricTrendScaleDomain.DefaultDecayFactor);
-
-        return MetricTrendScaleDomain.ResolveRenderedDomainMax(
-            rawDomainMax: _dynamicDomainMaxRaw,
-            floor: floor,
-            ceiling: ceiling);
-    }
-
-    private (double Floor, double? Ceiling) ResolveDomainPolicy()
-    {
-        double? overrideMax = double.IsNaN(DomainMaxOverride)
-            ? null
-            : Math.Max(0d, DomainMaxOverride);
-
-        return ScaleMode switch
-        {
-            MetricTrendScaleMode.CpuPercent => (MetricTrendScaleDomain.CpuFloorPercent, MetricTrendScaleDomain.CpuCeilingPercent),
-            MetricTrendScaleMode.MemoryBytes => (MetricTrendScaleDomain.MemoryFloorBytes, overrideMax),
-            MetricTrendScaleMode.BitsRate => (MetricTrendScaleDomain.BitsRateFloor, overrideMax),
-            _ => (MetricTrendScaleDomain.IoRateFloorBytes, overrideMax),
-        };
-    }
-
-    private static (int Start, int Count) ResolveWindow(IReadOnlyList<double> values, int visiblePointCount)
-    {
-        if (values.Count == 0)
-        {
-            return (0, 0);
-        }
-
-        int count = Math.Min(values.Count, visiblePointCount);
-        return (values.Count - count, count);
-    }
-
-    private static ReadOnlySpan<double> AcquireWindowSpan(
-        IReadOnlyList<double> values,
-        int start,
-        int count,
-        out double[]? lease)
-    {
-        lease = null;
-        if (count <= 0 || values.Count == 0)
-        {
-            return ReadOnlySpan<double>.Empty;
-        }
-
-        int safeStart = Math.Max(0, start);
-        int safeCount = Math.Min(count, values.Count - safeStart);
-        if (safeCount <= 0)
-        {
-            return ReadOnlySpan<double>.Empty;
-        }
-
-        if (values is double[] array)
-        {
-            return array.AsSpan(safeStart, safeCount);
-        }
-
-        if (values is List<double> list)
-        {
-            return CollectionsMarshal.AsSpan(list).Slice(safeStart, safeCount);
-        }
-
-        lease = ArrayPool<double>.Shared.Rent(safeCount);
-        for (int index = 0; index < safeCount; index++)
-        {
-            lease[index] = values[safeStart + index];
-        }
-
-        return lease.AsSpan(0, safeCount);
-    }
-
-    private static void ReturnWindowLease(double[]? lease)
-    {
-        if (lease is null)
-        {
-            return;
-        }
-
-        ArrayPool<double>.Shared.Return(lease, clearArray: false);
-    }
-
-    private static WindowStats AnalyzeWindow(ReadOnlySpan<double> values)
-    {
-        if (values.Length == 0)
-        {
-            return new WindowStats(Max: 0d, HasNonFinite: false);
-        }
-
-        double max = 0d;
-        bool hasNonFinite = false;
-        for (int index = 0; index < values.Length; index++)
-        {
-            double value = values[index];
-            if (!double.IsFinite(value))
-            {
-                hasNonFinite = true;
-                continue;
-            }
-
-            if (value > max)
-            {
-                max = value;
-            }
-        }
-
-        return new WindowStats(Max: max, HasNonFinite: hasNonFinite);
-    }
 
     private string FormatScaleLabel(double domainMax)
     {
@@ -1005,11 +846,6 @@ public sealed partial class MetricTrendChart : UserControl
         }
 
         return (ulong)Math.Round(value);
-    }
-
-    private static int NormalizeVisiblePointCount(int candidate)
-    {
-        return candidate >= MaxVisiblePointCount ? MaxVisiblePointCount : MinVisiblePointCount;
     }
 
     private static Geometry BuildGridGeometry(double width, double height, int verticalDivisions, int horizontalDivisions)
@@ -1061,8 +897,8 @@ public sealed partial class MetricTrendChart : UserControl
         bool PointFallbackUsed,
         int LinePointCount,
         int OverlayPointCount);
-
-    private readonly record struct WindowStats(
-        double Max,
-        bool HasNonFinite);
 }
+
+
+
+

@@ -234,7 +234,7 @@ public class MonitoringRuntimeTests
         runtime.SetFilter("keep-filter");
         await persistenceStore.WaitForFirstSaveStartedAsync();
 
-        Task restartTask = runtime.RestartAsync(adminMode: true, CancellationToken.None);
+        Task<CollectorActivationResult> restartTask = runtime.RestartAsync(adminMode: true, CancellationToken.None);
         Task completed = await Task.WhenAny(restartTask, Task.Delay(100));
         Assert.NotSame(restartTask, completed);
 
@@ -249,7 +249,7 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
-    public void Constructor_WhenPersistedAdminModeCollectorFails_FallsBackToNonAdmin()
+    public async Task InitializeAsync_WhenPersistedAdminModeCollectorFails_FallsBackToNonAdmin()
     {
         FailingAdminCollectorFactory collectorFactory = new();
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
@@ -260,12 +260,15 @@ public class MonitoringRuntimeTests
 
         using MonitoringRuntime runtime = CreateRuntime(collectorFactory, persistenceStore);
 
+        CollectorActivationResult activation = await runtime.InitializeAsync(CancellationToken.None);
         TickOutcome outcome = runtime.Tick(jitterMs: 0);
 
-        Assert.Equal([true, false], collectorFactory.RequestedModes);
+        Assert.Equal([true], collectorFactory.RequestedModes);
         Assert.False(runtime.IsAdminMode());
+        Assert.False(activation.EffectiveAdminMode);
         Assert.True(persistenceStore.CurrentSettings.AdminMode);
         Assert.Equal(0, persistenceStore.SettingsSaveCount);
+        Assert.NotNull(activation.Warning);
         Assert.NotNull(outcome.Warning);
         Assert.Contains("admin_mode_start_failed", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -282,14 +285,16 @@ public class MonitoringRuntimeTests
 
         using MonitoringRuntime runtime = CreateRuntime(collectorFactory, persistenceStore);
 
-        await runtime.RestartAsync(adminMode: true, CancellationToken.None);
+        await runtime.InitializeAsync(CancellationToken.None);
+        CollectorActivationResult activation = await runtime.RestartAsync(adminMode: true, CancellationToken.None);
         TickOutcome outcome = runtime.Tick(jitterMs: 0);
 
-        Assert.Equal([false, true, false], collectorFactory.RequestedModes);
+        Assert.Equal([false, true], collectorFactory.RequestedModes);
         Assert.False(runtime.IsAdminMode());
         Assert.True(persistenceStore.CurrentSettings.AdminMode);
-        Assert.NotNull(outcome.Warning);
-        Assert.Contains("admin_mode_start_failed", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(activation.Warning);
+        Assert.Contains("admin_mode_start_failed", activation.Warning!, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(outcome.Warning);
     }
 
     [Fact]
@@ -357,13 +362,15 @@ public class MonitoringRuntimeTests
         IPersistenceStore persistenceStore,
         RuntimeHostOptions runtimeHostOptions)
     {
-        return new MonitoringRuntime(
+        MonitoringRuntime runtime = new(
             new DelegatingCollectorFactory(collector),
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
             persistenceStore,
             runtimeHostOptions);
+        runtime.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return runtime;
     }
 
     private static MonitoringRuntime CreateRuntime(IProcessCollectorFactory collectorFactory, IPersistenceStore persistenceStore)
@@ -555,15 +562,18 @@ public class MonitoringRuntimeTests
     {
         public List<bool> RequestedModes { get; } = [];
 
-        public IProcessCollector Create(bool adminMode)
+        public ValueTask<CollectorActivationResult> CreateAsync(bool adminMode, CancellationToken ct)
         {
             RequestedModes.Add(adminMode);
             if (adminMode)
             {
-                throw new InvalidOperationException("elevation failed");
+                return ValueTask.FromResult(new CollectorActivationResult(
+                    new TestCollector(),
+                    EffectiveAdminMode: false,
+                    Warning: "admin_mode_start_failed requested_admin_mode=true fallback_admin_mode=false error=InvalidOperationException: elevation failed"));
             }
 
-            return new TestCollector();
+            return ValueTask.FromResult(new CollectorActivationResult(new TestCollector(), EffectiveAdminMode: false, Warning: null));
         }
     }
 
@@ -611,9 +621,9 @@ public class MonitoringRuntimeTests
             _collector = collector;
         }
 
-        public IProcessCollector Create(bool _)
+        public ValueTask<CollectorActivationResult> CreateAsync(bool _, CancellationToken ct)
         {
-            return _collector;
+            return ValueTask.FromResult(new CollectorActivationResult(_collector, EffectiveAdminMode: _, Warning: null));
         }
     }
 
@@ -667,3 +677,13 @@ public class MonitoringRuntimeTests
         }
     }
 }
+
+
+
+
+
+
+
+
+
+

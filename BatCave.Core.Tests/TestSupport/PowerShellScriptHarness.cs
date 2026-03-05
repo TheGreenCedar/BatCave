@@ -13,10 +13,7 @@ param(
 )
 
 function global:dotnet {
-    param(
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$DotnetArgs
-    )
+    $DotnetArgs = @($args)
 
     if ($null -ne $DotnetArgs -and $DotnetArgs.Count -gt 0) {
         $logPath = $env:FAKE_DOTNET_LOG
@@ -46,6 +43,15 @@ function global:dotnet {
             return
         }
         'run' {
+            $joined = if ($null -eq $DotnetArgs) { "" } else { $DotnetArgs -join ' ' }
+            if ($joined.IndexOf('--print-gate-status', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                '{"passed":true}'
+            }
+
+            if ($joined.IndexOf('--print-runtime-health', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                '{"runtime_loop_enabled":true}'
+            }
+
             if (-not [string]::IsNullOrWhiteSpace($env:FAKE_DOTNET_RUN_EXIT_CODE)) {
                 $global:LASTEXITCODE = [int]$env:FAKE_DOTNET_RUN_EXIT_CODE
                 return
@@ -121,6 +127,11 @@ exit $LASTEXITCODE
     {
         _environment["FAKE_DOTNET_BUILD_FAIL_CONTAINS"] = contains;
         _environment["FAKE_DOTNET_BUILD_FAIL_CODE"] = exitCode.ToString(CultureInfo.InvariantCulture);
+    }
+
+    public void EnableRuntimeDiagnostics()
+    {
+        _environment["FAKE_DOTNET_INCLUDE_RUNTIME_DIAGNOSTICS"] = "1";
     }
 
     public void SetBuildExitCode(int exitCode)

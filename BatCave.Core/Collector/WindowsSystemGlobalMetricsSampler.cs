@@ -218,15 +218,20 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
         Task completed = await Task.WhenAny(allProbeTasks, softTimeout).ConfigureAwait(false);
         bool completedWithinBudget = ReferenceEquals(completed, allProbeTasks);
 
+        CompletedTaskResult<SystemGlobalCpuSnapshot?> cpuResult = CaptureCompletedTaskResult(cpuTask);
+        CompletedTaskResult<SystemGlobalMemorySnapshot> memoryResult = CaptureCompletedTaskResult(memoryTask);
+        CompletedTaskResult<IReadOnlyList<SystemGlobalDiskSnapshot>> diskResult = CaptureCompletedTaskResult(diskTask);
+        CompletedTaskResult<IReadOnlyList<SystemGlobalNetworkSnapshot>> networkResult = CaptureCompletedTaskResult(networkTask);
+
         ApplyExtendedProbeResults(
-            GetCompletedTaskResult(cpuTask),
-            cpuTask.IsCompletedSuccessfully,
-            GetCompletedTaskResult(memoryTask),
-            memoryTask.IsCompletedSuccessfully,
-            GetCompletedTaskResult(diskTask),
-            diskTask.IsCompletedSuccessfully,
-            GetCompletedTaskResult(networkTask),
-            networkTask.IsCompletedSuccessfully,
+            cpuResult.Result,
+            cpuResult.IsCompletedSuccessfully,
+            memoryResult.Result,
+            memoryResult.IsCompletedSuccessfully,
+            diskResult.Result,
+            diskResult.IsCompletedSuccessfully,
+            networkResult.Result,
+            networkResult.IsCompletedSuccessfully,
             markCycleComplete: true);
 
         if (completedWithinBudget)
@@ -248,23 +253,32 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             // Individual probe failures are intentionally handled via stale-value fallbacks.
         }
 
+        cpuResult = CaptureCompletedTaskResult(cpuTask);
+        memoryResult = CaptureCompletedTaskResult(memoryTask);
+        diskResult = CaptureCompletedTaskResult(diskTask);
+        networkResult = CaptureCompletedTaskResult(networkTask);
+
         // Promote any probe results that completed after the soft timeout.
         ApplyExtendedProbeResults(
-            GetCompletedTaskResult(cpuTask),
-            cpuTask.IsCompletedSuccessfully,
-            GetCompletedTaskResult(memoryTask),
-            memoryTask.IsCompletedSuccessfully,
-            GetCompletedTaskResult(diskTask),
-            diskTask.IsCompletedSuccessfully,
-            GetCompletedTaskResult(networkTask),
-            networkTask.IsCompletedSuccessfully,
+            cpuResult.Result,
+            cpuResult.IsCompletedSuccessfully,
+            memoryResult.Result,
+            memoryResult.IsCompletedSuccessfully,
+            diskResult.Result,
+            diskResult.IsCompletedSuccessfully,
+            networkResult.Result,
+            networkResult.IsCompletedSuccessfully,
             markCycleComplete: false);
     }
 
-    private static T? GetCompletedTaskResult<T>(Task<T> task)
+    private static CompletedTaskResult<T> CaptureCompletedTaskResult<T>(Task<T> task)
     {
-        return task.IsCompletedSuccessfully ? task.Result : default;
+        return task.IsCompletedSuccessfully
+            ? new CompletedTaskResult<T>(true, task.Result)
+            : new CompletedTaskResult<T>(false, default);
     }
+
+    private readonly record struct CompletedTaskResult<T>(bool IsCompletedSuccessfully, T? Result);
 
     private void ApplyExtendedProbeResults(
         SystemGlobalCpuSnapshot? cpuSnapshot,
@@ -552,3 +566,4 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
     [LibraryImport("pdh.dll")]
     private static partial uint PdhCloseQuery(IntPtr query);
 }
+

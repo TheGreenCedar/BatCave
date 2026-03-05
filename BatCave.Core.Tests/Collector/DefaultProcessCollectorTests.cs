@@ -19,7 +19,7 @@ public class DefaultProcessCollectorTests
 
             ElevatedBridgeClient bridge = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 1_000);
 
-            using DefaultProcessCollector collector = new(adminMode: false);
+            using DefaultProcessCollector collector = new();
             InjectBridgeForTest(collector, bridge);
 
             _ = collector.CollectTick(seq: 1);
@@ -45,7 +45,7 @@ public class DefaultProcessCollectorTests
         {
             ElevatedBridgeClient bridge = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
 
-            using DefaultProcessCollector collector = new(adminMode: false);
+            using DefaultProcessCollector collector = new();
             InjectBridgeForTest(collector, bridge);
 
             _ = collector.CollectTick(seq: 1);
@@ -70,3 +70,5 @@ public class DefaultProcessCollectorTests
     }
 
 }
+
+

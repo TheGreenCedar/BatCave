@@ -2,6 +2,11 @@ using BatCave.Core.Domain;
 
 namespace BatCave.Core.Abstractions;
 
+public sealed record CollectorActivationResult(
+    IProcessCollector Collector,
+    bool EffectiveAdminMode,
+    string? Warning);
+
 public interface ILaunchPolicyGate
 {
     StartupGateStatus Enforce();
@@ -9,7 +14,7 @@ public interface ILaunchPolicyGate
 
 public interface IProcessCollectorFactory
 {
-    IProcessCollector Create(bool adminMode);
+    ValueTask<CollectorActivationResult> CreateAsync(bool adminMode, CancellationToken ct);
 }
 
 public interface IProcessCollector
@@ -67,6 +72,8 @@ public interface IPersistenceStore
 
 public interface IMonitoringRuntime
 {
+    Task<CollectorActivationResult> InitializeAsync(CancellationToken ct);
+
     QueryResponse GetSnapshot();
 
     RuntimeHealth GetRuntimeHealth();
@@ -81,7 +88,7 @@ public interface IMonitoringRuntime
 
     void SetMetricTrendWindowSeconds(int seconds);
 
-    Task RestartAsync(bool adminMode, CancellationToken ct);
+    Task<CollectorActivationResult> RestartAsync(bool adminMode, CancellationToken ct);
 
     void RecordDroppedTicks(ulong dropped);
 }

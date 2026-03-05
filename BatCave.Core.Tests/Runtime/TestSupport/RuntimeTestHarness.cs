@@ -10,13 +10,15 @@ internal static class RuntimeTestHarness
 {
     public static MonitoringRuntime CreateRuntime(IProcessCollector collector, IPersistenceStore persistenceStore)
     {
-        return new MonitoringRuntime(
+        MonitoringRuntime runtime = new(
             new DelegatingCollectorFactory(collector),
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
             persistenceStore,
             new RuntimeHostOptions());
+        runtime.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return runtime;
     }
 
     private sealed class DelegatingCollectorFactory : IProcessCollectorFactory
@@ -28,9 +30,9 @@ internal static class RuntimeTestHarness
             _collector = collector;
         }
 
-        public IProcessCollector Create(bool _)
+        public ValueTask<CollectorActivationResult> CreateAsync(bool adminMode, CancellationToken ct)
         {
-            return _collector;
+            return ValueTask.FromResult(new CollectorActivationResult(_collector, adminMode, Warning: null));
         }
     }
 }

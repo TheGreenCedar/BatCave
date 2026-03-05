@@ -128,6 +128,95 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task AdminToggle_WhenRestartThrows_RestartsRuntimeLoopAndSurfacesError()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringRuntime runtime = new(
+            new ThrowingOnAdminCollectorFactory(),
+            new DeltaTelemetryPipeline(),
+            new InMemoryStateStore(),
+            new IncrementalSortIndexEngine(),
+            new TestPersistenceStore(),
+            new RuntimeHostOptions());
+        RuntimeLoopService loopService = new(runtime, intervalOverride: TimeSpan.FromMilliseconds(5));
+        RuntimeHealthService runtimeHealthService = new();
+        MonitoringShellViewModel viewModel = new(
+            CreatePassedGate(),
+            runtime,
+            loopService,
+            gateway,
+            runtimeHealthService,
+            CreateNullMetadataProvider(),
+            TestSystemGlobalMetricsSampler.Default);
+
+        try
+        {
+            await runtime.InitializeAsync(CancellationToken.None);
+            int tickCount = 0;
+            loopService.TickCompleted += (_, _) => Interlocked.Increment(ref tickCount);
+            loopService.Start(loopService.CurrentGeneration);
+            await viewModel.BootstrapAsync(CancellationToken.None);
+            await Task.Delay(30);
+            int beforeToggle = Volatile.Read(ref tickCount);
+
+            await viewModel.ToggleAdminModeAsync(true, CancellationToken.None);
+            await Task.Delay(30);
+
+            Assert.True(viewModel.HasAdminModeError);
+            Assert.Contains("toggle boom", viewModel.AdminModeError, StringComparison.OrdinalIgnoreCase);
+            Assert.False(viewModel.AdminModeEnabled);
+            Assert.False(viewModel.AdminModePending);
+            Assert.True(Volatile.Read(ref tickCount) > beforeToggle, "Expected runtime loop to keep ticking after failed restart.");
+        }
+        finally
+        {
+            loopService.StopAndAdvanceGeneration();
+            runtime.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task AdminToggle_WhenRestartReturnsWarning_SurfacesWarningImmediately()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringRuntime runtime = new(
+            new WarningOnAdminCollectorFactory(),
+            new DeltaTelemetryPipeline(),
+            new InMemoryStateStore(),
+            new IncrementalSortIndexEngine(),
+            new TestPersistenceStore(),
+            new RuntimeHostOptions());
+        RuntimeLoopService loopService = new(runtime, intervalOverride: TimeSpan.FromMilliseconds(5));
+        RuntimeHealthService runtimeHealthService = new();
+        MonitoringShellViewModel viewModel = new(
+            CreatePassedGate(),
+            runtime,
+            loopService,
+            gateway,
+            runtimeHealthService,
+            CreateNullMetadataProvider(),
+            TestSystemGlobalMetricsSampler.Default);
+
+        try
+        {
+            await runtime.InitializeAsync(CancellationToken.None);
+            await viewModel.BootstrapAsync(CancellationToken.None);
+
+            await viewModel.ToggleAdminModeAsync(true, CancellationToken.None);
+
+            Assert.False(viewModel.AdminModeEnabled);
+            Assert.True(viewModel.HasAdminModeError);
+            Assert.Contains("bridge warning", viewModel.AdminModeError, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("bridge warning", viewModel.RuntimeHealthStatus, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            loopService.StopAndAdvanceGeneration();
+            runtime.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task CollectorWarning_ClearsAfterQuietTickWindow()
     {
         TestRuntimeEventGateway gateway = new();
@@ -1608,6 +1697,7 @@ public class MonitoringShellViewModelTests
             new IncrementalSortIndexEngine(),
             new TestPersistenceStore(settings),
             new RuntimeHostOptions());
+        runtime.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
         RuntimeLoopService loopService = new(runtime);
         RuntimeHealthService runtimeHealthService = new();
         TestSystemGlobalMetricsSampler sampler = systemGlobalMetricsSampler ?? TestSystemGlobalMetricsSampler.Default;
@@ -1719,12 +1809,35 @@ public class MonitoringShellViewModelTests
             return nextGateStep();
         }
     }
+    private sealed class ThrowingOnAdminCollectorFactory : IProcessCollectorFactory
+    {
+        public ValueTask<CollectorActivationResult> CreateAsync(bool adminMode, CancellationToken ct)
+        {
+            if (adminMode)
+            {
+                return ValueTask.FromException<CollectorActivationResult>(new InvalidOperationException("toggle boom"));
+            }
+
+            return ValueTask.FromResult(new CollectorActivationResult(new TestCollector(), EffectiveAdminMode: false, Warning: null));
+        }
+    }
+
+
+    private sealed class WarningOnAdminCollectorFactory : IProcessCollectorFactory
+    {
+        public ValueTask<CollectorActivationResult> CreateAsync(bool adminMode, CancellationToken ct)
+        {
+            return ValueTask.FromResult(adminMode
+                ? new CollectorActivationResult(new TestCollector(), EffectiveAdminMode: false, Warning: "bridge warning")
+                : new CollectorActivationResult(new TestCollector(), EffectiveAdminMode: false, Warning: null));
+        }
+    }
 
     private sealed class TestCollectorFactory : IProcessCollectorFactory
     {
-        public IProcessCollector Create(bool _)
+        public ValueTask<CollectorActivationResult> CreateAsync(bool adminMode, CancellationToken ct)
         {
-            return new TestCollector();
+            return ValueTask.FromResult(new CollectorActivationResult(new TestCollector(), adminMode, Warning: null));
         }
     }
 
@@ -1868,3 +1981,9 @@ public class MonitoringShellViewModelTests
     }
 
 }
+
+
+
+
+
+

@@ -207,14 +207,9 @@ public partial class MonitoringShellViewModel
     private SystemGlobalMetricsSample SampleGlobalMetricsForUiFrame()
     {
         EnsureGlobalMetricsSamplingStarted();
-        Task<SystemGlobalMetricsSample> sampleTask = _globalMetricsSampleTask!;
-
-        if (!sampleTask.IsCompleted && !sampleTask.Wait(GlobalMetricsSampleSoftWait))
-        {
-            return _latestGlobalMetricsSample;
-        }
-
-        return ConsumeGlobalMetricsSampleAndQueueNext();
+        return _globalMetricsSampleTask is { IsCompleted: true }
+            ? ConsumeGlobalMetricsSampleAndQueueNext()
+            : _latestGlobalMetricsSample;
     }
 
     private SystemGlobalMetricsSample ConsumeGlobalMetricsSampleAndQueueNext()
@@ -476,3 +471,5 @@ public partial class MonitoringShellViewModel
         _summaryHandles = 0;
     }
 }
+
+

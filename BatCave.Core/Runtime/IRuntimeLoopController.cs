@@ -13,4 +13,6 @@ public interface IRuntimeLoopController
     void Start(long generation);
 
     void StopAndAdvanceGeneration();
+
+    Task StopAndAdvanceGenerationAsync(CancellationToken ct);
 }

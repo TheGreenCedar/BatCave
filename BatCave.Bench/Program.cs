@@ -9,6 +9,21 @@ internal static class Program
 {
     public static int Main(string[] args)
     {
+        if (args.Any(static argument => string.Equals(argument, "--print-runtime-health", StringComparison.OrdinalIgnoreCase)))
+        {
+            RuntimeHealthCliSnapshot snapshot = new()
+            {
+                RuntimeLoopEnabled = false,
+                RuntimeLoopRunning = false,
+                StartupBlocked = false,
+                StatusSummary = "Runtime loop disabled for bench host diagnostics.",
+                UpdatedAtMs = (ulong)Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
+            };
+
+            Console.WriteLine(JsonSerializer.Serialize(snapshot, JsonDefaults.SnakeCase));
+            return 0;
+        }
+
         if (!TryParseArgs(
                 args,
                 out int ticks,
@@ -230,5 +245,18 @@ internal static class Program
         }
 
         return true;
+    }
+
+    private sealed record RuntimeHealthCliSnapshot
+    {
+        public bool RuntimeLoopEnabled { get; init; }
+
+        public bool RuntimeLoopRunning { get; init; }
+
+        public bool StartupBlocked { get; init; }
+
+        public string StatusSummary { get; init; } = string.Empty;
+
+        public ulong UpdatedAtMs { get; init; }
     }
 }

@@ -131,6 +131,7 @@ public static class BenchmarkRunner
             new IncrementalSortIndexEngine(),
             new BenchmarkPersistenceStore(),
             new RuntimeHostOptions());
+        runtime.InitializeAsync(ct).GetAwaiter().GetResult();
         runtime.GetSnapshot();
         startupStopwatch.Stop();
 
@@ -417,3 +418,8 @@ public static class BenchmarkRunner
         }
     }
 }
+
+
+
+
+

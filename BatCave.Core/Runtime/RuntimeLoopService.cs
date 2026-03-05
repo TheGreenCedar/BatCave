@@ -63,10 +63,27 @@ public sealed class RuntimeLoopService : IRuntimeLoopController
 
     public void StopAndAdvanceGeneration()
     {
+        CancelLoopAndAdvanceGeneration();
+    }
+
+    public async Task StopAndAdvanceGenerationAsync(CancellationToken ct)
+    {
+        Task? loopTask = CancelLoopAndAdvanceGeneration();
+        if (loopTask is null)
+        {
+            return;
+        }
+
+        await loopTask.WaitAsync(ct).ConfigureAwait(false);
+    }
+
+    private Task? CancelLoopAndAdvanceGeneration()
+    {
         lock (_sync)
         {
             Interlocked.Increment(ref _generation);
             _cts?.Cancel();
+            return _loopTask;
         }
     }
 

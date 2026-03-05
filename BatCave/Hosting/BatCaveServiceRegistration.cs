@@ -34,6 +34,7 @@ public static class BatCaveServiceRegistration
         services.AddSingleton<IProcessMetadataProvider, ProcessMetadataProvider>();
 
         services.AddSingleton<MonitoringRuntime>();
+        services.AddSingleton<IMonitoringRuntime>(provider => provider.GetRequiredService<MonitoringRuntime>());
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<RuntimeLoopService>();
         services.AddSingleton<IRuntimeLoopController>(provider => provider.GetRequiredService<RuntimeLoopService>());

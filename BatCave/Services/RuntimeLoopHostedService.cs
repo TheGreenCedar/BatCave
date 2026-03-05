@@ -1,16 +1,17 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using BatCave.Core.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace BatCave.Services;
 
 public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
 {
+    private readonly IMonitoringRuntime _runtime;
     private readonly IRuntimeLoopController _runtimeLoopController;
     private readonly IRuntimeEventGateway _runtimeEventGateway;
     private readonly ILaunchPolicyGate _launchPolicyGate;
@@ -22,6 +23,7 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
     private bool _started;
 
     public RuntimeLoopHostedService(
+        IMonitoringRuntime runtime,
         IRuntimeLoopController runtimeLoopController,
         IRuntimeEventGateway runtimeEventGateway,
         ILaunchPolicyGate launchPolicyGate,
@@ -29,6 +31,7 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
         IRuntimeHealthService runtimeHealthService,
         ILogger<RuntimeLoopHostedService> logger)
     {
+        _runtime = runtime;
         _runtimeLoopController = runtimeLoopController;
         _runtimeEventGateway = runtimeEventGateway;
         _launchPolicyGate = launchPolicyGate;
@@ -37,11 +40,12 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
         _logger = logger;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
         {
-            return Task.FromCanceled(cancellationToken);
+            await Task.FromCanceled(cancellationToken);
+            return;
         }
 
         if (!_runtimeHostOptions.EnableRuntimeLoop)
@@ -51,7 +55,7 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
                 running: false,
                 startupBlocked: false,
                 statusSummary: "Runtime loop disabled for this host mode.");
-            return Task.CompletedTask;
+            return;
         }
 
         StartupGateStatus startupGateStatus = _launchPolicyGate.Enforce();
@@ -64,9 +68,10 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
                 startupBlocked: true,
                 statusSummary: $"Runtime loop blocked: {reason}");
             _logger.LogWarning("runtime_loop_start_blocked reason={Reason}", reason);
-            return Task.CompletedTask;
+            return;
         }
 
+        await _runtime.InitializeAsync(cancellationToken).ConfigureAwait(false);
         EnsureEventsWired();
         _runtimeLoopController.Start(_runtimeLoopController.CurrentGeneration);
         _started = true;
@@ -78,7 +83,6 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
             statusSummary: "Runtime loop active.");
 
         _logger.LogInformation("runtime_loop_started generation={Generation}", _runtimeLoopController.CurrentGeneration);
-        return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -161,3 +165,5 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
         };
     }
 }
+
+

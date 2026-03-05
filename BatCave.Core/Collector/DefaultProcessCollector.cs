@@ -5,25 +5,52 @@ namespace BatCave.Core.Collector;
 
 public sealed class DefaultProcessCollectorFactory : IProcessCollectorFactory
 {
-    public IProcessCollector Create(bool adminMode)
+    public async ValueTask<CollectorActivationResult> CreateAsync(bool adminMode, CancellationToken ct)
     {
-        return new DefaultProcessCollector(adminMode);
+        if (!adminMode)
+        {
+            return new CollectorActivationResult(
+                Collector: new DefaultProcessCollector(),
+                EffectiveAdminMode: false,
+                Warning: null);
+        }
+
+        try
+        {
+            ElevatedBridgeClient bridge = await ElevatedBridgeClient.LaunchAsync(ct).ConfigureAwait(false);
+            return new CollectorActivationResult(
+                Collector: new DefaultProcessCollector(bridge),
+                EffectiveAdminMode: true,
+                Warning: null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new CollectorActivationResult(
+                Collector: new DefaultProcessCollector(),
+                EffectiveAdminMode: false,
+                Warning:
+                    $"admin_mode_start_failed requested_admin_mode=true fallback_admin_mode=false error={ex.GetType().Name}: {ex.Message}");
+        }
     }
 }
 
 public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
 {
-    private readonly WindowsProcessCollector _local;
+    private readonly WindowsProcessCollector _local = new();
     private readonly Queue<string> _pendingWarnings = [];
     private ElevatedBridgeClient? _bridge;
 
-    public DefaultProcessCollector(bool adminMode)
+    public DefaultProcessCollector()
     {
-        _local = new WindowsProcessCollector();
-        if (adminMode)
-        {
-            _bridge = ElevatedBridgeClient.LaunchAsync(CancellationToken.None).GetAwaiter().GetResult();
-        }
+    }
+
+    internal DefaultProcessCollector(ElevatedBridgeClient bridge)
+    {
+        _bridge = bridge;
     }
 
     public IReadOnlyList<ProcessSample> CollectTick(ulong seq)

@@ -36,8 +36,10 @@
     <Compile Include="..\BatCave\Charts\MetricTrendTransitionMath.cs" Link="Charts\MetricTrendTransitionMath.cs" />
     <Compile Include="..\BatCave\Charts\MetricTrendScaleDomain.cs" Link="Charts\MetricTrendScaleDomain.cs" />
     <Compile Include="..\BatCave\Charts\SparklineMath.cs" Link="Charts\SparklineMath.cs" />
+    <Compile Include="..\BatCave\Controls\MetricTrendChartRenderPlanner.cs" Link="Controls\MetricTrendChartRenderPlanner.cs" />
     <Compile Include="..\BatCave\Converters\ValueFormatConverters.cs" Link="Converters\ValueFormatConverters.cs" />
     <Compile Include="..\BatCave\Hosting\BatCaveServiceRegistration.cs" Link="Hosting\BatCaveServiceRegistration.cs" />
+    <Compile Include="..\BatCave\Layouts\LogicalCpuGridLayout.cs" Link="Layouts\LogicalCpuGridLayout.cs" />
     <Compile Include="..\BatCave\Layouts\ShellAdaptiveLayout.cs" Link="Layouts\ShellAdaptiveLayout.cs" />
     <Compile Include="..\BatCave\Services\RuntimeGateway.cs" Link="Services\RuntimeGateway.cs" />
     <Compile Include="..\BatCave\Services\RuntimeHealthService.cs" Link="Services\RuntimeHealthService.cs" />

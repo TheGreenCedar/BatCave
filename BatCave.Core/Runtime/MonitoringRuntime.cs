@@ -29,6 +29,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
     private RuntimeHealth _health = new();
     private UserSettings _settings;
     private bool _effectiveAdminMode;
+    private bool _initialized;
     private ulong _seq;
 
     public MonitoringRuntime(
@@ -76,20 +77,33 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         {
             MetricTrendWindowSeconds = normalizedMetricTrendWindowSeconds,
         };
-        bool requestedStartupAdminMode = _settings.AdminMode;
-        CollectorActivationResult startupCollector = ActivateCollector(requestedStartupAdminMode);
-        _collector = startupCollector.Collector;
-        _effectiveAdminMode = startupCollector.AdminMode;
-        EnqueueRuntimeWarning(startupCollector.Warning);
+
+        _effectiveAdminMode = _settings.AdminMode;
+        _collector = PassiveProcessCollector.Instance;
         if (metricTrendWindowNormalized || adminPreferenceMigrated || sortColumnNormalized)
         {
             PersistSettings();
         }
 
         _queryRequest = BuildQueryRequest(_settings);
+        _ = LoadWarmCache();
+    }
 
-        WarmCache? warmCache = LoadWarmCache();
-        LogStartup(warmCache);
+    public async Task<CollectorActivationResult> InitializeAsync(CancellationToken ct)
+    {
+        if (_initialized)
+        {
+            return new CollectorActivationResult(_collector, _effectiveAdminMode, Warning: null);
+        }
+
+        CollectorActivationResult startupCollector = await ActivateCollectorAsync(_settings.AdminMode, ct).ConfigureAwait(false);
+        _collector = startupCollector.Collector;
+        _effectiveAdminMode = startupCollector.EffectiveAdminMode;
+        _initialized = true;
+        EnqueueRuntimeWarning(startupCollector.Warning);
+        LogActivationWarning(_settings.AdminMode, startupCollector.Warning);
+        LogStartup();
+        return startupCollector;
     }
 
     public QueryResponse GetSnapshot()
@@ -155,12 +169,13 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         PersistSettings();
     }
 
-    public async Task RestartAsync(bool adminMode, CancellationToken ct)
+    public async Task<CollectorActivationResult> RestartAsync(bool adminMode, CancellationToken ct)
     {
-        CollectorActivationResult nextCollector = ActivateCollector(adminMode);
+        CollectorActivationResult nextCollector = await ActivateCollectorAsync(adminMode, ct).ConfigureAwait(false);
         IProcessCollector previousCollector = _collector;
         _collector = nextCollector.Collector;
-        _effectiveAdminMode = nextCollector.AdminMode;
+        _effectiveAdminMode = nextCollector.EffectiveAdminMode;
+        _initialized = true;
         _settings = _settings with
         {
             AdminMode = adminMode,
@@ -168,7 +183,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         };
 
         DisposeCollector(previousCollector);
-        EnqueueRuntimeWarning(nextCollector.Warning);
+        LogActivationWarning(adminMode, nextCollector.Warning);
 
         PersistSettings();
         await FlushSettingsQueueAsync(ct).ConfigureAwait(false);
@@ -178,6 +193,8 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             adminMode,
             _effectiveAdminMode,
             _seq);
+
+        return nextCollector;
     }
 
     public TickOutcome Tick(double jitterMs)
@@ -274,11 +291,11 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         return warmCache;
     }
 
-    private void LogStartup(WarmCache? warmCache)
+    private void LogStartup()
     {
         _logger.LogInformation(
             "runtime_startup warm_cache_rows={WarmCacheRows} sort_col={SortCol} sort_dir={SortDir} filter_text={FilterText} requested_admin_mode={RequestedAdminMode} effective_admin_mode={EffectiveAdminMode}",
-            warmCache?.Rows.Count ?? 0,
+            _stateStore.RowCount(),
             _settings.SortCol,
             _settings.SortDir,
             _settings.FilterText,
@@ -467,28 +484,22 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         }
     }
 
-    private CollectorActivationResult ActivateCollector(bool adminMode)
+    private async Task<CollectorActivationResult> ActivateCollectorAsync(bool adminMode, CancellationToken ct)
     {
-        try
-        {
-            return new CollectorActivationResult(
-                Collector: _collectorFactory.Create(adminMode),
-                AdminMode: adminMode,
-                Warning: null);
-        }
-        catch (Exception ex) when (adminMode)
-        {
-            _logger.LogWarning(
-                ex,
-                "collector_admin_mode_start_failed requested_admin_mode={RequestedAdminMode}. falling_back_to_non_admin",
-                adminMode);
+        return await _collectorFactory.CreateAsync(adminMode, ct).ConfigureAwait(false);
+    }
 
-            return new CollectorActivationResult(
-                Collector: _collectorFactory.Create(adminMode: false),
-                AdminMode: false,
-                Warning:
-                    $"admin_mode_start_failed requested_admin_mode=true fallback_admin_mode=false error={ex.GetType().Name}: {ex.Message}");
+    private void LogActivationWarning(bool requestedAdminMode, string? warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+        {
+            return;
         }
+
+        _logger.LogWarning(
+            "collector_activation_warning requested_admin_mode={RequestedAdminMode} detail={Warning}",
+            requestedAdminMode,
+            warning);
     }
 
     private void EnqueueRuntimeWarning(string? warning)
@@ -512,5 +523,21 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         }
     }
 
-    private sealed record CollectorActivationResult(IProcessCollector Collector, bool AdminMode, string? Warning);
+    private sealed class PassiveProcessCollector : IProcessCollector
+    {
+        public static PassiveProcessCollector Instance { get; } = new();
+
+        public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
+        {
+            return [];
+        }
+
+        public string? TakeWarning()
+        {
+            return null;
+        }
+    }
 }
+
+
+

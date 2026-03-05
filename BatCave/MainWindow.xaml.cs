@@ -1,3 +1,4 @@
+using BatCave.Layouts;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
@@ -13,12 +14,6 @@ namespace BatCave;
 
 public sealed partial class MainWindow : Window
 {
-    private const double LogicalCpuTileTargetWidth = 170;
-    private const double LogicalCpuTileTargetChartHeight = 120;
-    private const double LogicalCpuTileLabelReserve = 20;
-    private const double LogicalCpuTileMinWidth = 56;
-    private const double LogicalCpuTileMinHeight = 28;
-    private const double LogicalCpuTileItemMargin = 2;
 
     private bool _bootstrapped;
     private long _selectionSettleProbeStartedAt;
@@ -271,60 +266,20 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        (int columns, double itemWidth, double itemHeight) = ResolveLogicalCpuGridLayout(
+        LogicalCpuGridLayoutResult layout = LogicalCpuGridLayout.Resolve(
             logicalProcessorCount,
             availableWidth,
             availableHeight);
 
-        itemsWrapGrid.MaximumRowsOrColumns = columns;
-        itemsWrapGrid.ItemWidth = itemWidth;
-        itemsWrapGrid.ItemHeight = itemHeight;
+        itemsWrapGrid.MaximumRowsOrColumns = layout.Columns;
+        itemsWrapGrid.ItemWidth = layout.ItemWidth;
+        itemsWrapGrid.ItemHeight = layout.ItemHeight;
 
         _logicalCpuGridLastCount = logicalProcessorCount;
         _logicalCpuGridLastWidth = availableWidth;
         _logicalCpuGridLastHeight = availableHeight;
     }
 
-    private static (int Columns, double ItemWidth, double ItemHeight) ResolveLogicalCpuGridLayout(
-        int itemCount,
-        double availableWidth,
-        double availableHeight)
-    {
-        int bestColumns = 1;
-        double bestItemWidth = Math.Max(LogicalCpuTileMinWidth, availableWidth);
-        double bestItemHeight = Math.Max(LogicalCpuTileMinHeight, availableHeight / itemCount);
-        double bestScore = double.NegativeInfinity;
-
-        for (int columns = 1; columns <= itemCount; columns++)
-        {
-            int rows = (itemCount + columns - 1) / columns;
-            double horizontalMargins = columns * LogicalCpuTileItemMargin * 2d;
-            double verticalMargins = rows * LogicalCpuTileItemMargin * 2d;
-            double itemWidth = (availableWidth - horizontalMargins) / columns;
-            double itemHeight = (availableHeight - verticalMargins) / rows;
-            double chartHeight = itemHeight - LogicalCpuTileLabelReserve;
-            if (itemWidth <= 0 || chartHeight <= 0)
-            {
-                continue;
-            }
-
-            double widthFit = itemWidth / LogicalCpuTileTargetWidth;
-            double heightFit = chartHeight / LogicalCpuTileTargetChartHeight;
-            double score = Math.Min(widthFit, heightFit);
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestColumns = columns;
-                bestItemWidth = itemWidth;
-                bestItemHeight = itemHeight;
-            }
-        }
-
-        bestItemWidth = Math.Max(LogicalCpuTileMinWidth, bestItemWidth);
-        bestItemHeight = Math.Max(LogicalCpuTileMinHeight, bestItemHeight);
-        return (bestColumns, bestItemWidth, bestItemHeight);
-    }
 
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
@@ -354,3 +309,4 @@ public sealed partial class MainWindow : Window
         ViewModel.RecordSelectionSettleProbe(Stopwatch.GetTimestamp() - startedAt);
     }
 }
+

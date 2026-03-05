@@ -1,5 +1,6 @@
 param(
-    [string]$Platform = "ARM64",
+    [string]$Platform = "x64",
+    [string]$RunPlatform = "",
     [ValidateSet("core", "winui")]
     [string]$BenchmarkHost = "core",
     [int]$Ticks = 120,
@@ -15,6 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $isScriptHarness = -not [string]::IsNullOrWhiteSpace($env:FAKE_DOTNET_LOG)
+$includeHarnessRuntimeDiagnostics = $env:FAKE_DOTNET_INCLUDE_RUNTIME_DIAGNOSTICS -eq "1"
 
 function Assert-LastExitCode {
     param(
@@ -26,6 +28,117 @@ function Assert-LastExitCode {
     }
 }
 
+function Get-DefaultRunPlatform {
+    if (-not [string]::IsNullOrWhiteSpace($env:PROCESSOR_ARCHITECTURE)) {
+        switch ($env:PROCESSOR_ARCHITECTURE.ToUpperInvariant()) {
+            "ARM64" { return "ARM64" }
+            "AMD64" { return "x64" }
+            "X86" { return "x86" }
+        }
+    }
+
+    return "x64"
+}
+
+function Get-WinUiRunArguments {
+    param(
+        [string]$ProjectPath,
+        [string]$RuntimePlatform,
+        [string[]]$CommandArgs = @()
+    )
+
+    $arguments = @(
+        "run",
+        "--no-launch-profile",
+        "--project", $ProjectPath,
+        "-p:Platform=$RuntimePlatform",
+        "-p:WindowsPackageType=None",
+        "-p:GenerateAppxPackageOnBuild=false",
+        "-p:WindowsAppSdkBootstrapInitialize=true",
+        "-p:WindowsAppSdkDeploymentManagerInitialize=false"
+    )
+
+    if ($CommandArgs.Count -gt 0) {
+        $arguments += "--"
+        $arguments += $CommandArgs
+    }
+
+    return $arguments
+}
+
+function Clear-StaleBuildProcesses {
+    $processNames = @("XamlCompiler", "MakeAppx", "makeappx")
+
+    Get-Process -Name $processNames -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-BuildWithRetry {
+    param(
+        [string]$BuildPlatform
+    )
+
+    Clear-StaleBuildProcesses
+
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        dotnet build BatCave/BatCave.csproj "-p:Platform=$BuildPlatform"
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+
+        if ($attempt -lt 2) {
+            Write-Warning "Build attempt $attempt failed. Clearing lingering build processes and retrying once."
+            Clear-StaleBuildProcesses
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    Assert-LastExitCode "dotnet build BatCave/BatCave.csproj"
+}
+
+function Invoke-TestsWithRetry {
+    Clear-StaleBuildProcesses
+
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        dotnet test BatCave.slnx -m:1
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+
+        if ($attempt -lt 2) {
+            Write-Warning "Test attempt $attempt failed. Clearing lingering test/build processes and retrying once."
+            Clear-StaleBuildProcesses
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    Assert-LastExitCode "dotnet test BatCave.slnx -m:1"
+}
+
+function Invoke-LaunchPolicyGateDiagnostics {
+    param(
+        [string]$ProjectPath,
+        [string]$RuntimePlatform
+    )
+
+    Write-Host "Verifying launch policy diagnostics surface..."
+    $runArgs = Get-WinUiRunArguments -ProjectPath $ProjectPath -RuntimePlatform $RuntimePlatform -CommandArgs @("--print-gate-status")
+    $output = dotnet @runArgs
+    Assert-LastExitCode "dotnet run -- --print-gate-status"
+
+    $payload = $output | Out-String
+    if ([string]::IsNullOrWhiteSpace($payload)) {
+        throw "Launch policy diagnostics surface produced no output."
+    }
+
+    $json = $payload | ConvertFrom-Json
+    if ($null -eq $json -or $null -eq $json.passed) {
+        throw "Launch policy diagnostics payload is missing expected fields."
+    }
+
+    Write-Host "Launch policy diagnostics verified."
+}
+
 function Invoke-RuntimeHealthDiagnostics {
     param(
         [string]$ProjectPath,
@@ -33,7 +146,8 @@ function Invoke-RuntimeHealthDiagnostics {
     )
 
     Write-Host "Verifying runtime health diagnostics surface..."
-    $output = dotnet run --project $ProjectPath "-p:Platform=$RuntimePlatform" -- --print-runtime-health
+    $runArgs = Get-WinUiRunArguments -ProjectPath $ProjectPath -RuntimePlatform $RuntimePlatform -CommandArgs @("--print-runtime-health")
+    $output = dotnet @runArgs
     Assert-LastExitCode "dotnet run -- --print-runtime-health"
 
     $payload = $output | Out-String
@@ -65,7 +179,7 @@ function Invoke-WinUiLaunchSmoke {
     try {
         $runner = Start-Process `
             -FilePath "dotnet" `
-            -ArgumentList @("run", "--project", $ProjectPath, "-p:Platform=$RuntimePlatform") `
+            -ArgumentList (Get-WinUiRunArguments -ProjectPath $ProjectPath -RuntimePlatform $RuntimePlatform) `
             -PassThru
 
         $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -109,15 +223,14 @@ function Invoke-WinUiLaunchSmoke {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $projectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
+$resolvedRunPlatform = if ([string]::IsNullOrWhiteSpace($RunPlatform)) { Get-DefaultRunPlatform } else { $RunPlatform }
 Push-Location $repoRoot
 try {
-    Write-Host "Validating WinUI compile path (Platform=$Platform)..."
-    dotnet build BatCave/BatCave.csproj -p:Platform=$Platform
-    Assert-LastExitCode "dotnet build BatCave/BatCave.csproj"
+    Write-Host "Validating WinUI compile path (Platform=$Platform, RunPlatform=$resolvedRunPlatform)..."
+    Invoke-BuildWithRetry -BuildPlatform $Platform
 
-    Write-Host "Running solution tests..."
-    dotnet test BatCave.slnx
-    Assert-LastExitCode "dotnet test BatCave.slnx"
+    Write-Host "Running solution tests (serialized)..."
+    Invoke-TestsWithRetry
 
     if ($RunPerformanceGate) {
         if ([string]::IsNullOrWhiteSpace($BaselineJsonPath) -and [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
@@ -155,19 +268,22 @@ try {
         Assert-LastExitCode "scripts/run-benchmark.ps1 strict gate"
     }
 
-    if ($isScriptHarness) {
+    Invoke-LaunchPolicyGateDiagnostics -ProjectPath $projectPath -RuntimePlatform $resolvedRunPlatform
+
+    if ($isScriptHarness -and -not $includeHarnessRuntimeDiagnostics) {
         Write-Host "Skipping runtime health diagnostics (script harness mode)."
     }
     else {
-        Invoke-RuntimeHealthDiagnostics -ProjectPath $projectPath -RuntimePlatform $Platform
+        Invoke-RuntimeHealthDiagnostics -ProjectPath $projectPath -RuntimePlatform $resolvedRunPlatform
     }
 
     if ($isScriptHarness) {
         Write-Host "Skipping launch smoke verification (script harness mode)."
     }
     elseif (-not $SkipLaunchSmoke) {
-        Invoke-WinUiLaunchSmoke -ProjectPath $projectPath -RuntimePlatform $Platform -TimeoutSeconds $LaunchTimeoutSeconds
-    } else {
+        Invoke-WinUiLaunchSmoke -ProjectPath $projectPath -RuntimePlatform $resolvedRunPlatform -TimeoutSeconds $LaunchTimeoutSeconds
+    }
+    else {
         Write-Host "Skipping launch smoke verification."
     }
 
@@ -176,3 +292,4 @@ try {
 finally {
     Pop-Location
 }
+

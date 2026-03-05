@@ -63,6 +63,7 @@ internal static class WinUiBenchmarkCliRunner
         CancellationToken ct)
     {
         MonitoringRuntime runtime = services.GetRequiredService<MonitoringRuntime>();
+        await runtime.InitializeAsync(ct).ConfigureAwait(false);
         IRuntimeEventGateway runtimeEventGateway = services.GetRequiredService<IRuntimeEventGateway>();
         MonitoringShellViewModel viewModel = services.GetRequiredService<MonitoringShellViewModel>();
 
@@ -410,3 +411,5 @@ internal static class WinUiBenchmarkCliRunner
         public BenchmarkGateOptions GateOptions { get; init; } = new();
     }
 }
+
+

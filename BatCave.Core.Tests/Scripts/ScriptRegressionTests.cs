@@ -22,6 +22,59 @@ public class ScriptRegressionTests
     }
 
     [Fact]
+    public void ValidateWinUi_DefaultsToX64BuildPlatform_AndUsesHostCompatibleRunPlatformForDiagnostics()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+        harness.EnableRuntimeDiagnostics();
+
+        ScriptRunResult result = harness.Run("validate-winui.ps1", "-SkipLaunchSmoke");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Platform=x64", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("RunPlatform=x64", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(result.DotnetInvocations, invocation => invocation.StartsWith("build ", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.DotnetInvocations, invocation => invocation.StartsWith("test ", StringComparison.OrdinalIgnoreCase));
+
+        string gateInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-gate-status", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("-p:Platform=x64", gateInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsPackageType=None", gateInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:GenerateAppxPackageOnBuild=false", gateInvocation, StringComparison.OrdinalIgnoreCase);
+
+        string runtimeHealthInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-runtime-health", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("-p:Platform=x64", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsPackageType=None", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:GenerateAppxPackageOnBuild=false", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateWinUi_RunPlatform_OverridesRuntimeDiagnosticsPlatform()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+        harness.EnableRuntimeDiagnostics();
+
+        ScriptRunResult result = harness.Run(
+            "validate-winui.ps1",
+            "-Platform", "ARM64",
+            "-RunPlatform", "x64",
+            "-SkipLaunchSmoke");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Platform=ARM64", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("RunPlatform=x64", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(result.DotnetInvocations, invocation => invocation.StartsWith("build ", StringComparison.OrdinalIgnoreCase));
+
+        string gateInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-gate-status", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("-p:Platform=x64", gateInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-p:Platform=ARM64", gateInvocation, StringComparison.OrdinalIgnoreCase);
+
+        string runtimeHealthInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-runtime-health", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("-p:Platform=x64", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-p:Platform=ARM64", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void RunBenchmark_CoreStrict_ForwardsArgsAndPropagatesExitCode()
     {
         using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
@@ -219,10 +272,12 @@ public class ScriptRegressionTests
         Assert.Contains(result.DotnetInvocations, invocation => invocation.StartsWith("build ", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(result.DotnetInvocations, invocation => invocation.StartsWith("test ", StringComparison.OrdinalIgnoreCase));
 
-        string runInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.StartsWith("run ", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains("--strict", runInvocation, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("--baseline-json C:/tmp/baseline.summary.json", runInvocation, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("--min-speedup-multiplier 10", runInvocation, StringComparison.OrdinalIgnoreCase);
+        string benchmarkInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--strict", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("--baseline-json C:/tmp/baseline.summary.json", benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--min-speedup-multiplier 10", benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+
+        string gateInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-gate-status", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("-p:Platform=x64", gateInvocation, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -263,11 +318,13 @@ public class ScriptRegressionTests
             Assert.Contains(result.DotnetInvocations, invocation => invocation.StartsWith("build ", StringComparison.OrdinalIgnoreCase));
             Assert.Contains(result.DotnetInvocations, invocation => invocation.StartsWith("test ", StringComparison.OrdinalIgnoreCase));
 
-            string runInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.StartsWith("run ", StringComparison.OrdinalIgnoreCase));
-            Assert.Contains("--strict", runInvocation, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("--baseline-json", runInvocation, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains(summaryPath, runInvocation, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("--min-speedup-multiplier 10", runInvocation, StringComparison.OrdinalIgnoreCase);
+            string benchmarkInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--strict", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("--baseline-json", benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(summaryPath, benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("--min-speedup-multiplier 10", benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+
+            string gateInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-gate-status", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("-p:Platform=x64", gateInvocation, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

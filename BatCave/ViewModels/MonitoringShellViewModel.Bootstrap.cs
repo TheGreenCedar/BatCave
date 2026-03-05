@@ -1,3 +1,4 @@
+using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using BatCave.Services;
 using CommunityToolkit.Mvvm.Input;
@@ -74,15 +75,21 @@ public partial class MonitoringShellViewModel
 
         AdminModePending = true;
         AdminModeError = null;
+        bool loopStopped = false;
 
         try
         {
             _runtimeLoopService.StopAndAdvanceGeneration();
-            await _runtime.RestartAsync(nextAdminMode, ct);
-            _runtimeLoopService.Start(_runtimeLoopService.CurrentGeneration);
+            loopStopped = true;
+            CollectorActivationResult activation = await _runtime.RestartAsync(nextAdminMode, ct);
 
-            AdminModeEnabled = _runtime.IsAdminMode();
+            AdminModeEnabled = activation.EffectiveAdminMode;
             RefreshRuntimeSnapshot();
+            ApplyCollectorWarning(new CollectorWarning
+            {
+                Seq = 0,
+                Message = activation.Warning ?? string.Empty,
+            });
         }
         catch (Exception ex)
         {
@@ -91,6 +98,11 @@ public partial class MonitoringShellViewModel
         }
         finally
         {
+            if (loopStopped)
+            {
+                _runtimeLoopService.Start(_runtimeLoopService.CurrentGeneration);
+            }
+
             AdminModePending = false;
         }
     }
@@ -102,14 +114,21 @@ public partial class MonitoringShellViewModel
 
     private void OnCollectorWarningRaised(object? sender, CollectorWarning warning)
     {
-        RunOnUiThread(() =>
+        RunOnUiThread(() => ApplyCollectorWarning(warning));
+    }
+
+    private void ApplyCollectorWarning(CollectorWarning warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning.Message))
         {
-            RuntimeHealth runtimeHealth = _runtime.GetRuntimeHealth();
-            _latestWarningSeq = warning.Seq > 0 ? warning.Seq : runtimeHealth.Seq;
-            _latestWarningSummary = warning.Message;
-            AdminModeError = warning.Message;
-            RuntimeHealthStatus = BuildRuntimeHealthStatus(runtimeHealth);
-        });
+            return;
+        }
+
+        RuntimeHealth runtimeHealth = _runtime.GetRuntimeHealth();
+        _latestWarningSeq = warning.Seq > 0 ? warning.Seq : runtimeHealth.Seq;
+        _latestWarningSummary = warning.Message;
+        AdminModeError = warning.Message;
+        RuntimeHealthStatus = BuildRuntimeHealthStatus(runtimeHealth);
     }
 
     private void RefreshRuntimeSnapshot()
