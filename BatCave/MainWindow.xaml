@@ -137,19 +137,19 @@
                         </Rectangle.RenderTransform>
                     </Rectangle>
                     <Ellipse Width="18" Height="18" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="868" Canvas.Top="18" />
-                    <Ellipse Width="22" Height="22" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Right="258" Canvas.Top="2" />
-                    <Rectangle Width="52" Height="52" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Right="164" Canvas.Top="-20">
+                    <Ellipse Width="22" Height="22" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="930" Canvas.Top="2" />
+                    <Rectangle Width="52" Height="52" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Left="1016" Canvas.Top="-20">
                         <Rectangle.RenderTransform>
                             <RotateTransform Angle="10" />
                         </Rectangle.RenderTransform>
                     </Rectangle>
-                    <Rectangle Width="16" Height="16" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Right="118" Canvas.Top="26">
+                    <Rectangle Width="16" Height="16" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="1088" Canvas.Top="26">
                         <Rectangle.RenderTransform>
                             <RotateTransform Angle="28" />
                         </Rectangle.RenderTransform>
                     </Rectangle>
-                    <Ellipse Width="28" Height="28" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Right="74" Canvas.Top="10" />
-                    <Rectangle Width="22" Height="22" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Right="18" Canvas.Top="4">
+                    <Ellipse Width="28" Height="28" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="1124" Canvas.Top="10" />
+                    <Rectangle Width="22" Height="22" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="1182" Canvas.Top="4">
                         <Rectangle.RenderTransform>
                             <RotateTransform Angle="36" />
                         </Rectangle.RenderTransform>
