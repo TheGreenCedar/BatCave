@@ -30,7 +30,10 @@
             Opacity="0.9"
             CornerRadius="0"
             MinHeight="20">
-            <Grid>
+            <Canvas
+                x:Name="PlotCanvas"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch">
                 <Path
                     x:Name="GridPath"
                     Stroke="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -51,7 +54,7 @@
                     StrokeStartLineCap="Round"
                     StrokeEndLineCap="Round"
                     Visibility="Collapsed" />
-            </Grid>
+            </Canvas>
         </Border>
 
         <Grid

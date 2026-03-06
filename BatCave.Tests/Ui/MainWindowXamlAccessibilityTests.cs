@@ -155,9 +155,32 @@ public class MainWindowXamlAccessibilityTests
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("x:Name=\"ProcessLogicalPlaceholder\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ProcessSummaryContentScroller\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding GlobalCpuLogicalPlaceholderVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"METADATA STATUS\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"EXECUTABLE\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_ProcessSummary_KeepsChartOutsideTheSummaryScrollViewer()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("<Grid Visibility=\"{Binding ProcessSummarySectionVisibility, Mode=OneWay}\" RowSpacing=\"14\">", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ProcessSummaryContentScroller\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Grid.Row=\"1\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<ScrollViewer Visibility=\"{Binding ProcessSummarySectionVisibility, Mode=OneWay}\">", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_ProcessSummary_StretchesPrimaryChartWithinBoundedHost()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("Grid Grid.Row=\"0\" VerticalAlignment=\"Stretch\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("VerticalAlignment=\"Stretch\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ProcessPrimaryTrendChart\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<RowDefinition Height=\"*\" />", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

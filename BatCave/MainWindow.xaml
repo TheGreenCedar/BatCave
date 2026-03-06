@@ -722,14 +722,20 @@
                                 </Grid>
                             </Grid>
 
-                            <ScrollViewer Visibility="{Binding ProcessSummarySectionVisibility, Mode=OneWay}">
-                                <StackPanel Spacing="14">
+                            <Grid Visibility="{Binding ProcessSummarySectionVisibility, Mode=OneWay}" RowSpacing="14">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" VerticalAlignment="Stretch">
                                     <Border
                                         Visibility="{Binding GlobalCombinedChartVisibility, Mode=OneWay}"
                                         Background="{ThemeResource BatCavePanelAltBrush}"
                                         CornerRadius="8"
                                         Padding="14"
-                                        HorizontalAlignment="Stretch">
+                                        HorizontalAlignment="Stretch"
+                                        VerticalAlignment="Stretch">
                                         <Grid>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
@@ -745,6 +751,7 @@
                                                 Grid.Row="1"
                                                 Margin="0,12,0,0"
                                                 MinHeight="240"
+                                                VerticalAlignment="Stretch"
                                                 Background="Transparent"
                                                 Values="{Binding GlobalPrimaryTrendValues, Mode=OneWay}"
                                                 VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
@@ -774,35 +781,44 @@
                                         Background="{ThemeResource BatCavePanelAltBrush}"
                                         CornerRadius="8"
                                         Padding="18"
-                                        MinHeight="180">
+                                        MinHeight="180"
+                                        VerticalAlignment="Stretch">
                                         <StackPanel Spacing="8" VerticalAlignment="Center">
                                             <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="LOGICAL CPU VIEW UNAVAILABLE" />
                                             <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="Logical processor breakdown is only available in System Overview." TextWrapping="WrapWholeWords" />
                                             <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Text="Switch back to Combined or clear the process selection to view it." TextWrapping="WrapWholeWords" />
                                         </StackPanel>
                                     </Border>
+                                </Grid>
 
-                                    <Border
-                                        Background="{ThemeResource BatCavePanelAltBrush}"
-                                        CornerRadius="8"
-                                        Padding="12">
-                                        <Grid ColumnSpacing="12">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Spacing="6">
-                                                <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="METADATA STATUS" />
-                                                <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding MetadataStatus, Mode=OneWay}" TextWrapping="WrapWholeWords" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="1" Spacing="6">
-                                                <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="EXECUTABLE" />
-                                                <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding DetailsPanePrimaryText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </StackPanel>
-                            </ScrollViewer>
+                                <ScrollViewer
+                                    x:Name="ProcessSummaryContentScroller"
+                                    Grid.Row="1"
+                                    VerticalScrollBarVisibility="Auto"
+                                    VerticalScrollMode="Auto">
+                                    <StackPanel Spacing="14">
+                                        <Border
+                                            Background="{ThemeResource BatCavePanelAltBrush}"
+                                            CornerRadius="8"
+                                            Padding="12">
+                                            <Grid ColumnSpacing="12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="METADATA STATUS" />
+                                                    <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding MetadataStatus, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Spacing="6">
+                                                    <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="EXECUTABLE" />
+                                                    <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding DetailsPanePrimaryText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </Grid>
 
                             <ScrollViewer Visibility="{Binding PerformanceSectionVisibility, Mode=OneWay}">
                                 <StackPanel Spacing="16">
@@ -866,4 +882,3 @@
         </Border>
     </Grid>
 </Window>
-
