@@ -106,7 +106,7 @@
             Padding="16,10,16,10"
             SizeChanged="HeaderRegion_SizeChanged">
             <Grid>
-                <Canvas x:Name="HeaderDecorationCanvas" IsHitTestVisible="False" Opacity="0.08" />
+                <Canvas x:Name="HeaderDecorationCanvas" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" IsHitTestVisible="False" Opacity="0.08" />
 
                 <Grid ColumnSpacing="18">
                     <Grid.ColumnDefinitions>
@@ -657,12 +657,10 @@
                                                 HorizontalScrollBarVisibility="Disabled"
                                                 HorizontalScrollMode="Disabled"
                                                 VerticalScrollBarVisibility="Auto"
-                                                VerticalScrollMode="Auto"
-                                                Loaded="GlobalCpuLogicalRepeater_Loaded">
+                                                VerticalScrollMode="Auto">
                                                 <ItemsRepeater
                                                     x:Name="GlobalCpuLogicalRepeater"
-                                                    ItemsSource="{Binding GlobalCpuLogicalProcessorRows, Mode=OneWay}"
-                                                    ElementPrepared="GlobalCpuLogicalRepeater_ElementPrepared">
+                                                    ItemsSource="{Binding GlobalCpuLogicalProcessorRows, Mode=OneWay}">
                                                     <ItemsRepeater.Layout>
                                                         <UniformGridLayout
                                                             x:Name="GlobalCpuLogicalUniformLayout"
@@ -868,6 +866,4 @@
         </Border>
     </Grid>
 </Window>
-
-
 

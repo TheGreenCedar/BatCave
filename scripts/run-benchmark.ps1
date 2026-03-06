@@ -19,6 +19,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $solutionPath = Join-Path $repoRoot "BatCave.slnx"
 $coreProjectPath = Join-Path $repoRoot "BatCave.Bench/BatCave.Bench.csproj"
 $winUiProjectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
+. "$PSScriptRoot/winui-run-helpers.ps1"
 
 if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     throw "Specify either -BaselineJsonPath or -BaselineArtifactPath, not both."
@@ -151,7 +152,8 @@ if ($BenchmarkHost -eq "core") {
 }
 else {
     try {
-        dotnet run --project "$winUiProjectPath" "-p:Platform=$Platform" -- @winUiArgs
+        $runArgs = Get-WinUiRunArguments -ProjectPath $winUiProjectPath -RuntimePlatform $Platform -CommandArgs $winUiArgs
+        dotnet @runArgs
     }
     finally {
         if (-not [string]::IsNullOrWhiteSpace($tempBaselinePath)) {

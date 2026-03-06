@@ -17,6 +17,7 @@ param(
 $ErrorActionPreference = "Stop"
 $isScriptHarness = -not [string]::IsNullOrWhiteSpace($env:FAKE_DOTNET_LOG)
 $includeHarnessRuntimeDiagnostics = $env:FAKE_DOTNET_INCLUDE_RUNTIME_DIAGNOSTICS -eq "1"
+. "$PSScriptRoot/winui-run-helpers.ps1"
 
 function Assert-LastExitCode {
     param(
@@ -38,32 +39,6 @@ function Get-DefaultRunPlatform {
     }
 
     return "x64"
-}
-
-function Get-WinUiRunArguments {
-    param(
-        [string]$ProjectPath,
-        [string]$RuntimePlatform,
-        [string[]]$CommandArgs = @()
-    )
-
-    $arguments = @(
-        "run",
-        "--no-launch-profile",
-        "--project", $ProjectPath,
-        "-p:Platform=$RuntimePlatform",
-        "-p:WindowsPackageType=None",
-        "-p:GenerateAppxPackageOnBuild=false",
-        "-p:WindowsAppSdkBootstrapInitialize=true",
-        "-p:WindowsAppSdkDeploymentManagerInitialize=false"
-    )
-
-    if ($CommandArgs.Count -gt 0) {
-        $arguments += "--"
-        $arguments += $CommandArgs
-    }
-
-    return $arguments
 }
 
 function Clear-StaleBuildProcesses {
@@ -292,4 +267,3 @@ try {
 finally {
     Pop-Location
 }
-

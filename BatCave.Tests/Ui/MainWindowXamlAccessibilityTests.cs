@@ -118,8 +118,35 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("Style=\"{StaticResource BatCaveGhostButtonStyle}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding SystemSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding ProcessSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ElementPrepared=\"GlobalCpuLogicalRepeater_ElementPrepared\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("x:Name=\"GlobalCpuLogicalGridView\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"Clear Selection\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_LogicalCpuGrid_UsesXamlOwnedSizingWithoutLoadedResizeHooks()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"GlobalCpuLogicalGridScroller\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SizeChanged=\"GlobalCpuLogicalGridHost_SizeChanged\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Loaded=\"GlobalCpuLogicalRepeater_Loaded\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ElementPrepared=\"GlobalCpuLogicalRepeater_ElementPrepared\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_KeepsTrendCardsOnMinimumHeightsInsteadOfCodeBehindSizing()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"SystemPrimaryTrendChart\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinHeight=\"220\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"SystemAuxTrendChart\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinHeight=\"72\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ProcessPrimaryTrendChart\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinHeight=\"240\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ProcessLogicalPlaceholder\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinHeight=\"180\"", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

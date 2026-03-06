@@ -28,11 +28,6 @@ public sealed partial class MainWindow : Window
     private bool _logicalCpuGridLayoutQueued;
     private int _logicalCpuGridLastCount = -1;
     private double _logicalCpuGridLastWidth = -1;
-    private double _logicalCpuGridLastHeight = -1;
-    private double _logicalCpuTileWidth = LogicalCpuGridLayout.TileTargetWidth;
-    private double _logicalCpuTileHeight = LogicalCpuGridLayout.TileMinHeight;
-    private double _logicalCpuTileChartHeight = LogicalCpuGridLayout.TileMinChartHeight;
-    private double _lastChartSizingWindowHeight = -1;
     private const double HeaderDecorationStride = 388;
     private static readonly IReadOnlyList<HeaderDecorationSpec> HeaderDecorationPattern =
     [
@@ -54,7 +49,6 @@ public sealed partial class MainWindow : Window
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
         ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged += GlobalCpuLogicalProcessorRows_CollectionChanged;
         Activated += OnActivated;
-        SizeChanged += OnWindowSizeChanged;
         Closed += OnWindowClosed;
     }
 
@@ -237,12 +231,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnWindowSizeChanged(object sender, WindowSizeChangedEventArgs args)
-    {
-        ScheduleLogicalCpuGridLayout();
-        ApplyInspectorChartSizing(args.Size.Height);
-    }
-
     private void HeaderRegion_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         RebuildHeaderDecorations(e.NewSize.Width, e.NewSize.Height);
@@ -256,8 +244,6 @@ public sealed partial class MainWindow : Window
         }
 
         HeaderDecorationCanvas.Children.Clear();
-        HeaderDecorationCanvas.Width = width;
-        HeaderDecorationCanvas.Height = height;
         HeaderDecorationCanvas.Clip = new RectangleGeometry { Rect = new Rect(0, 0, width, height) };
 
         for (double offset = 0; offset < width + HeaderDecorationStride; offset += HeaderDecorationStride)
@@ -286,11 +272,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void GlobalCpuLogicalRepeater_Loaded(object sender, RoutedEventArgs e)
-    {
-        ScheduleLogicalCpuGridLayout();
-    }
-
     private void GlobalCpuLogicalGridHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         ScheduleLogicalCpuGridLayout();
@@ -299,16 +280,6 @@ public sealed partial class MainWindow : Window
     private void GlobalCpuLogicalProcessorRows_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         ScheduleLogicalCpuGridLayout();
-    }
-
-    private void GlobalCpuLogicalRepeater_ElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
-    {
-        if (args.Element is not FrameworkElement element)
-        {
-            return;
-        }
-
-        ApplyLogicalCpuTileSize(element);
     }
 
     private void ScheduleLogicalCpuGridLayout()
@@ -344,20 +315,18 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        double scrollerWidth = GlobalCpuLogicalGridScroller.ActualWidth;
         double hostWidth = GlobalCpuLogicalGridHost.ActualWidth;
-        double availableWidth = Math.Max(0d, hostWidth - 24d);
+        double availableWidth = scrollerWidth > 1d
+            ? scrollerWidth
+            : Math.Max(0d, hostWidth - 24d);
         if (availableWidth < 1)
         {
             return;
         }
 
-        double hostHeight = Math.Max(0d, GlobalCpuLogicalGridHost.ActualHeight - 24d);
-        double availableHeight = hostHeight > 1d ? hostHeight : double.PositiveInfinity;
-        double layoutHeightSentinel = double.IsFinite(availableHeight) ? availableHeight : -1d;
-
         if (_logicalCpuGridLastCount == logicalProcessorCount &&
-            Math.Abs(_logicalCpuGridLastWidth - availableWidth) < 0.5 &&
-            Math.Abs(_logicalCpuGridLastHeight - layoutHeightSentinel) < 0.5)
+            Math.Abs(_logicalCpuGridLastWidth - availableWidth) < 0.5)
         {
             return;
         }
@@ -365,7 +334,7 @@ public sealed partial class MainWindow : Window
         LogicalCpuGridLayoutResult layout = LogicalCpuGridLayout.Resolve(
             logicalProcessorCount,
             availableWidth,
-            availableHeight);
+            double.PositiveInfinity);
 
         GlobalCpuLogicalUniformLayout.MaximumRowsOrColumns = layout.Columns;
         GlobalCpuLogicalUniformLayout.MinColumnSpacing = LogicalCpuGridLayout.TileItemMargin * 2d;
@@ -373,72 +342,9 @@ public sealed partial class MainWindow : Window
         GlobalCpuLogicalUniformLayout.MinItemWidth = layout.ItemWidth;
         GlobalCpuLogicalUniformLayout.MinItemHeight = layout.ItemHeight;
 
-        _logicalCpuTileWidth = layout.ItemWidth;
-        _logicalCpuTileHeight = layout.ItemHeight;
-        _logicalCpuTileChartHeight = layout.ChartHeight;
-        ApplyLogicalCpuTileSizeToRealizedElements();
-        GlobalCpuLogicalRepeater.InvalidateMeasure();
-
         _logicalCpuGridLastCount = logicalProcessorCount;
         _logicalCpuGridLastWidth = availableWidth;
-        _logicalCpuGridLastHeight = layoutHeightSentinel;
     }
-
-    private void ApplyLogicalCpuTileSizeToRealizedElements()
-    {
-        int count = ViewModel.GlobalCpuLogicalProcessorRows.Count;
-        for (int index = 0; index < count; index++)
-        {
-            if (GlobalCpuLogicalRepeater.TryGetElement(index) is not FrameworkElement element)
-            {
-                continue;
-            }
-
-            ApplyLogicalCpuTileSize(element);
-        }
-    }
-
-    private void ApplyLogicalCpuTileSize(FrameworkElement element)
-    {
-        element.Width = _logicalCpuTileWidth;
-        element.Height = _logicalCpuTileHeight;
-        if (element.FindName("LogicalCpuTrendChart") is FrameworkElement trendChart)
-        {
-            trendChart.Height = _logicalCpuTileChartHeight;
-        }
-    }
-
-    private void ApplyInspectorChartSizing(double windowHeight)
-    {
-        if (windowHeight <= 0)
-        {
-            return;
-        }
-
-        if (Math.Abs(_lastChartSizingWindowHeight - windowHeight) < 0.5d)
-        {
-            return;
-        }
-
-        _lastChartSizingWindowHeight = windowHeight;
-
-        double inspectorVerticalBudget = Math.Max(windowHeight - 330d, 320d);
-        double systemPrimaryHeight = Clamp(inspectorVerticalBudget * 0.58d, 240d, 560d);
-        double processPrimaryHeight = Clamp(inspectorVerticalBudget * 0.64d, 260d, 600d);
-        double auxiliaryHeight = Clamp(systemPrimaryHeight * 0.24d, 72d, 160d);
-        double placeholderHeight = Clamp(processPrimaryHeight * 0.44d, 120d, 240d);
-
-        SystemPrimaryTrendChart.Height = systemPrimaryHeight;
-        SystemAuxTrendChart.Height = auxiliaryHeight;
-        ProcessPrimaryTrendChart.Height = processPrimaryHeight;
-        ProcessLogicalPlaceholder.MinHeight = placeholderHeight;
-    }
-
-    private static double Clamp(double value, double min, double max)
-    {
-        return Math.Min(max, Math.Max(min, value));
-    }
-
 
     private readonly record struct HeaderDecorationSpec(bool IsEllipse, double Left, double Top, double Size, string BrushResourceKey, double Angle);
 
@@ -446,7 +352,6 @@ public sealed partial class MainWindow : Window
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
         ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged -= GlobalCpuLogicalProcessorRows_CollectionChanged;
-        SizeChanged -= OnWindowSizeChanged;
         Closed -= OnWindowClosed;
     }
 
@@ -470,8 +375,5 @@ public sealed partial class MainWindow : Window
         ViewModel.RecordSelectionSettleProbe(Stopwatch.GetTimestamp() - startedAt);
     }
 }
-
-
-
 
 

@@ -40,11 +40,15 @@ public class ScriptRegressionTests
         Assert.Contains("-p:Platform=x64", gateInvocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("-p:WindowsPackageType=None", gateInvocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("-p:GenerateAppxPackageOnBuild=false", gateInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkBootstrapInitialize=true", gateInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkDeploymentManagerInitialize=false", gateInvocation, StringComparison.OrdinalIgnoreCase);
 
         string runtimeHealthInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-runtime-health", StringComparison.OrdinalIgnoreCase));
         Assert.Contains("-p:Platform=x64", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("-p:WindowsPackageType=None", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("-p:GenerateAppxPackageOnBuild=false", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkBootstrapInitialize=true", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkDeploymentManagerInitialize=false", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -72,6 +76,29 @@ public class ScriptRegressionTests
         string runtimeHealthInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-runtime-health", StringComparison.OrdinalIgnoreCase));
         Assert.Contains("-p:Platform=x64", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("-p:Platform=ARM64", runtimeHealthInvocation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RunDev_UsesUnpackagedWinUiRunArguments_AndForwardsAppArgs()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+
+        ScriptRunResult result = harness.Run(
+            "run-dev.ps1",
+            "-NoBuild",
+            "-Platform", "x64",
+            "--print-runtime-health");
+
+        Assert.Equal(0, result.ExitCode);
+        string invocation = Assert.Single(result.DotnetInvocations);
+        Assert.StartsWith("run ", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:Platform=x64", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsPackageType=None", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:GenerateAppxPackageOnBuild=false", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkBootstrapInitialize=true", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkDeploymentManagerInitialize=false", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-- --print-runtime-health", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--print-runtime-health", invocation, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -118,10 +145,31 @@ public class ScriptRegressionTests
         Assert.StartsWith("run ", invocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("BatCave.csproj", invocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("-p:Platform=x64", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsPackageType=None", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:GenerateAppxPackageOnBuild=false", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkBootstrapInitialize=true", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkDeploymentManagerInitialize=false", invocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--benchmark", invocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--ticks 9", invocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--sleep-ms 15", invocation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--strict", invocation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RunDev_DefaultLaunch_UsesUnpackagedWinUiRunArguments()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+
+        ScriptRunResult result = harness.Run("run-dev.ps1", "-NoBuild");
+
+        Assert.Equal(0, result.ExitCode);
+        string invocation = Assert.Single(result.DotnetInvocations, item => item.StartsWith("run ", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("BatCave.csproj", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:Platform=x64", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsPackageType=None", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:GenerateAppxPackageOnBuild=false", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkBootstrapInitialize=true", invocation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:WindowsAppSdkDeploymentManagerInitialize=false", invocation, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
