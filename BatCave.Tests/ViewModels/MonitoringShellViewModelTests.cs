@@ -162,6 +162,7 @@ public class MonitoringShellViewModelTests
         Assert.Equal(RuntimeStatusTone.Success, viewModel.RuntimeStatusTone);
         Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusSuccessVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusWarningVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusVisibility);
 
         gateway.PublishWarning(new CollectorWarning
         {
@@ -223,6 +224,7 @@ public class MonitoringShellViewModelTests
         Assert.Equal(RuntimeStatusTone.Success, viewModel.RuntimeStatusTone);
         Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusWarningVisibility);
         Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusSuccessVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusVisibility);
     }
 
     [Fact]

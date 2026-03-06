@@ -256,6 +256,10 @@ public partial class MonitoringShellViewModel
         }
 
 
-        SetRuntimeStatusPresentation(RuntimeStatusTone.Success, "Runtime Healthy", $"Seq {health.Seq} live, jitter p95 {health.JitterP95Ms:F0} ms, no active collector warnings.");
+        SetRuntimeStatusPresentation(
+            RuntimeStatusTone.Success,
+            "Runtime Healthy",
+            $"Seq {health.Seq} live, jitter p95 {health.JitterP95Ms:F0} ms, no active collector warnings.",
+            isVisible: false);
     }
 }

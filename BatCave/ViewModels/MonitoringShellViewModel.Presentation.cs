@@ -308,7 +308,7 @@ public partial class MonitoringShellViewModel
             nameof(DetailsPaneSecondaryText));
     }
 
-    private void SetRuntimeStatusPresentation(RuntimeStatusTone tone, string title, string summary)
+    private void SetRuntimeStatusPresentation(RuntimeStatusTone tone, string title, string summary, bool isVisible = true)
     {
         RuntimeStatusTone = tone;
         RuntimeStatusTag = tone switch
@@ -320,7 +320,7 @@ public partial class MonitoringShellViewModel
         };
         RuntimeStatusTitle = title;
         RuntimeStatusSummary = summary;
-        IsRuntimeStatusVisible = true;
+        IsRuntimeStatusVisible = isVisible;
         RaisePresentationProperties();
     }
 
