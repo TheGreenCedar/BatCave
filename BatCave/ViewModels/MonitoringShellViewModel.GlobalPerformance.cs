@@ -271,6 +271,7 @@ public partial class MonitoringShellViewModel
                 OnPropertyChanged(nameof(GlobalCombinedChartVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalGridVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalPlaceholderVisibility));
+                RaiseCpuModeChromeProperties();
             }
         }
     }
@@ -307,6 +308,7 @@ public partial class MonitoringShellViewModel
             // Re-raise mode booleans so bindings snap back to the authoritative enum state.
             OnPropertyChanged(nameof(IsCpuCombinedMode));
             OnPropertyChanged(nameof(IsCpuLogicalMode));
+            RaiseCpuModeChromeProperties();
         }
 
         QueueGlobalDetailStateRefresh();
@@ -1507,6 +1509,8 @@ public partial class MonitoringShellViewModel
         {
             _globalDetailStats.RemoveAt(_globalDetailStats.Count - 1);
         }
+
+        RaisePresentationProperties();
     }
 
     private static string FormatValue<T>(T? value)

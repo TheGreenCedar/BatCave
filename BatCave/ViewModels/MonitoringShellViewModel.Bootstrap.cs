@@ -129,6 +129,7 @@ public partial class MonitoringShellViewModel
         _latestWarningSummary = warning.Message;
         AdminModeError = warning.Message;
         RuntimeHealthStatus = BuildRuntimeHealthStatus(runtimeHealth);
+        SetRuntimeStatusPresentation(RuntimeStatusTone.Warning, "Collector Warning", warning.Message);
     }
 
     private void RefreshRuntimeSnapshot()
@@ -152,6 +153,7 @@ public partial class MonitoringShellViewModel
         ShellHeadline = "Initializing monitor runtime...";
         ShellBody = "Starting monitoring services.";
         RuntimeHealthStatus = healthSnapshot.StatusSummary;
+        SetRuntimeStatusPresentation(RuntimeStatusTone.Info, "Starting Runtime", "Starting monitoring services.");
     }
 
     private void ApplyBlockedStartupState(StartupGateStatus startupGateStatus)
@@ -162,6 +164,7 @@ public partial class MonitoringShellViewModel
         ShellHeadline = "Startup Blocked";
         ShellBody = BlockedReasonMessage;
         RuntimeHealthStatus = "Runtime health unavailable.";
+        SetRuntimeStatusPresentation(RuntimeStatusTone.Error, "Startup Blocked", BlockedReasonMessage);
     }
 
     private void ApplyStartupFailureState(Exception ex)
@@ -171,12 +174,14 @@ public partial class MonitoringShellViewModel
         StartupErrorMessage = ex.Message;
         ShellHeadline = "Startup Incomplete";
         ShellBody = ex.Message;
+        SetRuntimeStatusPresentation(RuntimeStatusTone.Error, "Startup Error", ex.Message);
     }
 
     private void ApplyRuntimeHealth(RuntimeHealth health)
     {
         MaybeClearStaleWarning(health);
         RuntimeHealthStatus = BuildRuntimeHealthStatus(health);
+        ApplyRuntimeStatusPresentation(health);
     }
 
     private string BuildRuntimeHealthStatus(RuntimeHealth health)
@@ -234,5 +239,28 @@ public partial class MonitoringShellViewModel
     {
         _latestWarningSummary = null;
         _latestWarningSeq = 0;
+    }
+
+    private void ApplyRuntimeStatusPresentation(RuntimeHealth health)
+    {
+        if (!string.IsNullOrWhiteSpace(_latestWarningSummary))
+        {
+            SetRuntimeStatusPresentation(RuntimeStatusTone.Warning, "Runtime Degraded", _latestWarningSummary!);
+            return;
+        }
+
+        if (health.DroppedTicks > 0)
+        {
+            SetRuntimeStatusPresentation(RuntimeStatusTone.Error, "Dropped Samples Detected", $"{health.DroppedTicks} samples were dropped from the runtime loop.");
+            return;
+        }
+
+        if (health.DegradeMode)
+        {
+            SetRuntimeStatusPresentation(RuntimeStatusTone.Warning, "Degrade Mode Active", $"Jitter p95 is {health.JitterP95Ms:F0} ms and degrade mode is active.");
+            return;
+        }
+
+        SetRuntimeStatusPresentation(RuntimeStatusTone.Success, "Runtime Healthy", $"Seq {health.Seq} live, jitter p95 {health.JitterP95Ms:F0} ms, no active collector warnings.");
     }
 }

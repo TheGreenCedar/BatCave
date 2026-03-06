@@ -128,6 +128,79 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task InspectorSections_DefaultToSummary_AndSwitchViaCommand()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        Assert.Equal(InspectorLayoutMode.SystemOverview, viewModel.InspectorLayoutMode);
+        Assert.True(viewModel.IsSystemOverview);
+        Assert.False(viewModel.IsProcessInspector);
+        Assert.Equal("SYSTEM VIEW", viewModel.InspectorOverviewEyebrow);
+        Assert.Equal("System Overview", viewModel.InspectorContextTitle);
+        Assert.Equal(Visibility.Visible, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.ProcessSummarySectionVisibility);
+        Assert.True(viewModel.IsSummarySectionSelected);
+        Assert.Equal(Visibility.Visible, viewModel.SummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.PerformanceSectionVisibility);
+
+        viewModel.SelectInspectorSectionCommand.Execute("Performance");
+
+        Assert.True(viewModel.IsPerformanceSectionSelected);
+        Assert.Equal(Visibility.Visible, viewModel.PerformanceSectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.SummarySectionVisibility);
+    }
+
+    [Fact]
+    public async Task RuntimeStatusPresentation_MapsHealthyAndWarningStates()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        Assert.Equal("Runtime Healthy", viewModel.RuntimeStatusTitle);
+        Assert.Equal("HEALTH", viewModel.RuntimeStatusTag);
+        Assert.Equal(RuntimeStatusTone.Success, viewModel.RuntimeStatusTone);
+        Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusSuccessVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusWarningVisibility);
+
+        gateway.PublishWarning(new CollectorWarning
+        {
+            Seq = 1,
+            Message = "bridge warning",
+        });
+
+        Assert.Equal("Collector Warning", viewModel.RuntimeStatusTitle);
+        Assert.Equal("bridge warning", viewModel.RuntimeStatusSummary);
+        Assert.Equal("WARN", viewModel.RuntimeStatusTag);
+        Assert.Equal(RuntimeStatusTone.Warning, viewModel.RuntimeStatusTone);
+        Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusWarningVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusSuccessVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusVisibility);
+    }
+
+    [Fact]
+    public async Task SelectingProcess_SwitchesInspectorToProcessLayout_AndCompactsSummaryCards()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+        ProcessSample row = Sample(pid: 901, startTime: 9_010, access: AccessState.Full) with { Name = "batcave.exe" };
+
+        gateway.RaiseDelta(1, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.Equal(InspectorLayoutMode.ProcessInspector, viewModel.InspectorLayoutMode);
+        Assert.True(viewModel.IsProcessInspector);
+        Assert.False(viewModel.IsSystemOverview);
+        Assert.Equal("PROCESS VIEW", viewModel.InspectorOverviewEyebrow);
+        Assert.Equal(viewModel.DetailTitle, viewModel.InspectorContextTitle);
+        Assert.Equal(Visibility.Visible, viewModel.ProcessSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal(4, viewModel.SummaryStatCards.Count);
+        Assert.Equal(960, viewModel.InspectorChartMaxWidth);
+        Assert.Equal(232, viewModel.SummaryStatCardWidth);
+    }
+
+    [Fact]
     public async Task AdminToggle_WhenRestartThrows_RestartsRuntimeLoopAndSurfacesError()
     {
         TestRuntimeEventGateway gateway = new();

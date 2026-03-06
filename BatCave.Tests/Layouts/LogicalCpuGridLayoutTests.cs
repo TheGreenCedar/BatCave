@@ -29,4 +29,22 @@ public sealed class LogicalCpuGridLayoutTests
         Assert.True(plan.ItemWidth >= LogicalCpuGridLayout.TileMinWidth);
         Assert.True(plan.ItemHeight >= LogicalCpuGridLayout.TileMinHeight);
     }
+
+    [Fact]
+    public void Resolve_IgnoresSelfReferentialHeightPressure_ForStableTileHeight()
+    {
+        LogicalCpuGridLayoutResult roomyPlan = LogicalCpuGridLayout.Resolve(
+            itemCount: 16,
+            availableWidth: 720d,
+            availableHeight: double.PositiveInfinity);
+
+        LogicalCpuGridLayoutResult feedbackPlan = LogicalCpuGridLayout.Resolve(
+            itemCount: 16,
+            availableWidth: 720d,
+            availableHeight: 160d);
+
+        Assert.Equal(roomyPlan.Columns, feedbackPlan.Columns);
+        Assert.True(roomyPlan.ItemHeight >= LogicalCpuGridLayout.TileMinHeight);
+        Assert.True(feedbackPlan.ItemHeight >= LogicalCpuGridLayout.TileMinHeight);
+    }
 }

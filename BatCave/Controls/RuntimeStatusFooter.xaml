@@ -6,12 +6,14 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <StackPanel Spacing="4">
+    <StackPanel Spacing="6">
+        <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="DIAGNOSTICS" />
         <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock FontWeight="SemiBold" Text="Runtime Health:" />
+            <TextBlock FontWeight="SemiBold" Text="Runtime Detail:" />
             <TextBlock
                 AutomationProperties.LiveSetting="Polite"
                 AutomationProperties.Name="Runtime Health Status"
+                Opacity="0.82"
                 Text="{Binding RuntimeHealthStatus, Mode=OneWay}"
                 TextWrapping="Wrap" />
         </StackPanel>

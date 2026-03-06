@@ -253,15 +253,13 @@ public sealed partial class MainWindow : Window
         }
 
         double availableWidth = Math.Max(0, GlobalCpuLogicalGridView.ActualWidth - 4);
-        double availableHeight = Math.Max(0, GlobalCpuLogicalGridView.ActualHeight - 4);
-        if (availableWidth < 1 || availableHeight < 1)
+        if (availableWidth < 1)
         {
             return;
         }
 
         if (_logicalCpuGridLastCount == logicalProcessorCount &&
-            Math.Abs(_logicalCpuGridLastWidth - availableWidth) < 0.5 &&
-            Math.Abs(_logicalCpuGridLastHeight - availableHeight) < 0.5)
+            Math.Abs(_logicalCpuGridLastWidth - availableWidth) < 0.5)
         {
             return;
         }
@@ -269,7 +267,7 @@ public sealed partial class MainWindow : Window
         LogicalCpuGridLayoutResult layout = LogicalCpuGridLayout.Resolve(
             logicalProcessorCount,
             availableWidth,
-            availableHeight);
+            double.PositiveInfinity);
 
         itemsWrapGrid.MaximumRowsOrColumns = layout.Columns;
         itemsWrapGrid.ItemWidth = layout.ItemWidth;
@@ -277,7 +275,7 @@ public sealed partial class MainWindow : Window
 
         _logicalCpuGridLastCount = logicalProcessorCount;
         _logicalCpuGridLastWidth = availableWidth;
-        _logicalCpuGridLastHeight = availableHeight;
+        _logicalCpuGridLastHeight = layout.ItemHeight;
     }
 
 

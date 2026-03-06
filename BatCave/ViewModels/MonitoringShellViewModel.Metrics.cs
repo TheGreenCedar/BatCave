@@ -45,6 +45,7 @@ public partial class MonitoringShellViewModel
             // Keep one-way bound toggle visuals consistent when the selected window is clicked again.
             OnPropertyChanged(nameof(IsTrendWindow60Selected));
             OnPropertyChanged(nameof(IsTrendWindow120Selected));
+            RaiseTrendWindowChromeProperties();
             return;
         }
 
@@ -69,6 +70,7 @@ public partial class MonitoringShellViewModel
             nameof(MetadataParentPid),
             nameof(MetadataCommandLine),
             nameof(MetadataExecutablePath));
+        RaisePresentationProperties();
     }
 
     private void RefreshDetailMetrics()

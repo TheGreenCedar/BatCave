@@ -50,6 +50,7 @@
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.cs" Link="ViewModels\MonitoringShellViewModel.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.GlobalPerformance.cs" Link="ViewModels\MonitoringShellViewModel.GlobalPerformance.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Metrics.cs" Link="ViewModels\MonitoringShellViewModel.Metrics.cs" />
+    <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Presentation.cs" Link="ViewModels\MonitoringShellViewModel.Presentation.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.ProcessTableMode.cs" Link="ViewModels\MonitoringShellViewModel.ProcessTableMode.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Selection.cs" Link="ViewModels\MonitoringShellViewModel.Selection.cs" />
     <Compile Include="..\BatCave\ViewModels\MonitoringShellViewModel.Sorting.cs" Link="ViewModels\MonitoringShellViewModel.Sorting.cs" />

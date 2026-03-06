@@ -15,43 +15,50 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid x:Name="ShellRoot">
+    <Grid x:Name="ShellRoot" Background="{ThemeResource BatCaveCanvasBrush}">
         <Grid.KeyboardAccelerators>
             <KeyboardAccelerator Key="F" Modifiers="Control" Invoked="FocusFilterAccelerator_Invoked" />
             <KeyboardAccelerator Key="R" Modifiers="Control" Invoked="RetryAccelerator_Invoked" />
             <KeyboardAccelerator Key="L" Modifiers="Control" Invoked="ClearSelectionAccelerator_Invoked" />
         </Grid.KeyboardAccelerators>
+
         <VisualStateManager.VisualStateGroups>
             <VisualStateGroup x:Name="WindowWidthStates">
                 <VisualState x:Name="WideState">
                     <VisualState.StateTriggers>
-                        <AdaptiveTrigger MinWindowWidth="1200" />
+                        <AdaptiveTrigger MinWindowWidth="1260" />
                     </VisualState.StateTriggers>
                     <VisualState.Setters>
-                        <Setter Target="HeaderRegion.Padding" Value="16" />
-                        <Setter Target="ContentRegion.Padding" Value="16" />
-                        <Setter Target="FooterRegion.Padding" Value="12" />
+                        <Setter Target="HeaderRegion.Padding" Value="18,14,18,12" />
+                        <Setter Target="ContentRegion.Padding" Value="20" />
+                        <Setter Target="WorkspaceRoot.ColumnSpacing" Value="16" />
+                        <Setter Target="WorkspaceLeftColumn.Width" Value="6*" />
+                        <Setter Target="WorkspaceRightColumn.Width" Value="6*" />
                         <Setter Target="HeaderControlsInline.Visibility" Value="Visible" />
                         <Setter Target="HeaderControlsPhone.Visibility" Value="Collapsed" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="MediumState">
                     <VisualState.StateTriggers>
-                        <AdaptiveTrigger MinWindowWidth="760" />
+                        <AdaptiveTrigger MinWindowWidth="860" />
                     </VisualState.StateTriggers>
                     <VisualState.Setters>
-                        <Setter Target="HeaderRegion.Padding" Value="12" />
-                        <Setter Target="ContentRegion.Padding" Value="12" />
-                        <Setter Target="FooterRegion.Padding" Value="10" />
+                        <Setter Target="HeaderRegion.Padding" Value="16,12,16,12" />
+                        <Setter Target="ContentRegion.Padding" Value="18" />
+                        <Setter Target="WorkspaceRoot.ColumnSpacing" Value="14" />
+                        <Setter Target="WorkspaceLeftColumn.Width" Value="11*" />
+                        <Setter Target="WorkspaceRightColumn.Width" Value="10*" />
                         <Setter Target="HeaderControlsInline.Visibility" Value="Visible" />
                         <Setter Target="HeaderControlsPhone.Visibility" Value="Collapsed" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="PhoneState">
                     <VisualState.Setters>
-                        <Setter Target="HeaderRegion.Padding" Value="8" />
-                        <Setter Target="ContentRegion.Padding" Value="8" />
-                        <Setter Target="FooterRegion.Padding" Value="8" />
+                        <Setter Target="HeaderRegion.Padding" Value="12,10,12,10" />
+                        <Setter Target="ContentRegion.Padding" Value="14" />
+                        <Setter Target="WorkspaceRoot.ColumnSpacing" Value="14" />
+                        <Setter Target="WorkspaceLeftColumn.Width" Value="*" />
+                        <Setter Target="WorkspaceRightColumn.Width" Value="0" />
                         <Setter Target="HeaderControlsInline.Visibility" Value="Collapsed" />
                         <Setter Target="HeaderControlsPhone.Visibility" Value="Visible" />
                     </VisualState.Setters>
@@ -61,6 +68,8 @@
 
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -68,103 +77,182 @@
         <Border
             x:Name="HeaderRegion"
             Grid.Row="0"
-            Padding="{ThemeResource ShellHeaderPadding}"
-            BorderThickness="0,0,0,1">
-            <StackPanel Spacing="10">
-                <TextBlock FontSize="28" FontWeight="SemiBold" Text="{ThemeResource ShellTitleText}" />
-                <TextBlock Opacity="0.8" Text="{ThemeResource ShellSubtitleText}" />
-                <Grid x:Name="HeaderControlsInline" ColumnSpacing="12" Visibility="Visible">
+            Background="{ThemeResource BatCaveHeaderBrush}"
+            Padding="16,10,16,10">
+            <Grid>
+                <Canvas IsHitTestVisible="False" Opacity="0.08">
+                    <Rectangle Width="72" Height="72" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="-20" Canvas.Top="-18" />
+                    <Rectangle Width="58" Height="58" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Left="216" Canvas.Top="-10">
+                        <Rectangle.RenderTransform>
+                            <RotateTransform Angle="14" />
+                        </Rectangle.RenderTransform>
+                    </Rectangle>
+                    <Ellipse Width="46" Height="46" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="612" Canvas.Top="-4" />
+                </Canvas>
+
+                <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBox
-                        x:Name="FilterTextBox"
-                        Grid.Column="0"
-                        Width="420"
-                        MinWidth="280"
-                        MaxWidth="520"
-                        HorizontalAlignment="Left"
-                        AccessKey="F"
-                        AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
-                        AutomationProperties.Name="Process Filter"
-                        PlaceholderText="{ThemeResource FilterPlaceholderText}"
-                        TabIndex="1"
-                        Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                        <TextBlock VerticalAlignment="Center" Text="Admin Mode" />
-                        <ToggleSwitch
-                            x:Name="AdminModeToggle"
-                            AccessKey="A"
-                            AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
-                            AutomationProperties.Name="Admin Mode Toggle"
-                            Header=""
-                            OnContent=""
-                            OffContent=""
-                            IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
-                            TabIndex="2"
-                            Toggled="AdminModeToggle_Toggled" />
+
+                    <StackPanel Spacing="2">
+                        <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="LIVE PROCESS TELEMETRY" />
+                        <TextBlock Style="{StaticResource BatCaveTitleTextStyle}" Text="{ThemeResource ShellTitleText}" />
+                        <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" MaxWidth="420" Text="{ThemeResource ShellSubtitleText}" TextWrapping="WrapWholeWords" />
                     </StackPanel>
+
+                    <Grid x:Name="HeaderControlsInline" Grid.Column="1" ColumnSpacing="10" VerticalAlignment="Top">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox
+                            x:Name="FilterTextBox"
+                            Grid.Column="0"
+                            Width="272"
+                            MinWidth="220"
+                            Height="44"
+                            Background="{ThemeResource BatCaveMutedBrush}"
+                            BorderBrush="{ThemeResource BatCavePrimaryBrush}"
+                            BorderThickness="0"
+                            PlaceholderText="{ThemeResource FilterPlaceholderText}"
+                            Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                            AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
+                            AutomationProperties.Name="Process Filter" />
+                        <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Top">
+                            <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="ELEVATION" />
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock VerticalAlignment="Center" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="Admin Mode" />
+                                <ToggleSwitch
+                                    x:Name="AdminModeToggle"
+                                    Header=""
+                                    IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
+                                    OffContent=""
+                                    OnContent=""
+                                    Toggled="AdminModeToggle_Toggled"
+                                    AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
+                                    AutomationProperties.Name="Admin Mode Toggle" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
                 </Grid>
-                <Grid x:Name="HeaderControlsPhone" RowSpacing="8" Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    <TextBox
-                        x:Name="FilterTextBoxPhone"
-                        AccessKey="F"
-                        AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
-                        AutomationProperties.Name="Process Filter"
-                        PlaceholderText="{ThemeResource FilterPlaceholderText}"
-                        TabIndex="1"
-                        Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="12">
-                        <TextBlock VerticalAlignment="Center" Text="Admin Mode" />
-                        <ToggleSwitch
-                            x:Name="AdminModeTogglePhone"
-                            AccessKey="A"
-                            AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
-                            AutomationProperties.Name="Admin Mode Toggle"
-                            Header=""
-                            OnContent=""
-                            OffContent=""
-                            IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
-                            TabIndex="2"
-                            Toggled="AdminModeToggle_Toggled" />
-                    </StackPanel>
-                </Grid>
-            </StackPanel>
+            </Grid>
         </Border>
 
-        <Grid x:Name="ContentRegion" Grid.Row="1" Padding="{ThemeResource ShellContentPadding}">
+        <Grid x:Name="HeaderControlsPhone" Grid.Row="1" Visibility="Collapsed" Margin="14,0,14,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <TextBox
+                x:Name="FilterTextBoxPhone"
+                Background="{ThemeResource BatCaveMutedBrush}"
+                BorderBrush="{ThemeResource BatCavePrimaryBrush}"
+                BorderThickness="0"
+                PlaceholderText="{ThemeResource FilterPlaceholderText}"
+                Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
+                AutomationProperties.Name="Process Filter" />
+            <StackPanel Grid.Row="1" Margin="0,10,0,0" Orientation="Horizontal" Spacing="10">
+                <TextBlock VerticalAlignment="Center" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="Admin Mode" />
+                <ToggleSwitch
+                    x:Name="AdminModeTogglePhone"
+                    Header=""
+                    IsOn="{x:Bind ViewModel.AdminModeEnabled, Mode=OneWay}"
+                    OffContent=""
+                    OnContent=""
+                    Toggled="AdminModeToggle_Toggled"
+                    AutomationProperties.HelpText="{ThemeResource AdminToggleHelpText}"
+                    AutomationProperties.Name="Admin Mode Toggle" />
+            </StackPanel>
+        </Grid>
+
+        <Border
+            Grid.Row="2"
+            Margin="18,0,18,0"
+            Padding="0"
+            Background="{Binding ViewModel.RuntimeStatusSurfaceBrush, ElementName=RootWindow, Mode=OneWay}"
+            BorderBrush="Transparent"
+            BorderThickness="0"
+            Visibility="{Binding ViewModel.RuntimeStatusVisibility, ElementName=RootWindow, Mode=OneWay}"
+            AutomationProperties.Name="Runtime Status Strip">
+            <Grid ColumnSpacing="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Rectangle Width="6" Fill="{Binding ViewModel.RuntimeStatusAccentBrush, ElementName=RootWindow, Mode=OneWay}" />
+                <Border
+                    Grid.Column="1"
+                    Margin="12,10,10,10"
+                    Padding="8,4"
+                    Background="{Binding ViewModel.RuntimeStatusTagBackgroundBrush, ElementName=RootWindow, Mode=OneWay}"
+                    CornerRadius="6">
+                    <TextBlock
+                        Style="{StaticResource BatCaveMetricLabelStyle}"
+                        Foreground="{Binding ViewModel.RuntimeStatusTagForegroundBrush, ElementName=RootWindow, Mode=OneWay}"
+                        VerticalAlignment="Center"
+                        Text="{Binding ViewModel.RuntimeStatusTag, ElementName=RootWindow, Mode=OneWay}" />
+                </Border>
+                <TextBlock
+                    Grid.Column="2"
+                    Visibility="Collapsed" />
+                <StackPanel Grid.Column="2" Margin="0,10,14,10" Spacing="2">
+                    <TextBlock
+                        Foreground="{Binding ViewModel.RuntimeStatusTitleBrush, ElementName=RootWindow, Mode=OneWay}"
+                        FontWeight="SemiBold"
+                        Text="{Binding ViewModel.RuntimeStatusTitle, ElementName=RootWindow, Mode=OneWay}" />
+                    <TextBlock
+                        Style="{StaticResource BatCaveSectionSubtitleStyle}"
+                        Foreground="{Binding ViewModel.RuntimeStatusSummaryBrush, ElementName=RootWindow, Mode=OneWay}"
+                        Text="{Binding ViewModel.RuntimeStatusSummary, ElementName=RootWindow, Mode=OneWay}"
+                        TextWrapping="WrapWholeWords" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid x:Name="ContentRegion" Grid.Row="3" Padding="{ThemeResource ShellContentPadding}">
             <controls:StartupStatePanel DataContext="{x:Bind ViewModel, Mode=OneWay}" />
 
-            <Grid Visibility="{x:Bind ViewModel.LiveVisibility, Mode=OneWay}">
+            <Grid x:Name="WorkspaceRoot" Visibility="{x:Bind ViewModel.LiveVisibility, Mode=OneWay}">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="3*" />
-                    <ColumnDefinition Width="2*" />
+                    <ColumnDefinition x:Name="WorkspaceLeftColumn" Width="6*" />
+                    <ColumnDefinition x:Name="WorkspaceRightColumn" Width="6*" />
                 </Grid.ColumnDefinitions>
-
-                <Border
-                    Grid.Column="0"
-                    Padding="12"
-                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="12">
-                    <Grid>
+                <Border Grid.Column="0" Style="{StaticResource BatCaveFlatPanelBorderStyle}">
+                    <Grid Padding="18">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <Grid
-                            Grid.Row="0"
-                            Margin="0,0,0,8"
-                            ColumnSpacing="6">
+                        <Grid ColumnSpacing="12">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="2*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2">
+                                <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="PROCESS EXPLORER" />
+                                <TextBlock Style="{StaticResource BatCaveSectionTitleStyle}" Text="Active Processes" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="1" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                                <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="COUNT" />
+                                <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{x:Bind ViewModel.CompactNameTotalLabel, Mode=OneWay}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Border
+                            Grid.Row="1"
+                            Margin="0,18,0,14"
+                            Background="{ThemeResource BatCaveMutedBrush}"
+                            CornerRadius="8"
+                            Padding="10,8">
+                            <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2.2*" />
                                 <ColumnDefinition Width="1*" />
                                 <ColumnDefinition Width="1*" />
                                 <ColumnDefinition Width="1*" />
@@ -173,117 +261,82 @@
 
                             <Button
                                 Grid.Column="0"
-                                AccessKey="N"
-                                AutomationProperties.Name="Compact sort by name"
-                                AutomationProperties.HelpText="Sort compact table by process name."
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
                                 CommandParameter="Name"
-                                Background="{x:Bind ViewModel.CompactNameColumnBackground, Mode=OneWay}"
-                                Foreground="{x:Bind ViewModel.CompactNameSortForeground, Mode=OneWay}"
-                                HorizontalAlignment="Stretch"
+                                Background="Transparent"
+                                BorderThickness="0"
                                 HorizontalContentAlignment="Left"
-                                TabIndex="10">
-                                <StackPanel Spacing="1">
-                                    <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.CompactNameSortLabel, Mode=OneWay}" />
-                                    <TextBlock FontSize="11" Opacity="0.8" Text="{x:Bind ViewModel.CompactNameTotalLabel, Mode=OneWay}" />
-                                </StackPanel>
+                                AutomationProperties.Name="Sort process table by name">
+                                <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{x:Bind ViewModel.CompactNameSortLabel, Mode=OneWay}" />
                             </Button>
 
                             <Button
                                 Grid.Column="1"
-                                AccessKey="U"
-                                AutomationProperties.Name="Compact sort by cpu"
-                                AutomationProperties.HelpText="Sort compact table by CPU usage."
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
                                 CommandParameter="CpuPct"
-                                Background="{x:Bind ViewModel.CompactCpuColumnBackground, Mode=OneWay}"
-                                Foreground="{x:Bind ViewModel.CompactCpuSortForeground, Mode=OneWay}"
-                                HorizontalAlignment="Stretch"
+                                Background="Transparent"
+                                BorderThickness="0"
                                 HorizontalContentAlignment="Right"
-                                TabIndex="11">
-                                <StackPanel Spacing="1">
-                                    <TextBlock HorizontalAlignment="Right" FontWeight="SemiBold" Text="{x:Bind ViewModel.CompactCpuSortLabel, Mode=OneWay}" />
-                                    <TextBlock HorizontalAlignment="Right" FontSize="11" Opacity="0.8" Text="{x:Bind ViewModel.CompactCpuTotalLabel, Mode=OneWay}" />
-                                </StackPanel>
+                                AutomationProperties.Name="Sort process table by cpu">
+                                <TextBlock HorizontalAlignment="Right" Style="{StaticResource BatCaveMetricLabelStyle}" Text="{x:Bind ViewModel.CompactCpuSortLabel, Mode=OneWay}" />
                             </Button>
 
                             <Button
                                 Grid.Column="2"
-                                AccessKey="M"
-                                AutomationProperties.Name="Compact sort by memory"
-                                AutomationProperties.HelpText="Sort compact table by memory usage."
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
                                 CommandParameter="RssBytes"
-                                Background="{x:Bind ViewModel.CompactMemoryColumnBackground, Mode=OneWay}"
-                                Foreground="{x:Bind ViewModel.CompactMemorySortForeground, Mode=OneWay}"
-                                HorizontalAlignment="Stretch"
+                                Background="Transparent"
+                                BorderThickness="0"
                                 HorizontalContentAlignment="Right"
-                                TabIndex="12">
-                                <StackPanel Spacing="1">
-                                    <TextBlock HorizontalAlignment="Right" FontWeight="SemiBold" Text="{x:Bind ViewModel.CompactMemorySortLabel, Mode=OneWay}" />
-                                    <TextBlock HorizontalAlignment="Right" FontSize="11" Opacity="0.8" Text="{x:Bind ViewModel.CompactMemoryTotalLabel, Mode=OneWay}" />
-                                </StackPanel>
+                                AutomationProperties.Name="Sort process table by memory">
+                                <TextBlock HorizontalAlignment="Right" Style="{StaticResource BatCaveMetricLabelStyle}" Text="{x:Bind ViewModel.CompactMemorySortLabel, Mode=OneWay}" />
                             </Button>
 
                             <Button
                                 Grid.Column="3"
-                                AccessKey="D"
-                                AutomationProperties.Name="Compact sort by disk"
-                                AutomationProperties.HelpText="Sort compact table by disk throughput."
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
                                 CommandParameter="DiskBps"
-                                Background="{x:Bind ViewModel.CompactDiskColumnBackground, Mode=OneWay}"
-                                Foreground="{x:Bind ViewModel.CompactDiskSortForeground, Mode=OneWay}"
-                                HorizontalAlignment="Stretch"
+                                Background="Transparent"
+                                BorderThickness="0"
                                 HorizontalContentAlignment="Right"
-                                TabIndex="13">
-                                <StackPanel Spacing="1">
-                                    <TextBlock HorizontalAlignment="Right" FontWeight="SemiBold" Text="{x:Bind ViewModel.CompactDiskSortLabel, Mode=OneWay}" />
-                                    <TextBlock HorizontalAlignment="Right" FontSize="11" Opacity="0.8" Text="{x:Bind ViewModel.CompactDiskTotalLabel, Mode=OneWay}" />
-                                </StackPanel>
+                                AutomationProperties.Name="Sort process table by disk">
+                                <TextBlock HorizontalAlignment="Right" Style="{StaticResource BatCaveMetricLabelStyle}" Text="{x:Bind ViewModel.CompactDiskSortLabel, Mode=OneWay}" />
                             </Button>
 
                             <Button
                                 Grid.Column="4"
-                                AccessKey="O"
-                                AutomationProperties.Name="Compact sort by network"
-                                AutomationProperties.HelpText="Sort compact table by network throughput."
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
                                 CommandParameter="OtherIoBps"
-                                Background="{x:Bind ViewModel.CompactNetworkColumnBackground, Mode=OneWay}"
-                                Foreground="{x:Bind ViewModel.CompactNetworkSortForeground, Mode=OneWay}"
-                                HorizontalAlignment="Stretch"
+                                Background="Transparent"
+                                BorderThickness="0"
                                 HorizontalContentAlignment="Right"
-                                TabIndex="14">
-                                <StackPanel Spacing="1">
-                                    <TextBlock HorizontalAlignment="Right" FontWeight="SemiBold" Text="{x:Bind ViewModel.CompactNetworkSortLabel, Mode=OneWay}" />
-                                    <TextBlock HorizontalAlignment="Right" FontSize="11" Opacity="0.8" Text="{x:Bind ViewModel.CompactNetworkTotalLabel, Mode=OneWay}" />
-                                </StackPanel>
+                                AutomationProperties.Name="Sort process table by network">
+                                <TextBlock HorizontalAlignment="Right" Style="{StaticResource BatCaveMetricLabelStyle}" Text="{x:Bind ViewModel.CompactNetworkSortLabel, Mode=OneWay}" />
                             </Button>
-                        </Grid>
+                            </Grid>
+                        </Border>
 
                         <ListView
                             x:Name="CompactProcessListView"
-                            AutomationProperties.HelpText="Compact process table with name, CPU, memory, disk, and network columns."
-                            AutomationProperties.Name="Compact Process Table"
-                            Grid.Row="1"
+                            Grid.Row="2"
+                            Background="Transparent"
                             ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}"
                             SelectedItem="{x:Bind ViewModel.SelectedVisibleRowBinding, Mode=OneWay}"
-                            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                             SelectionChanged="ProcessListView_SelectionChanged"
                             SelectionMode="Single"
-                            TabIndex="19"
-                            Background="Transparent">
+                            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                            AutomationProperties.HelpText="Compact process table with name, CPU, memory, disk, and network columns."
+                            AutomationProperties.Name="Compact Process Table">
                             <ListView.Resources>
-                                <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="AccentFillColorDefaultBrush" />
-                                <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="AccentFillColorDefaultBrush" />
-                                <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="AccentFillColorSecondaryBrush" />
-                                <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
-                                <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
-                                <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
-                                <StaticResource x:Key="ListViewItemSelectionIndicatorBrush" ResourceKey="AccentFillColorDefaultBrush" />
-                                <StaticResource x:Key="ListViewItemSelectionIndicatorPointerOverBrush" ResourceKey="AccentFillColorDefaultBrush" />
-                                <StaticResource x:Key="ListViewItemSelectionIndicatorPressedBrush" ResourceKey="AccentFillColorDefaultBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="BatCaveSelectionBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="BatCaveSelectionBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="BatCavePrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="BatCaveSelectionTextBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="BatCaveSelectionTextBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="BatCaveSelectionTextBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorBrush" ResourceKey="BatCavePrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorPointerOverBrush" ResourceKey="BatCavePrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemSelectionIndicatorPressedBrush" ResourceKey="BatCavePrimaryBrush" />
                                 <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">True</x:Boolean>
                             </ListView.Resources>
                             <ListView.ItemContainerTransitions>
@@ -294,36 +347,26 @@
                             <ListView.ItemContainerStyle>
                                 <Style TargetType="ListViewItem">
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                    <Setter Property="MinHeight" Value="30" />
-                                    <Setter Property="Padding" Value="3,2" />
-                                    <Setter Property="Margin" Value="0,1" />
+                                    <Setter Property="MinHeight" Value="38" />
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="Margin" Value="0,0,0,2" />
                                 </Style>
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="viewModels:ProcessRowViewState">
-                                    <Grid Padding="2,4">
+                                <DataTemplate>
+                                    <Grid Padding="8,6" Background="{ThemeResource BatCaveCanvasBrush}">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="2*" />
+                                            <ColumnDefinition Width="2.2*" />
                                             <ColumnDefinition Width="1*" />
                                             <ColumnDefinition Width="1*" />
                                             <ColumnDefinition Width="1*" />
                                             <ColumnDefinition Width="1*" />
                                         </Grid.ColumnDefinitions>
-                                        <Border Grid.Column="0" Padding="2,0" Background="{Binding ViewModel.CompactNameColumnBackground, ElementName=RootWindow}">
-                                            <TextBlock Text="{x:Bind Name, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
-                                        </Border>
-                                        <Border Grid.Column="1" Padding="2,0" Background="{Binding ViewModel.CompactCpuColumnBackground, ElementName=RootWindow}">
-                                            <TextBlock FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind CpuText, Mode=OneWay}" TextAlignment="Right" />
-                                        </Border>
-                                        <Border Grid.Column="2" Padding="2,0" Background="{Binding ViewModel.CompactMemoryColumnBackground, ElementName=RootWindow}">
-                                            <TextBlock FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind RssText, Mode=OneWay}" TextAlignment="Right" />
-                                        </Border>
-                                        <Border Grid.Column="3" Padding="2,0" Background="{Binding ViewModel.CompactDiskColumnBackground, ElementName=RootWindow}">
-                                            <TextBlock FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind DiskText, Mode=OneWay}" TextAlignment="Right" />
-                                        </Border>
-                                        <Border Grid.Column="4" Padding="2,0" Background="{Binding ViewModel.CompactNetworkColumnBackground, ElementName=RootWindow}">
-                                            <TextBlock FontFamily="Cascadia Mono" HorizontalAlignment="Right" Text="{x:Bind NetworkText, Mode=OneWay}" TextAlignment="Right" />
-                                        </Border>
+                                        <TextBlock Grid.Column="0" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding Name, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding CpuText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="2" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding RssText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="3" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding DiskText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="4" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding NetworkText, Mode=OneWay}" TextAlignment="Right" />
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -331,109 +374,127 @@
                     </Grid>
                 </Border>
 
-                <Border
-                    Grid.Column="1"
-                    Margin="16,0,0,0"
-                    Padding="12"
-                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="12">
-                    <Grid>
-                        <Grid
-                            x:Name="GlobalPerformanceRoot"
-                            DataContext="{x:Bind ViewModel, Mode=OneWay}"
-                            Visibility="{x:Bind ViewModel.GlobalPerformanceVisibility, Mode=OneWay}"
-                            ColumnSpacing="8">
+                <Border Grid.Column="1" Background="{ThemeResource BatCavePanelBrush}" CornerRadius="8">
+                    <Grid Padding="18" RowSpacing="14" DataContext="{x:Bind ViewModel, Mode=OneWay}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="248" />
                                 <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2">
+                                <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="INSPECTOR" />
+                                <TextBlock Style="{StaticResource BatCaveSectionTitleStyle}" Text="{Binding InspectorContextTitle, Mode=OneWay}" />
+                                <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Text="{Binding InspectorContextSubtitle, Mode=OneWay}" />
+                            </StackPanel>
 
-                            <Grid Grid.ColumnSpan="2" Visibility="{Binding GlobalPerformanceSkeletonVisibility, Mode=OneWay}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="248" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Border
-                                    Padding="12"
-                                    Background="{StaticResource TaskMgrPaneBackgroundBrush}"
-                                    BorderBrush="{StaticResource TaskMgrPaneBorderBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="6">
-                                    <StackPanel Spacing="10">
-                                        <ProgressRing IsActive="True" Width="24" Height="24" />
-                                        <TextBlock Style="{StaticResource TaskMgrSectionTitleStyle}" Text="Loading system metrics..." />
-                                        <Rectangle Height="18" RadiusX="3" RadiusY="3" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                        <Rectangle Height="18" RadiusX="3" RadiusY="3" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                        <Rectangle Height="18" RadiusX="3" RadiusY="3" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                    </StackPanel>
-                                </Border>
-                                <Border
-                                    Grid.Column="1"
-                                    Padding="12"
-                                    Background="{StaticResource TaskMgrPaneBackgroundBrush}"
-                                    BorderBrush="{StaticResource TaskMgrPaneBorderBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="6">
-                                    <StackPanel Spacing="8">
-                                        <Rectangle Height="22" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                        <Rectangle Height="14" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                        <Rectangle Height="230" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                        <Rectangle Height="80" RadiusX="4" RadiusY="4" Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                    </StackPanel>
-                                </Border>
-                            </Grid>
+                            <Border
+                                Grid.Column="1"
+                                Background="{ThemeResource BatCaveMutedBrush}"
+                                CornerRadius="8"
+                                Padding="6">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <ToggleButton
+                                        Style="{StaticResource BatCaveFlatToggleButtonStyle}"
+                                        Content="60s"
+                                        Background="{Binding Trend60BackgroundBrush, Mode=OneWay}"
+                                        Foreground="{Binding Trend60ForegroundBrush, Mode=OneWay}"
+                                        IsChecked="{Binding IsTrendWindow60Selected, Mode=OneWay}"
+                                        Command="{Binding MetricTrendWindowSelectedCommand}"
+                                        CommandParameter="60" />
+                                    <ToggleButton
+                                        Style="{StaticResource BatCaveFlatToggleButtonStyle}"
+                                        Content="120s"
+                                        Background="{Binding Trend120BackgroundBrush, Mode=OneWay}"
+                                        Foreground="{Binding Trend120ForegroundBrush, Mode=OneWay}"
+                                        IsChecked="{Binding IsTrendWindow120Selected, Mode=OneWay}"
+                                        Command="{Binding MetricTrendWindowSelectedCommand}"
+                                        CommandParameter="120" />
+                                    <ToggleButton
+                                        Style="{StaticResource BatCaveFlatToggleButtonStyle}"
+                                        Visibility="{Binding GlobalCpuModeToggleVisibility, Mode=OneWay}"
+                                        Content="Combined"
+                                        Background="{Binding CombinedModeBackgroundBrush, Mode=OneWay}"
+                                        Foreground="{Binding CombinedModeForegroundBrush, Mode=OneWay}"
+                                        IsChecked="{Binding IsCpuCombinedMode, Mode=OneWay}"
+                                        Command="{Binding CpuGraphModeSelectedCommand}"
+                                        CommandParameter="Combined" />
+                                    <ToggleButton
+                                        Style="{StaticResource BatCaveFlatToggleButtonStyle}"
+                                        Visibility="{Binding GlobalCpuModeToggleVisibility, Mode=OneWay}"
+                                        Content="Logical"
+                                        Background="{Binding LogicalModeBackgroundBrush, Mode=OneWay}"
+                                        Foreground="{Binding LogicalModeForegroundBrush, Mode=OneWay}"
+                                        IsChecked="{Binding IsCpuLogicalMode, Mode=OneWay}"
+                                        Command="{Binding CpuGraphModeSelectedCommand}"
+                                        CommandParameter="LogicalProcessors" />
+                                    <Button
+                                        Style="{StaticResource BatCaveGhostButtonStyle}"
+                                        IsEnabled="{Binding HasSelection, Mode=OneWay}"
+                                        Command="{Binding ClearSelectionRequestedCommand}"
+                                        Content="Clear" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
 
-                            <ListView
-                                x:Name="GlobalResourceListView"
-                                Visibility="{Binding GlobalPerformanceContentVisibility, Mode=OneWay}"
-                                ItemsSource="{Binding GlobalResourceRows, Mode=OneWay}"
-                                SelectionChanged="GlobalResourceListView_SelectionChanged"
-                                SelectionMode="Single"
-                                Background="{StaticResource TaskMgrPaneBackgroundBrush}"
-                                BorderBrush="{StaticResource TaskMgrPaneBorderBrush}"
-                                BorderThickness="1"
-                                Padding="4">
-                                <ListView.Resources>
-                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="BalancedSelectionBackgroundBrush" />
-                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="BalancedSelectionBackgroundPointerOverBrush" />
-                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="BalancedSelectionBackgroundPressedBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="BalancedSelectionForegroundBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="BalancedSelectionForegroundBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="BalancedSelectionForegroundBrush" />
-                                    <StaticResource x:Key="ListViewItemSelectionIndicatorBrush" ResourceKey="BalancedSelectionIndicatorBrush" />
-                                    <StaticResource x:Key="ListViewItemSelectionIndicatorPointerOverBrush" ResourceKey="BalancedSelectionIndicatorBrush" />
-                                    <StaticResource x:Key="ListViewItemSelectionIndicatorPressedBrush" ResourceKey="BalancedSelectionIndicatorBrush" />
-                                    <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">True</x:Boolean>
-                                </ListView.Resources>
-                                <ListView.ItemContainerStyle>
-                                    <Style TargetType="ListViewItem">
-                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                        <Setter Property="MinHeight" Value="{StaticResource TaskMgrDenseRowMinHeight}" />
-                                        <Setter Property="Padding" Value="{StaticResource TaskMgrResourceRowPadding}" />
-                                        <Setter Property="Margin" Value="0,1" />
-                                    </Style>
-                                </ListView.ItemContainerStyle>
-                                <ListView.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid ColumnSpacing="8">
+                        <ListView
+                            x:Name="GlobalResourceListView"
+                            Grid.Row="1"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Height="82"
+                            ItemsSource="{Binding GlobalResourceRows, Mode=OneWay}"
+                            SelectionChanged="GlobalResourceListView_SelectionChanged"
+                            SelectionMode="Single"
+                            ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                            ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                            <ListView.Resources>
+                                <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="BatCaveMutedBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="BatCaveMutedBrush" />
+                                <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="BatCaveMutedBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="BatCaveTextPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="BatCaveTextPrimaryBrush" />
+                                <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="BatCaveTextPrimaryBrush" />
+                                <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
+                            </ListView.Resources>
+                            <ListView.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <ItemsStackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ListView.ItemsPanel>
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="MinWidth" Value="128" />
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="Margin" Value="0,0,6,0" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{ThemeResource BatCavePanelBrush}" CornerRadius="8" Padding="8">
+                                        <Grid RowSpacing="4">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="92" />
+                                                <ColumnDefinition Width="48" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
                                             <controls:MetricTrendChart
-                                                Height="34"
-                                                MinWidth="84"
+                                                Width="44"
+                                                Height="28"
                                                 Values="{Binding MiniTrendValues, Mode=OneWay}"
                                                 VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                 ScaleMode="{Binding MiniScaleMode, Mode=OneWay}"
                                                 DomainMaxOverride="{Binding MiniDomainMax, Mode=OneWay}"
                                                 ShowGrid="False"
+                                                Background="Transparent"
                                                 AutomationProperties.Name="Global resource mini trend chart"
-                                                AutomationProperties.HelpText="Mini trend chart for a global resource."
-                                                IsTabStop="False"
-                                                Background="Transparent">
+                                                AutomationProperties.HelpText="Mini trend chart for a global resource.">
                                                 <controls:MetricTrendChart.StrokeBrush>
                                                     <SolidColorBrush Color="{Binding MiniStrokeColor, Mode=OneWay}" />
                                                 </controls:MetricTrendChart.StrokeBrush>
@@ -441,90 +502,234 @@
                                                     <SolidColorBrush Color="{Binding MiniFillColor, Mode=OneWay}" />
                                                 </controls:MetricTrendChart.FillBrush>
                                             </controls:MetricTrendChart>
-                                            <StackPanel Grid.Column="1" Spacing="1">
-                                                <TextBlock Style="{StaticResource TaskMgrMetricLabelStyle}" Text="{Binding Title, Mode=OneWay}" />
-                                                <TextBlock Style="{StaticResource TaskMgrSectionSubtitleStyle}" Text="{Binding Subtitle, Mode=OneWay}" Visibility="{Binding SubtitleVisibility, Mode=OneWay}" />
-                                                <TextBlock Style="{StaticResource TaskMgrSectionSubtitleStyle}" Text="{Binding ValueText, Mode=OneWay}" Visibility="{Binding ValueVisibility, Mode=OneWay}" />
+                                            <StackPanel Grid.Column="1" Spacing="2">
+                                                <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding Title, Mode=OneWay}" />
+                                                <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Text="{Binding Subtitle, Mode=OneWay}" Visibility="{Binding SubtitleVisibility, Mode=OneWay}" />
+                                                <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="{Binding ValueText, Mode=OneWay}" Visibility="{Binding ValueVisibility, Mode=OneWay}" />
                                             </StackPanel>
                                         </Grid>
-                                    </DataTemplate>
-                                </ListView.ItemTemplate>
-                            </ListView>
+                                    </Border>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
 
-                            <Border
-                                Grid.Column="1"
-                                Visibility="{Binding GlobalPerformanceContentVisibility, Mode=OneWay}"
-                                Padding="10"
-                                Background="{StaticResource TaskMgrPaneBackgroundBrush}"
-                                BorderBrush="{StaticResource TaskMgrPaneBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6">
-                                <Grid RowSpacing="6">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="2" Spacing="6">
+                            <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="{Binding InspectorOverviewEyebrow, Mode=OneWay}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <ToggleButton
+                                    Style="{StaticResource BatCaveInspectorTabToggleButtonStyle}"
+                                    Content="Summary"
+                                    Background="{Binding SummaryTabBackgroundBrush, Mode=OneWay}"
+                                    Foreground="{Binding SummaryTabForegroundBrush, Mode=OneWay}"
+                                    IsChecked="{Binding IsSummarySectionSelected, Mode=OneWay}"
+                                    Command="{Binding SelectInspectorSectionCommand, Mode=OneWay}"
+                                    CommandParameter="Summary" />
+                                <ToggleButton
+                                    Style="{StaticResource BatCaveInspectorTabToggleButtonStyle}"
+                                    Content="Performance"
+                                    Background="{Binding PerformanceTabBackgroundBrush, Mode=OneWay}"
+                                    Foreground="{Binding PerformanceTabForegroundBrush, Mode=OneWay}"
+                                    IsChecked="{Binding IsPerformanceSectionSelected, Mode=OneWay}"
+                                    Command="{Binding SelectInspectorSectionCommand, Mode=OneWay}"
+                                    CommandParameter="Performance" />
+                                <ToggleButton
+                                    Style="{StaticResource BatCaveInspectorTabToggleButtonStyle}"
+                                    Content="Details"
+                                    Background="{Binding DetailsTabBackgroundBrush, Mode=OneWay}"
+                                    Foreground="{Binding DetailsTabForegroundBrush, Mode=OneWay}"
+                                    IsChecked="{Binding IsDetailsSectionSelected, Mode=OneWay}"
+                                    Command="{Binding SelectInspectorSectionCommand, Mode=OneWay}"
+                                    CommandParameter="Details" />
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Visibility="{Binding InspectorOverviewSummaryVisibility, Mode=OneWay}" Text="{Binding InspectorOverviewSummary, Mode=OneWay}" />
+                        </StackPanel>
+                        <Grid Grid.Row="3">
+                            <ScrollViewer Visibility="{Binding SystemSummarySectionVisibility, Mode=OneWay}">
+                                <Grid ColumnSpacing="14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.65*" />
+                                        <ColumnDefinition Width="1*" />
+                                    </Grid.ColumnDefinitions>
 
-                                    <Grid ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Spacing="1">
-                                            <TextBlock Style="{StaticResource TaskMgrSectionTitleStyle}" Text="{Binding GlobalDetailTitle, Mode=OneWay}" />
-                                            <TextBlock Style="{StaticResource TaskMgrSectionSubtitleStyle}" Text="{Binding GlobalDetailSubtitle, Mode=OneWay}" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="4">
-                                            <TextBlock
-                                                HorizontalAlignment="Right"
-                                                Style="{StaticResource TaskMgrMetricValueStyle}"
-                                                FontSize="22"
-                                                Text="{Binding GlobalDetailCurrentValue, Mode=OneWay}" />
-                                            <Button
-                                                HorizontalAlignment="Right"
-                                                Content="Clear Selection"
-                                                Command="{x:Bind ViewModel.ClearSelectionRequestedCommand}"
-                                                IsEnabled="{x:Bind ViewModel.HasSelection, Mode=OneWay}" />
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
-                                                <ToggleButton
-                                                    Content="60s"
-                                                    IsChecked="{x:Bind ViewModel.IsTrendWindow60Selected, Mode=OneWay}"
-                                                    Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
-                                                    CommandParameter="60" />
-                                                <ToggleButton
-                                                    Content="120s"
-                                                    IsChecked="{x:Bind ViewModel.IsTrendWindow120Selected, Mode=OneWay}"
-                                                    Command="{x:Bind ViewModel.MetricTrendWindowSelectedCommand}"
-                                                    CommandParameter="120" />
-                                                <StackPanel Orientation="Horizontal" Spacing="6" Visibility="{Binding GlobalCpuModeToggleVisibility, Mode=OneWay}">
-                                                    <ToggleButton
-                                                        Content="Combined"
-                                                        IsChecked="{x:Bind ViewModel.IsCpuCombinedMode, Mode=OneWay}"
-                                                        Command="{x:Bind ViewModel.CpuGraphModeSelectedCommand}"
-                                                        CommandParameter="Combined" />
-                                                    <ToggleButton
-                                                        Content="Logical"
-                                                        IsChecked="{x:Bind ViewModel.IsCpuLogicalMode, Mode=OneWay}"
-                                                        Command="{x:Bind ViewModel.CpuGraphModeSelectedCommand}"
-                                                        CommandParameter="LogicalProcessors" />
+                                    <StackPanel Spacing="14">
+                                        <Border
+                                            Background="{ThemeResource BatCavePanelAltBrush}"
+                                            CornerRadius="8"
+                                            Padding="14"
+                                            MaxWidth="{Binding InspectorChartMaxWidth, Mode=OneWay}"
+                                            HorizontalAlignment="Left">
+                                            <Grid Visibility="{Binding GlobalCombinedChartVisibility, Mode=OneWay}">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding GlobalPrimaryChartTitle, Mode=OneWay}" />
+                                                    <TextBlock Style="{StaticResource BatCaveHeroValueStyle}" Text="{Binding GlobalDetailCurrentValue, Mode=OneWay}" />
+                                                    <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Text="{Binding GlobalDetailSubtitle, Mode=OneWay}" />
                                                 </StackPanel>
-                                            </StackPanel>
-                                        </StackPanel>
-                                    </Grid>
+                                                <controls:MetricTrendChart
+                                                    Grid.Row="1"
+                                                    Margin="0,12,0,0"
+                                                    Height="332"
+                                                    Background="Transparent"
+                                                    Values="{Binding GlobalPrimaryTrendValues, Mode=OneWay}"
+                                                    VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
+                                                    OverlayValues="{Binding GlobalSecondaryTrendValues, Mode=OneWay}"
+                                                    ShowOverlay="{Binding GlobalShowSecondaryOverlay, Mode=OneWay}"
+                                                    ScaleMode="{Binding GlobalPrimaryScaleMode, Mode=OneWay}"
+                                                    DomainMaxOverride="{Binding GlobalPrimaryDomainMax, Mode=OneWay}"
+                                                    ShowGrid="True"
+                                                    AutomationProperties.Name="Global primary trend chart"
+                                                    AutomationProperties.HelpText="Primary global metrics trend chart.">
+                                                    <controls:MetricTrendChart.StrokeBrush>
+                                                        <SolidColorBrush Color="{Binding GlobalPrimaryStrokeColor, Mode=OneWay}" />
+                                                    </controls:MetricTrendChart.StrokeBrush>
+                                                    <controls:MetricTrendChart.FillBrush>
+                                                        <SolidColorBrush Color="{Binding GlobalPrimaryFillColor, Mode=OneWay}" />
+                                                    </controls:MetricTrendChart.FillBrush>
+                                                    <controls:MetricTrendChart.OverlayStrokeBrush>
+                                                        <SolidColorBrush Color="{Binding GlobalSecondaryStrokeColor, Mode=OneWay}" />
+                                                    </controls:MetricTrendChart.OverlayStrokeBrush>
+                                                </controls:MetricTrendChart>
+                                                <TextBlock
+                                                    Grid.Row="2"
+                                                    Margin="0,10,0,4"
+                                                    Style="{StaticResource BatCaveMetricLabelStyle}"
+                                                    Text="{Binding GlobalAuxiliaryChartTitle, Mode=OneWay}"
+                                                    Visibility="{Binding GlobalAuxiliaryChartVisibility, Mode=OneWay}" />
+                                                <controls:MetricTrendChart
+                                                    Grid.Row="3"
+                                                    Height="112"
+                                                    Background="Transparent"
+                                                    Visibility="{Binding GlobalAuxiliaryChartVisibility, Mode=OneWay}"
+                                                    Values="{Binding GlobalAuxiliaryTrendValues, Mode=OneWay}"
+                                                    VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
+                                                    ScaleMode="{Binding GlobalAuxiliaryScaleMode, Mode=OneWay}"
+                                                    DomainMaxOverride="{Binding GlobalAuxiliaryDomainMax, Mode=OneWay}"
+                                                    ShowGrid="False"
+                                                    ShowAreaFill="False">
+                                                    <controls:MetricTrendChart.StrokeBrush>
+                                                        <SolidColorBrush Color="{Binding GlobalAuxiliaryStrokeColor, Mode=OneWay}" />
+                                                    </controls:MetricTrendChart.StrokeBrush>
+                                                    <controls:MetricTrendChart.FillBrush>
+                                                        <SolidColorBrush Color="{Binding GlobalAuxiliaryFillColor, Mode=OneWay}" />
+                                                    </controls:MetricTrendChart.FillBrush>
+                                                </controls:MetricTrendChart>
+                                            </Grid>
+                                        </Border>
 
-                                    <Grid Grid.Row="1" RowSpacing="6">
-                                        <Grid Visibility="{Binding GlobalCombinedChartVisibility, Mode=OneWay}" RowSpacing="6">
+                                        <Border
+                                            Background="{ThemeResource BatCavePanelAltBrush}"
+                                            CornerRadius="8"
+                                            Padding="12"
+                                            Visibility="{Binding GlobalCpuLogicalGridVisibility, Mode=OneWay}">
+                                            <GridView
+                                                x:Name="GlobalCpuLogicalGridView"
+                                                ItemsSource="{Binding GlobalCpuLogicalProcessorRows, Mode=OneWay}"
+                                                IsItemClickEnabled="False"
+                                                SelectionMode="None"
+                                                ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                                Loaded="GlobalCpuLogicalGridView_Loaded"
+                                                SizeChanged="GlobalCpuLogicalGridView_SizeChanged">
+                                                <GridView.ItemContainerStyle>
+                                                    <Style TargetType="GridViewItem">
+                                                        <Setter Property="Padding" Value="0" />
+                                                        <Setter Property="Margin" Value="2" />
+                                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                                                    </Style>
+                                                </GridView.ItemContainerStyle>
+                                                <GridView.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <ItemsWrapGrid Orientation="Horizontal" />
+                                                    </ItemsPanelTemplate>
+                                                </GridView.ItemsPanel>
+                                                <GridView.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Grid RowSpacing="2">
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="*" />
+                                                            </Grid.RowDefinitions>
+                                                            <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding Title, Mode=OneWay}" />
+                                                            <controls:MetricTrendChart
+                                                                Grid.Row="1"
+                                                                MinHeight="18"
+                                                                Background="Transparent"
+                                                                Values="{Binding Values, Mode=OneWay}"
+                                                                VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
+                                                                OverlayValues="{Binding OverlayValues, Mode=OneWay}"
+                                                                ShowOverlay="True"
+                                                                ScaleMode="CpuPercent"
+                                                                StrokeBrush="{ThemeResource ChartCpuStrokeBrush}"
+                                                                FillBrush="{ThemeResource ChartCpuFillBrush}"
+                                                                OverlayStrokeBrush="{ThemeResource ChartCpuKernelStrokeBrush}"
+                                                                ShowGrid="True"
+                                                                AutomationProperties.Name="Logical CPU trend chart"
+                                                                AutomationProperties.HelpText="Utilization trend for a logical processor." />
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </GridView.ItemTemplate>
+                                            </GridView>
+                                        </Border>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="1" Spacing="10">
+                                        <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="KEY STATS" />
+                                        <ItemsControl ItemsSource="{Binding SummaryStatCards, Mode=OneWay}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Width="{Binding ViewModel.SummaryStatCardWidth, ElementName=RootWindow, Mode=OneWay}" Margin="0,0,0,10" Background="{ThemeResource BatCavePanelAltBrush}" CornerRadius="8" Padding="12">
+                                                        <StackPanel Spacing="6">
+                                                            <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding Label, Mode=OneWay}" />
+                                                            <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="{Binding Value, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Grid>
+                            </ScrollViewer>
+
+                            <ScrollViewer Visibility="{Binding ProcessSummarySectionVisibility, Mode=OneWay}">
+                                <StackPanel Spacing="14">
+                                    <Border
+                                        Background="{ThemeResource BatCavePanelAltBrush}"
+                                        CornerRadius="8"
+                                        Padding="14"
+                                        MaxWidth="{Binding InspectorChartMaxWidth, Mode=OneWay}"
+                                        HorizontalAlignment="Stretch">
+                                        <Grid Visibility="{Binding GlobalCombinedChartVisibility, Mode=OneWay}">
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="*" />
                                                 <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
-                                            <TextBlock Style="{StaticResource TaskMgrMetricLabelStyle}" Text="{Binding GlobalPrimaryChartTitle, Mode=OneWay}" />
+                                            <Grid ColumnSpacing="16">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding GlobalPrimaryChartTitle, Mode=OneWay}" />
+                                                    <TextBlock Style="{StaticResource BatCaveHeroValueStyle}" Text="{Binding GlobalDetailCurrentValue, Mode=OneWay}" />
+                                                    <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Text="{Binding GlobalDetailSubtitle, Mode=OneWay}" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Spacing="4" HorizontalAlignment="Right">
+                                                    <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="PROCESS" />
+                                                    <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="{Binding InspectorContextTitle, Mode=OneWay}" />
+                                                </StackPanel>
+                                            </Grid>
                                             <controls:MetricTrendChart
                                                 Grid.Row="1"
-                                                MinHeight="275"
+                                                Margin="0,12,0,0"
+                                                Height="360"
+                                                Background="Transparent"
                                                 Values="{Binding GlobalPrimaryTrendValues, Mode=OneWay}"
                                                 VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                 OverlayValues="{Binding GlobalSecondaryTrendValues, Mode=OneWay}"
@@ -533,9 +738,7 @@
                                                 DomainMaxOverride="{Binding GlobalPrimaryDomainMax, Mode=OneWay}"
                                                 ShowGrid="True"
                                                 AutomationProperties.Name="Global primary trend chart"
-                                                AutomationProperties.HelpText="Primary global metrics trend chart."
-                                                IsTabStop="False"
-                                                Background="Transparent">
+                                                AutomationProperties.HelpText="Primary global metrics trend chart.">
                                                 <controls:MetricTrendChart.StrokeBrush>
                                                     <SolidColorBrush Color="{Binding GlobalPrimaryStrokeColor, Mode=OneWay}" />
                                                 </controls:MetricTrendChart.StrokeBrush>
@@ -546,108 +749,55 @@
                                                     <SolidColorBrush Color="{Binding GlobalSecondaryStrokeColor, Mode=OneWay}" />
                                                 </controls:MetricTrendChart.OverlayStrokeBrush>
                                             </controls:MetricTrendChart>
-                                            <TextBlock
+                                            <ItemsControl
                                                 Grid.Row="2"
-                                                Style="{StaticResource TaskMgrMetricLabelStyle}"
-                                                Text="{Binding GlobalAuxiliaryChartTitle, Mode=OneWay}"
-                                                Visibility="{Binding GlobalAuxiliaryChartVisibility, Mode=OneWay}" />
-                                            <controls:MetricTrendChart
-                                                Grid.Row="3"
-                                                MinHeight="100"
-                                                Values="{Binding GlobalAuxiliaryTrendValues, Mode=OneWay}"
-                                                VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
-                                                ScaleMode="{Binding GlobalAuxiliaryScaleMode, Mode=OneWay}"
-                                                DomainMaxOverride="{Binding GlobalAuxiliaryDomainMax, Mode=OneWay}"
-                                                ShowGrid="False"
-                                                ShowAreaFill="False"
-                                                AutomationProperties.Name="Global auxiliary trend chart"
-                                                AutomationProperties.HelpText="Auxiliary global metrics trend chart."
-                                                IsTabStop="False"
-                                                Background="Transparent"
-                                                Visibility="{Binding GlobalAuxiliaryChartVisibility, Mode=OneWay}">
-                                                <controls:MetricTrendChart.StrokeBrush>
-                                                    <SolidColorBrush Color="{Binding GlobalAuxiliaryStrokeColor, Mode=OneWay}" />
-                                                </controls:MetricTrendChart.StrokeBrush>
-                                                <controls:MetricTrendChart.FillBrush>
-                                                    <SolidColorBrush Color="{Binding GlobalAuxiliaryFillColor, Mode=OneWay}" />
-                                                </controls:MetricTrendChart.FillBrush>
-                                            </controls:MetricTrendChart>
+                                                Margin="0,14,0,0"
+                                                ItemsSource="{Binding SummaryStatCards, Mode=OneWay}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <ItemsWrapGrid Orientation="Horizontal" />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Width="{Binding ViewModel.SummaryStatCardWidth, ElementName=RootWindow, Mode=OneWay}" Margin="0,0,12,12" Background="{ThemeResource BatCaveCanvasBrush}" CornerRadius="8" Padding="12">
+                                                            <StackPanel Spacing="6">
+                                                                <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding Label, Mode=OneWay}" />
+                                                                <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="{Binding Value, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
                                         </Grid>
+                                    </Border>
 
-                                        <GridView
-                                            x:Name="GlobalCpuLogicalGridView"
-                                            Visibility="{Binding GlobalCpuLogicalGridVisibility, Mode=OneWay}"
-                                            ItemsSource="{Binding GlobalCpuLogicalProcessorRows, Mode=OneWay}"
-                                            IsItemClickEnabled="False"
-                                            SelectionMode="None"
-                                            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                            ScrollViewer.VerticalScrollBarVisibility="Disabled"
-                                            Loaded="GlobalCpuLogicalGridView_Loaded"
-                                            SizeChanged="GlobalCpuLogicalGridView_SizeChanged">
-                                            <GridView.ItemContainerStyle>
-                                                <Style TargetType="GridViewItem">
-                                                    <Setter Property="Padding" Value="0" />
-                                                    <Setter Property="Margin" Value="2" />
-                                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                                    <Setter Property="VerticalContentAlignment" Value="Stretch" />
-                                                </Style>
-                                            </GridView.ItemContainerStyle>
-                                            <GridView.ItemsPanel>
-                                                <ItemsPanelTemplate>
-                                                    <ItemsWrapGrid Orientation="Horizontal" />
-                                                </ItemsPanelTemplate>
-                                            </GridView.ItemsPanel>
-                                            <GridView.ItemTemplate>
-                                                <DataTemplate>
-                                                    <Grid RowSpacing="2">
-                                                        <Grid.RowDefinitions>
-                                                            <RowDefinition Height="Auto" />
-                                                            <RowDefinition Height="*" />
-                                                        </Grid.RowDefinitions>
-                                                        <TextBlock
-                                                            Style="{StaticResource TaskMgrMetricLabelStyle}"
-                                                            Text="{Binding Title, Mode=OneWay}"
-                                                            TextTrimming="CharacterEllipsis" />
-                                                        <controls:MetricTrendChart
-                                                            Grid.Row="1"
-                                                            MinHeight="12"
-                                                            Values="{Binding Values, Mode=OneWay}"
-                                                            VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
-                                                            OverlayValues="{Binding OverlayValues, Mode=OneWay}"
-                                                            ShowOverlay="True"
-                                                            ScaleMode="CpuPercent"
-                                                            StrokeBrush="{ThemeResource ChartCpuStrokeBrush}"
-                                                            FillBrush="{ThemeResource ChartCpuFillBrush}"
-                                                            OverlayStrokeBrush="{ThemeResource ChartCpuKernelStrokeBrush}"
-                                                            AutomationProperties.Name="Logical CPU trend chart"
-                                                            AutomationProperties.HelpText="Utilization trend for a logical processor."
-                                                            ShowGrid="True"
-                                                            IsTabStop="False"
-                                                            Background="Transparent" />
-                                                    </Grid>
-                                                </DataTemplate>
-                                            </GridView.ItemTemplate>
-                                        </GridView>
-
-                                        <Border
-                                            Padding="12"
-                                            CornerRadius="6"
-                                            BorderThickness="1"
-                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                            Visibility="{Binding GlobalCpuLogicalPlaceholderVisibility, Mode=OneWay}">
-                                            <StackPanel Spacing="8">
-                                                <TextBlock
-                                                    Style="{StaticResource TaskMgrSectionTitleStyle}"
-                                                    Text="Logical CPU view unavailable" />
-                                                <TextBlock
-                                                    Style="{StaticResource TaskMgrSectionSubtitleStyle}"
-                                                    TextWrapping="Wrap"
-                                                    Text="Logical processor breakdown is only available for global CPU monitoring." />
+                                    <Border
+                                        Background="{ThemeResource BatCavePanelAltBrush}"
+                                        CornerRadius="8"
+                                        Padding="14">
+                                        <Grid ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Spacing="6">
+                                                <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="METADATA STATUS" />
+                                                <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding MetadataStatus, Mode=OneWay}" TextWrapping="WrapWholeWords" />
                                             </StackPanel>
-                                        </Border>
-                                    </Grid>
+                                            <StackPanel Grid.Column="1" Spacing="6">
+                                                <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="EXECUTABLE" />
+                                                <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding DetailsPanePrimaryText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
 
-                                    <ItemsControl Grid.Row="2" ItemsSource="{Binding GlobalDetailStats, Mode=OneWay}">
+                            <ScrollViewer Visibility="{Binding PerformanceSectionVisibility, Mode=OneWay}">
+                                <StackPanel Spacing="16">
+                                    <TextBlock Style="{StaticResource BatCaveSectionTitleStyle}" Text="Performance Breakdown" />
+                                    <ItemsControl ItemsSource="{Binding GlobalDetailStats, Mode=OneWay}">
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
                                                 <ItemsWrapGrid Orientation="Horizontal" />
@@ -655,36 +805,53 @@
                                         </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <Grid Width="260" ColumnSpacing="10" Margin="0,0,12,2">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="Auto" />
-                                                        <ColumnDefinition Width="*" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <TextBlock Style="{StaticResource TaskMgrSectionSubtitleStyle}" Text="{Binding Label, Mode=OneWay}" />
-                                                    <TextBlock
-                                                        Grid.Column="1"
-                                                        HorizontalAlignment="Right"
-                                                        TextAlignment="Right"
-                                                        Style="{StaticResource TaskMgrMetricValueStyle}"
-                                                        Text="{Binding Value, Mode=OneWay}" />
-                                                </Grid>
+                                                <Border Width="240" Margin="0,0,12,10" Background="{ThemeResource BatCavePanelBrush}" CornerRadius="8" Padding="12">
+                                                    <StackPanel Spacing="6">
+                                                        <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding Label, Mode=OneWay}" />
+                                                        <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="{Binding Value, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                                    </StackPanel>
+                                                </Border>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
-                                </Grid>
-                            </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+
+                            <ScrollViewer Visibility="{Binding DetailsSectionVisibility, Mode=OneWay}">
+                                <StackPanel Spacing="14">
+                                    <TextBlock Style="{StaticResource BatCaveSectionTitleStyle}" Text="{Binding DetailsPaneTitle, Mode=OneWay}" />
+                                    <Border Background="{ThemeResource BatCavePanelBrush}" CornerRadius="8" Padding="14">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="PRIMARY" />
+                                            <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding DetailsPanePrimaryText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="{ThemeResource BatCavePanelBrush}" CornerRadius="8" Padding="14">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="SECONDARY" />
+                                            <TextBlock Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding DetailsPaneSecondaryText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="{ThemeResource BatCavePanelBrush}" CornerRadius="8" Padding="14">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="METADATA STATUS" />
+                                            <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="{Binding MetadataStatus, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                            <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="PARENT PID" />
+                                            <TextBlock Style="{StaticResource BatCaveMetricValueStyle}" Text="{Binding MetadataParentPid, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
                         </Grid>
                     </Grid>
                 </Border>
             </Grid>
-
         </Grid>
 
         <Border
-            x:Name="FooterRegion"
-            Grid.Row="2"
-            Padding="{ThemeResource ShellFooterPadding}"
-            BorderThickness="0,1,0,0">
+            Grid.Row="4"
+            Background="{ThemeResource BatCaveHeaderBrush}"
+            Padding="{ThemeResource ShellFooterPadding}">
             <controls:RuntimeStatusFooter DataContext="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
     </Grid>

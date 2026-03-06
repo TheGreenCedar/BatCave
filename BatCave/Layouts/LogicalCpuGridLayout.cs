@@ -5,7 +5,7 @@ namespace BatCave.Layouts;
 public static class LogicalCpuGridLayout
 {
     public const double TileTargetWidth = 170d;
-    public const double TileTargetChartHeight = 120d;
+    public const double TileTargetChartHeight = 56d;
     public const double TileLabelReserve = 20d;
     public const double TileMinWidth = 56d;
     public const double TileMinHeight = 28d;
@@ -14,40 +14,29 @@ public static class LogicalCpuGridLayout
     public static LogicalCpuGridLayoutResult Resolve(int itemCount, double availableWidth, double availableHeight)
     {
         int safeItemCount = Math.Max(1, itemCount);
-        double bestItemWidth = Math.Max(TileMinWidth, availableWidth);
-        double bestItemHeight = Math.Max(TileMinHeight, availableHeight / safeItemCount);
-        int bestColumns = 1;
-        double bestScore = double.NegativeInfinity;
+        double safeWidth = Math.Max(TileMinWidth, availableWidth);
+        double horizontalUnit = TileTargetWidth + (TileItemMargin * 2d);
+        int bestColumns = Math.Clamp((int)Math.Floor((safeWidth + (TileItemMargin * 2d)) / horizontalUnit), 1, safeItemCount);
+        int rows = (safeItemCount + bestColumns - 1) / bestColumns;
+        double horizontalMargins = bestColumns * TileItemMargin * 2d;
+        double itemWidth = Math.Max(TileMinWidth, (safeWidth - horizontalMargins) / bestColumns);
+        double chartHeight = Math.Max(TileMinHeight - TileLabelReserve, Math.Min(TileTargetChartHeight, itemWidth * 0.42d));
+        double itemHeight = Math.Max(TileMinHeight, TileLabelReserve + chartHeight);
 
-        for (int columns = 1; columns <= safeItemCount; columns++)
+        if (double.IsFinite(availableHeight) && availableHeight > 0d)
         {
-            int rows = (safeItemCount + columns - 1) / columns;
-            double horizontalMargins = columns * TileItemMargin * 2d;
             double verticalMargins = rows * TileItemMargin * 2d;
-            double itemWidth = (availableWidth - horizontalMargins) / columns;
-            double itemHeight = (availableHeight - verticalMargins) / rows;
-            double chartHeight = itemHeight - TileLabelReserve;
-            if (itemWidth <= 0d || chartHeight <= 0d)
+            double maxHeightPerItem = (availableHeight - verticalMargins) / rows;
+            if (maxHeightPerItem > TileMinHeight)
             {
-                continue;
-            }
-
-            double widthFit = itemWidth / TileTargetWidth;
-            double heightFit = chartHeight / TileTargetChartHeight;
-            double score = Math.Min(widthFit, heightFit);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestColumns = columns;
-                bestItemWidth = itemWidth;
-                bestItemHeight = itemHeight;
+                itemHeight = Math.Min(itemHeight, maxHeightPerItem);
             }
         }
 
         return new LogicalCpuGridLayoutResult(
             bestColumns,
-            Math.Max(TileMinWidth, bestItemWidth),
-            Math.Max(TileMinHeight, bestItemHeight));
+            Math.Max(TileMinWidth, itemWidth),
+            Math.Max(TileMinHeight, itemHeight));
     }
 }
 
