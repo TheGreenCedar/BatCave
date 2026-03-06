@@ -25,6 +25,16 @@ public class MainWindowXamlAccessibilityTests
     }
 
     [Fact]
+    public void MainWindowXaml_BindsVisiblePointCountForTrendChartsToRootViewModel()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+        const string binding = "VisiblePointCount=\"{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}\"";
+
+        Assert.Equal(4, Regex.Matches(xaml, Regex.Escape(binding)).Count);
+        Assert.DoesNotContain("VisiblePointCount=\"{Binding MetricTrendWindowSeconds, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MainWindowXaml_DoesNotUseHardcodedCpuTrendHexColors()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
