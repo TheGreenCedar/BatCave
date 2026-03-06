@@ -141,17 +141,11 @@ public sealed class GlobalResourceRowViewState : ObservableObject
     }
 }
 
-public sealed class GlobalStatItemViewState : ObservableObject
+public sealed class GlobalStatItemViewState(string label, string value) : ObservableObject
 {
-    private string _value;
+    private string _value = value;
 
-    public GlobalStatItemViewState(string label, string value)
-    {
-        Label = label;
-        _value = value;
-    }
-
-    public string Label { get; }
+    public string Label { get; } = label;
 
     public string Value
     {
@@ -159,25 +153,15 @@ public sealed class GlobalStatItemViewState : ObservableObject
         private set => SetProperty(ref _value, value);
     }
 
-    public void UpdateValue(string value)
-    {
-        Value = value;
-    }
+    public void UpdateValue(string value) => Value = value;
 }
 
-public sealed class LogicalProcessorTrendViewState : ObservableObject
+public sealed class LogicalProcessorTrendViewState(string title, double[] values, double[] overlayValues) : ObservableObject
 {
-    private double[] _values;
-    private double[] _overlayValues;
+    private double[] _values = values;
+    private double[] _overlayValues = overlayValues;
 
-    public LogicalProcessorTrendViewState(string title, double[] values, double[] overlayValues)
-    {
-        Title = title;
-        _values = values;
-        _overlayValues = overlayValues;
-    }
-
-    public string Title { get; }
+    public string Title { get; } = title;
 
     public double[] Values
     {
@@ -191,10 +175,7 @@ public sealed class LogicalProcessorTrendViewState : ObservableObject
         private set => SetProperty(ref _overlayValues, value);
     }
 
-    public void UpdateValues(double[] values)
-    {
-        Values = values;
-    }
+    public void UpdateValues(double[] values) => Values = values;
 
     internal void UpdateValues(FixedRingSeries series, FixedRingSeries overlaySeries, int visiblePointCount)
     {

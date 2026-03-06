@@ -213,8 +213,8 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
         ProcessDeltaBatch delta = new()
         {
             Seq = _pendingSeq,
-            Upserts = _pendingUpserts.Values.ToList(),
-            Exits = _pendingExits.ToList(),
+            Upserts = [.. _pendingUpserts.Values],
+            Exits = [.. _pendingExits],
         };
 
         _pendingUpserts.Clear();

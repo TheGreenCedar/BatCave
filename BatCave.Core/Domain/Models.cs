@@ -59,10 +59,7 @@ public sealed record ProcessSample
 
     public AccessState AccessState { get; init; }
 
-    public ProcessIdentity Identity()
-    {
-        return new ProcessIdentity(Pid, StartTimeMs);
-    }
+    public ProcessIdentity Identity() => new(Pid, StartTimeMs);
 }
 
 public sealed record ProcessDeltaBatch
@@ -299,23 +296,17 @@ public sealed record LaunchBlockReason
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public uint? DetectedBuild { get; init; }
 
-    public static LaunchBlockReason UnsupportedPlatform(string os)
+    public static LaunchBlockReason UnsupportedPlatform(string os) => new()
     {
-        return new LaunchBlockReason
-        {
-            Kind = LaunchBlockReasonKind.UnsupportedPlatform,
-            Os = os,
-        };
-    }
+        Kind = LaunchBlockReasonKind.UnsupportedPlatform,
+        Os = os,
+    };
 
-    public static LaunchBlockReason RequiresWindows11(uint detectedBuild)
+    public static LaunchBlockReason RequiresWindows11(uint detectedBuild) => new()
     {
-        return new LaunchBlockReason
-        {
-            Kind = LaunchBlockReasonKind.RequiresWindows11,
-            DetectedBuild = detectedBuild,
-        };
-    }
+        Kind = LaunchBlockReasonKind.RequiresWindows11,
+        DetectedBuild = detectedBuild,
+    };
 }
 
 public sealed record LaunchContext
@@ -335,23 +326,17 @@ public sealed record StartupGateStatus
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LaunchBlockReason? Reason { get; init; }
 
-    public static StartupGateStatus PassedContext(LaunchContext context)
+    public static StartupGateStatus PassedContext(LaunchContext context) => new()
     {
-        return new StartupGateStatus
-        {
-            Passed = true,
-            Context = context,
-        };
-    }
+        Passed = true,
+        Context = context,
+    };
 
-    public static StartupGateStatus Blocked(LaunchBlockReason reason)
+    public static StartupGateStatus Blocked(LaunchBlockReason reason) => new()
     {
-        return new StartupGateStatus
-        {
-            Passed = false,
-            Reason = reason,
-        };
-    }
+        Passed = false,
+        Reason = reason,
+    };
 }
 
 public sealed record UserSettings

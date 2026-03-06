@@ -105,8 +105,5 @@ internal sealed partial class FixedRingSeries(int capacity) : IReadOnlyList<doub
         }
     }
 
-    IEnumerator IEnumerable.GetEnumerator()
-    {
-        return GetEnumerator();
-    }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }

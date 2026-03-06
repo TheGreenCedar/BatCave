@@ -10,7 +10,7 @@ using System.Text.Json;
 
 namespace BatCave.Core.Operations;
 
-public sealed class CliOperationsHost : ICliOperationsHost
+public sealed class CliOperationsHost(ILaunchPolicyGate launchPolicyGate) : ICliOperationsHost
 {
     private static readonly Option<bool> PrintGateStatusOption = new("--print-gate-status");
     private static readonly Option<bool> BenchmarkOption = new("--benchmark");
@@ -34,17 +34,9 @@ public sealed class CliOperationsHost : ICliOperationsHost
         "--elevated-helper",
     };
 
-    private readonly ILaunchPolicyGate _launchPolicyGate;
+    private readonly ILaunchPolicyGate _launchPolicyGate = launchPolicyGate;
 
-    public CliOperationsHost(ILaunchPolicyGate launchPolicyGate)
-    {
-        _launchPolicyGate = launchPolicyGate;
-    }
-
-    public bool IsCliMode(string[] args)
-    {
-        return args.Any(CliFlags.Contains);
-    }
+    public bool IsCliMode(string[] args) => args.Any(CliFlags.Contains);
 
     public Task<int> ExecuteAsync(string[] args, CancellationToken ct)
     {

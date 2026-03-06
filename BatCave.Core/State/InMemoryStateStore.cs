@@ -20,10 +20,7 @@ public sealed class InMemoryStateStore : IStateStore
         }
     }
 
-    public IReadOnlyList<ProcessSample> AllRows()
-    {
-        return BuildRowSnapshot();
-    }
+    public IReadOnlyList<ProcessSample> AllRows() => BuildRowSnapshot();
 
     public WarmCache ExportWarmCache(ulong seq)
     {
@@ -43,10 +40,7 @@ public sealed class InMemoryStateStore : IStateStore
         }
     }
 
-    public int RowCount()
-    {
-        return _rows.Count;
-    }
+    public int RowCount() => _rows.Count;
 
     public void CompactTo(int maxRows)
     {
@@ -90,14 +84,5 @@ public sealed class InMemoryStateStore : IStateStore
         return (ulong)(row.CpuPct * 1000.0) + row.IoReadBps + row.IoWriteBps + row.OtherIoBps + row.RssBytes / 1024;
     }
 
-    private List<ProcessSample> BuildRowSnapshot()
-    {
-        List<ProcessSample> rows = new(_rows.Count);
-        foreach (ProcessSample row in _rows.Values)
-        {
-            rows.Add(row);
-        }
-
-        return rows;
-    }
+    private List<ProcessSample> BuildRowSnapshot() => [.. _rows.Values];
 }

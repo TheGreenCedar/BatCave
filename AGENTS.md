@@ -18,7 +18,7 @@
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-winui.ps1 -Platform ARM64`: handoff gate; builds the WinUI project, runs solution tests, verifies `--print-runtime-health`, and performs a launch smoke by default. Add `-RunPerformanceGate` with baseline args for strict perf validation.
 
 ## Coding Style & Naming Conventions
-- Language: C# (`net8.0-windows10.0.19041.0`) with nullable reference types enabled.
+- Language: C# (`net10.0-windows10.0.19041.0`) with nullable reference types enabled.
 - Follow existing code style: 4-space indentation, file-scoped namespaces, `PascalCase` for types/members, `_camelCase` for private fields.
 - Keep UI behavior in view models/services; keep code-behind limited to UI wiring.
 - Prefer focused, minimal edits; keep shared runtime/CLI logic in `BatCave.Core` and WinUI-only orchestration in `BatCave`.

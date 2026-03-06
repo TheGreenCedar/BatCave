@@ -35,25 +35,14 @@ public partial class MonitoringShellViewModel
     }
 }
 
-internal sealed class InteractionProbeRecorder
+internal sealed class InteractionProbeRecorder(int sampleCapacity = 64)
 {
     private const int DefaultSampleCapacity = 64;
-
-    private readonly RingBuffer _filterApply;
-    private readonly RingBuffer _sortComplete;
-    private readonly RingBuffer _selectionSettle;
-    private readonly RingBuffer _uiBatch;
-    private readonly RingBuffer _plotRefresh;
-
-    public InteractionProbeRecorder(int sampleCapacity = DefaultSampleCapacity)
-    {
-        int capacity = Math.Max(1, sampleCapacity);
-        _filterApply = new RingBuffer(capacity);
-        _sortComplete = new RingBuffer(capacity);
-        _selectionSettle = new RingBuffer(capacity);
-        _uiBatch = new RingBuffer(capacity);
-        _plotRefresh = new RingBuffer(capacity);
-    }
+    private readonly RingBuffer _filterApply = new(Math.Max(1, sampleCapacity));
+    private readonly RingBuffer _sortComplete = new(Math.Max(1, sampleCapacity));
+    private readonly RingBuffer _selectionSettle = new(Math.Max(1, sampleCapacity));
+    private readonly RingBuffer _uiBatch = new(Math.Max(1, sampleCapacity));
+    private readonly RingBuffer _plotRefresh = new(Math.Max(1, sampleCapacity));
 
     internal enum ProbeType
     {
@@ -74,10 +63,7 @@ internal sealed class InteractionProbeRecorder
         ResolveBuffer(probeType).Add(sampleMs);
     }
 
-    public double GetP95(ProbeType probeType)
-    {
-        return ResolveBuffer(probeType).GetP95();
-    }
+    public double GetP95(ProbeType probeType) => ResolveBuffer(probeType).GetP95();
 
     public InteractionProbeP95Snapshot SnapshotP95()
     {
@@ -98,18 +84,15 @@ internal sealed class InteractionProbeRecorder
         _plotRefresh.Clear();
     }
 
-    private RingBuffer ResolveBuffer(ProbeType probeType)
+    private RingBuffer ResolveBuffer(ProbeType probeType) => probeType switch
     {
-        return probeType switch
-        {
-            ProbeType.FilterApply => _filterApply,
-            ProbeType.SortComplete => _sortComplete,
-            ProbeType.SelectionSettle => _selectionSettle,
-            ProbeType.UiBatch => _uiBatch,
-            ProbeType.PlotRefresh => _plotRefresh,
-            _ => _filterApply,
-        };
-    }
+        ProbeType.FilterApply => _filterApply,
+        ProbeType.SortComplete => _sortComplete,
+        ProbeType.SelectionSettle => _selectionSettle,
+        ProbeType.UiBatch => _uiBatch,
+        ProbeType.PlotRefresh => _plotRefresh,
+        _ => _filterApply,
+    };
 
     private sealed class RingBuffer
     {

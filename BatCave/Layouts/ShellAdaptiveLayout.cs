@@ -12,15 +12,10 @@ public static class ShellAdaptiveLayout
     public const double MediumBreakpoint = 760;
     public const double WideBreakpoint = 1200;
 
-    public static ShellAdaptiveMode Resolve(double windowWidth)
+    public static ShellAdaptiveMode Resolve(double windowWidth) => windowWidth switch
     {
-        if (windowWidth >= WideBreakpoint)
-        {
-            return ShellAdaptiveMode.Wide;
-        }
-
-        return windowWidth >= MediumBreakpoint
-            ? ShellAdaptiveMode.Medium
-            : ShellAdaptiveMode.Phone;
-    }
+        >= WideBreakpoint => ShellAdaptiveMode.Wide,
+        >= MediumBreakpoint => ShellAdaptiveMode.Medium,
+        _ => ShellAdaptiveMode.Phone,
+    };
 }
