@@ -1,6 +1,8 @@
 using BatCave.Layouts;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -8,7 +10,9 @@ using System;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
+using WinRT.Interop;
 
 namespace BatCave;
 
@@ -30,6 +34,7 @@ public sealed partial class MainWindow : Window
     {
         ViewModel = App.Services.GetRequiredService<MonitoringShellViewModel>();
         InitializeComponent();
+        TryApplyWindowIcon();
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
         ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged += GlobalCpuLogicalProcessorRows_CollectionChanged;
@@ -39,6 +44,20 @@ public sealed partial class MainWindow : Window
     }
 
     public MonitoringShellViewModel ViewModel { get; }
+
+    private void TryApplyWindowIcon()
+    {
+        string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "BatCaveLogo.ico");
+        if (!File.Exists(iconPath))
+        {
+            return;
+        }
+
+        IntPtr windowHandle = WindowNative.GetWindowHandle(this);
+        WindowId windowId = Win32Interop.GetWindowIdFromWindow(windowHandle);
+        AppWindow appWindow = AppWindow.GetFromWindowId(windowId);
+        appWindow.SetIcon(iconPath);
+    }
 
     private async void OnActivated(object sender, WindowActivatedEventArgs args)
     {
