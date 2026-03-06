@@ -158,7 +158,7 @@ public partial class MonitoringShellViewModel
     public IReadOnlyList<GlobalStatItemViewState> SummaryStatCards =>
         _globalDetailStats.Take(Math.Min(HasSelection ? 4 : 6, _globalDetailStats.Count)).ToArray();
 
-    public double InspectorChartMaxWidth => HasSelection ? 960 : 680;
+    public double InspectorChartMaxWidth => HasSelection ? 960 : 840;
 
     public double SummaryStatCardWidth => HasSelection ? 232 : 208;
 

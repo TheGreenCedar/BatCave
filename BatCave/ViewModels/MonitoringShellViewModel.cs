@@ -545,6 +545,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         OnPropertyChanged(nameof(HasSelection));
         OnPropertyChanged(nameof(DetailTitle));
         RaiseGlobalModeProperties();
+        RaiseInspectorSectionProperties();
         RaisePresentationProperties();
         BuildAndAppendResourceRows(_latestGlobalMetricsSample);
         RaiseMetadataProperties();

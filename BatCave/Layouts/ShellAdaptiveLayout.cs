@@ -9,8 +9,8 @@ public enum ShellAdaptiveMode
 
 public static class ShellAdaptiveLayout
 {
-    public const double MediumBreakpoint = 760;
-    public const double WideBreakpoint = 1200;
+    public const double MediumBreakpoint = 860;
+    public const double WideBreakpoint = 1260;
 
     public static ShellAdaptiveMode Resolve(double windowWidth) => windowWidth switch
     {

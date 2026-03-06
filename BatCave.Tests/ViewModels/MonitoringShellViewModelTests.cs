@@ -201,6 +201,105 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task SelectingProcess_RaisesSummaryVisibilityProperties_AndShowsMetadataImmediately()
+    {
+        TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
+        {
+            Pid = pid,
+            ParentPid = 7,
+            ExecutablePath = @"C:\\Apps\\demo.exe",
+            CommandLine = "demo --flag",
+        }));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway, metadataProvider: metadata);
+
+        List<string> raised = [];
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (!string.IsNullOrWhiteSpace(args.PropertyName))
+            {
+                raised.Add(args.PropertyName!);
+            }
+        };
+
+        ProcessSample row = Sample(pid: 902, startTime: 9_020, access: AccessState.Full) with { Name = "demo.exe" };
+        gateway.RaiseDelta(1, [row], []);
+        raised.Clear();
+
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.Contains(nameof(MonitoringShellViewModel.ProcessSummarySectionVisibility), raised);
+        Assert.Contains(nameof(MonitoringShellViewModel.SystemSummarySectionVisibility), raised);
+        Assert.Equal(Visibility.Visible, viewModel.ProcessSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal("Metadata loaded.", viewModel.MetadataStatus);
+        Assert.Contains("demo.exe", viewModel.DetailsPanePrimaryText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ClearSelection_RaisesSummaryVisibilityProperties_AndRestoresSystemOverview()
+    {
+        TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
+        {
+            Pid = pid,
+            ParentPid = 7,
+            ExecutablePath = @"C:\\Apps\\demo.exe",
+            CommandLine = "demo --flag",
+        }));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway, metadataProvider: metadata);
+
+        ProcessSample row = Sample(pid: 903, startTime: 9_030, access: AccessState.Full);
+        gateway.RaiseDelta(1, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        List<string> raised = [];
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (!string.IsNullOrWhiteSpace(args.PropertyName))
+            {
+                raised.Add(args.PropertyName!);
+            }
+        };
+
+        raised.Clear();
+        viewModel.ClearSelection();
+
+        Assert.Contains(nameof(MonitoringShellViewModel.ProcessSummarySectionVisibility), raised);
+        Assert.Contains(nameof(MonitoringShellViewModel.SystemSummarySectionVisibility), raised);
+        Assert.Equal(Visibility.Collapsed, viewModel.ProcessSummarySectionVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal("System Overview", viewModel.InspectorContextTitle);
+        Assert.Equal("Select a process to load metadata.", viewModel.MetadataStatus);
+    }
+
+    [Fact]
+    public async Task SelectingProcess_ImmediatelyExposesProcessSummaryMetadataWhileSummaryTabStaysActive()
+    {
+        TestMetadataProvider metadata = new((pid, _, _) => Task.FromResult<ProcessMetadata?>(new ProcessMetadata
+        {
+            Pid = pid,
+            ParentPid = 42,
+            ExecutablePath = @"C:\\Apps\\batcave.exe",
+            CommandLine = "batcave --watch",
+        }));
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway, metadataProvider: metadata);
+        ProcessSample row = Sample(pid: 902, startTime: 9_020, access: AccessState.Full) with { Name = "batcave.exe" };
+
+        gateway.RaiseDelta(1, [row], []);
+        Assert.True(viewModel.IsSummarySectionSelected);
+
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.Equal(Visibility.Visible, viewModel.ProcessSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal("Metadata loaded.", viewModel.MetadataStatus);
+        Assert.Contains("batcave.exe", viewModel.DetailsPanePrimaryText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("PROCESS VIEW", viewModel.InspectorOverviewEyebrow);
+    }
+
+    [Fact]
     public async Task AdminToggle_WhenRestartThrows_RestartsRuntimeLoopAndSurfacesError()
     {
         TestRuntimeEventGateway gateway = new();
@@ -1441,6 +1540,30 @@ public class MonitoringShellViewModelTests
         Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuLogicalGridVisibility);
         Assert.Equal(Visibility.Visible, viewModel.GlobalCpuLogicalPlaceholderVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.GlobalCombinedChartVisibility);
+    }
+
+    [Fact]
+    public async Task ClearingSelection_RestoresSystemSummaryVisibility_AndHidesProcessSummary()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample row = Sample(pid: 261, startTime: 26_100, access: AccessState.Full) with
+        {
+            CpuPct = 17.5,
+        };
+        gateway.RaiseDelta(1, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.Equal(Visibility.Visible, viewModel.ProcessSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.SystemSummarySectionVisibility);
+
+        viewModel.ClearSelection();
+
+        Assert.True(viewModel.IsSummarySectionSelected);
+        Assert.Equal(Visibility.Visible, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.ProcessSummarySectionVisibility);
+        Assert.Equal("SYSTEM VIEW", viewModel.InspectorOverviewEyebrow);
     }
 
     [Fact]

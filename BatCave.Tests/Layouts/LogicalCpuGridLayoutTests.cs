@@ -33,18 +33,36 @@ public sealed class LogicalCpuGridLayoutTests
     [Fact]
     public void Resolve_IgnoresSelfReferentialHeightPressure_ForStableTileHeight()
     {
-        LogicalCpuGridLayoutResult roomyPlan = LogicalCpuGridLayout.Resolve(
+        LogicalCpuGridLayoutResult naturalPlan = LogicalCpuGridLayout.Resolve(
             itemCount: 16,
             availableWidth: 720d,
             availableHeight: double.PositiveInfinity);
 
-        LogicalCpuGridLayoutResult feedbackPlan = LogicalCpuGridLayout.Resolve(
+        LogicalCpuGridLayoutResult roomyPlan = LogicalCpuGridLayout.Resolve(
+            itemCount: 16,
+            availableWidth: 720d,
+            availableHeight: 720d);
+
+        Assert.Equal(naturalPlan.Columns, roomyPlan.Columns);
+        Assert.Equal(naturalPlan.ItemHeight, roomyPlan.ItemHeight);
+    }
+
+    [Fact]
+    public void Resolve_ShrinksTileHeight_WhenViewportIsTooShortToFitNaturalRows()
+    {
+        LogicalCpuGridLayoutResult naturalPlan = LogicalCpuGridLayout.Resolve(
+            itemCount: 16,
+            availableWidth: 720d,
+            availableHeight: double.PositiveInfinity);
+
+        LogicalCpuGridLayoutResult compactPlan = LogicalCpuGridLayout.Resolve(
             itemCount: 16,
             availableWidth: 720d,
             availableHeight: 160d);
 
-        Assert.Equal(roomyPlan.Columns, feedbackPlan.Columns);
-        Assert.True(roomyPlan.ItemHeight >= LogicalCpuGridLayout.TileMinHeight);
-        Assert.True(feedbackPlan.ItemHeight >= LogicalCpuGridLayout.TileMinHeight);
+        Assert.Equal(naturalPlan.Columns, compactPlan.Columns);
+        Assert.True(naturalPlan.ItemHeight >= LogicalCpuGridLayout.TileMinHeight);
+        Assert.True(compactPlan.ItemHeight >= LogicalCpuGridLayout.TileMinHeight);
+        Assert.True(compactPlan.ItemHeight < naturalPlan.ItemHeight);
     }
 }
