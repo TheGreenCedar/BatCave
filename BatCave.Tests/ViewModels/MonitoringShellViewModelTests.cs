@@ -176,6 +176,53 @@ public class MonitoringShellViewModelTests
         Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusWarningVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusSuccessVisibility);
         Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusVisibility);
+
+        gateway.Publish(new TickOutcome
+        {
+            Delta = new ProcessDeltaBatch
+            {
+                Seq = 2,
+                Upserts = [],
+                Exits = [],
+            },
+            Health = new RuntimeHealth
+            {
+                Seq = 2,
+            },
+            EmitTelemetryDelta = false,
+        });
+
+        Assert.Equal("Collector Warning", viewModel.RuntimeStatusTitle);
+        Assert.Equal("bridge warning", viewModel.RuntimeStatusSummary);
+    }
+    [Fact]
+    public async Task RuntimeStatusPresentation_KeepsDegradeModeInFooterOnly()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        gateway.Publish(new TickOutcome
+        {
+            Delta = new ProcessDeltaBatch
+            {
+                Seq = 1,
+                Upserts = [],
+                Exits = [],
+            },
+            Health = new RuntimeHealth
+            {
+                Seq = 1,
+                JitterP95Ms = 18,
+                DegradeMode = true,
+            },
+            EmitTelemetryDelta = false,
+        });
+
+        Assert.Contains("degrade ON", viewModel.RuntimeHealthStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Runtime Healthy", viewModel.RuntimeStatusTitle);
+        Assert.Equal(RuntimeStatusTone.Success, viewModel.RuntimeStatusTone);
+        Assert.Equal(Visibility.Collapsed, viewModel.RuntimeStatusWarningVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.RuntimeStatusSuccessVisibility);
     }
 
     [Fact]

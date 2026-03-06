@@ -6,13 +6,17 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
 using System;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using WinRT.Interop;
+using Windows.Foundation;
 
 namespace BatCave;
 
@@ -29,6 +33,17 @@ public sealed partial class MainWindow : Window
     private double _logicalCpuTileHeight = LogicalCpuGridLayout.TileMinHeight;
     private double _logicalCpuTileChartHeight = LogicalCpuGridLayout.TileMinChartHeight;
     private double _lastChartSizingWindowHeight = -1;
+    private const double HeaderDecorationStride = 388;
+    private static readonly IReadOnlyList<HeaderDecorationSpec> HeaderDecorationPattern =
+    [
+        new(false, -20, -18, 72, "BatCavePrimaryBrush", 0),
+        new(true, 84, -6, 20, "BatCaveAccentBrush", 0),
+        new(false, 128, 12, 28, "BatCaveSecondaryBrush", -16),
+        new(true, 182, 22, 14, "BatCavePrimaryBrush", 0),
+        new(false, 216, -10, 58, "BatCaveAccentBrush", 14),
+        new(false, 272, 12, 24, "BatCavePrimaryBrush", 22),
+        new(true, 318, -4, 46, "BatCaveSecondaryBrush", 0),
+    ];
 
     public MainWindow()
     {
@@ -47,7 +62,7 @@ public sealed partial class MainWindow : Window
 
     private void TryApplyWindowIcon()
     {
-        string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "BatCaveLogo.ico");
+        string iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "BatCaveLogo.ico");
         if (!File.Exists(iconPath))
         {
             return;
@@ -228,6 +243,49 @@ public sealed partial class MainWindow : Window
         ApplyInspectorChartSizing(args.Size.Height);
     }
 
+    private void HeaderRegion_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        RebuildHeaderDecorations(e.NewSize.Width, e.NewSize.Height);
+    }
+
+    private void RebuildHeaderDecorations(double width, double height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        HeaderDecorationCanvas.Children.Clear();
+        HeaderDecorationCanvas.Width = width;
+        HeaderDecorationCanvas.Height = height;
+        HeaderDecorationCanvas.Clip = new RectangleGeometry { Rect = new Rect(0, 0, width, height) };
+
+        for (double offset = 0; offset < width + HeaderDecorationStride; offset += HeaderDecorationStride)
+        {
+            foreach (HeaderDecorationSpec spec in HeaderDecorationPattern)
+            {
+                Shape shape = spec.IsEllipse ? new Ellipse() : new Rectangle();
+                shape.Width = spec.Size;
+                shape.Height = spec.Size;
+                shape.Fill = (Brush)Application.Current.Resources[spec.BrushResourceKey];
+
+                if (Math.Abs(spec.Angle) > double.Epsilon)
+                {
+                    shape.RenderTransform = new RotateTransform
+                    {
+                        Angle = spec.Angle,
+                        CenterX = spec.Size / 2,
+                        CenterY = spec.Size / 2,
+                    };
+                }
+
+                Canvas.SetLeft(shape, spec.Left + offset);
+                Canvas.SetTop(shape, spec.Top);
+                HeaderDecorationCanvas.Children.Add(shape);
+            }
+        }
+    }
+
     private void GlobalCpuLogicalRepeater_Loaded(object sender, RoutedEventArgs e)
     {
         ScheduleLogicalCpuGridLayout();
@@ -382,6 +440,8 @@ public sealed partial class MainWindow : Window
     }
 
 
+    private readonly record struct HeaderDecorationSpec(bool IsEllipse, double Left, double Top, double Size, string BrushResourceKey, double Angle);
+
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
@@ -410,4 +470,8 @@ public sealed partial class MainWindow : Window
         ViewModel.RecordSelectionSettleProbe(Stopwatch.GetTimestamp() - startedAt);
     }
 }
+
+
+
+
 

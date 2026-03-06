@@ -245,7 +245,7 @@ public partial class MonitoringShellViewModel
     {
         if (!string.IsNullOrWhiteSpace(_latestWarningSummary))
         {
-            SetRuntimeStatusPresentation(RuntimeStatusTone.Warning, "Runtime Degraded", _latestWarningSummary!);
+            SetRuntimeStatusPresentation(RuntimeStatusTone.Warning, "Collector Warning", _latestWarningSummary!);
             return;
         }
 
@@ -255,11 +255,6 @@ public partial class MonitoringShellViewModel
             return;
         }
 
-        if (health.DegradeMode)
-        {
-            SetRuntimeStatusPresentation(RuntimeStatusTone.Warning, "Degrade Mode Active", $"Jitter p95 is {health.JitterP95Ms:F0} ms and degrade mode is active.");
-            return;
-        }
 
         SetRuntimeStatusPresentation(RuntimeStatusTone.Success, "Runtime Healthy", $"Seq {health.Seq} live, jitter p95 {health.JitterP95Ms:F0} ms, no active collector warnings.");
     }

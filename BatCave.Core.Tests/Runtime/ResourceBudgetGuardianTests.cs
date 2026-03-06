@@ -5,20 +5,14 @@ namespace BatCave.Core.Tests.Runtime;
 
 public class ResourceBudgetGuardianTests
 {
+    private const ulong Mb = 1024UL * 1024UL;
+
     [Fact]
     public void DegradeMode_TransitionsByOverBudgetAndRecoveryStreaks()
     {
         ResourceBudgetGuardian guardian = new();
-        RuntimeHealth overBudget = new()
-        {
-            AppCpuPct = 2.0,
-            AppRssBytes = 200UL * 1024UL * 1024UL,
-        };
-        RuntimeHealth healthy = new()
-        {
-            AppCpuPct = 0.1,
-            AppRssBytes = 20UL * 1024UL * 1024UL,
-        };
+        RuntimeHealth overBudget = CreateHealth(cpuPct: 6.5, rssBytes: 360UL * Mb);
+        RuntimeHealth healthy = CreateHealth(cpuPct: 0.1, rssBytes: 20UL * Mb);
 
         for (ulong seq = 1; seq <= 3; seq++)
         {
@@ -39,11 +33,7 @@ public class ResourceBudgetGuardianTests
     public void WarmCacheInterval_TracksEmitStridePolicy()
     {
         ResourceBudgetGuardian guardian = new();
-        RuntimeHealth overBudget = new()
-        {
-            AppCpuPct = 2.0,
-            AppRssBytes = 200UL * 1024UL * 1024UL,
-        };
+        RuntimeHealth overBudget = CreateHealth(cpuPct: 6.5, rssBytes: 360UL * Mb);
 
         RuntimePolicy policyAfterThree = default!;
         for (ulong seq = 1; seq <= 3; seq++)
@@ -66,11 +56,7 @@ public class ResourceBudgetGuardianTests
     public void EmitTelemetryDelta_FollowsStrideWhenDegraded()
     {
         ResourceBudgetGuardian guardian = new();
-        RuntimeHealth overBudget = new()
-        {
-            AppCpuPct = 2.0,
-            AppRssBytes = 200UL * 1024UL * 1024UL,
-        };
+        RuntimeHealth overBudget = CreateHealth(cpuPct: 6.5, rssBytes: 360UL * Mb);
 
         RuntimePolicy policySeq1 = guardian.Evaluate(1, overBudget, rowCount: 1000);
         RuntimePolicy policySeq2 = guardian.Evaluate(2, overBudget, rowCount: 1000);
@@ -81,5 +67,52 @@ public class ResourceBudgetGuardianTests
         Assert.True(policySeq2.EmitTelemetryDelta);
         Assert.False(policySeq3.EmitTelemetryDelta);
         Assert.True(policySeq4.EmitTelemetryDelta);
+    }
+
+    [Fact]
+    public void DegradeMode_StaysOff_BelowUpdatedBudgetThresholds()
+    {
+        ResourceBudgetGuardian guardian = new();
+        RuntimeHealth belowBudget = CreateHealth(cpuPct: 5.9, rssBytes: 349UL * Mb);
+
+        for (ulong seq = 1; seq <= 3; seq++)
+        {
+            _ = guardian.Evaluate(seq, belowBudget, rowCount: 1000);
+        }
+
+        Assert.False(guardian.IsDegraded());
+    }
+
+    [Fact]
+    public void DegradeMode_Triggers_WhenEitherUpdatedBudgetThresholdIsReached()
+    {
+        ResourceBudgetGuardian cpuGuardian = new();
+        RuntimeHealth cpuOnlyThreshold = CreateHealth(cpuPct: 6.0, rssBytes: 20UL * Mb);
+
+        for (ulong seq = 1; seq <= 3; seq++)
+        {
+            _ = cpuGuardian.Evaluate(seq, cpuOnlyThreshold, rowCount: 1000);
+        }
+
+        Assert.True(cpuGuardian.IsDegraded());
+
+        ResourceBudgetGuardian rssGuardian = new();
+        RuntimeHealth rssOnlyThreshold = CreateHealth(cpuPct: 0.1, rssBytes: 350UL * Mb);
+
+        for (ulong seq = 1; seq <= 3; seq++)
+        {
+            _ = rssGuardian.Evaluate(seq, rssOnlyThreshold, rowCount: 1000);
+        }
+
+        Assert.True(rssGuardian.IsDegraded());
+    }
+
+    private static RuntimeHealth CreateHealth(double cpuPct, ulong rssBytes)
+    {
+        return new RuntimeHealth
+        {
+            AppCpuPct = cpuPct,
+            AppRssBytes = rssBytes,
+        };
     }
 }

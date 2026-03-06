@@ -103,58 +103,10 @@
             x:Name="HeaderRegion"
             Grid.Row="0"
             Background="{ThemeResource BatCaveHeaderBrush}"
-            Padding="16,10,16,10">
+            Padding="16,10,16,10"
+            SizeChanged="HeaderRegion_SizeChanged">
             <Grid>
-                <Canvas IsHitTestVisible="False" Opacity="0.08">
-                    <Rectangle Width="72" Height="72" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="-20" Canvas.Top="-18" />
-                    <Ellipse Width="20" Height="20" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Left="84" Canvas.Top="-6" />
-                    <Rectangle Width="28" Height="28" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="128" Canvas.Top="12">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="-16" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                    <Ellipse Width="14" Height="14" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="182" Canvas.Top="22" />
-                    <Rectangle Width="58" Height="58" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Left="216" Canvas.Top="-10">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="14" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                    <Ellipse Width="46" Height="46" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="612" Canvas.Top="-4" />
-                    <Rectangle Width="34" Height="34" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="356" Canvas.Top="12">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="22" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                    <Ellipse Width="24" Height="24" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Left="448" Canvas.Top="6" />
-                    <Rectangle Width="30" Height="30" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Left="530" Canvas.Top="12">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="-24" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                    <Rectangle Width="42" Height="42" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="748" Canvas.Top="-14">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="-18" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                    <Ellipse Width="18" Height="18" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="868" Canvas.Top="18" />
-                    <Ellipse Width="22" Height="22" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="930" Canvas.Top="2" />
-                    <Rectangle Width="52" Height="52" Fill="{ThemeResource BatCaveAccentBrush}" Canvas.Left="1016" Canvas.Top="-20">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="10" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                    <Rectangle Width="16" Height="16" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="1088" Canvas.Top="26">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="28" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                    <Ellipse Width="28" Height="28" Fill="{ThemeResource BatCaveSecondaryBrush}" Canvas.Left="1124" Canvas.Top="10" />
-                    <Rectangle Width="22" Height="22" Fill="{ThemeResource BatCavePrimaryBrush}" Canvas.Left="1182" Canvas.Top="4">
-                        <Rectangle.RenderTransform>
-                            <RotateTransform Angle="36" />
-                        </Rectangle.RenderTransform>
-                    </Rectangle>
-                </Canvas>
+                <Canvas x:Name="HeaderDecorationCanvas" IsHitTestVisible="False" Opacity="0.08" />
 
                 <Grid ColumnSpacing="18">
                     <Grid.ColumnDefinitions>
@@ -916,3 +868,6 @@
         </Border>
     </Grid>
 </Window>
+
+
+

@@ -14,8 +14,8 @@ public sealed record RuntimePolicy
 public sealed class ResourceBudgetGuardian
 {
     private const ulong Mb = 1024 * 1024;
-    private const double CpuBudgetPct = 1.0;
-    private const ulong RssBudgetBytes = 150 * Mb;
+    private const double CpuBudgetPct = 6.0;
+    private const ulong RssBudgetBytes = 350 * Mb;
     private const uint DegradeToStrideTwoHighStreakThreshold = 3;
     private const uint DegradeToStrideFourHighStreakThreshold = 8;
     private const uint RecoverToStrideOneLowStreakThreshold = 10;
