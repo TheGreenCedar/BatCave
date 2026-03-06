@@ -19,13 +19,14 @@ public class ShellAdaptiveLayoutTests
     }
 
     [Fact]
-    public void LogicalCpuGridLayout_DoesNotExpandTileHeightBeyondItsNaturalSize()
+    public void LogicalCpuGridLayout_TallViewport_ExpandsBeyondNaturalSize()
     {
-        LogicalCpuGridLayoutResult natural = LogicalCpuGridLayout.Resolve(16, 960, double.PositiveInfinity);
-        LogicalCpuGridLayoutResult tall = LogicalCpuGridLayout.Resolve(16, 960, 720);
+        LogicalCpuGridLayoutResult natural = LogicalCpuGridLayout.Resolve(16, 960d, double.PositiveInfinity);
+        LogicalCpuGridLayoutResult tall = LogicalCpuGridLayout.Resolve(16, 960d, 720d);
+        LogicalCpuGridLayoutResult taller = LogicalCpuGridLayout.Resolve(16, 960d, 1200d);
 
-        Assert.Equal(natural.ItemHeight, tall.ItemHeight);
-        Assert.Equal(tall.ItemHeight, LogicalCpuGridLayout.Resolve(16, 960, 1200).ItemHeight);
-        Assert.True(tall.ItemHeight <= LogicalCpuGridLayout.TileMaxHeight);
+        Assert.True(tall.ItemHeight > natural.ItemHeight);
+        Assert.True(tall.ChartHeight > natural.ChartHeight);
+        Assert.True(taller.ItemHeight >= tall.ItemHeight);
     }
 }
