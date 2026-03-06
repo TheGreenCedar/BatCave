@@ -61,6 +61,31 @@ public class MainWindowSourceTests
         Assert.DoesNotContain("HeaderDecorationCanvas.Height =", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MainWindowSource_ScrollsCompactProcessListToTopAfterSortToggle()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+
+        Assert.Contains("private void CompactProcessSortHeader_Click(object sender, RoutedEventArgs e)", source, StringComparison.Ordinal);
+        Assert.Contains("DispatcherQueue.TryEnqueue(ScrollCompactProcessListToTop);", source, StringComparison.Ordinal);
+        Assert.Contains("CompactProcessListView.ScrollIntoView(ViewModel.VisibleRows[0], ScrollIntoViewAlignment.Leading);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowSource_QueuesOneTimeInitialScrollWhenVisibleRowsFirstLoad()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+
+        Assert.Contains("private bool _compactProcessInitialScrollPending = true;", source, StringComparison.Ordinal);
+        Assert.Contains("if (ViewModel.VisibleRows is INotifyCollectionChanged visibleRows)", source, StringComparison.Ordinal);
+        Assert.Contains("visibleRows.CollectionChanged += VisibleRows_CollectionChanged;", source, StringComparison.Ordinal);
+        Assert.Contains("private void VisibleRows_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)", source, StringComparison.Ordinal);
+        Assert.Contains("QueueCompactProcessInitialScrollIfNeeded();", source, StringComparison.Ordinal);
+        Assert.Contains("if (!_compactProcessInitialScrollPending || ViewModel.VisibleRows.Count <= 0)", source, StringComparison.Ordinal);
+        Assert.Contains("_compactProcessInitialScrollPending = false;", source, StringComparison.Ordinal);
+        Assert.Contains("visibleRows.CollectionChanged -= VisibleRows_CollectionChanged;", source, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

@@ -106,6 +106,14 @@ public class MainWindowXamlAccessibilityTests
     }
 
     [Fact]
+    public void MainWindowXaml_CompactProcessSortButtons_RaiseClickHandlerForScrollReset()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Equal(5, Regex.Matches(xaml, "Click=\"CompactProcessSortHeader_Click\"", RegexOptions.CultureInvariant).Count);
+    }
+
+    [Fact]
     public void MainWindowXaml_UsesMetricSwitcherAndCompactInspectorChrome()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));

@@ -283,6 +283,7 @@
                             <Button
                                 Grid.Column="0"
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
+                                Click="CompactProcessSortHeader_Click"
                                 CommandParameter="Name"
                                 Background="Transparent"
                                 BorderThickness="0"
@@ -294,6 +295,7 @@
                             <Button
                                 Grid.Column="1"
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
+                                Click="CompactProcessSortHeader_Click"
                                 CommandParameter="CpuPct"
                                 Background="Transparent"
                                 BorderThickness="0"
@@ -305,6 +307,7 @@
                             <Button
                                 Grid.Column="2"
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
+                                Click="CompactProcessSortHeader_Click"
                                 CommandParameter="RssBytes"
                                 Background="Transparent"
                                 BorderThickness="0"
@@ -316,6 +319,7 @@
                             <Button
                                 Grid.Column="3"
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
+                                Click="CompactProcessSortHeader_Click"
                                 CommandParameter="DiskBps"
                                 Background="Transparent"
                                 BorderThickness="0"
@@ -327,6 +331,7 @@
                             <Button
                                 Grid.Column="4"
                                 Command="{x:Bind ViewModel.CompactSortHeaderCommand}"
+                                Click="CompactProcessSortHeader_Click"
                                 CommandParameter="OtherIoBps"
                                 Background="Transparent"
                                 BorderThickness="0"

@@ -24,6 +24,7 @@ public sealed partial class MainWindow : Window
 {
 
     private bool _bootstrapped;
+    private bool _compactProcessInitialScrollPending = true;
     private long _selectionSettleProbeStartedAt;
     private bool _logicalCpuGridLayoutQueued;
     private int _logicalCpuGridLastCount = -1;
@@ -47,6 +48,11 @@ public sealed partial class MainWindow : Window
         TryApplyWindowIcon();
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+        if (ViewModel.VisibleRows is INotifyCollectionChanged visibleRows)
+        {
+            visibleRows.CollectionChanged += VisibleRows_CollectionChanged;
+        }
+
         ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged += GlobalCpuLogicalProcessorRows_CollectionChanged;
         Activated += OnActivated;
         Closed += OnWindowClosed;
@@ -79,6 +85,7 @@ public sealed partial class MainWindow : Window
         await ViewModel.BootstrapAsync(CancellationToken.None);
         SyncAdminToggleState();
         GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
+        QueueCompactProcessInitialScrollIfNeeded();
         ScheduleLogicalCpuGridLayout();
     }
 
@@ -207,6 +214,37 @@ public sealed partial class MainWindow : Window
         }
 
         CompleteSelectionSettleProbeIfPending();
+    }
+
+    private void CompactProcessSortHeader_Click(object sender, RoutedEventArgs e)
+    {
+        DispatcherQueue.TryEnqueue(ScrollCompactProcessListToTop);
+    }
+
+    private void VisibleRows_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        QueueCompactProcessInitialScrollIfNeeded();
+    }
+
+    private void QueueCompactProcessInitialScrollIfNeeded()
+    {
+        if (!_compactProcessInitialScrollPending || ViewModel.VisibleRows.Count <= 0)
+        {
+            return;
+        }
+
+        _compactProcessInitialScrollPending = false;
+        DispatcherQueue.TryEnqueue(ScrollCompactProcessListToTop);
+    }
+
+    private void ScrollCompactProcessListToTop()
+    {
+        if (ViewModel.VisibleRows.Count <= 0)
+        {
+            return;
+        }
+
+        CompactProcessListView.ScrollIntoView(ViewModel.VisibleRows[0], ScrollIntoViewAlignment.Leading);
     }
 
     private void GlobalResourceListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -351,6 +389,11 @@ public sealed partial class MainWindow : Window
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        if (ViewModel.VisibleRows is INotifyCollectionChanged visibleRows)
+        {
+            visibleRows.CollectionChanged -= VisibleRows_CollectionChanged;
+        }
+
         ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged -= GlobalCpuLogicalProcessorRows_CollectionChanged;
         Closed -= OnWindowClosed;
     }
@@ -375,5 +418,3 @@ public sealed partial class MainWindow : Window
         ViewModel.RecordSelectionSettleProbe(Stopwatch.GetTimestamp() - startedAt);
     }
 }
-
-
