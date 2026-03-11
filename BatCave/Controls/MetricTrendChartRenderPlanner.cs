@@ -1,7 +1,6 @@
 using BatCave.Charts;
 using System;
 using System.Collections.Generic;
-using Windows.Foundation;
 
 namespace BatCave.Controls;
 
@@ -9,12 +8,6 @@ public static class MetricTrendChartRenderPlanner
 {
     public const int MinVisiblePointCount = 60;
     public const int MaxVisiblePointCount = 120;
-
-    private static readonly IReadOnlyList<Point> FlatlineFallbackPoints =
-    [
-        new Point(0d, 0d),
-        new Point(1d, 0d),
-    ];
 
     public static int NormalizeVisiblePointCount(int candidate)
     {
@@ -59,27 +52,12 @@ public static class MetricTrendChartRenderPlanner
             domainMax = floor;
         }
 
-        int alignedSlotCount = Math.Max(lineWindow.Count, overlayWindow.Count);
-        int lineLeadingSlots = Math.Max(0, alignedSlotCount - lineWindow.Count);
-        int overlayLeadingSlots = Math.Max(0, alignedSlotCount - overlayWindow.Count);
-
-        IReadOnlyList<Point> linePoints = BuildAlignedPoints(
-            lineWindow,
-            alignedSlotCount,
-            lineLeadingSlots,
-            request.Width,
-            request.Height,
-            domainMax,
-            out bool lineFallbackUsed);
-
-        IReadOnlyList<Point> overlayPoints = BuildAlignedPoints(
-            overlayWindow,
-            alignedSlotCount,
-            overlayLeadingSlots,
-            request.Width,
-            request.Height,
-            domainMax,
-            out bool overlayFallbackUsed);
+        int populatedSlotCount = Math.Max(lineWindow.Count, overlayWindow.Count);
+        int slotCount = populatedSlotCount == 0
+            ? 0
+            : visiblePointCount;
+        int lineLeadingSlots = Math.Max(0, slotCount - lineWindow.Count);
+        int overlayLeadingSlots = Math.Max(0, slotCount - overlayWindow.Count);
 
         return new MetricTrendChartRenderPlan(
             nextRawDomainMax,
@@ -87,32 +65,11 @@ public static class MetricTrendChartRenderPlanner
             maxVisible,
             nonFiniteSeriesDetected,
             domainFallbackUsed,
-            lineFallbackUsed,
-            overlayFallbackUsed,
-            linePoints,
-            overlayPoints);
-    }
-
-    private static IReadOnlyList<Point> BuildAlignedPoints(
-        IReadOnlyList<double> values,
-        int alignedSlotCount,
-        int leadingSlots,
-        double width,
-        double height,
-        double domainMax,
-        out bool fallbackUsed)
-    {
-        IReadOnlyList<Point> points = SparklineMath.BuildPointsInDomainWithSlotAlignment(
-            values,
-            alignedSlotCount,
-            leadingSlots,
-            width,
-            height,
-            minDomain: 0d,
-            maxDomain: domainMax);
-
-        fallbackUsed = points.Count == 0;
-        return fallbackUsed ? FlatlineFallbackPoints : points;
+            lineWindow.Count == 0,
+            overlayWindow.Count == 0,
+            slotCount,
+            new MetricTrendChartSeriesWindow(lineWindow, lineLeadingSlots),
+            new MetricTrendChartSeriesWindow(overlayWindow, overlayLeadingSlots));
     }
 
     private static (double Floor, double? Ceiling) ResolveDomainPolicy(MetricTrendScaleMode scaleMode, double domainMaxOverride)
@@ -198,11 +155,13 @@ public readonly record struct MetricTrendChartRenderRequest(
     IReadOnlyList<double> Values,
     IReadOnlyList<double> OverlayValues,
     int VisiblePointCount,
-    double Width,
-    double Height,
     MetricTrendScaleMode ScaleMode,
     double DomainMaxOverride,
     double PreviousRawDomainMax);
+
+public readonly record struct MetricTrendChartSeriesWindow(
+    IReadOnlyList<double> Values,
+    int LeadingSlots);
 
 public readonly record struct MetricTrendChartRenderPlan(
     double NextRawDomainMax,
@@ -212,8 +171,6 @@ public readonly record struct MetricTrendChartRenderPlan(
     bool DomainFallbackUsed,
     bool LineFallbackUsed,
     bool OverlayFallbackUsed,
-    IReadOnlyList<Point> LinePoints,
-    IReadOnlyList<Point> OverlayPoints);
-
-
-
+    int SlotCount,
+    MetricTrendChartSeriesWindow LineSeries,
+    MetricTrendChartSeriesWindow OverlaySeries);

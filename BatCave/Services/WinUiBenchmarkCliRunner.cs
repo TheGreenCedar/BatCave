@@ -3,10 +3,13 @@ using BatCave.Core.Runtime;
 using BatCave.Core.Serialization;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
+using System.CommandLine;
+using System.CommandLine.Parsing;
 using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,6 +19,14 @@ namespace BatCave.Services;
 internal static class WinUiBenchmarkCliRunner
 {
     private const int FilterDebounceSettleMs = 180;
+    private static readonly Option<bool> BenchmarkOption = new("--benchmark");
+    private static readonly Option<bool> StrictOption = new("--strict");
+    private static readonly Option<string?> TicksOption = new("--ticks");
+    private static readonly Option<string?> SleepMsOption = new("--sleep-ms");
+    private static readonly Option<string?> BaselineJsonOption = new("--baseline-json");
+    private static readonly Option<string?> MinSpeedupMultiplierOption = new("--min-speedup-multiplier");
+    private static readonly Option<string?> MaxP95MsOption = new("--max-p95-ms");
+    private static readonly RootCommand BenchmarkRootCommand = CreateRootCommand();
 
     private static readonly SortColumn[] SortColumns =
     [
@@ -46,9 +57,13 @@ internal static class WinUiBenchmarkCliRunner
 
     public static async Task<int> ExecuteAsync(IServiceProvider services, string[] args, CancellationToken ct)
     {
-        if (!TryParseArgs(args, out WinUiBenchmarkCliOptions options, out string? error))
+        if (!TryCreateOptions(args, out WinUiBenchmarkCliOptions options, out IReadOnlyList<string> errors))
         {
-            Console.Error.WriteLine(error);
+            foreach (string error in errors)
+            {
+                Console.Error.WriteLine(error);
+            }
+
             return 2;
         }
 
@@ -195,49 +210,73 @@ internal static class WinUiBenchmarkCliRunner
         return true;
     }
 
-    private static bool TryParseArgs(
+    internal static bool TryCreateOptions(
         string[] args,
         out WinUiBenchmarkCliOptions options,
-        out string? error)
+        out IReadOnlyList<string> errors)
     {
-        int ticks = 120;
-        int sleepMs = 1000;
-        bool strict = false;
-        string? baselineJsonPath = null;
-        double? minSpeedupMultiplier = null;
-        double? maxP95Ms = null;
-        error = null;
-
-        for (int index = 0; index < args.Length; index++)
+        ParseResult parseResult = BenchmarkRootCommand.Parse(args);
+        if (parseResult.Errors.Count > 0)
         {
-            if (!TryParseArgument(
-                    args,
-                    ref index,
-                    ref ticks,
-                    ref sleepMs,
-                    ref strict,
-                    ref baselineJsonPath,
-                    ref minSpeedupMultiplier,
-                    ref maxP95Ms,
-                    out error))
-            {
-                options = new WinUiBenchmarkCliOptions();
-                return false;
-            }
+            options = new WinUiBenchmarkCliOptions();
+            errors = parseResult.Errors.Select(parseError => parseError.Message).ToArray();
+            return false;
+        }
+
+        return TryCreateOptions(parseResult, out options, out errors);
+    }
+
+    private static RootCommand CreateRootCommand()
+    {
+        RootCommand command = new();
+        command.Add(BenchmarkOption);
+        command.Add(StrictOption);
+        command.Add(TicksOption);
+        command.Add(SleepMsOption);
+        command.Add(BaselineJsonOption);
+        command.Add(MinSpeedupMultiplierOption);
+        command.Add(MaxP95MsOption);
+        return command;
+    }
+
+    private static bool TryCreateOptions(
+        ParseResult parseResult,
+        out WinUiBenchmarkCliOptions options,
+        out IReadOnlyList<string> errors)
+    {
+        List<string> parseErrors = [];
+        int ticks = ParseIntOption(parseResult.GetValue(TicksOption), "--ticks", defaultValue: 120, parseErrors);
+        int sleepMs = ParseIntOption(parseResult.GetValue(SleepMsOption), "--sleep-ms", defaultValue: 1000, parseErrors);
+        string? baselineJsonPath = parseResult.GetValue(BaselineJsonOption);
+        double? minSpeedupMultiplier = ParsePositiveDoubleOption(
+            parseResult.GetValue(MinSpeedupMultiplierOption),
+            "--min-speedup-multiplier",
+            parseErrors);
+        double? maxP95Ms = ParsePositiveDoubleOption(
+            parseResult.GetValue(MaxP95MsOption),
+            "--max-p95-ms",
+            parseErrors);
+
+        if (parseErrors.Count > 0)
+        {
+            options = new WinUiBenchmarkCliOptions();
+            errors = parseErrors;
+            return false;
         }
 
         if (minSpeedupMultiplier.HasValue && string.IsNullOrWhiteSpace(baselineJsonPath))
         {
-            error = "--min-speedup-multiplier requires --baseline-json.";
             options = new WinUiBenchmarkCliOptions();
+            errors = ["--min-speedup-multiplier requires --baseline-json."];
             return false;
         }
 
         BenchmarkSummary? baseline = null;
         if (!string.IsNullOrWhiteSpace(baselineJsonPath)
-            && !TryLoadBaselineSummary(baselineJsonPath, out baseline, out error))
+            && !TryLoadBaselineSummary(baselineJsonPath, out baseline, out string? baselineError))
         {
             options = new WinUiBenchmarkCliOptions();
+            errors = [baselineError!];
             return false;
         }
 
@@ -245,7 +284,7 @@ internal static class WinUiBenchmarkCliRunner
         {
             Ticks = ticks,
             SleepMs = sleepMs,
-            Strict = strict,
+            Strict = parseResult.GetValue(StrictOption),
             GateOptions = new BenchmarkGateOptions
             {
                 Baseline = baseline,
@@ -253,118 +292,48 @@ internal static class WinUiBenchmarkCliRunner
                 MaxP95Ms = maxP95Ms,
             },
         };
-
+        errors = Array.Empty<string>();
         return true;
     }
 
-    private static bool TryParseArgument(
-        string[] args,
-        ref int index,
-        ref int ticks,
-        ref int sleepMs,
-        ref bool strict,
-        ref string? baselineJsonPath,
-        ref double? minSpeedupMultiplier,
-        ref double? maxP95Ms,
-        out string? error)
+    private static int ParseIntOption(
+        string? rawValue,
+        string optionName,
+        int defaultValue,
+        List<string> errors)
     {
-        error = null;
-        string argument = args[index];
-
-        switch (argument)
+        if (string.IsNullOrWhiteSpace(rawValue))
         {
-            case "--benchmark":
-                return true;
-            case "--strict":
-                strict = true;
-                return true;
-            case "--ticks":
-                if (!TryReadIntValue(args, ref index, out int parsedTicks))
-                {
-                    error = "Missing or invalid value for --ticks.";
-                    return false;
-                }
-
-                ticks = parsedTicks;
-                return true;
-            case "--sleep-ms":
-                if (!TryReadIntValue(args, ref index, out int parsedSleepMs))
-                {
-                    error = "Missing or invalid value for --sleep-ms.";
-                    return false;
-                }
-
-                sleepMs = parsedSleepMs;
-                return true;
-            case "--baseline-json":
-                if (!TryReadStringValue(args, ref index, out string parsedBaselinePath))
-                {
-                    error = "Missing value for --baseline-json.";
-                    return false;
-                }
-
-                baselineJsonPath = parsedBaselinePath;
-                return true;
-            case "--min-speedup-multiplier":
-                if (!TryReadDoubleValue(args, ref index, out double parsedMinSpeedupMultiplier)
-                    || parsedMinSpeedupMultiplier <= 0d)
-                {
-                    error = "Missing or invalid value for --min-speedup-multiplier (must be > 0).";
-                    return false;
-                }
-
-                minSpeedupMultiplier = parsedMinSpeedupMultiplier;
-                return true;
-            case "--max-p95-ms":
-                if (!TryReadDoubleValue(args, ref index, out double parsedMaxP95Ms)
-                    || parsedMaxP95Ms <= 0d)
-                {
-                    error = "Missing or invalid value for --max-p95-ms (must be > 0).";
-                    return false;
-                }
-
-                maxP95Ms = parsedMaxP95Ms;
-                return true;
-            default:
-                error = $"Unknown argument: {argument}";
-                return false;
+            return defaultValue;
         }
+
+        if (int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+        {
+            return value;
+        }
+
+        errors.Add($"Missing or invalid value for {optionName}.");
+        return defaultValue;
     }
 
-    private static bool TryReadIntValue(string[] args, ref int index, out int value)
+    private static double? ParsePositiveDoubleOption(
+        string? rawValue,
+        string optionName,
+        List<string> errors)
     {
-        value = 0;
-        if (!TryReadStringValue(args, ref index, out string rawValue))
+        if (string.IsNullOrWhiteSpace(rawValue))
         {
-            return false;
+            return null;
         }
 
-        return int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
-    }
-
-    private static bool TryReadDoubleValue(string[] args, ref int index, out double value)
-    {
-        value = 0;
-        if (!TryReadStringValue(args, ref index, out string rawValue))
+        if (double.TryParse(rawValue, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double value)
+            && value > 0d)
         {
-            return false;
+            return value;
         }
 
-        return double.TryParse(rawValue, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out value);
-    }
-
-    private static bool TryReadStringValue(string[] args, ref int index, out string value)
-    {
-        value = string.Empty;
-        int valueIndex = index + 1;
-        if (valueIndex >= args.Length)
-        {
-            return false;
-        }
-
-        value = args[valueIndex];
-        index = valueIndex;
-        return true;
+        errors.Add($"Missing or invalid value for {optionName} (must be > 0).");
+        return null;
     }
 
     private static bool TryLoadBaselineSummary(
@@ -400,7 +369,7 @@ internal static class WinUiBenchmarkCliRunner
         return true;
     }
 
-    private sealed record WinUiBenchmarkCliOptions
+    internal sealed record WinUiBenchmarkCliOptions
     {
         public int Ticks { get; init; } = 120;
 
@@ -411,5 +380,4 @@ internal static class WinUiBenchmarkCliRunner
         public BenchmarkGateOptions GateOptions { get; init; } = new();
     }
 }
-
 

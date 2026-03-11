@@ -56,7 +56,7 @@ public partial class App : Application
         string[] commandLineArgs = [.. Environment.GetCommandLineArgs().Skip(1)];
         bool cliMode = IsCliMode(commandLineArgs);
 
-        _host = CreateHost(CreateRuntimeHostOptions(cliMode));
+        _host = CreateHost(BuildRuntimeHostOptions(cliMode));
         await _host.StartAsync();
 
         if (await TryRunCliModeAsync(commandLineArgs, cliMode))
@@ -67,9 +67,9 @@ public partial class App : Application
         ActivateMainWindow();
     }
 
-    private static RuntimeHostOptions CreateRuntimeHostOptions(bool cliMode)
+    private static RuntimeHostOptions BuildRuntimeHostOptions(bool cliMode)
     {
-        RuntimeHostOptions options = new()
+        return new RuntimeHostOptions
         {
             EnableRuntimeLoop = !cliMode,
             DefaultAdminMode = true,
@@ -78,8 +78,6 @@ public partial class App : Application
             DefaultFilterText = string.Empty,
             DefaultMetricTrendWindowSeconds = 60,
         };
-
-        return RuntimeHostOptionsValidator.Validate(options);
     }
 
     private static IHost CreateHost(RuntimeHostOptions runtimeHostOptions)

@@ -7,6 +7,7 @@ using BatCave.Hosting;
 using BatCave.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace BatCave.Tests.Hosting;
 
@@ -99,12 +100,29 @@ public class RuntimeLoopHostedServiceTests
         services.AddBatCaveRuntimeServices(new RuntimeHostOptions());
 
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(RuntimeHostOptions));
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IValidateOptions<RuntimeHostOptions>));
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IRuntimeHealthService));
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IRuntimeEventGateway));
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(RuntimeLoopService));
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IMonitoringRuntime));
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IRuntimeLoopController));
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService));
+    }
+
+    [Fact]
+    public void AddBatCaveRuntimeServices_WhenOptionsInvalid_FailsWhenResolved()
+    {
+        ServiceCollection services = new();
+        services.AddLogging();
+        services.AddBatCaveRuntimeServices(new RuntimeHostOptions
+        {
+            DefaultMetricTrendWindowSeconds = 75,
+        });
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
+            () => provider.GetRequiredService<RuntimeHostOptions>());
+        Assert.Contains("60 or 120", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class FakeRuntime : IMonitoringRuntime

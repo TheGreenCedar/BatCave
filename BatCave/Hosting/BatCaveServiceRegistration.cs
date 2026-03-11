@@ -10,7 +10,8 @@ using BatCave.Core.Sort;
 using BatCave.Core.State;
 using BatCave.Services;
 using Microsoft.Extensions.DependencyInjection;
-using System;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace BatCave.Hosting;
 
@@ -20,9 +21,25 @@ public static class BatCaveServiceRegistration
         this IServiceCollection services,
         RuntimeHostOptions runtimeHostOptions)
     {
-        RuntimeHostOptions validatedOptions = RuntimeHostOptionsValidator.Validate(runtimeHostOptions);
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(runtimeHostOptions);
 
-        services.AddSingleton(validatedOptions);
+        RuntimeHostOptions normalizedOptions = RuntimeHostOptionsValidator.Normalize(runtimeHostOptions);
+
+        services.AddSingleton<IValidateOptions<RuntimeHostOptions>, RuntimeHostOptionsValidator>();
+        services.AddOptions<RuntimeHostOptions>()
+            .Configure(options =>
+            {
+                options.EnableRuntimeLoop = normalizedOptions.EnableRuntimeLoop;
+                options.DefaultSortColumn = normalizedOptions.DefaultSortColumn;
+                options.DefaultSortDirection = normalizedOptions.DefaultSortDirection;
+                options.DefaultFilterText = normalizedOptions.DefaultFilterText;
+                options.DefaultAdminMode = normalizedOptions.DefaultAdminMode;
+                options.DefaultMetricTrendWindowSeconds = normalizedOptions.DefaultMetricTrendWindowSeconds;
+            })
+            .ValidateOnStart();
+        services.AddSingleton(provider => provider.GetRequiredService<IOptions<RuntimeHostOptions>>().Value);
+
         services.AddSingleton<ICliOperationsHost, CliOperationsHost>();
         services.AddSingleton<ILaunchPolicyGate, WindowsLaunchPolicyGate>();
         services.AddSingleton<IProcessCollectorFactory, DefaultProcessCollectorFactory>();
@@ -30,7 +47,9 @@ public static class BatCaveServiceRegistration
         services.AddSingleton<ITelemetryPipeline, DeltaTelemetryPipeline>();
         services.AddSingleton<IStateStore, InMemoryStateStore>();
         services.AddSingleton<ISortIndexEngine, PassThroughSortIndexEngine>();
-        services.AddSingleton<IPersistenceStore, LocalJsonPersistenceStore>();
+        services.AddSingleton<IPersistenceStore>(provider =>
+            new LocalJsonPersistenceStore(
+                logger: provider.GetRequiredService<ILogger<LocalJsonPersistenceStore>>()));
         services.AddSingleton<IProcessMetadataProvider, ProcessMetadataProvider>();
 
         services.AddSingleton<MonitoringRuntime>();

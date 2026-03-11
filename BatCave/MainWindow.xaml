@@ -380,7 +380,7 @@
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Padding="8,6" Background="{ThemeResource BatCaveCanvasBrush}">
+                                    <Grid Padding="8,6" Background="Transparent">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="2.2*" />
                                             <ColumnDefinition Width="1*" />
@@ -509,6 +509,7 @@
                                             <controls:MetricTrendChart
                                                 Width="44"
                                                 Height="28"
+                                                ChartIdentityKey="{Binding ResourceId, Mode=OneWay}"
                                                 Values="{Binding MiniTrendValues, Mode=OneWay}"
                                                 VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                 ScaleMode="{Binding MiniScaleMode, Mode=OneWay}"
@@ -601,6 +602,7 @@
                                                     Margin="0,12,0,0"
                                                     MinHeight="220"
                                                     Background="Transparent"
+                                                    ChartIdentityKey="{Binding SystemPrimaryChartIdentityKey, Mode=OneWay}"
                                                     Values="{Binding GlobalPrimaryTrendValues, Mode=OneWay}"
                                                     VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                     OverlayValues="{Binding GlobalSecondaryTrendValues, Mode=OneWay}"
@@ -632,6 +634,7 @@
                                                     MinHeight="72"
                                                     Background="Transparent"
                                                     Visibility="{Binding GlobalAuxiliaryChartVisibility, Mode=OneWay}"
+                                                    ChartIdentityKey="{Binding SystemAuxiliaryChartIdentityKey, Mode=OneWay}"
                                                     Values="{Binding GlobalAuxiliaryTrendValues, Mode=OneWay}"
                                                     VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                     ScaleMode="{Binding GlobalAuxiliaryScaleMode, Mode=OneWay}"
@@ -690,6 +693,7 @@
                                                                     Grid.Row="1"
                                                                     MinHeight="18"
                                                                     Background="Transparent"
+                                                                    ChartIdentityKey="{Binding ChartIdentityKey, Mode=OneWay}"
                                                                     Values="{Binding Values, Mode=OneWay}"
                                                                     VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                                     OverlayValues="{Binding OverlayValues, Mode=OneWay}"
@@ -758,6 +762,7 @@
                                                 MinHeight="240"
                                                 VerticalAlignment="Stretch"
                                                 Background="Transparent"
+                                                ChartIdentityKey="{Binding ProcessPrimaryChartIdentityKey, Mode=OneWay}"
                                                 Values="{Binding GlobalPrimaryTrendValues, Mode=OneWay}"
                                                 VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                 OverlayValues="{Binding GlobalSecondaryTrendValues, Mode=OneWay}"

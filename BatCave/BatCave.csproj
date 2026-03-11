@@ -11,6 +11,7 @@
     <WinUISDKReferences>false</WinUISDKReferences>
     <EnableMsixTooling>true</EnableMsixTooling>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssetTargetFallback>$(AssetTargetFallback);net8.0-windows10.0.19041</AssetTargetFallback>
   </PropertyGroup>
 
   <ItemGroup>
@@ -45,6 +46,7 @@
     <PackageReference Include="CommunityToolkit.WinUI.Collections" Version="8.2.251219" />
     <PackageReference Include="DynamicData" Version="9.4.1" />
     <PackageReference Include="Humanizer.Core" Version="3.0.1" />
+    <PackageReference Include="LiveChartsCore.SkiaSharpView.WinUI" Version="2.0.0-rc6.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.7705" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260209005" />

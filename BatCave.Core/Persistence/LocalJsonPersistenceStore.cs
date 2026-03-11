@@ -1,6 +1,8 @@
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using BatCave.Core.Serialization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Text;
 using System.Text.Json;
 
@@ -13,6 +15,8 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
     {
         WriteIndented = false,
     };
+    private readonly ILogger<LocalJsonPersistenceStore> _logger;
+    private readonly bool _preferLoggerDiagnostics;
 
     private readonly string _settingsPath;
     private readonly string _warmCachePath;
@@ -20,8 +24,10 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
     private readonly object _warningSync = new();
     private readonly Queue<string> _pendingWarnings = new();
 
-    public LocalJsonPersistenceStore(string? baseDirectory = null)
+    public LocalJsonPersistenceStore(string? baseDirectory = null, ILogger<LocalJsonPersistenceStore>? logger = null)
     {
+        _logger = logger ?? NullLogger<LocalJsonPersistenceStore>.Instance;
+        _preferLoggerDiagnostics = logger is not null;
         BaseDirectory = baseDirectory ?? DefaultBaseDirectory();
         _settingsPath = Path.Combine(BaseDirectory, "settings.json");
         _warmCachePath = Path.Combine(BaseDirectory, "warm-cache.json");
@@ -63,7 +69,9 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
         await ExecuteWithWarningAsync(
             operation: "append_diagnostic",
             path: _logsDirectory,
-            action: () => AppendDiagnosticCoreAsync(category, payload, ct)).ConfigureAwait(false);
+            action: () => _preferLoggerDiagnostics
+                ? AppendDiagnosticViaLoggerAsync(category, payload, ct)
+                : AppendDiagnosticCoreAsync(category, payload, ct)).ConfigureAwait(false);
     }
 
     public string? TakeWarning()
@@ -119,12 +127,22 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
 
     private async Task AppendDiagnosticCoreAsync(string category, object payload, CancellationToken ct)
     {
+        DiagnosticEntry entry = CreateDiagnosticEntry(category, payload);
         EnsureLogDirectory();
         string logPath = ResolveDailyLogPath();
-        DiagnosticEntry entry = CreateDiagnosticEntry(category, payload);
         string line = JsonSerializer.Serialize(entry, _compactJson);
         await File.AppendAllTextAsync(logPath, line + Environment.NewLine, Encoding.UTF8, ct).ConfigureAwait(false);
         RotateLogFiles(maxFiles: 14);
+    }
+
+    private Task AppendDiagnosticViaLoggerAsync(string category, object payload, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        DiagnosticEntry entry = CreateDiagnosticEntry(category, payload);
+        string line = JsonSerializer.Serialize(entry, _compactJson);
+        _logger.LogInformation("local_diagnostic {Category} {DiagnosticEntryJson}", category, line);
+        return Task.CompletedTask;
     }
 
     private async Task ExecuteWithWarningAsync(string operation, string path, Func<Task> action)
@@ -137,32 +155,6 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
         {
             EnqueueWarning(operation, path, ex);
             throw;
-        }
-    }
-
-    private void RotateLogFiles(int maxFiles)
-    {
-        FileInfo[] files = new DirectoryInfo(_logsDirectory)
-            .GetFiles("*.jsonl")
-            .OrderByDescending(file => file.LastWriteTimeUtc)
-            .ToArray();
-
-        if (files.Length <= maxFiles)
-        {
-            return;
-        }
-
-        foreach (FileInfo staleFile in files.Skip(maxFiles))
-        {
-            try
-            {
-                staleFile.Delete();
-            }
-            catch (Exception ex)
-            {
-                EnqueueWarning("rotate_log_delete", staleFile.FullName, ex);
-                // best effort rotation; keep local-only behavior even if a stale file cannot be removed
-            }
         }
     }
 
@@ -190,6 +182,32 @@ public sealed class LocalJsonPersistenceStore : IPersistenceStore
     {
         string fileName = $"monitor-{DateTime.UtcNow:yyyyMMdd}.jsonl";
         return Path.Combine(_logsDirectory, fileName);
+    }
+
+    private void RotateLogFiles(int maxFiles)
+    {
+        FileInfo[] files = new DirectoryInfo(_logsDirectory)
+            .GetFiles("*.jsonl")
+            .OrderByDescending(file => file.LastWriteTimeUtc)
+            .ToArray();
+
+        if (files.Length <= maxFiles)
+        {
+            return;
+        }
+
+        foreach (FileInfo staleFile in files.Skip(maxFiles))
+        {
+            try
+            {
+                staleFile.Delete();
+            }
+            catch (Exception ex)
+            {
+                EnqueueWarning("rotate_log_delete", staleFile.FullName, ex);
+                // best effort rotation; keep local-only behavior even if a stale file cannot be removed
+            }
+        }
     }
 
     private static DiagnosticEntry CreateDiagnosticEntry(string category, object payload)

@@ -105,6 +105,7 @@ public partial class MonitoringShellViewModel
                 OnPropertyChanged(nameof(GlobalCombinedChartVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalGridVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalPlaceholderVisibility));
+                RaiseChartIdentityProperties();
                 QueueGlobalDetailStateRefresh();
             }
             catch (Exception ex)
@@ -257,6 +258,12 @@ public partial class MonitoringShellViewModel
         private set => SetProperty(ref _globalAuxiliaryDomainMax, value);
     }
 
+    public string SystemPrimaryChartIdentityKey => BuildInspectorChartIdentityKey(scope: "system", role: "primary");
+
+    public string SystemAuxiliaryChartIdentityKey => BuildInspectorChartIdentityKey(scope: "system", role: "aux");
+
+    public string ProcessPrimaryChartIdentityKey => BuildInspectorChartIdentityKey(scope: "process", role: "primary");
+
     public CpuGraphMode CpuGraphMode
     {
         get => _cpuGraphMode;
@@ -272,6 +279,7 @@ public partial class MonitoringShellViewModel
                 OnPropertyChanged(nameof(GlobalCpuLogicalGridVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalPlaceholderVisibility));
                 RaiseCpuModeChromeProperties();
+                RaiseChartIdentityProperties();
             }
         }
     }
@@ -325,6 +333,15 @@ public partial class MonitoringShellViewModel
             nameof(ProcessDetailVisibility),
             nameof(GlobalCpuLogicalGridVisibility),
             nameof(GlobalCpuLogicalPlaceholderVisibility));
+        RaiseChartIdentityProperties();
+    }
+
+    private void RaiseChartIdentityProperties()
+    {
+        RaiseProperties(
+            nameof(SystemPrimaryChartIdentityKey),
+            nameof(SystemAuxiliaryChartIdentityKey),
+            nameof(ProcessPrimaryChartIdentityKey));
     }
 
     private void RefreshGlobalPerformanceState(SystemGlobalMetricsSample sampled)
@@ -670,6 +687,38 @@ public partial class MonitoringShellViewModel
         {
             SelectedGlobalResource = fallback;
         }
+    }
+
+    private string BuildInspectorChartIdentityKey(string scope, string role)
+    {
+        string normalizedScope = string.IsNullOrWhiteSpace(scope) ? "system" : scope;
+        string normalizedRole = string.IsNullOrWhiteSpace(role) ? "primary" : role;
+        string resourceToken = ResolveActiveResourceIdentityToken(normalizedScope);
+        string modeToken = IsCpuResourceIdentity(resourceToken)
+            ? (IsCpuLogicalMode ? "logical" : "combined")
+            : "default";
+
+        return $"{normalizedScope}:{resourceToken}:{normalizedRole}:{modeToken}";
+    }
+
+    private string ResolveActiveResourceIdentityToken(string scope)
+    {
+        bool processScope = string.Equals(scope, "process", StringComparison.OrdinalIgnoreCase);
+        string? explicitResourceId = SelectedGlobalResource?.ResourceId;
+        if (!string.IsNullOrWhiteSpace(explicitResourceId)
+            && explicitResourceId.StartsWith("proc:", StringComparison.OrdinalIgnoreCase) == processScope)
+        {
+            return explicitResourceId!;
+        }
+
+        string? fallback = processScope ? _lastSelectedProcessResourceId : _lastSelectedGlobalResourceId;
+        return string.IsNullOrWhiteSpace(fallback) ? "none" : fallback!;
+    }
+
+    private static bool IsCpuResourceIdentity(string resourceToken)
+    {
+        return string.Equals(resourceToken, CpuGlobalResourceId, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(resourceToken, ProcessCpuResourceId, StringComparison.OrdinalIgnoreCase);
     }
 
     private List<GlobalResourceDescriptor> BuildGlobalResourceDescriptors(SystemGlobalMetricsSample sampled)
@@ -1255,7 +1304,11 @@ public partial class MonitoringShellViewModel
         while (_globalCpuLogicalProcessorRows.Count < rowCount)
         {
             int index = _globalCpuLogicalProcessorRows.Count;
-            _globalCpuLogicalProcessorRows.Add(new LogicalProcessorTrendViewState($"CPU {index}", [], []));
+            _globalCpuLogicalProcessorRows.Add(new LogicalProcessorTrendViewState(
+                $"CPU {index}",
+                BuildLogicalCpuChartIdentityKey(index),
+                [],
+                []));
         }
 
         while (_globalCpuLogicalProcessorRows.Count > rowCount)
@@ -1269,6 +1322,11 @@ public partial class MonitoringShellViewModel
             FixedRingSeries kernel = index < logicalKernelSeries.Count ? logicalKernelSeries[index] : EmptyTrendSeries;
             _globalCpuLogicalProcessorRows[index].UpdateValues(logical, kernel, visiblePointCount);
         }
+    }
+
+    private static string BuildLogicalCpuChartIdentityKey(int index)
+    {
+        return $"system:{CpuGlobalResourceId}:logical:{index}";
     }
 
     private void ApplyGlobalTrendValues(

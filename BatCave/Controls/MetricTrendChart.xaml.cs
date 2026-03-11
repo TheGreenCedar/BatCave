@@ -1,17 +1,26 @@
 using BatCave.Charts;
 using BatCave.Converters;
+using LiveChartsCore;
+using LiveChartsCore.Defaults;
+using LiveChartsCore.Measure;
+using LiveChartsCore.SkiaSharpView;
+using LiveChartsCore.SkiaSharpView.Painting;
+using LiveChartsCore.SkiaSharpView.Painting.Effects;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
+using SkiaSharp;
 using System;
+using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Threading;
-using Windows.Foundation;
 using Windows.UI;
+using LiveChartsCore.SkiaSharpView.WinUI;
 
 namespace BatCave.Controls;
 
@@ -34,6 +43,12 @@ public sealed partial class MetricTrendChart : UserControl
         typeof(int),
         typeof(MetricTrendChart),
         new PropertyMetadata(MetricTrendChartRenderPlanner.MinVisiblePointCount, OnChartPropertyChanged));
+
+    public static readonly DependencyProperty ChartIdentityKeyProperty = DependencyProperty.Register(
+        nameof(ChartIdentityKey),
+        typeof(string),
+        typeof(MetricTrendChart),
+        new PropertyMetadata(string.Empty, OnChartPropertyChanged));
 
     public static readonly DependencyProperty ScaleModeProperty = DependencyProperty.Register(
         nameof(ScaleMode),
@@ -113,40 +128,55 @@ public sealed partial class MetricTrendChart : UserControl
         typeof(MetricTrendChart),
         new PropertyMetadata(MetricTrendTransitionMath.DefaultDurationMs, OnChartPropertyChanged));
 
-    private readonly Brush _defaultStrokeBrush = new SolidColorBrush(Colors.DodgerBlue);
-    private readonly Brush _defaultFillBrush = new SolidColorBrush(Color.FromArgb(38, 30, 144, 255));
-    private readonly Brush _defaultOverlayStrokeBrush = new SolidColorBrush(Color.FromArgb(204, 76, 93, 112));
-    private readonly Brush _defaultGridBrush = new SolidColorBrush(Color.FromArgb(36, 140, 148, 163));
-    private readonly PointCollection _linePoints = [];
-    private readonly PointCollection _overlayPoints = [];
-    private readonly PointCollection _areaPoints = [];
-    private readonly PointCollection _targetLinePoints = [];
-    private readonly PointCollection _targetOverlayPoints = [];
-    private readonly PointCollection _animationStartLinePoints = [];
-    private readonly PointCollection _animationStartOverlayPoints = [];
-    private readonly DoubleCollection _overlayDashArray = [2, 2];
+    private static readonly DashEffect OverlayDashEffect = new([2f, 2f], 0f);
+    private readonly Color _defaultStrokeColor = Colors.DodgerBlue;
+    private readonly Color _defaultFillColor = Color.FromArgb(38, 30, 144, 255);
+    private readonly Color _defaultOverlayStrokeColor = Color.FromArgb(204, 76, 93, 112);
+    private readonly Color _defaultGridColor = Color.FromArgb(36, 140, 148, 163);
+    private readonly Axis _xAxis = new();
+    private readonly Axis _yAxis = new();
+    private readonly Axis[] _xAxes;
+    private readonly Axis[] _yAxes;
+    private ObservableCollection<ObservablePoint> _primaryPoints = [];
+    private ObservableCollection<ObservablePoint> _overlayPoints = [];
+    private LineSeries<ObservablePoint> _primarySeries = null!;
+    private LineSeries<ObservablePoint> _overlaySeries = null!;
+    private ISeries[] _singleSeries = null!;
+    private ISeries[] _dualSeries = null!;
+    private readonly Axis _transitionXAxis = new();
+    private readonly Axis _transitionYAxis = new();
+    private readonly Axis[] _transitionXAxes;
+    private readonly Axis[] _transitionYAxes;
+    private ObservableCollection<ObservablePoint> _transitionPrimaryPoints = [];
+    private ObservableCollection<ObservablePoint> _transitionOverlayPoints = [];
+    private LineSeries<ObservablePoint> _transitionPrimarySeries = null!;
+    private LineSeries<ObservablePoint> _transitionOverlaySeries = null!;
+    private ISeries[] _transitionSingleSeries = null!;
+    private ISeries[] _transitionDualSeries = null!;
 
     private double _dynamicDomainMaxRaw;
-    private double _cachedGridWidth = double.NaN;
-    private double _cachedGridHeight = double.NaN;
-    private Geometry? _cachedGridGeometry;
-    private DispatcherQueueTimer? _transitionTimer;
-    private DateTimeOffset _transitionStartedAt;
-    private double _transitionPlotHeight;
-    private bool _isTransitionRunning;
-    private bool _hasTransitionSnapshot;
-    private MetricTrendTransitionSnapshot _transitionSnapshot;
-    private int _pendingInvalidationMask = (int)RenderInvalidation.All;
     private int _renderQueued;
+    private bool _hasTransitionSnapshot;
+    private bool _pendingViewportSwitch;
+    private bool _requiresTransitionReset;
+    private bool _requiresSeriesRebuild;
     private INotifyPropertyChanged? _dataContextNotifier;
+    private MetricTrendTransitionSnapshot _transitionSnapshot;
+    private Storyboard? _viewportTransitionStoryboard;
+    private DispatcherQueueTimer? _viewportTransitionCleanupTimer;
 
     public MetricTrendChart()
     {
         InitializeComponent();
-        LinePolyline.Points = _linePoints;
-        OverlayPolyline.Points = _overlayPoints;
-        AreaPolygon.Points = _areaPoints;
-        OverlayPolyline.StrokeDashArray = _overlayDashArray;
+
+        _xAxes = [_xAxis];
+        _yAxes = [_yAxis];
+        _transitionXAxes = [_transitionXAxis];
+        _transitionYAxes = [_transitionYAxis];
+        RebuildChartSeries();
+
+        InitializeChartSurface(TrendChart, _xAxes, _yAxes, _singleSeries);
+        InitializeChartSurface(TransitionChart, _transitionXAxes, _transitionYAxes, _transitionSingleSeries);
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -171,6 +201,12 @@ public sealed partial class MetricTrendChart : UserControl
     {
         get => (int)GetValue(VisiblePointCountProperty);
         set => SetValue(VisiblePointCountProperty, value);
+    }
+
+    public string ChartIdentityKey
+    {
+        get => (string)GetValue(ChartIdentityKeyProperty);
+        set => SetValue(ChartIdentityKeyProperty, value ?? string.Empty);
     }
 
     public MetricTrendScaleMode ScaleMode
@@ -199,25 +235,25 @@ public sealed partial class MetricTrendChart : UserControl
 
     public Brush StrokeBrush
     {
-        get => (Brush?)GetValue(StrokeBrushProperty) ?? _defaultStrokeBrush;
+        get => (Brush?)GetValue(StrokeBrushProperty) ?? new SolidColorBrush(_defaultStrokeColor);
         set => SetValue(StrokeBrushProperty, value);
     }
 
     public Brush FillBrush
     {
-        get => (Brush?)GetValue(FillBrushProperty) ?? _defaultFillBrush;
+        get => (Brush?)GetValue(FillBrushProperty) ?? new SolidColorBrush(_defaultFillColor);
         set => SetValue(FillBrushProperty, value);
     }
 
     public Brush GridBrush
     {
-        get => (Brush?)GetValue(GridBrushProperty) ?? _defaultGridBrush;
+        get => (Brush?)GetValue(GridBrushProperty) ?? new SolidColorBrush(_defaultGridColor);
         set => SetValue(GridBrushProperty, value);
     }
 
     public Brush OverlayStrokeBrush
     {
-        get => (Brush?)GetValue(OverlayStrokeBrushProperty) ?? _defaultOverlayStrokeBrush;
+        get => (Brush?)GetValue(OverlayStrokeBrushProperty) ?? new SolidColorBrush(_defaultOverlayStrokeColor);
         set => SetValue(OverlayStrokeBrushProperty, value);
     }
 
@@ -253,29 +289,36 @@ public sealed partial class MetricTrendChart : UserControl
 
     public void RequestRender()
     {
-        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
         ScheduleRender();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        StopTransition();
-        _hasTransitionSnapshot = false;
+        ResetTransitionState();
         AttachDataContextNotifier(DataContext as INotifyPropertyChanged);
-        Invalidate(RenderInvalidation.All);
         ScheduleRender();
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        StopTransition();
-        _hasTransitionSnapshot = false;
+        ResetTransitionState();
         AttachDataContextNotifier(null);
     }
 
     private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
     {
         AttachDataContextNotifier(args.NewValue as INotifyPropertyChanged);
+    }
+
+    private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Width <= 1d || e.NewSize.Height <= 1d)
+        {
+            ResetTransitionState();
+            return;
+        }
+
+        ScheduleRender();
     }
 
     private void AttachDataContextNotifier(INotifyPropertyChanged? notifier)
@@ -304,7 +347,6 @@ public sealed partial class MetricTrendChart : UserControl
             return;
         }
 
-        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
         ScheduleRender();
     }
 
@@ -319,17 +361,6 @@ public sealed partial class MetricTrendChart : UserControl
             || propertyName.Equals("OverlayValues", StringComparison.Ordinal)
             || propertyName.Equals("MiniTrendValues", StringComparison.Ordinal)
             || propertyName.EndsWith("TrendValues", StringComparison.Ordinal);
-    }
-
-    private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        Invalidate(RenderInvalidation.Geometry | RenderInvalidation.Axes);
-        ScheduleRender();
-    }
-
-    private void Invalidate(RenderInvalidation invalidation)
-    {
-        Interlocked.Or(ref _pendingInvalidationMask, (int)invalidation);
     }
 
     private void ScheduleRender()
@@ -357,54 +388,57 @@ public sealed partial class MetricTrendChart : UserControl
     private void ProcessScheduledRender()
     {
         Interlocked.Exchange(ref _renderQueued, 0);
-        if (!TryEnsureUiThreadForRender())
+        if (!TryEnsureUiThreadForRender() || !IsLoaded)
         {
             return;
         }
 
-        if (!IsLoaded)
-        {
-            return;
-        }
-
-        int invalidationMask = Interlocked.Exchange(ref _pendingInvalidationMask, (int)RenderInvalidation.None);
-        if (invalidationMask == (int)RenderInvalidation.None)
-        {
-            return;
-        }
-
-        if (!TryGetRenderSize(out double width, out double height))
-        {
-            Interlocked.Or(ref _pendingInvalidationMask, invalidationMask);
-            return;
-        }
-
-        RenderInvalidation invalidation = (RenderInvalidation)invalidationMask;
         int visibleCount = MetricTrendChartRenderPlanner.NormalizeVisiblePointCount(VisiblePointCount);
         bool showAxes = ShowGrid;
-
-        if ((invalidation & RenderInvalidation.Style) != 0)
+        if (_requiresTransitionReset)
         {
-            ApplyVisualState(visibleCount, showAxes);
+            ResetTransitionState();
+            _requiresTransitionReset = false;
         }
 
-        if ((invalidation & (RenderInvalidation.Geometry | RenderInvalidation.Axes)) == 0)
+        if (_requiresSeriesRebuild)
         {
-            return;
+            RebuildChartSeries();
+            _requiresSeriesRebuild = false;
         }
 
-        ChartRenderMeta renderMeta = BuildRenderMeta(visibleCount, width, height);
+        bool viewportSwitchRequested = _pendingViewportSwitch
+            && (!_hasTransitionSnapshot || _transitionSnapshot.VisiblePointCount != visibleCount);
+        _pendingViewportSwitch = false;
 
-        if ((invalidation & RenderInvalidation.Axes) != 0)
+        bool shrinkingViewportSwitch = viewportSwitchRequested && IsShrinkingViewportSwitch(visibleCount);
+
+        ApplyVisualState(visibleCount, showAxes);
+        ChartRenderMeta renderMeta = BuildRenderMeta(visibleCount);
+        MetricTrendTransitionSnapshot nextTransitionSnapshot = CreateTransitionSnapshot(visibleCount, renderMeta.Plan, renderMeta.PointFallbackUsed);
+        bool canAnimate = !shrinkingViewportSwitch && MetricTrendTransitionMath.CanAnimateTransition(
+            enableTransitions: EnableSmoothPointTransitions,
+            hasPreviousFrame: _hasTransitionSnapshot,
+            previous: _transitionSnapshot,
+            next: nextTransitionSnapshot);
+
+        if (viewportSwitchRequested && !shrinkingViewportSwitch && ShouldUseViewportTransition(renderMeta.Plan, visibleCount))
         {
-            ApplyAxes(showAxes, width, height, renderMeta.DomainMax);
+            ApplyViewportTransition(renderMeta.Plan, renderMeta.DomainMax, visibleCount, showAxes);
+        }
+        else if (shrinkingViewportSwitch)
+        {
+            ApplyViewportCutover(renderMeta.Plan, renderMeta.DomainMax, visibleCount, showAxes);
+        }
+        else
+        {
+            StopViewportTransitionCrossfade();
+            ApplyAxes(TrendChart, _xAxis, _yAxis, renderMeta.Plan, renderMeta.DomainMax, visibleCount, showAxes, canAnimate);
+            ApplySeries(renderMeta.Plan);
         }
 
-        if ((invalidation & RenderInvalidation.Geometry) != 0)
-        {
-            ApplySeriesGeometry(renderMeta, visibleCount, width, height);
-        }
-
+        _transitionSnapshot = nextTransitionSnapshot;
+        _hasTransitionSnapshot = true;
         LogSanitizedRenderIfNeeded(renderMeta);
     }
 
@@ -423,300 +457,418 @@ public sealed partial class MetricTrendChart : UserControl
     {
         BottomAxisPanel.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
         TopRightScaleLabel.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
-        GridPath.Visibility = showAxes ? Visibility.Visible : Visibility.Collapsed;
+        GridPath.Visibility = Visibility.Collapsed;
         PlotBorder.BorderThickness = showAxes ? new Thickness(0.7) : new Thickness(0);
         TimeWindowLabel.Text = $"{visibleCount} seconds";
-
-        LinePolyline.Stroke = StrokeBrush;
-        AreaPolygon.Fill = ShowAreaFill ? FillBrush : null;
-        GridPath.Stroke = GridBrush;
-        LinePolyline.StrokeThickness = Math.Max(0.6, StrokeThickness);
-        OverlayPolyline.Stroke = OverlayStrokeBrush;
-        OverlayPolyline.StrokeThickness = Math.Max(0.5, OverlayStrokeThickness);
-        OverlayPolyline.StrokeDashArray = _overlayDashArray;
-        OverlayPolyline.Visibility = ShowOverlay ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private bool TryGetRenderSize(out double width, out double height)
-    {
-        width = PlotBorder.ActualWidth;
-        height = PlotBorder.ActualHeight;
-        if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 1d || height <= 1d)
-        {
-            if (!double.IsFinite(width) || !double.IsFinite(height))
-            {
-                Debug.WriteLine($"[MetricTrendChart] Skipping render due to non-finite size. scale={ScaleMode}, width={width}, height={height}");
-            }
-
-            return false;
-        }
-
-        return true;
-    }
-
-    private ChartRenderMeta BuildRenderMeta(int visibleCount, double width, double height)
+    private ChartRenderMeta BuildRenderMeta(int visibleCount)
     {
         MetricTrendChartRenderPlan plan = MetricTrendChartRenderPlanner.CreatePlan(new MetricTrendChartRenderRequest(
             Values ?? Array.Empty<double>(),
             OverlayValues ?? Array.Empty<double>(),
             visibleCount,
-            width,
-            height,
             ScaleMode,
             DomainMaxOverride,
             _dynamicDomainMaxRaw));
 
         _dynamicDomainMaxRaw = plan.NextRawDomainMax;
-        CopyPointCollection(plan.LinePoints, _targetLinePoints);
-        CopyPointCollection(plan.OverlayPoints, _targetOverlayPoints);
 
         return new ChartRenderMeta(
+            Plan: plan,
             DomainMax: plan.DomainMax,
             MaxVisible: plan.MaxVisible,
             NonFiniteSeriesDetected: plan.NonFiniteSeriesDetected,
             DomainFallbackUsed: plan.DomainFallbackUsed,
-            PointFallbackUsed: plan.LineFallbackUsed || (ShowOverlay && plan.OverlayFallbackUsed),
-            LinePointCount: _targetLinePoints.Count,
-            OverlayPointCount: ShowOverlay ? _targetOverlayPoints.Count : 0);
+            PointFallbackUsed: plan.LineFallbackUsed || (ShowOverlay && plan.OverlayFallbackUsed));
     }
 
-    private void ApplyAxes(bool showAxes, double width, double height, double domainMax)
+    private void InitializeChartSurface(CartesianChart chart, Axis[] xAxes, Axis[] yAxes, ISeries[] singleSeries)
     {
-        if (!showAxes)
-        {
-            TopRightScaleLabel.Text = string.Empty;
-            GridPath.Data = null;
-            return;
-        }
-
-        TopRightScaleLabel.Text = FormatScaleLabel(domainMax);
-        GridPath.Data = GetOrBuildGridGeometry(width, height);
+        chart.XAxes = xAxes;
+        chart.YAxes = yAxes;
+        chart.Series = singleSeries;
+        chart.ZoomMode = ZoomAndPanMode.None;
+        chart.LegendPosition = LegendPosition.Hidden;
+        chart.TooltipPosition = TooltipPosition.Hidden;
+        chart.EasingFunction = EasingFunctions.CubicOut;
     }
 
-    private Geometry GetOrBuildGridGeometry(double width, double height)
+    private void ApplyAxes(
+        CartesianChart chart,
+        Axis xAxis,
+        Axis yAxis,
+        MetricTrendChartRenderPlan plan,
+        double domainMax,
+        int visibleCount,
+        bool showAxes,
+        bool canAnimate)
     {
-        double roundedWidth = Math.Round(width, 2);
-        double roundedHeight = Math.Round(height, 2);
-        if (_cachedGridGeometry is not null
-            && _cachedGridWidth == roundedWidth
-            && _cachedGridHeight == roundedHeight)
-        {
-            return _cachedGridGeometry;
-        }
+        TopRightScaleLabel.Text = showAxes ? FormatScaleLabel(domainMax) : string.Empty;
 
-        _cachedGridWidth = roundedWidth;
-        _cachedGridHeight = roundedHeight;
-        _cachedGridGeometry = BuildGridGeometry(roundedWidth, roundedHeight, verticalDivisions: 12, horizontalDivisions: 8);
-        return _cachedGridGeometry;
+        int slotCount = Math.Max(plan.SlotCount, 2);
+        double maxLimit = Math.Max(1d, slotCount - 1d);
+        double xMinStep = Math.Max(1d, Math.Ceiling(Math.Max(visibleCount, 2) / 12d));
+        double safeDomainMax = Math.Max(domainMax, 1d);
+        double yMinStep = Math.Max(safeDomainMax / 8d, 0.01d);
+
+        ConfigureAxis(xAxis, 0d, maxLimit, xMinStep, showAxes);
+        ConfigureAxis(yAxis, 0d, safeDomainMax, yMinStep, showAxes);
+        chart.AnimationsSpeed = canAnimate
+            ? TimeSpan.FromMilliseconds(PointTransitionDurationMs)
+            : TimeSpan.Zero;
     }
 
-    private void ApplySeriesGeometry(ChartRenderMeta renderMeta, int visiblePointCount, double width, double height)
+    private MetricTrendTransitionSnapshot CreateTransitionSnapshot(int visibleCount, MetricTrendChartRenderPlan plan, bool fallbackUsed)
     {
-        MetricTrendTransitionSnapshot nextSnapshot = new(
-            VisiblePointCount: visiblePointCount,
+        double width = PlotBorder.ActualWidth;
+        double height = PlotBorder.ActualHeight;
+
+        return new MetricTrendTransitionSnapshot(
+            VisiblePointCount: visibleCount,
             ScaleMode: ScaleMode,
             DomainMaxOverride: DomainMaxOverride,
             Width: width,
             Height: height,
-            LinePointCount: renderMeta.LinePointCount,
-            OverlayPointCount: renderMeta.OverlayPointCount,
-            FallbackUsed: renderMeta.PointFallbackUsed);
-
-        bool canAnimate = MetricTrendTransitionMath.CanAnimateTransition(
-            enableTransitions: EnableSmoothPointTransitions,
-            hasPreviousFrame: _hasTransitionSnapshot,
-            previous: _transitionSnapshot,
-            next: nextSnapshot);
-
-        if (canAnimate)
-        {
-            StartOrRetargetTransition(height);
-        }
-        else
-        {
-            StopTransition();
-            ApplyTargetPointsInstant(height);
-        }
-
-        _transitionSnapshot = nextSnapshot;
-        _hasTransitionSnapshot = true;
+            LinePointCount: plan.LineSeries.Values.Count,
+            OverlayPointCount: ShowOverlay ? plan.OverlaySeries.Values.Count : 0,
+            FallbackUsed: fallbackUsed);
     }
 
-    private void StartOrRetargetTransition(double height)
+    private bool IsShrinkingViewportSwitch(int visibleCount)
     {
-        if (_linePoints.Count != _targetLinePoints.Count
-            || (ShowOverlay && _overlayPoints.Count != _targetOverlayPoints.Count))
+        return _hasTransitionSnapshot
+            && visibleCount < _transitionSnapshot.VisiblePointCount;
+    }
+
+    private bool ShouldUseViewportTransition(MetricTrendChartRenderPlan plan, int visibleCount)
+    {
+        return EnableSmoothPointTransitions
+            && _hasTransitionSnapshot
+            && visibleCount >= _transitionSnapshot.VisiblePointCount
+            && _transitionSnapshot.LinePointCount > 0
+            && plan.LineSeries.Values.Count > 0;
+    }
+
+    private void ApplyViewportCutover(MetricTrendChartRenderPlan plan, double domainMax, int visibleCount, bool showAxes)
+    {
+        StopViewportTransitionCrossfade();
+        RebuildChartSeries();
+        ReplaceActiveSeries(plan);
+        ApplyAxes(TrendChart, _xAxis, _yAxis, plan, domainMax, visibleCount, showAxes, canAnimate: false);
+    }
+
+    private void ApplyViewportTransition(MetricTrendChartRenderPlan plan, double domainMax, int visibleCount, bool showAxes)
+    {
+        StopViewportTransitionCrossfade();
+        SnapshotCurrentStateIntoTransitionSurface();
+        TrendChart.Opacity = 0d;
+        TransitionChart.Opacity = 1d;
+        TransitionChart.Visibility = Visibility.Visible;
+
+        ReplaceActiveSeries(plan);
+        ApplyAxes(TrendChart, _xAxis, _yAxis, plan, domainMax, visibleCount, showAxes, canAnimate: false);
+
+        StartViewportTransitionCrossfade();
+    }
+
+    private void ApplySeries(MetricTrendChartRenderPlan plan)
+    {
+        UpdateObservablePoints(_primaryPoints, plan.LineSeries, renderFallback: true);
+        UpdateObservablePoints(_overlayPoints, plan.OverlaySeries, renderFallback: false);
+
+        ApplySeriesPaints(_primarySeries, _overlaySeries);
+
+        ISeries[] targetSeries = ShowOverlay && _overlayPoints.Count > 0
+            ? _dualSeries
+            : _singleSeries;
+
+        if (!ReferenceEquals(TrendChart.Series, targetSeries))
         {
-            ApplyTargetPointsInstant(height);
+            TrendChart.Series = targetSeries;
+        }
+    }
+
+    private void ReplaceActiveSeries(MetricTrendChartRenderPlan plan)
+    {
+        _primaryPoints = CreateObservablePointsCollection(plan.LineSeries, renderFallback: true);
+        _overlayPoints = CreateObservablePointsCollection(plan.OverlaySeries, renderFallback: false);
+        _primarySeries.Values = _primaryPoints;
+        _overlaySeries.Values = _overlayPoints;
+        ApplySeriesPaints(_primarySeries, _overlaySeries);
+
+        ISeries[] targetSeries = ShowOverlay && _overlayPoints.Count > 0
+            ? _dualSeries
+            : _singleSeries;
+
+        if (!ReferenceEquals(TrendChart.Series, targetSeries))
+        {
+            TrendChart.Series = targetSeries;
+        }
+    }
+
+    private void SnapshotCurrentStateIntoTransitionSurface()
+    {
+        _transitionPrimaryPoints = ClonePoints(_primaryPoints);
+        _transitionOverlayPoints = ClonePoints(_overlayPoints);
+        _transitionPrimarySeries.Values = _transitionPrimaryPoints;
+        _transitionOverlaySeries.Values = _transitionOverlayPoints;
+        ApplySeriesPaints(_transitionPrimarySeries, _transitionOverlaySeries);
+        CopyAxisState(_xAxis, _transitionXAxis);
+        CopyAxisState(_yAxis, _transitionYAxis);
+
+        ISeries[] targetSeries = ShowOverlay && _transitionOverlayPoints.Count > 0
+            ? _transitionDualSeries
+            : _transitionSingleSeries;
+
+        if (!ReferenceEquals(TransitionChart.Series, targetSeries))
+        {
+            TransitionChart.Series = targetSeries;
+        }
+        TransitionChart.AnimationsSpeed = TimeSpan.Zero;
+    }
+
+    private void StartViewportTransitionCrossfade()
+    {
+        TimeSpan duration = TimeSpan.FromMilliseconds(PointTransitionDurationMs);
+        DoubleAnimation fadeOut = new()
+        {
+            From = 1d,
+            To = 0d,
+            Duration = new Duration(duration),
+            EnableDependentAnimation = true,
+        };
+        DoubleAnimation fadeIn = new()
+        {
+            From = 0d,
+            To = 1d,
+            Duration = new Duration(duration),
+            EnableDependentAnimation = true,
+        };
+
+        Storyboard storyboard = new();
+        Storyboard.SetTarget(fadeOut, TransitionChart);
+        Storyboard.SetTargetProperty(fadeOut, "Opacity");
+        Storyboard.SetTarget(fadeIn, TrendChart);
+        Storyboard.SetTargetProperty(fadeIn, "Opacity");
+        storyboard.Children.Add(fadeOut);
+        storyboard.Children.Add(fadeIn);
+        storyboard.Completed += ViewportTransitionStoryboard_Completed;
+        _viewportTransitionStoryboard = storyboard;
+        EnsureViewportTransitionCleanupTimer(duration);
+        storyboard.Begin();
+    }
+
+    private void ViewportTransitionStoryboard_Completed(object? sender, object e)
+    {
+        StopViewportTransitionCrossfade();
+    }
+
+    private void StopViewportTransitionCrossfade()
+    {
+        if (_viewportTransitionStoryboard is not null)
+        {
+            _viewportTransitionStoryboard.Completed -= ViewportTransitionStoryboard_Completed;
+            _viewportTransitionStoryboard.Stop();
+            _viewportTransitionStoryboard = null;
+        }
+
+        _viewportTransitionCleanupTimer?.Stop();
+
+        TrendChart.Opacity = 1d;
+        TransitionChart.Opacity = 0d;
+        TransitionChart.Visibility = Visibility.Collapsed;
+        ClearTransitionSurface();
+    }
+
+    private void ResetTransitionState()
+    {
+        StopViewportTransitionCrossfade();
+        _hasTransitionSnapshot = false;
+        _pendingViewportSwitch = false;
+        _transitionSnapshot = default;
+        _dynamicDomainMaxRaw = 0d;
+        _requiresSeriesRebuild = true;
+    }
+
+    private void RebuildChartSeries()
+    {
+        _primarySeries = CreateSeries(_primaryPoints);
+        _overlaySeries = CreateSeries(_overlayPoints);
+        _singleSeries = [_primarySeries];
+        _dualSeries = [_primarySeries, _overlaySeries];
+        _transitionPrimarySeries = CreateSeries(_transitionPrimaryPoints);
+        _transitionOverlaySeries = CreateSeries(_transitionOverlayPoints);
+        _transitionSingleSeries = [_transitionPrimarySeries];
+        _transitionDualSeries = [_transitionPrimarySeries, _transitionOverlaySeries];
+
+        ApplySeriesPaints(_primarySeries, _overlaySeries);
+        ApplySeriesPaints(_transitionPrimarySeries, _transitionOverlaySeries);
+
+        TrendChart.Series = Array.Empty<ISeries>();
+        ClearTransitionSurface();
+    }
+
+    private void ClearTransitionSurface()
+    {
+        _transitionPrimaryPoints.Clear();
+        _transitionOverlayPoints.Clear();
+        _transitionPrimarySeries.Values = _transitionPrimaryPoints;
+        _transitionOverlaySeries.Values = _transitionOverlayPoints;
+        TransitionChart.Series = Array.Empty<ISeries>();
+    }
+
+    private void EnsureViewportTransitionCleanupTimer(TimeSpan duration)
+    {
+        if (DispatcherQueue is null)
+        {
             return;
         }
 
-        CopyPointCollection(_linePoints, _animationStartLinePoints);
-        if (ShowOverlay)
+        _viewportTransitionCleanupTimer ??= DispatcherQueue.CreateTimer();
+        _viewportTransitionCleanupTimer.Stop();
+        _viewportTransitionCleanupTimer.Interval = duration;
+        _viewportTransitionCleanupTimer.Tick -= ViewportTransitionCleanupTimer_Tick;
+        _viewportTransitionCleanupTimer.Tick += ViewportTransitionCleanupTimer_Tick;
+        _viewportTransitionCleanupTimer.Start();
+    }
+
+    private void ViewportTransitionCleanupTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        sender.Stop();
+        StopViewportTransitionCrossfade();
+    }
+
+    private void ApplySeriesPaints(LineSeries<ObservablePoint> primarySeries, LineSeries<ObservablePoint> overlaySeries)
+    {
+        primarySeries.Stroke = CreateStrokePaint(StrokeBrush, _defaultStrokeColor, Math.Max(0.6d, StrokeThickness));
+        primarySeries.Fill = ShowAreaFill ? CreateFillPaint(FillBrush, _defaultFillColor) : null;
+
+        SolidColorPaint overlayPaint = CreateStrokePaint(
+            OverlayStrokeBrush,
+            _defaultOverlayStrokeColor,
+            Math.Max(0.5d, OverlayStrokeThickness));
+        overlayPaint.PathEffect = OverlayDashEffect;
+        overlaySeries.Stroke = overlayPaint;
+        overlaySeries.Fill = null;
+    }
+
+    private static ObservableCollection<ObservablePoint> CreateObservablePointsCollection(
+        MetricTrendChartSeriesWindow window,
+        bool renderFallback)
+    {
+        ObservableCollection<ObservablePoint> points = [];
+        UpdateObservablePoints(points, window, renderFallback);
+        return points;
+    }
+
+    private static ObservableCollection<ObservablePoint> ClonePoints(ObservableCollection<ObservablePoint> source)
+    {
+        ObservableCollection<ObservablePoint> clone = [];
+        foreach (ObservablePoint point in source)
         {
-            CopyPointCollection(_overlayPoints, _animationStartOverlayPoints);
-        }
-        else
-        {
-            _animationStartOverlayPoints.Clear();
+            clone.Add(new ObservablePoint(point.X, point.Y));
         }
 
-        _transitionPlotHeight = height;
-        _transitionStartedAt = DateTimeOffset.UtcNow;
-        _isTransitionRunning = true;
-        EnsureTransitionTimer();
-        if (_transitionTimer is null)
+        return clone;
+    }
+
+    private static void CopyAxisState(Axis source, Axis target)
+    {
+        target.MinLimit = source.MinLimit;
+        target.MaxLimit = source.MaxLimit;
+        target.MinStep = source.MinStep;
+        target.ForceStepToMin = source.ForceStepToMin;
+        target.ShowSeparatorLines = source.ShowSeparatorLines;
+        target.LabelsPaint = source.LabelsPaint;
+        target.SeparatorsPaint = source.SeparatorsPaint;
+        target.SubseparatorsPaint = source.SubseparatorsPaint;
+        target.TicksPaint = source.TicksPaint;
+        target.TextSize = source.TextSize;
+    }
+
+    private static void UpdateObservablePoints(
+        ObservableCollection<ObservablePoint> target,
+        MetricTrendChartSeriesWindow window,
+        bool renderFallback)
+    {
+        if (window.Values.Count == 0)
         {
-            _isTransitionRunning = false;
-            ApplyTargetPointsInstant(height);
+            if (renderFallback)
+            {
+                SetOrAddPoint(target, 0, 0d, 0d);
+                SetOrAddPoint(target, 1, 1d, 0d);
+                TrimExcessPoints(target, 2);
+                return;
+            }
+
+            TrimExcessPoints(target, 0);
             return;
         }
 
-        ApplyTransitionFrame(easedProgress: 0d);
-        _transitionTimer.Start();
+        for (int index = 0; index < window.Values.Count; index++)
+        {
+            double value = window.Values[index];
+            SetOrAddPoint(
+                target,
+                index,
+                window.LeadingSlots + index,
+                SanitizeSeriesValue(value));
+        }
+
+        TrimExcessPoints(target, window.Values.Count);
     }
 
-    private void EnsureTransitionTimer()
+    private static void SetOrAddPoint(ObservableCollection<ObservablePoint> target, int index, double x, double y)
     {
-        if (_transitionTimer is not null || DispatcherQueue is null)
+        if (index < target.Count)
         {
+            target[index].X = x;
+            target[index].Y = y;
             return;
         }
 
-        _transitionTimer = DispatcherQueue.CreateTimer();
-        _transitionTimer.Interval = TimeSpan.FromMilliseconds(16);
-        _transitionTimer.Tick += TransitionTimer_Tick;
+        target.Add(new ObservablePoint(x, y));
     }
 
-    private void TransitionTimer_Tick(DispatcherQueueTimer sender, object args)
+    private static void TrimExcessPoints(ObservableCollection<ObservablePoint> target, int desiredCount)
     {
-        if (!_isTransitionRunning)
+        while (target.Count > desiredCount)
         {
-            sender.Stop();
-            return;
-        }
-
-        double progress = MetricTrendTransitionMath.ComputeProgress(
-            DateTimeOffset.UtcNow - _transitionStartedAt,
-            PointTransitionDurationMs);
-        double eased = MetricTrendTransitionMath.EaseOutCubic(progress);
-        ApplyTransitionFrame(eased);
-
-        if (progress >= 1d)
-        {
-            _isTransitionRunning = false;
-            sender.Stop();
+            target.RemoveAt(target.Count - 1);
         }
     }
 
-    private void ApplyTransitionFrame(double easedProgress)
+    private static double SanitizeSeriesValue(double value)
     {
-        if (_animationStartLinePoints.Count != _targetLinePoints.Count
-            || (ShowOverlay && _animationStartOverlayPoints.Count != _targetOverlayPoints.Count))
-        {
-            _isTransitionRunning = false;
-            ApplyTargetPointsInstant(_transitionPlotHeight);
-            return;
-        }
-
-        InterpolatePointCollection(_animationStartLinePoints, _targetLinePoints, easedProgress, _linePoints);
-        if (ShowOverlay)
-        {
-            InterpolatePointCollection(_animationStartOverlayPoints, _targetOverlayPoints, easedProgress, _overlayPoints);
-        }
-        else
-        {
-            _overlayPoints.Clear();
-        }
-
-        UpdateAreaGeometry(_transitionPlotHeight);
+        return !double.IsFinite(value) || value <= 0d
+            ? 0d
+            : value;
     }
 
-    private void ApplyTargetPointsInstant(double height)
+    private void ConfigureAxis(Axis axis, double minLimit, double maxLimit, double minStep, bool showAxes)
     {
-        CopyPointCollection(_targetLinePoints, _linePoints);
-        if (ShowOverlay)
-        {
-            CopyPointCollection(_targetOverlayPoints, _overlayPoints);
-        }
-        else
-        {
-            _overlayPoints.Clear();
-        }
-
-        UpdateAreaGeometry(height);
+        axis.MinLimit = minLimit;
+        axis.MaxLimit = maxLimit;
+        axis.MinStep = minStep;
+        axis.ForceStepToMin = true;
+        axis.ShowSeparatorLines = showAxes;
+        axis.LabelsPaint = null;
+        axis.SeparatorsPaint = showAxes ? CreateGridPaint() : null;
+        axis.SubseparatorsPaint = null;
+        axis.TicksPaint = null;
+        axis.TextSize = 0d;
     }
 
-    private void UpdateAreaGeometry(double height)
+    private static LineSeries<ObservablePoint> CreateSeries(ObservableCollection<ObservablePoint> values)
     {
-        if (ShowAreaFill)
+        return new LineSeries<ObservablePoint>
         {
-            SparklineMath.WriteFillPolygon(_linePoints, height, _areaPoints);
-            AreaPolygon.Fill = FillBrush;
-        }
-        else
-        {
-            AreaPolygon.Fill = null;
-            _areaPoints.Clear();
-        }
-
-        OverlayPolyline.Visibility = ShowOverlay ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void StopTransition()
-    {
-        _isTransitionRunning = false;
-        _transitionTimer?.Stop();
-    }
-
-    private static void InterpolatePointCollection(
-        IList<Point> start,
-        IList<Point> target,
-        double easedProgress,
-        PointCollection destination)
-    {
-        if (start.Count != target.Count)
-        {
-            CopyPointCollection(target, destination);
-            return;
-        }
-
-        EnsurePointCollectionSize(destination, target.Count);
-        for (int index = 0; index < target.Count; index++)
-        {
-            destination[index] = MetricTrendTransitionMath.InterpolatePoint(start[index], target[index], easedProgress);
-        }
-    }
-
-    private static void CopyPointCollection(IReadOnlyList<Point> source, PointCollection destination)
-    {
-        EnsurePointCollectionSize(destination, source.Count);
-        for (int index = 0; index < source.Count; index++)
-        {
-            destination[index] = source[index];
-        }
-    }
-
-    private static void CopyPointCollection(IList<Point> source, PointCollection destination)
-    {
-        EnsurePointCollectionSize(destination, source.Count);
-        for (int index = 0; index < source.Count; index++)
-        {
-            destination[index] = source[index];
-        }
-    }
-
-    private static void EnsurePointCollectionSize(PointCollection destination, int count)
-    {
-        while (destination.Count > count)
-        {
-            destination.RemoveAt(destination.Count - 1);
-        }
-
-        while (destination.Count < count)
-        {
-            destination.Add(new Point(0d, 0d));
-        }
+            Values = values,
+            GeometrySize = 0d,
+            LineSmoothness = 0d,
+            IsVisibleAtLegend = false,
+        };
     }
 
     private void LogSanitizedRenderIfNeeded(ChartRenderMeta renderMeta)
@@ -748,6 +900,21 @@ public sealed partial class MetricTrendChart : UserControl
             _dynamicDomainMaxRaw = 0d;
         }
 
+        if ((property == ScaleModeProperty
+                || property == DomainMaxOverrideProperty
+                || property == ShowOverlayProperty
+                || property == ShowAreaFillProperty
+                || property == ChartIdentityKeyProperty)
+            && !Equals(oldValue, newValue))
+        {
+            _requiresTransitionReset = true;
+        }
+
+        if (property == VisiblePointCountProperty && !Equals(oldValue, newValue))
+        {
+            _pendingViewportSwitch = true;
+        }
+
         if (property == PointTransitionDurationMsProperty)
         {
             int normalized = MetricTrendTransitionMath.NormalizeDurationMs(newValue is int value ? value : MetricTrendTransitionMath.DefaultDurationMs);
@@ -758,50 +925,8 @@ public sealed partial class MetricTrendChart : UserControl
             }
         }
 
-        if (property == EnableSmoothPointTransitionsProperty
-            && newValue is bool enabled
-            && !enabled)
-        {
-            StopTransition();
-            ApplyTargetPointsInstant(Math.Max(1d, PlotBorder.ActualHeight));
-        }
-
-        Invalidate(ResolveInvalidation(property));
         ScheduleRender();
     }
-
-    private static RenderInvalidation ResolveInvalidation(DependencyProperty property)
-    {
-        if (property == ShowGridProperty)
-        {
-            return RenderInvalidation.Style | RenderInvalidation.Axes;
-        }
-
-        if (property == StrokeBrushProperty
-            || property == FillBrushProperty
-            || property == GridBrushProperty
-            || property == OverlayStrokeBrushProperty
-            || property == StrokeThicknessProperty
-            || property == OverlayStrokeThicknessProperty
-            || property == ShowAreaFillProperty
-            || property == ShowOverlayProperty)
-        {
-            return RenderInvalidation.Style;
-        }
-
-        if (property == VisiblePointCountProperty)
-        {
-            return RenderInvalidation.Style | RenderInvalidation.Geometry | RenderInvalidation.Axes;
-        }
-
-        if (property == EnableSmoothPointTransitionsProperty || property == PointTransitionDurationMsProperty)
-        {
-            return RenderInvalidation.Geometry;
-        }
-
-        return RenderInvalidation.Geometry | RenderInvalidation.Axes;
-    }
-
 
     private string FormatScaleLabel(double domainMax)
     {
@@ -848,57 +973,45 @@ public sealed partial class MetricTrendChart : UserControl
         return (ulong)Math.Round(value);
     }
 
-    private static Geometry BuildGridGeometry(double width, double height, int verticalDivisions, int horizontalDivisions)
+    private SolidColorPaint CreateGridPaint()
     {
-        GeometryGroup group = new();
-        if (width <= 0 || height <= 0)
-        {
-            return group;
-        }
-
-        for (int index = 1; index < verticalDivisions; index++)
-        {
-            double x = Math.Round((width * index) / verticalDivisions, 2);
-            group.Children.Add(new LineGeometry
-            {
-                StartPoint = new Windows.Foundation.Point(x, 0),
-                EndPoint = new Windows.Foundation.Point(x, height),
-            });
-        }
-
-        for (int index = 1; index < horizontalDivisions; index++)
-        {
-            double y = Math.Round((height * index) / horizontalDivisions, 2);
-            group.Children.Add(new LineGeometry
-            {
-                StartPoint = new Windows.Foundation.Point(0, y),
-                EndPoint = new Windows.Foundation.Point(width, y),
-            });
-        }
-
-        return group;
+        SolidColorPaint paint = CreateFillPaint(GridBrush, _defaultGridColor);
+        paint.StrokeCap = SKStrokeCap.Round;
+        paint.StrokeJoin = SKStrokeJoin.Round;
+        paint.StrokeThickness = 0.65f;
+        return paint;
     }
 
-    [Flags]
-    private enum RenderInvalidation
+    private SolidColorPaint CreateStrokePaint(Brush brush, Color fallback, double thickness)
     {
-        None = 0,
-        Style = 1 << 0,
-        Geometry = 1 << 1,
-        Axes = 1 << 2,
-        All = Style | Geometry | Axes,
+        SolidColorPaint paint = new(ToSkColor(brush, fallback), (float)thickness)
+        {
+            StrokeCap = SKStrokeCap.Round,
+            StrokeJoin = SKStrokeJoin.Round,
+        };
+
+        return paint;
+    }
+
+    private SolidColorPaint CreateFillPaint(Brush brush, Color fallback)
+    {
+        return new SolidColorPaint(ToSkColor(brush, fallback));
+    }
+
+    private static SKColor ToSkColor(Brush brush, Color fallback)
+    {
+        Color color = brush is SolidColorBrush solidColorBrush
+            ? solidColorBrush.Color
+            : fallback;
+
+        return new SKColor(color.R, color.G, color.B, color.A);
     }
 
     private readonly record struct ChartRenderMeta(
+        MetricTrendChartRenderPlan Plan,
         double DomainMax,
         double MaxVisible,
         bool NonFiniteSeriesDetected,
         bool DomainFallbackUsed,
-        bool PointFallbackUsed,
-        int LinePointCount,
-        int OverlayPointCount);
+        bool PointFallbackUsed);
 }
-
-
-
-

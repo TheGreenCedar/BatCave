@@ -40,6 +40,7 @@
     <Compile Include="..\BatCave\Layouts\ShellAdaptiveLayout.cs" Link="Layouts\ShellAdaptiveLayout.cs" />
     <Compile Include="..\BatCave\Services\RuntimeGateway.cs" Link="Services\RuntimeGateway.cs" />
     <Compile Include="..\BatCave\Services\RuntimeHealthService.cs" Link="Services\RuntimeHealthService.cs" />
+    <Compile Include="..\BatCave\Services\WinUiBenchmarkCliRunner.cs" Link="Services\WinUiBenchmarkCliRunner.cs" />
     <Compile Include="..\BatCave\Services\RuntimeLoopHostedService.cs" Link="Services\RuntimeLoopHostedService.cs" />
     <Compile Include="..\BatCave\Styling\AppThemeTokens.cs" Link="Styling\AppThemeTokens.cs" />
     <Compile Include="..\BatCave\ViewModels\FixedRingSeries.cs" Link="ViewModels\FixedRingSeries.cs" />

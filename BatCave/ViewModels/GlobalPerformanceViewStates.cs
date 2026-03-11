@@ -156,12 +156,14 @@ public sealed class GlobalStatItemViewState(string label, string value) : Observ
     public void UpdateValue(string value) => Value = value;
 }
 
-public sealed class LogicalProcessorTrendViewState(string title, double[] values, double[] overlayValues) : ObservableObject
+public sealed class LogicalProcessorTrendViewState(string title, string chartIdentityKey, double[] values, double[] overlayValues) : ObservableObject
 {
     private double[] _values = values;
     private double[] _overlayValues = overlayValues;
 
     public string Title { get; } = title;
+
+    public string ChartIdentityKey { get; } = chartIdentityKey;
 
     public double[] Values
     {

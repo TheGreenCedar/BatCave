@@ -3,6 +3,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:lvc="using:LiveChartsCore.SkiaSharpView.WinUI"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
@@ -30,31 +31,28 @@
             Opacity="0.9"
             CornerRadius="0"
             MinHeight="20">
-            <Canvas
-                x:Name="PlotCanvas"
-                HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch">
+            <Grid>
                 <Path
                     x:Name="GridPath"
                     Stroke="{ThemeResource CardStrokeColorDefaultBrush}"
                     StrokeThickness="0.65"
                     Opacity="0.28"
                     Visibility="Collapsed" />
-                <Polygon x:Name="AreaPolygon" />
-                <Polyline
-                    x:Name="LinePolyline"
-                    Opacity="0.92"
-                    StrokeLineJoin="Round"
-                    StrokeStartLineCap="Round"
-                    StrokeEndLineCap="Round" />
-                <Polyline
-                    x:Name="OverlayPolyline"
-                    Opacity="0.74"
-                    StrokeLineJoin="Round"
-                    StrokeStartLineCap="Round"
-                    StrokeEndLineCap="Round"
+                <lvc:CartesianChart
+                    x:Name="TrendChart"
+                    Background="Transparent"
+                    HorizontalAlignment="Stretch"
+                    IsHitTestVisible="False"
+                    VerticalAlignment="Stretch" />
+                <lvc:CartesianChart
+                    x:Name="TransitionChart"
+                    Background="Transparent"
+                    HorizontalAlignment="Stretch"
+                    IsHitTestVisible="False"
+                    VerticalAlignment="Stretch"
+                    Opacity="0"
                     Visibility="Collapsed" />
-            </Canvas>
+            </Grid>
         </Border>
 
         <Grid

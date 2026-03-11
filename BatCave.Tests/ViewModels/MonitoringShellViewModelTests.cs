@@ -1492,8 +1492,35 @@ public class MonitoringShellViewModelTests
         Assert.Equal(Visibility.Visible, viewModel.GlobalCpuLogicalGridVisibility);
         Assert.NotEmpty(viewModel.GlobalCpuLogicalProcessorRows);
         LogicalProcessorTrendViewState logicalRow = viewModel.GlobalCpuLogicalProcessorRows[0];
+        Assert.Equal("system:cpu:logical:0", logicalRow.ChartIdentityKey);
         Assert.NotEmpty(logicalRow.Values);
         Assert.NotEmpty(logicalRow.OverlayValues);
+    }
+
+    [Fact]
+    public async Task GlobalSelection_SwitchingCpuToMemory_ChangesPrimaryChartIdentity_AndDisablesOverlay()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 202,
+                cpuPct: 9.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        Assert.Equal("system:cpu:primary:combined", viewModel.SystemPrimaryChartIdentityKey);
+
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Memory));
+        viewModel.SelectedGlobalResource = memoryRow;
+
+        Assert.Equal("system:memory:primary:default", viewModel.SystemPrimaryChartIdentityKey);
+        Assert.False(viewModel.GlobalShowSecondaryOverlay);
     }
 
     [Fact]
@@ -1595,7 +1622,21 @@ public class MonitoringShellViewModelTests
     public async Task ClearingSelection_RestoresSystemSummaryVisibility_AndHidesProcessSummary()
     {
         TestRuntimeEventGateway gateway = new();
-        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 261,
+                cpuPct: 14.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Memory));
+        viewModel.SelectedGlobalResource = memoryRow;
 
         ProcessSample row = Sample(pid: 261, startTime: 26_100, access: AccessState.Full) with
         {
@@ -1606,6 +1647,7 @@ public class MonitoringShellViewModelTests
 
         Assert.Equal(Visibility.Visible, viewModel.ProcessSummarySectionVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal("process:proc:cpu:primary:combined", viewModel.ProcessPrimaryChartIdentityKey);
 
         viewModel.ClearSelection();
 
@@ -1613,6 +1655,36 @@ public class MonitoringShellViewModelTests
         Assert.Equal(Visibility.Visible, viewModel.SystemSummarySectionVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.ProcessSummarySectionVisibility);
         Assert.Equal("SYSTEM VIEW", viewModel.InspectorOverviewEyebrow);
+        Assert.Equal("system:memory:primary:default", viewModel.SystemPrimaryChartIdentityKey);
+    }
+
+    [Fact]
+    public async Task CpuGraphModeSwitch_ChangesSystemPrimaryChartIdentity_WhenCpuRemainsSelected()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 275,
+                cpuPct: 32.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0,
+                cpuSnapshot: new SystemGlobalCpuSnapshot
+                {
+                    LogicalProcessorUtilizationPct = [12.0, 24.0],
+                    LogicalProcessorKernelPct = [4.0, 8.0],
+                }));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        Assert.Equal("system:cpu:primary:combined", viewModel.SystemPrimaryChartIdentityKey);
+
+        viewModel.CpuGraphModeSelectedCommand.Execute("LogicalProcessors");
+
+        Assert.Equal("system:cpu:primary:logical", viewModel.SystemPrimaryChartIdentityKey);
     }
 
     [Fact]

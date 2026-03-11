@@ -53,6 +53,18 @@ public class MainWindowXamlAccessibilityTests
     }
 
     [Fact]
+    public void MainWindowXaml_BindsExplicitChartIdentityKeysForInspectorCharts()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("ChartIdentityKey=\"{Binding ResourceId, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ChartIdentityKey=\"{Binding SystemPrimaryChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ChartIdentityKey=\"{Binding SystemAuxiliaryChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ChartIdentityKey=\"{Binding ProcessPrimaryChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ChartIdentityKey=\"{Binding ChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MainWindowXaml_DoesNotUseHardcodedCpuTrendHexColors()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
@@ -103,6 +115,8 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("Text=\"{Binding DiskText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{Binding NetworkText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("ResourceKey=\"BatCaveSelectionBrush\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Grid Padding=\"8,6\" Background=\"Transparent\">", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<Grid Padding=\"8,6\" Background=\"{ThemeResource BatCaveCanvasBrush}\">", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

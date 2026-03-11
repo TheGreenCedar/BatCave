@@ -1,6 +1,7 @@
 using BatCave.Core.Domain;
 using BatCave.Core.Persistence;
 using BatCave.Core.Tests.TestSupport;
+using Microsoft.Extensions.Logging;
 
 namespace BatCave.Core.Tests.Persistence;
 
@@ -42,7 +43,7 @@ public class LocalJsonPersistenceStoreTests
     }
 
     [Fact]
-    public async Task WarmCache_And_Diagnostics_WriteLocalFilesOnly()
+    public async Task WarmCache_WritesLocalFilesOnly()
     {
         using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-core-tests");
         string baseDir = tempDir.DirectoryPath;
@@ -74,22 +75,33 @@ public class LocalJsonPersistenceStoreTests
         };
 
         await store.SaveWarmCacheAsync(cache, CancellationToken.None);
-        await store.AppendDiagnosticAsync("runtime_tick", new { seq = 42 }, CancellationToken.None);
 
         WarmCache? loadedCache = store.LoadWarmCache();
         Assert.NotNull(loadedCache);
         Assert.Equal(42UL, loadedCache!.Seq);
         Assert.Single(loadedCache.Rows);
 
-        string logsDir = Path.Combine(baseDir, "logs");
-        string[] logFiles = Directory.GetFiles(logsDir, "*.jsonl");
-        Assert.Single(logFiles);
-        Assert.StartsWith(baseDir, logFiles[0], StringComparison.OrdinalIgnoreCase);
+        string warmCachePath = Path.Combine(baseDir, "warm-cache.json");
+        Assert.True(File.Exists(warmCachePath));
+        Assert.StartsWith(baseDir, warmCachePath, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.GetFiles(baseDir, "*.jsonl", SearchOption.AllDirectories));
+    }
 
-        string content = await File.ReadAllTextAsync(logFiles[0]);
-        Assert.Contains("runtime_tick", content, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("http://", content, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("https://", content, StringComparison.OrdinalIgnoreCase);
+    [Fact]
+    public async Task AppendDiagnostic_WhenLoggerProvided_UsesLoggerInsteadOfJsonlFiles()
+    {
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-core-tests");
+        string baseDir = tempDir.DirectoryPath;
+        TestLogger<LocalJsonPersistenceStore> logger = new();
+        LocalJsonPersistenceStore store = new(baseDir, logger);
+
+        await store.AppendDiagnosticAsync("runtime_tick", new { seq = 42 }, CancellationToken.None);
+
+        Assert.Empty(Directory.GetFiles(baseDir, "*.jsonl", SearchOption.AllDirectories));
+        Assert.Single(logger.Entries);
+        Assert.Contains("local_diagnostic", logger.Entries[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("runtime_tick", logger.Entries[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"seq\":42", logger.Entries[0], StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -112,4 +124,38 @@ public class LocalJsonPersistenceStoreTests
         Assert.Null(store.TakeWarning());
     }
 
+}
+
+internal sealed class TestLogger<T> : ILogger<T>
+{
+    public List<string> Entries { get; } = [];
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+    {
+        return NullScope.Instance;
+    }
+
+    public bool IsEnabled(LogLevel logLevel)
+    {
+        return true;
+    }
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        Entries.Add(formatter(state, exception));
+    }
+
+    private sealed class NullScope : IDisposable
+    {
+        public static NullScope Instance { get; } = new();
+
+        public void Dispose()
+        {
+        }
+    }
 }

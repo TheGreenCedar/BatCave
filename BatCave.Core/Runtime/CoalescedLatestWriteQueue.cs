@@ -1,23 +1,34 @@
+using System.Threading.Channels;
+
 namespace BatCave.Core.Runtime;
 
 internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
 {
     private readonly Func<T, CancellationToken, Task> _saveAsync;
     private readonly object _sync = new();
+    private readonly Channel<QueuedWrite> _channel;
+    private readonly Task _workerTask;
 
-    private T _latestPending = default!;
-    private bool _hasPending;
     private bool _disposed;
-    private Task _drainTask = Task.CompletedTask;
-    private TaskCompletionSource<bool>? _idleSignal;
+    private long _latestEnqueuedSerial;
+    private long _lastCompletedSerial;
+    private List<FlushWaiter>? _flushWaiters;
 
     public CoalescedLatestWriteQueue(Func<T, CancellationToken, Task> saveAsync)
     {
         _saveAsync = saveAsync;
+        _channel = Channel.CreateBounded<QueuedWrite>(new BoundedChannelOptions(1)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
+        _workerTask = Task.Run(ProcessLoopAsync);
     }
 
     public void Enqueue(T value)
     {
+        QueuedWrite queuedWrite;
         lock (_sync)
         {
             if (_disposed)
@@ -25,32 +36,32 @@ internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
                 return;
             }
 
-            _latestPending = value;
-            _hasPending = true;
-            _ = EnsureIdleSignalAndDrainStartedNoLock();
+            queuedWrite = new QueuedWrite(++_latestEnqueuedSerial, value);
         }
+
+        _ = _channel.Writer.TryWrite(queuedWrite);
     }
 
     public Task FlushAsync(CancellationToken ct)
     {
-        Task idleTask;
+        Task pendingTask;
         lock (_sync)
         {
-            if (!_hasPending && _drainTask.IsCompleted)
+            if (_latestEnqueuedSerial <= _lastCompletedSerial)
             {
                 return Task.CompletedTask;
             }
 
-            idleTask = EnsureIdleSignalAndDrainStartedNoLock().Task;
+            TaskCompletionSource<bool> flushSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            (_flushWaiters ??= []).Add(new FlushWaiter(_latestEnqueuedSerial, flushSignal));
+            pendingTask = flushSignal.Task;
         }
 
-        return idleTask.WaitAsync(ct);
+        return pendingTask.WaitAsync(ct);
     }
 
     public void Dispose()
     {
-        Task flushTask = Task.CompletedTask;
-
         lock (_sync)
         {
             if (_disposed)
@@ -59,15 +70,13 @@ internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
             }
 
             _disposed = true;
-            if (_hasPending || !_drainTask.IsCompleted)
-            {
-                flushTask = EnsureIdleSignalAndDrainStartedNoLock().Task;
-            }
         }
+
+        _channel.Writer.TryComplete();
 
         try
         {
-            flushTask.GetAwaiter().GetResult();
+            _workerTask.GetAwaiter().GetResult();
         }
         catch
         {
@@ -75,64 +84,89 @@ internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
         }
     }
 
-    private async Task DrainAsync()
+    private async Task ProcessLoopAsync()
     {
-        while (true)
+        try
         {
-            if (!TryDequeuePending(out T pending, out TaskCompletionSource<bool>? idleSignalToComplete))
+            await foreach (QueuedWrite queuedWrite in _channel.Reader.ReadAllAsync().ConfigureAwait(false))
             {
-                CompleteIdleSignal(idleSignalToComplete);
+                try
+                {
+                    await _saveAsync(queuedWrite.Value, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // keep runtime resilient if local persistence is temporarily unavailable
+                }
+                finally
+                {
+                    MarkCompleted(queuedWrite.Serial);
+                }
+            }
+        }
+        finally
+        {
+            CompleteAllFlushWaiters();
+        }
+    }
+
+    private void MarkCompleted(long completedSerial)
+    {
+        List<TaskCompletionSource<bool>> readySignals = [];
+
+        lock (_sync)
+        {
+            if (completedSerial > _lastCompletedSerial)
+            {
+                _lastCompletedSerial = completedSerial;
+            }
+
+            if (_flushWaiters is null || _flushWaiters.Count == 0)
+            {
                 return;
             }
 
-            try
+            for (int index = _flushWaiters.Count - 1; index >= 0; index--)
             {
-                await _saveAsync(pending, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch
-            {
-                // keep runtime resilient if local persistence is temporarily unavailable
+                FlushWaiter waiter = _flushWaiters[index];
+                if (waiter.TargetSerial > _lastCompletedSerial)
+                {
+                    continue;
+                }
+
+                readySignals.Add(waiter.Signal);
+                _flushWaiters.RemoveAt(index);
             }
         }
-    }
 
-    private TaskCompletionSource<bool> EnsureIdleSignalAndDrainStartedNoLock()
-    {
-        _idleSignal ??= CreateIdleSignal();
-        if (_drainTask.IsCompleted)
+        foreach (TaskCompletionSource<bool> readySignal in readySignals)
         {
-            _drainTask = Task.Run(DrainAsync);
+            readySignal.TrySetResult(true);
         }
-
-        return _idleSignal;
     }
 
-    private bool TryDequeuePending(out T pending, out TaskCompletionSource<bool>? idleSignalToComplete)
+    private void CompleteAllFlushWaiters()
     {
+        List<TaskCompletionSource<bool>> pendingSignals = [];
+
         lock (_sync)
         {
-            if (_hasPending)
+            if (_flushWaiters is null || _flushWaiters.Count == 0)
             {
-                pending = _latestPending;
-                _hasPending = false;
-                idleSignalToComplete = null;
-                return true;
+                return;
             }
 
-            pending = default!;
-            idleSignalToComplete = _idleSignal;
-            _idleSignal = null;
-            return false;
+            pendingSignals.AddRange(_flushWaiters.Select(waiter => waiter.Signal));
+            _flushWaiters.Clear();
+        }
+
+        foreach (TaskCompletionSource<bool> pendingSignal in pendingSignals)
+        {
+            pendingSignal.TrySetResult(true);
         }
     }
 
-    private static void CompleteIdleSignal(TaskCompletionSource<bool>? idleSignalToComplete)
-    {
-        idleSignalToComplete?.TrySetResult(true);
-    }
+    private readonly record struct QueuedWrite(long Serial, T Value);
 
-    private static TaskCompletionSource<bool> CreateIdleSignal()
-    {
-        return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
+    private readonly record struct FlushWaiter(long TargetSerial, TaskCompletionSource<bool> Signal);
 }
