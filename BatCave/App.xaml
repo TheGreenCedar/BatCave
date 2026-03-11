@@ -36,6 +36,15 @@
                     <Color x:Key="BatCaveBannerErrorSurfaceColor">#FF3A1319</Color>
                     <Color x:Key="BatCaveSegmentSurfaceColor">#FF112036</Color>
                     <Color x:Key="BatCaveSegmentSelectedColor">#FF60A5FA</Color>
+                    <Color x:Key="BatCaveCaveStoneColor">#FF1E293B</Color>
+                    <Color x:Key="BatCaveCaveMouthColor">#FF020617</Color>
+                    <Color x:Key="BatCaveCaveInputSurfaceColor">#FF0F172A</Color>
+                    <Color x:Key="BatCaveCaveInputBorderColor">#FF475569</Color>
+                    <Color x:Key="BatCaveHeroCaveShellColor">#FF1E293B</Color>
+                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF64748B</Color>
+                    <Color x:Key="BatCaveHeroCaveMouthColor">#FF08111F</Color>
+                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FF14243B</Color>
+                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FFCBD5E1</Color>
 
                     <Color x:Key="ChartCpuStrokeColor">#FF60A5FA</Color>
                     <Color x:Key="ChartCpuFillColor">#2260A5FA</Color>
@@ -78,6 +87,15 @@
                     <Color x:Key="BatCaveBannerErrorSurfaceColor">#FFFEE2E2</Color>
                     <Color x:Key="BatCaveSegmentSurfaceColor">#FFE7EDF5</Color>
                     <Color x:Key="BatCaveSegmentSelectedColor">#FF3B82F6</Color>
+                    <Color x:Key="BatCaveCaveStoneColor">#FF64748B</Color>
+                    <Color x:Key="BatCaveCaveMouthColor">#FF334155</Color>
+                    <Color x:Key="BatCaveCaveInputSurfaceColor">#FFF8FAFC</Color>
+                    <Color x:Key="BatCaveCaveInputBorderColor">#FF94A3B8</Color>
+                    <Color x:Key="BatCaveHeroCaveShellColor">#FF475569</Color>
+                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF0F172A</Color>
+                    <Color x:Key="BatCaveHeroCaveMouthColor">#FF1E293B</Color>
+                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FFFFFFFF</Color>
+                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FF475569</Color>
 
                     <Color x:Key="ChartCpuStrokeColor">#FF3B82F6</Color>
                     <Color x:Key="ChartCpuFillColor">#223B82F6</Color>
@@ -120,6 +138,15 @@
                     <Color x:Key="BatCaveBannerErrorSurfaceColor">#FF3A1319</Color>
                     <Color x:Key="BatCaveSegmentSurfaceColor">#FF112036</Color>
                     <Color x:Key="BatCaveSegmentSelectedColor">#FF60A5FA</Color>
+                    <Color x:Key="BatCaveCaveStoneColor">#FF1E293B</Color>
+                    <Color x:Key="BatCaveCaveMouthColor">#FF020617</Color>
+                    <Color x:Key="BatCaveCaveInputSurfaceColor">#FF0F172A</Color>
+                    <Color x:Key="BatCaveCaveInputBorderColor">#FF475569</Color>
+                    <Color x:Key="BatCaveHeroCaveShellColor">#FF1E293B</Color>
+                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF64748B</Color>
+                    <Color x:Key="BatCaveHeroCaveMouthColor">#FF08111F</Color>
+                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FF14243B</Color>
+                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FFCBD5E1</Color>
 
                     <Color x:Key="ChartCpuStrokeColor">#FF60A5FA</Color>
                     <Color x:Key="ChartCpuFillColor">#2260A5FA</Color>
@@ -162,6 +189,15 @@
             <SolidColorBrush x:Key="BatCaveBannerErrorSurfaceBrush" Color="{ThemeResource BatCaveBannerErrorSurfaceColor}" />
             <SolidColorBrush x:Key="BatCaveSegmentSurfaceBrush" Color="{ThemeResource BatCaveSegmentSurfaceColor}" />
             <SolidColorBrush x:Key="BatCaveSegmentSelectedBrush" Color="{ThemeResource BatCaveSegmentSelectedColor}" />
+            <SolidColorBrush x:Key="BatCaveCaveStoneBrush" Color="{ThemeResource BatCaveCaveStoneColor}" />
+            <SolidColorBrush x:Key="BatCaveCaveMouthBrush" Color="{ThemeResource BatCaveCaveMouthColor}" />
+            <SolidColorBrush x:Key="BatCaveCaveInputSurfaceBrush" Color="{ThemeResource BatCaveCaveInputSurfaceColor}" />
+            <SolidColorBrush x:Key="BatCaveCaveInputBorderBrush" Color="{ThemeResource BatCaveCaveInputBorderColor}" />
+            <SolidColorBrush x:Key="BatCaveHeroCaveShellBrush" Color="{ThemeResource BatCaveHeroCaveShellColor}" />
+            <SolidColorBrush x:Key="BatCaveHeroCaveStrokeBrush" Color="{ThemeResource BatCaveHeroCaveStrokeColor}" />
+            <SolidColorBrush x:Key="BatCaveHeroCaveMouthBrush" Color="{ThemeResource BatCaveHeroCaveMouthColor}" />
+            <SolidColorBrush x:Key="BatCaveHeroInputSurfaceBrush" Color="{ThemeResource BatCaveHeroInputSurfaceColor}" />
+            <SolidColorBrush x:Key="BatCaveHeroInputPlaceholderBrush" Color="{ThemeResource BatCaveHeroInputPlaceholderColor}" />
 
             <SolidColorBrush x:Key="ChartCpuStrokeBrush" Color="{ThemeResource ChartCpuStrokeColor}" />
             <SolidColorBrush x:Key="ChartCpuFillBrush" Color="{ThemeResource ChartCpuFillColor}" />
@@ -182,7 +218,6 @@
             <Thickness x:Key="ShellContentPadding">24</Thickness>
             <Thickness x:Key="ShellFooterPadding">20,14,20,18</Thickness>
             <x:String x:Key="ShellTitleText">BatCave Monitor</x:String>
-            <x:String x:Key="ShellSubtitleText">Windows-native process telemetry with runtime parity.</x:String>
             <x:String x:Key="FilterPlaceholderText">Filter by name or PID</x:String>
             <x:String x:Key="ProcessFilterHelpText">Type to filter by process name or process id.</x:String>
             <x:String x:Key="AdminToggleHelpText">Toggle elevated bridge mode.</x:String>

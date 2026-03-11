@@ -10,9 +10,9 @@ public class MainWindowXamlAccessibilityTests
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("Text=\"{ThemeResource ShellTitleText}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"{ThemeResource ShellSubtitleText}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("PlaceholderText=\"{ThemeResource FilterPlaceholderText}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Background=\"{ThemeResource BatCaveCanvasBrush}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShellSubtitleText", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -81,7 +81,11 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("x:Name=\"HeaderControlsInline\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderAdminControlsInline\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderControlsPhone\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveShell\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveMouth\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveHostPhone\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"FilterTextBox\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"FilterTextBoxPhone\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"AdminModeToggle\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Command=\"{Binding SelectInspectorSectionCommand, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("CommandParameter=\"Summary\"", xaml, StringComparison.Ordinal);
@@ -98,10 +102,13 @@ public class MainWindowXamlAccessibilityTests
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("KeyboardAcceleratorPlacementMode=\"Hidden\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveShell\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveMouth\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveInputSurface\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"FilterTextBox\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Grid.Column=\"1\"", xaml, StringComparison.Ordinal);
         Assert.Contains("<ColumnDefinition Width=\"*\" />", xaml, StringComparison.Ordinal);
-        Assert.Contains("Width=\"304\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Width=\"360\"", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

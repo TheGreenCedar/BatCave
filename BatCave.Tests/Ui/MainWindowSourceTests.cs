@@ -57,6 +57,13 @@ public class MainWindowSourceTests
         string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
 
         Assert.Contains("HeaderDecorationCanvas.Clip = new RectangleGeometry", source, StringComparison.Ordinal);
+        Assert.Contains("HeaderBatGlidePathData", source, StringComparison.Ordinal);
+        Assert.Contains("HeaderBatSweepPathData", source, StringComparison.Ordinal);
+        Assert.Contains("HeaderBatDartPathData", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveHeaderBatPathData", source, StringComparison.Ordinal);
+        Assert.Contains("CreateHeaderBatPath", source, StringComparison.Ordinal);
+        Assert.Contains("StartHeaderBatAnimation", source, StringComparison.Ordinal);
+        Assert.Contains("ResetHeaderDecorationAnimations();", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HeaderDecorationCanvas.Width =", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HeaderDecorationCanvas.Height =", source, StringComparison.Ordinal);
     }

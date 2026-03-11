@@ -106,43 +106,65 @@
             Padding="16,10,16,10"
             SizeChanged="HeaderRegion_SizeChanged">
             <Grid>
-                <Canvas x:Name="HeaderDecorationCanvas" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" IsHitTestVisible="False" Opacity="0.08" />
+                <Canvas x:Name="HeaderDecorationCanvas" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" IsHitTestVisible="False" />
 
-                <Grid ColumnSpacing="18">
+                <Grid ColumnSpacing="16">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
-                    <StackPanel Spacing="2">
+                    <StackPanel MaxWidth="340" Spacing="0" VerticalAlignment="Center">
                         <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="LIVE PROCESS TELEMETRY" />
                         <TextBlock Style="{StaticResource BatCaveTitleTextStyle}" Text="{ThemeResource ShellTitleText}" />
-                        <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" MaxWidth="420" Text="{ThemeResource ShellSubtitleText}" TextWrapping="WrapWholeWords" />
                     </StackPanel>
 
-                    <Border
+                    <Grid
                         x:Name="HeaderControlsInline"
                         Grid.Column="1"
-                        Background="{ThemeResource BatCaveMutedBrush}"
-                        BorderBrush="{ThemeResource BatCavePrimaryBrush}"
-                        BorderThickness="0"
-                        CornerRadius="8"
-                        Padding="0"
-                        VerticalAlignment="Top">
+                        Width="360"
+                        MinWidth="320"
+                        Height="96"
+                        VerticalAlignment="Center">
+                        <Path
+                            x:Name="HeaderCaveShell"
+                            Stretch="Fill"
+                            Fill="{ThemeResource BatCaveHeroCaveShellBrush}"
+                            Stroke="{ThemeResource BatCaveHeroCaveStrokeBrush}"
+                            StrokeThickness="2.25"
+                            Data="M10,84 L22,46 L42,24 L68,18 L94,28 L122,12 L158,18 L194,10 L228,18 L262,14 L296,26 L320,44 L338,66 L350,84 L314,84 L298,60 L280,84 L236,84 L222,56 L204,84 L156,84 L140,54 L122,84 L82,84 L64,58 L46,84 Z" />
+                        <Path
+                            x:Name="HeaderCaveMouth"
+                            Margin="30,16,30,14"
+                            Stretch="Fill"
+                            Fill="{ThemeResource BatCaveHeroCaveMouthBrush}"
+                            Opacity="0.98"
+                            Data="M36,62 C48,34 72,18 104,18 L234,18 C268,18 292,34 304,62 L274,62 L258,42 L240,62 L126,62 L108,34 L88,62 Z" />
+                        <Border
+                            x:Name="HeaderCaveInputSurface"
+                            Margin="64,28,64,20"
+                            Background="{ThemeResource BatCaveHeroInputSurfaceBrush}"
+                            BorderBrush="{ThemeResource BatCaveHeroCaveStrokeBrush}"
+                            BorderThickness="1.5"
+                            CornerRadius="20"
+                            Opacity="1" />
                         <TextBox
                             x:Name="FilterTextBox"
-                            Width="304"
-                            MinWidth="260"
-                            Height="44"
+                            Margin="72,24,72,18"
                             Background="Transparent"
                             BorderThickness="0"
+                            Foreground="{ThemeResource BatCaveTextPrimaryBrush}"
+                            PlaceholderForeground="{ThemeResource BatCaveHeroInputPlaceholderBrush}"
                             PlaceholderText="{ThemeResource FilterPlaceholderText}"
                             Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                            Padding="4,0"
+                            VerticalAlignment="Center"
+                            VerticalContentAlignment="Center"
                             AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
                             AutomationProperties.Name="Process Filter" />
-                    </Border>
-                    <StackPanel x:Name="HeaderAdminControlsInline" Grid.Column="2" Spacing="4" VerticalAlignment="Top" HorizontalAlignment="Right">
+                    </Grid>
+                    <StackPanel x:Name="HeaderAdminControlsInline" Grid.Column="2" Spacing="4" VerticalAlignment="Center" HorizontalAlignment="Right">
                         <TextBlock Style="{StaticResource BatCaveEyebrowTextStyle}" Text="ELEVATION" />
                         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                             <TextBlock VerticalAlignment="Center" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="Admin Mode" />
@@ -166,15 +188,41 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <TextBox
-                x:Name="FilterTextBoxPhone"
-                Background="{ThemeResource BatCaveMutedBrush}"
-                BorderBrush="{ThemeResource BatCavePrimaryBrush}"
-                BorderThickness="0"
-                PlaceholderText="{ThemeResource FilterPlaceholderText}"
-                Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
-                AutomationProperties.Name="Process Filter" />
+            <Grid x:Name="HeaderCaveHostPhone" Height="84">
+                <Path
+                    Stretch="Fill"
+                    Fill="{ThemeResource BatCaveHeroCaveShellBrush}"
+                    Stroke="{ThemeResource BatCaveHeroCaveStrokeBrush}"
+                    StrokeThickness="1.8"
+                    Data="M8,72 L18,40 L38,20 L58,16 L78,24 L102,12 L130,16 L160,10 L186,16 L214,14 L242,24 L264,40 L280,58 L290,72 L262,72 L248,52 L232,72 L196,72 L182,48 L166,72 L122,72 L106,46 L88,72 L52,72 L36,50 L24,72 Z" />
+                <Path
+                    Margin="24,14,24,12"
+                    Stretch="Fill"
+                    Fill="{ThemeResource BatCaveHeroCaveMouthBrush}"
+                    Opacity="0.98"
+                    Data="M26,46 C38,22 56,10 80,10 L176,10 C202,10 220,24 230,46 L206,46 L194,30 L180,46 L96,46 L80,24 L62,46 Z" />
+                <Border
+                    Margin="46,20,46,16"
+                    Background="{ThemeResource BatCaveHeroInputSurfaceBrush}"
+                    BorderBrush="{ThemeResource BatCaveHeroCaveStrokeBrush}"
+                    BorderThickness="1.25"
+                    CornerRadius="18"
+                    Opacity="1" />
+                <TextBox
+                    x:Name="FilterTextBoxPhone"
+                    Margin="54,16,54,14"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Foreground="{ThemeResource BatCaveTextPrimaryBrush}"
+                    PlaceholderForeground="{ThemeResource BatCaveHeroInputPlaceholderBrush}"
+                    PlaceholderText="{ThemeResource FilterPlaceholderText}"
+                    Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    Padding="4,0"
+                    VerticalAlignment="Center"
+                    VerticalContentAlignment="Center"
+                    AutomationProperties.HelpText="{ThemeResource ProcessFilterHelpText}"
+                    AutomationProperties.Name="Process Filter" />
+            </Grid>
             <StackPanel Grid.Row="1" Margin="0,10,0,0" Orientation="Horizontal" Spacing="10">
                 <TextBlock VerticalAlignment="Center" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="Admin Mode" />
                 <ToggleSwitch
