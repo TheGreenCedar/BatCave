@@ -557,7 +557,7 @@
                                             <controls:MetricTrendChart
                                                 Width="44"
                                                 Height="28"
-                                                ChartIdentityKey="{Binding ResourceId, Mode=OneWay}"
+                                                ChartIdentityKey="{Binding ChartIdentityKey, Mode=OneWay}"
                                                 Values="{Binding MiniTrendValues, Mode=OneWay}"
                                                 VisiblePointCount="{Binding ViewModel.MetricTrendWindowSeconds, ElementName=RootWindow, Mode=OneWay}"
                                                 ScaleMode="{Binding MiniScaleMode, Mode=OneWay}"
@@ -940,3 +940,4 @@
         </Border>
     </Grid>
 </Window>
+

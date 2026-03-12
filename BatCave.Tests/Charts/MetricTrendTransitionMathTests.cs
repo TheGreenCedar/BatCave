@@ -58,6 +58,7 @@ public sealed class MetricTrendTransitionMathTests
     public void CanAnimateTransition_TrueWhenCompatible()
     {
         MetricTrendTransitionSnapshot previous = new(
+            ChartIdentityKey: "system:cpu:primary:combined",
             VisiblePointCount: 60,
             ScaleMode: MetricTrendScaleMode.CpuPercent,
             DomainMaxOverride: double.NaN,
@@ -99,6 +100,7 @@ public sealed class MetricTrendTransitionMathTests
         bool nextFallbackUsed)
     {
         MetricTrendTransitionSnapshot previous = new(
+            ChartIdentityKey: "system:cpu:primary:combined",
             VisiblePointCount: previousVisibleCount,
             ScaleMode: previousScaleMode,
             DomainMaxOverride: double.NaN,
@@ -108,6 +110,7 @@ public sealed class MetricTrendTransitionMathTests
             OverlayPointCount: 60,
             FallbackUsed: false);
         MetricTrendTransitionSnapshot next = new(
+            ChartIdentityKey: "system:cpu:primary:combined",
             VisiblePointCount: nextVisibleCount,
             ScaleMode: nextScaleMode,
             DomainMaxOverride: double.NaN,
@@ -120,6 +123,33 @@ public sealed class MetricTrendTransitionMathTests
         bool canAnimate = MetricTrendTransitionMath.CanAnimateTransition(
             enableTransitions,
             hasPreviousFrame,
+            previous,
+            next);
+
+        Assert.False(canAnimate);
+    }
+
+    [Fact]
+    public void CanAnimateTransition_ReturnsFalseWhenChartIdentityChanges()
+    {
+        MetricTrendTransitionSnapshot previous = new(
+            ChartIdentityKey: "system:cpu:primary:combined",
+            VisiblePointCount: 60,
+            ScaleMode: MetricTrendScaleMode.CpuPercent,
+            DomainMaxOverride: double.NaN,
+            Width: 120d,
+            Height: 36d,
+            LinePointCount: 60,
+            OverlayPointCount: 60,
+            FallbackUsed: false);
+        MetricTrendTransitionSnapshot next = previous with
+        {
+            ChartIdentityKey = "process:proc:cpu:primary:combined",
+        };
+
+        bool canAnimate = MetricTrendTransitionMath.CanAnimateTransition(
+            enableTransitions: true,
+            hasPreviousFrame: true,
             previous,
             next);
 

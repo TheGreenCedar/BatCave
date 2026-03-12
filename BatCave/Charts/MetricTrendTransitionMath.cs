@@ -65,6 +65,7 @@ public static class MetricTrendTransitionMath
 
         if (previous.VisiblePointCount != next.VisiblePointCount
             || previous.ScaleMode != next.ScaleMode
+            || !string.Equals(previous.ChartIdentityKey, next.ChartIdentityKey, StringComparison.Ordinal)
             || !AreDomainOverridesEquivalent(previous.DomainMaxOverride, next.DomainMaxOverride))
         {
             return false;
@@ -92,6 +93,7 @@ public static class MetricTrendTransitionMath
 }
 
 public readonly record struct MetricTrendTransitionSnapshot(
+    string ChartIdentityKey,
     int VisiblePointCount,
     MetricTrendScaleMode ScaleMode,
     double DomainMaxOverride,

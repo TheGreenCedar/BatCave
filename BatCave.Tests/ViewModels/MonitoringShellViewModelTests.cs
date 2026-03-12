@@ -1619,6 +1619,39 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task ProcessSelection_SwitchingProcesses_ChangesProcessChartIdentity_AndMiniChartIdentity()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample first = Sample(pid: 310, startTime: 31_000, access: AccessState.Full) with
+        {
+            CpuPct = 11.5,
+        };
+        ProcessSample second = Sample(pid: 311, startTime: 31_100, access: AccessState.Full) with
+        {
+            CpuPct = 19.5,
+        };
+
+        gateway.RaiseDelta(1, [first, second], []);
+        await viewModel.SelectRowAsync(first, CancellationToken.None);
+        string firstInspectorIdentity = viewModel.ProcessPrimaryChartIdentityKey;
+        GlobalResourceRowViewState firstCpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Cpu));
+        string firstMiniIdentity = firstCpuRow.ChartIdentityKey;
+
+        await viewModel.SelectRowAsync(second, CancellationToken.None);
+        string secondInspectorIdentity = viewModel.ProcessPrimaryChartIdentityKey;
+        GlobalResourceRowViewState secondCpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Cpu));
+        string secondMiniIdentity = secondCpuRow.ChartIdentityKey;
+
+        Assert.Equal("process:pid310-start31000:proc:cpu:primary:combined", firstInspectorIdentity);
+        Assert.Equal("process:pid311-start31100:proc:cpu:primary:combined", secondInspectorIdentity);
+        Assert.NotEqual(firstInspectorIdentity, secondInspectorIdentity);
+        Assert.Equal("proc:cpu:310:31000", firstMiniIdentity);
+        Assert.Equal("proc:cpu:311:31100", secondMiniIdentity);
+        Assert.NotEqual(firstMiniIdentity, secondMiniIdentity);
+    }
+    [Fact]
     public async Task ClearingSelection_RestoresSystemSummaryVisibility_AndHidesProcessSummary()
     {
         TestRuntimeEventGateway gateway = new();
@@ -1647,7 +1680,7 @@ public class MonitoringShellViewModelTests
 
         Assert.Equal(Visibility.Visible, viewModel.ProcessSummarySectionVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.SystemSummarySectionVisibility);
-        Assert.Equal("process:proc:cpu:primary:combined", viewModel.ProcessPrimaryChartIdentityKey);
+        Assert.Equal("process:pid261-start26100:proc:cpu:primary:combined", viewModel.ProcessPrimaryChartIdentityKey);
 
         viewModel.ClearSelection();
 
@@ -2455,9 +2488,3 @@ public class MonitoringShellViewModelTests
     }
 
 }
-
-
-
-
-
-

@@ -418,10 +418,12 @@ public sealed partial class MetricTrendChart : UserControl
             _requiresTransitionReset = false;
         }
 
+        bool replaceSeries = false;
         if (_requiresSeriesRebuild)
         {
             RebuildChartSeries();
             _requiresSeriesRebuild = false;
+            replaceSeries = true;
         }
 
         bool viewportSwitchRequested = _pendingViewportSwitch
@@ -451,7 +453,14 @@ public sealed partial class MetricTrendChart : UserControl
         {
             StopViewportTransitionCrossfade();
             ApplyAxes(TrendChart, _xAxis, _yAxis, renderMeta.Plan, renderMeta.DomainMax, visibleCount, showAxes, canAnimate);
-            ApplySeries(renderMeta.Plan);
+            if (replaceSeries)
+            {
+                ReplaceActiveSeries(renderMeta.Plan);
+            }
+            else
+            {
+                ApplySeries(renderMeta.Plan);
+            }
         }
 
         _transitionSnapshot = nextTransitionSnapshot;
@@ -542,6 +551,7 @@ public sealed partial class MetricTrendChart : UserControl
         double height = PlotBorder.ActualHeight;
 
         return new MetricTrendTransitionSnapshot(
+            ChartIdentityKey: ChartIdentityKey,
             VisiblePointCount: visibleCount,
             ScaleMode: ScaleMode,
             DomainMaxOverride: DomainMaxOverride,
@@ -748,6 +758,11 @@ public sealed partial class MetricTrendChart : UserControl
     }
     private void RebuildChartSeries()
     {
+        _primaryPoints = [];
+        _overlayPoints = [];
+        _transitionPrimaryPoints = [];
+        _transitionOverlayPoints = [];
+
         _primarySeries = CreateSeries(_primaryPoints);
         _overlaySeries = CreateSeries(_overlayPoints);
         _singleSeries = [_primarySeries];
@@ -762,6 +777,7 @@ public sealed partial class MetricTrendChart : UserControl
 
         TrendChart.Series = Array.Empty<ISeries>();
         ClearTransitionSurface();
+        InvalidateChartSurfaces(includeTransitionSurface: true);
     }
 
     private void ClearTransitionSurface()
@@ -1070,5 +1086,3 @@ public sealed partial class MetricTrendChart : UserControl
         bool DomainFallbackUsed,
         bool PointFallbackUsed);
 }
-
-

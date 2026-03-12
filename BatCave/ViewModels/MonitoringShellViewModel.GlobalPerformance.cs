@@ -398,6 +398,7 @@ public partial class MonitoringShellViewModel
         foreach (GlobalResourceDescriptor descriptor in descriptors)
         {
             GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(descriptor.ResourceId);
+            string chartIdentityKey = descriptor.ResourceId;
             GlobalResourceRowViewState? existing = _globalResourceRows.FirstOrDefault(
                 row => string.Equals(row.ResourceId, descriptor.ResourceId, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
@@ -410,6 +411,7 @@ public partial class MonitoringShellViewModel
                     descriptor.Title,
                     descriptor.Subtitle,
                     descriptor.ValueText,
+                    chartIdentityKey,
                     miniTrend,
                     descriptor.MiniScaleMode,
                     descriptor.MiniStrokeColor,
@@ -421,6 +423,7 @@ public partial class MonitoringShellViewModel
                 existing.Update(
                     descriptor.Subtitle,
                     descriptor.ValueText,
+                    chartIdentityKey,
                     existing.MiniTrendValues,
                     descriptor.MiniScaleMode,
                     descriptor.MiniStrokeColor,
@@ -515,6 +518,7 @@ public partial class MonitoringShellViewModel
 
         foreach (ProcessResourceDescriptor descriptor in descriptors)
         {
+            string chartIdentityKey = BuildProcessMiniChartIdentityKey(descriptor.ResourceId, selected);
             GlobalResourceRowViewState? existing = _globalResourceRows.FirstOrDefault(
                 row => string.Equals(row.ResourceId, descriptor.ResourceId, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
@@ -525,6 +529,7 @@ public partial class MonitoringShellViewModel
                     descriptor.Title,
                     descriptor.Subtitle,
                     descriptor.ValueText,
+                    chartIdentityKey,
                     descriptor.MiniTrendValues,
                     descriptor.MiniScaleMode,
                     descriptor.MiniStrokeColor,
@@ -536,6 +541,7 @@ public partial class MonitoringShellViewModel
                 existing.Update(
                     descriptor.Subtitle,
                     descriptor.ValueText,
+                    chartIdentityKey,
                     descriptor.MiniTrendValues,
                     descriptor.MiniScaleMode,
                     descriptor.MiniStrokeColor,
@@ -735,12 +741,25 @@ public partial class MonitoringShellViewModel
     {
         string normalizedScope = string.IsNullOrWhiteSpace(scope) ? "system" : scope;
         string normalizedRole = string.IsNullOrWhiteSpace(role) ? "primary" : role;
+        string scopeInstanceToken = ResolveScopeInstanceIdentityToken(normalizedScope);
         string resourceToken = ResolveActiveResourceIdentityToken(normalizedScope);
         string modeToken = IsCpuResourceIdentity(resourceToken)
             ? (IsCpuLogicalMode ? "logical" : "combined")
             : "default";
+        return string.IsNullOrWhiteSpace(scopeInstanceToken)
+            ? $"{normalizedScope}:{resourceToken}:{normalizedRole}:{modeToken}"
+            : $"{normalizedScope}:{scopeInstanceToken}:{resourceToken}:{normalizedRole}:{modeToken}";
+    }
 
-        return $"{normalizedScope}:{resourceToken}:{normalizedRole}:{modeToken}";
+    private string ResolveScopeInstanceIdentityToken(string scope)
+    {
+        bool processScope = string.Equals(scope, "process", StringComparison.OrdinalIgnoreCase);
+        if (!processScope || SelectedRow is not ProcessSample selected)
+        {
+            return string.Empty;
+        }
+
+        return $"pid{selected.Pid}-start{selected.StartTimeMs}";
     }
 
     private string ResolveActiveResourceIdentityToken(string scope)
@@ -755,6 +774,16 @@ public partial class MonitoringShellViewModel
 
         string? fallback = processScope ? _lastSelectedProcessResourceId : _lastSelectedGlobalResourceId;
         return string.IsNullOrWhiteSpace(fallback) ? "none" : fallback!;
+    }
+
+    private string BuildProcessMiniChartIdentityKey(string resourceId, ProcessSample selected)
+    {
+        return $"{resourceId}:{FormatProcessIdentityToken(selected.Identity())}";
+    }
+
+    private static string FormatProcessIdentityToken(ProcessIdentity identity)
+    {
+        return $"{identity.Pid}:{identity.StartTimeMs}";
     }
 
     private static bool IsCpuResourceIdentity(string resourceToken)

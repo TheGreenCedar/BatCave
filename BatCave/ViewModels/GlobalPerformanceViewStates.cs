@@ -24,6 +24,7 @@ public sealed class GlobalResourceRowViewState : ObservableObject
 {
     private string _subtitle;
     private string _valueText;
+    private string _chartIdentityKey;
     private double[] _miniTrendValues;
     private MetricTrendScaleMode _miniScaleMode;
     private Color _miniStrokeColor;
@@ -36,6 +37,7 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         string title,
         string subtitle,
         string valueText,
+        string chartIdentityKey,
         double[] miniTrendValues,
         MetricTrendScaleMode miniScaleMode,
         Color miniStrokeColor,
@@ -47,6 +49,7 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         Title = title;
         _subtitle = subtitle;
         _valueText = valueText;
+        _chartIdentityKey = chartIdentityKey;
         _miniTrendValues = miniTrendValues;
         _miniScaleMode = miniScaleMode;
         _miniStrokeColor = miniStrokeColor;
@@ -59,6 +62,12 @@ public sealed class GlobalResourceRowViewState : ObservableObject
     public GlobalResourceKind Kind { get; }
 
     public string Title { get; }
+
+    public string ChartIdentityKey
+    {
+        get => _chartIdentityKey;
+        private set => SetProperty(ref _chartIdentityKey, value);
+    }
 
     public string Subtitle
     {
@@ -117,6 +126,7 @@ public sealed class GlobalResourceRowViewState : ObservableObject
     public void Update(
         string subtitle,
         string valueText,
+        string chartIdentityKey,
         double[] miniTrendValues,
         MetricTrendScaleMode miniScaleMode,
         Color miniStrokeColor,
@@ -125,6 +135,7 @@ public sealed class GlobalResourceRowViewState : ObservableObject
     {
         Subtitle = subtitle;
         ValueText = valueText;
+        ChartIdentityKey = chartIdentityKey;
         MiniTrendValues = miniTrendValues;
         MiniScaleMode = miniScaleMode;
         MiniStrokeColor = miniStrokeColor;

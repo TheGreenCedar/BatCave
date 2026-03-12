@@ -15,6 +15,7 @@ public sealed class GlobalResourceRowViewStateTests
             title: "CPU",
             subtitle: "10%",
             valueText: string.Empty,
+            chartIdentityKey: "cpu",
             miniTrendValues: [10d],
             miniScaleMode: MetricTrendScaleMode.CpuPercent,
             miniStrokeColor: Color.FromArgb(0xFF, 0x00, 0x7A, 0xCC),
@@ -33,6 +34,7 @@ public sealed class GlobalResourceRowViewStateTests
         state.Update(
             subtitle: "22%",
             valueText: "42 C",
+            chartIdentityKey: "cpu",
             miniTrendValues: [10d, 22d],
             miniScaleMode: MetricTrendScaleMode.CpuPercent,
             miniStrokeColor: Color.FromArgb(0xFF, 0x00, 0x7A, 0xCC),

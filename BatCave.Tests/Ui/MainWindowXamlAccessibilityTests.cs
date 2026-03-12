@@ -57,7 +57,7 @@ public class MainWindowXamlAccessibilityTests
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
-        Assert.Contains("ChartIdentityKey=\"{Binding ResourceId, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ChartIdentityKey=\"{Binding ChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("ChartIdentityKey=\"{Binding SystemPrimaryChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("ChartIdentityKey=\"{Binding SystemAuxiliaryChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("ChartIdentityKey=\"{Binding ProcessPrimaryChartIdentityKey, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
@@ -270,3 +270,5 @@ public class MainWindowXamlAccessibilityTests
         throw new DirectoryNotFoundException("Could not locate repository root from test base directory.");
     }
 }
+
+
