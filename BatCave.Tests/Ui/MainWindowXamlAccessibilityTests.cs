@@ -147,6 +147,8 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("Style=\"{StaticResource BatCaveGhostButtonStyle}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding SystemSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding ProcessSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<StackPanel Orientation=\"Horizontal\" />", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<ItemsStackPanel Orientation=\"Horizontal\" />", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ElementPrepared=\"GlobalCpuLogicalRepeater_ElementPrepared\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("x:Name=\"GlobalCpuLogicalGridView\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"Clear Selection\"", xaml, StringComparison.Ordinal);

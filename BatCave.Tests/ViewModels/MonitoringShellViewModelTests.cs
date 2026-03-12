@@ -1657,7 +1657,164 @@ public class MonitoringShellViewModelTests
         Assert.Equal("SYSTEM VIEW", viewModel.InspectorOverviewEyebrow);
         Assert.Equal("system:memory:primary:default", viewModel.SystemPrimaryChartIdentityKey);
     }
+    [Fact]
+    public async Task SystemMiniTrendHistories_KeepAdvancing_WhileProcessInspectorIsActive()
+    {
+        TestRuntimeEventGateway gateway = new();
+        ManualResetEventSlim firstSampleStarted = new(initialState: false);
+        ManualResetEventSlim firstSampleRelease = new(initialState: false);
+        ManualResetEventSlim firstSampleCompleted = new(initialState: false);
+        ManualResetEventSlim secondSampleStarted = new(initialState: false);
+        ManualResetEventSlim secondSampleRelease = new(initialState: false);
+        ManualResetEventSlim secondSampleCompleted = new(initialState: false);
 
+        SystemGlobalMetricsSample firstSample = CreateSystemGlobalMetricsSample(
+            tsMs: 261,
+            cpuPct: 14.0,
+            memoryUsedBytes: 8 * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0);
+        SystemGlobalMetricsSample secondSample = CreateSystemGlobalMetricsSample(
+            tsMs: 262,
+            cpuPct: 39.0,
+            memoryUsedBytes: 24 * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0);
+        TestSystemGlobalMetricsSampler sampler = new(firstSample);
+        int sampleCallCount = 0;
+        sampler.Handler = () =>
+        {
+            int call = Interlocked.Increment(ref sampleCallCount);
+            if (call == 1)
+            {
+                firstSampleStarted.Set();
+                if (!firstSampleRelease.Wait(TimeSpan.FromSeconds(2)))
+                {
+                    throw new TimeoutException("Timed out waiting to release first global mini-chart sample.");
+                }
+
+                firstSampleCompleted.Set();
+                return firstSample;
+            }
+
+            if (call == 2)
+            {
+                secondSampleStarted.Set();
+                if (!secondSampleRelease.Wait(TimeSpan.FromSeconds(2)))
+                {
+                    throw new TimeoutException("Timed out waiting to release second global mini-chart sample.");
+                }
+
+                secondSampleCompleted.Set();
+                return secondSample;
+            }
+
+            return secondSample;
+        };
+
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        try
+        {
+            Assert.True(firstSampleStarted.Wait(TimeSpan.FromSeconds(2)), "First global mini-chart sample did not start.");
+            firstSampleRelease.Set();
+            Assert.True(firstSampleCompleted.Wait(TimeSpan.FromSeconds(2)), "First global mini-chart sample did not complete.");
+
+            gateway.RaiseDelta(1, [], []);
+            GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Memory);
+            viewModel.SelectedGlobalResource = memoryRow;
+
+            ProcessSample row = Sample(pid: 261, startTime: 26_100, access: AccessState.Full) with
+            {
+                CpuPct = 17.5,
+            };
+            gateway.RaiseDelta(2, [row], []);
+            await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+            Assert.True(secondSampleStarted.Wait(TimeSpan.FromSeconds(2)), "Second global mini-chart sample did not start.");
+            secondSampleRelease.Set();
+            Assert.True(secondSampleCompleted.Wait(TimeSpan.FromSeconds(2)), "Second global mini-chart sample did not complete.");
+
+            gateway.RaiseDelta(3, [row with { Seq = 3, TsMs = 3 }], []);
+            viewModel.ClearSelection();
+
+            GlobalResourceRowViewState restoredMemoryResource = Assert.IsType<GlobalResourceRowViewState>(viewModel.SelectedGlobalResource);
+            Assert.Equal(GlobalResourceKind.Memory, restoredMemoryResource.Kind);
+            Assert.Equal((double)secondSample.MemoryUsedBytes!.Value, restoredMemoryResource.MiniTrendValues[^1]);
+            Assert.Contains(restoredMemoryResource.MiniTrendValues, value => value > 0d);
+        }
+        finally
+        {
+            firstSampleRelease.Set();
+            secondSampleRelease.Set();
+        }
+    }
+
+    [Fact]
+    public async Task ClearingSelection_PreservesLastKnownSystemCpuSample_WhenNextSampleIsSparse()
+    {
+        TestRuntimeEventGateway gateway = new();
+        SystemGlobalMetricsSample firstSample = CreateSystemGlobalMetricsSample(
+            tsMs: 264,
+            cpuPct: 52.0,
+            memoryUsedBytes: 8 * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0,
+            cpuSnapshot: new SystemGlobalCpuSnapshot
+            {
+                ProcessorName = "Processor",
+                SpeedMHz = 3500,
+                BaseSpeedMHz = 3200,
+            });
+        SystemGlobalMetricsSample sparseSecondSample = CreateSystemGlobalMetricsSample(
+            tsMs: 265,
+            cpuPct: null,
+            memoryUsedBytes: 16 * 1024UL * 1024UL,
+            diskReadBps: 0,
+            diskWriteBps: 0,
+            otherIoBps: 0,
+            cpuSnapshot: null,
+            memorySnapshot: new SystemGlobalMemorySnapshot
+            {
+                UsedBytes = 16 * 1024UL * 1024UL,
+                TotalBytes = 32 * 1024UL * 1024UL,
+            });
+
+        int sampleCallCount = 0;
+        TestSystemGlobalMetricsSampler sampler = new(firstSample)
+        {
+            Handler = () => Interlocked.Increment(ref sampleCallCount) == 1 ? firstSample : sparseSecondSample,
+        };
+
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+
+        ProcessSample row = Sample(pid: 264, startTime: 26_400, access: AccessState.Full) with
+        {
+            CpuPct = 11.5,
+        };
+        gateway.RaiseDelta(2, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        gateway.RaiseDelta(3, [row with { Seq = 3, TsMs = 3, CpuPct = 12.5 }], []);
+        viewModel.ClearSelection();
+
+        Assert.Equal(GlobalResourceKind.Cpu, viewModel.SelectedGlobalResource?.Kind);
+        Assert.Equal("system:cpu:primary:combined", viewModel.SystemPrimaryChartIdentityKey);
+        Assert.Equal("52% 3.50 GHz", viewModel.GlobalDetailCurrentValue);
+        Assert.Equal("Processor", viewModel.GlobalDetailSubtitle);
+        Assert.Equal(52.0, viewModel.GlobalPrimaryTrendValues[^1]);
+        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Cpu);
+        Assert.Equal("52% 3.50 GHz", cpuRow.Subtitle);
+    }
     [Fact]
     public async Task CpuGraphModeSwitch_ChangesSystemPrimaryChartIdentity_WhenCpuRemainsSelected()
     {

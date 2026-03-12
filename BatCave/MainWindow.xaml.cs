@@ -281,10 +281,32 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            GlobalResourceRowViewState? selected = listView.SelectedItem as GlobalResourceRowViewState;
-            if (!ReferenceEquals(ViewModel.SelectedGlobalResource, selected))
+            if (listView.SelectedItem is GlobalResourceRowViewState selected)
             {
-                ViewModel.SelectedGlobalResource = selected;
+                if (!ReferenceEquals(ViewModel.SelectedGlobalResource, selected))
+                {
+                    ViewModel.SelectedGlobalResource = selected;
+                }
+
+                return;
+            }
+
+            if (ViewModel.SelectedGlobalResource is not null && ViewModel.GlobalResourceRows.Count > 0)
+            {
+                // Ignore transient null churn while the ListView rebinds during per-tick row refreshes.
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!ReferenceEquals(GlobalResourceListView.SelectedItem, ViewModel.SelectedGlobalResource))
+                    {
+                        GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
+                    }
+                });
+                return;
+            }
+
+            if (ViewModel.SelectedGlobalResource is not null)
+            {
+                ViewModel.SelectedGlobalResource = null;
             }
         }
         catch (Exception ex)

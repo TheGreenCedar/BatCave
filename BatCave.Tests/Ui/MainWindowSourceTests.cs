@@ -93,6 +93,20 @@ public class MainWindowSourceTests
         Assert.Contains("visibleRows.CollectionChanged -= VisibleRows_CollectionChanged;", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MainWindowSource_IgnoresTransientNullChurnForGlobalResourceSelection()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+
+        Assert.Contains("private void GlobalResourceListView_SelectionChanged(object sender, SelectionChangedEventArgs e)", source, StringComparison.Ordinal);
+        Assert.Contains("if (listView.SelectedItem is GlobalResourceRowViewState selected)", source, StringComparison.Ordinal);
+        Assert.Contains("if (ViewModel.SelectedGlobalResource is not null && ViewModel.GlobalResourceRows.Count > 0)", source, StringComparison.Ordinal);
+        Assert.Contains("DispatcherQueue.TryEnqueue(() =>", source, StringComparison.Ordinal);
+        Assert.Contains("GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;", source, StringComparison.Ordinal);
+        Assert.Contains("if (ViewModel.SelectedGlobalResource is not null)", source, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.SelectedGlobalResource = null;", source, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

@@ -353,16 +353,19 @@ public partial class MonitoringShellViewModel
             return;
         }
 
-        _latestGlobalMetricsSample = sampled;
+        SystemGlobalMetricsSample resolved = ResolveGlobalMetricsSampleForPresentation(sampled);
+        _latestGlobalMetricsSample = resolved;
         OnPropertyChanged(nameof(IsGlobalMetricsReady));
         OnPropertyChanged(nameof(GlobalPerformanceContentVisibility));
         OnPropertyChanged(nameof(GlobalPerformanceSkeletonVisibility));
         RaiseCompactTotalsProperties();
-        BuildAndAppendResourceRows(sampled);
+        List<GlobalResourceDescriptor> descriptors = BuildGlobalResourceDescriptors(resolved);
+        UpdateGlobalResourceHistories(descriptors);
+        BuildAndAppendResourceRows(descriptors);
         QueueGlobalDetailStateRefresh();
     }
 
-    private void BuildAndAppendResourceRows(SystemGlobalMetricsSample sampled)
+    private void BuildAndAppendResourceRows(IReadOnlyList<GlobalResourceDescriptor> descriptors)
     {
         if (!IsGlobalPerformanceMode)
         {
@@ -371,16 +374,10 @@ public partial class MonitoringShellViewModel
         }
 
         string? selectedResourceId = SelectedGlobalResource?.ResourceId;
-        List<GlobalResourceDescriptor> descriptors = BuildGlobalResourceDescriptors(sampled);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         HashSet<string> currentIds = descriptors
-            .Select(static d => d.ResourceId)
+            .Select(static descriptor => descriptor.ResourceId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        foreach (string resourceId in currentIds)
-        {
-            _globalResourceLastSeenUtc[resourceId] = now;
-        }
 
         for (int index = _globalResourceRows.Count - 1; index >= 0; index--)
         {
@@ -396,20 +393,11 @@ public partial class MonitoringShellViewModel
             }
 
             _globalResourceRows.RemoveAt(index);
-            _globalTrendByResourceId.Remove(row.ResourceId);
-            _globalResourceLastSeenUtc.Remove(row.ResourceId);
         }
 
         foreach (GlobalResourceDescriptor descriptor in descriptors)
         {
             GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(descriptor.ResourceId);
-            history.Append(
-                descriptor.PrimaryValue,
-                descriptor.SecondaryValue,
-                descriptor.AuxiliaryValue,
-                descriptor.LogicalValues,
-                descriptor.LogicalKernelValues);
-
             GlobalResourceRowViewState? existing = _globalResourceRows.FirstOrDefault(
                 row => string.Equals(row.ResourceId, descriptor.ResourceId, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
@@ -443,6 +431,60 @@ public partial class MonitoringShellViewModel
         }
 
         ReconcileSelectedGlobalResource(selectedResourceId);
+    }
+
+    private void UpdateGlobalResourceHistories(IReadOnlyList<GlobalResourceDescriptor> descriptors)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        HashSet<string> currentIds = descriptors
+            .Select(static descriptor => descriptor.ResourceId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string resourceId in currentIds)
+        {
+            _globalResourceLastSeenUtc[resourceId] = now;
+        }
+
+        foreach (GlobalResourceDescriptor descriptor in descriptors)
+        {
+            GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(descriptor.ResourceId);
+            history.Append(
+                descriptor.PrimaryValue,
+                descriptor.SecondaryValue,
+                descriptor.AuxiliaryValue,
+                descriptor.LogicalValues,
+                descriptor.LogicalKernelValues);
+        }
+
+        string[] staleResourceIds = _globalTrendByResourceId.Keys
+            .Where(resourceId => !currentIds.Contains(resourceId) && CanRemoveStaleGlobalResource(resourceId, now))
+            .ToArray();
+        foreach (string resourceId in staleResourceIds)
+        {
+            _globalTrendByResourceId.Remove(resourceId);
+            _globalResourceLastSeenUtc.Remove(resourceId);
+        }
+    }
+
+    private SystemGlobalMetricsSample ResolveGlobalMetricsSampleForPresentation(SystemGlobalMetricsSample sampled)
+    {
+        SystemGlobalMetricsSample previous = _latestGlobalMetricsSample;
+        return sampled with
+        {
+            CpuPct = sampled.CpuPct ?? previous.CpuPct,
+            MemoryUsedBytes = sampled.MemoryUsedBytes ?? previous.MemoryUsedBytes,
+            DiskReadBps = sampled.DiskReadBps ?? previous.DiskReadBps,
+            DiskWriteBps = sampled.DiskWriteBps ?? previous.DiskWriteBps,
+            OtherIoBps = sampled.OtherIoBps ?? previous.OtherIoBps,
+            CpuSnapshot = sampled.CpuSnapshot ?? previous.CpuSnapshot,
+            MemorySnapshot = sampled.MemorySnapshot ?? previous.MemorySnapshot,
+            DiskSnapshots = sampled.DiskSnapshots.Count > 0 ? sampled.DiskSnapshots : previous.DiskSnapshots,
+            NetworkSnapshots = sampled.NetworkSnapshots.Count > 0 ? sampled.NetworkSnapshots : previous.NetworkSnapshots,
+            CpuRateWarmed = sampled.CpuRateWarmed || previous.CpuRateWarmed,
+            RateCountersWarmed = sampled.RateCountersWarmed || previous.RateCountersWarmed,
+            ExtendedProbeCycleCompleted = sampled.ExtendedProbeCycleCompleted || previous.ExtendedProbeCycleCompleted,
+            IsReady = sampled.IsReady || previous.IsReady,
+        };
     }
 
     private void BuildAndAppendProcessResourceRows()

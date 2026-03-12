@@ -70,6 +70,43 @@ public sealed class MetricTrendChartSourceTests
         Assert.Contains("&& visibleCount >= _transitionSnapshot.VisiblePointCount", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MetricTrendChartSource_HardResetsRecycledChartsOnDataContextSwap()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("private object? _lastDataContext;", source, StringComparison.Ordinal);
+        Assert.Contains("bool dataContextChanged = !ReferenceEquals(_lastDataContext, args.NewValue);", source, StringComparison.Ordinal);
+        Assert.Contains("_lastDataContext = args.NewValue;", source, StringComparison.Ordinal);
+        Assert.Contains("ResetForDataContextSwap();", source, StringComparison.Ordinal);
+        Assert.Contains("private void ResetForDataContextSwap()", source, StringComparison.Ordinal);
+        Assert.Contains("ResetTransitionState();", source, StringComparison.Ordinal);
+        Assert.Contains("ScheduleRender();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MetricTrendChartSource_LeavesSizeChangeResetPathUntouched()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)", source, StringComparison.Ordinal);
+        Assert.Contains("if (e.NewSize.Width <= 1d || e.NewSize.Height <= 1d)", source, StringComparison.Ordinal);
+        Assert.Contains("ResetTransitionState();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResetForDataContextSwap();\r\n            return;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MetricTrendChartSource_InvalidatesLiveChartsSurfaceAfterSeriesUpdates()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("private void InvalidateChartSurfaces(bool includeTransitionSurface = false)", source, StringComparison.Ordinal);
+        Assert.Contains("((IChartView)TrendChart).Invalidate();", source, StringComparison.Ordinal);
+        Assert.Contains("((IChartView)TransitionChart).Invalidate();", source, StringComparison.Ordinal);
+        Assert.Contains("InvalidateChartSurfaces();", source, StringComparison.Ordinal);
+        Assert.Contains("InvalidateChartSurfaces(includeTransitionSurface: true);", source, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);
@@ -93,3 +130,4 @@ public sealed class MetricTrendChartSourceTests
         throw new DirectoryNotFoundException("Could not locate repository root from test base directory.");
     }
 }
+

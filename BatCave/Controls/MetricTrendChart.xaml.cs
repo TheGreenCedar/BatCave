@@ -2,6 +2,7 @@ using BatCave.Charts;
 using BatCave.Converters;
 using LiveChartsCore;
 using LiveChartsCore.Defaults;
+using LiveChartsCore.Kernel.Sketches;
 using LiveChartsCore.Measure;
 using LiveChartsCore.SkiaSharpView;
 using LiveChartsCore.SkiaSharpView.Painting;
@@ -157,9 +158,11 @@ public sealed partial class MetricTrendChart : UserControl
     private double _dynamicDomainMaxRaw;
     private int _renderQueued;
     private bool _hasTransitionSnapshot;
+    private bool _pendingLayoutSettledRender;
     private bool _pendingViewportSwitch;
     private bool _requiresTransitionReset;
     private bool _requiresSeriesRebuild;
+    private object? _lastDataContext;
     private INotifyPropertyChanged? _dataContextNotifier;
     private MetricTrendTransitionSnapshot _transitionSnapshot;
     private Storyboard? _viewportTransitionStoryboard;
@@ -294,6 +297,7 @@ public sealed partial class MetricTrendChart : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        _lastDataContext = DataContext;
         ResetTransitionState();
         AttachDataContextNotifier(DataContext as INotifyPropertyChanged);
         ScheduleRender();
@@ -301,13 +305,26 @@ public sealed partial class MetricTrendChart : UserControl
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        _lastDataContext = null;
+        _pendingLayoutSettledRender = false;
+        LayoutUpdated -= MetricTrendChart_LayoutUpdated;
         ResetTransitionState();
         AttachDataContextNotifier(null);
     }
 
     private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
     {
+        bool dataContextChanged = !ReferenceEquals(_lastDataContext, args.NewValue);
+        _lastDataContext = args.NewValue;
         AttachDataContextNotifier(args.NewValue as INotifyPropertyChanged);
+        if (!dataContextChanged)
+        {
+            return;
+        }
+
+        ResetForDataContextSwap();
+        QueueLayoutSettledRender();
+        ScheduleRender();
     }
 
     private void PlotBorder_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -556,6 +573,7 @@ public sealed partial class MetricTrendChart : UserControl
         RebuildChartSeries();
         ReplaceActiveSeries(plan);
         ApplyAxes(TrendChart, _xAxis, _yAxis, plan, domainMax, visibleCount, showAxes, canAnimate: false);
+        InvalidateChartSurfaces();
     }
 
     private void ApplyViewportTransition(MetricTrendChartRenderPlan plan, double domainMax, int visibleCount, bool showAxes)
@@ -569,6 +587,7 @@ public sealed partial class MetricTrendChart : UserControl
         ReplaceActiveSeries(plan);
         ApplyAxes(TrendChart, _xAxis, _yAxis, plan, domainMax, visibleCount, showAxes, canAnimate: false);
 
+        InvalidateChartSurfaces(includeTransitionSurface: true);
         StartViewportTransitionCrossfade();
     }
 
@@ -587,6 +606,8 @@ public sealed partial class MetricTrendChart : UserControl
         {
             TrendChart.Series = targetSeries;
         }
+
+        InvalidateChartSurfaces();
     }
 
     private void ReplaceActiveSeries(MetricTrendChartRenderPlan plan)
@@ -605,6 +626,8 @@ public sealed partial class MetricTrendChart : UserControl
         {
             TrendChart.Series = targetSeries;
         }
+
+        InvalidateChartSurfaces();
     }
 
     private void SnapshotCurrentStateIntoTransitionSurface()
@@ -626,6 +649,15 @@ public sealed partial class MetricTrendChart : UserControl
             TransitionChart.Series = targetSeries;
         }
         TransitionChart.AnimationsSpeed = TimeSpan.Zero;
+    }
+
+    private void InvalidateChartSurfaces(bool includeTransitionSurface = false)
+    {
+        ((IChartView)TrendChart).Invalidate();
+        if (includeTransitionSurface)
+        {
+            ((IChartView)TransitionChart).Invalidate();
+        }
     }
 
     private void StartViewportTransitionCrossfade()
@@ -691,6 +723,29 @@ public sealed partial class MetricTrendChart : UserControl
         _requiresSeriesRebuild = true;
     }
 
+    private void ResetForDataContextSwap()
+    {
+        ResetTransitionState();
+    }
+
+    private void QueueLayoutSettledRender()
+    {
+        _pendingLayoutSettledRender = true;
+        LayoutUpdated -= MetricTrendChart_LayoutUpdated;
+        LayoutUpdated += MetricTrendChart_LayoutUpdated;
+    }
+
+    private void MetricTrendChart_LayoutUpdated(object? sender, object e)
+    {
+        if (!_pendingLayoutSettledRender || !IsLoaded || PlotBorder.ActualWidth <= 1d || PlotBorder.ActualHeight <= 1d)
+        {
+            return;
+        }
+
+        _pendingLayoutSettledRender = false;
+        LayoutUpdated -= MetricTrendChart_LayoutUpdated;
+        ScheduleRender();
+    }
     private void RebuildChartSeries()
     {
         _primarySeries = CreateSeries(_primaryPoints);
@@ -1015,3 +1070,5 @@ public sealed partial class MetricTrendChart : UserControl
         bool DomainFallbackUsed,
         bool PointFallbackUsed);
 }
+
+

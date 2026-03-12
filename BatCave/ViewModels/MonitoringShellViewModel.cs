@@ -547,7 +547,7 @@ public partial class MonitoringShellViewModel : ObservableObject
         RaiseGlobalModeProperties();
         RaiseInspectorSectionProperties();
         RaisePresentationProperties();
-        BuildAndAppendResourceRows(_latestGlobalMetricsSample);
+        BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));
         RaiseMetadataProperties();
         RefreshDetailMetrics();
         RefreshGlobalDetailState();
