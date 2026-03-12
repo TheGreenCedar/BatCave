@@ -868,8 +868,8 @@ public partial class MonitoringShellViewModel
             ResourceId: CpuGlobalResourceId,
             Kind: GlobalResourceKind.Cpu,
             Title: "CPU",
-            Subtitle: cpuSpeed == "n/a" ? $"{cpuPct:F0}%" : $"{cpuPct:F0}% {cpuSpeed}",
-            ValueText: string.Empty,
+            Subtitle: $"{cpuPct:F0}%",
+            ValueText: cpuSpeed == "n/a" ? string.Empty : cpuSpeed,
             PrimaryValue: cpuPct,
             SecondaryValue: sampled.CpuSnapshot?.KernelPct ?? 0d,
             AuxiliaryValue: 0d,
@@ -885,15 +885,18 @@ public partial class MonitoringShellViewModel
     {
         ulong memoryUsedBytes = sampled.MemorySnapshot?.UsedBytes ?? sampled.MemoryUsedBytes ?? 0UL;
         ulong memoryTotalBytes = sampled.MemorySnapshot?.TotalBytes ?? 0UL;
+        string memorySubtitle = memoryTotalBytes > 0
+            ? $"{(memoryUsedBytes * 100d / memoryTotalBytes):F0}%"
+            : string.Empty;
         string memoryValueText = memoryTotalBytes > 0
-            ? $"{ValueFormat.FormatBytes(memoryUsedBytes)} / {ValueFormat.FormatBytes(memoryTotalBytes)} ({(memoryUsedBytes * 100d / memoryTotalBytes):F0}%)"
+            ? $"{ValueFormat.FormatBytes(memoryUsedBytes)} / {ValueFormat.FormatBytes(memoryTotalBytes)}"
             : ValueFormat.FormatBytes(memoryUsedBytes);
         return new GlobalResourceDescriptor(
             ResourceId: MemoryGlobalResourceId,
             Kind: GlobalResourceKind.Memory,
             Title: "Memory",
-            Subtitle: memoryValueText,
-            ValueText: string.Empty,
+            Subtitle: memorySubtitle,
+            ValueText: memoryValueText,
             PrimaryValue: memoryUsedBytes,
             SecondaryValue: 0d,
             AuxiliaryValue: 0d,

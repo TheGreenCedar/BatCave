@@ -47,4 +47,33 @@ public sealed class GlobalResourceRowViewStateTests
         Assert.Contains(nameof(GlobalResourceRowViewState.ValueVisibility), changed);
         Assert.DoesNotContain("SetTextWithVisibility", changed);
     }
+
+    [Fact]
+    public void Update_WhenValueTextCleared_CollapsesValueVisibility()
+    {
+        GlobalResourceRowViewState state = new(
+            resourceId: "cpu",
+            kind: GlobalResourceKind.Cpu,
+            title: "CPU",
+            subtitle: "22%",
+            valueText: "3.20 GHz",
+            chartIdentityKey: "cpu",
+            miniTrendValues: [22d],
+            miniScaleMode: MetricTrendScaleMode.CpuPercent,
+            miniStrokeColor: Color.FromArgb(0xFF, 0x00, 0x7A, 0xCC),
+            miniFillColor: Color.FromArgb(0x33, 0x00, 0x7A, 0xCC),
+            miniDomainMax: double.NaN);
+
+        state.Update(
+            subtitle: "22%",
+            valueText: string.Empty,
+            chartIdentityKey: "cpu",
+            miniTrendValues: [22d, 24d],
+            miniScaleMode: MetricTrendScaleMode.CpuPercent,
+            miniStrokeColor: Color.FromArgb(0xFF, 0x00, 0x7A, 0xCC),
+            miniFillColor: Color.FromArgb(0x33, 0x00, 0x7A, 0xCC),
+            miniDomainMax: double.NaN);
+
+        Assert.Equal(Microsoft.UI.Xaml.Visibility.Collapsed, state.ValueVisibility);
+    }
 }

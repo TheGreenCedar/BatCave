@@ -79,6 +79,8 @@ public class MainWindowXamlAccessibilityTests
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("x:Name=\"HeaderControlsInline\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderFilterInline\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderFilterSurface\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderAdminControlsInline\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderControlsPhone\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveShell\"", xaml, StringComparison.Ordinal);
@@ -97,18 +99,19 @@ public class MainWindowXamlAccessibilityTests
     }
 
     [Fact]
-    public void MainWindowXaml_HidesKeyboardAcceleratorTooltips_AndCentersHeaderFilter()
+    public void MainWindowXaml_HidesKeyboardAcceleratorTooltips_AndSplitsHeaderFilterFromCenteredTitleCave()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("KeyboardAcceleratorPlacementMode=\"Hidden\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderFilterInline\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderFilterSurface\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveShell\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveMouth\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveInputSurface\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"FilterTextBox\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Grid.Column=\"1\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("<ColumnDefinition Width=\"*\" />", xaml, StringComparison.Ordinal);
-        Assert.Contains("Width=\"360\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("HorizontalAlignment=\"Center\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("HeaderFilterInline.Visibility", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -147,6 +150,8 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("Style=\"{StaticResource BatCaveGhostButtonStyle}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding SystemSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding ProcessSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Style=\"{StaticResource BatCaveSectionSubtitleStyle}\" Text=\"{Binding ValueText, Mode=OneWay}\" Visibility=\"{Binding ValueVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Style=\"{StaticResource BatCaveMetricValueStyle}\" Text=\"{Binding ValueText, Mode=OneWay}\" Visibility=\"{Binding ValueVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("<StackPanel Orientation=\"Horizontal\" />", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<ItemsStackPanel Orientation=\"Horizontal\" />", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ElementPrepared=\"GlobalCpuLogicalRepeater_ElementPrepared\"", xaml, StringComparison.Ordinal);
@@ -232,6 +237,7 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("VisualStateGroup x:Name=\"InspectorSummaryWidthStates\"", xaml, StringComparison.Ordinal);
         Assert.Contains("VisualState x:Name=\"InspectorSummaryWideState\"", xaml, StringComparison.Ordinal);
         Assert.Contains("VisualState x:Name=\"InspectorSummaryStackedState\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("HeaderFilterInline.Visibility", xaml, StringComparison.Ordinal);
         Assert.Contains("HeaderAdminControlsInline.Visibility", xaml, StringComparison.Ordinal);
         Assert.Contains("KeyboardAcceleratorPlacementMode=\"Hidden\"", xaml, StringComparison.Ordinal);
     }

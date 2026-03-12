@@ -217,7 +217,7 @@
             <Thickness x:Key="ShellHeaderPadding">18,14,18,12</Thickness>
             <Thickness x:Key="ShellContentPadding">24</Thickness>
             <Thickness x:Key="ShellFooterPadding">20,14,20,18</Thickness>
-            <x:String x:Key="ShellTitleText">BatCave Monitor</x:String>
+            <x:String x:Key="ShellTitleText">BatCave</x:String>
             <x:String x:Key="FilterPlaceholderText">Filter by name or PID</x:String>
             <x:String x:Key="ProcessFilterHelpText">Type to filter by process name or process id.</x:String>
             <x:String x:Key="AdminToggleHelpText">Toggle elevated bridge mode.</x:String>

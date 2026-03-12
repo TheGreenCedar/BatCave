@@ -1115,6 +1115,10 @@ public class MonitoringShellViewModelTests
         Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Memory);
         Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
         Assert.Contains(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Network);
+
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Memory);
+        Assert.Equal("45%", memoryRow.Subtitle);
+        Assert.Equal($"{ValueFormat.FormatBytes(29UL * 1024UL * 1024UL * 1024UL)} / {ValueFormat.FormatBytes(64UL * 1024UL * 1024UL * 1024UL)}", memoryRow.ValueText);
     }
 
     [Fact]
@@ -1197,12 +1201,12 @@ public class MonitoringShellViewModelTests
 
             gateway.RaiseDelta(1, [], []);
 
-            GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Cpu));
+            GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Cpu);
             viewModel.SelectedGlobalResource = cpuRow;
 
             string firstSpeed = ValueFormat.FormatFrequencyGHz(firstSample.CpuSnapshot?.SpeedMHz);
-            Assert.Equal($"37% {firstSpeed}", cpuRow.Subtitle);
-            Assert.Equal(string.Empty, cpuRow.ValueText);
+            Assert.Equal("37%", cpuRow.Subtitle);
+            Assert.Equal(firstSpeed, cpuRow.ValueText);
             Assert.Equal($"37% {firstSpeed}", viewModel.GlobalDetailCurrentValue);
             Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Speed" && item.Value == firstSpeed);
 
@@ -1212,10 +1216,10 @@ public class MonitoringShellViewModelTests
 
             gateway.RaiseDelta(2, [], []);
 
-            Assert.Same(cpuRow, Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Cpu)));
+            Assert.Same(cpuRow, Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Cpu));
             string secondSpeed = ValueFormat.FormatFrequencyGHz(secondSample.CpuSnapshot?.SpeedMHz);
-            Assert.Equal($"63% {secondSpeed}", cpuRow.Subtitle);
-            Assert.Equal(string.Empty, cpuRow.ValueText);
+            Assert.Equal("63%", cpuRow.Subtitle);
+            Assert.Equal(secondSpeed, cpuRow.ValueText);
             Assert.Equal($"63% {secondSpeed}", viewModel.GlobalDetailCurrentValue);
             Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Speed" && item.Value == secondSpeed);
             Assert.DoesNotContain(firstSpeed, viewModel.GlobalDetailCurrentValue, StringComparison.Ordinal);
@@ -1846,7 +1850,8 @@ public class MonitoringShellViewModelTests
         Assert.Equal("Processor", viewModel.GlobalDetailSubtitle);
         Assert.Equal(52.0, viewModel.GlobalPrimaryTrendValues[^1]);
         GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Cpu);
-        Assert.Equal("52% 3.50 GHz", cpuRow.Subtitle);
+        Assert.Equal("52%", cpuRow.Subtitle);
+        Assert.Equal("3.50 GHz", cpuRow.ValueText);
     }
     [Fact]
     public async Task CpuGraphModeSwitch_ChangesSystemPrimaryChartIdentity_WhenCpuRemainsSelected()
