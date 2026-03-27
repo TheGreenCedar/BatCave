@@ -13,7 +13,7 @@
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Default">
                     <Color x:Key="BatCaveCanvasColor">#FF0F172A</Color>
-                    <Color x:Key="BatCaveHeaderColor">#FF0C1526</Color>
+                    <Color x:Key="BatCaveHeaderColor">#FF0A1220</Color>
                     <Color x:Key="BatCavePanelColor">#FF142033</Color>
                     <Color x:Key="BatCavePanelAltColor">#FF1A2940</Color>
                     <Color x:Key="BatCaveMutedColor">#FF334865</Color>
@@ -40,11 +40,11 @@
                     <Color x:Key="BatCaveCaveMouthColor">#FF020617</Color>
                     <Color x:Key="BatCaveCaveInputSurfaceColor">#FF0F172A</Color>
                     <Color x:Key="BatCaveCaveInputBorderColor">#FF475569</Color>
-                    <Color x:Key="BatCaveHeroCaveShellColor">#FF1E293B</Color>
-                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF64748B</Color>
+                    <Color x:Key="BatCaveHeroCaveShellColor">#FF22324A</Color>
+                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF7A8DA5</Color>
                     <Color x:Key="BatCaveHeroCaveMouthColor">#FF08111F</Color>
-                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FF14243B</Color>
-                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FFCBD5E1</Color>
+                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FF17283F</Color>
+                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FFB8C7D9</Color>
 
                     <Color x:Key="ChartCpuStrokeColor">#FF60A5FA</Color>
                     <Color x:Key="ChartCpuFillColor">#2260A5FA</Color>
@@ -64,16 +64,16 @@
 
                 <ResourceDictionary x:Key="Light">
                     <Color x:Key="BatCaveCanvasColor">#FFFFFFFF</Color>
-                    <Color x:Key="BatCaveHeaderColor">#FFF1F5F9</Color>
+                    <Color x:Key="BatCaveHeaderColor">#FFDCE7F3</Color>
                     <Color x:Key="BatCavePanelColor">#FFFFFFFF</Color>
-                    <Color x:Key="BatCavePanelAltColor">#FFE9EFF7</Color>
-                    <Color x:Key="BatCaveMutedColor">#FFDCE6F3</Color>
+                    <Color x:Key="BatCavePanelAltColor">#FFE4ECF6</Color>
+                    <Color x:Key="BatCaveMutedColor">#FFD4DFEC</Color>
                     <Color x:Key="BatCaveTextPrimaryColor">#FF111827</Color>
                     <Color x:Key="BatCaveTextSecondaryColor">#FF475569</Color>
                     <Color x:Key="BatCavePrimaryColor">#FF3B82F6</Color>
                     <Color x:Key="BatCaveSecondaryColor">#FF10B981</Color>
                     <Color x:Key="BatCaveAccentColor">#FFF59E0B</Color>
-                    <Color x:Key="BatCaveBorderColor">#FFE5E7EB</Color>
+                    <Color x:Key="BatCaveBorderColor">#FFD2DCE8</Color>
                     <Color x:Key="BatCaveDangerColor">#FFDC2626</Color>
                     <Color x:Key="BatCaveSuccessColor">#FF059669</Color>
                     <Color x:Key="BatCaveWarningColor">#FFD97706</Color>
@@ -91,11 +91,11 @@
                     <Color x:Key="BatCaveCaveMouthColor">#FF334155</Color>
                     <Color x:Key="BatCaveCaveInputSurfaceColor">#FFF8FAFC</Color>
                     <Color x:Key="BatCaveCaveInputBorderColor">#FF94A3B8</Color>
-                    <Color x:Key="BatCaveHeroCaveShellColor">#FF475569</Color>
-                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF0F172A</Color>
+                    <Color x:Key="BatCaveHeroCaveShellColor">#FF3F5168</Color>
+                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF162235</Color>
                     <Color x:Key="BatCaveHeroCaveMouthColor">#FF1E293B</Color>
-                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FFFFFFFF</Color>
-                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FF475569</Color>
+                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FFF8FBFF</Color>
+                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FF425466</Color>
 
                     <Color x:Key="ChartCpuStrokeColor">#FF3B82F6</Color>
                     <Color x:Key="ChartCpuFillColor">#223B82F6</Color>
@@ -115,7 +115,7 @@
 
                 <ResourceDictionary x:Key="Dark">
                     <Color x:Key="BatCaveCanvasColor">#FF0F172A</Color>
-                    <Color x:Key="BatCaveHeaderColor">#FF0C1526</Color>
+                    <Color x:Key="BatCaveHeaderColor">#FF0A1220</Color>
                     <Color x:Key="BatCavePanelColor">#FF142033</Color>
                     <Color x:Key="BatCavePanelAltColor">#FF1A2940</Color>
                     <Color x:Key="BatCaveMutedColor">#FF334865</Color>
@@ -142,11 +142,11 @@
                     <Color x:Key="BatCaveCaveMouthColor">#FF020617</Color>
                     <Color x:Key="BatCaveCaveInputSurfaceColor">#FF0F172A</Color>
                     <Color x:Key="BatCaveCaveInputBorderColor">#FF475569</Color>
-                    <Color x:Key="BatCaveHeroCaveShellColor">#FF1E293B</Color>
-                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF64748B</Color>
+                    <Color x:Key="BatCaveHeroCaveShellColor">#FF22324A</Color>
+                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FF7A8DA5</Color>
                     <Color x:Key="BatCaveHeroCaveMouthColor">#FF08111F</Color>
-                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FF14243B</Color>
-                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FFCBD5E1</Color>
+                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FF17283F</Color>
+                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FFB8C7D9</Color>
 
                     <Color x:Key="ChartCpuStrokeColor">#FF60A5FA</Color>
                     <Color x:Key="ChartCpuFillColor">#2260A5FA</Color>
@@ -237,7 +237,7 @@
 
             <Style x:Key="BatCaveTitleTextStyle" TargetType="TextBlock">
                 <Setter Property="FontFamily" Value="Bahnschrift" />
-                <Setter Property="FontSize" Value="22" />
+                <Setter Property="FontSize" Value="20" />
                 <Setter Property="FontWeight" Value="Bold" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextPrimaryBrush}" />
                 <Setter Property="TextTrimming" Value="CharacterEllipsis" />

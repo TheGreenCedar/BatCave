@@ -78,14 +78,34 @@ public class MainWindowXamlAccessibilityTests
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
+        Assert.Contains("<Grid x:Name=\"TitleBarDragRegion\">", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderControlsInline\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderFilterInline\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderFilterSurface\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderAdminControlsInline\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("x:Name=\"HeaderControlsPhone\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatField\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderControlsPhone\" Grid.Row=\"2\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"AdminModeTogglePhone\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentLeft\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentNearLeft\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentCenterLeft\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentCenterHigh\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentCenter\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentCenterRight\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentRight\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentNearRight\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentUpperRight\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentFarLeft\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentFarRight\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentPhoneFarLeft\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentPhoneLeft\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentPhoneRight\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderBatAccentPhoneFarRight\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveShell\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("x:Name=\"HeaderCaveMouth\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveCrest\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveHostPhone\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveCrestPhone\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"HeaderCaveInputSurface\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"FilterTextBox\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"FilterTextBoxPhone\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"AdminModeToggle\"", xaml, StringComparison.Ordinal);
@@ -99,16 +119,17 @@ public class MainWindowXamlAccessibilityTests
     }
 
     [Fact]
-    public void MainWindowXaml_HidesKeyboardAcceleratorTooltips_AndSplitsHeaderFilterFromCenteredTitleCave()
+    public void MainWindowXaml_HidesKeyboardAcceleratorTooltips_AndSplitsHeaderFilterFromCenteredTitleLockup()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("KeyboardAcceleratorPlacementMode=\"Hidden\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Grid x:Name=\"TitleBarDragRegion\">", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderFilterInline\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderFilterSurface\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveShell\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("x:Name=\"HeaderCaveMouth\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"HeaderCaveInputSurface\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("HeaderBrandPhone.Visibility", xaml, StringComparison.Ordinal);
         Assert.Contains("x:Name=\"FilterTextBox\"", xaml, StringComparison.Ordinal);
         Assert.Contains("HorizontalAlignment=\"Center\"", xaml, StringComparison.Ordinal);
         Assert.Contains("HeaderFilterInline.Visibility", xaml, StringComparison.Ordinal);
@@ -276,5 +297,4 @@ public class MainWindowXamlAccessibilityTests
         throw new DirectoryNotFoundException("Could not locate repository root from test base directory.");
     }
 }
-
 

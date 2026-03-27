@@ -11,7 +11,7 @@ public class MainWindowSourceTests
         Assert.Contains("Path.Combine(AppContext.BaseDirectory, \"Assets\", \"BatCaveLogo.ico\")", source, StringComparison.Ordinal);
         Assert.Contains("WindowNative.GetWindowHandle(this)", source, StringComparison.Ordinal);
         Assert.Contains("AppWindow.GetFromWindowId(windowId)", source, StringComparison.Ordinal);
-        Assert.Contains("appWindow.SetIcon(iconPath);", source, StringComparison.Ordinal);
+        Assert.Contains("_appWindow.SetIcon(iconPath);", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -52,20 +52,19 @@ public class MainWindowSourceTests
     }
 
     [Fact]
-    public void MainWindowSource_RebuildsHeaderDecorationsWithoutSettingCanvasDimensions()
+    public void MainWindowSource_UsesCustomTitleBarWithoutHeaderDecorationAnimations()
     {
         string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
 
-        Assert.Contains("HeaderDecorationCanvas.Clip = new RectangleGeometry", source, StringComparison.Ordinal);
-        Assert.Contains("HeaderBatGlidePathData", source, StringComparison.Ordinal);
-        Assert.Contains("HeaderBatSweepPathData", source, StringComparison.Ordinal);
-        Assert.Contains("HeaderBatDartPathData", source, StringComparison.Ordinal);
-        Assert.Contains("ResolveHeaderBatPathData", source, StringComparison.Ordinal);
-        Assert.Contains("CreateHeaderBatPath", source, StringComparison.Ordinal);
-        Assert.Contains("StartHeaderBatAnimation", source, StringComparison.Ordinal);
-        Assert.Contains("ResetHeaderDecorationAnimations();", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("HeaderDecorationCanvas.Width =", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("HeaderDecorationCanvas.Height =", source, StringComparison.Ordinal);
+        Assert.Contains("ExtendsContentIntoTitleBar = true;", source, StringComparison.Ordinal);
+        Assert.Contains("SetTitleBar(TitleBarDragRegion);", source, StringComparison.Ordinal);
+        Assert.Contains("ShellRoot.ActualThemeChanged += ShellRoot_ActualThemeChanged;", source, StringComparison.Ordinal);
+        Assert.Contains("AppWindowTitleBar.IsCustomizationSupported()", source, StringComparison.Ordinal);
+        Assert.Contains("ApplyTitleBarButtonColors();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HeaderDecorationCanvas", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HeaderRegion_SizeChanged", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HeaderBatGlidePathData", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResetHeaderDecorationAnimations", source, StringComparison.Ordinal);
     }
 
     [Fact]
