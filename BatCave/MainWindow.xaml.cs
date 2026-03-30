@@ -6,6 +6,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using System;
 using System.Collections.Specialized;
 using System.ComponentModel;
@@ -23,7 +24,14 @@ public sealed partial class MainWindow : Window
     private bool _bootstrapped;
     private bool _titleBarConfigured;
     private bool _compactProcessInitialScrollPending = true;
+    private bool _compactProcessSortPending;
+    private bool _compactProcessSortFinalizeQueued;
+    private bool _compactProcessSelectionRestoreQueued;
+    private bool _syncingCompactProcessSelection;
+    private bool _globalResourceSelectionRestoreQueued;
     private long _selectionSettleProbeStartedAt;
+    private double? _compactProcessSortRestoreOffset;
+    private ScrollViewer? _compactProcessListScrollViewer;
     private bool _logicalCpuGridLayoutQueued;
     private int _logicalCpuGridLastCount = -1;
     private double _logicalCpuGridLastWidth = -1;
@@ -128,6 +136,7 @@ public sealed partial class MainWindow : Window
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
         SyncAdminToggleState();
+        SyncCompactProcessSelection();
         GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
         QueueCompactProcessInitialScrollIfNeeded();
         ScheduleLogicalCpuGridLayout();
@@ -211,6 +220,13 @@ public sealed partial class MainWindow : Window
             case nameof(MonitoringShellViewModel.GlobalCpuLogicalGridVisibility):
                 ScheduleLogicalCpuGridLayout();
                 break;
+            case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
+                if (!_compactProcessSortPending)
+                {
+                    SyncCompactProcessSelection();
+                }
+
+                break;
             case nameof(MonitoringShellViewModel.SelectedGlobalResource):
                 if (!ReferenceEquals(GlobalResourceListView.SelectedItem, ViewModel.SelectedGlobalResource))
                 {
@@ -235,6 +251,12 @@ public sealed partial class MainWindow : Window
 
     private void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_syncingCompactProcessSelection)
+        {
+            CompleteSelectionSettleProbeIfPending();
+            return;
+        }
+
         if (sender is not ListView listView)
         {
             return;
@@ -243,16 +265,24 @@ public sealed partial class MainWindow : Window
         if (listView.SelectedItem is ProcessRowViewState selected)
         {
             BeginSelectionSettleProbeIfNeeded();
-            _ = ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
+            if (!ReferenceEquals(ViewModel.SelectedVisibleRowBinding, selected))
+            {
+                _ = ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
+            }
+
             DispatcherQueue.TryEnqueue(CompleteSelectionSettleProbeIfPending);
             return;
         }
 
-        if (ViewModel.SelectedVisibleRowBinding is not null)
+        if (ViewModel.SelectedVisibleRowBinding is not null && ViewModel.VisibleRows.Count > 0)
         {
             // Ignore transient null churn from virtualization/sort transitions.
             BeginSelectionSettleProbeIfNeeded();
-            ViewModel.SelectedVisibleRowBinding = null;
+            if (!_compactProcessSortPending)
+            {
+                QueueCompactProcessSelectionRestore();
+            }
+
             DispatcherQueue.TryEnqueue(CompleteSelectionSettleProbeIfPending);
             return;
         }
@@ -262,12 +292,23 @@ public sealed partial class MainWindow : Window
 
     private void CompactProcessSortHeader_Click(object sender, RoutedEventArgs e)
     {
-        DispatcherQueue.TryEnqueue(ScrollCompactProcessListToTop);
+        _compactProcessSortPending = true;
+        _compactProcessSortRestoreOffset = TryGetCompactProcessScrollOffset();
+        DispatcherQueue.TryEnqueue(CompleteCompactProcessSortInteraction);
     }
 
     private void VisibleRows_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         QueueCompactProcessInitialScrollIfNeeded();
+        if (_compactProcessSortPending)
+        {
+            return;
+        }
+
+        if (ViewModel.SelectedVisibleRowBinding is not null && CompactProcessListView.SelectedItem is null)
+        {
+            QueueCompactProcessSelectionRestore();
+        }
     }
 
     private void QueueCompactProcessInitialScrollIfNeeded()
@@ -289,6 +330,145 @@ public sealed partial class MainWindow : Window
         }
 
         CompactProcessListView.ScrollIntoView(ViewModel.VisibleRows[0], ScrollIntoViewAlignment.Leading);
+    }
+
+    private void QueueCompactProcessSelectionRestore()
+    {
+        if (_compactProcessSelectionRestoreQueued)
+        {
+            return;
+        }
+
+        _compactProcessSelectionRestoreQueued = true;
+        DispatcherQueue.TryEnqueue(RestoreCompactProcessSelectionIfNeeded);
+    }
+
+    private void RestoreCompactProcessSelectionIfNeeded()
+    {
+        _compactProcessSelectionRestoreQueued = false;
+        if (_compactProcessSortPending)
+        {
+            return;
+        }
+
+        SyncCompactProcessSelection();
+    }
+
+    private void CompleteCompactProcessSortInteraction()
+    {
+        if (!_compactProcessSortPending)
+        {
+            return;
+        }
+
+        SyncCompactProcessSelection();
+        CompactProcessListView.LayoutUpdated -= CompactProcessListView_LayoutUpdated;
+        CompactProcessListView.LayoutUpdated += CompactProcessListView_LayoutUpdated;
+    }
+
+    private void FinalizeCompactProcessSortInteraction()
+    {
+        _compactProcessSortFinalizeQueued = false;
+        RestoreCompactProcessScrollOffsetIfNeeded();
+        _compactProcessSortPending = false;
+    }
+
+    private void CompactProcessListView_LayoutUpdated(object? sender, object e)
+    {
+        CompactProcessListView.LayoutUpdated -= CompactProcessListView_LayoutUpdated;
+        if (_compactProcessSortFinalizeQueued)
+        {
+            return;
+        }
+
+        _compactProcessSortFinalizeQueued = true;
+        DispatcherQueue.TryEnqueue(FinalizeCompactProcessSortInteraction);
+    }
+
+    private void SyncCompactProcessSelection()
+    {
+        ProcessRowViewState? selectedVisibleRow = ViewModel.SelectedVisibleRowBinding;
+        if (selectedVisibleRow is not null && !IsVisibleProcessRow(selectedVisibleRow))
+        {
+            selectedVisibleRow = null;
+        }
+
+        if (ReferenceEquals(CompactProcessListView.SelectedItem, selectedVisibleRow))
+        {
+            return;
+        }
+
+        try
+        {
+            _syncingCompactProcessSelection = true;
+            CompactProcessListView.SelectedItem = selectedVisibleRow;
+        }
+        finally
+        {
+            _syncingCompactProcessSelection = false;
+        }
+    }
+
+    private bool IsVisibleProcessRow(ProcessRowViewState row)
+    {
+        foreach (ProcessRowViewState visibleRow in ViewModel.VisibleRows)
+        {
+            if (ReferenceEquals(visibleRow, row))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private double? TryGetCompactProcessScrollOffset()
+    {
+        ScrollViewer? scrollViewer = GetCompactProcessListScrollViewer();
+        return scrollViewer?.VerticalOffset;
+    }
+
+    private void RestoreCompactProcessScrollOffsetIfNeeded()
+    {
+        if (_compactProcessSortRestoreOffset is not double verticalOffset)
+        {
+            return;
+        }
+
+        _compactProcessSortRestoreOffset = null;
+        ScrollViewer? scrollViewer = GetCompactProcessListScrollViewer();
+        scrollViewer?.ChangeView(null, verticalOffset, null, disableAnimation: true);
+    }
+
+    private ScrollViewer? GetCompactProcessListScrollViewer()
+    {
+        return _compactProcessListScrollViewer ??= FindDescendant<ScrollViewer>(CompactProcessListView);
+    }
+
+    private static T? FindDescendant<T>(DependencyObject? root) where T : DependencyObject
+    {
+        if (root is null)
+        {
+            return null;
+        }
+
+        int childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (int index = 0; index < childCount; index++)
+        {
+            DependencyObject child = VisualTreeHelper.GetChild(root, index);
+            if (child is T target)
+            {
+                return target;
+            }
+
+            T? nested = FindDescendant<T>(child);
+            if (nested is not null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
     }
 
     private void GlobalResourceListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -313,13 +493,7 @@ public sealed partial class MainWindow : Window
             if (ViewModel.SelectedGlobalResource is not null && ViewModel.GlobalResourceRows.Count > 0)
             {
                 // Ignore transient null churn while the ListView rebinds during per-tick row refreshes.
-                DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (!ReferenceEquals(GlobalResourceListView.SelectedItem, ViewModel.SelectedGlobalResource))
-                    {
-                        GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
-                    }
-                });
+                QueueGlobalResourceSelectionRestore();
                 return;
             }
 
@@ -353,11 +527,39 @@ public sealed partial class MainWindow : Window
         }
 
         _logicalCpuGridLayoutQueued = true;
-        DispatcherQueue.TryEnqueue(() =>
+        DispatcherQueue.TryEnqueue(ApplyQueuedLogicalCpuGridLayout);
+    }
+
+    private void QueueGlobalResourceSelectionRestore()
+    {
+        if (_globalResourceSelectionRestoreQueued)
         {
-            _logicalCpuGridLayoutQueued = false;
-            ApplyLogicalCpuGridLayout();
-        });
+            return;
+        }
+
+        _globalResourceSelectionRestoreQueued = true;
+        DispatcherQueue.TryEnqueue(RestoreGlobalResourceSelectionIfNeeded);
+    }
+
+    private void RestoreGlobalResourceSelectionIfNeeded()
+    {
+        _globalResourceSelectionRestoreQueued = false;
+
+        if (ViewModel.SelectedGlobalResource is null || ViewModel.GlobalResourceRows.Count == 0)
+        {
+            return;
+        }
+
+        if (!ReferenceEquals(GlobalResourceListView.SelectedItem, ViewModel.SelectedGlobalResource))
+        {
+            GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
+        }
+    }
+
+    private void ApplyQueuedLogicalCpuGridLayout()
+    {
+        _logicalCpuGridLayoutQueued = false;
+        ApplyLogicalCpuGridLayout();
     }
 
     private void ApplyLogicalCpuGridLayout()
@@ -417,6 +619,7 @@ public sealed partial class MainWindow : Window
         }
 
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        CompactProcessListView.LayoutUpdated -= CompactProcessListView_LayoutUpdated;
         if (ViewModel.VisibleRows is INotifyCollectionChanged visibleRows)
         {
             visibleRows.CollectionChanged -= VisibleRows_CollectionChanged;

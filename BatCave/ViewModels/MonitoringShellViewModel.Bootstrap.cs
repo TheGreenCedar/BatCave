@@ -16,6 +16,11 @@ public partial class MonitoringShellViewModel
 
     public Task BootstrapAsync(CancellationToken ct)
     {
+        if (_disposed)
+        {
+            return Task.CompletedTask;
+        }
+
         InitializeBootstrapState();
 
         try
@@ -68,6 +73,11 @@ public partial class MonitoringShellViewModel
 
     public async Task ToggleAdminModeAsync(bool nextAdminMode, CancellationToken ct)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (AdminModePending || nextAdminMode == AdminModeEnabled)
         {
             return;
@@ -83,6 +93,11 @@ public partial class MonitoringShellViewModel
             loopStopped = true;
             CollectorActivationResult activation = await _runtime.RestartAsync(nextAdminMode, ct);
 
+            if (_disposed)
+            {
+                return;
+            }
+
             AdminModeEnabled = activation.EffectiveAdminMode;
             RefreshRuntimeSnapshot();
             ApplyCollectorWarning(new CollectorWarning
@@ -93,32 +108,55 @@ public partial class MonitoringShellViewModel
         }
         catch (Exception ex)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             AdminModeError = ex.Message;
             AdminModeEnabled = _runtime.IsAdminMode();
         }
         finally
         {
-            if (loopStopped)
+            if (!_disposed)
             {
-                _runtimeLoopService.Start(_runtimeLoopService.CurrentGeneration);
-            }
+                if (loopStopped)
+                {
+                    _runtimeLoopService.Start(_runtimeLoopService.CurrentGeneration);
+                }
 
-            AdminModePending = false;
+                AdminModePending = false;
+            }
         }
     }
 
     private void OnRuntimeHealthChanged(object? sender, RuntimeHealth health)
     {
-        RunOnUiThread(() => ApplyRuntimeHealth(health));
+        if (_disposed)
+        {
+            return;
+        }
+
+        QueuePendingRuntimeHealth(health);
     }
 
     private void OnCollectorWarningRaised(object? sender, CollectorWarning warning)
     {
-        RunOnUiThread(() => ApplyCollectorWarning(warning));
+        if (_disposed)
+        {
+            return;
+        }
+
+        QueuePendingCollectorWarning(warning);
     }
 
     private void ApplyCollectorWarning(CollectorWarning warning)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(warning.Message))
         {
             return;
@@ -134,6 +172,11 @@ public partial class MonitoringShellViewModel
 
     private void RefreshRuntimeSnapshot()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         QueryResponse snapshot = _runtime.GetSnapshot();
         RuntimeHealth health = _runtime.GetRuntimeHealth();
         LoadSnapshot(snapshot.Rows);
@@ -142,6 +185,11 @@ public partial class MonitoringShellViewModel
 
     private void InitializeBootstrapState()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         RuntimeHealthSnapshot healthSnapshot = _runtimeHealthService.Snapshot();
         IsLoading = true;
         IsStartupError = false;
@@ -158,6 +206,11 @@ public partial class MonitoringShellViewModel
 
     private void ApplyBlockedStartupState(StartupGateStatus startupGateStatus)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         IsBlocked = true;
         ResetWarningState();
         BlockedReasonMessage = FormatBlockReason(startupGateStatus.Reason);
@@ -169,6 +222,11 @@ public partial class MonitoringShellViewModel
 
     private void ApplyStartupFailureState(Exception ex)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         IsStartupError = true;
         ResetWarningState();
         StartupErrorMessage = ex.Message;
@@ -179,6 +237,11 @@ public partial class MonitoringShellViewModel
 
     private void ApplyRuntimeHealth(RuntimeHealth health)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         MaybeClearStaleWarning(health);
         RuntimeHealthStatus = BuildRuntimeHealthStatus(health);
         ApplyRuntimeStatusPresentation(health);

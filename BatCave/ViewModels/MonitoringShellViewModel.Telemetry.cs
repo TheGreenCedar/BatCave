@@ -2,6 +2,7 @@ using BatCave.Core.Domain;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 
 namespace BatCave.ViewModels;
 
@@ -9,11 +10,21 @@ public partial class MonitoringShellViewModel
 {
     private void OnTelemetryDelta(object? sender, ProcessDeltaBatch delta)
     {
-        RunOnUiThread(() => ApplyTelemetryDelta(delta));
+        if (_disposed)
+        {
+            return;
+        }
+
+        QueuePendingTelemetryDelta(delta);
     }
 
     private void ApplyTelemetryDelta(ProcessDeltaBatch delta)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         long startedAt = Stopwatch.GetTimestamp();
         bool refreshFilter = ApplyUpserts(delta.Upserts);
         refreshFilter |= ApplyExits(delta.Exits);
@@ -25,8 +36,17 @@ public partial class MonitoringShellViewModel
 
     private bool ApplyUpserts(IReadOnlyList<ProcessSample> upserts)
     {
+        if (_disposed)
+        {
+            return false;
+        }
+
         bool refreshFilter = false;
         List<ProcessIdentity>? changedProjectionRows = null;
+        string filterNeedle = FilterText.Trim();
+        SortColumn currentSortColumn = CurrentSortColumn;
+        bool adminModeEnabled = AdminModeEnabled;
+        bool adminEnabledOnlyFilter = AdminEnabledOnlyFilter;
 
         foreach (ProcessSample upsert in upserts)
         {
@@ -35,7 +55,13 @@ public partial class MonitoringShellViewModel
             TrackUpsert(identity, upsert, hadPrevious ? previous : null);
 
             ProcessRowViewState rowState = GetOrCreateVisibleRowState(upsert);
-            bool projectionChanged = UpdateVisibleRowForUpsert(rowState, upsert);
+            bool projectionChanged = UpdateVisibleRowForUpsert(
+                rowState,
+                upsert,
+                currentSortColumn,
+                filterNeedle,
+                adminModeEnabled,
+                adminEnabledOnlyFilter);
             if (projectionChanged)
             {
                 changedProjectionRows ??= [];
@@ -59,6 +85,11 @@ public partial class MonitoringShellViewModel
 
     private bool ApplyExits(IReadOnlyList<ProcessIdentity> exits)
     {
+        if (_disposed)
+        {
+            return false;
+        }
+
         bool refreshFilter = false;
 
         foreach (ProcessIdentity exit in exits)
@@ -71,6 +102,11 @@ public partial class MonitoringShellViewModel
 
     private void FinalizeDeltaRefresh(ProcessDeltaBatch delta, bool refreshFilter)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _summarySeq = Math.Max(_summarySeq, delta.Seq);
         if (delta.Upserts.Count == 0)
         {
@@ -82,10 +118,144 @@ public partial class MonitoringShellViewModel
         AppendHeartbeatSamplesIfNeeded(delta.Seq);
         RefreshVisibleRows(refreshFilter);
         ReconcileSelectionAfterDelta();
+        RefreshInspectorAfterTelemetryDelta();
+    }
+
+    private void QueuePendingTelemetryDelta(ProcessDeltaBatch delta)
+    {
+        lock (_pendingUiEventSync)
+        {
+            MergePendingTelemetry(delta);
+        }
+
+        QueuePendingUiEventDrain();
+    }
+
+    private void QueuePendingRuntimeHealth(RuntimeHealth health)
+    {
+        lock (_pendingUiEventSync)
+        {
+            _pendingRuntimeHealth = health;
+        }
+
+        QueuePendingUiEventDrain();
+    }
+
+    private void QueuePendingCollectorWarning(CollectorWarning warning)
+    {
+        lock (_pendingUiEventSync)
+        {
+            _pendingCollectorWarnings.Add(warning);
+        }
+
+        QueuePendingUiEventDrain();
+    }
+
+    private void QueuePendingUiEventDrain()
+    {
+        if (Interlocked.Exchange(ref _pendingUiEventDrainQueued, 1) == 1)
+        {
+            return;
+        }
+
+        RunDispatcherHandlerOnUiThread(DrainPendingUiEvents);
+    }
+
+    private void DrainPendingUiEvents()
+    {
+        while (true)
+        {
+            ProcessDeltaBatch? delta;
+            RuntimeHealth? runtimeHealth;
+            CollectorWarning[]? warnings;
+
+            lock (_pendingUiEventSync)
+            {
+                if (!_hasPendingTelemetry
+                    && _pendingRuntimeHealth is null
+                    && _pendingCollectorWarnings.Count == 0)
+                {
+                    Interlocked.Exchange(ref _pendingUiEventDrainQueued, 0);
+                    return;
+                }
+
+                delta = _hasPendingTelemetry ? FlushPendingTelemetry() : null;
+                runtimeHealth = _pendingRuntimeHealth;
+                _pendingRuntimeHealth = null;
+                warnings = _pendingCollectorWarnings.Count > 0
+                    ? [.. _pendingCollectorWarnings]
+                    : null;
+                _pendingCollectorWarnings.Clear();
+            }
+
+            if (delta is not null)
+            {
+                ApplyTelemetryDelta(delta);
+            }
+
+            if (runtimeHealth is not null)
+            {
+                ApplyRuntimeHealth(runtimeHealth);
+            }
+
+            if (warnings is null)
+            {
+                continue;
+            }
+
+            foreach (CollectorWarning warning in warnings)
+            {
+                ApplyCollectorWarning(warning);
+            }
+        }
+    }
+
+    private void MergePendingTelemetry(ProcessDeltaBatch delta)
+    {
+        _hasPendingTelemetry = true;
+
+        if (delta.Seq > _pendingTelemetrySeq)
+        {
+            _pendingTelemetrySeq = delta.Seq;
+        }
+
+        foreach (ProcessSample sample in delta.Upserts)
+        {
+            ProcessIdentity identity = sample.Identity();
+            _pendingTelemetryExits.Remove(identity);
+            _pendingTelemetryUpserts[identity] = sample;
+        }
+
+        foreach (ProcessIdentity identity in delta.Exits)
+        {
+            _pendingTelemetryUpserts.Remove(identity);
+            _pendingTelemetryExits.Add(identity);
+        }
+    }
+
+    private ProcessDeltaBatch FlushPendingTelemetry()
+    {
+        ProcessDeltaBatch delta = new()
+        {
+            Seq = _pendingTelemetrySeq,
+            Upserts = [.. _pendingTelemetryUpserts.Values],
+            Exits = [.. _pendingTelemetryExits],
+        };
+
+        _pendingTelemetrySeq = 0;
+        _pendingTelemetryUpserts.Clear();
+        _pendingTelemetryExits.Clear();
+        _hasPendingTelemetry = false;
+        return delta;
     }
 
     private void LoadSnapshot(IReadOnlyList<ProcessSample> rows)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _allRows.Clear();
         _metricHistory.Clear();
         _metricHistoryLastSeq.Clear();
@@ -109,6 +279,11 @@ public partial class MonitoringShellViewModel
 
     private void AddSnapshotRow(ProcessSample row)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         ProcessIdentity identity = row.Identity();
         _allRows[identity] = row;
 
@@ -124,6 +299,11 @@ public partial class MonitoringShellViewModel
 
     private void PruneMetadataCache()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         List<ProcessIdentity> staleIdentities = [];
         foreach (ProcessIdentity cachedIdentity in _metadataCache.Keys)
         {
@@ -141,18 +321,40 @@ public partial class MonitoringShellViewModel
 
     private void RefreshVisibleRows(bool refreshFilter)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (refreshFilter)
         {
             ApplyCanonicalFilter();
         }
 
         SelectedVisibleRow = ResolveSelectedVisibleRow();
-        RefreshDetailMetrics();
         RaiseCompactTotalsProperties();
+    }
+
+    private void RefreshInspectorAfterTelemetryDelta()
+    {
+        RefreshDetailMetrics();
+
+        if (SelectedRow is null)
+        {
+            return;
+        }
+
+        BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));
+        RefreshGlobalDetailState();
     }
 
     private ProcessRowViewState GetOrCreateVisibleRowState(ProcessSample sample)
     {
+        if (_disposed)
+        {
+            return new ProcessRowViewState(sample, []);
+        }
+
         ProcessIdentity identity = sample.Identity();
         if (_visibleRowStateByIdentity.TryGetValue(identity, out ProcessRowViewState? existing))
         {
@@ -199,6 +401,11 @@ public partial class MonitoringShellViewModel
 
     private bool AppendHeartbeatForIdentity(ProcessIdentity identity, ProcessSample sample, ulong seq)
     {
+        if (_disposed)
+        {
+            return false;
+        }
+
         ulong lastSeq = _metricHistoryLastSeq.TryGetValue(identity, out ulong value) ? value : 0;
         if (lastSeq >= seq)
         {
@@ -224,6 +431,11 @@ public partial class MonitoringShellViewModel
 
     private void TrackUpsert(ProcessIdentity identity, ProcessSample upsert, ProcessSample? previous)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (previous is not null)
         {
             ApplySummaryDelta(previous, -1d);
@@ -253,16 +465,109 @@ public partial class MonitoringShellViewModel
 
     private static bool UpdateVisibleRowForUpsert(
         ProcessRowViewState rowState,
-        ProcessSample upsert)
+        ProcessSample upsert,
+        SortColumn currentSortColumn,
+        string filterNeedle,
+        bool adminModeEnabled,
+        bool adminEnabledOnlyFilter)
     {
-        bool projectionChanged = false;
-        if (ShouldReplaceVisibleRow(rowState.Sample, upsert))
+        ProcessSample previous = rowState.Sample;
+        bool displayProjectionChanged = false;
+        if (ShouldReplaceVisibleRow(previous, upsert))
         {
             rowState.UpdateSample(upsert);
-            projectionChanged = true;
+            displayProjectionChanged = true;
         }
 
-        return projectionChanged;
+        if (!displayProjectionChanged)
+        {
+            return false;
+        }
+
+        return ShouldRefreshVisibleRowShape(
+            previous,
+            upsert,
+            currentSortColumn,
+            filterNeedle,
+            adminModeEnabled,
+            adminEnabledOnlyFilter);
+    }
+
+    private static bool ShouldRefreshVisibleRowShape(
+        ProcessSample previous,
+        ProcessSample current,
+        SortColumn currentSortColumn,
+        string filterNeedle,
+        bool adminModeEnabled,
+        bool adminEnabledOnlyFilter)
+    {
+        bool wasVisible = IsVisibleForCurrentRowShaping(previous, filterNeedle, adminModeEnabled, adminEnabledOnlyFilter);
+        bool isVisible = IsVisibleForCurrentRowShaping(current, filterNeedle, adminModeEnabled, adminEnabledOnlyFilter);
+
+        if (wasVisible != isVisible)
+        {
+            return true;
+        }
+
+        if (!wasVisible)
+        {
+            return false;
+        }
+
+        return IsCurrentSortKeyChanged(previous, current, currentSortColumn);
+    }
+
+    private static bool IsVisibleForCurrentRowShaping(
+        ProcessSample sample,
+        string filterNeedle,
+        bool adminModeEnabled,
+        bool adminEnabledOnlyFilter)
+    {
+        if (IsFilteredOutByAdminVisibility(sample, adminModeEnabled, adminEnabledOnlyFilter))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(filterNeedle))
+        {
+            return true;
+        }
+
+        return sample.Name.Contains(filterNeedle, StringComparison.OrdinalIgnoreCase)
+            || sample.Pid.ToString().Contains(filterNeedle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsFilteredOutByAdminVisibility(
+        ProcessSample sample,
+        bool adminModeEnabled,
+        bool adminEnabledOnlyFilter)
+    {
+        if (!adminModeEnabled && sample.AccessState == AccessState.Denied)
+        {
+            return true;
+        }
+
+        return adminEnabledOnlyFilter && sample.AccessState != AccessState.Full;
+    }
+
+    private static bool IsCurrentSortKeyChanged(
+        ProcessSample previous,
+        ProcessSample current,
+        SortColumn currentSortColumn)
+    {
+        return currentSortColumn switch
+        {
+            SortColumn.Name => !string.Equals(previous.Name, current.Name, StringComparison.Ordinal),
+            SortColumn.CpuPct => ProcessRowViewState.IsCpuSortBucketChanged(previous.CpuPct, current.CpuPct),
+            SortColumn.RssBytes => previous.RssBytes != current.RssBytes,
+            SortColumn.IoReadBps => previous.IoReadBps != current.IoReadBps,
+            SortColumn.IoWriteBps => previous.IoWriteBps != current.IoWriteBps,
+            SortColumn.OtherIoBps => previous.OtherIoBps != current.OtherIoBps,
+            SortColumn.DiskBps => previous.IoReadBps != current.IoReadBps || previous.IoWriteBps != current.IoWriteBps,
+            SortColumn.Threads => previous.Threads != current.Threads,
+            SortColumn.Handles => previous.Handles != current.Handles,
+            _ => false,
+        };
     }
 
     private bool RemoveTrackedIdentity(ProcessIdentity identity)
@@ -278,6 +583,11 @@ public partial class MonitoringShellViewModel
 
     private void RemoveIdentityStateFromCaches(ProcessIdentity identity)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _metadataCache.Remove(identity);
         _metricHistory.Remove(identity);
         _metricHistoryLastSeq.Remove(identity);
@@ -285,6 +595,11 @@ public partial class MonitoringShellViewModel
 
     private bool RemoveVisibleRowState(ProcessIdentity identity)
     {
+        if (_disposed)
+        {
+            return false;
+        }
+
         if (_visibleRowStateByIdentity.Remove(identity, out _))
         {
             _rowViewSource.Edit(updater => updater.RemoveKey(identity));

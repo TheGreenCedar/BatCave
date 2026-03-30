@@ -25,6 +25,7 @@ public partial class MonitoringShellViewModel
     private const string ProcessDiskResourceId = "proc:disk";
     private const string ProcessNetworkResourceId = "proc:network";
     private const string ProcessOtherIoResourceId = "proc:otherio";
+    private const int MiniTrendVisiblePointCount = 60;
     private static readonly TimeSpan GlobalResourceStaleRetention = TimeSpan.FromMinutes(5);
     private static readonly FixedRingSeries EmptyTrendSeries = new(1);
     private static Color CpuStrokeColor => AppThemeTokens.ResolveColor("ChartCpuStrokeColor", Color.FromArgb(0xFF, 0x0B, 0x84, 0xD8));
@@ -44,6 +45,7 @@ public partial class MonitoringShellViewModel
     private readonly Dictionary<string, GlobalTrendHistory> _globalTrendByResourceId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _globalResourceLastSeenUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly ObservableCollection<GlobalStatItemViewState> _globalDetailStats = [];
+    private readonly ObservableCollection<GlobalStatItemViewState> _summaryStatCards = [];
     private readonly ObservableCollection<LogicalProcessorTrendViewState> _globalCpuLogicalProcessorRows = [];
 
     private SystemGlobalMetricsSample _latestGlobalMetricsSample = new();
@@ -117,6 +119,8 @@ public partial class MonitoringShellViewModel
     }
 
     public ObservableCollection<GlobalStatItemViewState> GlobalDetailStats => _globalDetailStats;
+
+    public ObservableCollection<GlobalStatItemViewState> SummaryStatCards => _summaryStatCards;
 
     public ObservableCollection<LogicalProcessorTrendViewState> GlobalCpuLogicalProcessorRows => _globalCpuLogicalProcessorRows;
 
@@ -361,6 +365,12 @@ public partial class MonitoringShellViewModel
         RaiseCompactTotalsProperties();
         List<GlobalResourceDescriptor> descriptors = BuildGlobalResourceDescriptors(resolved);
         UpdateGlobalResourceHistories(descriptors);
+
+        if (!IsGlobalPerformanceMode)
+        {
+            return;
+        }
+
         BuildAndAppendResourceRows(descriptors);
         QueueGlobalDetailStateRefresh();
     }
@@ -501,6 +511,7 @@ public partial class MonitoringShellViewModel
         }
 
         string? selectedResourceId = SelectedGlobalResource?.ResourceId;
+        MetricHistoryBuffer history = ResolveProcessHistory(selected);
         List<ProcessResourceDescriptor> descriptors = BuildProcessResourceDescriptors(selected);
         HashSet<string> currentIds = descriptors
             .Select(static descriptor => descriptor.ResourceId)
@@ -530,7 +541,7 @@ public partial class MonitoringShellViewModel
                     descriptor.Subtitle,
                     descriptor.ValueText,
                     chartIdentityKey,
-                    descriptor.MiniTrendValues,
+                    CreateProcessMiniTrendValues(history, descriptor.ResourceId),
                     descriptor.MiniScaleMode,
                     descriptor.MiniStrokeColor,
                     descriptor.MiniFillColor,
@@ -542,11 +553,12 @@ public partial class MonitoringShellViewModel
                     descriptor.Subtitle,
                     descriptor.ValueText,
                     chartIdentityKey,
-                    descriptor.MiniTrendValues,
+                    existing.MiniTrendValues,
                     descriptor.MiniScaleMode,
                     descriptor.MiniStrokeColor,
                     descriptor.MiniFillColor,
                     descriptor.MiniDomainMax);
+                RefreshProcessMiniTrend(existing, history, descriptor.ResourceId);
             }
         }
 
@@ -555,7 +567,6 @@ public partial class MonitoringShellViewModel
 
     private List<ProcessResourceDescriptor> BuildProcessResourceDescriptors(ProcessSample selected)
     {
-        MetricHistoryBuffer history = ResolveProcessHistory(selected);
         ulong diskRate = SaturatingAddRates(selected.IoReadBps, selected.IoWriteBps);
 
         return
@@ -566,7 +577,6 @@ public partial class MonitoringShellViewModel
                 Title: "CPU",
                 Subtitle: selected.Name,
                 ValueText: $"{selected.CpuPct:F1}%",
-                MiniTrendValues: SnapshotSeries(history.Cpu, 60),
                 MiniScaleMode: MetricTrendScaleMode.CpuPercent,
                 MiniStrokeColor: CpuStrokeColor,
                 MiniFillColor: CpuFillColor,
@@ -577,7 +587,6 @@ public partial class MonitoringShellViewModel
                 Title: "Memory",
                 Subtitle: selected.Name,
                 ValueText: ValueFormat.FormatBytes(selected.RssBytes),
-                MiniTrendValues: SnapshotSeries(history.Memory, 60),
                 MiniScaleMode: MetricTrendScaleMode.MemoryBytes,
                 MiniStrokeColor: MemoryStrokeColor,
                 MiniFillColor: MemoryFillColor,
@@ -588,7 +597,6 @@ public partial class MonitoringShellViewModel
                 Title: "Disk",
                 Subtitle: "Read + Write",
                 ValueText: ValueFormat.FormatRate(diskRate),
-                MiniTrendValues: SnapshotCombinedSeries(history.IoRead, history.IoWrite, 60),
                 MiniScaleMode: MetricTrendScaleMode.IoRate,
                 MiniStrokeColor: DiskStrokeColor,
                 MiniFillColor: DiskFillColor,
@@ -599,7 +607,6 @@ public partial class MonitoringShellViewModel
                 Title: "Network",
                 Subtitle: "Derived from Other I/O",
                 ValueText: ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps),
-                MiniTrendValues: SnapshotSeries(history.OtherIo, 60, static value => value * 8d),
                 MiniScaleMode: MetricTrendScaleMode.BitsRate,
                 MiniStrokeColor: NetworkStrokeColor,
                 MiniFillColor: NetworkFillColor,
@@ -610,12 +617,46 @@ public partial class MonitoringShellViewModel
                 Title: "Other I/O",
                 Subtitle: selected.Name,
                 ValueText: ValueFormat.FormatRate(selected.OtherIoBps),
-                MiniTrendValues: SnapshotSeries(history.OtherIo, 60),
                 MiniScaleMode: MetricTrendScaleMode.IoRate,
                 MiniStrokeColor: OtherIoStrokeColor,
                 MiniFillColor: OtherIoFillColor,
                 MiniDomainMax: double.NaN),
         ];
+    }
+
+    private static double[] CreateProcessMiniTrendValues(MetricHistoryBuffer history, string resourceId)
+    {
+        return resourceId switch
+        {
+            ProcessCpuResourceId => SnapshotSeries(history.Cpu, MiniTrendVisiblePointCount),
+            ProcessMemoryResourceId => SnapshotSeries(history.Memory, MiniTrendVisiblePointCount),
+            ProcessDiskResourceId => SnapshotCombinedSeries(history.IoRead, history.IoWrite, MiniTrendVisiblePointCount),
+            ProcessNetworkResourceId => SnapshotSeries(history.OtherIo, MiniTrendVisiblePointCount, static value => value * 8d),
+            ProcessOtherIoResourceId => SnapshotSeries(history.OtherIo, MiniTrendVisiblePointCount),
+            _ => new double[MiniTrendVisiblePointCount],
+        };
+    }
+
+    private static void RefreshProcessMiniTrend(GlobalResourceRowViewState row, MetricHistoryBuffer history, string resourceId)
+    {
+        switch (resourceId)
+        {
+            case ProcessCpuResourceId:
+                row.RefreshMiniTrend(history.Cpu, MiniTrendVisiblePointCount);
+                break;
+            case ProcessMemoryResourceId:
+                row.RefreshMiniTrend(history.Memory, MiniTrendVisiblePointCount);
+                break;
+            case ProcessDiskResourceId:
+                row.RefreshMiniTrend(history.IoRead, history.IoWrite, MiniTrendVisiblePointCount);
+                break;
+            case ProcessNetworkResourceId:
+                row.RefreshMiniTrend(history.OtherIo, MiniTrendVisiblePointCount, static value => value * 8d);
+                break;
+            case ProcessOtherIoResourceId:
+                row.RefreshMiniTrend(history.OtherIo, MiniTrendVisiblePointCount);
+                break;
+        }
     }
 
     private MetricHistoryBuffer ResolveProcessHistory(ProcessSample selected)
@@ -669,11 +710,13 @@ public partial class MonitoringShellViewModel
             return;
         }
 
-        RunOnUiThread(() =>
-        {
-            Interlocked.Exchange(ref _globalDetailRefreshQueued, 0);
-            RefreshGlobalDetailState();
-        });
+        RunDispatcherHandlerOnUiThread(DrainQueuedGlobalDetailStateRefresh);
+    }
+
+    private void DrainQueuedGlobalDetailStateRefresh()
+    {
+        Interlocked.Exchange(ref _globalDetailRefreshQueued, 0);
+        RefreshGlobalDetailState();
     }
 
     private bool CanRemoveStaleGlobalResource(string resourceId, DateTimeOffset nowUtc)
@@ -1642,7 +1685,34 @@ public partial class MonitoringShellViewModel
             _globalDetailStats.RemoveAt(_globalDetailStats.Count - 1);
         }
 
-        RaisePresentationProperties();
+        RefreshSummaryStatCards();
+        RaisePresentationDetailProperties();
+    }
+
+    private void RefreshSummaryStatCards()
+    {
+        int targetCount = Math.Min(HasSelection ? 4 : 6, _globalDetailStats.Count);
+
+        while (_summaryStatCards.Count < targetCount)
+        {
+            _summaryStatCards.Add(_globalDetailStats[_summaryStatCards.Count]);
+        }
+
+        for (int index = 0; index < targetCount; index++)
+        {
+            GlobalStatItemViewState next = _globalDetailStats[index];
+            if (ReferenceEquals(_summaryStatCards[index], next))
+            {
+                continue;
+            }
+
+            _summaryStatCards[index] = next;
+        }
+
+        while (_summaryStatCards.Count > targetCount)
+        {
+            _summaryStatCards.RemoveAt(_summaryStatCards.Count - 1);
+        }
     }
 
     private static string FormatValue<T>(T? value)
@@ -1749,7 +1819,6 @@ public partial class MonitoringShellViewModel
         string Title,
         string Subtitle,
         string ValueText,
-        double[] MiniTrendValues,
         MetricTrendScaleMode MiniScaleMode,
         Color MiniStrokeColor,
         Color MiniFillColor,

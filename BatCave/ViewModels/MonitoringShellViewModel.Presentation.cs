@@ -3,7 +3,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace BatCave.ViewModels;
 
@@ -155,9 +154,6 @@ public partial class MonitoringShellViewModel
 
     public Visibility RuntimeStatusVisibility => IsRuntimeStatusVisible ? Visibility.Visible : Visibility.Collapsed;
 
-    public IReadOnlyList<GlobalStatItemViewState> SummaryStatCards =>
-        _globalDetailStats.Take(Math.Min(HasSelection ? 4 : 6, _globalDetailStats.Count)).ToArray();
-
     public double InspectorChartMaxWidth => HasSelection ? 960 : 840;
 
     public double SummaryStatCardWidth => HasSelection ? 232 : 208;
@@ -287,7 +283,7 @@ public partial class MonitoringShellViewModel
             nameof(LogicalModeForegroundBrush));
     }
 
-    private void RaisePresentationProperties()
+    private void RaisePresentationModeProperties()
     {
         RaiseProperties(
             nameof(InspectorLayoutMode),
@@ -302,10 +298,20 @@ public partial class MonitoringShellViewModel
             nameof(ProcessSummaryLayoutVisibility),
             nameof(InspectorChartMaxWidth),
             nameof(SummaryStatCardWidth),
-            nameof(SummaryStatCards),
-            nameof(DetailsPaneTitle),
+            nameof(DetailsPaneTitle));
+    }
+
+    private void RaisePresentationDetailProperties()
+    {
+        RaiseProperties(
             nameof(DetailsPanePrimaryText),
             nameof(DetailsPaneSecondaryText));
+    }
+
+    private void RaisePresentationProperties()
+    {
+        RaisePresentationModeProperties();
+        RaisePresentationDetailProperties();
     }
 
     private void SetRuntimeStatusPresentation(RuntimeStatusTone tone, string title, string summary, bool isVisible = true)

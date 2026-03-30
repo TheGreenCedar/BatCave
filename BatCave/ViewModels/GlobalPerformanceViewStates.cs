@@ -143,12 +143,107 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         MiniDomainMax = miniDomainMax;
     }
 
-    internal void RefreshMiniTrend(FixedRingSeries series, int visiblePointCount)
+    internal void RefreshMiniTrend(IReadOnlyList<double> series, int visiblePointCount)
     {
-        if (series.CopyLatestInto(ref _miniTrendValues, visiblePointCount))
+        if (CopyLatestInto(series, ref _miniTrendValues, visiblePointCount))
         {
             OnPropertyChanged(nameof(MiniTrendValues));
         }
+    }
+
+    internal void RefreshMiniTrend(IReadOnlyList<double> series, int visiblePointCount, Func<double, double> map)
+    {
+        if (CopyLatestInto(series, ref _miniTrendValues, visiblePointCount, map))
+        {
+            OnPropertyChanged(nameof(MiniTrendValues));
+        }
+    }
+
+    internal void RefreshMiniTrend(IReadOnlyList<double> left, IReadOnlyList<double> right, int visiblePointCount)
+    {
+        if (CopyCombinedLatestInto(left, right, ref _miniTrendValues, visiblePointCount))
+        {
+            OnPropertyChanged(nameof(MiniTrendValues));
+        }
+    }
+
+    private static bool CopyLatestInto(
+        IReadOnlyList<double> source,
+        ref double[] destination,
+        int visiblePointCount,
+        Func<double, double>? map = null)
+    {
+        int windowSize = Math.Max(1, visiblePointCount);
+        int take = Math.Min(source.Count, windowSize);
+        int sourceStart = source.Count - take;
+        int destinationStart = windowSize - take;
+        bool changed = EnsureTrendBufferSize(ref destination, windowSize);
+
+        for (int index = 0; index < destinationStart; index++)
+        {
+            if (destination[index] == 0d)
+            {
+                continue;
+            }
+
+            destination[index] = 0d;
+            changed = true;
+        }
+
+        for (int index = 0; index < take; index++)
+        {
+            double current = source[sourceStart + index];
+            double next = map is null ? current : map(current);
+            int targetIndex = destinationStart + index;
+            if (destination[targetIndex] == next)
+            {
+                continue;
+            }
+
+            destination[targetIndex] = next;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool CopyCombinedLatestInto(
+        IReadOnlyList<double> left,
+        IReadOnlyList<double> right,
+        ref double[] destination,
+        int visiblePointCount)
+    {
+        int windowSize = Math.Max(1, visiblePointCount);
+        bool changed = EnsureTrendBufferSize(ref destination, windowSize);
+
+        for (int outputIndex = 0; outputIndex < windowSize; outputIndex++)
+        {
+            int leftIndex = left.Count - windowSize + outputIndex;
+            int rightIndex = right.Count - windowSize + outputIndex;
+            double leftValue = leftIndex >= 0 && leftIndex < left.Count ? left[leftIndex] : 0d;
+            double rightValue = rightIndex >= 0 && rightIndex < right.Count ? right[rightIndex] : 0d;
+            double next = leftValue + rightValue;
+            if (destination[outputIndex] == next)
+            {
+                continue;
+            }
+
+            destination[outputIndex] = next;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool EnsureTrendBufferSize(ref double[] destination, int windowSize)
+    {
+        if (destination.Length == windowSize)
+        {
+            return false;
+        }
+
+        destination = new double[windowSize];
+        return true;
     }
 }
 

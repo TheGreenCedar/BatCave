@@ -97,6 +97,33 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         }
     }
 
+    private static ManagementBaseObject? TakeFirstManagementRow(ManagementObjectCollection rows)
+    {
+        foreach (ManagementBaseObject row in rows)
+        {
+            return row;
+        }
+
+        return null;
+    }
+
+    private static ManagementBaseObject? FindManagementRow(
+        ManagementObjectCollection rows,
+        Func<ManagementBaseObject, bool> predicate)
+    {
+        foreach (ManagementBaseObject row in rows)
+        {
+            if (predicate(row))
+            {
+                return row;
+            }
+
+            row.Dispose();
+        }
+
+        return null;
+    }
+
     private SystemGlobalCpuSnapshot BuildCpuSnapshot(double? cpuPct, double? kernelPct)
     {
         List<double> logicalUtilization = [];
@@ -114,6 +141,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             using ManagementObjectCollection processorRows = processorPerfSearcher.Get();
             foreach (ManagementBaseObject row in processorRows)
             {
+                using ManagementBaseObject rowScope = row;
                 string? name = row["Name"] as string;
                 if (string.IsNullOrWhiteSpace(name))
                 {
@@ -151,7 +179,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         {
             using ManagementObjectSearcher osSearcher = new("SELECT NumberOfProcesses, LastBootUpTime FROM Win32_OperatingSystem");
             using ManagementObjectCollection osRows = osSearcher.Get();
-            ManagementBaseObject? osRow = osRows.Cast<ManagementBaseObject>().FirstOrDefault();
+            using ManagementBaseObject? osRow = TakeFirstManagementRow(osRows);
             if (osRow is not null)
             {
                 processes = ReadUInt(osRow["NumberOfProcesses"]);
@@ -175,7 +203,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         {
             using ManagementObjectSearcher perfSystemSearcher = new("SELECT Threads, Processes, SystemCallsPersec FROM Win32_PerfFormattedData_PerfOS_System");
             using ManagementObjectCollection perfRows = perfSystemSearcher.Get();
-            ManagementBaseObject? perfRow = perfRows.Cast<ManagementBaseObject>().FirstOrDefault();
+            using ManagementBaseObject? perfRow = TakeFirstManagementRow(perfRows);
             if (perfRow is not null)
             {
                 threads = ReadUInt(perfRow["Threads"]);
@@ -190,7 +218,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         {
             using ManagementObjectSearcher processPerfSearcher = new("SELECT HandleCount FROM Win32_PerfFormattedData_PerfProc_Process WHERE Name = '_Total'");
             using ManagementObjectCollection processRows = processPerfSearcher.Get();
-            ManagementBaseObject? processRow = processRows.Cast<ManagementBaseObject>().FirstOrDefault();
+            using ManagementBaseObject? processRow = TakeFirstManagementRow(processRows);
             if (processRow is not null)
             {
                 handles = ReadUInt(processRow["HandleCount"]);
@@ -234,9 +262,9 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             "SELECT Name, ActualFrequency, ProcessorFrequency FROM Win32_PerfFormattedData_Counters_ProcessorInformation");
         using ManagementObjectCollection rows = searcher.Get();
 
-        ManagementBaseObject? totalRow = rows
-            .Cast<ManagementBaseObject>()
-            .FirstOrDefault(static row => string.Equals(row["Name"] as string, "_Total", StringComparison.OrdinalIgnoreCase));
+        using ManagementBaseObject? totalRow = FindManagementRow(
+            rows,
+            static row => string.Equals(row["Name"] as string, "_Total", StringComparison.OrdinalIgnoreCase));
         if (totalRow is null)
         {
             return (null, null);
@@ -292,7 +320,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             using ManagementObjectSearcher perfMemorySearcher = new(
                 "SELECT CommittedBytes, CommitLimit, CacheBytes, PoolPagedBytes, PoolNonpagedBytes FROM Win32_PerfFormattedData_PerfOS_Memory");
             using ManagementObjectCollection perfRows = perfMemorySearcher.Get();
-            ManagementBaseObject? row = perfRows.Cast<ManagementBaseObject>().FirstOrDefault();
+            using ManagementBaseObject? row = TakeFirstManagementRow(perfRows);
             if (row is not null)
             {
                 committedBytes = ReadULong(row["CommittedBytes"]);
@@ -380,6 +408,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
             foreach (ManagementBaseObject row in rows)
             {
+                using ManagementBaseObject rowScope = row;
                 string? name = row["Name"] as string;
                 if (string.IsNullOrWhiteSpace(name) || string.Equals(name, "_Total", StringComparison.OrdinalIgnoreCase))
                 {
@@ -465,6 +494,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
             foreach (ManagementBaseObject row in rows)
             {
+                using ManagementBaseObject rowScope = row;
                 string? name = row["Name"] as string;
                 if (string.IsNullOrWhiteSpace(name) || string.Equals(name, "_Total", StringComparison.OrdinalIgnoreCase))
                 {
@@ -555,6 +585,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
 
         foreach (ManagementBaseObject row in rows)
         {
+            using ManagementBaseObject rowScope = row;
             string? name = row["Name"] as string;
             if (string.IsNullOrWhiteSpace(name))
             {
@@ -609,7 +640,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         using ManagementObjectSearcher processorSearcher = new(
             "SELECT Name, CurrentClockSpeed, MaxClockSpeed, NumberOfCores, NumberOfLogicalProcessors, L2CacheSize, L3CacheSize, VirtualizationFirmwareEnabled FROM Win32_Processor");
         using ManagementObjectCollection rows = processorSearcher.Get();
-        ManagementBaseObject? row = rows.Cast<ManagementBaseObject>().FirstOrDefault();
+        using ManagementBaseObject? row = TakeFirstManagementRow(rows);
         if (row is null)
         {
             return CpuStaticMetadata.Empty;
@@ -643,6 +674,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
             using ManagementObjectCollection cacheRows = cacheSearcher.Get();
             foreach (ManagementBaseObject row in cacheRows)
             {
+                using ManagementBaseObject rowScope = row;
                 byte? cacheTier = ResolveCacheTierFromWmiLevel(ReadUInt(row["Level"]));
                 ulong? cacheBytes = ScaleKbToBytes(ReadULong(row["InstalledSize"]));
                 if (!cacheTier.HasValue || !cacheBytes.HasValue)
@@ -676,7 +708,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
     {
         using ManagementObjectSearcher computerSearcher = new("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem");
         using ManagementObjectCollection computerRows = computerSearcher.Get();
-        ManagementBaseObject? computer = computerRows.Cast<ManagementBaseObject>().FirstOrDefault();
+        using ManagementBaseObject? computer = TakeFirstManagementRow(computerRows);
 
         ulong? totalBytes = ReadULong(computer?["TotalPhysicalMemory"]);
         ulong? capacityBytes = null;
@@ -689,6 +721,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         using ManagementObjectCollection physicalRows = physicalMemorySearcher.Get();
         foreach (ManagementBaseObject row in physicalRows)
         {
+            using ManagementBaseObject rowScope = row;
             slotsTotal++;
             if (ReadULong(row["Capacity"]) is ulong moduleCapacity && moduleCapacity > 0)
             {
@@ -726,6 +759,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         using ManagementObjectCollection diskRows = diskSearcher.Get();
         foreach (ManagementBaseObject row in diskRows)
         {
+            using ManagementBaseObject rowScope = row;
             if (ReadInt(row["Index"]) is not int index)
             {
                 continue;
@@ -807,6 +841,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         using ManagementObjectCollection rows = searcher.Get();
         foreach (ManagementBaseObject row in rows)
         {
+            using ManagementBaseObject rowScope = row;
             if (row["Name"] is not string name || string.IsNullOrWhiteSpace(name))
             {
                 continue;
@@ -1160,6 +1195,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler
         using ManagementObjectCollection rows = assocSearcher.Get();
         foreach (ManagementBaseObject row in rows)
         {
+            using ManagementBaseObject rowScope = row;
             string antecedent = Convert.ToString(row["Antecedent"], CultureInfo.InvariantCulture) ?? string.Empty;
             string dependent = Convert.ToString(row["Dependent"], CultureInfo.InvariantCulture) ?? string.Empty;
             string drive = ExtractDriveLetterFromDependent(dependent);

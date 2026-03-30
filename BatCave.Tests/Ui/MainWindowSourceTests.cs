@@ -68,12 +68,18 @@ public class MainWindowSourceTests
     }
 
     [Fact]
-    public void MainWindowSource_ScrollsCompactProcessListToTopAfterSortToggle()
+    public void MainWindowSource_DoesNotForceCompactProcessScrollResetOnSort()
     {
         string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
 
         Assert.Contains("private void CompactProcessSortHeader_Click(object sender, RoutedEventArgs e)", source, StringComparison.Ordinal);
-        Assert.Contains("DispatcherQueue.TryEnqueue(ScrollCompactProcessListToTop);", source, StringComparison.Ordinal);
+        Assert.Contains("_compactProcessSortRestoreOffset = TryGetCompactProcessScrollOffset();", source, StringComparison.Ordinal);
+        Assert.Contains("DispatcherQueue.TryEnqueue(CompleteCompactProcessSortInteraction);", source, StringComparison.Ordinal);
+        Assert.Contains("CompactProcessListView.LayoutUpdated += CompactProcessListView_LayoutUpdated;", source, StringComparison.Ordinal);
+        Assert.Contains("private void CompactProcessListView_LayoutUpdated(object? sender, object e)", source, StringComparison.Ordinal);
+        Assert.Contains("DispatcherQueue.TryEnqueue(FinalizeCompactProcessSortInteraction);", source, StringComparison.Ordinal);
+        Assert.Contains("private void RestoreCompactProcessScrollOffsetIfNeeded()", source, StringComparison.Ordinal);
+        Assert.Contains("scrollViewer?.ChangeView(null, verticalOffset, null, disableAnimation: true);", source, StringComparison.Ordinal);
         Assert.Contains("CompactProcessListView.ScrollIntoView(ViewModel.VisibleRows[0], ScrollIntoViewAlignment.Leading);", source, StringComparison.Ordinal);
     }
 
@@ -93,6 +99,33 @@ public class MainWindowSourceTests
     }
 
     [Fact]
+    public void MainWindowSource_DisablesRepositionAnimationsForLiveProcessTable()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"CompactProcessListView\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RepositionThemeTransition", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("<ListView.ItemContainerTransitions>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SelectedItem=\"{x:Bind ViewModel.SelectedVisibleRowBinding, Mode=OneWay}\"", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowSource_SyncsCompactProcessSelectionFromCodeBehind()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+
+        Assert.Contains("case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):", source, StringComparison.Ordinal);
+        Assert.Contains("if (!_compactProcessSortPending)", source, StringComparison.Ordinal);
+        Assert.Contains("SyncCompactProcessSelection();", source, StringComparison.Ordinal);
+        Assert.Contains("private void QueueCompactProcessSelectionRestore()", source, StringComparison.Ordinal);
+        Assert.Contains("DispatcherQueue.TryEnqueue(RestoreCompactProcessSelectionIfNeeded);", source, StringComparison.Ordinal);
+        Assert.Contains("private void RestoreCompactProcessSelectionIfNeeded()", source, StringComparison.Ordinal);
+        Assert.Contains("if (_compactProcessSortPending)", source, StringComparison.Ordinal);
+        Assert.Contains("CompactProcessListView.SelectedItem = selectedVisibleRow;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.SelectedVisibleRowBinding = null;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MainWindowSource_IgnoresTransientNullChurnForGlobalResourceSelection()
     {
         string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
@@ -100,10 +133,24 @@ public class MainWindowSourceTests
         Assert.Contains("private void GlobalResourceListView_SelectionChanged(object sender, SelectionChangedEventArgs e)", source, StringComparison.Ordinal);
         Assert.Contains("if (listView.SelectedItem is GlobalResourceRowViewState selected)", source, StringComparison.Ordinal);
         Assert.Contains("if (ViewModel.SelectedGlobalResource is not null && ViewModel.GlobalResourceRows.Count > 0)", source, StringComparison.Ordinal);
-        Assert.Contains("DispatcherQueue.TryEnqueue(() =>", source, StringComparison.Ordinal);
+        Assert.Contains("private bool _globalResourceSelectionRestoreQueued;", source, StringComparison.Ordinal);
+        Assert.Contains("QueueGlobalResourceSelectionRestore();", source, StringComparison.Ordinal);
+        Assert.Contains("private void QueueGlobalResourceSelectionRestore()", source, StringComparison.Ordinal);
+        Assert.Contains("DispatcherQueue.TryEnqueue(RestoreGlobalResourceSelectionIfNeeded);", source, StringComparison.Ordinal);
+        Assert.Contains("private void RestoreGlobalResourceSelectionIfNeeded()", source, StringComparison.Ordinal);
         Assert.Contains("GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;", source, StringComparison.Ordinal);
         Assert.Contains("if (ViewModel.SelectedGlobalResource is not null)", source, StringComparison.Ordinal);
         Assert.Contains("ViewModel.SelectedGlobalResource = null;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowSource_CoalescesLogicalCpuLayoutQueueWithoutInlineLambda()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+
+        Assert.Contains("DispatcherQueue.TryEnqueue(ApplyQueuedLogicalCpuGridLayout);", source, StringComparison.Ordinal);
+        Assert.Contains("private void ApplyQueuedLogicalCpuGridLayout()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DispatcherQueue.TryEnqueue(() =>", source, StringComparison.Ordinal);
     }
 
     private static string ResolveRepoPath(params string[] relativeSegments)

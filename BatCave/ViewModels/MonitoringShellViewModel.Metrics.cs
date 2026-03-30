@@ -70,7 +70,7 @@ public partial class MonitoringShellViewModel
             nameof(MetadataParentPid),
             nameof(MetadataCommandLine),
             nameof(MetadataExecutablePath));
-        RaisePresentationProperties();
+        RaisePresentationDetailProperties();
     }
 
     private void RefreshDetailMetrics()

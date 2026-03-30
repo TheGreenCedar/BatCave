@@ -16,6 +16,11 @@ public partial class MonitoringShellViewModel
 
     public async Task ToggleSelectionAsync(ProcessSample? row, CancellationToken ct)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (row is null)
         {
             if (ShouldPreserveSelectionOnNullToggle())
@@ -37,6 +42,11 @@ public partial class MonitoringShellViewModel
 
     public async Task SelectRowAsync(ProcessSample? row, CancellationToken ct)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (row is null)
         {
             ClearSelection();
@@ -57,16 +67,31 @@ public partial class MonitoringShellViewModel
         try
         {
             ProcessMetadata? metadata = await _metadataProvider.GetAsync(row.Pid, row.StartTimeMs, ct);
+            if (_disposed)
+            {
+                return;
+            }
+
             RunOnUiThread(() => CompleteMetadataRequest(identity, requestVersion, metadata, error: null));
         }
         catch (Exception ex)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             RunOnUiThread(() => CompleteMetadataRequest(identity, requestVersion, metadata: null, error: ex.Message));
         }
     }
 
     public void ClearSelection()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         Interlocked.Increment(ref _metadataRequestVersion);
         SelectedRow = null;
         SelectedVisibleRow = null;
@@ -77,6 +102,11 @@ public partial class MonitoringShellViewModel
 
     private void ApplySelectedVisibleRowBinding(ProcessRowViewState? value)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (_isApplyingSelectedVisibleRowBinding || ReferenceEquals(value, SelectedVisibleRow))
         {
             return;
@@ -113,13 +143,7 @@ public partial class MonitoringShellViewModel
 
     private void ReassertSelectionAfterSort()
     {
-        if (!TrySyncSelectedVisibleRowFromTrackedRows(ResolveVisibleSelectionAfterSort, out ProcessIdentity identity))
-        {
-            return;
-        }
-
-        RaiseSelectedVisibleRowBindingProperty();
-        ReassertSelectedVisibleRowBindingOnDispatcher(identity);
+        _ = TrySyncSelectedVisibleRowFromTrackedRows(ResolveVisibleSelectionAfterSort, out _);
     }
 
     private void ReconcileSelectionAfterDelta()
@@ -275,17 +299,6 @@ public partial class MonitoringShellViewModel
                && ShouldShowRow(rowState)
             ? rowState
             : null;
-    }
-
-    private void ReassertSelectedVisibleRowBindingOnDispatcher(ProcessIdentity identity)
-    {
-        _dispatcherQueue?.TryEnqueue(() =>
-        {
-            if (SelectedRow?.Identity() == identity)
-            {
-                RaiseSelectedVisibleRowBindingProperty();
-            }
-        });
     }
 
     private bool IsCurrentMetadataRequest(long requestVersion, ProcessIdentity identity)

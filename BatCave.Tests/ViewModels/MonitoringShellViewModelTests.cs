@@ -10,6 +10,7 @@ using BatCave.Services;
 using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
 using Microsoft.UI.Xaml;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Diagnostics;
 
@@ -101,6 +102,26 @@ public class MonitoringShellViewModelTests
 
         Assert.Equal(Visibility.Collapsed, viewModel.GlobalPerformanceSkeletonVisibility);
         Assert.Equal(Visibility.Visible, viewModel.GlobalPerformanceContentVisibility);
+    }
+
+    [Fact]
+    public async Task Dispose_UnsubscribesFromTelemetryAndClearsViewState()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+        ProcessSample first = Sample(pid: 710, startTime: 7_100, access: AccessState.Full);
+        ProcessSample second = Sample(pid: 711, startTime: 7_110, access: AccessState.Full);
+
+        gateway.RaiseDelta(1, [first], []);
+        Assert.Single(GetVisibleRows(viewModel));
+
+        viewModel.Dispose();
+        viewModel.Dispose();
+
+        Assert.Empty(GetVisibleRows(viewModel));
+
+        gateway.RaiseDelta(2, [second], []);
+        Assert.Empty(GetVisibleRows(viewModel));
     }
 
     [Fact]
@@ -247,6 +268,51 @@ public class MonitoringShellViewModelTests
         Assert.Equal(4, viewModel.SummaryStatCards.Count);
         Assert.Equal(960, viewModel.InspectorChartMaxWidth);
         Assert.Equal(232, viewModel.SummaryStatCardWidth);
+    }
+
+    [Fact]
+    public async Task ProcessInspector_MiniTrendBuffersReuseExistingArraysAcrossTelemetryTicks()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+        ProcessSample row = Sample(pid: 902, startTime: 9_020, access: AccessState.Full) with
+        {
+            CpuPct = 11.5,
+            RssBytes = 8 * 1024UL * 1024UL,
+            IoReadBps = 2 * 1024UL,
+            IoWriteBps = 4 * 1024UL,
+            OtherIoBps = 6 * 1024UL,
+        };
+
+        gateway.RaiseDelta(1, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Memory);
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Disk);
+        GlobalResourceRowViewState networkRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Network);
+        double[] initialMemoryTrend = memoryRow.MiniTrendValues;
+        double[] initialDiskTrend = diskRow.MiniTrendValues;
+        double[] initialNetworkTrend = networkRow.MiniTrendValues;
+
+        ProcessSample updated = row with
+        {
+            Seq = 2,
+            TsMs = 2,
+            CpuPct = 17.5,
+            RssBytes = 24 * 1024UL * 1024UL,
+            IoReadBps = 8 * 1024UL,
+            IoWriteBps = 16 * 1024UL,
+            OtherIoBps = 10 * 1024UL,
+        };
+
+        gateway.RaiseDelta(2, [updated], []);
+
+        Assert.Same(initialMemoryTrend, memoryRow.MiniTrendValues);
+        Assert.Same(initialDiskTrend, diskRow.MiniTrendValues);
+        Assert.Same(initialNetworkTrend, networkRow.MiniTrendValues);
+        Assert.Equal((double)updated.RssBytes, memoryRow.MiniTrendValues[^1]);
+        Assert.Equal((double)(updated.IoReadBps + updated.IoWriteBps), diskRow.MiniTrendValues[^1]);
+        Assert.Equal(updated.OtherIoBps * 8d, networkRow.MiniTrendValues[^1]);
     }
 
     [Fact]
@@ -817,6 +883,161 @@ public class MonitoringShellViewModelTests
 
         Assert.DoesNotContain(NotifyCollectionChangedAction.Reset, actions);
         Assert.Contains(NotifyCollectionChangedAction.Move, actions);
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_WhenActiveSortKeyDoesNotChange_UpdatesRowWithoutCollectionChurn()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample beta = Sample(pid: 180, startTime: 1800, access: AccessState.Full) with { Name = "beta", CpuPct = 15 };
+        ProcessSample alpha = Sample(pid: 181, startTime: 1801, access: AccessState.Full) with { Name = "alpha", CpuPct = 70 };
+        gateway.RaiseDelta(1, [beta, alpha], []);
+
+        viewModel.ChangeSort(SortColumn.Name);
+        ProcessRowViewState betaState = GetVisibleRows(viewModel).Single(row => row.Pid == beta.Pid);
+
+        List<NotifyCollectionChangedAction> actions = [];
+        ((INotifyCollectionChanged)viewModel.VisibleRows).CollectionChanged += (_, args) =>
+        {
+            actions.Add(args.Action);
+        };
+
+        gateway.RaiseDelta(2, [beta with { Seq = 2, TsMs = 2, CpuPct = 88 }, alpha with { Seq = 2, TsMs = 2, CpuPct = 5 }], []);
+
+        Assert.Empty(actions);
+        Assert.Same(betaState, GetVisibleRows(viewModel).Single(row => row.Pid == beta.Pid));
+        Assert.Equal(88d, betaState.CpuPct);
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_SelectedProcessSameIdentity_UpdatesInspectorWithoutSelectionChromeChurn()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample current = Sample(pid: 1810, startTime: 18_100, access: AccessState.Full) with
+        {
+            Name = "BatCave.exe",
+            CpuPct = 12.5,
+            RssBytes = 24 * 1024UL * 1024UL,
+            IoReadBps = 1024UL,
+            IoWriteBps = 2048UL,
+            OtherIoBps = 4096UL,
+        };
+
+        gateway.RaiseDelta(1, [current], []);
+        await viewModel.SelectRowAsync(current, CancellationToken.None);
+
+        List<string> raised = [];
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (!string.IsNullOrWhiteSpace(args.PropertyName))
+            {
+                raised.Add(args.PropertyName!);
+            }
+        };
+
+        raised.Clear();
+        current = current with
+        {
+            Seq = 2,
+            TsMs = 2,
+            CpuPct = 44.5,
+            RssBytes = 48 * 1024UL * 1024UL,
+            IoReadBps = 8 * 1024UL,
+            IoWriteBps = 16 * 1024UL,
+            OtherIoBps = 10 * 1024UL,
+        };
+        gateway.RaiseDelta(2, [current], []);
+
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.HasSelection), raised);
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.DetailTitle), raised);
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.InspectorLayoutMode), raised);
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.ProcessSummarySectionVisibility), raised);
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.SystemSummarySectionVisibility), raised);
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.ProcessPrimaryChartIdentityKey), raised);
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.SummaryStatCards), raised);
+        Assert.Contains(nameof(MonitoringShellViewModel.CpuMetricTrendValues), raised);
+        Assert.Equal($"{current.CpuPct:F2}%", viewModel.CpuMetricChipValue);
+        Assert.Equal(ValueFormat.FormatBytes(current.RssBytes), viewModel.MemoryMetricChipValue);
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_SelectedProcessSameIdentity_ReusesSummaryStatCardsCollection()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample current = Sample(pid: 1811, startTime: 18_110, access: AccessState.Full) with
+        {
+            Name = "BatCave.exe",
+            CpuPct = 10.5,
+            RssBytes = 16 * 1024UL * 1024UL,
+            IoReadBps = 1024UL,
+            IoWriteBps = 2048UL,
+            OtherIoBps = 4096UL,
+        };
+
+        gateway.RaiseDelta(1, [current], []);
+        await viewModel.SelectRowAsync(current, CancellationToken.None);
+
+        ObservableCollection<GlobalStatItemViewState> summaryCards = viewModel.SummaryStatCards;
+        List<NotifyCollectionChangedAction> actions = [];
+        List<string> propertyChanges = [];
+        summaryCards.CollectionChanged += (_, args) => actions.Add(args.Action);
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (!string.IsNullOrWhiteSpace(args.PropertyName))
+            {
+                propertyChanges.Add(args.PropertyName!);
+            }
+        };
+
+        current = current with
+        {
+            Seq = 2,
+            TsMs = 2,
+            CpuPct = 35.5,
+            RssBytes = 32 * 1024UL * 1024UL,
+            IoReadBps = 8 * 1024UL,
+            IoWriteBps = 16 * 1024UL,
+            OtherIoBps = 10 * 1024UL,
+        };
+        gateway.RaiseDelta(2, [current], []);
+
+        Assert.Same(summaryCards, viewModel.SummaryStatCards);
+        Assert.Empty(actions);
+        Assert.DoesNotContain(nameof(MonitoringShellViewModel.SummaryStatCards), propertyChanges);
+        Assert.Equal(4, viewModel.SummaryStatCards.Count);
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_FilteredView_IgnoresOffscreenSortKeyUpdates()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample target = Sample(pid: 182, startTime: 1820, access: AccessState.Full) with { Name = "BatCave.exe", CpuPct = 12 };
+        ProcessSample hidden = Sample(pid: 183, startTime: 1830, access: AccessState.Full) with { Name = "other.exe", CpuPct = 10 };
+        gateway.RaiseDelta(1, [target, hidden], []);
+
+        viewModel.FilterText = "BatCave.exe";
+        await Task.Delay(220);
+        Assert.Single(GetVisibleRows(viewModel));
+
+        List<NotifyCollectionChangedAction> actions = [];
+        ((INotifyCollectionChanged)viewModel.VisibleRows).CollectionChanged += (_, args) =>
+        {
+            actions.Add(args.Action);
+        };
+
+        gateway.RaiseDelta(2, [target with { Seq = 2, TsMs = 2 }, hidden with { Seq = 2, TsMs = 2, CpuPct = 99 }], []);
+
+        Assert.Empty(actions);
+        Assert.Single(GetVisibleRows(viewModel));
+        Assert.Equal(target.Pid, GetVisibleRow(viewModel, 0).Pid);
     }
 
     [Fact]
@@ -2102,7 +2323,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task ChangeSort_WithSelection_ReassertsSelectedVisibleRowBindingForColumnAndDirectionChanges()
+    public async Task ChangeSort_WithSelection_PreservesSelectedVisibleRowBindingWithoutForcedReassertions()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -2124,11 +2345,9 @@ public class MonitoringShellViewModelTests
         int beforeSortChanges = bindingNotificationCount;
 
         viewModel.ChangeSort(SortColumn.Name);
-        int afterColumnChange = bindingNotificationCount;
         viewModel.ChangeSort(SortColumn.Name);
 
-        Assert.True(afterColumnChange > beforeSortChanges);
-        Assert.True(bindingNotificationCount > afterColumnChange);
+        Assert.Equal(beforeSortChanges, bindingNotificationCount);
         Assert.Same(selected, viewModel.SelectedVisibleRowBinding);
         Assert.Equal(second.Identity(), viewModel.SelectedRow!.Identity());
     }

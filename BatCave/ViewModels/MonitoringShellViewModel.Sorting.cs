@@ -1,5 +1,6 @@
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.UI.Dispatching;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -27,6 +28,11 @@ public partial class MonitoringShellViewModel
 
     public void ChangeSort(SortColumn column)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         long startedAt = Stopwatch.GetTimestamp();
         CurrentSortColumn = column;
         CurrentSortDirection = ResolveNextSortDirection(column);
@@ -156,6 +162,11 @@ public partial class MonitoringShellViewModel
 
     private void ScheduleFilterApply(string filterText)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _filterDebounceCts?.Cancel();
         _filterDebounceCts?.Dispose();
 
@@ -169,7 +180,7 @@ public partial class MonitoringShellViewModel
         try
         {
             await Task.Delay(FilterDebounceMs, ct);
-            if (ct.IsCancellationRequested)
+            if (_disposed || ct.IsCancellationRequested)
             {
                 return;
             }
@@ -200,6 +211,11 @@ public partial class MonitoringShellViewModel
 
     private void RunOnUiThread(Action action)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         var dispatcherQueue = _dispatcherQueue;
         if (dispatcherQueue is null || dispatcherQueue.HasThreadAccess)
         {
@@ -208,6 +224,23 @@ public partial class MonitoringShellViewModel
         }
 
         dispatcherQueue.TryEnqueue(() => action());
+    }
+
+    private void RunDispatcherHandlerOnUiThread(DispatcherQueueHandler callback)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        DispatcherQueue? dispatcherQueue = _dispatcherQueue;
+        if (dispatcherQueue is null || dispatcherQueue.HasThreadAccess)
+        {
+            callback();
+            return;
+        }
+
+        _ = dispatcherQueue.TryEnqueue(callback);
     }
 
     private string SortLabel(string text, SortColumn column)

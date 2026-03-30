@@ -639,7 +639,6 @@
                             Grid.Row="2"
                             Background="Transparent"
                             ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}"
-                            SelectedItem="{x:Bind ViewModel.SelectedVisibleRowBinding, Mode=OneWay}"
                             SelectionChanged="ProcessListView_SelectionChanged"
                             SelectionMode="Single"
                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -657,11 +656,6 @@
                                 <StaticResource x:Key="ListViewItemSelectionIndicatorPressedBrush" ResourceKey="BatCavePrimaryBrush" />
                                 <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">True</x:Boolean>
                             </ListView.Resources>
-                            <ListView.ItemContainerTransitions>
-                                <TransitionCollection>
-                                    <RepositionThemeTransition IsStaggeringEnabled="False" />
-                                </TransitionCollection>
-                            </ListView.ItemContainerTransitions>
                             <ListView.ItemContainerStyle>
                                 <Style TargetType="ListViewItem">
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -671,7 +665,7 @@
                                 </Style>
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
-                                <DataTemplate>
+                                <DataTemplate x:DataType="viewModels:ProcessRowViewState">
                                     <Grid Padding="8,6" Background="Transparent">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="2.2*" />
@@ -680,11 +674,11 @@
                                             <ColumnDefinition Width="1*" />
                                             <ColumnDefinition Width="1*" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{Binding Name, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="1" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding CpuText, Mode=OneWay}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="2" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding RssText, Mode=OneWay}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="3" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding DiskText, Mode=OneWay}" TextAlignment="Right" />
-                                        <TextBlock Grid.Column="4" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{Binding NetworkText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="0" Foreground="{ThemeResource BatCaveTextPrimaryBrush}" Text="{x:Bind Name, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{x:Bind CpuText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="2" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{x:Bind RssText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="3" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{x:Bind DiskText, Mode=OneWay}" TextAlignment="Right" />
+                                        <TextBlock Grid.Column="4" Style="{StaticResource BatCaveMetricValueStyle}" HorizontalAlignment="Right" Text="{x:Bind NetworkText, Mode=OneWay}" TextAlignment="Right" />
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -821,10 +815,10 @@
                                                 <TextBlock Style="{StaticResource BatCaveMetricLabelStyle}" Text="{Binding Title, Mode=OneWay}" />
                                                 <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Text="{Binding Subtitle, Mode=OneWay}" Visibility="{Binding SubtitleVisibility, Mode=OneWay}" />
                                                 <TextBlock Style="{StaticResource BatCaveSectionSubtitleStyle}" Text="{Binding ValueText, Mode=OneWay}" Visibility="{Binding ValueVisibility, Mode=OneWay}" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
 
@@ -902,6 +896,7 @@
                                                     ScaleMode="{Binding GlobalPrimaryScaleMode, Mode=OneWay}"
                                                     DomainMaxOverride="{Binding GlobalPrimaryDomainMax, Mode=OneWay}"
                                                     ShowGrid="True"
+                                                    EnableSmoothPointTransitions="False"
                                                     AutomationProperties.Name="Global primary trend chart"
                                                     AutomationProperties.HelpText="Primary global metrics trend chart.">
                                                     <controls:MetricTrendChart.StrokeBrush>
@@ -1062,6 +1057,7 @@
                                                 ScaleMode="{Binding GlobalPrimaryScaleMode, Mode=OneWay}"
                                                 DomainMaxOverride="{Binding GlobalPrimaryDomainMax, Mode=OneWay}"
                                                 ShowGrid="True"
+                                                EnableSmoothPointTransitions="False"
                                                 AutomationProperties.Name="Global primary trend chart"
                                                 AutomationProperties.HelpText="Primary global metrics trend chart.">
                                                 <controls:MetricTrendChart.StrokeBrush>

@@ -143,19 +143,21 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("x:Name=\"CompactProcessListView\"", xaml, StringComparison.Ordinal);
         Assert.Contains("AutomationProperties.Name=\"Compact Process Table\"", xaml, StringComparison.Ordinal);
         Assert.Contains("CommandParameter=\"DiskBps\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"{Binding DiskText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"{Binding NetworkText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:DataType=\"viewModels:ProcessRowViewState\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{x:Bind DiskText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{x:Bind NetworkText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("ResourceKey=\"BatCaveSelectionBrush\"", xaml, StringComparison.Ordinal);
         Assert.Contains("<Grid Padding=\"8,6\" Background=\"Transparent\">", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<Grid Padding=\"8,6\" Background=\"{ThemeResource BatCaveCanvasBrush}\">", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MainWindowXaml_CompactProcessSortButtons_RaiseClickHandlerForScrollReset()
+    public void MainWindowXaml_CompactProcessSortButtons_CaptureSortInteractionWithoutCommandChanges()
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Equal(5, Regex.Matches(xaml, "Click=\"CompactProcessSortHeader_Click\"", RegexOptions.CultureInvariant).Count);
+        Assert.Equal(5, Regex.Matches(xaml, "Command=\"\\{x:Bind ViewModel.CompactSortHeaderCommand\\}\"", RegexOptions.CultureInvariant).Count);
     }
 
     [Fact]

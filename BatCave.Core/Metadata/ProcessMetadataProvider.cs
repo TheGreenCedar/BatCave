@@ -35,7 +35,7 @@ public sealed class ProcessMetadataProvider : IProcessMetadataProvider
             using ManagementObjectSearcher searcher = new(query);
             using ManagementObjectCollection results = searcher.Get();
 
-            ManagementBaseObject? row = results.Cast<ManagementBaseObject>().FirstOrDefault();
+            using ManagementBaseObject? row = TakeFirstManagementRow(results);
             if (row is null)
             {
                 return null;
@@ -69,6 +69,16 @@ public sealed class ProcessMetadataProvider : IProcessMetadataProvider
         {
             throw new InvalidOperationException($"metadata lookup failed for pid {pid}: {ex.Message}", ex);
         }
+    }
+
+    private static ManagementBaseObject? TakeFirstManagementRow(ManagementObjectCollection rows)
+    {
+        foreach (ManagementBaseObject row in rows)
+        {
+            return row;
+        }
+
+        return null;
     }
 
     private static bool TryGetStartTime(uint pid, out ulong startTimeMs)

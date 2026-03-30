@@ -13,8 +13,9 @@ public sealed class MetricTrendChartSourceTests
         Assert.Contains("_transitionSnapshot.VisiblePointCount != visibleCount", source, StringComparison.Ordinal);
         Assert.Contains("_requiresTransitionReset = true;", source, StringComparison.Ordinal);
         Assert.Contains("_requiresSeriesRebuild = true;", source, StringComparison.Ordinal);
+        Assert.Contains("bool useInteractiveTransitions = ShouldUseInteractiveTransitions();", source, StringComparison.Ordinal);
         Assert.Contains("bool shrinkingViewportSwitch = viewportSwitchRequested && IsShrinkingViewportSwitch(visibleCount);", source, StringComparison.Ordinal);
-        Assert.Contains("if (viewportSwitchRequested && !shrinkingViewportSwitch && ShouldUseViewportTransition(renderMeta.Plan, visibleCount))", source, StringComparison.Ordinal);
+        Assert.Contains("if (viewportSwitchRequested && !shrinkingViewportSwitch && ShouldUseViewportTransition(renderMeta.Plan, visibleCount, useInteractiveTransitions))", source, StringComparison.Ordinal);
         Assert.Contains("ApplyViewportTransition(renderMeta.Plan, renderMeta.DomainMax, visibleCount, showAxes);", source, StringComparison.Ordinal);
         Assert.Contains("ApplyViewportCutover(renderMeta.Plan, renderMeta.DomainMax, visibleCount, showAxes);", source, StringComparison.Ordinal);
         Assert.Contains("ReplaceActiveSeries(plan);", source, StringComparison.Ordinal);
@@ -28,7 +29,8 @@ public sealed class MetricTrendChartSourceTests
 
         Assert.Contains("StopViewportTransitionCrossfade();", source, StringComparison.Ordinal);
         Assert.Contains("EnsureViewportTransitionCleanupTimer(duration);", source, StringComparison.Ordinal);
-        Assert.Contains("_viewportTransitionCleanupTimer?.Stop();", source, StringComparison.Ordinal);
+        Assert.Contains("_viewportTransitionCleanupTimer.Stop();", source, StringComparison.Ordinal);
+        Assert.Contains("_viewportTransitionCleanupTimer.Tick -= ViewportTransitionCleanupTimer_Tick;", source, StringComparison.Ordinal);
         Assert.Contains("ClearTransitionSurface();", source, StringComparison.Ordinal);
         Assert.Contains("TransitionChart.Series = Array.Empty<ISeries>();", source, StringComparison.Ordinal);
         Assert.Contains("TransitionChart.Visibility = Visibility.Visible;", source, StringComparison.Ordinal);
@@ -58,6 +60,7 @@ public sealed class MetricTrendChartSourceTests
         Assert.Contains("ReplaceActiveSeries(renderMeta.Plan);", source, StringComparison.Ordinal);
         Assert.Contains("ApplySeries(renderMeta.Plan);", source, StringComparison.Ordinal);
         Assert.Contains("UpdateObservablePoints(_primaryPoints, plan.LineSeries, renderFallback: true);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("|| property == DomainMaxOverrideProperty\r\n                || property == ShowOverlayProperty", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -111,17 +114,77 @@ public sealed class MetricTrendChartSourceTests
     }
 
     [Fact]
-    public void MetricTrendChartSource_HardResetRebuildsFreshPointCollectionsBeforeNextFrame()
+    public void MetricTrendChartSource_HardResetReusesCachedSeriesAndPointCollections()
     {
         string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
 
-        Assert.Contains("_primaryPoints = [];", source, StringComparison.Ordinal);
-        Assert.Contains("_overlayPoints = [];", source, StringComparison.Ordinal);
-        Assert.Contains("_transitionPrimaryPoints = [];", source, StringComparison.Ordinal);
-        Assert.Contains("_transitionOverlayPoints = [];", source, StringComparison.Ordinal);
+        Assert.Contains("EnsureSeriesCacheInitialized();", source, StringComparison.Ordinal);
+        Assert.Contains("ResetObservablePoints(_primaryPoints);", source, StringComparison.Ordinal);
+        Assert.Contains("ResetObservablePoints(_overlayPoints);", source, StringComparison.Ordinal);
+        Assert.Contains("ResetObservablePoints(_transitionPrimaryPoints);", source, StringComparison.Ordinal);
+        Assert.Contains("ResetObservablePoints(_transitionOverlayPoints);", source, StringComparison.Ordinal);
+        Assert.Contains("CopyPoints(_primaryPoints, _transitionPrimaryPoints);", source, StringComparison.Ordinal);
+        Assert.Contains("CopyPoints(_overlayPoints, _transitionOverlayPoints);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateObservablePointsCollection(plan.LineSeries, renderFallback: true);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_primaryPoints = CreateObservablePointsCollection(plan.LineSeries, renderFallback: true);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_transitionPrimaryPoints = ClonePoints(_primaryPoints);", source, StringComparison.Ordinal);
         Assert.Contains("TrendChart.Series = Array.Empty<ISeries>();", source, StringComparison.Ordinal);
         Assert.Contains("ClearTransitionSurface();", source, StringComparison.Ordinal);
         Assert.Contains("InvalidateChartSurfaces(includeTransitionSurface: true);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MetricTrendChartSource_UsesLightweightTransitionGateForSmallCharts()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("private const double InteractiveChartMinWidth = 220d;", source, StringComparison.Ordinal);
+        Assert.Contains("private const double InteractiveChartMinHeight = 140d;", source, StringComparison.Ordinal);
+        Assert.Contains("private bool ShouldUseInteractiveTransitions()", source, StringComparison.Ordinal);
+        Assert.Contains("&& ShowGrid", source, StringComparison.Ordinal);
+        Assert.Contains("&& PlotBorder.ActualWidth >= InteractiveChartMinWidth", source, StringComparison.Ordinal);
+        Assert.Contains("&& PlotBorder.ActualHeight >= InteractiveChartMinHeight;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MetricTrendChartSource_ReusesCachedPaintsInsteadOfAllocatingPerFrame()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("InitializePaintCache();", source, StringComparison.Ordinal);
+        Assert.Contains("_primaryStrokePaint = CreateStrokePaint(", source, StringComparison.Ordinal);
+        Assert.Contains("_transitionPrimaryStrokePaint = CreateStrokePaint(", source, StringComparison.Ordinal);
+        Assert.Contains("_gridPaint = CreateGridPaint(", source, StringComparison.Ordinal);
+        Assert.Contains("UpdateStrokePaint(", source, StringComparison.Ordinal);
+        Assert.Contains("UpdateFillPaint(", source, StringComparison.Ordinal);
+        Assert.Contains("UpdateGridPaint(_gridPaint", source, StringComparison.Ordinal);
+        Assert.Contains("private void ReleaseChartSurfaceReferences()", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MetricTrendChartSource_RendersInlineOnUiThreadAndCoalescesMidRenderRequests()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("private bool _isProcessingRender;", source, StringComparison.Ordinal);
+        Assert.Contains("private bool _renderRequestedWhileProcessing;", source, StringComparison.Ordinal);
+        Assert.Contains("if (_isProcessingRender)", source, StringComparison.Ordinal);
+        Assert.Contains("_renderRequestedWhileProcessing = true;", source, StringComparison.Ordinal);
+        Assert.Contains("ProcessScheduledRender();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryEnqueue(ScheduleRender)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryEnqueue(() => chart.HandleChartPropertyChanged(args.Property, args.OldValue, args.NewValue))", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (DispatcherQueue is { } queue)\r\n        {\r\n            _ = queue.TryEnqueue(ProcessScheduledRender);\r\n            return;\r\n        }", source, StringComparison.Ordinal);
+        Assert.Contains("while (_renderRequestedWhileProcessing);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowSource_DisablesSmoothPointTransitionsOnLargeInspectorCharts()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"SystemPrimaryTrendChart\"", source, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ProcessPrimaryTrendChart\"", source, StringComparison.Ordinal);
+        Assert.Equal(2, CountOccurrences(source, "EnableSmoothPointTransitions=\"False\""));
     }
 
     private static string ResolveRepoPath(params string[] relativeSegments)
@@ -145,6 +208,19 @@ public sealed class MetricTrendChartSourceTests
         }
 
         throw new DirectoryNotFoundException("Could not locate repository root from test base directory.");
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        int count = 0;
+        int searchIndex = 0;
+        while ((searchIndex = source.IndexOf(value, searchIndex, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            searchIndex += value.Length;
+        }
+
+        return count;
     }
 }
 

@@ -173,6 +173,37 @@ public class ScriptRegressionTests
     }
 
     [Fact]
+    public void ProfileMemory_Help_PrintsUsageWithoutLaunchingApp()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+
+        ScriptRunResult result = harness.Run("profile-memory.ps1", "-Help");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Profiles BatCave memory growth", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CollectHeapDump", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CollectRuntimeCounters", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CollectGCDumpSnapshots", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("MaxPrivateBytesGrowthMB", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.DotnetInvocations);
+    }
+
+    [Fact]
+    public void ProfileMemory_WarmupMustBeLessThanDuration()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+
+        ScriptRunResult result = harness.Run(
+            "profile-memory.ps1",
+            "-WarmupSeconds", "30",
+            "-DurationSeconds", "20");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("WarmupSeconds", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.DotnetInvocations);
+    }
+
+    [Fact]
     public void RunBenchmark_Core_ForwardsBaselineCompareArgs()
     {
         using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();

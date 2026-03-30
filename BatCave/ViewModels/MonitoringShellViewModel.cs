@@ -23,7 +23,7 @@ public enum DetailMetricFocus
     OtherIo,
 }
 
-public partial class MonitoringShellViewModel : ObservableObject
+public partial class MonitoringShellViewModel : ObservableObject, IDisposable
 {
     private const int FilterDebounceMs = 160;
     private const int HistoryLimit = 120;
@@ -50,6 +50,15 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     private DispatcherQueue? _dispatcherQueue;
     private CancellationTokenSource? _filterDebounceCts;
+    private bool _disposed;
+    private readonly object _pendingUiEventSync = new();
+    private readonly Dictionary<ProcessIdentity, ProcessSample> _pendingTelemetryUpserts = [];
+    private readonly HashSet<ProcessIdentity> _pendingTelemetryExits = [];
+    private readonly List<CollectorWarning> _pendingCollectorWarnings = [];
+    private ulong _pendingTelemetrySeq;
+    private RuntimeHealth? _pendingRuntimeHealth;
+    private bool _hasPendingTelemetry;
+    private int _pendingUiEventDrainQueued;
 
     private bool _isLoading = true;
     private bool _isBlocked;
@@ -143,6 +152,58 @@ public partial class MonitoringShellViewModel : ObservableObject
         EnsureGlobalMetricsSamplingStarted();
         RefreshGlobalPerformanceState(new SystemGlobalMetricsSample());
         RuntimeHealthStatus = _runtimeHealthService.Snapshot().StatusSummary;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        _runtimeEventGateway.TelemetryDelta -= OnTelemetryDelta;
+        _runtimeEventGateway.RuntimeHealthChanged -= OnRuntimeHealthChanged;
+        _runtimeEventGateway.CollectorWarningRaised -= OnCollectorWarningRaised;
+
+        _filterDebounceCts?.Cancel();
+        _filterDebounceCts?.Dispose();
+        _filterDebounceCts = null;
+
+        _rowViewSource.Edit(updater => updater.Clear());
+        _rowShapingSubscription.Dispose();
+        _rowFilter.Dispose();
+        _rowSorter.Dispose();
+        _rowViewSource.Dispose();
+
+        _allRows.Clear();
+        _metadataCache.Clear();
+        _metricHistory.Clear();
+        _metricHistoryLastSeq.Clear();
+        _visibleRowStateByIdentity.Clear();
+        _pendingTelemetryUpserts.Clear();
+        _pendingTelemetryExits.Clear();
+        _pendingCollectorWarnings.Clear();
+        _pendingRuntimeHealth = null;
+        _pendingTelemetrySeq = 0;
+        _hasPendingTelemetry = false;
+        _pendingUiEventDrainQueued = 0;
+        _globalResourceRows.Clear();
+        _globalTrendByResourceId.Clear();
+        _globalResourceLastSeenUtc.Clear();
+        _globalDetailStats.Clear();
+        _summaryStatCards.Clear();
+        _globalCpuLogicalProcessorRows.Clear();
+
+        _selectedRow = null;
+        _selectedVisibleRow = null;
+        _selectedMetadata = null;
+        _isApplyingSelectedVisibleRowBinding = false;
+        _isMetadataLoading = false;
+        _metadataError = null;
+        _dispatcherQueue = null;
+        _globalMetricsSampleTask = null;
     }
 
     public IReadOnlyList<ProcessRowViewState> VisibleRows => _visibleRows;
@@ -313,10 +374,15 @@ public partial class MonitoringShellViewModel : ObservableObject
         get => _selectedRow;
         private set
         {
-            if (SetProperty(ref _selectedRow, value))
+            ProcessSample? previous = _selectedRow;
+            if (EqualityComparer<ProcessSample?>.Default.Equals(previous, value))
             {
-                RaiseSelectedRowDerivedProperties();
+                return;
             }
+
+            _selectedRow = value;
+            OnPropertyChanged(nameof(SelectedRow));
+            ApplySelectedRowChange(previous, value);
         }
     }
 
@@ -529,6 +595,11 @@ public partial class MonitoringShellViewModel : ObservableObject
 
     public void AttachDispatcherQueue(DispatcherQueue dispatcherQueue)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _dispatcherQueue = dispatcherQueue;
     }
 
@@ -540,17 +611,71 @@ public partial class MonitoringShellViewModel : ObservableObject
         }
     }
 
-    private void RaiseSelectedRowDerivedProperties()
+    private void ApplySelectedRowChange(ProcessSample? previous, ProcessSample? current)
     {
-        OnPropertyChanged(nameof(HasSelection));
-        OnPropertyChanged(nameof(DetailTitle));
-        RaiseGlobalModeProperties();
-        RaiseInspectorSectionProperties();
-        RaisePresentationProperties();
+        bool selectionModeChanged = (previous is null) != (current is null);
+        bool selectionIdentityChanged = !HasSameSelectionIdentity(previous, current);
+        bool detailTitleChanged = IsDetailTitleChanged(previous, current);
+        bool requiresSelectionPresentationRefresh = selectionModeChanged || selectionIdentityChanged || detailTitleChanged;
+
+        if (selectionModeChanged)
+        {
+            OnPropertyChanged(nameof(HasSelection));
+            RaiseGlobalModeProperties();
+            RaiseInspectorSectionProperties();
+        }
+        else if (selectionIdentityChanged)
+        {
+            RaiseChartIdentityProperties();
+        }
+
+        if (detailTitleChanged)
+        {
+            OnPropertyChanged(nameof(DetailTitle));
+        }
+
+        if (selectionModeChanged || detailTitleChanged)
+        {
+            RaisePresentationProperties();
+        }
+
+        if (selectionModeChanged || selectionIdentityChanged)
+        {
+            RaiseMetadataProperties();
+        }
+
+        if (requiresSelectionPresentationRefresh)
+        {
+            RefreshSelectionInspectorState();
+        }
+    }
+
+    private void RefreshSelectionInspectorState()
+    {
         BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));
-        RaiseMetadataProperties();
         RefreshDetailMetrics();
         RefreshGlobalDetailState();
+    }
+
+    private static bool HasSameSelectionIdentity(ProcessSample? previous, ProcessSample? current)
+    {
+        if (previous is null || current is null)
+        {
+            return previous is null && current is null;
+        }
+
+        return previous.Identity() == current.Identity();
+    }
+
+    private static bool IsDetailTitleChanged(ProcessSample? previous, ProcessSample? current)
+    {
+        if (previous is null || current is null)
+        {
+            return (previous is null) != (current is null);
+        }
+
+        return previous.Pid != current.Pid
+            || !string.Equals(previous.Name, current.Name, StringComparison.Ordinal);
     }
 
     private void RaiseSelectedVisibleRowBindingProperty()
