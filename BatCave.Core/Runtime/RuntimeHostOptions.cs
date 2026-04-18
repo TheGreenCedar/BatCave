@@ -15,6 +15,8 @@ public sealed class RuntimeHostOptions
 
     public bool DefaultAdminMode { get; set; } = true;
 
+    public bool DeferAdminModeAtStartup { get; set; }
+
     public int DefaultMetricTrendWindowSeconds { get; set; } = 60;
 }
 
@@ -77,6 +79,7 @@ public sealed class RuntimeHostOptionsValidator : IValidateOptions<RuntimeHostOp
             DefaultSortDirection = options.DefaultSortDirection,
             DefaultFilterText = (options.DefaultFilterText ?? string.Empty).Trim(),
             DefaultAdminMode = options.DefaultAdminMode,
+            DeferAdminModeAtStartup = options.DeferAdminModeAtStartup,
             DefaultMetricTrendWindowSeconds = options.DefaultMetricTrendWindowSeconds,
         };
     }

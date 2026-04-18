@@ -29,8 +29,6 @@ public sealed partial class MainWindow : Window
     private bool _compactProcessInitialScrollPending = true;
     private bool _compactProcessSortPending;
     private bool _compactProcessSortFinalizeQueued;
-    private bool _compactProcessSelectionRestoreQueued;
-    private bool _syncingCompactProcessSelection;
     private bool _globalResourceSelectionRestoreQueued;
     private long _selectionSettleProbeStartedAt;
     private double? _compactProcessSortRestoreOffset;
@@ -144,7 +142,6 @@ public sealed partial class MainWindow : Window
         _bootstrapped = true;
         await ViewModel.BootstrapAsync(CancellationToken.None);
         SyncAdminToggleState();
-        SyncCompactProcessSelection();
         GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
         QueueCompactProcessInitialScrollIfNeeded();
         ScheduleLogicalCpuGridLayout();
@@ -244,13 +241,6 @@ public sealed partial class MainWindow : Window
             case nameof(MonitoringShellViewModel.GlobalCpuLogicalGridVisibility):
                 ScheduleLogicalCpuGridLayout();
                 break;
-            case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):
-                if (!_compactProcessSortPending)
-                {
-                    SyncCompactProcessSelection();
-                }
-
-                break;
             case nameof(MonitoringShellViewModel.SelectedGlobalResource):
                 if (!ReferenceEquals(GlobalResourceListView.SelectedItem, ViewModel.SelectedGlobalResource))
                 {
@@ -273,45 +263,20 @@ public sealed partial class MainWindow : Window
         AdminModeTogglePhone.IsEnabled = canInteract;
     }
 
-    private void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void ProcessListView_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (_syncingCompactProcessSelection)
-        {
-            CompleteSelectionSettleProbeIfPending();
-            return;
-        }
-
-        if (sender is not ListView listView)
+        if (e.ClickedItem is not ProcessRowViewState selected)
         {
             return;
         }
 
-        if (listView.SelectedItem is ProcessRowViewState selected)
+        BeginSelectionSettleProbeIfNeeded();
+        if (!ReferenceEquals(ViewModel.SelectedVisibleRowBinding, selected))
         {
-            BeginSelectionSettleProbeIfNeeded();
-            if (!ReferenceEquals(ViewModel.SelectedVisibleRowBinding, selected))
-            {
-                _ = ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
-            }
-
-            DispatcherQueue.TryEnqueue(CompleteSelectionSettleProbeIfPending);
-            return;
+            _ = ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);
         }
 
-        if (ViewModel.SelectedVisibleRowBinding is not null && ViewModel.VisibleRows.Count > 0)
-        {
-            // Ignore transient null churn from virtualization/sort transitions.
-            BeginSelectionSettleProbeIfNeeded();
-            if (!_compactProcessSortPending)
-            {
-                QueueCompactProcessSelectionRestore();
-            }
-
-            DispatcherQueue.TryEnqueue(CompleteSelectionSettleProbeIfPending);
-            return;
-        }
-
-        CompleteSelectionSettleProbeIfPending();
+        DispatcherQueue.TryEnqueue(CompleteSelectionSettleProbeIfPending);
     }
 
     private void CompactProcessSortHeader_Click(object sender, RoutedEventArgs e)
@@ -327,11 +292,6 @@ public sealed partial class MainWindow : Window
         if (_compactProcessSortPending)
         {
             return;
-        }
-
-        if (ViewModel.SelectedVisibleRowBinding is not null && CompactProcessListView.SelectedItem is null)
-        {
-            QueueCompactProcessSelectionRestore();
         }
     }
 
@@ -356,28 +316,6 @@ public sealed partial class MainWindow : Window
         CompactProcessListView.ScrollIntoView(ViewModel.VisibleRows[0], ScrollIntoViewAlignment.Leading);
     }
 
-    private void QueueCompactProcessSelectionRestore()
-    {
-        if (_compactProcessSelectionRestoreQueued)
-        {
-            return;
-        }
-
-        _compactProcessSelectionRestoreQueued = true;
-        DispatcherQueue.TryEnqueue(RestoreCompactProcessSelectionIfNeeded);
-    }
-
-    private void RestoreCompactProcessSelectionIfNeeded()
-    {
-        _compactProcessSelectionRestoreQueued = false;
-        if (_compactProcessSortPending)
-        {
-            return;
-        }
-
-        SyncCompactProcessSelection();
-    }
-
     private void CompleteCompactProcessSortInteraction()
     {
         if (!_compactProcessSortPending)
@@ -385,7 +323,6 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        SyncCompactProcessSelection();
         CompactProcessListView.LayoutUpdated -= CompactProcessListView_LayoutUpdated;
         CompactProcessListView.LayoutUpdated += CompactProcessListView_LayoutUpdated;
     }
@@ -407,43 +344,6 @@ public sealed partial class MainWindow : Window
 
         _compactProcessSortFinalizeQueued = true;
         DispatcherQueue.TryEnqueue(FinalizeCompactProcessSortInteraction);
-    }
-
-    private void SyncCompactProcessSelection()
-    {
-        ProcessRowViewState? selectedVisibleRow = ViewModel.SelectedVisibleRowBinding;
-        if (selectedVisibleRow is not null && !IsVisibleProcessRow(selectedVisibleRow))
-        {
-            selectedVisibleRow = null;
-        }
-
-        if (ReferenceEquals(CompactProcessListView.SelectedItem, selectedVisibleRow))
-        {
-            return;
-        }
-
-        try
-        {
-            _syncingCompactProcessSelection = true;
-            CompactProcessListView.SelectedItem = selectedVisibleRow;
-        }
-        finally
-        {
-            _syncingCompactProcessSelection = false;
-        }
-    }
-
-    private bool IsVisibleProcessRow(ProcessRowViewState row)
-    {
-        foreach (ProcessRowViewState visibleRow in ViewModel.VisibleRows)
-        {
-            if (ReferenceEquals(visibleRow, row))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private double? TryGetCompactProcessScrollOffset()

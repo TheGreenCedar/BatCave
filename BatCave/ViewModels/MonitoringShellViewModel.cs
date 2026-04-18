@@ -393,8 +393,11 @@ public partial class MonitoringShellViewModel : ObservableObject, IDisposable
         get => _selectedVisibleRow;
         private set
         {
+            ProcessRowViewState? previous = _selectedVisibleRow;
             if (SetProperty(ref _selectedVisibleRow, value))
             {
+                previous?.IsSelected = false;
+                value?.IsSelected = true;
                 RaiseSelectedVisibleRowBindingProperty();
             }
         }
@@ -654,7 +657,15 @@ public partial class MonitoringShellViewModel : ObservableObject, IDisposable
 
     private void RefreshSelectionInspectorState()
     {
-        BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));
+        if (SelectedRow is null)
+        {
+            BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));
+        }
+        else
+        {
+            BuildAndAppendProcessResourceRows();
+        }
+
         RefreshDetailMetrics();
         RefreshGlobalDetailState();
     }

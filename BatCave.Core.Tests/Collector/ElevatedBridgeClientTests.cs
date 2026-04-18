@@ -27,19 +27,11 @@ public class ElevatedBridgeClientTests
         using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
         string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
         string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
-        ElevatedBridgeClient.NowMsOverrideForTest = () => 20_000;
-        try
-        {
-            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
-            BridgePollResult result = client.PollRows();
+        ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0, nowMs: () => 20_000);
+        BridgePollResult result = client.PollRows();
 
-            Assert.Equal(BridgePollState.Faulted, result.State);
-            Assert.Contains("startup grace", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            ElevatedBridgeClient.NowMsOverrideForTest = null;
-        }
+        Assert.Equal(BridgePollState.Faulted, result.State);
+        Assert.Contains("startup grace", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -48,31 +40,22 @@ public class ElevatedBridgeClientTests
         using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
         string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
         string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
-        try
+        File.WriteAllText(dataFile, JsonSerializer.Serialize(new
         {
-            File.WriteAllText(dataFile, JsonSerializer.Serialize(new
-            {
-                Token = "token",
-                Seq = 1UL,
-                Rows = Array.Empty<object>(),
-            }));
+            Token = "token",
+            Seq = 1UL,
+            Rows = Array.Empty<object>(),
+        }));
 
-            ulong nowMs = 1_000;
-            ElevatedBridgeClient.NowMsOverrideForTest = () => nowMs;
+        ulong nowMs = 1_000;
+        ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0, nowMs: () => nowMs);
+        BridgePollResult initial = client.PollRows();
+        Assert.Equal(BridgePollState.Rows, initial.State);
 
-            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
-            BridgePollResult initial = client.PollRows();
-            Assert.Equal(BridgePollState.Rows, initial.State);
-
-            nowMs = 6_000;
-            BridgePollResult stale = client.PollRows();
-            Assert.Equal(BridgePollState.Faulted, stale.State);
-            Assert.Contains("stalled", stale.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            ElevatedBridgeClient.NowMsOverrideForTest = null;
-        }
+        nowMs = 6_000;
+        BridgePollResult stale = client.PollRows();
+        Assert.Equal(BridgePollState.Faulted, stale.State);
+        Assert.Contains("stalled", stale.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -81,24 +64,16 @@ public class ElevatedBridgeClientTests
         using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
         string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
         string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
-        ElevatedBridgeClient.NowMsOverrideForTest = () => 1_000;
-        try
-        {
-            File.WriteAllText(dataFile, "{ invalid-json");
+        File.WriteAllText(dataFile, "{ invalid-json");
 
-            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 1_000);
+        ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 1_000, nowMs: () => 1_000);
 
-            BridgePollResult result = client.PollRows();
-            string? warning = client.TakeWarning();
+        BridgePollResult result = client.PollRows();
+        string? warning = client.TakeWarning();
 
-            Assert.Equal(BridgePollState.Pending, result.State);
-            Assert.NotNull(warning);
-            Assert.Contains("snapshot_parse_failed", warning, StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            ElevatedBridgeClient.NowMsOverrideForTest = null;
-        }
+        Assert.Equal(BridgePollState.Pending, result.State);
+        Assert.NotNull(warning);
+        Assert.Contains("snapshot_parse_failed", warning, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -108,49 +83,40 @@ public class ElevatedBridgeClientTests
         string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
         string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
         ulong nowMs = 20_000;
-        ElevatedBridgeClient.NowMsOverrideForTest = () => nowMs;
+        ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0, nowMs: () => nowMs);
+        Assert.Equal(BridgePollState.Faulted, client.PollRows().State);
 
-        try
+        ProcessSample recovered = new()
         {
-            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
-            Assert.Equal(BridgePollState.Faulted, client.PollRows().State);
-
-            ProcessSample recovered = new()
-            {
-                Pid = 901,
-                Seq = 2,
-                TsMs = 2,
-                ParentPid = 1,
-                StartTimeMs = 9_010,
-                Name = "bridge-recovered",
-                CpuPct = 4,
-                RssBytes = 1024,
-                PrivateBytes = 512,
-                IoReadBps = 8,
-                IoWriteBps = 9,
-                OtherIoBps = 10,
-                Threads = 2,
-                Handles = 3,
-                AccessState = AccessState.Full,
-            };
-            File.WriteAllText(dataFile, JsonSerializer.Serialize(new
-            {
-                Token = "token",
-                Seq = 2UL,
-                Rows = new[] { recovered },
-            }));
-
-            nowMs = 20_100;
-            BridgePollResult result = client.PollRows();
-
-            Assert.Equal(BridgePollState.Rows, result.State);
-            ProcessSample row = Assert.Single(result.Rows);
-            Assert.Equal(recovered.Identity(), row.Identity());
-        }
-        finally
+            Pid = 901,
+            Seq = 2,
+            TsMs = 2,
+            ParentPid = 1,
+            StartTimeMs = 9_010,
+            Name = "bridge-recovered",
+            CpuPct = 4,
+            RssBytes = 1024,
+            PrivateBytes = 512,
+            IoReadBps = 8,
+            IoWriteBps = 9,
+            OtherIoBps = 10,
+            Threads = 2,
+            Handles = 3,
+            AccessState = AccessState.Full,
+        };
+        File.WriteAllText(dataFile, JsonSerializer.Serialize(new
         {
-            ElevatedBridgeClient.NowMsOverrideForTest = null;
-        }
+            Token = "token",
+            Seq = 2UL,
+            Rows = new[] { recovered },
+        }));
+
+        nowMs = 20_100;
+        BridgePollResult result = client.PollRows();
+
+        Assert.Equal(BridgePollState.Rows, result.State);
+        ProcessSample row = Assert.Single(result.Rows);
+        Assert.Equal(recovered.Identity(), row.Identity());
     }
 
     [Fact]
@@ -160,27 +126,49 @@ public class ElevatedBridgeClientTests
         string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
         string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
         ulong nowMs = 20_000;
-        ElevatedBridgeClient.NowMsOverrideForTest = () => nowMs;
+        ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0, nowMs: () => nowMs);
 
-        try
+        BridgePollResult first = client.PollRows();
+        string? firstWarning = client.TakeWarning();
+
+        nowMs = 20_500;
+        BridgePollResult second = client.PollRows();
+        string? secondWarning = client.TakeWarning();
+
+        Assert.Equal(BridgePollState.Faulted, first.State);
+        Assert.Equal(BridgePollState.Faulted, second.State);
+        Assert.NotNull(firstWarning);
+        Assert.Null(secondWarning);
+    }
+
+    [Fact]
+    public void PollRows_WhenStaleStreamPersists_QueuesWarningOnlyOnce()
+    {
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
+        string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
+        string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
+        File.WriteAllText(dataFile, JsonSerializer.Serialize(new
         {
-            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
+            Token = "token",
+            Seq = 1UL,
+            Rows = Array.Empty<object>(),
+        }));
 
-            BridgePollResult first = client.PollRows();
-            string? firstWarning = client.TakeWarning();
+        ulong nowMs = 1_000;
+        ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0, nowMs: () => nowMs);
+        Assert.Equal(BridgePollState.Rows, client.PollRows().State);
 
-            nowMs = 20_500;
-            BridgePollResult second = client.PollRows();
-            string? secondWarning = client.TakeWarning();
+        nowMs = 6_000;
+        BridgePollResult first = client.PollRows();
+        string? firstWarning = client.TakeWarning();
 
-            Assert.Equal(BridgePollState.Faulted, first.State);
-            Assert.Equal(BridgePollState.Faulted, second.State);
-            Assert.NotNull(firstWarning);
-            Assert.Null(secondWarning);
-        }
-        finally
-        {
-            ElevatedBridgeClient.NowMsOverrideForTest = null;
-        }
+        nowMs = 6_500;
+        BridgePollResult second = client.PollRows();
+        string? secondWarning = client.TakeWarning();
+
+        Assert.Equal(BridgePollState.Faulted, first.State);
+        Assert.Equal(BridgePollState.Faulted, second.State);
+        Assert.NotNull(firstWarning);
+        Assert.Null(secondWarning);
     }
 }

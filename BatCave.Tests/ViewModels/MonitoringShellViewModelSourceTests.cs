@@ -50,6 +50,26 @@ public sealed class MonitoringShellViewModelSourceTests
         Assert.Contains("refreshFilter |= DidVisibilityMembershipChange(", telemetrySource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MonitoringShellViewModelTelemetrySource_AvoidsBuildingUnusedGlobalDescriptorsForProcessInspectorRefresh()
+    {
+        string telemetrySource = File.ReadAllText(ResolveRepoPath("BatCave", "ViewModels", "MonitoringShellViewModel.Telemetry.cs"));
+
+        Assert.Contains("BuildAndAppendProcessResourceRows();", telemetrySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));", telemetrySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MonitoringShellViewModelSource_SelectionRefreshBranchesDirectlyToProcessInspectorRows()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "ViewModels", "MonitoringShellViewModel.cs"));
+
+        Assert.Contains("private void RefreshSelectionInspectorState()", source, StringComparison.Ordinal);
+        Assert.Contains("if (SelectedRow is null)", source, StringComparison.Ordinal);
+        Assert.Contains("BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));", source, StringComparison.Ordinal);
+        Assert.Contains("BuildAndAppendProcessResourceRows();", source, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

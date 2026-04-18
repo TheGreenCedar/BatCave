@@ -84,6 +84,7 @@ public partial class App : Application
         {
             EnableRuntimeLoop = !cliMode,
             DefaultAdminMode = true,
+            DeferAdminModeAtStartup = !cliMode,
             DefaultSortColumn = Core.Domain.SortColumn.CpuPct,
             DefaultSortDirection = Core.Domain.SortDirection.Desc,
             DefaultFilterText = string.Empty,

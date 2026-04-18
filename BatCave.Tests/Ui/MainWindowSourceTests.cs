@@ -107,22 +107,33 @@ public class MainWindowSourceTests
         Assert.DoesNotContain("RepositionThemeTransition", source, StringComparison.Ordinal);
         Assert.DoesNotContain("<ListView.ItemContainerTransitions>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SelectedItem=\"{x:Bind ViewModel.SelectedVisibleRowBinding, Mode=OneWay}\"", source, StringComparison.Ordinal);
+        Assert.Contains("SelectionMode=\"None\"", source, StringComparison.Ordinal);
+        Assert.Contains("IsItemClickEnabled=\"True\"", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MainWindowSource_SyncsCompactProcessSelectionFromCodeBehind()
+    public void MainWindowSource_AnchorsCompactProcessScrollOffsetDuringLiveReordering()
     {
-        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
-        Assert.Contains("case nameof(MonitoringShellViewModel.SelectedVisibleRowBinding):", source, StringComparison.Ordinal);
-        Assert.Contains("if (!_compactProcessSortPending)", source, StringComparison.Ordinal);
-        Assert.Contains("SyncCompactProcessSelection();", source, StringComparison.Ordinal);
-        Assert.Contains("private void QueueCompactProcessSelectionRestore()", source, StringComparison.Ordinal);
-        Assert.Contains("DispatcherQueue.TryEnqueue(RestoreCompactProcessSelectionIfNeeded);", source, StringComparison.Ordinal);
-        Assert.Contains("private void RestoreCompactProcessSelectionIfNeeded()", source, StringComparison.Ordinal);
-        Assert.Contains("if (_compactProcessSortPending)", source, StringComparison.Ordinal);
-        Assert.Contains("CompactProcessListView.SelectedItem = selectedVisibleRow;", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("ViewModel.SelectedVisibleRowBinding = null;", source, StringComparison.Ordinal);
+        Assert.Contains("<ListView.ItemsPanel>", source, StringComparison.Ordinal);
+        Assert.Contains("<ItemsStackPanel ItemsUpdatingScrollMode=\"KeepScrollOffset\" />", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowSource_ActivatesCompactProcessRowsWithoutNativeSelectionRestore()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+        string codeBehind = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+
+        Assert.Contains("ItemClick=\"ProcessListView_ItemClick\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("SelectionChanged=\"ProcessListView_SelectionChanged\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Visibility=\"{x:Bind SelectionChromeVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("private void ProcessListView_ItemClick(object sender, ItemClickEventArgs e)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("_ = ViewModel.SelectRowAsync(selected.Sample, CancellationToken.None);", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncCompactProcessSelection();", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("CompactProcessListView.SelectedItem = selectedVisibleRow;", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.SelectedVisibleRowBinding = null;", codeBehind, StringComparison.Ordinal);
     }
 
     [Fact]

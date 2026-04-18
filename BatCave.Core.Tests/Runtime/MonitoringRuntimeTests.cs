@@ -274,6 +274,38 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
+    public async Task InitializeAsync_WhenAdminModeDeferredAtStartup_UsesLocalCollectorAndWarns()
+    {
+        FailingAdminCollectorFactory collectorFactory = new();
+        PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
+        {
+            AdminMode = true,
+            AdminPreferenceInitialized = true,
+        });
+
+        using MonitoringRuntime runtime = CreateRuntime(
+            collectorFactory,
+            persistenceStore,
+            new RuntimeHostOptions
+            {
+                DeferAdminModeAtStartup = true,
+            });
+
+        CollectorActivationResult activation = await runtime.InitializeAsync(CancellationToken.None);
+        TickOutcome outcome = runtime.Tick(jitterMs: 0);
+
+        Assert.Equal([false], collectorFactory.RequestedModes);
+        Assert.False(runtime.IsAdminMode());
+        Assert.False(activation.EffectiveAdminMode);
+        Assert.True(persistenceStore.CurrentSettings.AdminMode);
+        Assert.Equal(0, persistenceStore.SettingsSaveCount);
+        Assert.NotNull(activation.Warning);
+        Assert.Contains("admin_mode_start_deferred", activation.Warning, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(outcome.Warning);
+        Assert.Contains("admin_mode_start_deferred", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task RestartAsync_WhenAdminCollectorFails_FallsBackToNonAdminWithoutThrowing()
     {
         FailingAdminCollectorFactory collectorFactory = new();
@@ -438,13 +470,21 @@ public class MonitoringRuntimeTests
 
     private static MonitoringRuntime CreateRuntime(IProcessCollectorFactory collectorFactory, IPersistenceStore persistenceStore)
     {
+        return CreateRuntime(collectorFactory, persistenceStore, new RuntimeHostOptions());
+    }
+
+    private static MonitoringRuntime CreateRuntime(
+        IProcessCollectorFactory collectorFactory,
+        IPersistenceStore persistenceStore,
+        RuntimeHostOptions runtimeHostOptions)
+    {
         return new MonitoringRuntime(
             collectorFactory,
             new DeltaTelemetryPipeline(),
             new InMemoryStateStore(),
             new IncrementalSortIndexEngine(),
             persistenceStore,
-            new RuntimeHostOptions());
+            runtimeHostOptions);
     }
 
     private static TickOutcome TickUntilWarning(MonitoringRuntime runtime, int maxAttempts = 10)
@@ -900,7 +940,6 @@ public class MonitoringRuntimeTests
         }
     }
 }
-
 
 
 

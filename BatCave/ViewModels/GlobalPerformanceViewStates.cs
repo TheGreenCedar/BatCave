@@ -219,31 +219,18 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         int windowSize = Math.Max(1, visiblePointCount);
         int take = Math.Min(source.Count, windowSize);
         int sourceStart = source.Count - take;
-        int destinationStart = windowSize - take;
-        bool changed = EnsureTrendBufferSize(ref destination, windowSize);
-
-        for (int index = 0; index < destinationStart; index++)
-        {
-            if (destination[index] == 0d)
-            {
-                continue;
-            }
-
-            destination[index] = 0d;
-            changed = true;
-        }
+        bool changed = EnsureTrendBufferSize(ref destination, take);
 
         for (int index = 0; index < take; index++)
         {
             double current = source[sourceStart + index];
             double next = map is null ? current : map(current);
-            int targetIndex = destinationStart + index;
-            if (destination[targetIndex] == next)
+            if (destination[index] == next)
             {
                 continue;
             }
 
-            destination[targetIndex] = next;
+            destination[index] = next;
             changed = true;
         }
 
@@ -257,12 +244,13 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         int visiblePointCount)
     {
         int windowSize = Math.Max(1, visiblePointCount);
-        bool changed = EnsureTrendBufferSize(ref destination, windowSize);
+        int take = Math.Min(Math.Max(left.Count, right.Count), windowSize);
+        bool changed = EnsureTrendBufferSize(ref destination, take);
 
-        for (int outputIndex = 0; outputIndex < windowSize; outputIndex++)
+        for (int outputIndex = 0; outputIndex < take; outputIndex++)
         {
-            int leftIndex = left.Count - windowSize + outputIndex;
-            int rightIndex = right.Count - windowSize + outputIndex;
+            int leftIndex = left.Count - take + outputIndex;
+            int rightIndex = right.Count - take + outputIndex;
             double leftValue = leftIndex >= 0 && leftIndex < left.Count ? left[leftIndex] : 0d;
             double rightValue = rightIndex >= 0 && rightIndex < right.Count ? right[rightIndex] : 0d;
             double next = leftValue + rightValue;

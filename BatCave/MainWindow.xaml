@@ -661,11 +661,17 @@
                             Grid.Row="2"
                             Background="Transparent"
                             ItemsSource="{x:Bind ViewModel.VisibleRows, Mode=OneWay}"
-                            SelectionChanged="ProcessListView_SelectionChanged"
-                            SelectionMode="Single"
+                            IsItemClickEnabled="True"
+                            ItemClick="ProcessListView_ItemClick"
+                            SelectionMode="None"
                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                             AutomationProperties.HelpText="Compact process table with name, PID, CPU, memory, disk, and estimated network columns."
                             AutomationProperties.Name="Compact Process Table">
+                            <ListView.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <ItemsStackPanel ItemsUpdatingScrollMode="KeepScrollOffset" />
+                                </ItemsPanelTemplate>
+                            </ListView.ItemsPanel>
                             <ListView.Resources>
                                 <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="BatCaveSelectionBrush" />
                                 <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="BatCaveSelectionBrush" />
@@ -688,8 +694,12 @@
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="viewModels:ProcessRowViewState">
-                                    <Grid Padding="8,6" Background="Transparent">
-                                        <Grid AutomationProperties.Name="{x:Bind AccessibilitySummary, Mode=OneWay}">
+                                    <Grid Background="Transparent">
+                                        <Border
+                                            Background="{ThemeResource BatCaveSelectionBrush}"
+                                            CornerRadius="8"
+                                            Visibility="{x:Bind SelectionChromeVisibility, Mode=OneWay}" />
+                                        <Grid Padding="8,6" AutomationProperties.Name="{x:Bind AccessibilitySummary, Mode=OneWay}">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="2.2*" />
                                                 <ColumnDefinition Width="1*" />
@@ -799,9 +809,9 @@
                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
                                 ScrollViewer.VerticalScrollBarVisibility="Disabled">
                                 <ListView.Resources>
-                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="BatCaveMutedBrush" />
-                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="BatCaveMutedBrush" />
-                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="BatCaveMutedBrush" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="Transparent" />
                                     <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="BatCaveTextPrimaryBrush" />
                                     <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="BatCaveTextPrimaryBrush" />
                                     <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="BatCaveTextPrimaryBrush" />
@@ -1298,5 +1308,3 @@
         </Border>
     </Grid>
 </Window>
-
-

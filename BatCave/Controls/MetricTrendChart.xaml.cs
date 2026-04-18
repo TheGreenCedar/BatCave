@@ -391,7 +391,9 @@ public sealed partial class MetricTrendChart : UserControl
         return propertyName.Equals("Values", StringComparison.Ordinal)
             || propertyName.Equals("OverlayValues", StringComparison.Ordinal)
             || propertyName.Equals("MiniTrendValues", StringComparison.Ordinal)
-            || propertyName.EndsWith("TrendValues", StringComparison.Ordinal);
+            || propertyName.Equals("GlobalPrimaryTrendValues", StringComparison.Ordinal)
+            || propertyName.Equals("GlobalSecondaryTrendValues", StringComparison.Ordinal)
+            || propertyName.Equals("GlobalAuxiliaryTrendValues", StringComparison.Ordinal);
     }
 
     private void ScheduleRender()
@@ -438,6 +440,12 @@ public sealed partial class MetricTrendChart : UserControl
                 Interlocked.Exchange(ref _renderQueued, 0);
                 if (!TryEnsureUiThreadForRender() || !IsLoaded)
                 {
+                    return;
+                }
+
+                if (PlotBorder.ActualWidth <= 1d || PlotBorder.ActualHeight <= 1d)
+                {
+                    ResetTransitionState();
                     return;
                 }
 

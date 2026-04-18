@@ -98,14 +98,22 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             return new CollectorActivationResult(_collector, _effectiveAdminMode, Warning: null);
         }
 
-        CollectorActivationResult startupCollector = await ActivateCollectorAsync(_settings.AdminMode, ct).ConfigureAwait(false);
+        bool requestedAdminMode = _settings.AdminMode;
+        bool deferAdminMode = requestedAdminMode && _runtimeHostOptions.DeferAdminModeAtStartup;
+        CollectorActivationResult startupCollector = await ActivateCollectorAsync(deferAdminMode ? false : requestedAdminMode, ct).ConfigureAwait(false);
         _collector = startupCollector.Collector;
         _effectiveAdminMode = startupCollector.EffectiveAdminMode;
         _initialized = true;
-        EnqueueRuntimeWarning(startupCollector.Warning);
-        LogActivationWarning(_settings.AdminMode, startupCollector.Warning);
+        string? startupWarning = deferAdminMode
+            ? "admin_mode_start_deferred requested_admin_mode=true effective_admin_mode=false reason=interactive startup opens in local mode; enable Admin Mode after launch."
+            : startupCollector.Warning;
+        EnqueueRuntimeWarning(startupWarning);
+        LogActivationWarning(requestedAdminMode, startupWarning);
         LogStartup();
-        return startupCollector;
+        return startupCollector with
+        {
+            Warning = startupWarning,
+        };
     }
 
     public QueryResponse GetSnapshot()
@@ -602,6 +610,4 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         }
     }
 }
-
-
 

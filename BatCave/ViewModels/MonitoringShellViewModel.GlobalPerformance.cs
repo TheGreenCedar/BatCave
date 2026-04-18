@@ -702,15 +702,19 @@ public partial class MonitoringShellViewModel
 
     private static double[] SnapshotSeries(IReadOnlyList<double> source, int visiblePointCount, Func<double, double>? map = null)
     {
-        int count = Math.Max(1, visiblePointCount);
+        int count = Math.Min(source.Count, Math.Max(1, visiblePointCount));
+        if (count <= 0)
+        {
+            return [];
+        }
+
         double[] result = new double[count];
         int take = Math.Min(source.Count, count);
         int sourceStart = source.Count - take;
-        int destinationStart = count - take;
         for (int index = 0; index < take; index++)
         {
             double value = source[sourceStart + index];
-            result[destinationStart + index] = map is null ? value : map(value);
+            result[index] = map is null ? value : map(value);
         }
 
         return result;
@@ -718,7 +722,12 @@ public partial class MonitoringShellViewModel
 
     private static double[] SnapshotCombinedSeries(IReadOnlyList<double> left, IReadOnlyList<double> right, int visiblePointCount)
     {
-        int count = Math.Max(1, visiblePointCount);
+        int count = Math.Min(Math.Max(left.Count, right.Count), Math.Max(1, visiblePointCount));
+        if (count <= 0)
+        {
+            return [];
+        }
+
         double[] result = new double[count];
         for (int outputIndex = 0; outputIndex < count; outputIndex++)
         {
@@ -1511,38 +1520,25 @@ public partial class MonitoringShellViewModel
         Func<double, double>? map = null)
     {
         int visiblePointCount = Math.Max(1, MetricTrendWindowSeconds);
-        bool changed = target.Length != visiblePointCount;
+        int take = Math.Min(source.Count, visiblePointCount);
+        bool changed = target.Length != take;
         if (changed)
         {
-            target = new double[visiblePointCount];
+            target = new double[take];
         }
 
-        int take = Math.Min(source.Count, visiblePointCount);
         int sourceStart = source.Count - take;
-        int destinationStart = visiblePointCount - take;
-
-        for (int index = 0; index < destinationStart; index++)
-        {
-            if (target[index] == 0d)
-            {
-                continue;
-            }
-
-            target[index] = 0d;
-            changed = true;
-        }
 
         for (int index = 0; index < take; index++)
         {
             double next = source[sourceStart + index];
             next = map is null ? next : map(next);
-            int destinationIndex = destinationStart + index;
-            if (target[destinationIndex] == next)
+            if (target[index] == next)
             {
                 continue;
             }
 
-            target[destinationIndex] = next;
+            target[index] = next;
             changed = true;
         }
 
@@ -1559,16 +1555,17 @@ public partial class MonitoringShellViewModel
         string propertyName)
     {
         int visiblePointCount = Math.Max(1, MetricTrendWindowSeconds);
-        bool changed = target.Length != visiblePointCount;
+        int take = Math.Min(Math.Max(left.Count, right.Count), visiblePointCount);
+        bool changed = target.Length != take;
         if (changed)
         {
-            target = new double[visiblePointCount];
+            target = new double[take];
         }
 
-        for (int index = 0; index < visiblePointCount; index++)
+        for (int index = 0; index < take; index++)
         {
-            int leftIndex = left.Count - visiblePointCount + index;
-            int rightIndex = right.Count - visiblePointCount + index;
+            int leftIndex = left.Count - take + index;
+            int rightIndex = right.Count - take + index;
             double leftValue = leftIndex >= 0 && leftIndex < left.Count ? left[leftIndex] : 0d;
             double rightValue = rightIndex >= 0 && rightIndex < right.Count ? right[rightIndex] : 0d;
             double next = leftValue + rightValue;

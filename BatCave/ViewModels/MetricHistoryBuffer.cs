@@ -21,8 +21,6 @@ public sealed partial class MetricHistoryBuffer
         _ioRead = new RingSeries(normalizedLimit);
         _ioWrite = new RingSeries(normalizedLimit);
         _otherIo = new RingSeries(normalizedLimit);
-
-        PrefillWithZeros(normalizedLimit);
     }
 
     public IReadOnlyList<double> Cpu => _cpu;
@@ -51,18 +49,6 @@ public sealed partial class MetricHistoryBuffer
         _ioRead.Add(sample.IoReadBps);
         _ioWrite.Add(sample.IoWriteBps);
         _otherIo.Add(sample.OtherIoBps);
-    }
-
-    private void PrefillWithZeros(int count)
-    {
-        for (int index = 0; index < count; index++)
-        {
-            _cpu.Add(0d);
-            _memory.Add(0d);
-            _ioRead.Add(0d);
-            _ioWrite.Add(0d);
-            _otherIo.Add(0d);
-        }
     }
 
     private sealed partial class RingSeries : IReadOnlyList<double>

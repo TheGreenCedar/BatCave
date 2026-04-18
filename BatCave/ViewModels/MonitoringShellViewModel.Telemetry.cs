@@ -367,7 +367,7 @@ public partial class MonitoringShellViewModel
             return;
         }
 
-        BuildAndAppendResourceRows(BuildGlobalResourceDescriptors(_latestGlobalMetricsSample));
+        BuildAndAppendProcessResourceRows();
         RefreshGlobalDetailState();
     }
 
@@ -537,7 +537,10 @@ public partial class MonitoringShellViewModel
             return false;
         }
 
-        return IsCurrentSortKeyChanged(previous, current, currentSortColumn);
+        // Live metric churn should update row values without moving the user's viewport every tick.
+        // Explicit sort changes still reapply the comparer through ApplyCanonicalSort().
+        return currentSortColumn == SortColumn.Name
+               && !string.Equals(previous.Name, current.Name, StringComparison.Ordinal);
     }
 
     private static bool IsVisibleForCurrentRowShaping(
@@ -571,26 +574,6 @@ public partial class MonitoringShellViewModel
         }
 
         return adminEnabledOnlyFilter && sample.AccessState != AccessState.Full;
-    }
-
-    private static bool IsCurrentSortKeyChanged(
-        ProcessSample previous,
-        ProcessSample current,
-        SortColumn currentSortColumn)
-    {
-        return currentSortColumn switch
-        {
-            SortColumn.Name => !string.Equals(previous.Name, current.Name, StringComparison.Ordinal),
-            SortColumn.CpuPct => ProcessRowViewState.IsCpuSortBucketChanged(previous.CpuPct, current.CpuPct),
-            SortColumn.RssBytes => previous.RssBytes != current.RssBytes,
-            SortColumn.IoReadBps => previous.IoReadBps != current.IoReadBps,
-            SortColumn.IoWriteBps => previous.IoWriteBps != current.IoWriteBps,
-            SortColumn.OtherIoBps => previous.OtherIoBps != current.OtherIoBps,
-            SortColumn.DiskBps => previous.IoReadBps != current.IoReadBps || previous.IoWriteBps != current.IoWriteBps,
-            SortColumn.Threads => previous.Threads != current.Threads,
-            SortColumn.Handles => previous.Handles != current.Handles,
-            _ => false,
-        };
     }
 
     private bool RemoveTrackedIdentity(ProcessIdentity identity)

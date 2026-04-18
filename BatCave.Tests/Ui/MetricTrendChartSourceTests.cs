@@ -178,6 +178,28 @@ public sealed class MetricTrendChartSourceTests
     }
 
     [Fact]
+    public void MetricTrendChartSource_SkipsSteadyStateRenderWorkWhenPlotSurfaceIsCollapsed()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("if (!TryEnsureUiThreadForRender() || !IsLoaded)", source, StringComparison.Ordinal);
+        Assert.Contains("if (PlotBorder.ActualWidth <= 1d || PlotBorder.ActualHeight <= 1d)", source, StringComparison.Ordinal);
+        Assert.Contains("ResetTransitionState();", source, StringComparison.Ordinal);
+        Assert.Contains("return;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MetricTrendChartSource_DoesNotWakeEveryInspectorChartForAnyTrendValuesProperty()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "Controls", "MetricTrendChart.xaml.cs"));
+
+        Assert.Contains("propertyName.Equals(\"GlobalPrimaryTrendValues\", StringComparison.Ordinal)", source, StringComparison.Ordinal);
+        Assert.Contains("propertyName.Equals(\"GlobalSecondaryTrendValues\", StringComparison.Ordinal)", source, StringComparison.Ordinal);
+        Assert.Contains("propertyName.Equals(\"GlobalAuxiliaryTrendValues\", StringComparison.Ordinal)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("propertyName.EndsWith(\"TrendValues\", StringComparison.Ordinal)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MainWindowSource_DisablesSmoothPointTransitionsOnLargeInspectorCharts()
     {
         string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));

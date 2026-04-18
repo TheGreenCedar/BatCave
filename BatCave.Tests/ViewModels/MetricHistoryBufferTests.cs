@@ -7,15 +7,15 @@ namespace BatCave.Tests.ViewModels;
 public sealed class MetricHistoryBufferTests
 {
     [Fact]
-    public void Constructor_PrefillsSeriesWithZerosUpToLimit()
+    public void Constructor_StartsSeriesEmpty()
     {
         MetricHistoryBuffer buffer = new(limit: 4);
 
-        Assert.Equal([0d, 0d, 0d, 0d], buffer.Cpu.ToArray());
-        Assert.Equal([0d, 0d, 0d, 0d], buffer.Memory.ToArray());
-        Assert.Equal([0d, 0d, 0d, 0d], buffer.IoRead.ToArray());
-        Assert.Equal([0d, 0d, 0d, 0d], buffer.IoWrite.ToArray());
-        Assert.Equal([0d, 0d, 0d, 0d], buffer.OtherIo.ToArray());
+        Assert.Empty(buffer.Cpu);
+        Assert.Empty(buffer.Memory);
+        Assert.Empty(buffer.IoRead);
+        Assert.Empty(buffer.IoWrite);
+        Assert.Empty(buffer.OtherIo);
     }
 
     [Fact]

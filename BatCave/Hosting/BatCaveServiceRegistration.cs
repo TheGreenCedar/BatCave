@@ -35,6 +35,7 @@ public static class BatCaveServiceRegistration
                 options.DefaultSortDirection = normalizedOptions.DefaultSortDirection;
                 options.DefaultFilterText = normalizedOptions.DefaultFilterText;
                 options.DefaultAdminMode = normalizedOptions.DefaultAdminMode;
+                options.DeferAdminModeAtStartup = normalizedOptions.DeferAdminModeAtStartup;
                 options.DefaultMetricTrendWindowSeconds = normalizedOptions.DefaultMetricTrendWindowSeconds;
             })
             .ValidateOnStart();

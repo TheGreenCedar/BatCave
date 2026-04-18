@@ -1,6 +1,7 @@
 using BatCave.Converters;
 using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Microsoft.UI.Xaml;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -22,6 +23,7 @@ public sealed class ProcessRowViewState : ObservableObject
     private string _otherIoText;
     private string _diskText;
     private string _networkText;
+    private bool _isSelected;
 
     public ProcessRowViewState(ProcessSample sample, IReadOnlyList<Point> cpuTrendGeometry, double[]? cpuTrendValues = null)
     {
@@ -117,6 +119,20 @@ public sealed class ProcessRowViewState : ObservableObject
     }
 
     public IReadOnlyList<double> CpuTrendValues => _cpuTrendValues;
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        internal set
+        {
+            if (SetProperty(ref _isSelected, value))
+            {
+                OnPropertyChanged(nameof(SelectionChromeVisibility));
+            }
+        }
+    }
+
+    public Visibility SelectionChromeVisibility => IsSelected ? Visibility.Visible : Visibility.Collapsed;
 
     public void UpdateSample(ProcessSample sample)
     {

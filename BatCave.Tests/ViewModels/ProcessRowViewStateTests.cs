@@ -1,6 +1,7 @@
 using BatCave.Core.Domain;
 using BatCave.Tests.TestSupport;
 using BatCave.ViewModels;
+using Microsoft.UI.Xaml;
 using Windows.Foundation;
 
 namespace BatCave.Tests.ViewModels;
@@ -92,6 +93,30 @@ public sealed class ProcessRowViewStateTests
         Assert.Contains("CPU 10.00%", state.AccessibilitySummary, StringComparison.Ordinal);
         Assert.Contains("Estimated network", state.AccessibilitySummary, StringComparison.Ordinal);
         Assert.StartsWith("Est. ", state.NetworkEstimateText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IsSelected_UpdatesSelectionChromeVisibility()
+    {
+        ProcessRowViewState state = new(
+            Sample(cpuPct: 10, rssBytes: 1024, ioReadBps: 2048, ioWriteBps: 3072, netBps: 4096, threads: 5, handles: 6),
+            CreateTrendGeometry());
+
+        List<string> changed = [];
+        state.PropertyChanged += (_, args) =>
+        {
+            if (!string.IsNullOrWhiteSpace(args.PropertyName))
+            {
+                changed.Add(args.PropertyName!);
+            }
+        };
+
+        state.IsSelected = true;
+
+        Assert.True(state.IsSelected);
+        Assert.Equal(Visibility.Visible, state.SelectionChromeVisibility);
+        Assert.Contains(nameof(ProcessRowViewState.IsSelected), changed);
+        Assert.Contains(nameof(ProcessRowViewState.SelectionChromeVisibility), changed);
     }
 
     [Fact]

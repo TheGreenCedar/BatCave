@@ -306,7 +306,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task ProcessInspector_MiniTrendBuffersReuseExistingArraysAcrossTelemetryTicks()
+    public async Task ProcessInspector_MiniTrendBuffersAppendRealSamplesAcrossTelemetryTicks()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -325,9 +325,9 @@ public class MonitoringShellViewModelTests
         GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Memory);
         GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Disk);
         GlobalResourceRowViewState networkRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Network);
-        double[] initialMemoryTrend = memoryRow.MiniTrendValues;
-        double[] initialDiskTrend = diskRow.MiniTrendValues;
-        double[] initialNetworkTrend = networkRow.MiniTrendValues;
+        Assert.Equal([(double)row.RssBytes], memoryRow.MiniTrendValues);
+        Assert.Equal([(double)(row.IoReadBps + row.IoWriteBps)], diskRow.MiniTrendValues);
+        Assert.Equal([row.OtherIoBps * 8d], networkRow.MiniTrendValues);
 
         ProcessSample updated = row with
         {
@@ -342,9 +342,9 @@ public class MonitoringShellViewModelTests
 
         gateway.RaiseDelta(2, [updated], []);
 
-        Assert.Same(initialMemoryTrend, memoryRow.MiniTrendValues);
-        Assert.Same(initialDiskTrend, diskRow.MiniTrendValues);
-        Assert.Same(initialNetworkTrend, networkRow.MiniTrendValues);
+        Assert.Equal([(double)row.RssBytes, (double)updated.RssBytes], memoryRow.MiniTrendValues);
+        Assert.Equal([(double)(row.IoReadBps + row.IoWriteBps), (double)(updated.IoReadBps + updated.IoWriteBps)], diskRow.MiniTrendValues);
+        Assert.Equal([row.OtherIoBps * 8d, updated.OtherIoBps * 8d], networkRow.MiniTrendValues);
         Assert.Equal((double)updated.RssBytes, memoryRow.MiniTrendValues[^1]);
         Assert.Equal((double)(updated.IoReadBps + updated.IoWriteBps), diskRow.MiniTrendValues[^1]);
         Assert.Equal(updated.OtherIoBps * 8d, networkRow.MiniTrendValues[^1]);
@@ -956,7 +956,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task TelemetryDelta_Reorder_UsesMoveOperationsWithoutReplace()
+    public async Task TelemetryDelta_LiveReorderCandidates_UpdateValuesWithoutMovingRows()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -976,16 +976,19 @@ public class MonitoringShellViewModelTests
 
         Assert.Collection(
             GetVisibleRows(viewModel),
+            row => Assert.Equal(high.Pid, row.Pid),
             row => Assert.Equal(mid.Pid, row.Pid),
-            row => Assert.Equal(low.Pid, row.Pid),
-            row => Assert.Equal(high.Pid, row.Pid));
-        Assert.Same(midState, GetVisibleRow(viewModel, 0));
-        Assert.Same(lowState, GetVisibleRow(viewModel, 1));
-        Assert.Same(highState, GetVisibleRow(viewModel, 2));
+            row => Assert.Equal(low.Pid, row.Pid));
+        Assert.Same(highState, GetVisibleRow(viewModel, 0));
+        Assert.Same(midState, GetVisibleRow(viewModel, 1));
+        Assert.Same(lowState, GetVisibleRow(viewModel, 2));
+        Assert.Equal(5, GetVisibleRow(viewModel, 0).CpuPct);
+        Assert.Equal(95, GetVisibleRow(viewModel, 1).CpuPct);
+        Assert.Equal(55, GetVisibleRow(viewModel, 2).CpuPct);
     }
 
     [Fact]
-    public async Task TelemetryDelta_Reorder_DoesNotRaiseCollectionReset()
+    public async Task TelemetryDelta_LiveSortKeyUpdatesDoNotMoveRows()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -1005,8 +1008,11 @@ public class MonitoringShellViewModelTests
         ProcessSample lowNowHigh = low with { Seq = 2, TsMs = 2, CpuPct = 95 };
         gateway.RaiseDelta(2, [highNowLow, lowNowHigh], []);
 
-        Assert.DoesNotContain(NotifyCollectionChangedAction.Reset, actions);
-        Assert.Contains(NotifyCollectionChangedAction.Move, actions);
+        Assert.Empty(actions);
+        Assert.Equal(high.Pid, GetVisibleRow(viewModel, 0).Pid);
+        Assert.Equal(low.Pid, GetVisibleRow(viewModel, 1).Pid);
+        Assert.Equal(5d, GetVisibleRow(viewModel, 0).CpuPct);
+        Assert.Equal(95d, GetVisibleRow(viewModel, 1).CpuPct);
     }
 
     [Fact]
@@ -1193,7 +1199,7 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
-    public async Task TelemetryDelta_CpuResort_IgnoresInvisibleJitterButReordersOnMeaningfulChange()
+    public async Task TelemetryDelta_CpuSortKeyChanges_DoNotChurnLiveRowOrder()
     {
         TestRuntimeEventGateway gateway = new();
         MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
@@ -1210,11 +1216,12 @@ public class MonitoringShellViewModelTests
 
         Assert.Equal(first.Pid, GetVisibleRow(viewModel, 0).Pid);
 
-        // Meaningful displayed difference should still reorder.
+        // Meaningful displayed differences still update values, but live telemetry does not move the viewport.
         ProcessSample secondMeaningful = secondJitter with { Seq = 3, TsMs = 3, CpuPct = 1.0200 };
         gateway.RaiseDelta(3, [firstJitter with { Seq = 3, TsMs = 3 }, secondMeaningful], []);
 
-        Assert.Equal(second.Pid, GetVisibleRow(viewModel, 0).Pid);
+        Assert.Equal(first.Pid, GetVisibleRow(viewModel, 0).Pid);
+        Assert.Equal(1.0200d, GetVisibleRow(viewModel, 1).CpuPct);
     }
 
     [Fact]
@@ -1974,6 +1981,31 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task SelectedProcessTrendValues_DoNotInventLeadingZeroSamples()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample current = Sample(pid: 251, startTime: 25_100, access: AccessState.Full);
+        for (ulong seq = 1; seq <= 3; seq++)
+        {
+            current = current with
+            {
+                Seq = seq,
+                TsMs = seq,
+                CpuPct = 10d + seq,
+            };
+            gateway.RaiseDelta(seq, [current], []);
+        }
+
+        await viewModel.SelectRowAsync(current, CancellationToken.None);
+
+        Assert.Equal([11d, 12d, 13d], viewModel.GlobalPrimaryTrendValues);
+        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Cpu);
+        Assert.Equal([11d, 12d, 13d], cpuRow.MiniTrendValues);
+    }
+
+    [Fact]
     public async Task ProcessMode_CpuLogicalSelection_ShowsPlaceholderInsteadOfLogicalGrid()
     {
         TestRuntimeEventGateway gateway = new();
@@ -2420,8 +2452,28 @@ public class MonitoringShellViewModelTests
         Assert.NotNull(viewModel.SelectedRow);
         Assert.Equal(row.Identity(), viewModel.SelectedRow!.Identity());
         Assert.Same(rowState, viewModel.SelectedVisibleRow);
+        Assert.True(rowState.IsSelected);
         Assert.NotNull(viewModel.SelectedMetadata);
         Assert.Equal(1, metadataRequestCount);
+    }
+
+    [Fact]
+    public async Task SelectedVisibleRowBinding_WhenSelectionChanges_MovesRowSelectionChrome()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample first = Sample(pid: 64, startTime: 6400, access: AccessState.Full) with { CpuPct = 10 };
+        ProcessSample second = Sample(pid: 65, startTime: 6500, access: AccessState.Full) with { CpuPct = 20 };
+        gateway.RaiseDelta(1, [first, second], []);
+        ProcessRowViewState firstRow = GetVisibleRow(viewModel, 1);
+        ProcessRowViewState secondRow = GetVisibleRow(viewModel, 0);
+
+        viewModel.SelectedVisibleRowBinding = firstRow;
+        viewModel.SelectedVisibleRowBinding = secondRow;
+
+        Assert.False(firstRow.IsSelected);
+        Assert.True(secondRow.IsSelected);
     }
 
     [Fact]

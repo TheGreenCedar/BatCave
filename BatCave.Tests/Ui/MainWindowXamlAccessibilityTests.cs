@@ -153,7 +153,8 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("Text=\"{x:Bind NetworkEstimateText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("AutomationProperties.Name=\"{x:Bind AccessibilitySummary, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("ResourceKey=\"BatCaveSelectionBrush\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("<Grid Padding=\"8,6\" Background=\"Transparent\">", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Grid Background=\"Transparent\">", xaml, StringComparison.Ordinal);
+        Assert.Contains("Visibility=\"{x:Bind SelectionChromeVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<Grid Padding=\"8,6\" Background=\"{ThemeResource BatCaveCanvasBrush}\">", xaml, StringComparison.Ordinal);
     }
 
@@ -189,6 +190,17 @@ public class MainWindowXamlAccessibilityTests
         Assert.DoesNotContain("ElementPrepared=\"GlobalCpuLogicalRepeater_ElementPrepared\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("x:Name=\"GlobalCpuLogicalGridView\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"Clear Selection\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_UsesTransparentOuterSelectionForMetricSwitcherCards()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"GlobalResourceListView\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<SolidColorBrush x:Key=\"ListViewItemBackgroundSelected\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("<SolidColorBrush x:Key=\"ListViewItemBackgroundSelectedPointerOver\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("<SolidColorBrush x:Key=\"ListViewItemBackgroundSelectedPressed\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -333,4 +345,3 @@ public class MainWindowXamlAccessibilityTests
         throw new DirectoryNotFoundException("Could not locate repository root from test base directory.");
     }
 }
-
