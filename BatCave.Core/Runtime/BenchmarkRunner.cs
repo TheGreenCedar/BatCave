@@ -10,6 +10,12 @@ namespace BatCave.Core.Runtime;
 
 public sealed record BenchmarkSummary
 {
+    public string Host { get; init; } = string.Empty;
+
+    public string MeasurementOrigin { get; init; } = string.Empty;
+
+    public bool UsesAttachedDispatcher { get; init; }
+
     public int Ticks { get; init; }
 
     public int SleepMs { get; init; }
@@ -31,6 +37,8 @@ public sealed record BenchmarkSummary
     public ulong RssBudgetBytes { get; init; }
 
     public BenchmarkComparison? BaselineComparison { get; init; }
+
+    public bool BaselineMetadataMatched { get; init; } = true;
 
     public BenchmarkInteractionProbeP95? InteractionProbeP95 { get; init; }
 
@@ -109,6 +117,29 @@ public sealed record BenchmarkGateOptions
     public bool RequireInteractionProbeSpeedup { get; init; }
 }
 
+public sealed record BenchmarkMeasurement
+{
+    public string Host { get; init; } = string.Empty;
+
+    public string MeasurementOrigin { get; init; } = string.Empty;
+
+    public bool UsesAttachedDispatcher { get; init; }
+
+    public int Ticks { get; init; }
+
+    public int SleepMs { get; init; }
+
+    public long StartupMs { get; init; }
+
+    public double TickP95Ms { get; init; }
+
+    public double SortP95Ms { get; init; }
+
+    public double AvgAppCpuPct { get; init; }
+
+    public ulong AvgAppRssBytes { get; init; }
+}
+
 public static class BenchmarkRunner
 {
     public const double CpuBudgetPct = 1.0;
@@ -170,19 +201,57 @@ public static class BenchmarkRunner
         double tickP95Ms = PercentileMath.Percentile95(tickSamples);
         double sortP95Ms = PercentileMath.Percentile95(sortSamples);
 
+        return CreateSummary(
+            new BenchmarkMeasurement
+            {
+                Host = "core",
+                MeasurementOrigin = "headless_runtime",
+                UsesAttachedDispatcher = false,
+                Ticks = safeTicks,
+                SleepMs = safeSleepMs,
+                StartupMs = startupStopwatch.ElapsedMilliseconds,
+                TickP95Ms = tickP95Ms,
+                SortP95Ms = sortP95Ms,
+                AvgAppCpuPct = avgCpu,
+                AvgAppRssBytes = avgRss,
+            },
+            gateOptions);
+    }
+
+    public static BenchmarkSummary CreateSummary(
+        BenchmarkMeasurement measurement,
+        BenchmarkGateOptions? gateOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(measurement);
+
         BenchmarkGateOptions normalizedGateOptions = gateOptions ?? new BenchmarkGateOptions();
+        double normalizedTickP95Ms = NormalizeNonNegative(measurement.TickP95Ms);
+        double normalizedSortP95Ms = NormalizeNonNegative(measurement.SortP95Ms);
+        double normalizedAvgCpuPct = NormalizeNonNegative(measurement.AvgAppCpuPct);
+        ulong normalizedAvgRssBytes = measurement.AvgAppRssBytes;
+        bool budgetPassed = normalizedAvgCpuPct < CpuBudgetPct && normalizedAvgRssBytes < RssBudgetBytes;
         double? minSpeedupMultiplier = NormalizeOptionalPositive(normalizedGateOptions.MinSpeedupMultiplier);
         double? maxP95Ms = NormalizeOptionalPositive(normalizedGateOptions.MaxP95Ms);
+        string normalizedHost = NormalizeMetadataToken(measurement.Host, "unknown");
+        string normalizedMeasurementOrigin = NormalizeMetadataToken(measurement.MeasurementOrigin, "unknown");
+        bool baselineMetadataMatched = BaselineMetadataMatches(
+            normalizedGateOptions.Baseline,
+            normalizedHost,
+            normalizedMeasurementOrigin);
+
+        BenchmarkSummary? compatibleBaseline = baselineMetadataMatched
+            ? normalizedGateOptions.Baseline
+            : null;
 
         BenchmarkComparison? comparison = BuildBaselineComparison(
-            normalizedGateOptions.Baseline,
-            tickP95Ms,
-            sortP95Ms,
+            compatibleBaseline,
+            normalizedTickP95Ms,
+            normalizedSortP95Ms,
             minSpeedupMultiplier);
 
         BenchmarkInteractionProbeP95? interactionProbe = NormalizeInteractionProbe(normalizedGateOptions.InteractionProbeP95);
         BenchmarkInteractionComparison? interactionComparison = BuildInteractionComparison(
-            normalizedGateOptions.Baseline?.InteractionProbeP95,
+            compatibleBaseline?.InteractionProbeP95,
             interactionProbe,
             minSpeedupMultiplier);
 
@@ -193,22 +262,26 @@ public static class BenchmarkRunner
                                             && !normalizedGateOptions.RequireInteractionProbeSpeedup);
         bool speedupPassed = coreSpeedupPassed && interactionSpeedupPassed;
         bool maxP95Passed = maxP95Ms is null
-                            || (tickP95Ms <= maxP95Ms.Value && sortP95Ms <= maxP95Ms.Value);
+                            || (normalizedTickP95Ms <= maxP95Ms.Value && normalizedSortP95Ms <= maxP95Ms.Value);
         bool strictPassed = budgetPassed && speedupPassed && maxP95Passed;
 
         return new BenchmarkSummary
         {
-            Ticks = safeTicks,
-            SleepMs = safeSleepMs,
-            StartupMs = startupStopwatch.ElapsedMilliseconds,
-            TickP95Ms = tickP95Ms,
-            SortP95Ms = sortP95Ms,
-            AvgAppCpuPct = avgCpu,
-            AvgAppRssBytes = avgRss,
+            Host = normalizedHost,
+            MeasurementOrigin = normalizedMeasurementOrigin,
+            UsesAttachedDispatcher = measurement.UsesAttachedDispatcher,
+            Ticks = Math.Max(0, measurement.Ticks),
+            SleepMs = Math.Max(0, measurement.SleepMs),
+            StartupMs = Math.Max(0L, measurement.StartupMs),
+            TickP95Ms = normalizedTickP95Ms,
+            SortP95Ms = normalizedSortP95Ms,
+            AvgAppCpuPct = normalizedAvgCpuPct,
+            AvgAppRssBytes = normalizedAvgRssBytes,
             BudgetPassed = budgetPassed,
             CpuBudgetPct = CpuBudgetPct,
             RssBudgetBytes = RssBudgetBytes,
             BaselineComparison = comparison,
+            BaselineMetadataMatched = baselineMetadataMatched,
             InteractionProbeP95 = interactionProbe,
             InteractionBaselineComparison = interactionComparison,
             MinSpeedupMultiplier = minSpeedupMultiplier,
@@ -374,6 +447,39 @@ public static class BenchmarkRunner
         }
 
         return value;
+    }
+
+    private static bool BaselineMetadataMatches(
+        BenchmarkSummary? baseline,
+        string currentHost,
+        string currentMeasurementOrigin)
+    {
+        if (baseline is null)
+        {
+            return true;
+        }
+
+        string baselineHost = NormalizeMetadataToken(baseline.Host, string.Empty);
+        string baselineMeasurementOrigin = NormalizeMetadataToken(baseline.MeasurementOrigin, string.Empty);
+        if (string.IsNullOrWhiteSpace(currentHost)
+            || string.IsNullOrWhiteSpace(currentMeasurementOrigin))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(baselineHost)
+            || string.IsNullOrWhiteSpace(baselineMeasurementOrigin))
+        {
+            return true;
+        }
+
+        return string.Equals(baselineHost, currentHost, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(baselineMeasurementOrigin, currentMeasurementOrigin, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeMetadataToken(string? value, string fallback)
+    {
+        return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     }
 
     private sealed class BenchmarkPersistenceStore : IPersistenceStore

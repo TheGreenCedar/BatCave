@@ -29,6 +29,40 @@ function Assert-LastExitCode {
     }
 }
 
+function ConvertFrom-DiagnosticJson {
+    param(
+        [string]$Payload,
+        [string]$SurfaceName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Payload)) {
+        throw "$SurfaceName produced no output."
+    }
+
+    $trimmedPayload = $Payload.Trim()
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add($trimmedPayload)
+
+    $firstBrace = $trimmedPayload.IndexOf('{')
+    $lastBrace = $trimmedPayload.LastIndexOf('}')
+    if ($firstBrace -ge 0 -and $lastBrace -gt $firstBrace) {
+        $embeddedJson = $trimmedPayload.Substring($firstBrace, $lastBrace - $firstBrace + 1).Trim()
+        if (-not [string]::Equals($embeddedJson, $trimmedPayload, [System.StringComparison]::Ordinal)) {
+            $candidates.Add($embeddedJson)
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        try {
+            return $candidate | ConvertFrom-Json
+        }
+        catch {
+        }
+    }
+
+    throw "$SurfaceName did not contain a valid JSON payload."
+}
+
 function Get-DefaultRunPlatform {
     if (-not [string]::IsNullOrWhiteSpace($env:PROCESSOR_ARCHITECTURE)) {
         switch ($env:PROCESSOR_ARCHITECTURE.ToUpperInvariant()) {
@@ -39,6 +73,78 @@ function Get-DefaultRunPlatform {
     }
 
     return "x64"
+}
+
+function Resolve-BaselineSummaryPath {
+    param(
+        [string]$SummaryPath,
+        [string]$ArtifactPath,
+        [string]$BenchmarkHostName,
+        [string]$HostPlatform,
+        [string]$RepositoryRoot,
+        [int]$RequestedTicks,
+        [int]$RequestedSleepMs
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ArtifactPath)) {
+        return @{
+            BaselinePath = $SummaryPath
+            TempPath = ""
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $ArtifactPath)) {
+        throw "Baseline artifact not found: $ArtifactPath"
+    }
+
+    $artifact = Get-Content -LiteralPath $ArtifactPath -Raw | ConvertFrom-Json
+    if ($artifact -eq $null) {
+        throw "Baseline artifact is empty: $ArtifactPath"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($artifact.host) -and $artifact.host -ne $BenchmarkHostName) {
+        throw "Baseline artifact host mismatch. Expected '$BenchmarkHostName', found '$($artifact.host)'."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($artifact.platform) -and $artifact.platform -ne $HostPlatform) {
+        throw "Baseline artifact platform mismatch. Expected '$HostPlatform', found '$($artifact.platform)'."
+    }
+
+    if ($artifact.measured_ticks -and [int]$artifact.measured_ticks -ne $RequestedTicks) {
+        throw "Baseline artifact measured_ticks mismatch. Expected '$RequestedTicks', found '$($artifact.measured_ticks)'."
+    }
+
+    if ($artifact.sleep_ms -and [int]$artifact.sleep_ms -ne $RequestedSleepMs) {
+        throw "Baseline artifact sleep_ms mismatch. Expected '$RequestedSleepMs', found '$($artifact.sleep_ms)'."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($artifact.baseline_summary_path)) {
+        $resolvedSummaryPath = [string]$artifact.baseline_summary_path
+        if (-not [System.IO.Path]::IsPathRooted($resolvedSummaryPath)) {
+            $resolvedSummaryPath = Join-Path $RepositoryRoot $resolvedSummaryPath
+        }
+
+        if (-not (Test-Path -LiteralPath $resolvedSummaryPath)) {
+            throw "Baseline artifact references missing baseline_summary_path: $resolvedSummaryPath"
+        }
+
+        return @{
+            BaselinePath = $resolvedSummaryPath
+            TempPath = ""
+        }
+    }
+
+    if ($artifact.baseline_summary -eq $null) {
+        throw "Baseline artifact missing 'baseline_summary' and 'baseline_summary_path'."
+    }
+
+    $tmpPath = Join-Path ([System.IO.Path]::GetTempPath()) ("batcave-baseline-summary-" + [Guid]::NewGuid().ToString("N") + ".json")
+    $artifact.baseline_summary | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $tmpPath -Encoding UTF8
+
+    return @{
+        BaselinePath = $tmpPath
+        TempPath = $tmpPath
+    }
 }
 
 function Clear-StaleBuildProcesses {
@@ -102,11 +208,7 @@ function Invoke-LaunchPolicyGateDiagnostics {
     Assert-LastExitCode "dotnet run -- --print-gate-status"
 
     $payload = $output | Out-String
-    if ([string]::IsNullOrWhiteSpace($payload)) {
-        throw "Launch policy diagnostics surface produced no output."
-    }
-
-    $json = $payload | ConvertFrom-Json
+    $json = ConvertFrom-DiagnosticJson -Payload $payload -SurfaceName "Launch policy diagnostics surface"
     if ($null -eq $json -or $null -eq $json.passed) {
         throw "Launch policy diagnostics payload is missing expected fields."
     }
@@ -126,11 +228,7 @@ function Invoke-RuntimeHealthDiagnostics {
     Assert-LastExitCode "dotnet run -- --print-runtime-health"
 
     $payload = $output | Out-String
-    if ([string]::IsNullOrWhiteSpace($payload)) {
-        throw "Runtime health diagnostics surface produced no output."
-    }
-
-    $json = $payload | ConvertFrom-Json
+    $json = ConvertFrom-DiagnosticJson -Payload $payload -SurfaceName "Runtime health diagnostics surface"
     if ($null -eq $json -or $null -eq $json.runtime_loop_enabled) {
         throw "Runtime health diagnostics payload is missing expected fields."
     }
@@ -217,9 +315,18 @@ try {
         }
 
         Write-Host "Running strict performance gate benchmark..."
+        $resolvedBaseline = Resolve-BaselineSummaryPath `
+            -SummaryPath $BaselineJsonPath `
+            -ArtifactPath $BaselineArtifactPath `
+            -BenchmarkHostName $BenchmarkHost `
+            -HostPlatform $resolvedRunPlatform `
+            -RepositoryRoot $repoRoot `
+            -RequestedTicks $Ticks `
+            -RequestedSleepMs $SleepMs
+
         $benchmarkArgs = @{
             BenchmarkHost = $BenchmarkHost
-            Platform = $Platform
+            Platform = $resolvedRunPlatform
             Ticks = $Ticks
             SleepMs = $SleepMs
             MinSpeedupMultiplier = $MinSpeedupMultiplier
@@ -227,20 +334,23 @@ try {
             Strict = $true
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath)) {
-            $benchmarkArgs["BaselineJsonPath"] = $BaselineJsonPath
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
-            $benchmarkArgs["BaselineArtifactPath"] = $BaselineArtifactPath
+        if (-not [string]::IsNullOrWhiteSpace($resolvedBaseline.BaselinePath)) {
+            $benchmarkArgs["BaselineJsonPath"] = [string]$resolvedBaseline.BaselinePath
         }
 
         if (-not [string]::IsNullOrWhiteSpace($MaxP95Ms)) {
             $benchmarkArgs["MaxP95Ms"] = $MaxP95Ms
         }
 
-        & "$PSScriptRoot/run-benchmark.ps1" @benchmarkArgs
-        Assert-LastExitCode "scripts/run-benchmark.ps1 strict gate"
+        try {
+            & "$PSScriptRoot/run-benchmark.ps1" @benchmarkArgs
+            Assert-LastExitCode "scripts/run-benchmark.ps1 strict gate"
+        }
+        finally {
+            if (-not [string]::IsNullOrWhiteSpace($resolvedBaseline.TempPath)) {
+                Remove-Item -LiteralPath ([string]$resolvedBaseline.TempPath) -ErrorAction SilentlyContinue
+            }
+        }
     }
 
     Invoke-LaunchPolicyGateDiagnostics -ProjectPath $projectPath -RuntimePlatform $resolvedRunPlatform

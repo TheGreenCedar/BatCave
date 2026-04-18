@@ -3,6 +3,7 @@ using BatCave.Core.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Windows.Foundation;
 
 namespace BatCave.ViewModels;
@@ -95,6 +96,13 @@ public sealed class ProcessRowViewState : ObservableObject
         get => _networkText;
         private set => SetProperty(ref _networkText, value);
     }
+
+    public string NetworkEstimateText => $"Est. {NetworkText}";
+
+    public string CompactPidText => $"PID {Pid.ToString(CultureInfo.InvariantCulture)}";
+
+    public string AccessibilitySummary =>
+        $"Process {Name}, {CompactPidText}, CPU {CpuText}, memory {RssText}, disk {DiskText}, Estimated network {NetworkText}.";
 
     public uint Threads => _sample.Threads;
 
@@ -230,6 +238,7 @@ public sealed class ProcessRowViewState : ObservableObject
         if (!string.Equals(previous.Name, current.Name, StringComparison.Ordinal))
         {
             OnPropertyChanged(nameof(Name));
+            OnPropertyChanged(nameof(AccessibilitySummary));
         }
 
         if (previous.CpuPct != current.CpuPct)
@@ -241,9 +250,13 @@ public sealed class ProcessRowViewState : ObservableObject
             }
 
             CpuText = FormatCpu(current.CpuPct);
+            OnPropertyChanged(nameof(AccessibilitySummary));
         }
 
-        UpdateFormattedMetricIfChanged(previous.RssBytes, current.RssBytes, nameof(RssBytes), value => RssText = value, ValueFormat.FormatBytes);
+        if (UpdateFormattedMetricIfChanged(previous.RssBytes, current.RssBytes, nameof(RssBytes), value => RssText = value, ValueFormat.FormatBytes))
+        {
+            OnPropertyChanged(nameof(AccessibilitySummary));
+        }
         bool ioReadChanged = RaiseIfChanged(previous.IoReadBps, current.IoReadBps, nameof(IoReadBps));
         if (ioReadChanged)
         {
@@ -260,6 +273,7 @@ public sealed class ProcessRowViewState : ObservableObject
         {
             OnPropertyChanged(nameof(DiskBps));
             DiskText = ValueFormat.FormatRate(SaturatingAdd(current.IoReadBps, current.IoWriteBps));
+            OnPropertyChanged(nameof(AccessibilitySummary));
         }
 
         bool otherIoChanged = RaiseIfChanged(previous.OtherIoBps, current.OtherIoBps, nameof(OtherIoBps));
@@ -267,6 +281,8 @@ public sealed class ProcessRowViewState : ObservableObject
         {
             OtherIoText = ValueFormat.FormatRate(current.OtherIoBps);
             NetworkText = ValueFormat.FormatBitsRateFromBytes(current.OtherIoBps);
+            OnPropertyChanged(nameof(NetworkEstimateText));
+            OnPropertyChanged(nameof(AccessibilitySummary));
         }
 
         RaiseIfChanged(previous.Threads, current.Threads, nameof(Threads));
@@ -274,7 +290,7 @@ public sealed class ProcessRowViewState : ObservableObject
         RaiseIfChanged(previous.AccessState, current.AccessState, nameof(AccessState));
     }
 
-    private void UpdateFormattedMetricIfChanged<TValue>(
+    private bool UpdateFormattedMetricIfChanged<TValue>(
         TValue previous,
         TValue current,
         string propertyName,
@@ -284,7 +300,10 @@ public sealed class ProcessRowViewState : ObservableObject
         if (RaiseIfChanged(previous, current, propertyName))
         {
             applyText(formatter(current));
+            return true;
         }
+
+        return false;
     }
 
     private bool RaiseIfChanged<T>(T previous, T current, string propertyName)

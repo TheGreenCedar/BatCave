@@ -1,6 +1,7 @@
 using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using Microsoft.Win32.SafeHandles;
+using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace BatCave.Core.Collector;
@@ -37,13 +38,29 @@ public sealed partial class WindowsProcessCollector : IProcessCollector
     private readonly Dictionary<uint, OwnedProcessHandle> _processHandles = new();
     private readonly Dictionary<uint, ulong> _deniedHandleRetryUntilMs = new();
     private readonly List<uint> _stalePidScratch = [];
+    private readonly Func<ulong, IReadOnlyList<ProcessSample>?>? _testSnapshotProvider;
+    private List<ProcessSample> _lastSuccessfulRows = [];
 
     private ulong? _previousSystemTotal100ns;
     private ulong? _previousTickMs;
     private string? _pendingWarning;
 
+    public WindowsProcessCollector()
+    {
+    }
+
+    internal WindowsProcessCollector(Func<ulong, IReadOnlyList<ProcessSample>?> testSnapshotProvider)
+    {
+        _testSnapshotProvider = testSnapshotProvider;
+    }
+
     public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
     {
+        if (_testSnapshotProvider is not null)
+        {
+            return CollectTickFromTestSnapshotProvider(seq);
+        }
+
         ulong now = NowMs();
         ulong? systemTotal100ns = QuerySystemTotal100ns();
         ulong? systemDelta100ns = ResolveSystemDelta100ns(_previousSystemTotal100ns, systemTotal100ns);
@@ -53,16 +70,33 @@ public sealed partial class WindowsProcessCollector : IProcessCollector
         HashSet<uint> seenPids = new();
         if (!TryCollectSnapshotRows(seq, now, elapsedMs, systemDelta100ns, currentSnapshot, seenPids, out List<ProcessSample> rows))
         {
-            return rows;
+            return BuildFallbackRows(seq, now);
         }
 
         UpdatePreviousProcessSnapshot(currentSnapshot);
+        _lastSuccessfulRows =
+        [
+            .. rows,
+        ];
 
         _previousSystemTotal100ns = systemTotal100ns;
         _previousTickMs = now;
 
         RetainOnlySeenPids(seenPids);
 
+        return rows;
+    }
+
+    private IReadOnlyList<ProcessSample> CollectTickFromTestSnapshotProvider(ulong seq)
+    {
+        IReadOnlyList<ProcessSample>? rows = _testSnapshotProvider!(seq);
+        if (rows is null)
+        {
+            _pendingWarning = "failed to create process snapshot";
+            return BuildFallbackRows(seq, NowMs());
+        }
+
+        _lastSuccessfulRows = [.. rows];
         return rows;
     }
 
@@ -106,6 +140,23 @@ public sealed partial class WindowsProcessCollector : IProcessCollector
         }
 
         return true;
+    }
+
+    private IReadOnlyList<ProcessSample> BuildFallbackRows(ulong seq, ulong now)
+    {
+        if (_lastSuccessfulRows.Count == 0)
+        {
+            return [];
+        }
+
+        return
+        [
+            .. _lastSuccessfulRows.Select(row => row with
+            {
+                Seq = seq,
+                TsMs = now,
+            }),
+        ];
     }
 
     private void UpdatePreviousProcessSnapshot(Dictionary<ProcessIdentity, ProcessCounterSnapshot> currentSnapshot)

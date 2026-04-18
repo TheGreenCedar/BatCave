@@ -79,6 +79,23 @@ public class ScriptRegressionTests
     }
 
     [Fact]
+    public void ValidateWinUi_DiagnosticParsing_ToleratesExtraStdoutBeforeJson()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+        harness.EnableRuntimeDiagnostics();
+        harness.EnableDiagnosticChatter();
+
+        ScriptRunResult result = harness.Run(
+            "validate-winui.ps1",
+            "-RunPlatform", "x64",
+            "-SkipLaunchSmoke");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Launch policy diagnostics verified.", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Runtime health diagnostics verified.", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void RunDev_UsesUnpackagedWinUiRunArguments_AndForwardsAppArgs()
     {
         using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
@@ -360,6 +377,34 @@ public class ScriptRegressionTests
     }
 
     [Fact]
+    public void ValidateWinUi_RunPerformanceGate_WinUiHost_UsesResolvedRunPlatform()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+        harness.SetRunExitCode(0);
+
+        ScriptRunResult result = harness.Run(
+            "validate-winui.ps1",
+            "-Platform", "ARM64",
+            "-RunPlatform", "x64",
+            "-RunPerformanceGate",
+            "-BenchmarkHost", "winui",
+            "-Ticks", "8",
+            "-SleepMs", "12",
+            "-BaselineJsonPath", "C:/tmp/baseline.summary.json",
+            "-MinSpeedupMultiplier", "10");
+
+        Assert.Equal(0, result.ExitCode);
+        string benchmarkInvocation = Assert.Single(
+            result.DotnetInvocations,
+            invocation => invocation.Contains("BatCave.csproj", StringComparison.OrdinalIgnoreCase)
+                          && invocation.Contains("--benchmark", StringComparison.OrdinalIgnoreCase)
+                          && invocation.Contains("--strict", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains("-p:Platform=x64", benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-p:Platform=ARM64", benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ValidateWinUi_RunPerformanceGate_WithBaselineArtifact_ForwardsResolvedSummaryPath()
     {
         using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
@@ -376,7 +421,7 @@ public class ScriptRegressionTests
                 $$"""
                 {
                   "host": "core",
-                  "platform": "ARM64",
+                  "platform": "x64",
                   "measured_ticks": 8,
                   "sleep_ms": 12,
                   "baseline_summary_path": "{{escapedSummaryPath}}"
@@ -404,6 +449,57 @@ public class ScriptRegressionTests
 
             string gateInvocation = Assert.Single(result.DotnetInvocations, invocation => invocation.Contains("--print-gate-status", StringComparison.OrdinalIgnoreCase));
             Assert.Contains("-p:Platform=x64", gateInvocation, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(summaryPath);
+            File.Delete(artifactPath);
+        }
+    }
+
+    [Fact]
+    public async Task ValidateWinUi_RunPerformanceGate_WithCrossPlatformArtifact_ValidatesAgainstRunPlatform()
+    {
+        using PowerShellScriptHarness harness = PowerShellScriptHarness.Create();
+        harness.SetRunExitCode(0);
+
+        string summaryPath = Path.GetTempFileName();
+        string artifactPath = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(summaryPath, """{"tick_p95_ms":1.0}""");
+            string escapedSummaryPath = summaryPath.Replace("\\", "\\\\", StringComparison.Ordinal);
+            await File.WriteAllTextAsync(
+                artifactPath,
+                $$"""
+                {
+                  "host": "winui",
+                  "platform": "x64",
+                  "measured_ticks": 8,
+                  "sleep_ms": 12,
+                  "baseline_summary_path": "{{escapedSummaryPath}}"
+                }
+                """);
+
+            ScriptRunResult result = harness.Run(
+                "validate-winui.ps1",
+                "-Platform", "ARM64",
+                "-RunPlatform", "x64",
+                "-RunPerformanceGate",
+                "-BenchmarkHost", "winui",
+                "-Ticks", "8",
+                "-SleepMs", "12",
+                "-BaselineArtifactPath", artifactPath,
+                "-MinSpeedupMultiplier", "10");
+
+            Assert.Equal(0, result.ExitCode);
+            string benchmarkInvocation = Assert.Single(
+                result.DotnetInvocations,
+                invocation => invocation.Contains("BatCave.csproj", StringComparison.OrdinalIgnoreCase)
+                              && invocation.Contains("--benchmark", StringComparison.OrdinalIgnoreCase)
+                              && invocation.Contains("--strict", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("-p:Platform=x64", benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(summaryPath, benchmarkInvocation, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

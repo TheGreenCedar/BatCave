@@ -37,9 +37,12 @@ public class MainWindowXamlAccessibilityTests
     {
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
-        Assert.Contains("AutomationProperties.Name=\"Global resource mini trend chart\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("AutomationProperties.Name=\"Global primary trend chart\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("AutomationProperties.Name=\"Logical CPU trend chart\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{Binding MiniChartAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.HelpText=\"{Binding MiniChartAutomationHelpText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{Binding SystemPrimaryChartAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{Binding SystemAuxiliaryChartAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{Binding ProcessPrimaryChartAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{Binding LogicalChartAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -113,7 +116,8 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("CommandParameter=\"Summary\"", xaml, StringComparison.Ordinal);
         Assert.Contains("CommandParameter=\"Performance\"", xaml, StringComparison.Ordinal);
         Assert.Contains("CommandParameter=\"Details\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Style=\"{StaticResource BatCaveInspectorTabButtonStyle}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Style=\"{StaticResource BatCaveInspectorTabRadioButtonStyle}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("GroupName=\"InspectorSectionGroup\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{Binding InspectorOverviewEyebrow, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{Binding InspectorOverviewSummary, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
     }
@@ -145,7 +149,9 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("CommandParameter=\"DiskBps\"", xaml, StringComparison.Ordinal);
         Assert.Contains("x:DataType=\"viewModels:ProcessRowViewState\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{x:Bind DiskText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"{x:Bind NetworkText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{x:Bind CompactPidText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{x:Bind NetworkEstimateText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{x:Bind AccessibilitySummary, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("ResourceKey=\"BatCaveSelectionBrush\"", xaml, StringComparison.Ordinal);
         Assert.Contains("<Grid Padding=\"8,6\" Background=\"Transparent\">", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<Grid Padding=\"8,6\" Background=\"{ThemeResource BatCaveCanvasBrush}\">", xaml, StringComparison.Ordinal);
@@ -170,6 +176,9 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("x:Name=\"GlobalCpuLogicalUniformLayout\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Content=\"Combined\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Content=\"Logical\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("GroupName=\"TrendWindowGroup\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("GroupName=\"CpuModeGroup\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Style=\"{StaticResource BatCaveSegmentRadioButtonStyle}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Style=\"{StaticResource BatCaveGhostButtonStyle}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding SystemSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding ProcessSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
@@ -260,9 +269,34 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("VisualStateGroup x:Name=\"InspectorSummaryWidthStates\"", xaml, StringComparison.Ordinal);
         Assert.Contains("VisualState x:Name=\"InspectorSummaryWideState\"", xaml, StringComparison.Ordinal);
         Assert.Contains("VisualState x:Name=\"InspectorSummaryStackedState\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AdaptiveTrigger MinWindowWidth=\"1320\"", xaml, StringComparison.Ordinal);
         Assert.Contains("HeaderFilterInline.Visibility", xaml, StringComparison.Ordinal);
         Assert.Contains("HeaderAdminControlsInline.Visibility", xaml, StringComparison.Ordinal);
         Assert.Contains("KeyboardAcceleratorPlacementMode=\"Hidden\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_UsesInlineInspectorAndSkeletonStateForNarrowLayouts()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("x:Name=\"WorkspaceInspectorPane\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("WorkspaceInspectorPane.(Grid.Row)", xaml, StringComparison.Ordinal);
+        Assert.Contains("WorkspaceInspectorPane.(Grid.ColumnSpan)", xaml, StringComparison.Ordinal);
+        Assert.Contains("Visibility=\"{Binding GlobalPerformanceContentVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Visibility=\"{Binding GlobalPerformanceSkeletonVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainWindowXaml_UsesDynamicSortAccessibilityMetadata()
+    {
+        string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
+
+        Assert.Contains("AutomationProperties.Name=\"{x:Bind ViewModel.CompactNameSortAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{x:Bind ViewModel.CompactCpuSortAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{x:Bind ViewModel.CompactMemorySortAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{x:Bind ViewModel.CompactDiskSortAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"{x:Bind ViewModel.CompactNetworkSortAutomationName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

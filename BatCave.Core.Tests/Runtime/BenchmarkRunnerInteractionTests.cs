@@ -5,6 +5,20 @@ namespace BatCave.Core.Tests.Runtime;
 public class BenchmarkRunnerInteractionTests
 {
     [Fact]
+    public void Run_PopulatesCoreBenchmarkMetadata()
+    {
+        BenchmarkSummary summary = BenchmarkRunner.Run(
+            ticks: 0,
+            sleepMs: 0,
+            ct: CancellationToken.None);
+
+        Assert.Equal("core", summary.Host);
+        Assert.Equal("headless_runtime", summary.MeasurementOrigin);
+        Assert.False(summary.UsesAttachedDispatcher);
+        Assert.True(summary.BaselineMetadataMatched);
+    }
+
+    [Fact]
     public void Run_WithRequiredInteractionSpeedupAndMissingSamples_FailsStrictGate()
     {
         BenchmarkSummary baseline = new()
@@ -26,6 +40,41 @@ public class BenchmarkRunnerInteractionTests
             });
 
         Assert.False(summary.InteractionSpeedupPassed);
+        Assert.False(summary.SpeedupPassed);
+        Assert.False(summary.StrictPassed);
+    }
+
+    [Fact]
+    public void CreateSummary_WithMismatchedBaselineMetadata_FailsStrictGate()
+    {
+        BenchmarkSummary baseline = new()
+        {
+            Host = "core",
+            MeasurementOrigin = "headless_runtime",
+            TickP95Ms = 1.0,
+            SortP95Ms = 1.0,
+        };
+
+        BenchmarkSummary summary = BenchmarkRunner.CreateSummary(
+            new BenchmarkMeasurement
+            {
+                Host = "winui",
+                MeasurementOrigin = "live_shell",
+                UsesAttachedDispatcher = true,
+                Ticks = 0,
+                SleepMs = 0,
+                TickP95Ms = 0.5,
+                SortP95Ms = 0.5,
+            },
+            new BenchmarkGateOptions
+            {
+                Baseline = baseline,
+                MinSpeedupMultiplier = 1.2,
+            });
+
+        Assert.False(summary.BaselineMetadataMatched);
+        Assert.Null(summary.BaselineComparison);
+        Assert.False(summary.CoreSpeedupPassed);
         Assert.False(summary.SpeedupPassed);
         Assert.False(summary.StrictPassed);
     }

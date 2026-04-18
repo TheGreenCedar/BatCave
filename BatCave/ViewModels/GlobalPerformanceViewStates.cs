@@ -1,6 +1,8 @@
 using BatCave.Controls;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
 using Windows.UI;
 
 namespace BatCave.ViewModels;
@@ -30,6 +32,10 @@ public sealed class GlobalResourceRowViewState : ObservableObject
     private Color _miniStrokeColor;
     private Color _miniFillColor;
     private double _miniDomainMax;
+    private Brush? _containerBackgroundBrush = ResolveBrush("BatCavePanelAltBrush");
+    private Brush? _containerBorderBrush = ResolveBrush("BatCaveBorderBrush");
+    private Brush? _primaryTextBrush = ResolveBrush("BatCaveTextPrimaryBrush");
+    private Brush? _secondaryTextBrush = ResolveBrush("BatCaveTextSecondaryBrush");
 
     public GlobalResourceRowViewState(
         string resourceId,
@@ -123,6 +129,35 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         private set => SetProperty(ref _miniDomainMax, value);
     }
 
+    public Brush? ContainerBackgroundBrush
+    {
+        get => _containerBackgroundBrush;
+        private set => SetProperty(ref _containerBackgroundBrush, value);
+    }
+
+    public Brush? ContainerBorderBrush
+    {
+        get => _containerBorderBrush;
+        private set => SetProperty(ref _containerBorderBrush, value);
+    }
+
+    public Brush? PrimaryTextBrush
+    {
+        get => _primaryTextBrush;
+        private set => SetProperty(ref _primaryTextBrush, value);
+    }
+
+    public Brush? SecondaryTextBrush
+    {
+        get => _secondaryTextBrush;
+        private set => SetProperty(ref _secondaryTextBrush, value);
+    }
+
+    public string MiniChartAutomationName => $"{Title} mini trend chart";
+
+    public string MiniChartAutomationHelpText =>
+        $"{Title} mini chart. Passive summary view for quick scanning; use the inspector chart for detailed values.";
+
     public void Update(
         string subtitle,
         string valueText,
@@ -141,6 +176,14 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         MiniStrokeColor = miniStrokeColor;
         MiniFillColor = miniFillColor;
         MiniDomainMax = miniDomainMax;
+    }
+
+    public void SetSelectionState(bool isSelected)
+    {
+        ContainerBackgroundBrush = ResolveBrush(isSelected ? "BatCaveSelectionBrush" : "BatCavePanelAltBrush");
+        ContainerBorderBrush = ResolveBrush(isSelected ? "BatCavePrimaryBrush" : "BatCaveBorderBrush");
+        PrimaryTextBrush = ResolveBrush(isSelected ? "BatCaveSelectionTextBrush" : "BatCaveTextPrimaryBrush");
+        SecondaryTextBrush = ResolveBrush(isSelected ? "BatCaveSelectionTextBrush" : "BatCaveTextSecondaryBrush");
     }
 
     internal void RefreshMiniTrend(IReadOnlyList<double> series, int visiblePointCount)
@@ -245,6 +288,24 @@ public sealed class GlobalResourceRowViewState : ObservableObject
         destination = new double[windowSize];
         return true;
     }
+
+    private static Brush? ResolveBrush(string resourceKey)
+    {
+        try
+        {
+            if (Application.Current?.Resources.TryGetValue(resourceKey, out object? resource) == true
+                && resource is Brush brush)
+            {
+                return brush;
+            }
+        }
+        catch
+        {
+            // Unit tests can instantiate view state without a WinUI application host.
+        }
+
+        return null;
+    }
 }
 
 public sealed class GlobalStatItemViewState(string label, string value) : ObservableObject
@@ -270,6 +331,11 @@ public sealed class LogicalProcessorTrendViewState(string title, string chartIde
     public string Title { get; } = title;
 
     public string ChartIdentityKey { get; } = chartIdentityKey;
+
+    public string LogicalChartAutomationName => $"{Title} logical CPU trend chart";
+
+    public string LogicalChartAutomationHelpText =>
+        $"{Title} passive logical processor chart showing user and kernel utilization over time.";
 
     public double[] Values
     {

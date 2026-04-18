@@ -43,6 +43,7 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
     private readonly WindowsProcessCollector _local = new();
     private readonly Queue<string> _pendingWarnings = [];
     private ElevatedBridgeClient? _bridge;
+    private string? _lastBridgeFaultReason;
 
     public DefaultProcessCollector()
     {
@@ -73,13 +74,16 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
     {
         if (pollResult.State == BridgePollState.Faulted)
         {
-            if (!string.IsNullOrWhiteSpace(pollResult.Reason))
+            if (!string.IsNullOrWhiteSpace(pollResult.Reason)
+                && !string.Equals(_lastBridgeFaultReason, pollResult.Reason, StringComparison.Ordinal))
             {
                 _pendingWarnings.Enqueue($"elevated_bridge_faulted: {pollResult.Reason}");
+                _lastBridgeFaultReason = pollResult.Reason;
             }
-
-            _bridge?.Dispose();
-            _bridge = null;
+        }
+        else
+        {
+            _lastBridgeFaultReason = null;
         }
 
         return _local.CollectTick(seq);
@@ -91,10 +95,10 @@ public sealed class DefaultProcessCollector : IProcessCollector, IDisposable
         return
         [
             .. rows.Select(row => row with
-        {
-            Seq = seq,
-            TsMs = timestamp,
-        }),
+            {
+                Seq = seq,
+                TsMs = timestamp,
+            }),
         ];
     }
 

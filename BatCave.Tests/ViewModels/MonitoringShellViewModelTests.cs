@@ -56,6 +56,41 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task PresentStartupFailure_ShowsErrorState_AndRetryUsesRecoveryBeforeBootstrap()
+    {
+        TestMetadataProvider metadata = CreateNullMetadataProvider();
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = CreateViewModel(CreatePassedGate(), metadata, gateway);
+        int recoveryCalls = 0;
+
+        viewModel.PresentStartupFailure(
+            new InvalidOperationException("host start failed"),
+            _ =>
+            {
+                recoveryCalls++;
+                return Task.CompletedTask;
+            });
+
+        Assert.True(viewModel.IsStartupError);
+        Assert.False(viewModel.IsLive);
+        Assert.Equal(Visibility.Visible, viewModel.StartupErrorVisibility);
+        Assert.Equal("host start failed", viewModel.StartupErrorMessage);
+        Assert.Equal("Startup Error", viewModel.RuntimeStatusTitle);
+        Assert.Equal(RuntimeStatusTone.Error, viewModel.RuntimeStatusTone);
+
+        await viewModel.BootstrapAsync(CancellationToken.None);
+
+        Assert.True(viewModel.IsStartupError);
+        Assert.False(viewModel.IsLive);
+
+        await viewModel.RetryBootstrapAsync(CancellationToken.None);
+
+        Assert.Equal(1, recoveryCalls);
+        Assert.False(viewModel.IsStartupError);
+        Assert.True(viewModel.IsLive);
+    }
+
+    [Fact]
     public async Task GlobalPerformance_ShowsSkeletonUntilReadySampleArrives()
     {
         TestRuntimeEventGateway gateway = new();
@@ -412,6 +447,95 @@ public class MonitoringShellViewModelTests
         Assert.Equal("Metadata loaded.", viewModel.MetadataStatus);
         Assert.Contains("batcave.exe", viewModel.DetailsPanePrimaryText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("PROCESS VIEW", viewModel.InspectorOverviewEyebrow);
+    }
+
+    [Fact]
+    public async Task SwitchingInspectorContexts_ResetsSectionToSummary()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 40,
+                cpuPct: 37.5,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0,
+                cpuSnapshot: new SystemGlobalCpuSnapshot
+                {
+                    LogicalProcessorUtilizationPct = [11.0, 17.0],
+                    LogicalProcessorKernelPct = [4.0, 6.0],
+                }));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        viewModel.SelectInspectorSectionCommand.Execute("Performance");
+        Assert.True(viewModel.IsPerformanceSectionSelected);
+
+        ProcessSample row = Sample(pid: 905, startTime: 9_050, access: AccessState.Full);
+        gateway.RaiseDelta(2, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.True(viewModel.IsSummarySectionSelected);
+        Assert.Equal(Visibility.Visible, viewModel.ProcessSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.PerformanceSectionVisibility);
+
+        viewModel.SelectInspectorSectionCommand.Execute("Details");
+        Assert.True(viewModel.IsDetailsSectionSelected);
+
+        viewModel.ClearSelection();
+
+        Assert.True(viewModel.IsSummarySectionSelected);
+        Assert.Equal(Visibility.Visible, viewModel.SystemSummarySectionVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.DetailsSectionVisibility);
+    }
+
+    [Fact]
+    public async Task CpuGraphMode_IsScopedPerInspectorContext()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 41,
+                cpuPct: 52.0,
+                memoryUsedBytes: 8 * 1024UL * 1024UL,
+                diskReadBps: 0,
+                diskWriteBps: 0,
+                otherIoBps: 0,
+                cpuSnapshot: new SystemGlobalCpuSnapshot
+                {
+                    LogicalProcessorUtilizationPct = [12.0, 24.0],
+                    LogicalProcessorKernelPct = [3.0, 7.0],
+                }));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        viewModel.CpuGraphModeSelectedCommand.Execute("LogicalProcessors");
+
+        Assert.Equal(CpuGraphMode.LogicalProcessors, viewModel.CpuGraphMode);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCpuLogicalGridVisibility);
+
+        ProcessSample row = Sample(pid: 906, startTime: 9_060, access: AccessState.Full) with
+        {
+            CpuPct = 19.5,
+        };
+        gateway.RaiseDelta(2, [row], []);
+        await viewModel.SelectRowAsync(row, CancellationToken.None);
+
+        Assert.Equal(CpuGraphMode.Combined, viewModel.CpuGraphMode);
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuModeToggleVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCombinedChartVisibility);
+        Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuLogicalPlaceholderVisibility);
+
+        viewModel.ClearSelection();
+
+        Assert.Equal(CpuGraphMode.LogicalProcessors, viewModel.CpuGraphMode);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCpuModeToggleVisibility);
+        Assert.Equal(Visibility.Visible, viewModel.GlobalCpuLogicalGridVisibility);
     }
 
     [Fact]
@@ -1038,6 +1162,34 @@ public class MonitoringShellViewModelTests
         Assert.Empty(actions);
         Assert.Single(GetVisibleRows(viewModel));
         Assert.Equal(target.Pid, GetVisibleRow(viewModel, 0).Pid);
+    }
+
+    [Fact]
+    public async Task TelemetryDelta_FilteredView_RefreshesWhenOffscreenRowChangesMembership()
+    {
+        TestRuntimeEventGateway gateway = new();
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(gateway);
+
+        ProcessSample target = Sample(pid: 184, startTime: 1840, access: AccessState.Full) with { Name = "BatCave.exe", CpuPct = 12 };
+        ProcessSample hidden = Sample(pid: 185, startTime: 1850, access: AccessState.Full) with { Name = "other.exe", CpuPct = 10 };
+        gateway.RaiseDelta(1, [target, hidden], []);
+
+        viewModel.FilterText = "BatCave";
+        await Task.Delay(220);
+        Assert.Single(GetVisibleRows(viewModel));
+
+        ProcessSample revealed = hidden with
+        {
+            Seq = 2,
+            TsMs = 2,
+            Name = "BatCave Helper.exe",
+        };
+
+        gateway.RaiseDelta(2, [target with { Seq = 2, TsMs = 2 }, revealed], []);
+
+        IReadOnlyList<ProcessRowViewState> visibleRows = GetVisibleRows(viewModel);
+        Assert.Equal(2, visibleRows.Count);
+        Assert.Contains(visibleRows, row => row.Pid == revealed.Pid);
     }
 
     [Fact]

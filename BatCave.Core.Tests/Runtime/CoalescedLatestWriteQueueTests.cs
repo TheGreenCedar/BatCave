@@ -58,4 +58,38 @@ public class CoalescedLatestWriteQueueTests
 
         Assert.Equal([7], persistedValues);
     }
+
+    [Fact]
+    public async Task FlushAsync_WhenPersistenceFails_Throws()
+    {
+        using CoalescedLatestWriteQueue<int> queue = new((_, _) =>
+            Task.FromException(new InvalidOperationException("disk unavailable")));
+
+        queue.Enqueue(7);
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => queue.FlushAsync(CancellationToken.None));
+        Assert.True(
+            exception.Message.Contains("durably save", StringComparison.OrdinalIgnoreCase)
+            || exception.Message.Contains("disk unavailable", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task FlushAsync_WhenNewerValuePersistsAfterFailure_CompletesSuccessfully()
+    {
+        int saveCalls = 0;
+        using CoalescedLatestWriteQueue<int> queue = new((_, _) =>
+        {
+            int call = Interlocked.Increment(ref saveCalls);
+            return call == 1
+                ? Task.FromException(new InvalidOperationException("disk unavailable"))
+                : Task.CompletedTask;
+        });
+
+        queue.Enqueue(7);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => queue.FlushAsync(CancellationToken.None));
+
+        queue.Enqueue(8);
+        await queue.FlushAsync(CancellationToken.None);
+    }
 }

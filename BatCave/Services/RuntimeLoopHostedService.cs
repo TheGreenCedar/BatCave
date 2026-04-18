@@ -85,16 +85,17 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
         _logger.LogInformation("runtime_loop_started generation={Generation}", _runtimeLoopController.CurrentGeneration);
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
         {
-            return Task.FromCanceled(cancellationToken);
+            await Task.FromCanceled(cancellationToken);
+            return;
         }
 
         if (_started)
         {
-            _runtimeLoopController.StopAndAdvanceGeneration();
+            await _runtimeLoopController.StopAndAdvanceGenerationAsync(cancellationToken).ConfigureAwait(false);
             _started = false;
             _logger.LogInformation("runtime_loop_stopped");
         }
@@ -106,8 +107,6 @@ public sealed class RuntimeLoopHostedService : IHostedService, IDisposable
             statusSummary: _runtimeHostOptions.EnableRuntimeLoop
                 ? "Runtime loop stopped."
                 : "Runtime loop disabled for this host mode.");
-
-        return Task.CompletedTask;
     }
 
     public void Dispose()

@@ -256,7 +256,26 @@ public partial class MonitoringShellViewModel
     private void RaiseSortHeaderLabels()
     {
         RaiseCompactSortVisualProperties();
+        RaiseProperties(
+            nameof(CompactEstimatedTrafficSortLabel),
+            nameof(CompactNameSortAutomationName),
+            nameof(CompactCpuSortAutomationName),
+            nameof(CompactMemorySortAutomationName),
+            nameof(CompactDiskSortAutomationName),
+            nameof(CompactNetworkSortAutomationName));
     }
+
+    public string CompactEstimatedTrafficSortLabel => SortLabel("Est. net", SortColumn.OtherIoBps);
+
+    public string CompactNameSortAutomationName => BuildSortAutomationName("name", SortColumn.Name);
+
+    public string CompactCpuSortAutomationName => BuildSortAutomationName("CPU", SortColumn.CpuPct);
+
+    public string CompactMemorySortAutomationName => BuildSortAutomationName("memory", SortColumn.RssBytes);
+
+    public string CompactDiskSortAutomationName => BuildSortAutomationName("disk", SortColumn.DiskBps);
+
+    public string CompactNetworkSortAutomationName => BuildSortAutomationName("estimated network", SortColumn.OtherIoBps);
 
     private SortDirection ResolveNextSortDirection(SortColumn column)
     {
@@ -278,6 +297,18 @@ public partial class MonitoringShellViewModel
     private static string SortDirectionSuffix(SortDirection direction)
     {
         return direction == SortDirection.Desc ? "↓" : "↑";
+    }
+
+    private string BuildSortAutomationName(string columnLabel, SortColumn column)
+    {
+        if (CurrentSortColumn != column)
+        {
+            return $"Sort process table by {columnLabel}";
+        }
+
+        string direction = CurrentSortDirection == SortDirection.Desc ? "descending" : "ascending";
+        string nextDirection = CurrentSortDirection == SortDirection.Desc ? "ascending" : "descending";
+        return $"Sort process table by {columnLabel}, currently {direction}. Activate to sort {nextDirection}.";
     }
 
     private void RecordTimingProbe(

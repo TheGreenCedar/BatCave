@@ -163,6 +163,57 @@
                     <Color x:Key="ChartNetworkFillColor">#225EEAD4</Color>
                     <Color x:Key="ChartNetworkOverlayStrokeColor">#FF99F6E4</Color>
                 </ResourceDictionary>
+
+                <ResourceDictionary x:Key="HighContrast">
+                    <Color x:Key="BatCaveCanvasColor">#FF000000</Color>
+                    <Color x:Key="BatCaveHeaderColor">#FF000000</Color>
+                    <Color x:Key="BatCavePanelColor">#FF000000</Color>
+                    <Color x:Key="BatCavePanelAltColor">#FF0A0A0A</Color>
+                    <Color x:Key="BatCaveMutedColor">#FF1A1A1A</Color>
+                    <Color x:Key="BatCaveTextPrimaryColor">#FFFFFFFF</Color>
+                    <Color x:Key="BatCaveTextSecondaryColor">#FFFFFF00</Color>
+                    <Color x:Key="BatCavePrimaryColor">#FFFFFF00</Color>
+                    <Color x:Key="BatCaveSecondaryColor">#FF00FFFF</Color>
+                    <Color x:Key="BatCaveAccentColor">#FFFFFF00</Color>
+                    <Color x:Key="BatCaveBorderColor">#FFFFFFFF</Color>
+                    <Color x:Key="BatCaveDangerColor">#FFFF8080</Color>
+                    <Color x:Key="BatCaveSuccessColor">#FF00FF00</Color>
+                    <Color x:Key="BatCaveWarningColor">#FFFFFF00</Color>
+                    <Color x:Key="BatCaveSelectionColor">#FFFFFF00</Color>
+                    <Color x:Key="BatCaveSelectionTextColor">#FF000000</Color>
+                    <Color x:Key="BatCaveGhostTextColor">#FFFFFFFF</Color>
+                    <Color x:Key="BatCaveOnPrimaryColor">#FF000000</Color>
+                    <Color x:Key="BatCaveBannerInfoSurfaceColor">#FF000000</Color>
+                    <Color x:Key="BatCaveBannerSuccessSurfaceColor">#FF001A00</Color>
+                    <Color x:Key="BatCaveBannerWarningSurfaceColor">#FF1A1A00</Color>
+                    <Color x:Key="BatCaveBannerErrorSurfaceColor">#FF1A0000</Color>
+                    <Color x:Key="BatCaveSegmentSurfaceColor">#FF000000</Color>
+                    <Color x:Key="BatCaveSegmentSelectedColor">#FFFFFF00</Color>
+                    <Color x:Key="BatCaveCaveStoneColor">#FFFFFFFF</Color>
+                    <Color x:Key="BatCaveCaveMouthColor">#FF000000</Color>
+                    <Color x:Key="BatCaveCaveInputSurfaceColor">#FF000000</Color>
+                    <Color x:Key="BatCaveCaveInputBorderColor">#FFFFFFFF</Color>
+                    <Color x:Key="BatCaveHeroCaveShellColor">#FF000000</Color>
+                    <Color x:Key="BatCaveHeroCaveStrokeColor">#FFFFFFFF</Color>
+                    <Color x:Key="BatCaveHeroCaveMouthColor">#FF000000</Color>
+                    <Color x:Key="BatCaveHeroInputSurfaceColor">#FF000000</Color>
+                    <Color x:Key="BatCaveHeroInputPlaceholderColor">#FFFFFF00</Color>
+
+                    <Color x:Key="ChartCpuStrokeColor">#FFFFFF00</Color>
+                    <Color x:Key="ChartCpuFillColor">#22FFFF00</Color>
+                    <Color x:Key="ChartCpuKernelStrokeColor">#FFFFFFFF</Color>
+                    <Color x:Key="ChartMemoryStrokeColor">#FF00FFFF</Color>
+                    <Color x:Key="ChartMemoryFillColor">#2200FFFF</Color>
+                    <Color x:Key="ChartIoReadStrokeColor">#FF00FF00</Color>
+                    <Color x:Key="ChartIoReadFillColor">#2200FF00</Color>
+                    <Color x:Key="ChartIoWriteStrokeColor">#FFFFA500</Color>
+                    <Color x:Key="ChartIoWriteFillColor">#22FFA500</Color>
+                    <Color x:Key="ChartOtherIoStrokeColor">#FFFF00FF</Color>
+                    <Color x:Key="ChartOtherIoFillColor">#22FF00FF</Color>
+                    <Color x:Key="ChartNetworkStrokeColor">#FF00FFFF</Color>
+                    <Color x:Key="ChartNetworkFillColor">#2200FFFF</Color>
+                    <Color x:Key="ChartNetworkOverlayStrokeColor">#FFFFFFFF</Color>
+                </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
             <SolidColorBrush x:Key="BatCaveCanvasBrush" Color="{ThemeResource BatCaveCanvasColor}" />
@@ -218,13 +269,18 @@
             <Thickness x:Key="ShellContentPadding">24</Thickness>
             <Thickness x:Key="ShellFooterPadding">20,14,20,18</Thickness>
             <x:String x:Key="ShellTitleText">BatCave</x:String>
-            <x:String x:Key="FilterPlaceholderText">Filter by name or PID</x:String>
+            <x:String x:Key="FilterPlaceholderText">Filter by process name or PID</x:String>
             <x:String x:Key="ProcessFilterHelpText">Type to filter by process name or process id.</x:String>
             <x:String x:Key="AdminToggleHelpText">Toggle elevated bridge mode.</x:String>
             <x:String x:Key="StartupLoadingText">Starting monitoring runtime...</x:String>
             <x:String x:Key="StartupBlockedTitleText">Startup Blocked</x:String>
             <x:String x:Key="StartupErrorTitleText">Startup Error</x:String>
             <x:String x:Key="RetryButtonText">Retry</x:String>
+            <x:Double x:Key="BatCaveInteractivePointerOverOpacity">0.94</x:Double>
+            <x:Double x:Key="BatCaveInteractivePressedOpacity">0.84</x:Double>
+            <Duration x:Key="BatCaveInteractiveFastDuration">0:0:0.10</Duration>
+            <Duration x:Key="BatCaveInteractivePressedDuration">0:0:0.05</Duration>
+            <x:Boolean x:Key="BatCaveChartSmoothTransitionsEnabled">True</x:Boolean>
 
             <Style x:Key="BatCaveEyebrowTextStyle" TargetType="TextBlock">
                 <Setter Property="FontFamily" Value="Bahnschrift" />
@@ -232,7 +288,8 @@
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="CharacterSpacing" Value="120" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextSecondaryBrush}" />
-                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                <Setter Property="TextTrimming" Value="None" />
+                <Setter Property="TextWrapping" Value="WrapWholeWords" />
             </Style>
 
             <Style x:Key="BatCaveTitleTextStyle" TargetType="TextBlock">
@@ -240,7 +297,8 @@
                 <Setter Property="FontSize" Value="20" />
                 <Setter Property="FontWeight" Value="Bold" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextPrimaryBrush}" />
-                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                <Setter Property="TextTrimming" Value="None" />
+                <Setter Property="TextWrapping" Value="WrapWholeWords" />
             </Style>
 
             <Style x:Key="BatCaveSectionTitleStyle" TargetType="TextBlock">
@@ -248,13 +306,15 @@
                 <Setter Property="FontSize" Value="18" />
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextPrimaryBrush}" />
-                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                <Setter Property="TextTrimming" Value="None" />
+                <Setter Property="TextWrapping" Value="WrapWholeWords" />
             </Style>
 
             <Style x:Key="BatCaveSectionSubtitleStyle" TargetType="TextBlock">
                 <Setter Property="FontSize" Value="11" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextSecondaryBrush}" />
-                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                <Setter Property="TextTrimming" Value="None" />
+                <Setter Property="TextWrapping" Value="WrapWholeWords" />
             </Style>
 
             <Style x:Key="BatCaveMetricLabelStyle" TargetType="TextBlock">
@@ -263,7 +323,8 @@
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="CharacterSpacing" Value="100" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextSecondaryBrush}" />
-                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                <Setter Property="TextTrimming" Value="None" />
+                <Setter Property="TextWrapping" Value="WrapWholeWords" />
             </Style>
 
             <Style x:Key="BatCaveMetricValueStyle" TargetType="TextBlock">
@@ -271,7 +332,8 @@
                 <Setter Property="FontSize" Value="14" />
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextPrimaryBrush}" />
-                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                <Setter Property="TextTrimming" Value="None" />
+                <Setter Property="TextWrapping" Value="WrapWholeWords" />
             </Style>
 
             <Style x:Key="BatCaveHeroValueStyle" TargetType="TextBlock">
@@ -279,7 +341,8 @@
                 <Setter Property="FontSize" Value="24" />
                 <Setter Property="FontWeight" Value="Bold" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextPrimaryBrush}" />
-                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                <Setter Property="TextTrimming" Value="None" />
+                <Setter Property="TextWrapping" Value="WrapWholeWords" />
             </Style>
 
             <Style x:Key="BatCaveFlatPanelBorderStyle" TargetType="Border">
@@ -292,26 +355,44 @@
                 <Setter Property="Background" Value="{ThemeResource BatCaveMutedBrush}" />
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveTextPrimaryBrush}" />
                 <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="UseSystemFocusVisuals" Value="False" />
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="Button">
-                            <Border
-                                x:Name="RootBorder"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="8">
+                            <Grid>
+                                <Border
+                                    x:Name="RootBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8">
+                                    <ContentPresenter
+                                        x:Name="ContentPresenter"
+                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                        Content="{TemplateBinding Content}"
+                                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                                        Padding="{TemplateBinding Padding}" />
+                                </Border>
+                                <Border
+                                    x:Name="FocusBorder"
+                                    Margin="-2"
+                                    BorderBrush="{ThemeResource BatCaveAccentBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="10"
+                                    IsHitTestVisible="False"
+                                    Visibility="Collapsed" />
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
                                         <VisualState x:Name="Normal" />
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
-                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="0.92" Duration="0:0:0.1" />
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePointerOverOpacity}" Duration="{StaticResource BatCaveInteractiveFastDuration}" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
-                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="0.82" Duration="0:0:0.05" />
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePressedOpacity}" Duration="{StaticResource BatCaveInteractivePressedDuration}" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Disabled">
@@ -320,15 +401,25 @@
                                             </Storyboard>
                                         </VisualState>
                                     </VisualStateGroup>
+                                    <VisualStateGroup x:Name="FocusStates">
+                                        <VisualState x:Name="Unfocused" />
+                                        <VisualState x:Name="Focused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="PointerFocused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
                                 </VisualStateManager.VisualStateGroups>
-                                <ContentPresenter
-                                    x:Name="ContentPresenter"
-                                    HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                    VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                                    Content="{TemplateBinding Content}"
-                                    ContentTemplate="{TemplateBinding ContentTemplate}"
-                                    Padding="{TemplateBinding Padding}" />
-                            </Border>
+                            </Grid>
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
@@ -341,15 +432,33 @@
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="HorizontalContentAlignment" Value="Center" />
                 <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="UseSystemFocusVisuals" Value="False" />
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="ToggleButton">
-                            <Border
-                                x:Name="RootBorder"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6">
+                            <Grid>
+                                <Border
+                                    x:Name="RootBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6">
+                                    <ContentPresenter
+                                        x:Name="ContentPresenter"
+                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                        Content="{TemplateBinding Content}"
+                                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                                        Padding="{TemplateBinding Padding}" />
+                                </Border>
+                                <Border
+                                    x:Name="FocusBorder"
+                                    Margin="-2"
+                                    BorderBrush="{ThemeResource BatCaveAccentBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="8"
+                                    IsHitTestVisible="False"
+                                    Visibility="Collapsed" />
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CheckStates">
                                         <VisualState x:Name="Unchecked" />
@@ -360,12 +469,12 @@
                                         <VisualState x:Name="Normal" />
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
-                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="0.94" Duration="0:0:0.1" />
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePointerOverOpacity}" Duration="{StaticResource BatCaveInteractiveFastDuration}" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
-                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="0.84" Duration="0:0:0.05" />
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePressedOpacity}" Duration="{StaticResource BatCaveInteractivePressedDuration}" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Disabled">
@@ -374,15 +483,25 @@
                                             </Storyboard>
                                         </VisualState>
                                     </VisualStateGroup>
+                                    <VisualStateGroup x:Name="FocusStates">
+                                        <VisualState x:Name="Unfocused" />
+                                        <VisualState x:Name="Focused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="PointerFocused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
                                 </VisualStateManager.VisualStateGroups>
-                                <ContentPresenter
-                                    x:Name="ContentPresenter"
-                                    HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                    VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                                    Content="{TemplateBinding Content}"
-                                    ContentTemplate="{TemplateBinding ContentTemplate}"
-                                    Padding="{TemplateBinding Padding}" />
-                            </Border>
+                            </Grid>
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
@@ -398,7 +517,94 @@
                 <Setter Property="Background" Value="{ThemeResource BatCaveSegmentSurfaceBrush}" />
             </Style>
 
+            <Style x:Key="BatCaveSegmentRadioButtonStyle" TargetType="RadioButton">
+                <Setter Property="Padding" Value="10,6" />
+                <Setter Property="Background" Value="{ThemeResource BatCaveSegmentSurfaceBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource BatCaveTextPrimaryBrush}" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="UseSystemFocusVisuals" Value="False" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="RadioButton">
+                            <Grid>
+                                <Border
+                                    x:Name="RootBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6">
+                                    <ContentPresenter
+                                        x:Name="ContentPresenter"
+                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                        Content="{TemplateBinding Content}"
+                                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                                        Padding="{TemplateBinding Padding}" />
+                                </Border>
+                                <Border
+                                    x:Name="FocusBorder"
+                                    Margin="-2"
+                                    BorderBrush="{ThemeResource BatCaveAccentBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="8"
+                                    IsHitTestVisible="False"
+                                    Visibility="Collapsed" />
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CheckStates">
+                                        <VisualState x:Name="Unchecked" />
+                                        <VisualState x:Name="Checked" />
+                                        <VisualState x:Name="Indeterminate" />
+                                    </VisualStateGroup>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePointerOverOpacity}" Duration="{StaticResource BatCaveInteractiveFastDuration}" />
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePressedOpacity}" Duration="{StaticResource BatCaveInteractivePressedDuration}" />
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Disabled">
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="0.4" Duration="0" />
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                    <VisualStateGroup x:Name="FocusStates">
+                                        <VisualState x:Name="Unfocused" />
+                                        <VisualState x:Name="Focused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="PointerFocused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <Style x:Key="BatCaveInspectorTabButtonStyle" TargetType="Button" BasedOn="{StaticResource BatCaveSegmentButtonStyle}">
+                <Setter Property="Padding" Value="12,8" />
+                <Setter Property="MinWidth" Value="96" />
+            </Style>
+
+            <Style x:Key="BatCaveInspectorTabRadioButtonStyle" TargetType="RadioButton" BasedOn="{StaticResource BatCaveSegmentRadioButtonStyle}">
                 <Setter Property="Padding" Value="12,8" />
                 <Setter Property="MinWidth" Value="96" />
             </Style>
@@ -409,26 +615,44 @@
                 <Setter Property="Foreground" Value="{ThemeResource BatCaveGhostTextBrush}" />
                 <Setter Property="BorderBrush" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="UseSystemFocusVisuals" Value="False" />
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="Button">
-                            <Border
-                                x:Name="RootBorder"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6">
+                            <Grid>
+                                <Border
+                                    x:Name="RootBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6">
+                                    <ContentPresenter
+                                        x:Name="ContentPresenter"
+                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                        Content="{TemplateBinding Content}"
+                                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                                        Padding="{TemplateBinding Padding}" />
+                                </Border>
+                                <Border
+                                    x:Name="FocusBorder"
+                                    Margin="-2"
+                                    BorderBrush="{ThemeResource BatCaveAccentBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="8"
+                                    IsHitTestVisible="False"
+                                    Visibility="Collapsed" />
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
                                         <VisualState x:Name="Normal" />
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
-                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="0.82" Duration="0:0:0.1" />
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePointerOverOpacity}" Duration="{StaticResource BatCaveInteractiveFastDuration}" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
-                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="0.68" Duration="0:0:0.05" />
+                                                <DoubleAnimation Storyboard.TargetName="RootBorder" Storyboard.TargetProperty="Opacity" To="{StaticResource BatCaveInteractivePressedOpacity}" Duration="{StaticResource BatCaveInteractivePressedDuration}" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Disabled">
@@ -437,15 +661,25 @@
                                             </Storyboard>
                                         </VisualState>
                                     </VisualStateGroup>
+                                    <VisualStateGroup x:Name="FocusStates">
+                                        <VisualState x:Name="Unfocused" />
+                                        <VisualState x:Name="Focused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="PointerFocused">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="FocusBorder" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
                                 </VisualStateManager.VisualStateGroups>
-                                <ContentPresenter
-                                    x:Name="ContentPresenter"
-                                    HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                    VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                                    Content="{TemplateBinding Content}"
-                                    ContentTemplate="{TemplateBinding ContentTemplate}"
-                                    Padding="{TemplateBinding Padding}" />
-                            </Border>
+                            </Grid>
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>

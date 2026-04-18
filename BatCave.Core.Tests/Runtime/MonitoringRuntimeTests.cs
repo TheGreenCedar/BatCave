@@ -339,6 +339,69 @@ public class MonitoringRuntimeTests
         Assert.Equal(2d, health.JitterP95Ms);
     }
 
+    [Fact]
+    public void Tick_AfterCompaction_RehydratesCompactedLiveRowsOnNextTick()
+    {
+        StickyCompactionCollector collector = new();
+        using MonitoringRuntime runtime = CreateRuntime(collector, new TestPersistenceStore());
+        runtime.SetSort(SortColumn.Pid, SortDirection.Asc);
+
+        runtime.Tick(jitterMs: 0);
+        runtime.Tick(jitterMs: 0);
+        runtime.Tick(jitterMs: 0);
+
+        QueryResponse compactedSnapshot = runtime.GetSnapshot();
+        Assert.Equal(5000, compactedSnapshot.Total);
+        Assert.DoesNotContain(compactedSnapshot.Rows, row => row.Identity() == collector.ColdRowIdentity);
+
+        runtime.Tick(jitterMs: 0);
+
+        QueryResponse restoredSnapshot = runtime.GetSnapshot();
+        Assert.Equal(5001, restoredSnapshot.Total);
+        Assert.Contains(restoredSnapshot.Rows, row => row.Identity() == collector.ColdRowIdentity);
+    }
+
+    [Fact]
+    public void Tick_WhenFirstLiveCollectionFailsAfterWarmCache_KeepsWarmCacheRowsVisible()
+    {
+        ProcessSample warmRow = new()
+        {
+            Pid = 910,
+            Seq = 4,
+            TsMs = 4,
+            ParentPid = 1,
+            StartTimeMs = 9_100,
+            Name = "warm-cache-proc",
+            CpuPct = 22,
+            RssBytes = 4 * 1024UL,
+            PrivateBytes = 2 * 1024UL,
+            IoReadBps = 10,
+            IoWriteBps = 11,
+            OtherIoBps = 12,
+            Threads = 3,
+            Handles = 5,
+            AccessState = AccessState.Full,
+        };
+
+        WarmCachePersistenceStore persistenceStore = new(new WarmCache
+        {
+            Seq = 4,
+            Rows = [warmRow],
+        });
+        SnapshotFailureCollector collector = new();
+        using MonitoringRuntime runtime = CreateRuntime(collector, persistenceStore);
+
+        QueryResponse beforeTick = runtime.GetSnapshot();
+        TickOutcome outcome = runtime.Tick(jitterMs: 0);
+        QueryResponse afterTick = runtime.GetSnapshot();
+
+        Assert.Single(beforeTick.Rows);
+        Assert.NotNull(outcome.Warning);
+        Assert.Contains("failed to create process snapshot", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
+        ProcessSample retained = Assert.Single(afterTick.Rows);
+        Assert.Equal(warmRow.Identity(), retained.Identity());
+    }
+
     private static MonitoringRuntime CreateRuntime(
         out TestCollector collector,
         out TestPersistenceStore persistenceStore,
@@ -612,6 +675,100 @@ public class MonitoringRuntimeTests
         }
     }
 
+    private sealed class StickyCompactionCollector : IProcessCollector
+    {
+        private readonly IReadOnlyList<ProcessSample> _rows;
+
+        public StickyCompactionCollector()
+        {
+            List<ProcessSample> rows = new(capacity: 5001);
+            ProcessSample coldRow = new()
+            {
+                Pid = 1,
+                Seq = 0,
+                TsMs = 0,
+                ParentPid = 0,
+                StartTimeMs = 10,
+                Name = "cold-proc",
+                CpuPct = 0,
+                RssBytes = 0,
+                PrivateBytes = 0,
+                IoReadBps = 0,
+                IoWriteBps = 0,
+                OtherIoBps = 0,
+                Threads = 1,
+                Handles = 1,
+                AccessState = AccessState.Full,
+            };
+            rows.Add(coldRow);
+            ColdRowIdentity = coldRow.Identity();
+
+            uint selfPid = (uint)Environment.ProcessId;
+            rows.Add(new ProcessSample
+            {
+                Pid = selfPid,
+                Seq = 0,
+                TsMs = 0,
+                ParentPid = 0,
+                StartTimeMs = 20,
+                Name = "batcave-self",
+                CpuPct = 15,
+                RssBytes = 1024,
+                PrivateBytes = 512,
+                IoReadBps = 32,
+                IoWriteBps = 16,
+                OtherIoBps = 8,
+                Threads = 4,
+                Handles = 8,
+                AccessState = AccessState.Full,
+            });
+
+            for (uint index = 0; index < 4_999; index++)
+            {
+                uint pid = 10_000 + index;
+                rows.Add(new ProcessSample
+                {
+                    Pid = pid,
+                    Seq = 0,
+                    TsMs = 0,
+                    ParentPid = 0,
+                    StartTimeMs = 100 + pid,
+                    Name = $"hot-{pid}",
+                    CpuPct = 25,
+                    RssBytes = 4 * 1024UL * 1024UL,
+                    PrivateBytes = 2 * 1024UL * 1024UL,
+                    IoReadBps = 2_000,
+                    IoWriteBps = 1_000,
+                    OtherIoBps = 500,
+                    Threads = 3,
+                    Handles = 6,
+                    AccessState = AccessState.Full,
+                });
+            }
+
+            _rows = rows;
+        }
+
+        public ProcessIdentity ColdRowIdentity { get; }
+
+        public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
+        {
+            return
+            [
+                .. _rows.Select(row => row with
+                {
+                    Seq = seq,
+                    TsMs = seq,
+                }),
+            ];
+        }
+
+        public string? TakeWarning()
+        {
+            return null;
+        }
+    }
+
     private sealed class DelegatingCollectorFactory : IProcessCollectorFactory
     {
         private readonly IProcessCollector _collector;
@@ -624,6 +781,72 @@ public class MonitoringRuntimeTests
         public ValueTask<CollectorActivationResult> CreateAsync(bool _, CancellationToken ct)
         {
             return ValueTask.FromResult(new CollectorActivationResult(_collector, EffectiveAdminMode: _, Warning: null));
+        }
+    }
+
+    private sealed class SnapshotFailureCollector : IProcessCollector
+    {
+        private bool _warningAvailable = true;
+
+        public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
+        {
+            return [];
+        }
+
+        public string? TakeWarning()
+        {
+            if (!_warningAvailable)
+            {
+                return null;
+            }
+
+            _warningAvailable = false;
+            return "failed to create process snapshot";
+        }
+    }
+
+    private sealed class WarmCachePersistenceStore : IPersistenceStore
+    {
+        private readonly WarmCache _warmCache;
+
+        public WarmCachePersistenceStore(WarmCache warmCache)
+        {
+            _warmCache = warmCache;
+        }
+
+        public string BaseDirectory => Path.GetTempPath();
+
+        public UserSettings? LoadSettings()
+        {
+            return new UserSettings
+            {
+                AdminPreferenceInitialized = true,
+            };
+        }
+
+        public Task SaveSettingsAsync(UserSettings settings, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public WarmCache? LoadWarmCache()
+        {
+            return _warmCache;
+        }
+
+        public Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct)
+        {
+            return Task.CompletedTask;
+        }
+
+        public string? TakeWarning()
+        {
+            return null;
         }
     }
 

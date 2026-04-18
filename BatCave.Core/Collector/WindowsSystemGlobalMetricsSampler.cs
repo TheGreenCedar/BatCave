@@ -32,6 +32,8 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
     private bool _extendedProbeCycleCompleted;
     private Task? _extendedProbeTask;
     private Task? _metadataRefreshTask;
+    private long _extendedProbeCycleGeneration;
+    private long _lastAppliedExtendedProbeGeneration;
     private SystemGlobalCpuSnapshot? _latestCpuSnapshot;
     private SystemGlobalMemorySnapshot? _latestMemorySnapshot;
     private IReadOnlyList<SystemGlobalDiskSnapshot> _latestDiskSnapshots = [];
@@ -152,7 +154,8 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             return;
         }
 
-        _extendedProbeTask = Task.Run(() => RunExtendedProbeCycleAsync(cpuPct, memoryUsedBytes, kernelPct));
+        long generation = ++_extendedProbeCycleGeneration;
+        _extendedProbeTask = Task.Run(() => RunExtendedProbeCycleAsync(generation, cpuPct, memoryUsedBytes, kernelPct));
     }
 
     private void TryPromoteCompletedMetadataRefresh_NoThrow()
@@ -206,7 +209,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             && !string.IsNullOrWhiteSpace(_cpuStaticMetadata.ProcessorName);
     }
 
-    private async Task RunExtendedProbeCycleAsync(double? cpuPct, ulong? memoryUsedBytes, double? kernelPct)
+    private async Task RunExtendedProbeCycleAsync(long generation, double? cpuPct, ulong? memoryUsedBytes, double? kernelPct)
     {
         Task<SystemGlobalCpuSnapshot?> cpuTask = Task.Run(() => _cpuSnapshotFactory(cpuPct, kernelPct));
         Task<SystemGlobalMemorySnapshot> memoryTask = Task.Run(() => _memorySnapshotFactory(memoryUsedBytes));
@@ -232,6 +235,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             diskResult.IsCompletedSuccessfully,
             networkResult.Result,
             networkResult.IsCompletedSuccessfully,
+            generation,
             markCycleComplete: true);
 
         if (completedWithinBudget)
@@ -244,31 +248,7 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             return;
         }
 
-        try
-        {
-            await allProbeTasks.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Individual probe failures are intentionally handled via stale-value fallbacks.
-        }
-
-        cpuResult = CaptureCompletedTaskResult(cpuTask);
-        memoryResult = CaptureCompletedTaskResult(memoryTask);
-        diskResult = CaptureCompletedTaskResult(diskTask);
-        networkResult = CaptureCompletedTaskResult(networkTask);
-
-        // Promote any probe results that completed after the soft timeout.
-        ApplyExtendedProbeResults(
-            cpuResult.Result,
-            cpuResult.IsCompletedSuccessfully,
-            memoryResult.Result,
-            memoryResult.IsCompletedSuccessfully,
-            diskResult.Result,
-            diskResult.IsCompletedSuccessfully,
-            networkResult.Result,
-            networkResult.IsCompletedSuccessfully,
-            markCycleComplete: false);
+        _ = PromoteLateExtendedProbeResultsAsync(generation, cpuTask, memoryTask, diskTask, networkTask);
     }
 
     private static CompletedTaskResult<T> CaptureCompletedTaskResult<T>(Task<T> task)
@@ -289,11 +269,17 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
         bool diskCompleted,
         IReadOnlyList<SystemGlobalNetworkSnapshot>? networkSnapshots,
         bool networkCompleted,
+        long generation,
         bool markCycleComplete)
     {
         lock (_sync)
         {
             if (_disposed)
+            {
+                return;
+            }
+
+            if (generation < _lastAppliedExtendedProbeGeneration)
             {
                 return;
             }
@@ -322,7 +308,43 @@ public sealed partial class WindowsSystemGlobalMetricsSampler : ISystemGlobalMet
             {
                 _extendedProbeCycleCompleted = true;
             }
+
+            _lastAppliedExtendedProbeGeneration = generation;
         }
+    }
+
+    private async Task PromoteLateExtendedProbeResultsAsync(
+        long generation,
+        Task<SystemGlobalCpuSnapshot?> cpuTask,
+        Task<SystemGlobalMemorySnapshot> memoryTask,
+        Task<IReadOnlyList<SystemGlobalDiskSnapshot>> diskTask,
+        Task<IReadOnlyList<SystemGlobalNetworkSnapshot>> networkTask)
+    {
+        try
+        {
+            await Task.WhenAll(cpuTask, memoryTask, diskTask, networkTask).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Individual probe failures are intentionally handled via stale-value fallbacks.
+        }
+
+        CompletedTaskResult<SystemGlobalCpuSnapshot?> cpuResult = CaptureCompletedTaskResult(cpuTask);
+        CompletedTaskResult<SystemGlobalMemorySnapshot> memoryResult = CaptureCompletedTaskResult(memoryTask);
+        CompletedTaskResult<IReadOnlyList<SystemGlobalDiskSnapshot>> diskResult = CaptureCompletedTaskResult(diskTask);
+        CompletedTaskResult<IReadOnlyList<SystemGlobalNetworkSnapshot>> networkResult = CaptureCompletedTaskResult(networkTask);
+
+        ApplyExtendedProbeResults(
+            cpuResult.Result,
+            cpuResult.IsCompletedSuccessfully,
+            memoryResult.Result,
+            memoryResult.IsCompletedSuccessfully,
+            diskResult.Result,
+            diskResult.IsCompletedSuccessfully,
+            networkResult.Result,
+            networkResult.IsCompletedSuccessfully,
+            generation,
+            markCycleComplete: false);
     }
 
     private void ThrowIfDisposed()

@@ -4,10 +4,12 @@ using BatCave.Core.Runtime;
 using BatCave.Core.Serialization;
 using BatCave.Hosting;
 using BatCave.Services;
+using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Serilog;
 using System;
 using System.Collections.Generic;
@@ -56,8 +58,16 @@ public partial class App : Application
         string[] commandLineArgs = [.. Environment.GetCommandLineArgs().Skip(1)];
         bool cliMode = IsCliMode(commandLineArgs);
 
-        _host = CreateHost(BuildRuntimeHostOptions(cliMode));
-        await _host.StartAsync();
+        try
+        {
+            _host = CreateHost(BuildRuntimeHostOptions(cliMode));
+            await _host.StartAsync();
+        }
+        catch (Exception ex) when (!cliMode)
+        {
+            RouteStartupFailureToShell(ex);
+            return;
+        }
 
         if (await TryRunCliModeAsync(commandLineArgs, cliMode))
         {
@@ -136,6 +146,132 @@ public partial class App : Application
     private static bool IsCliMode(string[] args)
     {
         return args.Any(CliModeFlags.Contains);
+    }
+
+    private void RouteStartupFailureToShell(Exception ex)
+    {
+        if (_host is null)
+        {
+            Log.Error(ex, "Interactive startup failure occurred before the application host was created.");
+            ShowHostConstructionFailureWindow(ex);
+            return;
+        }
+
+        IHost host = _host;
+        ILogger<App>? logger = host.Services.GetService<ILogger<App>>();
+        if (logger is not null)
+        {
+            logger.LogError(ex, "Interactive startup failed before the monitor shell became live.");
+        }
+        else
+        {
+            Log.Error(ex, "Interactive startup failed before the monitor shell became live.");
+        }
+
+        MonitoringShellViewModel viewModel = host.Services.GetRequiredService<MonitoringShellViewModel>();
+        viewModel.PresentStartupFailure(ex, RetryHostStartupAsync);
+        ActivateMainWindow();
+    }
+
+    private void ShowHostConstructionFailureWindow(Exception ex)
+    {
+        Window fallbackWindow = _window ?? new Window();
+        _window = fallbackWindow;
+
+        TextBlock titleBlock = new()
+        {
+            Text = "Startup Error",
+            FontSize = 24,
+            FontWeight = Windows.UI.Text.FontWeights.SemiBold,
+        };
+        TextBlock messageBlock = new()
+        {
+            Text = "BatCave could not finish building the application host.",
+            TextWrapping = TextWrapping.WrapWholeWords,
+        };
+        TextBlock detailBlock = new()
+        {
+            Text = ex.Message,
+            TextWrapping = TextWrapping.WrapWholeWords,
+        };
+        Button retryButton = new()
+        {
+            Content = "Retry",
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        retryButton.Click += async (_, _) =>
+        {
+            await RetryHostConstructionAsync(retryButton, titleBlock, messageBlock, detailBlock);
+        };
+
+        fallbackWindow.Content = new Grid
+        {
+            Padding = new Thickness(32),
+            Children =
+            {
+                new StackPanel
+                {
+                    VerticalAlignment = VerticalAlignment.Center,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Spacing = 12,
+                    MaxWidth = 720,
+                    Children =
+                    {
+                        titleBlock,
+                        messageBlock,
+                        detailBlock,
+                        retryButton,
+                    },
+                },
+            },
+        };
+        fallbackWindow.Activate();
+    }
+
+    private async Task RetryHostConstructionAsync(
+        Button retryButton,
+        TextBlock titleBlock,
+        TextBlock messageBlock,
+        TextBlock detailBlock)
+    {
+        retryButton.IsEnabled = false;
+        titleBlock.Text = "Retrying Startup";
+        messageBlock.Text = "Rebuilding the application host.";
+
+        try
+        {
+            _host = CreateHost(BuildRuntimeHostOptions(cliMode: false));
+            await _host.StartAsync();
+
+            Window? fallbackWindow = _window;
+            _window = null;
+            fallbackWindow?.Close();
+            ActivateMainWindow();
+        }
+        catch (Exception ex)
+        {
+            if (_host is not null)
+            {
+                _host.Dispose();
+                _host = null;
+            }
+
+            Log.Error(ex, "Interactive startup retry failed before the application host was created.");
+            titleBlock.Text = "Startup Error";
+            messageBlock.Text = "BatCave could not finish building the application host.";
+            detailBlock.Text = ex.Message;
+            retryButton.IsEnabled = true;
+        }
+    }
+
+    private Task RetryHostStartupAsync(CancellationToken ct)
+    {
+        if (_host is null)
+        {
+            throw new InvalidOperationException("Application host is unavailable for startup retry.");
+        }
+
+        return _host.StartAsync(ct);
     }
 
     private void ActivateMainWindow()

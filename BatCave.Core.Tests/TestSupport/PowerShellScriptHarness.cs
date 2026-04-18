@@ -45,10 +45,16 @@ function global:dotnet {
         'run' {
             $joined = if ($null -eq $DotnetArgs) { "" } else { $DotnetArgs -join ' ' }
             if ($joined.IndexOf('--print-gate-status', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                if ($env:FAKE_DOTNET_DIAGNOSTIC_CHATTER -eq '1') {
+                    'info: gate diagnostics starting'
+                }
                 '{"passed":true}'
             }
 
             if ($joined.IndexOf('--print-runtime-health', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                if ($env:FAKE_DOTNET_DIAGNOSTIC_CHATTER -eq '1') {
+                    'info: runtime health diagnostics starting'
+                }
                 '{"runtime_loop_enabled":true}'
             }
 
@@ -132,6 +138,11 @@ exit $LASTEXITCODE
     public void EnableRuntimeDiagnostics()
     {
         _environment["FAKE_DOTNET_INCLUDE_RUNTIME_DIAGNOSTICS"] = "1";
+    }
+
+    public void EnableDiagnosticChatter()
+    {
+        _environment["FAKE_DOTNET_DIAGNOSTIC_CHATTER"] = "1";
     }
 
     public void SetBuildExitCode(int exitCode)

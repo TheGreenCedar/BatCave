@@ -2,6 +2,8 @@ using BatCave.Core.Abstractions;
 using BatCave.Core.Domain;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace BatCave.Core.Runtime;
 
@@ -202,6 +204,7 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _seq++;
         IReadOnlyList<ProcessSample> raw = _collector.CollectTick(_seq);
         CollectorWarning? warning = CaptureRuntimeWarning();
+        raw = ResolveCollectorFallbackRows(raw, warning);
 
         ProcessDeltaBatch delta = ApplyRawDelta(raw);
 
@@ -219,6 +222,34 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
             Warning = warning,
             EmitTelemetryDelta = policy.EmitTelemetryDelta,
         };
+    }
+
+    private IReadOnlyList<ProcessSample> ResolveCollectorFallbackRows(
+        IReadOnlyList<ProcessSample> raw,
+        CollectorWarning? warning)
+    {
+        if (raw.Count > 0
+            || warning is null
+            || !warning.Message.Contains("failed to create process snapshot", StringComparison.OrdinalIgnoreCase))
+        {
+            return raw;
+        }
+
+        IReadOnlyList<ProcessSample> persistedRows = _stateStore.AllRows();
+        if (persistedRows.Count == 0)
+        {
+            return raw;
+        }
+
+        ulong now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return
+        [
+            .. persistedRows.Select(row => row with
+            {
+                Seq = _seq,
+                TsMs = now,
+            }),
+        ];
     }
 
     private void PersistSettings()
@@ -334,13 +365,46 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
 
     private int ApplyCompactionPolicy(RuntimePolicy policy, int rowCount)
     {
-        if (policy.CompactMaxRows is not int maxRows)
+        if (policy.CompactMaxRows is not int maxRows || policy.EmitTelemetryDelta)
         {
             return rowCount;
         }
 
+        HashSet<ProcessIdentity> identitiesBeforeCompaction = [];
+        foreach (ProcessSample row in _stateStore.AllRows())
+        {
+            identitiesBeforeCompaction.Add(row.Identity());
+        }
+
         _stateStore.CompactTo(maxRows);
-        return _stateStore.RowCount();
+        IReadOnlyList<ProcessSample> rowsAfterCompaction = _stateStore.AllRows();
+        if (identitiesBeforeCompaction.Count > rowsAfterCompaction.Count)
+        {
+            HashSet<ProcessIdentity> retainedIdentities = [];
+            foreach (ProcessSample row in rowsAfterCompaction)
+            {
+                retainedIdentities.Add(row.Identity());
+            }
+
+            List<ProcessIdentity>? removedIdentities = null;
+            foreach (ProcessIdentity identity in identitiesBeforeCompaction)
+            {
+                if (retainedIdentities.Contains(identity))
+                {
+                    continue;
+                }
+
+                removedIdentities ??= [];
+                removedIdentities.Add(identity);
+            }
+
+            if (removedIdentities is { Count: > 0 })
+            {
+                _pipeline.Forget(removedIdentities);
+            }
+        }
+
+        return rowsAfterCompaction.Count;
     }
 
     private CollectorWarning? CaptureRuntimeWarning()

@@ -25,10 +25,11 @@ public sealed class ProcessRowViewStateTests
 
         state.UpdateSample(updated);
 
-        Assert.Equal(3, changed.Count);
+        Assert.Equal(4, changed.Count);
         Assert.Contains(nameof(ProcessRowViewState.CpuPct), changed);
         Assert.Contains(nameof(ProcessRowViewState.CpuSortBucket), changed);
         Assert.Contains(nameof(ProcessRowViewState.CpuText), changed);
+        Assert.Contains(nameof(ProcessRowViewState.AccessibilitySummary), changed);
     }
 
     [Fact]
@@ -77,6 +78,20 @@ public sealed class ProcessRowViewStateTests
         Assert.Equal("9.0 KB/s", state.DiskText);
         Assert.Equal("49.2 Kbps", state.NetworkText);
         Assert.Contains("KB", state.RssText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AccessibilitySummary_UsesPidAndLabeledCompactValues()
+    {
+        ProcessSample initial = Sample(cpuPct: 10, rssBytes: 1024, ioReadBps: 2048, ioWriteBps: 3072, netBps: 4096, threads: 5, handles: 6);
+        ProcessRowViewState state = new(initial, CreateTrendGeometry());
+
+        Assert.Equal("PID 500", state.CompactPidText);
+        Assert.Contains("Process proc-500", state.AccessibilitySummary, StringComparison.Ordinal);
+        Assert.Contains("PID 500", state.AccessibilitySummary, StringComparison.Ordinal);
+        Assert.Contains("CPU 10.00%", state.AccessibilitySummary, StringComparison.Ordinal);
+        Assert.Contains("Estimated network", state.AccessibilitySummary, StringComparison.Ordinal);
+        Assert.StartsWith("Est. ", state.NetworkEstimateText, StringComparison.Ordinal);
     }
 
     [Fact]

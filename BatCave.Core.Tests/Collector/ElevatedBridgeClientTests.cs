@@ -1,4 +1,5 @@
 using BatCave.Core.Collector;
+using BatCave.Core.Domain;
 using BatCave.Core.Tests.TestSupport;
 using System.Text.Json;
 
@@ -93,6 +94,89 @@ public class ElevatedBridgeClientTests
             Assert.Equal(BridgePollState.Pending, result.State);
             Assert.NotNull(warning);
             Assert.Contains("snapshot_parse_failed", warning, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            ElevatedBridgeClient.NowMsOverrideForTest = null;
+        }
+    }
+
+    [Fact]
+    public void PollRows_WhenFreshSnapshotArrivesAfterFault_Recovers()
+    {
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
+        string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
+        string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
+        ulong nowMs = 20_000;
+        ElevatedBridgeClient.NowMsOverrideForTest = () => nowMs;
+
+        try
+        {
+            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
+            Assert.Equal(BridgePollState.Faulted, client.PollRows().State);
+
+            ProcessSample recovered = new()
+            {
+                Pid = 901,
+                Seq = 2,
+                TsMs = 2,
+                ParentPid = 1,
+                StartTimeMs = 9_010,
+                Name = "bridge-recovered",
+                CpuPct = 4,
+                RssBytes = 1024,
+                PrivateBytes = 512,
+                IoReadBps = 8,
+                IoWriteBps = 9,
+                OtherIoBps = 10,
+                Threads = 2,
+                Handles = 3,
+                AccessState = AccessState.Full,
+            };
+            File.WriteAllText(dataFile, JsonSerializer.Serialize(new
+            {
+                Token = "token",
+                Seq = 2UL,
+                Rows = new[] { recovered },
+            }));
+
+            nowMs = 20_100;
+            BridgePollResult result = client.PollRows();
+
+            Assert.Equal(BridgePollState.Rows, result.State);
+            ProcessSample row = Assert.Single(result.Rows);
+            Assert.Equal(recovered.Identity(), row.Identity());
+        }
+        finally
+        {
+            ElevatedBridgeClient.NowMsOverrideForTest = null;
+        }
+    }
+
+    [Fact]
+    public void PollRows_WhenSameFaultPersists_QueuesWarningOnlyOnceUntilRecovery()
+    {
+        using TestTempDirectory tempDir = TestTempDirectory.Create("batcave-bridge-tests");
+        string dataFile = Path.Combine(tempDir.DirectoryPath, "snapshot.json");
+        string stopFile = Path.Combine(tempDir.DirectoryPath, "stop.signal");
+        ulong nowMs = 20_000;
+        ElevatedBridgeClient.NowMsOverrideForTest = () => nowMs;
+
+        try
+        {
+            ElevatedBridgeClient client = ElevatedBridgeClient.CreateForTest(dataFile, stopFile, "token", launchedMs: 0);
+
+            BridgePollResult first = client.PollRows();
+            string? firstWarning = client.TakeWarning();
+
+            nowMs = 20_500;
+            BridgePollResult second = client.PollRows();
+            string? secondWarning = client.TakeWarning();
+
+            Assert.Equal(BridgePollState.Faulted, first.State);
+            Assert.Equal(BridgePollState.Faulted, second.State);
+            Assert.NotNull(firstWarning);
+            Assert.Null(secondWarning);
         }
         finally
         {
