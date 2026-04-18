@@ -74,7 +74,14 @@ public sealed class RuntimeLoopService : IRuntimeLoopController
             return;
         }
 
-        await loopTask.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await loopTask.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The loop task uses its own cancellation token to stop the timer during shutdown.
+        }
     }
 
     private Task? CancelLoopAndAdvanceGeneration()
@@ -93,40 +100,46 @@ public sealed class RuntimeLoopService : IRuntimeLoopController
         using PeriodicTimer timer = new(_interval, _timeProvider);
         int consecutiveFaults = 0;
 
-        while (!ct.IsCancellationRequested && await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+        try
         {
-            if (ShouldStopLoop(generation))
+            while (!ct.IsCancellationRequested && await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
-                break;
-            }
-
-            DateTimeOffset tickStart = _timeProvider.GetUtcNow();
-            double jitterMs = ResolveJitterMs(tickStart, nextTick);
-
-            try
-            {
-                TickOutcome outcome = _runtime.Tick(jitterMs);
-                HandleSuccessfulTick(outcome, ref consecutiveFaults, ref nextTick);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                (bool shouldStop, DateTimeOffset resumedTick, int updatedFaults) = await HandleFaultAndBackoffAsync(
-                    generation,
-                    ex,
-                    ct,
-                    consecutiveFaults).ConfigureAwait(false);
-                consecutiveFaults = updatedFaults;
-                if (shouldStop)
+                if (ShouldStopLoop(generation))
                 {
                     break;
                 }
 
-                nextTick = resumedTick;
+                DateTimeOffset tickStart = _timeProvider.GetUtcNow();
+                double jitterMs = ResolveJitterMs(tickStart, nextTick);
+
+                try
+                {
+                    TickOutcome outcome = _runtime.Tick(jitterMs);
+                    HandleSuccessfulTick(outcome, ref consecutiveFaults, ref nextTick);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    (bool shouldStop, DateTimeOffset resumedTick, int updatedFaults) = await HandleFaultAndBackoffAsync(
+                        generation,
+                        ex,
+                        ct,
+                        consecutiveFaults).ConfigureAwait(false);
+                    consecutiveFaults = updatedFaults;
+                    if (shouldStop)
+                    {
+                        break;
+                    }
+
+                    nextTick = resumedTick;
+                }
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
         }
     }
 
@@ -175,7 +188,8 @@ public sealed class RuntimeLoopService : IRuntimeLoopController
     private void RecordDroppedTicks(DateTimeOffset scheduledTick, DateTimeOffset loopEnd)
     {
         long lagMs = (long)(loopEnd - scheduledTick).TotalMilliseconds;
-        ulong dropped = lagMs > 0 ? (ulong)(lagMs / 1000) : 0;
+        long intervalMs = Math.Max(1L, (long)Math.Round(_interval.TotalMilliseconds));
+        ulong dropped = lagMs > 0 ? (ulong)(lagMs / intervalMs) : 0;
         if (dropped > 0)
         {
             _runtime.RecordDroppedTicks(dropped);

@@ -17,6 +17,9 @@
         </StackPanel>
 
         <StackPanel
+            x:Name="BlockedStatePanel"
+            AutomationProperties.LiveSetting="Assertive"
+            AutomationProperties.Name="Startup blocked state"
             HorizontalAlignment="Center"
             VerticalAlignment="Center"
             Spacing="8"
@@ -26,6 +29,9 @@
         </StackPanel>
 
         <StackPanel
+            x:Name="StartupErrorStatePanel"
+            AutomationProperties.LiveSetting="Assertive"
+            AutomationProperties.Name="Startup error state"
             HorizontalAlignment="Center"
             VerticalAlignment="Center"
             Spacing="8"

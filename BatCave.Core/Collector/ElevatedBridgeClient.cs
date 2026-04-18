@@ -63,7 +63,7 @@ public sealed class ElevatedBridgeClient : IDisposable
     private ulong _lastSeq;
     private List<ProcessSample> _lastRows = [];
     private ulong? _lastSuccessMs;
-    private string? _faultReason;
+    private string? _activeFaultReason;
     private readonly Queue<string> _pendingWarnings = [];
 
     private ElevatedBridgeClient(string dataFile, string stopFile, string token, uint helperPid, ulong? launchedMs = null)
@@ -94,13 +94,15 @@ public sealed class ElevatedBridgeClient : IDisposable
     public BridgePollResult PollRows()
     {
         ulong now = NowMs();
-        if (GetExistingFaultResult() is BridgePollResult existingFault)
+        TryReadLatestSnapshot(now);
+        BridgePollResult? pendingOrFault = GetPendingOrFaultBeforeRows(now);
+        if (pendingOrFault is not null)
         {
-            return existingFault;
+            return pendingOrFault;
         }
 
-        TryReadLatestSnapshot(now);
-        return GetPendingOrFaultBeforeRows(now) ?? BridgePollResult.RowsResult(_lastRows);
+        _activeFaultReason = null;
+        return BridgePollResult.RowsResult(_lastRows);
     }
 
     public string? TakeWarning()
@@ -137,23 +139,6 @@ public sealed class ElevatedBridgeClient : IDisposable
         }
     }
 
-    private BridgePollResult SetFault(string reason)
-    {
-        _faultReason = reason;
-        EnqueueWarning(reason);
-        return BridgePollResult.Faulted(reason);
-    }
-
-    private BridgePollResult? GetExistingFaultResult()
-    {
-        if (string.IsNullOrWhiteSpace(_faultReason))
-        {
-            return null;
-        }
-
-        return BridgePollResult.Faulted(_faultReason!);
-    }
-
     private BridgePollResult? GetPendingOrFaultBeforeRows(ulong now)
     {
         if (_lastSuccessMs is null)
@@ -169,9 +154,10 @@ public sealed class ElevatedBridgeClient : IDisposable
         ulong startupElapsed = now - _launchedMs;
         if (startupElapsed > BridgeStartupGraceMs)
         {
-            return SetFault($"no elevated bridge snapshot received within startup grace window ({BridgeStartupGraceMs} ms)");
+            return Fault($"no elevated bridge snapshot received within startup grace window ({BridgeStartupGraceMs} ms)");
         }
 
+        _activeFaultReason = null;
         return BridgePollResult.Pending();
     }
 
@@ -183,7 +169,18 @@ public sealed class ElevatedBridgeClient : IDisposable
             return null;
         }
 
-        return SetFault($"elevated bridge snapshot stream stalled for {staleFor} ms");
+        return Fault($"elevated bridge snapshot stream stalled for {staleFor} ms");
+    }
+
+    private BridgePollResult Fault(string reason)
+    {
+        if (!string.Equals(_activeFaultReason, reason, StringComparison.Ordinal))
+        {
+            _activeFaultReason = reason;
+            EnqueueWarning(reason);
+        }
+
+        return BridgePollResult.Faulted(reason);
     }
 
     public void Dispose()

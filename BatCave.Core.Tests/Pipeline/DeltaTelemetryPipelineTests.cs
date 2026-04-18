@@ -68,6 +68,22 @@ public class DeltaTelemetryPipelineTests
         Assert.Equal(warmCacheRow.Identity(), delta.Exits[0]);
     }
 
+    [Fact]
+    public void Forget_RemovesIdentitySoUnchangedLiveRowReappearsAsUpsert()
+    {
+        DeltaTelemetryPipeline pipeline = new();
+        ProcessSample row = Sample(pid: 303, startTimeMs: 3_333, cpu: 0.7);
+
+        pipeline.ApplyRaw(1, [row]);
+        pipeline.Forget([row.Identity()]);
+
+        ProcessDeltaBatch delta = pipeline.ApplyRaw(2, [row with { Seq = 2, TsMs = 20 }]);
+
+        Assert.Single(delta.Upserts);
+        Assert.Equal(row.Identity(), delta.Upserts[0].Identity());
+        Assert.Empty(delta.Exits);
+    }
+
     private static ProcessSample Sample(uint pid, ulong startTimeMs, double cpu)
     {
         return new ProcessSample

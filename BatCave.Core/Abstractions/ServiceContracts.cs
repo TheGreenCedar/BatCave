@@ -29,6 +29,8 @@ public interface ITelemetryPipeline
     void SeedFromWarmCache(IReadOnlyList<ProcessSample> rows);
 
     ProcessDeltaBatch ApplyRaw(ulong seq, IReadOnlyList<ProcessSample> raw);
+
+    void Forget(IReadOnlyList<ProcessIdentity> identities);
 }
 
 public interface IStateStore

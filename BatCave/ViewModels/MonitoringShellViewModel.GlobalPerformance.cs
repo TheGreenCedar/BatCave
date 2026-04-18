@@ -52,7 +52,8 @@ public partial class MonitoringShellViewModel
     private GlobalResourceRowViewState? _selectedGlobalResource;
     private string _lastSelectedGlobalResourceId = CpuGlobalResourceId;
     private string _lastSelectedProcessResourceId = ProcessCpuResourceId;
-    private CpuGraphMode _cpuGraphMode = CpuGraphMode.Combined;
+    private CpuGraphMode _systemCpuGraphMode = CpuGraphMode.Combined;
+    private CpuGraphMode _processCpuGraphMode = CpuGraphMode.Combined;
     private bool _isRefreshingGlobalDetailState;
     private int _globalDetailRefreshQueued;
 
@@ -85,6 +86,7 @@ public partial class MonitoringShellViewModel
         {
             if (!SetProperty(ref _selectedGlobalResource, value))
             {
+                UpdateGlobalResourceSelectionState();
                 return;
             }
 
@@ -107,6 +109,7 @@ public partial class MonitoringShellViewModel
                 OnPropertyChanged(nameof(GlobalCombinedChartVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalGridVisibility));
                 OnPropertyChanged(nameof(GlobalCpuLogicalPlaceholderVisibility));
+                UpdateGlobalResourceSelectionState();
                 RaiseChartIdentityProperties();
                 QueueGlobalDetailStateRefresh();
             }
@@ -270,11 +273,22 @@ public partial class MonitoringShellViewModel
 
     public CpuGraphMode CpuGraphMode
     {
-        get => _cpuGraphMode;
+        get => IsGlobalPerformanceMode ? _systemCpuGraphMode : _processCpuGraphMode;
         private set
         {
-            if (SetProperty(ref _cpuGraphMode, value))
+            CpuGraphMode current = CpuGraphMode;
+            if (current != value)
             {
+                if (IsGlobalPerformanceMode)
+                {
+                    _systemCpuGraphMode = value;
+                }
+                else
+                {
+                    _processCpuGraphMode = value;
+                }
+
+                OnPropertyChanged(nameof(CpuGraphMode));
                 OnPropertyChanged(nameof(IsCpuCombinedMode));
                 OnPropertyChanged(nameof(IsCpuLogicalMode));
                 OnPropertyChanged(nameof(IsCpuResourceSelected));
@@ -294,7 +308,8 @@ public partial class MonitoringShellViewModel
 
     public bool IsCpuLogicalMode => CpuGraphMode == CpuGraphMode.LogicalProcessors;
 
-    public Visibility GlobalCpuModeToggleVisibility => IsCpuResourceSelected ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility GlobalCpuModeToggleVisibility =>
+        IsGlobalPerformanceMode && IsCpuResourceSelected ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility GlobalCombinedChartVisibility => IsCpuResourceSelected && IsCpuLogicalMode ? Visibility.Collapsed : Visibility.Visible;
 
@@ -335,8 +350,14 @@ public partial class MonitoringShellViewModel
             nameof(GlobalPerformanceContentVisibility),
             nameof(GlobalPerformanceSkeletonVisibility),
             nameof(ProcessDetailVisibility),
+            nameof(CpuGraphMode),
+            nameof(IsCpuCombinedMode),
+            nameof(IsCpuLogicalMode),
+            nameof(GlobalCpuModeToggleVisibility),
+            nameof(GlobalCombinedChartVisibility),
             nameof(GlobalCpuLogicalGridVisibility),
             nameof(GlobalCpuLogicalPlaceholderVisibility));
+        RaiseCpuModeChromeProperties();
         RaiseChartIdentityProperties();
     }
 
@@ -444,6 +465,14 @@ public partial class MonitoringShellViewModel
         }
 
         ReconcileSelectedGlobalResource(selectedResourceId);
+    }
+
+    private void UpdateGlobalResourceSelectionState()
+    {
+        foreach (GlobalResourceRowViewState row in _globalResourceRows)
+        {
+            row.SetSelectionState(ReferenceEquals(row, SelectedGlobalResource));
+        }
     }
 
     private void UpdateGlobalResourceHistories(IReadOnlyList<GlobalResourceDescriptor> descriptors)
@@ -604,7 +633,7 @@ public partial class MonitoringShellViewModel
             new ProcessResourceDescriptor(
                 ResourceId: ProcessNetworkResourceId,
                 Kind: GlobalResourceKind.Network,
-                Title: "Network",
+                Title: "Estimated traffic",
                 Subtitle: "Derived from Other I/O",
                 ValueText: ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps),
                 MiniScaleMode: MetricTrendScaleMode.BitsRate,
@@ -1186,7 +1215,7 @@ public partial class MonitoringShellViewModel
         GlobalPrimaryScaleMode = MetricTrendScaleMode.BitsRate;
         GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
         GlobalPrimaryChartTitle = "Throughput";
-        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalAuxiliaryChartTitle = "Send throughput";
         GlobalShowSecondaryOverlay = true;
         GlobalShowAuxiliaryChart = false;
         GlobalPrimaryStrokeColor = NetworkStrokeColor;
@@ -1324,14 +1353,14 @@ public partial class MonitoringShellViewModel
             return;
         }
 
-        GlobalDetailTitle = "Network";
+        GlobalDetailTitle = "Estimated traffic";
         GlobalDetailSubtitle = $"{selected.Name} ({selected.Pid})";
         GlobalDetailCurrentValue = ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps);
 
         GlobalPrimaryScaleMode = MetricTrendScaleMode.BitsRate;
         GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
-        GlobalPrimaryChartTitle = "Derived throughput";
-        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalPrimaryChartTitle = "Estimated throughput";
+        GlobalAuxiliaryChartTitle = "Other I/O rate";
         GlobalShowSecondaryOverlay = false;
         GlobalShowAuxiliaryChart = false;
         GlobalPrimaryStrokeColor = NetworkStrokeColor;
@@ -1649,7 +1678,7 @@ public partial class MonitoringShellViewModel
             ("Disk read", ValueFormat.FormatRate(selected.IoReadBps)),
             ("Disk write", ValueFormat.FormatRate(selected.IoWriteBps)),
             ("Disk total", ValueFormat.FormatRate(SaturatingAddRates(selected.IoReadBps, selected.IoWriteBps))),
-            ("Network", ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps)),
+            ("Estimated traffic", ValueFormat.FormatBitsRateFromBytes(selected.OtherIoBps)),
             ("Other I/O", ValueFormat.FormatRate(selected.OtherIoBps)),
             ("Metadata", MetadataStatus),
             ("Parent PID", MetadataParentPid),

@@ -71,6 +71,15 @@ public sealed class DeltaTelemetryPipeline : ITelemetryPipeline
         };
     }
 
+    public void Forget(IReadOnlyList<ProcessIdentity> identities)
+    {
+        foreach (ProcessIdentity identity in identities)
+        {
+            _previous.Remove(identity);
+            _lastEmittedSeq.Remove(identity);
+        }
+    }
+
     private static bool EquivalentSample(ProcessSample left, ProcessSample right)
     {
         return CpuEquivalent(left.CpuPct, right.CpuPct)

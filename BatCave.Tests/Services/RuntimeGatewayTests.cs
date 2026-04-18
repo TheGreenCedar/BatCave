@@ -236,6 +236,71 @@ public class RuntimeGatewayTests
     }
 
     [Fact]
+    public async Task Publish_BurstAcrossDistinctIdentities_PreservesEveryIrreversibleExit()
+    {
+        using RuntimeGateway gateway = new(new RuntimeHealthService());
+        TaskCompletionSource<ProcessDeltaBatch> emitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        ProcessIdentity firstIdentity = Sample(pid: 910, seq: 1).Identity();
+        ProcessIdentity secondIdentity = Sample(pid: 911, seq: 1).Identity();
+
+        gateway.TelemetryDelta += (_, delta) =>
+        {
+            if (delta.Exits.Contains(firstIdentity) && delta.Exits.Contains(secondIdentity))
+            {
+                emitted.TrySetResult(delta);
+            }
+        };
+
+        for (int index = 1; index <= 400; index++)
+        {
+            gateway.Publish(new TickOutcome
+            {
+                Delta = new ProcessDeltaBatch
+                {
+                    Seq = (ulong)index,
+                    Upserts =
+                    [
+                        Sample(pid: 910, seq: (ulong)index),
+                        Sample(pid: 911, seq: (ulong)index),
+                    ],
+                    Exits = [],
+                },
+                Health = new RuntimeHealth { Seq = (ulong)index },
+                EmitTelemetryDelta = true,
+            });
+        }
+
+        gateway.Publish(new TickOutcome
+        {
+            Delta = new ProcessDeltaBatch
+            {
+                Seq = 401,
+                Upserts = [],
+                Exits = [firstIdentity],
+            },
+            Health = new RuntimeHealth { Seq = 401 },
+            EmitTelemetryDelta = true,
+        });
+        gateway.Publish(new TickOutcome
+        {
+            Delta = new ProcessDeltaBatch
+            {
+                Seq = 402,
+                Upserts = [],
+                Exits = [secondIdentity],
+            },
+            Health = new RuntimeHealth { Seq = 402 },
+            EmitTelemetryDelta = true,
+        });
+
+        ProcessDeltaBatch flushed = await emitted.Task.WaitAsync(TimeSpan.FromMilliseconds(1000));
+        Assert.Equal(402UL, flushed.Seq);
+        Assert.Contains(firstIdentity, flushed.Exits);
+        Assert.Contains(secondIdentity, flushed.Exits);
+        Assert.DoesNotContain(flushed.Upserts, sample => sample.Identity() == firstIdentity || sample.Identity() == secondIdentity);
+    }
+
+    [Fact]
     public void Publish_HealthAndWarningRemainImmediateAndIndependent()
     {
         using RuntimeGateway gateway = new(new RuntimeHealthService());

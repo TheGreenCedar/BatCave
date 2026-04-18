@@ -21,6 +21,12 @@ public partial class MonitoringShellViewModel
             return Task.CompletedTask;
         }
 
+        if (IsStartupError && _startupFailureRecoveryAction is not null)
+        {
+            IsLoading = false;
+            return Task.CompletedTask;
+        }
+
         InitializeBootstrapState();
 
         try
@@ -60,15 +66,43 @@ public partial class MonitoringShellViewModel
         return Task.CompletedTask;
     }
 
-    public Task RetryBootstrapAsync(CancellationToken ct)
+    public async Task RetryBootstrapAsync(CancellationToken ct)
     {
-        return BootstrapAsync(ct);
+        Func<CancellationToken, Task>? recoveryAction = _startupFailureRecoveryAction;
+        if (recoveryAction is not null)
+        {
+            _startupFailureRecoveryAction = null;
+            InitializeBootstrapState();
+
+            try
+            {
+                await recoveryAction(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                PresentStartupFailure(ex, recoveryAction);
+                return;
+            }
+        }
+
+        await BootstrapAsync(ct).ConfigureAwait(false);
     }
 
     [RelayCommand]
     private Task RetryBootstrapRequestedAsync()
     {
         return RetryBootstrapAsync(CancellationToken.None);
+    }
+
+    public void PresentStartupFailure(Exception ex, Func<CancellationToken, Task>? recoveryAction = null)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _startupFailureRecoveryAction = recoveryAction;
+        ApplyStartupFailureState(ex);
     }
 
     public async Task ToggleAdminModeAsync(bool nextAdminMode, CancellationToken ct)
@@ -89,7 +123,7 @@ public partial class MonitoringShellViewModel
 
         try
         {
-            _runtimeLoopService.StopAndAdvanceGeneration();
+            await _runtimeLoopService.StopAndAdvanceGenerationAsync(ct);
             loopStopped = true;
             CollectorActivationResult activation = await _runtime.RestartAsync(nextAdminMode, ct);
 
@@ -211,8 +245,13 @@ public partial class MonitoringShellViewModel
             return;
         }
 
+        IsLoading = false;
+        IsStartupError = false;
         IsBlocked = true;
+        IsLive = false;
         ResetWarningState();
+        StartupErrorMessage = string.Empty;
+        StartupGateStatus = startupGateStatus;
         BlockedReasonMessage = FormatBlockReason(startupGateStatus.Reason);
         ShellHeadline = "Startup Blocked";
         ShellBody = BlockedReasonMessage;
@@ -227,11 +266,17 @@ public partial class MonitoringShellViewModel
             return;
         }
 
+        IsLoading = false;
+        IsBlocked = false;
         IsStartupError = true;
+        IsLive = false;
         ResetWarningState();
+        BlockedReasonMessage = string.Empty;
+        StartupGateStatus = new StartupGateStatus();
         StartupErrorMessage = ex.Message;
         ShellHeadline = "Startup Incomplete";
         ShellBody = ex.Message;
+        RuntimeHealthStatus = _runtimeHealthService.Snapshot().StatusSummary;
         SetRuntimeStatusPresentation(RuntimeStatusTone.Error, "Startup Error", ex.Message);
     }
 
@@ -314,7 +359,10 @@ public partial class MonitoringShellViewModel
 
         if (health.DroppedTicks > 0)
         {
-            SetRuntimeStatusPresentation(RuntimeStatusTone.Error, "Dropped Samples Detected", $"{health.DroppedTicks} samples were dropped from the runtime loop.");
+            SetRuntimeStatusPresentation(
+                RuntimeStatusTone.Error,
+                "Dropped Samples Detected",
+                "Runtime loop dropped samples. Review runtime detail for counts and jitter.");
             return;
         }
 
@@ -322,7 +370,7 @@ public partial class MonitoringShellViewModel
         SetRuntimeStatusPresentation(
             RuntimeStatusTone.Success,
             "Runtime Healthy",
-            $"Seq {health.Seq} live, jitter p95 {health.JitterP95Ms:F0} ms, no active collector warnings.",
+            "No active collector warnings. Review runtime detail for current loop metrics.",
             isVisible: false);
     }
 }

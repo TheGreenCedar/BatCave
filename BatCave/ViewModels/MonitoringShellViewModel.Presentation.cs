@@ -235,6 +235,21 @@ public partial class MonitoringShellViewModel
 
     public Brush LogicalModeForegroundBrush => GetSegmentForeground(IsCpuLogicalMode);
 
+    public string SystemPrimaryChartAutomationName => $"System {GlobalDetailTitle} {GlobalPrimaryChartTitle} chart";
+
+    public string SystemPrimaryChartAutomationHelpText =>
+        $"Interactive inspector chart for system {GlobalDetailTitle.ToLowerInvariant()} showing {GlobalPrimaryChartTitle.ToLowerInvariant()}.";
+
+    public string SystemAuxiliaryChartAutomationName => $"System {GlobalDetailTitle} {GlobalAuxiliaryChartTitle} chart";
+
+    public string SystemAuxiliaryChartAutomationHelpText =>
+        $"Interactive companion chart for system {GlobalDetailTitle.ToLowerInvariant()} showing {GlobalAuxiliaryChartTitle.ToLowerInvariant()}.";
+
+    public string ProcessPrimaryChartAutomationName => $"Process {GlobalDetailTitle} {GlobalPrimaryChartTitle} chart";
+
+    public string ProcessPrimaryChartAutomationHelpText =>
+        $"Interactive inspector chart for the selected process showing {GlobalPrimaryChartTitle.ToLowerInvariant()}.";
+
     [RelayCommand]
     private void SelectInspectorSection(string? sectionTag)
     {
@@ -312,6 +327,23 @@ public partial class MonitoringShellViewModel
     {
         RaisePresentationModeProperties();
         RaisePresentationDetailProperties();
+        RaiseChartAccessibilityProperties();
+    }
+
+    private void RaiseChartAccessibilityProperties()
+    {
+        RaiseProperties(
+            nameof(SystemPrimaryChartAutomationName),
+            nameof(SystemPrimaryChartAutomationHelpText),
+            nameof(SystemAuxiliaryChartAutomationName),
+            nameof(SystemAuxiliaryChartAutomationHelpText),
+            nameof(ProcessPrimaryChartAutomationName),
+            nameof(ProcessPrimaryChartAutomationHelpText));
+    }
+
+    private void ResetInspectorSectionToSummary()
+    {
+        InspectorSection = InspectorSection.Summary;
     }
 
     private void SetRuntimeStatusPresentation(RuntimeStatusTone tone, string title, string summary, bool isVisible = true)

@@ -1,4 +1,6 @@
 using BatCave.Layouts;
+using BatCave.Controls;
+using BatCave.Converters;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI;
@@ -8,6 +10,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -32,6 +35,8 @@ public sealed partial class MainWindow : Window
     private long _selectionSettleProbeStartedAt;
     private double? _compactProcessSortRestoreOffset;
     private ScrollViewer? _compactProcessListScrollViewer;
+    private readonly ToolTip _inspectorChartToolTip = new();
+    private Border? _activeInspectorChartOverlay;
     private bool _logicalCpuGridLayoutQueued;
     private int _logicalCpuGridLastCount = -1;
     private double _logicalCpuGridLastWidth = -1;
@@ -78,6 +83,7 @@ public sealed partial class MainWindow : Window
     private void ShellRoot_ActualThemeChanged(FrameworkElement sender, object args)
     {
         ApplyTitleBarButtonColors();
+        ApplyMotionPreferences();
     }
 
     private void ApplyTitleBarButtonColors()
@@ -121,6 +127,8 @@ public sealed partial class MainWindow : Window
 
     private async void OnActivated(object sender, WindowActivatedEventArgs args)
     {
+        ApplyMotionPreferences();
+
         if (!_titleBarConfigured)
         {
             ConfigureTitleBar();
@@ -140,6 +148,22 @@ public sealed partial class MainWindow : Window
         GlobalResourceListView.SelectedItem = ViewModel.SelectedGlobalResource;
         QueueCompactProcessInitialScrollIfNeeded();
         ScheduleLogicalCpuGridLayout();
+    }
+
+    private void ApplyMotionPreferences()
+    {
+        Windows.UI.ViewManagement.UISettings uiSettings = new Windows.UI.ViewManagement.UISettings();
+        bool animationsEnabled = uiSettings.AnimationsEnabled;
+
+        Application.Current.Resources["BatCaveInteractivePointerOverOpacity"] = animationsEnabled ? 0.94d : 1d;
+        Application.Current.Resources["BatCaveInteractivePressedOpacity"] = animationsEnabled ? 0.84d : 1d;
+        Application.Current.Resources["BatCaveInteractiveFastDuration"] = animationsEnabled
+            ? new Duration(TimeSpan.FromMilliseconds(100))
+            : new Duration(TimeSpan.Zero);
+        Application.Current.Resources["BatCaveInteractivePressedDuration"] = animationsEnabled
+            ? new Duration(TimeSpan.FromMilliseconds(50))
+            : new Duration(TimeSpan.Zero);
+        Application.Current.Resources["BatCaveChartSmoothTransitionsEnabled"] = animationsEnabled;
     }
 
     private async void AdminModeToggle_Toggled(object sender, RoutedEventArgs e)
@@ -519,6 +543,174 @@ public sealed partial class MainWindow : Window
         ScheduleLogicalCpuGridLayout();
     }
 
+    private void InspectorChartOverlay_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is not Border overlay)
+        {
+            return;
+        }
+
+        string? tooltipText = TryBuildInspectorChartTooltip(overlay, e);
+        if (string.IsNullOrWhiteSpace(tooltipText))
+        {
+            CloseInspectorChartTooltip();
+            return;
+        }
+
+        if (!ReferenceEquals(_activeInspectorChartOverlay, overlay))
+        {
+            if (_activeInspectorChartOverlay is not null)
+            {
+                ToolTipService.SetToolTip(_activeInspectorChartOverlay, null);
+            }
+
+            _activeInspectorChartOverlay = overlay;
+            ToolTipService.SetToolTip(overlay, _inspectorChartToolTip);
+        }
+
+        _inspectorChartToolTip.Content = tooltipText;
+        _inspectorChartToolTip.IsOpen = true;
+    }
+
+    private void InspectorChartOverlay_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        CloseInspectorChartTooltip();
+    }
+
+    private string? TryBuildInspectorChartTooltip(Border overlay, PointerRoutedEventArgs e)
+    {
+        if (overlay.ActualWidth <= 0d)
+        {
+            return null;
+        }
+
+        if (!TryResolveInspectorChartPayload(
+                overlay.Tag as string,
+                out IReadOnlyList<double>? values,
+                out MetricTrendScaleMode scaleMode,
+                out string primaryLabel,
+                out IReadOnlyList<double>? secondaryValues,
+                out string? secondaryLabel))
+        {
+            return null;
+        }
+
+        if (values is null || values.Count == 0)
+        {
+            return null;
+        }
+
+        double width = Math.Max(overlay.ActualWidth, 1d);
+        double x = e.GetCurrentPoint(overlay).Position.X;
+        double normalized = Math.Clamp(x / width, 0d, 1d);
+        int sampleIndex = Math.Clamp((int)Math.Round(normalized * (values.Count - 1)), 0, values.Count - 1);
+        double primaryValue = values[sampleIndex];
+        if (!double.IsFinite(primaryValue))
+        {
+            return null;
+        }
+
+        string tooltipText = $"{primaryLabel}: {FormatChartValue(scaleMode, primaryValue)}";
+        if (secondaryValues is not null &&
+            secondaryValues.Count > sampleIndex &&
+            double.IsFinite(secondaryValues[sampleIndex]))
+        {
+            tooltipText = $"{tooltipText}{Environment.NewLine}{secondaryLabel}: {FormatChartValue(scaleMode, secondaryValues[sampleIndex])}";
+        }
+
+        return tooltipText;
+    }
+
+    private bool TryResolveInspectorChartPayload(
+        string? tag,
+        out IReadOnlyList<double>? values,
+        out MetricTrendScaleMode scaleMode,
+        out string primaryLabel,
+        out IReadOnlyList<double>? secondaryValues,
+        out string? secondaryLabel)
+    {
+        values = null;
+        secondaryValues = null;
+        secondaryLabel = null;
+        scaleMode = MetricTrendScaleMode.CpuPercent;
+        primaryLabel = string.Empty;
+
+        switch (tag)
+        {
+            case "SystemPrimary":
+                values = ViewModel.GlobalPrimaryTrendValues;
+                scaleMode = ViewModel.GlobalPrimaryScaleMode;
+                primaryLabel = $"System {ViewModel.GlobalPrimaryChartTitle}";
+                if (ViewModel.GlobalShowSecondaryOverlay && ViewModel.GlobalSecondaryTrendValues.Length > 0)
+                {
+                    secondaryValues = ViewModel.GlobalSecondaryTrendValues;
+                    secondaryLabel = ResolveOverlayLabel(scaleMode);
+                }
+
+                return true;
+            case "SystemAuxiliary":
+                values = ViewModel.GlobalAuxiliaryTrendValues;
+                scaleMode = ViewModel.GlobalAuxiliaryScaleMode;
+                primaryLabel = $"System {ViewModel.GlobalAuxiliaryChartTitle}";
+                return true;
+            case "ProcessPrimary":
+                values = ViewModel.GlobalPrimaryTrendValues;
+                scaleMode = ViewModel.GlobalPrimaryScaleMode;
+                primaryLabel = $"Process {ViewModel.GlobalPrimaryChartTitle}";
+                if (ViewModel.GlobalShowSecondaryOverlay && ViewModel.GlobalSecondaryTrendValues.Length > 0)
+                {
+                    secondaryValues = ViewModel.GlobalSecondaryTrendValues;
+                    secondaryLabel = ResolveOverlayLabel(scaleMode);
+                }
+
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static string ResolveOverlayLabel(MetricTrendScaleMode scaleMode)
+    {
+        return scaleMode switch
+        {
+            MetricTrendScaleMode.CpuPercent => "Kernel",
+            MetricTrendScaleMode.BitsRate => "Receive",
+            _ => "Overlay",
+        };
+    }
+
+    private static string FormatChartValue(MetricTrendScaleMode scaleMode, double value)
+    {
+        return scaleMode switch
+        {
+            MetricTrendScaleMode.CpuPercent => $"{Math.Max(0d, value):F1}%",
+            MetricTrendScaleMode.MemoryBytes => ValueFormat.FormatBytes(ClampToUlong(value)),
+            MetricTrendScaleMode.IoRate => ValueFormat.FormatRate(ClampToUlong(value)),
+            MetricTrendScaleMode.BitsRate => ValueFormat.FormatBitsRate(Math.Max(0d, value)),
+            _ => value.ToString("F1"),
+        };
+    }
+
+    private static ulong ClampToUlong(double value)
+    {
+        if (!double.IsFinite(value) || value <= 0d)
+        {
+            return 0UL;
+        }
+
+        return value >= ulong.MaxValue ? ulong.MaxValue : (ulong)Math.Round(value);
+    }
+
+    private void CloseInspectorChartTooltip()
+    {
+        _inspectorChartToolTip.IsOpen = false;
+        if (_activeInspectorChartOverlay is not null)
+        {
+            ToolTipService.SetToolTip(_activeInspectorChartOverlay, null);
+            _activeInspectorChartOverlay = null;
+        }
+    }
+
     private void ScheduleLogicalCpuGridLayout()
     {
         if (_logicalCpuGridLayoutQueued)
@@ -627,6 +819,7 @@ public sealed partial class MainWindow : Window
 
         ViewModel.GlobalCpuLogicalProcessorRows.CollectionChanged -= GlobalCpuLogicalProcessorRows_CollectionChanged;
         Closed -= OnWindowClosed;
+        CloseInspectorChartTooltip();
     }
 
     private void BeginSelectionSettleProbeIfNeeded()

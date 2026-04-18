@@ -3,13 +3,16 @@ using BatCave.Core.Runtime;
 using BatCave.Core.Serialization;
 using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI.Dispatching;
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -78,16 +81,31 @@ internal static class WinUiBenchmarkCliRunner
         CancellationToken ct)
     {
         MonitoringRuntime runtime = services.GetRequiredService<MonitoringRuntime>();
-        await runtime.InitializeAsync(ct).ConfigureAwait(false);
         IRuntimeEventGateway runtimeEventGateway = services.GetRequiredService<IRuntimeEventGateway>();
         MonitoringShellViewModel viewModel = services.GetRequiredService<MonitoringShellViewModel>();
+        DispatcherQueue dispatcherQueue = ResolveShellDispatcherQueue(services);
 
-        await viewModel.BootstrapAsync(ct).ConfigureAwait(false);
+        Stopwatch startupStopwatch = Stopwatch.StartNew();
+        await runtime.InitializeAsync(ct);
+        await viewModel.BootstrapAsync(ct);
         viewModel.ResetInteractionProbeRecorder();
-        await DriveInteractionProbeWorkloadAsync(runtime, runtimeEventGateway, viewModel, options.Ticks, options.SleepMs, ct)
-            .ConfigureAwait(false);
+        startupStopwatch.Stop();
 
-        InteractionProbeP95Snapshot interactionSnapshot = viewModel.SnapshotInteractionProbeP95();
+        LiveShellBenchmarkMeasurement liveShellMeasurement = await Task.Run(
+            () => DriveLiveShellWorkloadAsync(
+                dispatcherQueue,
+                runtime,
+                runtimeEventGateway,
+                viewModel,
+                options.Ticks,
+                options.SleepMs,
+                ct),
+            ct).ConfigureAwait(false);
+
+        InteractionProbeP95Snapshot interactionSnapshot = await InvokeOnDispatcherAsync(
+            dispatcherQueue,
+            viewModel.SnapshotInteractionProbeP95,
+            ct).ConfigureAwait(false);
         BenchmarkInteractionProbeP95 interactionProbeP95 = new()
         {
             FilterP95Ms = interactionSnapshot.FilterApplyMs,
@@ -103,10 +121,25 @@ internal static class WinUiBenchmarkCliRunner
             RequireInteractionProbeSpeedup = true,
         };
 
-        return BenchmarkRunner.Run(options.Ticks, options.SleepMs, ct, gateOptions);
+        return BenchmarkRunner.CreateSummary(
+            new BenchmarkMeasurement
+            {
+                Host = "winui",
+                MeasurementOrigin = "live_shell",
+                UsesAttachedDispatcher = true,
+                Ticks = liveShellMeasurement.Ticks,
+                SleepMs = liveShellMeasurement.SleepMs,
+                StartupMs = startupStopwatch.ElapsedMilliseconds,
+                TickP95Ms = liveShellMeasurement.TickP95Ms,
+                SortP95Ms = liveShellMeasurement.SortP95Ms,
+                AvgAppCpuPct = liveShellMeasurement.AvgAppCpuPct,
+                AvgAppRssBytes = liveShellMeasurement.AvgAppRssBytes,
+            },
+            gateOptions);
     }
 
-    private static async Task DriveInteractionProbeWorkloadAsync(
+    private static async Task<LiveShellBenchmarkMeasurement> DriveLiveShellWorkloadAsync(
+        DispatcherQueue dispatcherQueue,
         MonitoringRuntime runtime,
         IRuntimeEventGateway runtimeEventGateway,
         MonitoringShellViewModel viewModel,
@@ -116,10 +149,14 @@ internal static class WinUiBenchmarkCliRunner
     {
         int iterationCount = Math.Max(1, ticks);
         int warmupTicks = Math.Max(4, Math.Min(16, iterationCount / 5));
+        List<double> tickSamples = new(iterationCount);
+        List<double> sortSamples = new(iterationCount);
+        double cpuAccum = 0d;
+        ulong rssAccum = 0UL;
 
         for (int index = 0; index < warmupTicks; index++)
         {
-            PublishTelemetryTick(runtime, runtimeEventGateway);
+            await PublishTelemetryTickAsync(dispatcherQueue, runtime, runtimeEventGateway, ct).ConfigureAwait(false);
         }
 
         if (sleepMs > 0)
@@ -130,24 +167,28 @@ internal static class WinUiBenchmarkCliRunner
         for (int index = 0; index < iterationCount; index++)
         {
             ct.ThrowIfCancellationRequested();
-            PublishTelemetryTick(runtime, runtimeEventGateway);
+            tickSamples.Add(await PublishTelemetryTickAsync(dispatcherQueue, runtime, runtimeEventGateway, ct).ConfigureAwait(false));
 
             SortColumn sortColumn = SortColumns[index % SortColumns.Length];
-            viewModel.ChangeSort(sortColumn);
+            sortSamples.Add(await MeasureSortInteractionAsync(dispatcherQueue, viewModel, sortColumn, ct).ConfigureAwait(false));
 
-            viewModel.FilterText = ResolveFilterText(viewModel, index);
+            await InvokeOnDispatcherAsync(
+                dispatcherQueue,
+                () =>
+                {
+                    viewModel.FilterText = ResolveFilterText(viewModel, index);
+                },
+                ct).ConfigureAwait(false);
             await Task.Delay(FilterDebounceSettleMs, ct).ConfigureAwait(false);
+            await AwaitDispatcherIdleAsync(dispatcherQueue, ct).ConfigureAwait(false);
 
-            if (TryGetVisibleRowForSelection(viewModel, index, out ProcessRowViewState rowState))
-            {
-                long selectionStartedAt = Stopwatch.GetTimestamp();
-                await viewModel.SelectRowAsync(rowState.Sample, ct).ConfigureAwait(false);
-                viewModel.RecordSelectionSettleProbe(Stopwatch.GetTimestamp() - selectionStartedAt);
-            }
+            await MeasureSelectionInteractionAsync(dispatcherQueue, viewModel, index, ct).ConfigureAwait(false);
 
-            long plotStartedAt = Stopwatch.GetTimestamp();
-            viewModel.MetricFocus = (DetailMetricFocus)(index % 5);
-            viewModel.RecordPlotRefreshProbe(Stopwatch.GetTimestamp() - plotStartedAt);
+            await MeasurePlotInteractionAsync(dispatcherQueue, viewModel, index, ct).ConfigureAwait(false);
+
+            RuntimeHealth health = runtime.GetRuntimeHealth();
+            cpuAccum += health.AppCpuPct;
+            rssAccum = AddSaturating(rssAccum, health.AppRssBytes);
 
             if (sleepMs > 0)
             {
@@ -155,15 +196,269 @@ internal static class WinUiBenchmarkCliRunner
             }
         }
 
-        await Task.Delay(50, ct).ConfigureAwait(false);
+        await AwaitDispatcherIdleAsync(dispatcherQueue, ct).ConfigureAwait(false);
+
+        return new LiveShellBenchmarkMeasurement
+        {
+            Ticks = iterationCount,
+            SleepMs = Math.Max(0, sleepMs),
+            TickP95Ms = Percentile95(tickSamples),
+            SortP95Ms = Percentile95(sortSamples),
+            AvgAppCpuPct = iterationCount > 0 ? cpuAccum / iterationCount : 0d,
+            AvgAppRssBytes = iterationCount > 0 ? rssAccum / (ulong)iterationCount : 0UL,
+        };
     }
 
-    private static void PublishTelemetryTick(
+    private static async Task<double> PublishTelemetryTickAsync(
+        DispatcherQueue dispatcherQueue,
         MonitoringRuntime runtime,
-        IRuntimeEventGateway runtimeEventGateway)
+        IRuntimeEventGateway runtimeEventGateway,
+        CancellationToken ct)
     {
+        Stopwatch stopwatch = Stopwatch.StartNew();
         TickOutcome outcome = runtime.Tick(0);
+        Task telemetryDrain = ShouldAwaitTelemetryDrain(outcome)
+            ? WaitForTelemetryDeltaAsync(runtimeEventGateway, outcome.Delta.Seq, ct)
+            : Task.CompletedTask;
+
         runtimeEventGateway.Publish(outcome);
+        await telemetryDrain.ConfigureAwait(false);
+        await AwaitDispatcherIdleAsync(dispatcherQueue, ct).ConfigureAwait(false);
+        stopwatch.Stop();
+        return stopwatch.Elapsed.TotalMilliseconds;
+    }
+
+    private static bool ShouldAwaitTelemetryDrain(TickOutcome outcome)
+    {
+        return outcome.EmitTelemetryDelta
+               || outcome.Delta.Upserts.Count > 0
+               || outcome.Delta.Exits.Count > 0;
+    }
+
+    private static async Task<double> MeasureSortInteractionAsync(
+        DispatcherQueue dispatcherQueue,
+        MonitoringShellViewModel viewModel,
+        SortColumn sortColumn,
+        CancellationToken ct)
+    {
+        long startedAt = Stopwatch.GetTimestamp();
+        await InvokeOnDispatcherAsync(dispatcherQueue, () => viewModel.ChangeSort(sortColumn), ct).ConfigureAwait(false);
+        await AwaitDispatcherIdleAsync(dispatcherQueue, ct).ConfigureAwait(false);
+        return ElapsedMilliseconds(startedAt);
+    }
+
+    private static async Task MeasureSelectionInteractionAsync(
+        DispatcherQueue dispatcherQueue,
+        MonitoringShellViewModel viewModel,
+        int index,
+        CancellationToken ct)
+    {
+        await InvokeOnDispatcherAsync(
+            dispatcherQueue,
+            async () =>
+            {
+                if (!TryGetVisibleRowForSelection(viewModel, index, out ProcessRowViewState rowState))
+                {
+                    return;
+                }
+
+                long selectionStartedAt = Stopwatch.GetTimestamp();
+                await viewModel.SelectRowAsync(rowState.Sample, ct);
+                viewModel.RecordSelectionSettleProbe(Stopwatch.GetTimestamp() - selectionStartedAt);
+            },
+            ct).ConfigureAwait(false);
+        await AwaitDispatcherIdleAsync(dispatcherQueue, ct).ConfigureAwait(false);
+    }
+
+    private static async Task MeasurePlotInteractionAsync(
+        DispatcherQueue dispatcherQueue,
+        MonitoringShellViewModel viewModel,
+        int index,
+        CancellationToken ct)
+    {
+        await InvokeOnDispatcherAsync(
+            dispatcherQueue,
+            () =>
+            {
+                long plotStartedAt = Stopwatch.GetTimestamp();
+                viewModel.MetricFocus = (DetailMetricFocus)(index % 5);
+                viewModel.RecordPlotRefreshProbe(Stopwatch.GetTimestamp() - plotStartedAt);
+            },
+            ct).ConfigureAwait(false);
+        await AwaitDispatcherIdleAsync(dispatcherQueue, ct).ConfigureAwait(false);
+    }
+
+    private static Task AwaitDispatcherIdleAsync(
+        DispatcherQueue dispatcherQueue,
+        CancellationToken ct)
+    {
+        return InvokeOnDispatcherAsync(dispatcherQueue, static () => { }, ct);
+    }
+
+    private static async Task InvokeOnDispatcherAsync(
+        DispatcherQueue dispatcherQueue,
+        Func<Task> callback,
+        CancellationToken ct)
+    {
+        if (dispatcherQueue.HasThreadAccess)
+        {
+            ct.ThrowIfCancellationRequested();
+            await callback().ConfigureAwait(false);
+            return;
+        }
+
+        TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration cancellationRegistration = ct.Register(static state =>
+        {
+            ((TaskCompletionSource)state!).TrySetCanceled();
+        }, completion);
+
+        if (!dispatcherQueue.TryEnqueue(async () =>
+            {
+                try
+                {
+                    await callback().ConfigureAwait(false);
+                    completion.TrySetResult();
+                }
+                catch (OperationCanceledException)
+                {
+                    completion.TrySetCanceled();
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            }))
+        {
+            throw new InvalidOperationException("Failed to enqueue WinUI benchmark work on the dispatcher queue.");
+        }
+
+        await completion.Task.ConfigureAwait(false);
+    }
+
+    private static async Task InvokeOnDispatcherAsync(
+        DispatcherQueue dispatcherQueue,
+        Action callback,
+        CancellationToken ct)
+    {
+        await InvokeOnDispatcherAsync(
+            dispatcherQueue,
+            () =>
+            {
+                callback();
+                return Task.CompletedTask;
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task<T> InvokeOnDispatcherAsync<T>(
+        DispatcherQueue dispatcherQueue,
+        Func<T> callback,
+        CancellationToken ct)
+    {
+        T result = default!;
+        await InvokeOnDispatcherAsync(
+            dispatcherQueue,
+            () =>
+            {
+                result = callback();
+                return Task.CompletedTask;
+            },
+            ct).ConfigureAwait(false);
+        return result;
+    }
+
+    private static Task WaitForTelemetryDeltaAsync(
+        IRuntimeEventGateway runtimeEventGateway,
+        ulong minimumSequence,
+        CancellationToken ct)
+    {
+        TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler<ProcessDeltaBatch>? handler = null;
+        CancellationTokenRegistration cancellationRegistration = default;
+        handler = (_, delta) =>
+        {
+            if (delta.Seq < minimumSequence)
+            {
+                return;
+            }
+
+            runtimeEventGateway.TelemetryDelta -= handler;
+            cancellationRegistration.Dispose();
+            completion.TrySetResult();
+        };
+
+        runtimeEventGateway.TelemetryDelta += handler;
+        cancellationRegistration = ct.Register(static state =>
+        {
+            StateTuple tuple = (StateTuple)state!;
+            tuple.Gateway.TelemetryDelta -= tuple.Handler;
+            tuple.Completion.TrySetCanceled();
+        }, new StateTuple(runtimeEventGateway, handler, completion));
+
+        return completion.Task;
+    }
+
+    private static double ElapsedMilliseconds(long startedAt)
+    {
+        return (Stopwatch.GetTimestamp() - startedAt) * 1000d / Stopwatch.Frequency;
+    }
+
+    private static ulong AddSaturating(ulong left, ulong right)
+    {
+        ulong sum = left + right;
+        return sum < left ? ulong.MaxValue : sum;
+    }
+
+    private static double Percentile95(List<double> samples)
+    {
+        if (samples.Count == 0)
+        {
+            return 0d;
+        }
+
+        double[] ordered = [.. samples];
+        Array.Sort(ordered);
+        int percentileIndex = Math.Min(
+            ordered.Length - 1,
+            Math.Max(0, (int)Math.Ceiling(ordered.Length * 0.95d) - 1));
+
+        return ordered[percentileIndex];
+    }
+
+    private static DispatcherQueue ResolveShellDispatcherQueue(IServiceProvider services)
+    {
+        Type? mainWindowType = services
+            .GetType()
+            .Assembly
+            .GetType("BatCave.MainWindow", throwOnError: false);
+
+        if (mainWindowType is null)
+        {
+            mainWindowType = AppDomain.CurrentDomain
+                .GetAssemblies()
+                .Select(assembly => assembly.GetType("BatCave.MainWindow", throwOnError: false))
+                .FirstOrDefault(static candidate => candidate is not null);
+        }
+
+        if (mainWindowType is null)
+        {
+            throw new InvalidOperationException("Could not resolve the BatCave shell window type for WinUI benchmark execution.");
+        }
+
+        object? shellWindow = services.GetService(mainWindowType);
+        if (shellWindow is null)
+        {
+            throw new InvalidOperationException("Could not resolve the BatCave shell window service for WinUI benchmark execution.");
+        }
+
+        PropertyInfo? dispatcherQueueProperty = mainWindowType.GetProperty(nameof(DispatcherQueue));
+        if (dispatcherQueueProperty?.GetValue(shellWindow) is not DispatcherQueue dispatcherQueue)
+        {
+            throw new InvalidOperationException("Could not resolve the BatCave shell dispatcher queue for WinUI benchmark execution.");
+        }
+
+        return dispatcherQueue;
     }
 
     private static string ResolveFilterText(MonitoringShellViewModel viewModel, int index)
@@ -379,5 +674,24 @@ internal static class WinUiBenchmarkCliRunner
 
         public BenchmarkGateOptions GateOptions { get; init; } = new();
     }
-}
 
+    private sealed record LiveShellBenchmarkMeasurement
+    {
+        public int Ticks { get; init; }
+
+        public int SleepMs { get; init; }
+
+        public double TickP95Ms { get; init; }
+
+        public double SortP95Ms { get; init; }
+
+        public double AvgAppCpuPct { get; init; }
+
+        public ulong AvgAppRssBytes { get; init; }
+    }
+
+    private sealed record StateTuple(
+        IRuntimeEventGateway Gateway,
+        EventHandler<ProcessDeltaBatch> Handler,
+        TaskCompletionSource Completion);
+}

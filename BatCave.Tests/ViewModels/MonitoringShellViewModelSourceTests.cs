@@ -40,6 +40,16 @@ public sealed class MonitoringShellViewModelSourceTests
         Assert.DoesNotContain("ReassertSelectedVisibleRowBindingOnDispatcher(", selectionSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MonitoringShellViewModelTelemetrySource_OnlyRefreshesFilterForMembershipChanges()
+    {
+        string telemetrySource = File.ReadAllText(ResolveRepoPath("BatCave", "ViewModels", "MonitoringShellViewModel.Telemetry.cs"));
+
+        Assert.DoesNotContain("bool hasActiveVisibilityFilter = !adminModeEnabled || adminEnabledOnlyFilter;", telemetrySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (hasActiveTextFilter || hasActiveVisibilityFilter)", telemetrySource, StringComparison.Ordinal);
+        Assert.Contains("refreshFilter |= DidVisibilityMembershipChange(", telemetrySource, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 
 namespace BatCave.Core.Runtime;
@@ -12,6 +13,8 @@ internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
     private bool _disposed;
     private long _latestEnqueuedSerial;
     private long _lastCompletedSerial;
+    private long _lastFailedSerial;
+    private ExceptionDispatchInfo? _lastFailure;
     private List<FlushWaiter>? _flushWaiters;
 
     public CoalescedLatestWriteQueue(Func<T, CancellationToken, Task> saveAsync)
@@ -47,13 +50,19 @@ internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
         Task pendingTask;
         lock (_sync)
         {
-            if (_latestEnqueuedSerial <= _lastCompletedSerial)
+            long targetSerial = _latestEnqueuedSerial;
+            if (targetSerial <= _lastCompletedSerial)
             {
                 return Task.CompletedTask;
             }
 
+            if (_lastFailedSerial >= targetSerial && _lastFailure is not null)
+            {
+                return Task.FromException(_lastFailure.SourceException);
+            }
+
             TaskCompletionSource<bool> flushSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            (_flushWaiters ??= []).Add(new FlushWaiter(_latestEnqueuedSerial, flushSignal));
+            (_flushWaiters ??= []).Add(new FlushWaiter(targetSerial, flushSignal));
             pendingTask = flushSignal.Task;
         }
 
@@ -93,14 +102,11 @@ internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
                 try
                 {
                     await _saveAsync(queuedWrite.Value, CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // keep runtime resilient if local persistence is temporarily unavailable
-                }
-                finally
-                {
                     MarkCompleted(queuedWrite.Serial);
+                }
+                catch (Exception ex)
+                {
+                    MarkFailed(queuedWrite.Serial, ex);
                 }
             }
         }
@@ -142,6 +148,42 @@ internal sealed class CoalescedLatestWriteQueue<T> : IDisposable
         foreach (TaskCompletionSource<bool> readySignal in readySignals)
         {
             readySignal.TrySetResult(true);
+        }
+    }
+
+    private void MarkFailed(long failedSerial, Exception exception)
+    {
+        List<TaskCompletionSource<bool>> failedSignals = [];
+
+        lock (_sync)
+        {
+            if (failedSerial > _lastFailedSerial)
+            {
+                _lastFailedSerial = failedSerial;
+                _lastFailure = ExceptionDispatchInfo.Capture(exception);
+            }
+
+            if (_flushWaiters is null || _flushWaiters.Count == 0)
+            {
+                return;
+            }
+
+            for (int index = _flushWaiters.Count - 1; index >= 0; index--)
+            {
+                FlushWaiter waiter = _flushWaiters[index];
+                if (waiter.TargetSerial > failedSerial)
+                {
+                    continue;
+                }
+
+                failedSignals.Add(waiter.Signal);
+                _flushWaiters.RemoveAt(index);
+            }
+        }
+
+        foreach (TaskCompletionSource<bool> failedSignal in failedSignals)
+        {
+            failedSignal.TrySetException(exception);
         }
     }
 

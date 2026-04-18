@@ -80,6 +80,39 @@ public class RuntimeLoopServiceTests
         Assert.Equal(0, completedTickCount);
     }
 
+    [Fact]
+    public async Task StopAndAdvanceGenerationAsync_WhenTickInFlight_WaitsForQuiescentStop()
+    {
+        BlockingCollector collector = new();
+        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, new TestPersistenceStore());
+        RuntimeLoopService runtimeLoopService = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
+
+        runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
+        await collector.WaitForTickStartedAsync();
+
+        Task stopTask = runtimeLoopService.StopAndAdvanceGenerationAsync(CancellationToken.None);
+        Task completed = await Task.WhenAny(stopTask, Task.Delay(100));
+        Assert.NotSame(stopTask, completed);
+
+        collector.ReleaseTick();
+        await stopTask.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, collector.CompletedTicks);
+    }
+
+    [Fact]
+    public async Task TickDuration_WhenOverInterval_RecordsDroppedTicksUsingConfiguredInterval()
+    {
+        SlowCollector collector = new(TimeSpan.FromMilliseconds(180));
+        using MonitoringRuntime runtime = RuntimeTestHarness.CreateRuntime(collector, new TestPersistenceStore());
+        RuntimeLoopService runtimeLoopService = new(runtime, TimeProvider.System, TimeSpan.FromMilliseconds(25));
+
+        runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
+        await collector.WaitForFirstTickCompletedAsync();
+        await runtimeLoopService.StopAndAdvanceGenerationAsync(CancellationToken.None);
+
+        Assert.True(runtime.GetRuntimeHealth().DroppedTicks > 0);
+    }
+
     private sealed class SequenceCollector : IProcessCollector
     {
         private readonly Queue<Func<ulong, IReadOnlyList<ProcessSample>>> _steps;
@@ -101,11 +134,75 @@ public class RuntimeLoopServiceTests
         }
     }
 
+    private sealed class BlockingCollector : IProcessCollector
+    {
+        private readonly TaskCompletionSource<bool> _tickStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _releaseTick = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _completedTicks;
+
+        public int CompletedTicks => Volatile.Read(ref _completedTicks);
+
+        public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
+        {
+            _tickStarted.TrySetResult(true);
+            _releaseTick.Task.GetAwaiter().GetResult();
+            Interlocked.Increment(ref _completedTicks);
+            return [];
+        }
+
+        public string? TakeWarning()
+        {
+            return null;
+        }
+
+        public Task WaitForTickStartedAsync()
+        {
+            return _tickStarted.Task;
+        }
+
+        public void ReleaseTick()
+        {
+            _releaseTick.TrySetResult(true);
+        }
+    }
+
+    private sealed class SlowCollector : IProcessCollector
+    {
+        private readonly TimeSpan _firstTickDelay;
+        private readonly TaskCompletionSource<bool> _firstTickCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public SlowCollector(TimeSpan firstTickDelay)
+        {
+            _firstTickDelay = firstTickDelay;
+        }
+
+        public IReadOnlyList<ProcessSample> CollectTick(ulong seq)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                Thread.Sleep(_firstTickDelay);
+                _firstTickCompleted.TrySetResult(true);
+            }
+
+            return [];
+        }
+
+        public string? TakeWarning()
+        {
+            return null;
+        }
+
+        public Task WaitForFirstTickCompletedAsync()
+        {
+            return _firstTickCompleted.Task;
+        }
+    }
+
     private static async Task RunLoopForAsync(RuntimeLoopService runtimeLoopService, int runDurationMs)
     {
         runtimeLoopService.Start(runtimeLoopService.CurrentGeneration);
         await Task.Delay(runDurationMs);
-        runtimeLoopService.StopAndAdvanceGeneration();
-        await Task.Delay(150);
+        await runtimeLoopService.StopAndAdvanceGenerationAsync(CancellationToken.None);
     }
 }

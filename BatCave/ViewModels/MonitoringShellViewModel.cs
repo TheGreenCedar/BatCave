@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Reactive.Subjects;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace BatCave.ViewModels;
 
@@ -50,6 +51,7 @@ public partial class MonitoringShellViewModel : ObservableObject, IDisposable
 
     private DispatcherQueue? _dispatcherQueue;
     private CancellationTokenSource? _filterDebounceCts;
+    private Func<CancellationToken, Task>? _startupFailureRecoveryAction;
     private bool _disposed;
     private readonly object _pendingUiEventSync = new();
     private readonly Dictionary<ProcessIdentity, ProcessSample> _pendingTelemetryUpserts = [];

@@ -153,6 +153,18 @@ public class MainWindowSourceTests
         Assert.DoesNotContain("DispatcherQueue.TryEnqueue(() =>", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MainWindowSource_UpdatesMotionResourcesAndChartHoverOverlays()
+    {
+        string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
+
+        Assert.Contains("new Windows.UI.ViewManagement.UISettings()", source, StringComparison.Ordinal);
+        Assert.Contains("BatCaveInteractivePointerOverOpacity", source, StringComparison.Ordinal);
+        Assert.Contains("BatCaveChartSmoothTransitionsEnabled", source, StringComparison.Ordinal);
+        Assert.Contains("private void InspectorChartOverlay_PointerMoved(object sender, PointerRoutedEventArgs e)", source, StringComparison.Ordinal);
+        Assert.Contains("private void InspectorChartOverlay_PointerExited(object sender, PointerRoutedEventArgs e)", source, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoPath(params string[] relativeSegments)
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

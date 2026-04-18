@@ -1,7 +1,6 @@
 using BatCave.Core.Domain;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -23,13 +22,13 @@ public interface IRuntimeEventGateway
 
 public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
 {
-    private const int TelemetryChannelCapacity = 64;
     private static readonly TimeSpan TelemetryFrameWindow = TimeSpan.FromMilliseconds(33);
 
     private readonly IRuntimeHealthService _runtimeHealthService;
+    private readonly object _telemetrySync = new();
     private readonly Dictionary<ProcessIdentity, ProcessSample> _pendingUpserts = new();
     private readonly HashSet<ProcessIdentity> _pendingExits = [];
-    private readonly Channel<ProcessDeltaBatch> _telemetryChannel;
+    private readonly Channel<bool> _telemetrySignalChannel;
     private readonly CancellationTokenSource _coalescerCts = new();
     private readonly Task _coalescerTask;
     private ulong _pendingSeq;
@@ -39,7 +38,7 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
     public RuntimeGateway(IRuntimeHealthService runtimeHealthService)
     {
         _runtimeHealthService = runtimeHealthService;
-        _telemetryChannel = Channel.CreateBounded<ProcessDeltaBatch>(new BoundedChannelOptions(TelemetryChannelCapacity)
+        _telemetrySignalChannel = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
         {
             SingleReader = true,
             SingleWriter = false,
@@ -95,7 +94,7 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
             return;
         }
 
-        _telemetryChannel.Writer.TryComplete();
+        _telemetrySignalChannel.Writer.TryComplete();
         _coalescerCts.Cancel();
 
         try
@@ -116,20 +115,25 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
             return;
         }
 
-        _ = _telemetryChannel.Writer.TryWrite(delta);
+        lock (_telemetrySync)
+        {
+            MergeDelta(delta);
+        }
+
+        _ = _telemetrySignalChannel.Writer.TryWrite(true);
     }
 
     private async Task RunTelemetryCoalescerAsync()
     {
-        ChannelReader<ProcessDeltaBatch> reader = _telemetryChannel.Reader;
+        ChannelReader<bool> reader = _telemetrySignalChannel.Reader;
 
         try
         {
             while (await reader.WaitToReadAsync(_coalescerCts.Token).ConfigureAwait(false))
             {
-                DrainTelemetryQueue(reader);
-                EmitMergedTelemetryIfPending();
+                DrainTelemetrySignals(reader);
                 await Task.Delay(TelemetryFrameWindow, _coalescerCts.Token).ConfigureAwait(false);
+                EmitMergedTelemetryIfPending();
             }
         }
         catch (OperationCanceledException) when (_coalescerCts.IsCancellationRequested)
@@ -137,32 +141,27 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
         }
         finally
         {
-            DrainTelemetryQueue(reader);
+            DrainTelemetrySignals(reader);
             EmitMergedTelemetryIfPending();
         }
     }
 
-    private void DrainTelemetryQueue(ChannelReader<ProcessDeltaBatch> reader)
+    private static void DrainTelemetrySignals(ChannelReader<bool> reader)
     {
-        while (reader.TryRead(out ProcessDeltaBatch? delta))
+        while (reader.TryRead(out _))
         {
-            if (delta is null)
-            {
-                continue;
-            }
-
-            MergeDelta(delta);
         }
     }
 
     private void EmitMergedTelemetryIfPending()
     {
-        if (!_hasPendingTelemetry)
+        ProcessDeltaBatch? delta = FlushPendingDeltaOrNull();
+        if (delta is null)
         {
             return;
         }
 
-        TelemetryDelta?.Invoke(this, FlushPendingDelta());
+        TelemetryDelta?.Invoke(this, delta);
     }
 
     private void MergeDelta(ProcessDeltaBatch delta)
@@ -208,18 +207,26 @@ public sealed class RuntimeGateway : IRuntimeEventGateway, IDisposable
         _pendingExits.Add(identity);
     }
 
-    private ProcessDeltaBatch FlushPendingDelta()
+    private ProcessDeltaBatch? FlushPendingDeltaOrNull()
     {
-        ProcessDeltaBatch delta = new()
+        lock (_telemetrySync)
         {
-            Seq = _pendingSeq,
-            Upserts = [.. _pendingUpserts.Values],
-            Exits = [.. _pendingExits],
-        };
+            if (!_hasPendingTelemetry)
+            {
+                return null;
+            }
 
-        _pendingUpserts.Clear();
-        _pendingExits.Clear();
-        _hasPendingTelemetry = false;
-        return delta;
+            ProcessDeltaBatch delta = new()
+            {
+                Seq = _pendingSeq,
+                Upserts = [.. _pendingUpserts.Values],
+                Exits = [.. _pendingExits],
+            };
+
+            _pendingUpserts.Clear();
+            _pendingExits.Clear();
+            _hasPendingTelemetry = false;
+            return delta;
+        }
     }
 }

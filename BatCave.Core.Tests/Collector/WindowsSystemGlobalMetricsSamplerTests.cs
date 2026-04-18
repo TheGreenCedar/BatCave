@@ -95,7 +95,7 @@ public class WindowsSystemGlobalMetricsSamplerTests
     }
 
     [Fact]
-    public void Sample_WhenProbeCompletesAfterTimeout_PromotesLateResult()
+    public void Sample_WhenProbeCompletesAfterTimeout_KeepsNewestCycleResult()
     {
         int cpuProbeCalls = 0;
         using WindowsSystemGlobalMetricsSampler sampler = new(
@@ -128,8 +128,50 @@ public class WindowsSystemGlobalMetricsSamplerTests
         Thread.Sleep(180);
         SystemGlobalMetricsSample afterLateCompletion = sampler.Sample();
 
-        Assert.Equal("cpu-1", afterLateCompletion.CpuSnapshot?.ProcessorName);
-        Assert.True(cpuProbeCalls >= 1);
+        Assert.Equal("cpu-2", afterLateCompletion.CpuSnapshot?.ProcessorName);
+        Assert.True(cpuProbeCalls >= 2);
+    }
+
+    [Fact]
+    public void Sample_WhenProbeNeverCompletes_FutureCyclesStillRun()
+    {
+        TaskCompletionSource<bool> neverComplete = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int memoryProbeCalls = 0;
+        using WindowsSystemGlobalMetricsSampler sampler = new(
+            cpuSnapshotFactory: (_, _) => new SystemGlobalCpuSnapshot { ProcessorName = "cpu" },
+            memorySnapshotFactory: _ =>
+            {
+                int call = Interlocked.Increment(ref memoryProbeCalls);
+                if (call == 2)
+                {
+                    neverComplete.Task.GetAwaiter().GetResult();
+                }
+
+                return new SystemGlobalMemorySnapshot
+                {
+                    TotalBytes = (ulong)call,
+                };
+            },
+            diskSnapshotFactory: () => [],
+            networkSnapshotFactory: () => [],
+            metadataRefreshAction: static () => { },
+            extendedProbeSoftTimeout: TimeSpan.FromMilliseconds(40),
+            initializePdhCounters: false);
+
+        _ = sampler.Sample();
+        Thread.Sleep(120);
+        Assert.Equal(1UL, sampler.Sample().MemorySnapshot?.TotalBytes);
+
+        _ = sampler.Sample();
+        Thread.Sleep(80);
+        Assert.Equal(1UL, sampler.Sample().MemorySnapshot?.TotalBytes);
+
+        _ = sampler.Sample();
+        Thread.Sleep(120);
+
+        SystemGlobalMetricsSample afterRetry = sampler.Sample();
+        Assert.Equal(3UL, afterRetry.MemorySnapshot?.TotalBytes);
+        Assert.True(memoryProbeCalls >= 3);
     }
 
     [Fact]

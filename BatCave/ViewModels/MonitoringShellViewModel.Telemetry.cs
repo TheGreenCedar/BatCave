@@ -67,6 +67,13 @@ public partial class MonitoringShellViewModel
                 changedProjectionRows ??= [];
                 changedProjectionRows.Add(identity);
             }
+
+            refreshFilter |= DidVisibilityMembershipChange(
+                hadPrevious ? previous : null,
+                upsert,
+                filterNeedle,
+                adminModeEnabled,
+                adminEnabledOnlyFilter);
         }
 
         if (changedProjectionRows is { Count: > 0 })
@@ -81,6 +88,22 @@ public partial class MonitoringShellViewModel
         }
 
         return refreshFilter;
+    }
+
+    private static bool DidVisibilityMembershipChange(
+        ProcessSample? previous,
+        ProcessSample current,
+        string filterNeedle,
+        bool adminModeEnabled,
+        bool adminEnabledOnlyFilter)
+    {
+        if (previous is null)
+        {
+            return false;
+        }
+
+        return IsVisibleForCurrentRowShaping(previous, filterNeedle, adminModeEnabled, adminEnabledOnlyFilter)
+               != IsVisibleForCurrentRowShaping(current, filterNeedle, adminModeEnabled, adminEnabledOnlyFilter);
     }
 
     private bool ApplyExits(IReadOnlyList<ProcessIdentity> exits)

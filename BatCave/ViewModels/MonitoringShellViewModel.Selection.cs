@@ -92,12 +92,17 @@ public partial class MonitoringShellViewModel
             return;
         }
 
+        bool selectionModeChanged = SelectedRow is not null;
         Interlocked.Increment(ref _metadataRequestVersion);
         SelectedRow = null;
         SelectedVisibleRow = null;
         SelectedMetadata = null;
         IsMetadataLoading = false;
         MetadataError = null;
+        if (selectionModeChanged)
+        {
+            ResetInspectorSectionToSummary();
+        }
     }
 
     private void ApplySelectedVisibleRowBinding(ProcessRowViewState? value)
@@ -183,10 +188,15 @@ public partial class MonitoringShellViewModel
 
     private void PrepareSelectionState(ProcessSample row, ProcessIdentity identity)
     {
+        bool selectionModeChanged = SelectedRow is null;
         SelectedRow = row;
         SelectedVisibleRow = TryGetVisibleRow(identity);
         MetadataError = null;
         SelectedMetadata = null;
+        if (selectionModeChanged)
+        {
+            ResetInspectorSectionToSummary();
+        }
     }
 
     private bool TryApplyCachedMetadata(ProcessIdentity identity)
