@@ -8,6 +8,7 @@ using BatCave.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Serilog;
@@ -182,7 +183,7 @@ public partial class App : Application
         {
             Text = "Startup Error",
             FontSize = 24,
-            FontWeight = Windows.UI.Text.FontWeights.SemiBold,
+            FontWeight = FontWeights.SemiBold,
         };
         TextBlock messageBlock = new()
         {
