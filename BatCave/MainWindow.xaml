@@ -797,40 +797,44 @@
                         </Grid>
 
                         <Grid Grid.Row="1">
-                            <ListView
+                            <GridView
                                 x:Name="GlobalResourceListView"
                                 Background="Transparent"
                                 BorderThickness="0"
-                                Height="82"
+                                MinHeight="82"
+                                MaxHeight="170"
                                 Visibility="{Binding GlobalPerformanceContentVisibility, Mode=OneWay}"
                                 ItemsSource="{Binding GlobalResourceRows, Mode=OneWay}"
                                 SelectionChanged="GlobalResourceListView_SelectionChanged"
                                 SelectionMode="Single"
-                                ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                                ScrollViewer.VerticalScrollBarVisibility="Disabled">
-                                <ListView.Resources>
-                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="Transparent" />
-                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="Transparent" />
-                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="Transparent" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="BatCaveTextPrimaryBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelectedPointerOver" ResourceKey="BatCaveTextPrimaryBrush" />
-                                    <StaticResource x:Key="ListViewItemForegroundSelectedPressed" ResourceKey="BatCaveTextPrimaryBrush" />
+                                ScrollViewer.HorizontalScrollMode="Disabled"
+                                ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                ScrollViewer.VerticalScrollMode="Enabled"
+                                ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <GridView.Resources>
+                                    <SolidColorBrush x:Key="GridViewItemBackgroundSelected" Color="Transparent" />
+                                    <SolidColorBrush x:Key="GridViewItemBackgroundSelectedPointerOver" Color="Transparent" />
+                                    <SolidColorBrush x:Key="GridViewItemBackgroundSelectedPressed" Color="Transparent" />
+                                    <StaticResource x:Key="GridViewItemForegroundSelected" ResourceKey="BatCaveTextPrimaryBrush" />
+                                    <StaticResource x:Key="GridViewItemForegroundSelectedPointerOver" ResourceKey="BatCaveTextPrimaryBrush" />
+                                    <StaticResource x:Key="GridViewItemForegroundSelectedPressed" ResourceKey="BatCaveTextPrimaryBrush" />
+                                    <x:Boolean x:Key="GridViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
                                     <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
-                                </ListView.Resources>
-                                <ListView.ItemsPanel>
+                                </GridView.Resources>
+                                <GridView.ItemsPanel>
                                     <ItemsPanelTemplate>
-                                        <StackPanel Orientation="Horizontal" />
+                                        <ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="2" />
                                     </ItemsPanelTemplate>
-                                </ListView.ItemsPanel>
-                                <ListView.ItemContainerStyle>
-                                    <Style TargetType="ListViewItem">
+                                </GridView.ItemsPanel>
+                                <GridView.ItemContainerStyle>
+                                    <Style TargetType="GridViewItem">
                                         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                                         <Setter Property="MinWidth" Value="128" />
                                         <Setter Property="Padding" Value="0" />
                                         <Setter Property="Margin" Value="0,0,6,0" />
                                     </Style>
-                                </ListView.ItemContainerStyle>
-                                <ListView.ItemTemplate>
+                                </GridView.ItemContainerStyle>
+                                <GridView.ItemTemplate>
                                     <DataTemplate>
                                         <Border Background="{Binding ContainerBackgroundBrush, Mode=OneWay}" BorderBrush="{Binding ContainerBorderBrush, Mode=OneWay}" BorderThickness="1.5" CornerRadius="8" Padding="8">
                                             <Grid RowSpacing="4">
@@ -866,8 +870,8 @@
                                             </Grid>
                                         </Border>
                                     </DataTemplate>
-                                </ListView.ItemTemplate>
-                            </ListView>
+                                </GridView.ItemTemplate>
+                            </GridView>
                             <Grid Visibility="{Binding GlobalPerformanceSkeletonVisibility, Mode=OneWay}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />

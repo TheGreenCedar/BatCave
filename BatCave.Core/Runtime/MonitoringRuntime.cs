@@ -104,9 +104,15 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         _collector = startupCollector.Collector;
         _effectiveAdminMode = startupCollector.EffectiveAdminMode;
         _initialized = true;
-        string? startupWarning = deferAdminMode
-            ? "admin_mode_start_deferred requested_admin_mode=true effective_admin_mode=false reason=interactive startup opens in local mode; enable Admin Mode after launch."
-            : startupCollector.Warning;
+        if (deferAdminMode)
+        {
+            _logger.LogInformation(
+                "admin_mode_start_deferred requested_admin_mode={RequestedAdminMode} effective_admin_mode={EffectiveAdminMode}",
+                requestedAdminMode,
+                _effectiveAdminMode);
+        }
+
+        string? startupWarning = startupCollector.Warning;
         EnqueueRuntimeWarning(startupWarning);
         LogActivationWarning(requestedAdminMode, startupWarning);
         LogStartup();
@@ -610,4 +616,3 @@ public sealed class MonitoringRuntime : IMonitoringRuntime, IDisposable
         }
     }
 }
-

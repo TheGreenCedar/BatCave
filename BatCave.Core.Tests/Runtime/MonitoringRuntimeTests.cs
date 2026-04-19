@@ -274,7 +274,7 @@ public class MonitoringRuntimeTests
     }
 
     [Fact]
-    public async Task InitializeAsync_WhenAdminModeDeferredAtStartup_UsesLocalCollectorAndWarns()
+    public async Task InitializeAsync_WhenAdminModeDeferredAtStartup_UsesLocalCollectorWithoutWarning()
     {
         FailingAdminCollectorFactory collectorFactory = new();
         PreloadedSettingsPersistenceStore persistenceStore = new(new UserSettings
@@ -299,10 +299,8 @@ public class MonitoringRuntimeTests
         Assert.False(activation.EffectiveAdminMode);
         Assert.True(persistenceStore.CurrentSettings.AdminMode);
         Assert.Equal(0, persistenceStore.SettingsSaveCount);
-        Assert.NotNull(activation.Warning);
-        Assert.Contains("admin_mode_start_deferred", activation.Warning, StringComparison.OrdinalIgnoreCase);
-        Assert.NotNull(outcome.Warning);
-        Assert.Contains("admin_mode_start_deferred", outcome.Warning!.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(activation.Warning);
+        Assert.Null(outcome.Warning);
     }
 
     [Fact]
@@ -940,7 +938,6 @@ public class MonitoringRuntimeTests
         }
     }
 }
-
 
 
 

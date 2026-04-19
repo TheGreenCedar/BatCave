@@ -10,6 +10,8 @@
     <UseWinUI>true</UseWinUI>
     <WinUISDKReferences>false</WinUISDKReferences>
     <EnableMsixTooling>true</EnableMsixTooling>
+    <AppxSymbolPackageEnabled>false</AppxSymbolPackageEnabled>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssetTargetFallback>$(AssetTargetFallback);net8.0-windows10.0.19041</AssetTargetFallback>
   </PropertyGroup>
@@ -83,4 +85,10 @@
     <RepositoryType>git</RepositoryType>
     <ApplicationIcon>Assets\BatCaveLogo.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <Target Name="BatCaveDisableAppxPdbPayloadWhenSymbolsDisabled" BeforeTargets="_EnsurePdbCmfExeFullPath" Condition="'$(AppxSymbolPackageEnabled)' != 'true'">
+    <ItemGroup>
+      <PDBPayload Remove="@(PDBPayload)" />
+    </ItemGroup>
+  </Target>
 </Project>

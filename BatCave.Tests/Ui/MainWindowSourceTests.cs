@@ -142,7 +142,8 @@ public class MainWindowSourceTests
         string source = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml.cs"));
 
         Assert.Contains("private void GlobalResourceListView_SelectionChanged(object sender, SelectionChangedEventArgs e)", source, StringComparison.Ordinal);
-        Assert.Contains("if (listView.SelectedItem is GlobalResourceRowViewState selected)", source, StringComparison.Ordinal);
+        Assert.Contains("if (sender is not Selector resourceSelector)", source, StringComparison.Ordinal);
+        Assert.Contains("if (resourceSelector.SelectedItem is GlobalResourceRowViewState selected)", source, StringComparison.Ordinal);
         Assert.Contains("if (ViewModel.SelectedGlobalResource is not null && ViewModel.GlobalResourceRows.Count > 0)", source, StringComparison.Ordinal);
         Assert.Contains("private bool _globalResourceSelectionRestoreQueued;", source, StringComparison.Ordinal);
         Assert.Contains("QueueGlobalResourceSelectionRestore();", source, StringComparison.Ordinal);

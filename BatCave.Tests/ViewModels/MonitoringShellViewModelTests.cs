@@ -1502,6 +1502,50 @@ public class MonitoringShellViewModelTests
     }
 
     [Fact]
+    public async Task GlobalMode_ListsAggregateDiskAndNetworkRows_WhenExtendedSnapshotsAreUnavailable()
+    {
+        TestRuntimeEventGateway gateway = new();
+        TestSystemGlobalMetricsSampler sampler = new(
+            CreateSystemGlobalMetricsSample(
+                tsMs: 220,
+                cpuPct: 12,
+                memoryUsedBytes: 10 * 1024UL * 1024UL * 1024UL,
+                diskReadBps: 1024UL,
+                diskWriteBps: 2048UL,
+                otherIoBps: 4096UL,
+                memorySnapshot: new SystemGlobalMemorySnapshot
+                {
+                    TotalBytes = 32UL * 1024UL * 1024UL * 1024UL,
+                    UsedBytes = 10UL * 1024UL * 1024UL * 1024UL,
+                }));
+        MonitoringShellViewModel viewModel = await CreateBootstrappedViewModelAsync(
+            gateway,
+            systemGlobalMetricsSampler: sampler);
+
+        gateway.RaiseDelta(1, [], []);
+        gateway.RaiseDelta(2, [], []);
+
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
+        GlobalResourceRowViewState networkRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Network);
+        Assert.Equal("Disk", diskRow.Title);
+        Assert.Equal("Read + Write", diskRow.Subtitle);
+        Assert.Equal(ValueFormat.FormatRate(3072UL), diskRow.ValueText);
+        Assert.Equal("Network", networkRow.Title);
+        Assert.Equal("Estimated traffic", networkRow.Subtitle);
+        Assert.Equal(ValueFormat.FormatBitsRateFromBytes(4096UL), networkRow.ValueText);
+
+        viewModel.SelectedGlobalResource = diskRow;
+        Assert.Equal("Disk", viewModel.GlobalDetailTitle);
+        Assert.Equal("Read + write", viewModel.GlobalDetailSubtitle);
+        Assert.Equal(ValueFormat.FormatRate(3072UL), viewModel.GlobalDetailCurrentValue);
+
+        viewModel.SelectedGlobalResource = networkRow;
+        Assert.Equal("Network", viewModel.GlobalDetailTitle);
+        Assert.Equal("Estimated from Other I/O", viewModel.GlobalDetailSubtitle);
+        Assert.Equal(ValueFormat.FormatBitsRateFromBytes(4096UL), viewModel.GlobalDetailCurrentValue);
+    }
+
+    [Fact]
     public async Task GlobalMode_CpuSpeedChange_UpdatesRowSubtitleAndCpuDetailSpeed()
     {
         TestRuntimeEventGateway gateway = new();
@@ -1643,7 +1687,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [], []);
         gateway.RaiseDelta(2, [], []);
 
-        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
         viewModel.SelectedGlobalResource = diskRow;
         Assert.Equal("7%", diskRow.ValueText);
         Assert.Equal("7.0%", viewModel.GlobalDetailCurrentValue);
@@ -1695,7 +1739,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [], []);
         gateway.RaiseDelta(2, [], []);
 
-        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
         viewModel.SelectedGlobalResource = diskRow;
 
         Assert.Equal("0%", diskRow.ValueText);
@@ -1735,7 +1779,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [], []);
         gateway.RaiseDelta(2, [], []);
 
-        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
         viewModel.SelectedGlobalResource = diskRow;
 
         Assert.Contains(viewModel.GlobalDetailStats, item => item.Label == "Average response time" && item.Value == "<0.001 ms");
@@ -1772,7 +1816,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [], []);
         gateway.RaiseDelta(2, [], []);
 
-        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
         Exception? exception = Record.Exception(() => viewModel.SelectedGlobalResource = diskRow);
 
         Assert.Null(exception);
@@ -1813,7 +1857,7 @@ public class MonitoringShellViewModelTests
 
         gateway.RaiseDelta(1, [], []);
 
-        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Disk));
+        GlobalResourceRowViewState diskRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Disk);
         viewModel.SelectedGlobalResource = diskRow;
 
         Assert.Equal(Visibility.Visible, viewModel.GlobalAuxiliaryChartVisibility);
@@ -1861,14 +1905,14 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [], []);
         viewModel.CpuGraphModeSelectedCommand.Execute("LogicalProcessors");
 
-        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Memory));
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Memory);
         viewModel.SelectedGlobalResource = memoryRow;
 
         Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuModeToggleVisibility);
         Assert.Equal(Visibility.Visible, viewModel.GlobalCombinedChartVisibility);
         Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuLogicalGridVisibility);
 
-        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Cpu));
+        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Cpu);
         viewModel.SelectedGlobalResource = cpuRow;
 
         Assert.Equal(Visibility.Visible, viewModel.GlobalCpuModeToggleVisibility);
@@ -1900,7 +1944,7 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [], []);
         Assert.Equal("system:cpu:primary:combined", viewModel.SystemPrimaryChartIdentityKey);
 
-        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Memory));
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Memory);
         viewModel.SelectedGlobalResource = memoryRow;
 
         Assert.Equal("system:memory:primary:default", viewModel.SystemPrimaryChartIdentityKey);
@@ -1936,7 +1980,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
-        GlobalResourceRowViewState networkRow = Assert.Single(viewModel.GlobalResourceRows.Where(row => row.Kind == GlobalResourceKind.Network));
+        GlobalResourceRowViewState networkRow = Assert.Single(viewModel.GlobalResourceRows, row => row.Kind == GlobalResourceKind.Network);
         viewModel.SelectedGlobalResource = networkRow;
 
         Assert.Equal(MetricTrendScaleMode.BitsRate, viewModel.GlobalPrimaryScaleMode);
@@ -2019,7 +2063,7 @@ public class MonitoringShellViewModelTests
         await viewModel.SelectRowAsync(row, CancellationToken.None);
 
         viewModel.CpuGraphModeSelectedCommand.Execute("LogicalProcessors");
-        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Cpu));
+        GlobalResourceRowViewState cpuRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Cpu);
         viewModel.SelectedGlobalResource = cpuRow;
 
         Assert.Equal(Visibility.Collapsed, viewModel.GlobalCpuLogicalGridVisibility);
@@ -2045,12 +2089,12 @@ public class MonitoringShellViewModelTests
         gateway.RaiseDelta(1, [first, second], []);
         await viewModel.SelectRowAsync(first, CancellationToken.None);
         string firstInspectorIdentity = viewModel.ProcessPrimaryChartIdentityKey;
-        GlobalResourceRowViewState firstCpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Cpu));
+        GlobalResourceRowViewState firstCpuRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Cpu);
         string firstMiniIdentity = firstCpuRow.ChartIdentityKey;
 
         await viewModel.SelectRowAsync(second, CancellationToken.None);
         string secondInspectorIdentity = viewModel.ProcessPrimaryChartIdentityKey;
-        GlobalResourceRowViewState secondCpuRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Cpu));
+        GlobalResourceRowViewState secondCpuRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Cpu);
         string secondMiniIdentity = secondCpuRow.ChartIdentityKey;
 
         Assert.Equal("process:pid310-start31000:proc:cpu:primary:combined", firstInspectorIdentity);
@@ -2077,7 +2121,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
-        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Memory));
+        GlobalResourceRowViewState memoryRow = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Memory);
         viewModel.SelectedGlobalResource = memoryRow;
 
         ProcessSample row = Sample(pid: 261, startTime: 26_100, access: AccessState.Full) with
@@ -2304,7 +2348,7 @@ public class MonitoringShellViewModelTests
             systemGlobalMetricsSampler: sampler);
 
         gateway.RaiseDelta(1, [], []);
-        GlobalResourceRowViewState globalMemory = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.Memory));
+        GlobalResourceRowViewState globalMemory = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.Memory);
         viewModel.SelectedGlobalResource = globalMemory;
 
         ProcessSample row = Sample(pid: 270, startTime: 27_000, access: AccessState.Full) with
@@ -2313,7 +2357,7 @@ public class MonitoringShellViewModelTests
         };
         gateway.RaiseDelta(2, [row], []);
         await viewModel.SelectRowAsync(row, CancellationToken.None);
-        GlobalResourceRowViewState processOtherIo = Assert.Single(viewModel.GlobalResourceRows.Where(item => item.Kind == GlobalResourceKind.OtherIo));
+        GlobalResourceRowViewState processOtherIo = Assert.Single(viewModel.GlobalResourceRows, item => item.Kind == GlobalResourceKind.OtherIo);
         viewModel.SelectedGlobalResource = processOtherIo;
 
         viewModel.ClearSelection();

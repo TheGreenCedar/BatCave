@@ -7,6 +7,7 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System;
@@ -397,14 +398,14 @@ public sealed partial class MainWindow : Window
 
     private void GlobalResourceListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is not ListView listView)
+        if (sender is not Selector resourceSelector)
         {
             return;
         }
 
         try
         {
-            if (listView.SelectedItem is GlobalResourceRowViewState selected)
+            if (resourceSelector.SelectedItem is GlobalResourceRowViewState selected)
             {
                 if (!ReferenceEquals(ViewModel.SelectedGlobalResource, selected))
                 {
@@ -416,7 +417,7 @@ public sealed partial class MainWindow : Window
 
             if (ViewModel.SelectedGlobalResource is not null && ViewModel.GlobalResourceRows.Count > 0)
             {
-                // Ignore transient null churn while the ListView rebinds during per-tick row refreshes.
+                // Ignore transient null churn while the resource selector rebinds during per-tick row refreshes.
                 QueueGlobalResourceSelectionRestore();
                 return;
             }
@@ -428,7 +429,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[GlobalSelection] Failed to apply selection from list view. {ex}");
+            Debug.WriteLine($"[GlobalSelection] Failed to apply selection from resource selector. {ex}");
             ViewModel.SelectedGlobalResource = null;
         }
     }

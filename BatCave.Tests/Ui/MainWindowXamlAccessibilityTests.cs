@@ -185,7 +185,13 @@ public class MainWindowXamlAccessibilityTests
         Assert.Contains("Visibility=\"{Binding ProcessSummarySectionVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Style=\"{StaticResource BatCaveSectionSubtitleStyle}\" Text=\"{Binding ValueText, Mode=OneWay}\" Visibility=\"{Binding ValueVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Style=\"{StaticResource BatCaveMetricValueStyle}\" Text=\"{Binding ValueText, Mode=OneWay}\" Visibility=\"{Binding ValueVisibility, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("<StackPanel Orientation=\"Horizontal\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("<ItemsWrapGrid Orientation=\"Horizontal\" MaximumRowsOrColumns=\"2\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("ScrollViewer.HorizontalScrollMode=\"Disabled\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ScrollViewer.HorizontalScrollBarVisibility=\"Disabled\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ScrollViewer.VerticalScrollMode=\"Enabled\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ScrollViewer.VerticalScrollBarVisibility=\"Auto\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MaxHeight=\"170\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<StackPanel Orientation=\"Horizontal\" />", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<ItemsStackPanel Orientation=\"Horizontal\" />", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ElementPrepared=\"GlobalCpuLogicalRepeater_ElementPrepared\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("x:Name=\"GlobalCpuLogicalGridView\"", xaml, StringComparison.Ordinal);
@@ -198,9 +204,10 @@ public class MainWindowXamlAccessibilityTests
         string xaml = File.ReadAllText(ResolveRepoPath("BatCave", "MainWindow.xaml"));
 
         Assert.Contains("x:Name=\"GlobalResourceListView\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("<SolidColorBrush x:Key=\"ListViewItemBackgroundSelected\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
-        Assert.Contains("<SolidColorBrush x:Key=\"ListViewItemBackgroundSelectedPointerOver\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
-        Assert.Contains("<SolidColorBrush x:Key=\"ListViewItemBackgroundSelectedPressed\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("<SolidColorBrush x:Key=\"GridViewItemBackgroundSelected\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("<SolidColorBrush x:Key=\"GridViewItemBackgroundSelectedPointerOver\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("<SolidColorBrush x:Key=\"GridViewItemBackgroundSelectedPressed\" Color=\"Transparent\" />", xaml, StringComparison.Ordinal);
+        Assert.Contains("<x:Boolean x:Key=\"GridViewItemSelectionIndicatorVisualEnabled\">False</x:Boolean>", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

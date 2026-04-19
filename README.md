@@ -4,6 +4,12 @@ BatCave is a Windows 11 WinUI 3 process monitor built for fast, local-first tele
 
 The app is designed to be useful both as an interactive desktop monitor and as a validation target for scripts, tests, and benchmark workflows. The repository also includes a headless benchmark host, script regression coverage, and WinUI-facing accessibility and layout tests.
 
+## Screenshots
+
+![BatCave process explorer and system overview](docs/images/batcave-overview.png)
+
+![BatCave system performance breakdown](docs/images/batcave-performance-breakdown.png)
+
 ## Highlights
 
 - Live process explorer with sortable CPU, memory, disk, and network/other I/O columns.

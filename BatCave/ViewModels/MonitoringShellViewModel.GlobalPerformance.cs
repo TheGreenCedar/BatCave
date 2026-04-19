@@ -20,6 +20,9 @@ public partial class MonitoringShellViewModel
 {
     private const string CpuGlobalResourceId = "cpu";
     private const string MemoryGlobalResourceId = "memory";
+    private const string DiskAggregateGlobalResourceId = "disk:aggregate";
+    private const string NetworkAggregateGlobalResourceId = "net:aggregate";
+    private const string AggregateResourceKey = "aggregate";
     private const string ProcessCpuResourceId = "proc:cpu";
     private const string ProcessMemoryResourceId = "proc:memory";
     private const string ProcessDiskResourceId = "proc:disk";
@@ -765,6 +768,12 @@ public partial class MonitoringShellViewModel
             return false;
         }
 
+        if (string.Equals(resourceId, DiskAggregateGlobalResourceId, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(resourceId, NetworkAggregateGlobalResourceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         if (!_globalResourceLastSeenUtc.TryGetValue(resourceId, out DateTimeOffset lastSeenUtc))
         {
             return true;
@@ -875,15 +884,17 @@ public partial class MonitoringShellViewModel
 
     private List<GlobalResourceDescriptor> BuildGlobalResourceDescriptors(SystemGlobalMetricsSample sampled)
     {
-        List<GlobalResourceDescriptor> descriptors = new(capacity: 2 + sampled.DiskSnapshots.Count + sampled.NetworkSnapshots.Count);
+        List<GlobalResourceDescriptor> descriptors = new(capacity: 4 + sampled.DiskSnapshots.Count + sampled.NetworkSnapshots.Count);
         descriptors.Add(BuildCpuDescriptor(sampled));
         descriptors.Add(BuildMemoryDescriptor(sampled));
 
+        bool addedDiskDescriptor = false;
         IEnumerable<SystemGlobalDiskSnapshot> disks = sampled.DiskSnapshots
             .Where(static disk => !string.Equals(disk.DiskId, "_Total", StringComparison.OrdinalIgnoreCase))
             .OrderBy(static disk => disk.DisplayName, StringComparer.OrdinalIgnoreCase);
         foreach (SystemGlobalDiskSnapshot disk in disks)
         {
+            addedDiskDescriptor = true;
             double? activeTimePct = NormalizeNonNegativeFiniteMetric(disk.ActiveTimePct);
             double activePct = activeTimePct ?? 0d;
             ulong read = disk.ReadBps ?? 0UL;
@@ -909,13 +920,20 @@ public partial class MonitoringShellViewModel
                 MiniDomainMax: double.NaN));
         }
 
+        if (!addedDiskDescriptor)
+        {
+            descriptors.Add(BuildAggregateDiskDescriptor(sampled));
+        }
+
         List<SystemGlobalNetworkSnapshot> networks = sampled.NetworkSnapshots
             .Where(IsVisibleNetworkAdapter)
             .OrderBy(static adapter => adapter.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        bool addedNetworkDescriptor = false;
         foreach ((SystemGlobalNetworkSnapshot adapter, string title) in BuildNetworkDisplayRows(networks))
         {
+            addedNetworkDescriptor = true;
             ulong receiveBps = adapter.ReceiveBps ?? 0UL;
             ulong sendBps = adapter.SendBps ?? 0UL;
             string subtitle = string.IsNullOrWhiteSpace(adapter.DisplayName)
@@ -936,6 +954,11 @@ public partial class MonitoringShellViewModel
                 MiniStrokeColor: NetworkStrokeColor,
                 MiniFillColor: NetworkFillColor,
                 MiniDomainMax: double.NaN));
+        }
+
+        if (!addedNetworkDescriptor)
+        {
+            descriptors.Add(BuildAggregateNetworkDescriptor(sampled));
         }
 
         return descriptors;
@@ -987,6 +1010,48 @@ public partial class MonitoringShellViewModel
             MiniStrokeColor: MemoryStrokeColor,
             MiniFillColor: MemoryFillColor,
             MiniDomainMax: memoryTotalBytes > 0 ? memoryTotalBytes : double.NaN);
+    }
+
+    private static GlobalResourceDescriptor BuildAggregateDiskDescriptor(SystemGlobalMetricsSample sampled)
+    {
+        ulong read = sampled.DiskReadBps ?? 0UL;
+        ulong write = sampled.DiskWriteBps ?? 0UL;
+        ulong total = SaturatingAddRates(read, write);
+        return new GlobalResourceDescriptor(
+            ResourceId: DiskAggregateGlobalResourceId,
+            Kind: GlobalResourceKind.Disk,
+            Title: "Disk",
+            Subtitle: "Read + Write",
+            ValueText: ValueFormat.FormatRate(total),
+            PrimaryValue: total,
+            SecondaryValue: write,
+            AuxiliaryValue: 0d,
+            LogicalValues: [],
+            LogicalKernelValues: [],
+            MiniScaleMode: MetricTrendScaleMode.IoRate,
+            MiniStrokeColor: DiskStrokeColor,
+            MiniFillColor: DiskFillColor,
+            MiniDomainMax: double.NaN);
+    }
+
+    private static GlobalResourceDescriptor BuildAggregateNetworkDescriptor(SystemGlobalMetricsSample sampled)
+    {
+        ulong estimatedTraffic = sampled.OtherIoBps ?? 0UL;
+        return new GlobalResourceDescriptor(
+            ResourceId: NetworkAggregateGlobalResourceId,
+            Kind: GlobalResourceKind.Network,
+            Title: "Network",
+            Subtitle: "Estimated traffic",
+            ValueText: ValueFormat.FormatBitsRateFromBytes(estimatedTraffic),
+            PrimaryValue: estimatedTraffic * 8d,
+            SecondaryValue: 0d,
+            AuxiliaryValue: 0d,
+            LogicalValues: [],
+            LogicalKernelValues: [],
+            MiniScaleMode: MetricTrendScaleMode.BitsRate,
+            MiniStrokeColor: NetworkStrokeColor,
+            MiniFillColor: NetworkFillColor,
+            MiniDomainMax: double.NaN);
     }
 
     private static bool IsVisibleNetworkAdapter(SystemGlobalNetworkSnapshot adapter)
@@ -1165,6 +1230,12 @@ public partial class MonitoringShellViewModel
             return;
         }
 
+        if (string.Equals(diskId, AggregateResourceKey, StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyAggregateDiskDetailState();
+            return;
+        }
+
         SystemGlobalDiskSnapshot? disk = _latestGlobalMetricsSample.DiskSnapshots.FirstOrDefault(candidate => candidate.DiskId == diskId);
         GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(resourceId);
 
@@ -1199,11 +1270,46 @@ public partial class MonitoringShellViewModel
         PopulateDiskStats(disk);
     }
 
+    private void ApplyAggregateDiskDetailState()
+    {
+        GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(DiskAggregateGlobalResourceId);
+        ulong read = _latestGlobalMetricsSample.DiskReadBps ?? 0UL;
+        ulong write = _latestGlobalMetricsSample.DiskWriteBps ?? 0UL;
+        ulong total = SaturatingAddRates(read, write);
+
+        GlobalDetailTitle = "Disk";
+        GlobalDetailSubtitle = "Read + write";
+        GlobalDetailCurrentValue = ValueFormat.FormatRate(total);
+        GlobalPrimaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalPrimaryChartTitle = "Transfer rate";
+        GlobalAuxiliaryChartTitle = "Write rate";
+        GlobalShowSecondaryOverlay = true;
+        GlobalShowAuxiliaryChart = false;
+        GlobalPrimaryStrokeColor = DiskStrokeColor;
+        GlobalPrimaryFillColor = DiskFillColor;
+        GlobalSecondaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryFillColor = DiskFillColor;
+        GlobalPrimaryDomainMax = double.NaN;
+        GlobalAuxiliaryDomainMax = double.NaN;
+        ApplyGlobalTrendValues(history.Primary, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues), sanitize: true);
+        ApplyGlobalTrendValues(history.Secondary, ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues), sanitize: true);
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        PopulateAggregateDiskStats(read, write, total);
+    }
+
     private void ApplyNetworkDetailState(string resourceId)
     {
         if (!TryParseResourceId(resourceId, "net:", out string adapterId))
         {
             ApplyDetailFallbackState(SelectedGlobalResource);
+            return;
+        }
+
+        if (string.Equals(adapterId, AggregateResourceKey, StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyAggregateNetworkDetailState();
             return;
         }
 
@@ -1239,6 +1345,33 @@ public partial class MonitoringShellViewModel
         ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
 
         PopulateNetworkStats(network);
+    }
+
+    private void ApplyAggregateNetworkDetailState()
+    {
+        GlobalTrendHistory history = GetOrCreateGlobalTrendHistory(NetworkAggregateGlobalResourceId);
+        ulong estimatedTraffic = _latestGlobalMetricsSample.OtherIoBps ?? 0UL;
+
+        GlobalDetailTitle = "Network";
+        GlobalDetailSubtitle = "Estimated from Other I/O";
+        GlobalDetailCurrentValue = ValueFormat.FormatBitsRateFromBytes(estimatedTraffic);
+        GlobalPrimaryScaleMode = MetricTrendScaleMode.BitsRate;
+        GlobalAuxiliaryScaleMode = MetricTrendScaleMode.IoRate;
+        GlobalPrimaryChartTitle = "Estimated traffic";
+        GlobalAuxiliaryChartTitle = "Transfer rate";
+        GlobalShowSecondaryOverlay = false;
+        GlobalShowAuxiliaryChart = false;
+        GlobalPrimaryStrokeColor = NetworkStrokeColor;
+        GlobalPrimaryFillColor = NetworkFillColor;
+        GlobalSecondaryStrokeColor = NetworkOverlayStrokeColor;
+        GlobalAuxiliaryStrokeColor = DiskStrokeColor;
+        GlobalAuxiliaryFillColor = DiskFillColor;
+        GlobalPrimaryDomainMax = double.NaN;
+        GlobalAuxiliaryDomainMax = double.NaN;
+        ApplyGlobalTrendValues(history.Primary, ref _globalPrimaryTrendValues, nameof(GlobalPrimaryTrendValues));
+        ClearGlobalTrendValues(ref _globalSecondaryTrendValues, nameof(GlobalSecondaryTrendValues));
+        ClearGlobalTrendValues(ref _globalAuxiliaryTrendValues, nameof(GlobalAuxiliaryTrendValues));
+        PopulateAggregateNetworkStats(estimatedTraffic);
     }
 
     private bool TryResolveSelectedProcessForDetail(out ProcessSample selected, out MetricHistoryBuffer history)
@@ -1650,6 +1783,17 @@ public partial class MonitoringShellViewModel
         });
     }
 
+    private void PopulateAggregateDiskStats(ulong read, ulong write, ulong total)
+    {
+        SetGlobalStats(new (string, string)[]
+        {
+            ("Read speed", ValueFormat.FormatRate(read)),
+            ("Write speed", ValueFormat.FormatRate(write)),
+            ("Total transfer", ValueFormat.FormatRate(total)),
+            ("Source", "Aggregate runtime counters"),
+        });
+    }
+
     private void PopulateNetworkStats(SystemGlobalNetworkSnapshot? network)
     {
         SetGlobalStats(new (string, string)[]
@@ -1661,6 +1805,15 @@ public partial class MonitoringShellViewModel
             ("IPv4 address", string.IsNullOrWhiteSpace(network?.IPv4Address) ? "n/a" : network.IPv4Address!),
             ("IPv6 address", string.IsNullOrWhiteSpace(network?.IPv6Address) ? "n/a" : network.IPv6Address!),
             ("Link speed", network?.LinkSpeedBps.HasValue == true ? ValueFormat.FormatBitsRate(network.LinkSpeedBps.Value) : "n/a"),
+        });
+    }
+
+    private void PopulateAggregateNetworkStats(ulong estimatedTraffic)
+    {
+        SetGlobalStats(new (string, string)[]
+        {
+            ("Estimated traffic", ValueFormat.FormatBitsRateFromBytes(estimatedTraffic)),
+            ("Source", "Aggregate Other I/O"),
         });
     }
 
