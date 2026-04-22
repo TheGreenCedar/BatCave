@@ -16,6 +16,8 @@ public sealed record RuntimeStoreOptions
     public int SubscriberBufferCapacity { get; init; } = 8;
     public int MaxWarningCount { get; init; } = 16;
     public int WarmCacheWriteIntervalTicks { get; init; } = 10;
+    public double DegradeCpuThresholdPct { get; init; } = 6.0d;
+    public ulong DegradeRssThresholdBytes { get; init; } = 350UL * 1024UL * 1024UL;
     public RuntimeSettings DefaultSettings { get; init; } = new()
     {
         AdminModeRequested = true,
@@ -439,13 +441,11 @@ public sealed class RuntimeStore : IRuntimeStore, IHostedService, IAsyncDisposab
         {
         }
 
-        bool degradeMode = appCpuPct >= 6.0d || rssBytes >= 350UL * 1024UL * 1024UL;
-        string status = warning
-            ?? (!_options.RuntimeLoopEnabled
-                ? "Runtime loop disabled."
-                : _settings.Paused ? "Runtime paused."
-                : _settings.AdminModeRequested && !_settings.AdminModeEnabled ? "Admin mode requested; standard access active."
-                : runtimeLoopRunning ? "Runtime healthy." : "Runtime starting.");
+        bool cpuDegraded = appCpuPct >= _options.DegradeCpuThresholdPct;
+        bool rssDegraded = rssBytes >= _options.DegradeRssThresholdBytes;
+        bool degradeMode = cpuDegraded || rssDegraded;
+        RuntimeWarning? currentWarning = _warnings.LastOrDefault(item => item.Seq == _seq);
+        string status = BuildStatusSummary(runtimeLoopRunning, warning, currentWarning, cpuDegraded, rssDegraded);
         return new RuntimeHealth
         {
             RuntimeLoopEnabled = _options.RuntimeLoopEnabled,
@@ -463,6 +463,59 @@ public sealed class RuntimeStore : IRuntimeStore, IHostedService, IAsyncDisposab
             DegradeMode = degradeMode,
             LastWarning = _warnings.LastOrDefault()?.Message,
         };
+    }
+
+    private string BuildStatusSummary(
+        bool runtimeLoopRunning,
+        string? warning,
+        RuntimeWarning? currentWarning,
+        bool cpuDegraded,
+        bool rssDegraded)
+    {
+        if (!_options.RuntimeLoopEnabled)
+        {
+            return "Runtime loop disabled.";
+        }
+
+        if (_settings.Paused)
+        {
+            return "Paused.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(warning))
+        {
+            return warning;
+        }
+
+        if (currentWarning is not null)
+        {
+            string category = string.IsNullOrWhiteSpace(currentWarning.Category)
+                ? "Runtime"
+                : currentWarning.Category.Replace('_', ' ');
+            return $"{char.ToUpperInvariant(category[0])}{category[1..]} warning: {currentWarning.Message}";
+        }
+
+        if (_settings.AdminModeRequested && !_settings.AdminModeEnabled)
+        {
+            return "Standard access: admin mode requested but elevation is inactive.";
+        }
+
+        if (cpuDegraded && rssDegraded)
+        {
+            return "Degraded: app CPU and RSS above budget.";
+        }
+
+        if (cpuDegraded)
+        {
+            return "Degraded: app CPU above budget.";
+        }
+
+        if (rssDegraded)
+        {
+            return "Degraded: app RSS above budget.";
+        }
+
+        return runtimeLoopRunning ? "Healthy." : "Runtime starting.";
     }
 
     private double SampleAppCpuPct()

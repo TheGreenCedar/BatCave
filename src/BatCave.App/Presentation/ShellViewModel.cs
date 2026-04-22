@@ -1,25 +1,35 @@
+using BatCave.Runtime.Benchmarking;
 using BatCave.Runtime.Contracts;
 using BatCave.Runtime.Presentation;
+using BatCave.Runtime.Serialization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Text.Json;
 
 namespace BatCave.App.Presentation;
 
 public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 {
+    private const int FilterDebounceMs = 150;
+
     private readonly IRuntimeStore _runtimeStore;
     private readonly CancellationTokenSource _subscriptionCts = new();
+    private readonly Dictionary<ProcessIdentity, ProcessSample> _previousSamplesByIdentity = [];
     private DispatcherQueue? _dispatcherQueue;
     private Task? _subscriptionTask;
+    private CancellationTokenSource? _filterDebounceCts;
     private RuntimeSnapshot _snapshot = new();
     private RuntimeViewState _viewState = new();
     private ProcessRowViewModel? _selectedRow;
+    private ProcessQuickFilter _quickFilter = ProcessQuickFilter.All;
     private string _filterText = string.Empty;
     private string _statusText = "Runtime starting.";
     private string _processCountText = "0 processes";
+    private string _filterMatchText = "0 shown";
     private string _cpuText = "n/a";
     private string _memoryText = "n/a";
     private string _tickText = "0.0 ms";
@@ -30,11 +40,13 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     private bool _isPaused;
     private double[] _cpuTrendValues = new double[60];
     private double[] _memoryTrendValues = new double[60];
+    private BenchmarkSummary? _latestBenchmarkSummary;
     private int _trendIndex;
 
     public ShellViewModel(IRuntimeStore runtimeStore)
     {
         _runtimeStore = runtimeStore;
+        _latestBenchmarkSummary = TryLoadLatestBenchmarkSummary();
         ApplySnapshot(_runtimeStore.GetSnapshot());
     }
 
@@ -61,8 +73,17 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
                 OnPropertyChanged(nameof(InspectorDiskText));
                 OnPropertyChanged(nameof(InspectorOtherIoText));
                 OnPropertyChanged(nameof(InspectorThreadText));
+                OnPropertyChanged(nameof(InspectorParentPidText));
+                OnPropertyChanged(nameof(InspectorStartTimeText));
+                OnPropertyChanged(nameof(InspectorAccessStateText));
+                OnPropertyChanged(nameof(InspectorPrivateMemoryText));
+                OnPropertyChanged(nameof(InspectorHandlesText));
+                OnPropertyChanged(nameof(InspectorAttentionText));
+                OnPropertyChanged(nameof(InspectorLastChangeText));
+                OnPropertyChanged(nameof(CopyDetailsText));
                 OnPropertyChanged(nameof(HasSelectedRow));
                 OnPropertyChanged(nameof(ClearSelectionVisibility));
+                OnPropertyChanged(nameof(CopyDetailsVisibility));
                 ClearSelectionCommand.NotifyCanExecuteChanged();
             }
         }
@@ -75,7 +96,8 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref _filterText, value))
             {
-                _ = SetQueryAsync(_snapshot.Settings.Query with { FilterText = value });
+                OnPropertyChanged(nameof(ClearFilterVisibility));
+                QueueFilterUpdate(value);
             }
         }
     }
@@ -90,6 +112,12 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     {
         get => _processCountText;
         private set => SetProperty(ref _processCountText, value);
+    }
+
+    public string FilterMatchText
+    {
+        get => _filterMatchText;
+        private set => SetProperty(ref _filterMatchText, value);
     }
 
     public string CpuText
@@ -139,6 +167,20 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 
     public Visibility WarningVisibility => string.IsNullOrWhiteSpace(WarningText) ? Visibility.Collapsed : Visibility.Visible;
 
+    public string RuntimeConfidenceText => _snapshot.Health.DegradeMode ? "Runtime confidence: degraded" : $"Runtime confidence: {_snapshot.Health.StatusSummary}";
+
+    public string RuntimePerfText =>
+        $"tick p95 {TickText} | sort p95 {SortText} | jitter p95 {_snapshot.Health.JitterP95Ms:0.0} ms | dropped {_snapshot.Health.DroppedTicks:n0}";
+
+    public string RuntimeBudgetText =>
+        $"app CPU {_snapshot.Health.AppCpuPct:0.0}% | RSS {ProcessRowViewModel.FormatBytes(_snapshot.Health.AppRssBytes)}";
+
+    public string FooterCpuText => $"CPU {CpuText}";
+
+    public string FooterTickText => $"tick p95 {TickText}";
+
+    public string FooterSortP95Text => $"sort p95 {SortText}";
+
     public bool AdminModeEnabled
     {
         get => _adminModeEnabled;
@@ -174,6 +216,34 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     public bool HasSelectedRow => SelectedRow is not null;
 
     public Visibility ClearSelectionVisibility => HasSelectedRow ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility CopyDetailsVisibility => HasSelectedRow ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ClearFilterVisibility => string.IsNullOrWhiteSpace(FilterText) ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility EmptyStateVisibility => Rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public string EmptyStateText
+    {
+        get
+        {
+            if (_snapshot.Seq == 0 && !_snapshot.System.IsReady)
+            {
+                return "Warming process telemetry.";
+            }
+
+            if (!string.IsNullOrWhiteSpace(FilterText))
+            {
+                return $"No process matches \"{FilterText}\".";
+            }
+
+            return _quickFilter == ProcessQuickFilter.All
+                ? "No processes available."
+                : $"No processes match {QuickFilterLabel(_quickFilter)}.";
+        }
+    }
+
+    public string ActiveQuickFilterText => $"View: {QuickFilterLabel(_quickFilter)}";
 
     public bool IsPaused
     {
@@ -215,6 +285,36 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 
     public string InspectorThreadText => SelectedRow?.ThreadsText ?? _snapshot.System.LogicalProcessorCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
+    public string InspectorParentPidText => SelectedRow?.ParentPidText ?? "n/a";
+
+    public string InspectorStartTimeText => SelectedRow?.StartTimeText ?? "n/a";
+
+    public string InspectorAccessStateText => SelectedRow?.AccessStateText ?? "System";
+
+    public string InspectorPrivateMemoryText => SelectedRow?.PrivateMemoryText ?? "n/a";
+
+    public string InspectorHandlesText => SelectedRow?.HandlesText ?? "n/a";
+
+    public string InspectorAttentionText => SelectedRow?.AttentionSummaryText ?? "System overview";
+
+    public string InspectorLastChangeText => SelectedRow?.LastMeaningfulChangeText ?? "System-level metrics update every runtime tick.";
+
+    public string CopyDetailsText => SelectedRow?.ToClipboardText() ?? string.Empty;
+
+    public string BenchmarkStatusText => _latestBenchmarkSummary is null
+        ? "No benchmark artifact found."
+        : $"{_latestBenchmarkSummary.Host} benchmark: tick p95 {_latestBenchmarkSummary.TickP95Ms:0.0} ms, sort p95 {_latestBenchmarkSummary.SortP95Ms:0.0} ms.";
+
+    public string BenchmarkBudgetText => _latestBenchmarkSummary is null
+        ? "Run a benchmark to populate artifacts/benchmarks."
+        : $"budget {PassFail(_latestBenchmarkSummary.BudgetPassed)} | strict {PassFail(_latestBenchmarkSummary.StrictPassed)} | app CPU {_latestBenchmarkSummary.AvgAppCpuPct:0.0}% | RSS {ProcessRowViewModel.FormatBytes(_latestBenchmarkSummary.AvgAppRssBytes)}";
+
+    public string BenchmarkCommandText =>
+        "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark.ps1 -BenchmarkHost core -Platform x64 -Ticks 120 -SleepMs 1000";
+
+    public string ValidationCommandText =>
+        "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-winui.ps1 -Platform x64";
+
     public void AttachDispatcherQueue(DispatcherQueue dispatcherQueue)
     {
         _dispatcherQueue = dispatcherQueue;
@@ -244,6 +344,9 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
+        _filterDebounceCts?.Cancel();
+        _filterDebounceCts?.Dispose();
+        _filterDebounceCts = null;
         _subscriptionCts.Dispose();
     }
 
@@ -291,6 +394,21 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         return SetAdminModeAsync(true);
     }
 
+    [RelayCommand]
+    private void ClearFilter()
+    {
+        FilterText = string.Empty;
+    }
+
+    [RelayCommand]
+    private void ApplyQuickFilter(string? mode)
+    {
+        _quickFilter = ParseQuickFilter(mode);
+        OnPropertyChanged(nameof(ActiveQuickFilterText));
+        ApplyProcessRows(_viewState.Rows, _viewState.SelectedIdentity);
+        RefreshProcessTextProperties();
+    }
+
     [RelayCommand(CanExecute = nameof(HasSelectedRow))]
     private void ClearSelection()
     {
@@ -318,6 +436,27 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     private Task SetQueryAsync(RuntimeQuery query)
     {
         return _runtimeStore.ExecuteAsync(new SetProcessQueryCommand(query), CancellationToken.None);
+    }
+
+    private void QueueFilterUpdate(string value)
+    {
+        _filterDebounceCts?.Cancel();
+        _filterDebounceCts?.Dispose();
+        CancellationTokenSource cts = new();
+        _filterDebounceCts = cts;
+        _ = ApplyFilterAfterDelayAsync(value, cts.Token);
+    }
+
+    private async Task ApplyFilterAfterDelayAsync(string value, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(FilterDebounceMs, ct).ConfigureAwait(false);
+            await SetQueryAsync(_snapshot.Settings.Query with { FilterText = value }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     private async Task SubscribeAsync()
@@ -348,11 +487,16 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         _snapshot = snapshot;
         SnapshotSeq = snapshot.Seq;
         StatusText = snapshot.Health.StatusSummary;
-        ProcessCountText = $"{snapshot.TotalProcessCount:n0} processes";
         CpuText = snapshot.System.CpuPct.HasValue ? $"{snapshot.System.CpuPct.Value:0.0}%" : "warming";
         MemoryText = FormatMemory(snapshot.System);
         TickText = $"{snapshot.Health.TickP95Ms:0.0} ms";
         SortText = $"{snapshot.Health.SortP95Ms:0.0} ms";
+        OnPropertyChanged(nameof(RuntimeConfidenceText));
+        OnPropertyChanged(nameof(RuntimePerfText));
+        OnPropertyChanged(nameof(RuntimeBudgetText));
+        OnPropertyChanged(nameof(FooterCpuText));
+        OnPropertyChanged(nameof(FooterTickText));
+        OnPropertyChanged(nameof(FooterSortP95Text));
         OnPropertyChanged(nameof(ProcessSortText));
         OnPropertyChanged(nameof(CurrentSortColumn));
         OnPropertyChanged(nameof(CurrentSortDirection));
@@ -364,10 +508,12 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         {
             _filterText = snapshot.Settings.Query.FilterText;
             OnPropertyChanged(nameof(FilterText));
+            OnPropertyChanged(nameof(ClearFilterVisibility));
         }
 
         ApplyProcessRows(viewState.Rows, selectedIdentity);
         AppendTrend(snapshot);
+        RefreshProcessTextProperties();
         OnPropertyChanged(nameof(InspectorCpuText));
         OnPropertyChanged(nameof(InspectorMemoryText));
         OnPropertyChanged(nameof(InspectorDiskText));
@@ -377,15 +523,18 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyProcessRows(IReadOnlyList<ProcessSample> rows, ProcessIdentity? selectedIdentity)
     {
+        IReadOnlyList<ProcessSample> visibleRows = ApplyQuickFilter(rows);
         Dictionary<ProcessIdentity, ProcessRowViewModel> existing = Rows.ToDictionary(static row => row.Identity);
-        for (int index = 0; index < rows.Count; index++)
+        for (int index = 0; index < visibleRows.Count; index++)
         {
-            ProcessSample sample = rows[index];
+            ProcessSample sample = visibleRows[index];
             ProcessIdentity identity = sample.Identity();
+            _previousSamplesByIdentity.TryGetValue(identity, out ProcessSample? previousSample);
+            bool isNew = previousSample is null && SnapshotSeq > 0;
             ProcessRowViewModel viewRow = existing.TryGetValue(identity, out ProcessRowViewModel? current)
                 && current.HasSameDisplayState(sample)
                     ? current
-                    : new ProcessRowViewModel(sample);
+                    : new ProcessRowViewModel(sample, previousSample, isNew);
 
             if (index < Rows.Count)
             {
@@ -400,14 +549,47 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
-        while (Rows.Count > rows.Count)
+        while (Rows.Count > visibleRows.Count)
         {
             Rows.RemoveAt(Rows.Count - 1);
+        }
+
+        foreach (ProcessSample sample in rows)
+        {
+            _previousSamplesByIdentity[sample.Identity()] = sample;
         }
 
         SelectedRow = selectedIdentity.HasValue
             ? Rows.FirstOrDefault(row => row.Identity.Equals(selectedIdentity.Value))
             : null;
+    }
+
+    private IReadOnlyList<ProcessSample> ApplyQuickFilter(IReadOnlyList<ProcessSample> rows)
+    {
+        IEnumerable<ProcessSample> filtered = _quickFilter switch
+        {
+            ProcessQuickFilter.HighCpu => rows.Where(static row => row.CpuPct >= 1d),
+            ProcessQuickFilter.HighMemory => rows.Where(static row => row.MemoryBytes >= ProcessAttention.MemoryHeavyThresholdBytes),
+            ProcessQuickFilter.ActiveIo => rows.Where(static row => row.DiskBps + row.OtherIoBps > 0UL),
+            ProcessQuickFilter.LimitedAccess => rows.Where(static row => row.AccessState != AccessState.Full),
+            _ => rows,
+        };
+
+        return filtered.ToArray();
+    }
+
+    private void RefreshProcessTextProperties()
+    {
+        int queriedCount = _viewState.Rows.Count;
+        int visibleCount = Rows.Count;
+        ProcessCountText = _snapshot.TotalProcessCount == queriedCount && _quickFilter == ProcessQuickFilter.All
+            ? $"{_snapshot.TotalProcessCount:n0} processes"
+            : $"{visibleCount:n0} shown of {_snapshot.TotalProcessCount:n0} processes";
+        FilterMatchText = string.IsNullOrWhiteSpace(FilterText) && _quickFilter == ProcessQuickFilter.All
+            ? $"{visibleCount:n0} shown"
+            : $"{visibleCount:n0} matches";
+        OnPropertyChanged(nameof(EmptyStateVisibility));
+        OnPropertyChanged(nameof(EmptyStateText));
     }
 
     private void AppendTrend(RuntimeSnapshot snapshot)
@@ -473,6 +655,7 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     {
         return column switch
         {
+            SortColumn.Attention => "Attention",
             SortColumn.CpuPct => "CPU",
             SortColumn.MemoryBytes => "Memory",
             SortColumn.DiskBps => "Disk",
@@ -486,4 +669,72 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     {
         return direction == SortDirection.Asc ? "ascending" : "descending";
     }
+
+    private static ProcessQuickFilter ParseQuickFilter(string? mode)
+    {
+        return Enum.TryParse(mode, ignoreCase: true, out ProcessQuickFilter parsed)
+            ? parsed
+            : ProcessQuickFilter.All;
+    }
+
+    private static string QuickFilterLabel(ProcessQuickFilter mode)
+    {
+        return mode switch
+        {
+            ProcessQuickFilter.HighCpu => "High CPU",
+            ProcessQuickFilter.HighMemory => "High Memory",
+            ProcessQuickFilter.ActiveIo => "Active I/O",
+            ProcessQuickFilter.LimitedAccess => "Limited Access",
+            _ => "All Processes",
+        };
+    }
+
+    private static string PassFail(bool passed) => passed ? "passed" : "failed";
+
+    private static BenchmarkSummary? TryLoadLatestBenchmarkSummary()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "BatCave.slnx")))
+            {
+                string benchmarkDirectory = Path.Combine(directory.FullName, "artifacts", "benchmarks");
+                if (!Directory.Exists(benchmarkDirectory))
+                {
+                    return null;
+                }
+
+                FileInfo? latest = new DirectoryInfo(benchmarkDirectory)
+                    .EnumerateFiles("*.json")
+                    .OrderByDescending(static file => file.LastWriteTimeUtc)
+                    .FirstOrDefault();
+                if (latest is null)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return JsonSerializer.Deserialize<BenchmarkSummary>(File.ReadAllText(latest.FullName), JsonDefaults.SnakeCase);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            directory = directory.Parent;
+        }
+
+        return null;
+    }
+}
+
+internal enum ProcessQuickFilter
+{
+    All,
+    HighCpu,
+    HighMemory,
+    ActiveIo,
+    LimitedAccess,
 }

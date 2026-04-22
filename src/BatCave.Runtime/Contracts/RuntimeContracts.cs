@@ -17,6 +17,7 @@ public enum AccessState
 
 public enum SortColumn
 {
+    Attention,
     Name,
     Pid,
     CpuPct,

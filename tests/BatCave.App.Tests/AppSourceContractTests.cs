@@ -23,7 +23,7 @@ public sealed class AppSourceContractTests
         string windowCodeBehind = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml.cs");
 
         Assert.Contains("NarrowProcessPaneMaxHeight = 360", windowCodeBehind);
-        Assert.Contains("CompactProcessListMaxWidth = 900", windowCodeBehind);
+        Assert.Contains("CompactProcessListMaxWidth = 1280", windowCodeBehind);
         Assert.Contains("bool compactProcesses = width < CompactProcessListMaxWidth", windowCodeBehind);
         Assert.Contains("DesktopProcessTable.Visibility = compactProcesses ? Visibility.Collapsed : Visibility.Visible", windowCodeBehind);
         Assert.DoesNotContain("NarrowProcessPaneMaxHeight = 58", windowCodeBehind);
@@ -62,9 +62,11 @@ public sealed class AppSourceContractTests
         Assert.Contains("x:Name=\"DiskSortButton\"", xaml);
         Assert.Contains("x:Name=\"OtherIoSortButton\"", xaml);
         Assert.Contains("x:Name=\"PidSortButton\"", xaml);
+        Assert.Contains("x:Name=\"AttentionSortButton\"", xaml);
         Assert.Contains("CurrentSortColumn", viewModel);
         Assert.Contains("CurrentSortDirection", viewModel);
         Assert.Contains("UpdateSortHeaderVisualState", windowCodeBehind);
+        Assert.Contains("ApplySortHeaderVisualState(AttentionSortButton, SortColumn.Attention", windowCodeBehind);
         Assert.Contains("ApplySortHeaderVisualState(CpuSortButton, SortColumn.CpuPct", windowCodeBehind);
         Assert.Contains("directionMarker", windowCodeBehind);
         Assert.Contains("FontWeights.SemiBold", windowCodeBehind);
@@ -174,6 +176,56 @@ public sealed class AppSourceContractTests
         Assert.Contains("<Grid Grid.Row=\"0\" ColumnSpacing=\"8\">", compactTemplate);
         Assert.Contains("<Grid Grid.Row=\"1\" ColumnSpacing=\"8\">", compactTemplate);
         Assert.DoesNotContain("Orientation=\"Horizontal\"", compactTemplate);
+    }
+
+    [Fact]
+    public void MainWindow_ProvidesCockpitInspectorTabsAndRuntimeConfidence()
+    {
+        string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
+        string viewModel = ReadRepoFile("src", "BatCave.App", "Presentation", "ShellViewModel.cs");
+
+        Assert.Contains("<Pivot AutomationProperties.Name=\"Inspector Mode Tabs\">", xaml);
+        Assert.Contains("<PivotItem Header=\"Summary\">", xaml);
+        Assert.Contains("<PivotItem Header=\"Performance\">", xaml);
+        Assert.Contains("<PivotItem Header=\"Details\">", xaml);
+        Assert.Contains("RuntimeConfidenceText", xaml);
+        Assert.Contains("RuntimePerfText", xaml);
+        Assert.Contains("RuntimeBudgetText", viewModel);
+        Assert.Contains("BenchmarkStatusText", viewModel);
+    }
+
+    [Fact]
+    public void ShellViewModel_DebouncesFiltersAndSupportsQuickFilters()
+    {
+        string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
+        string viewModel = ReadRepoFile("src", "BatCave.App", "Presentation", "ShellViewModel.cs");
+
+        Assert.Contains("FilterDebounceMs = 150", viewModel);
+        Assert.Contains("QueueFilterUpdate", viewModel);
+        Assert.Contains("ClearFilterCommand", xaml);
+        Assert.Contains("ApplyQuickFilterCommand", xaml);
+        Assert.Contains("CommandParameter=\"HighCpu\"", xaml);
+        Assert.Contains("CommandParameter=\"HighMemory\"", xaml);
+        Assert.Contains("CommandParameter=\"ActiveIo\"", xaml);
+        Assert.Contains("CommandParameter=\"LimitedAccess\"", xaml);
+        Assert.Contains("EmptyStateText", viewModel);
+    }
+
+    [Fact]
+    public void ProcessInspector_ExposesAttentionDetailsAndCopyCommand()
+    {
+        string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
+        string windowCodeBehind = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml.cs");
+        string rowViewModel = ReadRepoFile("src", "BatCave.App", "Presentation", "ProcessRowViewModel.cs");
+
+        Assert.Contains("AttentionBadgeText", xaml);
+        Assert.Contains("InspectorLastChangeText", xaml);
+        Assert.Contains("CopyDetails_Click", xaml);
+        Assert.Contains("Clipboard.SetContent", windowCodeBehind);
+        Assert.Contains("ToClipboardText", rowViewModel);
+        Assert.Contains("ParentPidText", rowViewModel);
+        Assert.Contains("PrivateMemoryText", rowViewModel);
+        Assert.Contains("AccessStateText", rowViewModel);
     }
 
     [Fact]

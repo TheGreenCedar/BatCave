@@ -365,6 +365,7 @@ public sealed class LocalJsonRuntimePersistenceStore : IRuntimePersistenceStore
         return NormalizeEnumToken(value) switch
         {
             "pid" => SortColumn.Pid,
+            "attention" => SortColumn.Attention,
             "name" => SortColumn.Name,
             "cpupct" => SortColumn.CpuPct,
             "rssbytes" or "memorybytes" => SortColumn.MemoryBytes,

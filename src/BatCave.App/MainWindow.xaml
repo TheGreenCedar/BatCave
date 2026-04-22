@@ -34,13 +34,14 @@
             Padding="16,12"
             Background="{ThemeResource BatCaveSurfaceBrush}"
             ColumnSpacing="12"
-            RowSpacing="8">
+            RowSpacing="10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
@@ -59,21 +60,26 @@
                     Text="{x:Bind ViewModel.ProcessCountText, Mode=OneWay}" />
             </StackPanel>
 
-            <TextBox
-                x:Name="FilterBox"
-                Grid.Row="1"
-                Grid.Column="0"
-                Grid.ColumnSpan="3"
-                VerticalAlignment="Center"
-                PlaceholderText="Filter by process name or PID"
-                Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                AutomationProperties.Name="Process Filter"
-                AutomationProperties.HelpText="Type a process name or process id to filter the process list." />
-
             <StackPanel
                 Grid.Row="0"
                 Grid.Column="1"
-                HorizontalAlignment="Left"
+                VerticalAlignment="Center"
+                Spacing="2">
+                <TextBlock
+                    FontWeight="SemiBold"
+                    Foreground="{ThemeResource BatCaveTextPrimaryBrush}"
+                    Text="{x:Bind ViewModel.RuntimeConfidenceText, Mode=OneWay}"
+                    TextTrimming="CharacterEllipsis" />
+                <TextBlock
+                    Foreground="{ThemeResource BatCaveTextSecondaryBrush}"
+                    Text="{x:Bind ViewModel.RuntimePerfText, Mode=OneWay}"
+                    TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+
+            <StackPanel
+                Grid.Row="0"
+                Grid.Column="2"
+                HorizontalAlignment="Right"
                 VerticalAlignment="Center"
                 Orientation="Horizontal"
                 Spacing="12">
@@ -82,11 +88,8 @@
                     Header="Admin Mode"
                     IsOn="{x:Bind ViewModel.AdminModeRequested, Mode=OneWay}"
                     Toggled="AdminToggle_Toggled"
-                    AutomationProperties.Name="Admin Mode" />
-                <TextBlock
-                    VerticalAlignment="Center"
-                    Foreground="{ThemeResource BatCaveTextSecondaryBrush}"
-                    Text="{x:Bind ViewModel.AdminStatusText, Mode=OneWay}" />
+                    AutomationProperties.Name="Admin Mode"
+                    ToolTipService.ToolTip="{x:Bind ViewModel.AdminStatusText, Mode=OneWay}" />
                 <Button
                     Command="{x:Bind ViewModel.RetryAdminModeCommand}"
                     Visibility="{x:Bind ViewModel.RetryAdminModeVisibility, Mode=OneWay}"
@@ -103,19 +106,76 @@
                         Icon="Refresh"
                         Label="Refresh"
                         Command="{x:Bind ViewModel.RefreshCommand}"
-                        AutomationProperties.Name="Refresh Now" />
+                        AutomationProperties.Name="Refresh Now"
+                        ToolTipService.ToolTip="Refresh now" />
                     <AppBarButton
                         Icon="Pause"
                         Label="Pause"
                         Command="{x:Bind ViewModel.PauseCommand}"
-                        AutomationProperties.Name="Pause Runtime" />
+                        AutomationProperties.Name="Pause Runtime"
+                        ToolTipService.ToolTip="Pause runtime" />
                     <AppBarButton
                         Icon="Play"
                         Label="Resume"
                         Command="{x:Bind ViewModel.ResumeCommand}"
-                        AutomationProperties.Name="Resume Runtime" />
+                        AutomationProperties.Name="Resume Runtime"
+                        ToolTipService.ToolTip="Resume runtime" />
                 </CommandBar>
             </StackPanel>
+
+            <Grid
+                Grid.Row="1"
+                Grid.ColumnSpan="3"
+                ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBox
+                    x:Name="FilterBox"
+                    Grid.Column="0"
+                    VerticalAlignment="Center"
+                    PlaceholderText="Filter by process name or PID"
+                    Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    AutomationProperties.Name="Process Filter"
+                    AutomationProperties.HelpText="Type a process name or process id to filter the process list." />
+                <Button
+                    Grid.Column="1"
+                    Command="{x:Bind ViewModel.ClearFilterCommand}"
+                    Visibility="{x:Bind ViewModel.ClearFilterVisibility, Mode=OneWay}"
+                    AutomationProperties.Name="Clear Process Filter"
+                    ToolTipService.ToolTip="Clear filter">
+                    <SymbolIcon Symbol="Clear" />
+                </Button>
+                <TextBlock
+                    Grid.Column="2"
+                    MinWidth="84"
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource BatCaveTextSecondaryBrush}"
+                    Text="{x:Bind ViewModel.FilterMatchText, Mode=OneWay}" />
+            </Grid>
+
+            <ScrollViewer
+                Grid.Row="2"
+                Grid.ColumnSpan="3"
+                HorizontalScrollBarVisibility="Auto"
+                VerticalScrollBarVisibility="Disabled">
+                <StackPanel
+                    Orientation="Horizontal"
+                    Spacing="8">
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        Foreground="{ThemeResource BatCaveTextSecondaryBrush}"
+                        Text="{x:Bind ViewModel.ActiveQuickFilterText, Mode=OneWay}" />
+                    <Button Content="All" Command="{x:Bind ViewModel.ApplyQuickFilterCommand}" CommandParameter="All" AutomationProperties.Name="Show All Processes" />
+                    <Button Content="High CPU" Command="{x:Bind ViewModel.ApplyQuickFilterCommand}" CommandParameter="HighCpu" AutomationProperties.Name="Filter High CPU Processes" />
+                    <Button Content="High Memory" Command="{x:Bind ViewModel.ApplyQuickFilterCommand}" CommandParameter="HighMemory" AutomationProperties.Name="Filter High Memory Processes" />
+                    <Button Content="Active I/O" Command="{x:Bind ViewModel.ApplyQuickFilterCommand}" CommandParameter="ActiveIo" AutomationProperties.Name="Filter Active I/O Processes" />
+                    <Button Content="Limited Access" Command="{x:Bind ViewModel.ApplyQuickFilterCommand}" CommandParameter="LimitedAccess" AutomationProperties.Name="Filter Limited Access Processes" />
+                </StackPanel>
+            </ScrollViewer>
         </Grid>
 
         <Grid
@@ -143,164 +203,185 @@
                 BorderThickness="1"
                 CornerRadius="{ThemeResource BatCaveControlCornerRadius}">
                 <Grid>
-                <Grid
-                    x:Name="DesktopProcessTable"
-                    RowSpacing="0">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
                     <Grid
-                        Grid.Row="0"
-                        Padding="12,10"
-                        ColumnSpacing="8"
-                        Background="{ThemeResource BatCaveSurfaceAltBrush}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="150" />
-                            <ColumnDefinition Width="80" />
-                            <ColumnDefinition Width="120" />
-                            <ColumnDefinition Width="130" />
-                            <ColumnDefinition Width="120" />
-                            <ColumnDefinition Width="90" />
-                        </Grid.ColumnDefinitions>
-                        <Button x:Name="NameSortButton" Grid.Column="0" Tag="Name" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" MinWidth="0" Padding="8,4" Content="Name" AutomationProperties.Name="Sort by Name" />
-                        <Button x:Name="CpuSortButton" Grid.Column="1" Tag="CpuPct" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="CPU" AutomationProperties.Name="Sort by CPU" />
-                        <Button x:Name="MemorySortButton" Grid.Column="2" Tag="MemoryBytes" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="Memory" AutomationProperties.Name="Sort by Memory" />
-                        <Button x:Name="DiskSortButton" Grid.Column="3" Tag="DiskBps" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="Disk" AutomationProperties.Name="Sort by Disk" />
-                        <Button x:Name="OtherIoSortButton" Grid.Column="4" Tag="OtherIoBps" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="Other I/O" AutomationProperties.Name="Sort by Other I/O" />
-                        <Button x:Name="PidSortButton" Grid.Column="5" Tag="Pid" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="PID" AutomationProperties.Name="Sort by PID" />
+                        x:Name="DesktopProcessTable"
+                        RowSpacing="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid
+                            Grid.Row="0"
+                            Padding="12,10"
+                            ColumnSpacing="8"
+                            Background="{ThemeResource BatCaveSurfaceAltBrush}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="112" />
+                                <ColumnDefinition Width="74" />
+                                <ColumnDefinition Width="108" />
+                                <ColumnDefinition Width="112" />
+                                <ColumnDefinition Width="104" />
+                                <ColumnDefinition Width="74" />
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="NameSortButton" Grid.Column="0" Tag="Name" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" MinWidth="0" Padding="8,4" Content="Name" AutomationProperties.Name="Sort by Name" />
+                            <Button x:Name="AttentionSortButton" Grid.Column="1" Tag="Attention" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" MinWidth="0" Padding="8,4" Content="Attention" AutomationProperties.Name="Sort by Attention" />
+                            <Button x:Name="CpuSortButton" Grid.Column="2" Tag="CpuPct" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="CPU" AutomationProperties.Name="Sort by CPU" />
+                            <Button x:Name="MemorySortButton" Grid.Column="3" Tag="MemoryBytes" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="Memory" AutomationProperties.Name="Sort by Memory" />
+                            <Button x:Name="DiskSortButton" Grid.Column="4" Tag="DiskBps" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="Disk" AutomationProperties.Name="Sort by Disk" />
+                            <Button x:Name="OtherIoSortButton" Grid.Column="5" Tag="OtherIoBps" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="Other I/O" AutomationProperties.Name="Sort by Other I/O" />
+                            <Button x:Name="PidSortButton" Grid.Column="6" Tag="Pid" Click="SortButton_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Right" MinWidth="0" Padding="8,4" Content="PID" AutomationProperties.Name="Sort by PID" />
+                        </Grid>
+
+                        <ListView
+                            x:Name="ProcessList"
+                            Grid.Row="1"
+                            ItemsSource="{x:Bind ViewModel.Rows, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=TwoWay}"
+                            SelectionMode="Single"
+                            IsItemClickEnabled="False"
+                            SelectionChanged="ProcessList_SelectionChanged"
+                            AutomationProperties.Name="Process List">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="MinHeight" Value="44" />
+                                    <Setter Property="Padding" Value="0" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="presentation:ProcessRowViewModel">
+                                    <Grid Padding="12,8" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="150" />
+                                            <ColumnDefinition Width="112" />
+                                            <ColumnDefinition Width="74" />
+                                            <ColumnDefinition Width="108" />
+                                            <ColumnDefinition Width="112" />
+                                            <ColumnDefinition Width="104" />
+                                            <ColumnDefinition Width="74" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" FontSize="12" Text="{x:Bind PidCompactText}" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind AttentionBadgeText}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="2" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind CpuText}" />
+                                        <TextBlock Grid.Column="3" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind MemoryText}" />
+                                        <TextBlock Grid.Column="4" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind DiskText}" />
+                                        <TextBlock Grid.Column="5" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind OtherIoText}" />
+                                        <TextBlock Grid.Column="6" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind PidText}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
                     </Grid>
 
-                    <ListView
-                        x:Name="ProcessList"
-                        Grid.Row="1"
-                        ItemsSource="{x:Bind ViewModel.Rows, Mode=OneWay}"
-                        SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=TwoWay}"
-                        SelectionMode="Single"
-                        IsItemClickEnabled="False"
-                        SelectionChanged="ProcessList_SelectionChanged"
-                        AutomationProperties.Name="Process List">
-                        <ListView.ItemContainerStyle>
-                            <Style TargetType="ListViewItem">
-                                <Setter Property="MinHeight" Value="44" />
-                                <Setter Property="Padding" Value="0" />
-                            </Style>
-                        </ListView.ItemContainerStyle>
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="presentation:ProcessRowViewModel">
-                                <Grid Padding="12,8" ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="150" />
-                                        <ColumnDefinition Width="80" />
-                                        <ColumnDefinition Width="120" />
-                                        <ColumnDefinition Width="130" />
-                                        <ColumnDefinition Width="120" />
-                                        <ColumnDefinition Width="90" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" FontSize="12" Text="{x:Bind PidText}" />
-                                    </StackPanel>
-                                    <TextBlock Grid.Column="1" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind CpuText}" />
-                                    <TextBlock Grid.Column="2" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind MemoryText}" />
-                                    <TextBlock Grid.Column="3" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind DiskText}" />
-                                    <TextBlock Grid.Column="4" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind OtherIoText}" />
-                                    <TextBlock Grid.Column="5" FontFamily="Cascadia Mono, Consolas" HorizontalAlignment="Right" Text="{x:Bind PidText}" />
-                                </Grid>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
-                </Grid>
-                <Grid
-                    x:Name="CompactProcessSurface"
-                    RowSpacing="0"
-                    Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
                     <Grid
-                        Grid.Row="0"
-                        Padding="10,8"
-                        ColumnSpacing="8"
-                        Background="{ThemeResource BatCaveSurfaceAltBrush}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
+                        x:Name="CompactProcessSurface"
+                        RowSpacing="0"
+                        Visibility="Collapsed">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid
+                            Grid.Row="0"
+                            Padding="10,8"
+                            ColumnSpacing="8"
+                            Background="{ThemeResource BatCaveSurfaceAltBrush}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                Foreground="{ThemeResource BatCaveTextSecondaryBrush}"
+                                Text="{x:Bind ViewModel.ProcessSortText, Mode=OneWay}"
+                                TextTrimming="CharacterEllipsis" />
+                            <Button
+                                Grid.Column="1"
+                                HorizontalAlignment="Left"
+                                Content="Sort"
+                                AutomationProperties.Name="Compact Sort">
+                                <Button.Flyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="Attention" Tag="Attention" Click="SortMenuItem_Click" />
+                                        <MenuFlyoutItem Text="Name" Tag="Name" Click="SortMenuItem_Click" />
+                                        <MenuFlyoutItem Text="CPU" Tag="CpuPct" Click="SortMenuItem_Click" />
+                                        <MenuFlyoutItem Text="Memory" Tag="MemoryBytes" Click="SortMenuItem_Click" />
+                                        <MenuFlyoutItem Text="Disk" Tag="DiskBps" Click="SortMenuItem_Click" />
+                                        <MenuFlyoutItem Text="Other I/O" Tag="OtherIoBps" Click="SortMenuItem_Click" />
+                                        <MenuFlyoutItem Text="PID" Tag="Pid" Click="SortMenuItem_Click" />
+                                    </MenuFlyout>
+                                </Button.Flyout>
+                            </Button>
+                        </Grid>
+                        <ListView
+                            x:Name="CompactProcessList"
+                            Grid.Row="1"
+                            ItemsSource="{x:Bind ViewModel.Rows, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=TwoWay}"
+                            SelectionMode="Single"
+                            IsItemClickEnabled="False"
+                            SelectionChanged="ProcessList_SelectionChanged"
+                            Visibility="Collapsed"
+                            AutomationProperties.Name="Compact Process List">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="MinHeight" Value="56" />
+                                    <Setter Property="Padding" Value="0" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="presentation:ProcessRowViewModel">
+                                    <Grid Padding="10,5" RowSpacing="2">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid Grid.Row="0" ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" MinWidth="0" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="1" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" FontSize="12" Text="{x:Bind AttentionBadgeText}" TextTrimming="CharacterEllipsis" />
+                                        </Grid>
+                                        <Grid Grid.Row="1" ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind CpuCompactText}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="1" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind MemoryCompactText}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="2" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind DiskCompactText}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="3" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind OtherIoCompactText}" TextTrimming="CharacterEllipsis" />
+                                        </Grid>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </Grid>
+
+                    <Border
+                        Padding="24"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Background="{ThemeResource BatCaveSurfaceAltBrush}"
+                        CornerRadius="{ThemeResource BatCaveControlCornerRadius}"
+                        Visibility="{x:Bind ViewModel.EmptyStateVisibility, Mode=OneWay}"
+                        IsHitTestVisible="False">
                         <TextBlock
-                            Grid.Column="0"
-                            VerticalAlignment="Center"
                             Foreground="{ThemeResource BatCaveTextSecondaryBrush}"
-                            Text="{x:Bind ViewModel.ProcessSortText, Mode=OneWay}"
-                            TextTrimming="CharacterEllipsis" />
-                        <Button
-                            Grid.Column="1"
-                            HorizontalAlignment="Left"
-                            Content="Sort"
-                            AutomationProperties.Name="Compact Sort">
-                            <Button.Flyout>
-                                <MenuFlyout>
-                                    <MenuFlyoutItem Text="Name" Tag="Name" Click="SortMenuItem_Click" />
-                                    <MenuFlyoutItem Text="CPU" Tag="CpuPct" Click="SortMenuItem_Click" />
-                                    <MenuFlyoutItem Text="Memory" Tag="MemoryBytes" Click="SortMenuItem_Click" />
-                                    <MenuFlyoutItem Text="Disk" Tag="DiskBps" Click="SortMenuItem_Click" />
-                                    <MenuFlyoutItem Text="Other I/O" Tag="OtherIoBps" Click="SortMenuItem_Click" />
-                                    <MenuFlyoutItem Text="PID" Tag="Pid" Click="SortMenuItem_Click" />
-                                </MenuFlyout>
-                            </Button.Flyout>
-                        </Button>
-                    </Grid>
-                    <ListView
-                        x:Name="CompactProcessList"
-                        Grid.Row="1"
-                        ItemsSource="{x:Bind ViewModel.Rows, Mode=OneWay}"
-                        SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=TwoWay}"
-                        SelectionMode="Single"
-                        IsItemClickEnabled="False"
-                        SelectionChanged="ProcessList_SelectionChanged"
-                        Visibility="Collapsed"
-                        AutomationProperties.Name="Compact Process List">
-                        <ListView.ItemContainerStyle>
-                            <Style TargetType="ListViewItem">
-                                <Setter Property="MinHeight" Value="50" />
-                                <Setter Property="Padding" Value="0" />
-                            </Style>
-                        </ListView.ItemContainerStyle>
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="presentation:ProcessRowViewModel">
-                                <Grid Padding="10,4" RowSpacing="2">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid Grid.Row="0" ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" MinWidth="0" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="1" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" FontSize="12" Text="{x:Bind PidCompactText}" TextTrimming="CharacterEllipsis" />
-                                    </Grid>
-                                    <Grid Grid.Row="1" ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind CpuCompactText}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="1" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind MemoryCompactText}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="2" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind DiskCompactText}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="3" MinWidth="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind OtherIoCompactText}" TextTrimming="CharacterEllipsis" />
-                                    </Grid>
-                                </Grid>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
-                </Grid>
+                            Text="{x:Bind ViewModel.EmptyStateText, Mode=OneWay}"
+                            TextAlignment="Center"
+                            TextWrapping="WrapWholeWords" />
+                    </Border>
                 </Grid>
             </Border>
 
@@ -318,90 +399,157 @@
                 <ScrollViewer
                     Padding="10"
                     VerticalScrollBarVisibility="Auto">
-                    <StackPanel Spacing="8">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="INSPECTOR" />
-                        <Grid ColumnSpacing="8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" FontSize="24" FontWeight="SemiBold" Text="{x:Bind ViewModel.InspectorTitle, Mode=OneWay}" TextWrapping="WrapWholeWords" />
-                            <Button
-                                Grid.Column="1"
-                                Command="{x:Bind ViewModel.ClearSelectionCommand}"
-                                Visibility="{x:Bind ViewModel.ClearSelectionVisibility, Mode=OneWay}"
-                                AutomationProperties.Name="Show System Overview"
-                                ToolTipService.ToolTip="Show system overview">
-                                <SymbolIcon Symbol="Home" />
-                            </Button>
-                        </Grid>
-                        <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.InspectorSubtitle, Mode=OneWay}" TextWrapping="WrapWholeWords" />
-                    </StackPanel>
+                    <StackPanel Spacing="10">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="INSPECTOR" />
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" FontSize="24" FontWeight="SemiBold" Text="{x:Bind ViewModel.InspectorTitle, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                <Button
+                                    Grid.Column="1"
+                                    Click="CopyDetails_Click"
+                                    Visibility="{x:Bind ViewModel.CopyDetailsVisibility, Mode=OneWay}"
+                                    AutomationProperties.Name="Copy Process Details"
+                                    ToolTipService.ToolTip="Copy process details">
+                                    <SymbolIcon Symbol="Copy" />
+                                </Button>
+                                <Button
+                                    Grid.Column="2"
+                                    Command="{x:Bind ViewModel.ClearSelectionCommand}"
+                                    Visibility="{x:Bind ViewModel.ClearSelectionVisibility, Mode=OneWay}"
+                                    AutomationProperties.Name="Show System Overview"
+                                    ToolTipService.ToolTip="Show system overview">
+                                    <SymbolIcon Symbol="Home" />
+                                </Button>
+                            </Grid>
+                            <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.InspectorSubtitle, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                        </StackPanel>
 
-                    <InfoBar
-                        IsOpen="{x:Bind ViewModel.HasWarning, Mode=OneWay}"
-                        Severity="Warning"
-                        Title="Runtime Notice"
-                        Message="{x:Bind ViewModel.WarningText, Mode=OneWay}" />
+                        <InfoBar
+                            IsOpen="{x:Bind ViewModel.HasWarning, Mode=OneWay}"
+                            Severity="Warning"
+                            Title="Runtime Notice"
+                            Message="{x:Bind ViewModel.WarningText, Mode=OneWay}" />
 
-                    <Grid
-                        x:Name="InspectorMetricsGrid"
-                        ColumnSpacing="10"
-                        RowSpacing="10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition x:Name="InspectorMetricsSecondColumn" Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
+                        <Pivot AutomationProperties.Name="Inspector Mode Tabs">
+                            <PivotItem Header="Summary">
+                                <StackPanel Spacing="10">
+                                    <Grid
+                                        x:Name="InspectorMetricsGrid"
+                                        ColumnSpacing="10"
+                                        RowSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition x:Name="InspectorMetricsSecondColumn" Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
 
-                        <Border x:Name="CpuMetricCard" Grid.Row="0" Grid.Column="0" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
-                            <StackPanel>
-                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="CPU" />
-                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorCpuText, Mode=OneWay}" />
-                            </StackPanel>
-                        </Border>
-                        <Border x:Name="MemoryMetricCard" Grid.Row="0" Grid.Column="1" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
-                            <StackPanel>
-                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="MEMORY" />
-                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorMemoryText, Mode=OneWay}" />
-                            </StackPanel>
-                        </Border>
-                        <Border x:Name="DiskMetricCard" Grid.Row="1" Grid.Column="0" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
-                            <StackPanel>
-                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="DISK" />
-                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorDiskText, Mode=OneWay}" />
-                            </StackPanel>
-                        </Border>
-                        <Border x:Name="OtherIoMetricCard" Grid.Row="1" Grid.Column="1" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
-                            <StackPanel>
-                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="OTHER I/O" />
-                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorOtherIoText, Mode=OneWay}" />
-                            </StackPanel>
-                        </Border>
-                        <Border x:Name="ThreadsMetricCard" Grid.Row="2" Grid.ColumnSpan="2" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
-                            <StackPanel>
-                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="THREADS / LOGICAL PROCESSORS" />
-                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorThreadText, Mode=OneWay}" />
-                            </StackPanel>
-                        </Border>
-                    </Grid>
+                                        <Border x:Name="CpuMetricCard" Grid.Row="0" Grid.Column="0" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="CPU" />
+                                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorCpuText, Mode=OneWay}" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border x:Name="MemoryMetricCard" Grid.Row="0" Grid.Column="1" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="MEMORY" />
+                                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorMemoryText, Mode=OneWay}" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border x:Name="DiskMetricCard" Grid.Row="1" Grid.Column="0" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="DISK" />
+                                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorDiskText, Mode=OneWay}" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border x:Name="OtherIoMetricCard" Grid.Row="1" Grid.Column="1" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="OTHER I/O" />
+                                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorOtherIoText, Mode=OneWay}" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border x:Name="ThreadsMetricCard" Grid.Row="2" Grid.ColumnSpan="2" Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="THREADS / LOGICAL PROCESSORS" />
+                                                <TextBlock Style="{StaticResource MetricValueTextStyle}" Text="{x:Bind ViewModel.InspectorThreadText, Mode=OneWay}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
 
-                    <StackPanel Spacing="8">
-                        <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="CPU TREND" />
-                        <controls:SparklineControl Values="{x:Bind ViewModel.CpuTrendValues, Mode=OneWay}" />
-                    </StackPanel>
+                                    <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="ATTENTION" />
+                                    <TextBlock Text="{x:Bind ViewModel.InspectorAttentionText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                    <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.InspectorLastChangeText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </PivotItem>
 
-                    <StackPanel Spacing="8">
-                        <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="MEMORY TREND" />
-                        <controls:SparklineControl Values="{x:Bind ViewModel.MemoryTrendValues, Mode=OneWay}" />
-                    </StackPanel>
+                            <PivotItem Header="Performance">
+                                <StackPanel Spacing="10">
+                                    <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="RUNTIME CONFIDENCE" />
+                                    <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.RuntimeConfidenceText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                    <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.RuntimePerfText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                    <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.RuntimeBudgetText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="CPU TREND" />
+                                        <controls:SparklineControl Values="{x:Bind ViewModel.CpuTrendValues, Mode=OneWay}" />
+                                    </StackPanel>
+
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="MEMORY TREND" />
+                                        <controls:SparklineControl Values="{x:Bind ViewModel.MemoryTrendValues, Mode=OneWay}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </PivotItem>
+
+                            <PivotItem Header="Details">
+                                <StackPanel Spacing="10">
+                                    <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="PROCESS DETAILS" />
+                                    <Grid ColumnSpacing="10" RowSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Parent PID" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" />
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind ViewModel.InspectorParentPidText, Mode=OneWay}" />
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Started" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" />
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.InspectorStartTimeText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Access" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" />
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.InspectorAccessStateText, Mode=OneWay}" />
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Private memory" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" />
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{x:Bind ViewModel.InspectorPrivateMemoryText, Mode=OneWay}" />
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Handles" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" />
+                                        <TextBlock Grid.Row="4" Grid.Column="1" Text="{x:Bind ViewModel.InspectorHandlesText, Mode=OneWay}" />
+                                    </Grid>
+
+                                    <TextBlock Style="{StaticResource MetricLabelTextStyle}" Text="VALIDATION" />
+                                    <Border Background="{ThemeResource BatCaveSurfaceAltBrush}" CornerRadius="6" Padding="10">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock FontWeight="SemiBold" Text="{x:Bind ViewModel.BenchmarkStatusText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                            <TextBlock Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.BenchmarkBudgetText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                            <TextBlock FontFamily="Cascadia Mono, Consolas" FontSize="12" Text="{x:Bind ViewModel.BenchmarkCommandText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                            <TextBlock FontFamily="Cascadia Mono, Consolas" FontSize="12" Text="{x:Bind ViewModel.ValidationCommandText, Mode=OneWay}" TextWrapping="WrapWholeWords" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </PivotItem>
+                        </Pivot>
                     </StackPanel>
                 </ScrollViewer>
             </Border>
@@ -417,11 +565,13 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" />
-            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.CpuText, Mode=OneWay}" />
-            <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.TickText, Mode=OneWay}" />
-            <TextBlock Grid.Column="3" Text="{x:Bind ViewModel.SortText, Mode=OneWay}" />
+            <TextBlock Grid.Column="0" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.FooterCpuText, Mode=OneWay}" />
+            <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.FooterTickText, Mode=OneWay}" />
+            <TextBlock Grid.Column="3" Text="{x:Bind ViewModel.FooterSortP95Text, Mode=OneWay}" />
+            <TextBlock Grid.Column="4" Foreground="{ThemeResource BatCaveTextSecondaryBrush}" Text="{x:Bind ViewModel.ProcessSortText, Mode=OneWay}" />
         </Grid>
     </Grid>
 </Window>

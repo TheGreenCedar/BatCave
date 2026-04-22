@@ -29,7 +29,7 @@ public static class RuntimeViewReducer
         return new RuntimeViewState
         {
             Snapshot = snapshot,
-            Rows = Freeze(snapshot.Rows),
+            Rows = ShapeRows(snapshot),
             SelectedIdentity = selected?.Identity(),
             SelectedProcess = selected,
             ActiveWarning = activeWarning,
@@ -49,6 +49,19 @@ public static class RuntimeViewReducer
         }
 
         return null;
+    }
+
+    private static IReadOnlyList<ProcessSample> ShapeRows(RuntimeSnapshot snapshot)
+    {
+        IEnumerable<ProcessSample> rows = snapshot.Rows;
+        if (snapshot.Settings.Query.SortColumn == SortColumn.Attention)
+        {
+            rows = snapshot.Settings.Query.SortDirection == SortDirection.Asc
+                ? rows.OrderBy(ProcessAttention.Score).ThenBy(static row => row.Name, StringComparer.OrdinalIgnoreCase)
+                : rows.OrderByDescending(ProcessAttention.Score).ThenBy(static row => row.Name, StringComparer.OrdinalIgnoreCase);
+        }
+
+        return Freeze(rows);
     }
 
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T> values) => Array.AsReadOnly(values.ToArray());

@@ -416,7 +416,7 @@ public sealed class RuntimeReviewRegressionTests
 
         Assert.True(snapshot.Settings.AdminModeRequested);
         Assert.False(snapshot.Settings.AdminModeEnabled);
-        Assert.Contains("standard access active", snapshot.Health.StatusSummary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("elevation is inactive", snapshot.Health.StatusSummary, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

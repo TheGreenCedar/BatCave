@@ -1,6 +1,7 @@
 using BatCave.App.Presentation;
 using BatCave.Runtime.Contracts;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI;
 using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
@@ -11,18 +12,21 @@ using Microsoft.UI.Xaml.Media;
 using System;
 using System.ComponentModel;
 using System.IO;
+using Windows.ApplicationModel.DataTransfer;
 using WinRT.Interop;
 
 namespace BatCave.App;
 
 public sealed partial class MainWindow : Window
 {
-    private const double WideLayoutMinWidth = 1700;
-    private const double CompactProcessListMaxWidth = 900;
+    private const double WideLayoutMinWidth = 2000;
+    private const double CompactProcessListMaxWidth = 1280;
     private const double InspectorPaneWidth = 420;
-    private const double WideWorkspaceSpacing = 14;
     private const double WorkspaceHorizontalPadding = 32;
     private const double NarrowProcessPaneMaxHeight = 360;
+    private AppWindow? _appWindow;
+    private DispatcherQueueTimer? _responsiveLayoutTimer;
+    private double _lastResponsiveLayoutWidth = double.NaN;
 
     public MainWindow()
     {
@@ -37,20 +41,28 @@ public sealed partial class MainWindow : Window
 
     private void Root_Loaded(object sender, RoutedEventArgs e)
     {
+        AttachAppWindowEvents();
+        StartResponsiveLayoutWatcher();
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
         ViewModel.Start();
         UpdateSortHeaderVisualState();
-        ApplyResponsiveLayout(Root.ActualWidth);
+        ApplyResponsiveLayoutIfChanged(GetResponsiveWidth(Root.ActualWidth));
     }
 
     private void Root_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        ApplyResponsiveLayout(e.NewSize.Width);
+        ApplyResponsiveLayoutIfChanged(GetResponsiveWidth(e.NewSize.Width));
     }
 
     private async void OnClosed(object sender, WindowEventArgs args)
     {
         ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        if (_appWindow is not null)
+        {
+            _appWindow.Changed -= AppWindow_Changed;
+        }
+
+        _responsiveLayoutTimer?.Stop();
         try
         {
             await ViewModel.DisposeAsync();
@@ -79,9 +91,54 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        GetAppWindow().SetIcon(iconPath);
+    }
+
+    private void AttachAppWindowEvents()
+    {
+        AppWindow appWindow = GetAppWindow();
+        appWindow.Changed -= AppWindow_Changed;
+        appWindow.Changed += AppWindow_Changed;
+    }
+
+    private AppWindow GetAppWindow()
+    {
+        if (_appWindow is not null)
+        {
+            return _appWindow;
+        }
+
         IntPtr windowHandle = WindowNative.GetWindowHandle(this);
         WindowId windowId = Win32Interop.GetWindowIdFromWindow(windowHandle);
-        AppWindow.GetFromWindowId(windowId).SetIcon(iconPath);
+        _appWindow = AppWindow.GetFromWindowId(windowId);
+        return _appWindow;
+    }
+
+    private double GetResponsiveWidth(double fallbackWidth)
+    {
+        AppWindow appWindow = GetAppWindow();
+        return appWindow.Size.Width > 0 ? appWindow.Size.Width : fallbackWidth;
+    }
+
+    private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (args.DidSizeChange)
+        {
+            ApplyResponsiveLayoutIfChanged(sender.Size.Width);
+        }
+    }
+
+    private void StartResponsiveLayoutWatcher()
+    {
+        if (_responsiveLayoutTimer is not null)
+        {
+            return;
+        }
+
+        _responsiveLayoutTimer = DispatcherQueue.CreateTimer();
+        _responsiveLayoutTimer.Interval = TimeSpan.FromMilliseconds(250);
+        _responsiveLayoutTimer.Tick += (_, _) => ApplyResponsiveLayoutIfChanged(GetResponsiveWidth(Root.ActualWidth));
+        _responsiveLayoutTimer.Start();
     }
 
     private async void AdminToggle_Toggled(object sender, RoutedEventArgs e)
@@ -113,6 +170,7 @@ public sealed partial class MainWindow : Window
         SortColumn currentColumn = ViewModel.CurrentSortColumn;
         SortDirection currentDirection = ViewModel.CurrentSortDirection;
         ApplySortHeaderVisualState(NameSortButton, SortColumn.Name, "Name", currentColumn, currentDirection);
+        ApplySortHeaderVisualState(AttentionSortButton, SortColumn.Attention, "Attention", currentColumn, currentDirection);
         ApplySortHeaderVisualState(CpuSortButton, SortColumn.CpuPct, "CPU", currentColumn, currentDirection);
         ApplySortHeaderVisualState(MemorySortButton, SortColumn.MemoryBytes, "Memory", currentColumn, currentDirection);
         ApplySortHeaderVisualState(DiskSortButton, SortColumn.DiskBps, "Disk", currentColumn, currentDirection);
@@ -183,27 +241,45 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void CopyDetails_Click(object sender, RoutedEventArgs e)
+    {
+        string details = ViewModel.CopyDetailsText;
+        if (string.IsNullOrWhiteSpace(details))
+        {
+            return;
+        }
+
+        DataPackage package = new();
+        package.SetText(details);
+        Clipboard.SetContent(package);
+    }
+
+    private void ApplyResponsiveLayoutIfChanged(double width)
+    {
+        if (Math.Abs(width - _lastResponsiveLayoutWidth) < 0.5)
+        {
+            return;
+        }
+
+        ApplyResponsiveLayout(width);
+    }
+
     private void ApplyResponsiveLayout(double width)
     {
+        _lastResponsiveLayoutWidth = width;
+        double layoutWidth = Root.ActualWidth > 0 ? Root.ActualWidth : width;
         bool narrow = width < WideLayoutMinWidth;
         bool compactProcesses = width < CompactProcessListMaxWidth;
         WorkspaceGrid.ColumnSpacing = narrow ? 0 : 14;
         WorkspaceGrid.RowSpacing = narrow ? 14 : 0;
-        double processWidth = Math.Max(
-            320,
-                Math.Min(
-                    1040,
-                    Math.Min(
-                        width * 0.62,
-                        width - InspectorPaneWidth - WideWorkspaceSpacing - WorkspaceHorizontalPadding)));
-        ProcessColumn.Width = narrow ? new GridLength(1, GridUnitType.Star) : new GridLength(processWidth);
+        ProcessColumn.Width = new GridLength(1, GridUnitType.Star);
         ProcessColumn.MaxWidth = double.PositiveInfinity;
-        ProcessPane.Width = narrow ? double.NaN : processWidth;
-        ProcessPane.MaxWidth = narrow ? double.PositiveInfinity : processWidth;
+        ProcessPane.Width = double.NaN;
+        ProcessPane.MaxWidth = double.PositiveInfinity;
         ProcessPane.MaxHeight = narrow ? NarrowProcessPaneMaxHeight : double.PositiveInfinity;
         double desktopProcessTableWidth = narrow
-            ? Math.Max(320, width - WorkspaceHorizontalPadding)
-            : processWidth;
+            ? Math.Max(320, layoutWidth - WorkspaceHorizontalPadding)
+            : double.NaN;
         DesktopProcessTable.Width = compactProcesses ? double.NaN : desktopProcessTableWidth;
         DesktopProcessTable.Visibility = compactProcesses ? Visibility.Collapsed : Visibility.Visible;
         CompactProcessSurface.Visibility = compactProcesses ? Visibility.Visible : Visibility.Collapsed;

@@ -199,13 +199,86 @@ public sealed class RuntimeContractTests
         Assert.True(updated.HasHealthBanner);
     }
 
-    private static RuntimeStore CreateStore(MemoryPersistenceStore persistence, int SubscriberBufferCapacity)
+    [Fact]
+    public void RuntimeViewReducer_OrdersAttentionSortByAttentionScore()
+    {
+        ProcessSample quiet = Sample(10, "Quiet", 0.1);
+        ProcessSample busy = Sample(20, "Busy", 44.4);
+        ProcessSample limited = Sample(30, "Limited", 0.2) with { AccessState = AccessState.Partial };
+        RuntimeSnapshot snapshot = Snapshot(quiet, limited, busy) with
+        {
+            Settings = new RuntimeSettings
+            {
+                Query = new RuntimeQuery
+                {
+                    SortColumn = SortColumn.Attention,
+                    SortDirection = SortDirection.Desc,
+                },
+            },
+        };
+
+        RuntimeViewState viewState = RuntimeViewReducer.Reduce(null, snapshot);
+
+        Assert.Equal("Busy", viewState.Rows[0].Name);
+        Assert.Equal("Limited", viewState.Rows[1].Name);
+    }
+
+    [Fact]
+    public async Task RuntimeStore_UsesConfiguredDegradeThresholdsForStatus()
+    {
+        await using RuntimeStore store = CreateStore(
+            new MemoryPersistenceStore(),
+            SubscriberBufferCapacity: 4,
+            options: new RuntimeStoreOptions
+            {
+                DegradeCpuThresholdPct = 0d,
+                DegradeRssThresholdBytes = ulong.MaxValue,
+                DefaultSettings = new RuntimeSettings
+                {
+                    AdminModeRequested = false,
+                },
+            });
+
+        RuntimeSnapshot snapshot = store.GetSnapshot();
+
+        Assert.True(snapshot.Health.DegradeMode);
+        Assert.Equal("Degraded: app CPU above budget.", snapshot.Health.StatusSummary);
+    }
+
+    [Fact]
+    public async Task RuntimeStore_ExplainsCurrentCollectorWarnings()
+    {
+        await using RuntimeStore store = new(
+            new WarningProcessCollector(Sample(10, "Warned", 1)),
+            new FixedSystemMetricsCollector(),
+            new MemoryPersistenceStore(),
+            new RuntimeStoreOptions
+            {
+                TickInterval = TimeSpan.FromHours(1),
+                SubscriberBufferCapacity = 4,
+                WarmCacheWriteIntervalTicks = 1000,
+                DegradeCpuThresholdPct = double.MaxValue,
+                DegradeRssThresholdBytes = ulong.MaxValue,
+                DefaultSettings = new RuntimeSettings
+                {
+                    AdminModeRequested = false,
+                },
+            });
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        await store.StartAsync(timeout.Token);
+
+        await store.ExecuteAsync(new RefreshNowCommand(), timeout.Token);
+
+        Assert.StartsWith("Collector warning:", store.GetSnapshot().Health.StatusSummary);
+    }
+
+    private static RuntimeStore CreateStore(MemoryPersistenceStore persistence, int SubscriberBufferCapacity, RuntimeStoreOptions? options = null)
     {
         return new RuntimeStore(
             new FixedProcessCollector(Sample(10, "Alpha", 1), Sample(20, "Code", 9), Sample(30, "Beta", 2)),
             new FixedSystemMetricsCollector(),
             persistence,
-            new RuntimeStoreOptions
+            options ?? new RuntimeStoreOptions
             {
                 TickInterval = TimeSpan.FromHours(1),
                 SubscriberBufferCapacity = SubscriberBufferCapacity,
@@ -278,6 +351,17 @@ public sealed class RuntimeContractTests
             ulong tsMs = (ulong)Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             return rows.Select(row => row with { Seq = seq, TsMs = tsMs }).ToArray();
         }
+    }
+
+    private sealed class WarningProcessCollector(params ProcessSample[] rows) : IProcessCollector
+    {
+        public IReadOnlyList<ProcessSample> Collect(ulong seq)
+        {
+            ulong tsMs = (ulong)Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            return rows.Select(row => row with { Seq = seq, TsMs = tsMs }).ToArray();
+        }
+
+        public string? TakeWarning() => "collector access was partially denied.";
     }
 
     private sealed class FixedSystemMetricsCollector : ISystemMetricsCollector
