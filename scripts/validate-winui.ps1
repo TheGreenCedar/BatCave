@@ -162,7 +162,7 @@ function Invoke-BuildWithRetry {
     Clear-StaleBuildProcesses
 
     for ($attempt = 1; $attempt -le 2; $attempt++) {
-        dotnet build BatCave/BatCave.csproj "-p:Platform=$BuildPlatform"
+        dotnet build src/BatCave.App/BatCave.App.csproj "-p:Platform=$BuildPlatform"
         if ($LASTEXITCODE -eq 0) {
             return
         }
@@ -174,7 +174,7 @@ function Invoke-BuildWithRetry {
         }
     }
 
-    Assert-LastExitCode "dotnet build BatCave/BatCave.csproj"
+    Assert-LastExitCode "dotnet build src/BatCave.App/BatCave.App.csproj"
 }
 
 function Invoke-TestsWithRetry {
@@ -295,7 +295,7 @@ function Invoke-WinUiLaunchSmoke {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$projectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
+$projectPath = Join-Path $repoRoot "src/BatCave.App/BatCave.App.csproj"
 $resolvedRunPlatform = if ([string]::IsNullOrWhiteSpace($RunPlatform)) { Get-DefaultRunPlatform } else { $RunPlatform }
 Push-Location $repoRoot
 try {

@@ -17,8 +17,8 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $solutionPath = Join-Path $repoRoot "BatCave.slnx"
-$coreProjectPath = Join-Path $repoRoot "BatCave.Bench/BatCave.Bench.csproj"
-$winUiProjectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
+$coreProjectPath = Join-Path $repoRoot "src/BatCave.Bench/BatCave.Bench.csproj"
+$winUiProjectPath = Join-Path $repoRoot "src/BatCave.App/BatCave.App.csproj"
 . "$PSScriptRoot/winui-run-helpers.ps1"
 
 if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
@@ -98,7 +98,7 @@ function Resolve-BaselineSummaryPath {
 }
 
 if (-not $NoBuild) {
-    dotnet build "$solutionPath"
+    dotnet build "$solutionPath" "-p:Platform=$Platform"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -138,7 +138,7 @@ if (-not [string]::IsNullOrWhiteSpace($MaxP95Ms)) {
 }
 
 $coreArgs = @("--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs + $compareArgs
-$winUiArgs = @("--benchmark", "--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs + $compareArgs
+$winUiArgs = @("--benchmark", "--benchmark-host", "winui", "--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs + $compareArgs
 
 if ($BenchmarkHost -eq "core") {
     try {

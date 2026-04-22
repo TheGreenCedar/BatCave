@@ -2,7 +2,7 @@
 
 BatCave is a Windows 11 WinUI 3 process monitor built for fast, local-first telemetry and repeatable validation. It combines a live process explorer, system-level resource views, runtime health diagnostics, and benchmark gates in a single solution.
 
-The app is designed to be useful both as an interactive desktop monitor and as a validation target for scripts, tests, and benchmark workflows. The repository also includes a headless benchmark host, script regression coverage, and WinUI-facing accessibility and layout tests.
+The app is designed to be useful both as an interactive desktop monitor and as a validation target for scripts, tests, and benchmark workflows. The repository also includes a headless benchmark host, runtime contract coverage, and WinUI-facing accessibility and layout tests.
 
 ## Screenshots
 
@@ -13,10 +13,10 @@ The app is designed to be useful both as an interactive desktop monitor and as a
 ## Highlights
 
 - Live process explorer with sortable CPU, memory, disk, and network/other I/O columns.
-- System overview with combined resource trends and logical CPU breakdowns.
-- Process inspector with metadata such as executable path, command line, and parent PID.
+- System overview with lightweight CPU and memory trend sparklines.
+- Process inspector with dense process resource metrics and stable selection.
 - Runtime health surfacing for jitter, dropped ticks, degrade mode, and collector warnings.
-- Admin-mode restart path for fuller process access when the collector can elevate.
+- Admin-mode state preserved in the runtime store; elevated helper handoff remains a script-compatible CLI surface.
 - Repeatable benchmark, baseline capture, validation, and memory-profiling workflows.
 - Local-only persistence and logs under `%LOCALAPPDATA%\BatCaveMonitor`.
 
@@ -124,11 +124,11 @@ The JSON payloads use snake_case and are meant to stay stable enough for the val
 
 ## Repository Layout
 
-- `BatCave/`: WinUI 3 host, XAML controls, view models, charts, services, and WinUI-facing CLI surfaces.
-- `BatCave.Core/`: shared runtime, collectors, telemetry pipeline, state/sort engines, launch policy, metadata, and persistence.
-- `BatCave.Bench/`: headless benchmark host for runtime-only performance runs.
-- `BatCave.Core.Tests/`: xUnit coverage for collectors, runtime behavior, persistence, launch policy, benchmarks, CLI operations, and script regressions.
-- `BatCave.Tests/`: xUnit coverage for WinUI-facing host logic, layouts, charts, services, and XAML accessibility contracts.
+- `src/BatCave.App/`: WinUI 3 host, shell, focused controls, presentation adapter, app manifest, assets, and WinUI-facing CLI surfaces.
+- `src/BatCave.Runtime/`: shared collectors, immutable runtime contracts, single-writer runtime store, reducer, launch policy, benchmark contracts, and local JSON persistence.
+- `src/BatCave.Bench/`: headless benchmark host for runtime-only performance runs.
+- `tests/BatCave.Runtime.Tests/`: xUnit coverage for runtime contracts, persistence recovery, JSON shape, bounded event coalescing, reducer behavior, and benchmark-facing contracts.
+- `tests/BatCave.App.Tests/`: source-level coverage for WinUI shell contracts, native controls, accessibility names, and app identity settings.
 - `scripts/`: repeatable local workflows for running, benchmarking, validating, and profiling the app.
 - `artifacts/`: generated benchmark and memory-profiling output.
 
@@ -138,16 +138,18 @@ BatCave is split so the monitoring engine stays reusable outside the WinUI shell
 
 ```text
 Windows process + system collectors
-    -> delta telemetry pipeline
-    -> in-memory state store + incremental sort engine
-    -> runtime loop + health tracking + persistence queues
-    -> WinUI event gateway + view models
+    -> single-writer runtime store
+    -> bounded runtime delta/event stream
+    -> UI store reducer
+    -> WinUI render adapter
     -> desktop shell / benchmark runner / validation scripts
 ```
 
 Key design points:
 
-- `BatCave.Core` owns shared monitoring behavior so the same runtime can back both the UI and the benchmark host.
+- `src/BatCave.Runtime` owns shared monitoring behavior so the same runtime can back both the UI and the benchmark host.
+- `RuntimeSnapshot`, `RuntimeDelta`, and `RuntimeCommand` are the public boundary between collectors, scripts, benchmarks, and the WinUI adapter.
+- The WinUI layer consumes runtime store output and reducer state; it does not call collectors or mutate runtime state directly.
 - The runtime tracks health signals such as jitter p95, dropped ticks, collector warnings, and degrade mode.
 - Global system sampling adds CPU, memory, disk, and network context alongside per-process telemetry.
 - Persistence is intentionally local and lightweight: settings, warm cache, and logs live under `%LOCALAPPDATA%\BatCaveMonitor`.
@@ -166,8 +168,8 @@ The repository guidelines explicitly preserve local-only behavior and avoid outb
 
 If you are changing the runtime or UI, keep the solution boundaries intact:
 
-- Put shared runtime, CLI, persistence, and collector behavior in `BatCave.Core`.
-- Keep WinUI-only orchestration and presentation code in `BatCave`.
+- Put shared runtime, CLI, persistence, and collector behavior in `src/BatCave.Runtime`.
+- Keep WinUI-only orchestration and presentation code in `src/BatCave.App`.
 - Prefer minimal edits and preserve existing script and CLI contracts when possible.
 
 Before opening a PR, run:

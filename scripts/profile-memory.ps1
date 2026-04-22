@@ -34,7 +34,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$projectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
+$projectPath = Join-Path $repoRoot "src/BatCave.App/BatCave.App.csproj"
 . "$PSScriptRoot/winui-run-helpers.ps1"
 
 function Show-Help {
@@ -171,7 +171,7 @@ if ([string]::IsNullOrWhiteSpace($HeapDumpPath)) {
 }
 
 if (-not $NoBuild) {
-    dotnet build (Join-Path $repoRoot "BatCave.slnx")
+    dotnet build (Join-Path $repoRoot "BatCave.slnx") "-p:Platform=$Platform"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

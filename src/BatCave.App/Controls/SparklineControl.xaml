@@ -1,0 +1,15 @@
+<UserControl
+    x:Class="BatCave.App.Controls.SparklineControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    MinHeight="64">
+    <Grid Background="Transparent">
+        <Canvas x:Name="PlotCanvas">
+            <Polyline
+                x:Name="Line"
+                Stroke="{ThemeResource BatCavePrimaryBrush}"
+                StrokeThickness="2"
+                StrokeLineJoin="Round" />
+        </Canvas>
+    </Grid>
+</UserControl>

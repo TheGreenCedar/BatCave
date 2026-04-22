@@ -10,11 +10,11 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $solutionPath = Join-Path $repoRoot "BatCave.slnx"
-$projectPath = Join-Path $repoRoot "BatCave/BatCave.csproj"
+$projectPath = Join-Path $repoRoot "src/BatCave.App/BatCave.App.csproj"
 . "$PSScriptRoot/winui-run-helpers.ps1"
 
 if (-not $NoBuild) {
-    dotnet build "$solutionPath"
+    dotnet build "$solutionPath" "-p:Platform=$Platform"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
