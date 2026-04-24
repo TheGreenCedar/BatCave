@@ -156,7 +156,7 @@ public sealed class RuntimeContractTests
     }
 
     [Fact]
-    public void BenchmarkRunner_HonorsHostSpecificBudgetMetadata()
+    public void BenchmarkRunner_HonorsConfiguredBudgetMetadata()
     {
         BenchmarkSummary summary = BenchmarkRunner.Run(
             ticks: 1,
@@ -164,13 +164,13 @@ public sealed class RuntimeContractTests
             CancellationToken.None,
             new BenchmarkGateOptions
             {
-                Host = "winui",
-                MeasurementOrigin = BenchmarkRunner.WinUiMeasurementOrigin,
+                Host = "core",
+                MeasurementOrigin = BenchmarkRunner.CoreMeasurementOrigin,
                 RssBudgetBytes = 256UL * 1024UL * 1024UL,
             });
 
-        Assert.Equal("winui", summary.Host);
-        Assert.Equal(BenchmarkRunner.WinUiMeasurementOrigin, summary.MeasurementOrigin);
+        Assert.Equal("core", summary.Host);
+        Assert.Equal(BenchmarkRunner.CoreMeasurementOrigin, summary.MeasurementOrigin);
         Assert.Equal(256UL * 1024UL * 1024UL, summary.RssBudgetBytes);
     }
 

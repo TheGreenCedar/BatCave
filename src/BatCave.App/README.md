@@ -1,6 +1,6 @@
 # BatCave Monitor
 
-BatCave Monitor is the Rust + Tauri + Svelte candidate for the next BatCave desktop shell. It keeps telemetry local, exposes a small snake_case JSON contract through Tauri commands, and renders a dense resource cockpit for CPU, logical cores, memory, disk, network, process triage, and runtime health.
+BatCave Monitor is the production Rust + Tauri + Svelte desktop shell. It keeps telemetry local, exposes a small snake_case JSON contract through Tauri commands, and renders a dense resource cockpit for CPU, logical cores, memory, disk, network, process triage, and runtime health.
 
 The UI is designed for repeated use rather than a landing-page feel:
 

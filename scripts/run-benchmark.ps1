@@ -1,6 +1,6 @@
 param(
     [Alias("Host")]
-    [ValidateSet("core", "winui")]
+    [ValidateSet("core")]
     [string]$BenchmarkHost = "core",
     [ValidateSet("x86", "x64", "ARM64")]
     [string]$Platform = "x64",
@@ -18,8 +18,6 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $solutionPath = Join-Path $repoRoot "BatCave.slnx"
 $coreProjectPath = Join-Path $repoRoot "src/BatCave.Bench/BatCave.Bench.csproj"
-$winUiProjectPath = Join-Path $repoRoot "src/BatCave.App/BatCave.App.csproj"
-. "$PSScriptRoot/winui-run-helpers.ps1"
 
 if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     throw "Specify either -BaselineJsonPath or -BaselineArtifactPath, not both."
@@ -138,27 +136,13 @@ if (-not [string]::IsNullOrWhiteSpace($MaxP95Ms)) {
 }
 
 $coreArgs = @("--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs + $compareArgs
-$winUiArgs = @("--benchmark", "--benchmark-host", "winui", "--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs + $compareArgs
 
-if ($BenchmarkHost -eq "core") {
-    try {
-        dotnet run --project "$coreProjectPath" -- @coreArgs
-    }
-    finally {
-        if (-not [string]::IsNullOrWhiteSpace($tempBaselinePath)) {
-            Remove-Item -LiteralPath $tempBaselinePath -ErrorAction SilentlyContinue
-        }
-    }
+try {
+    dotnet run --project "$coreProjectPath" -- @coreArgs
 }
-else {
-    try {
-        $runArgs = Get-WinUiRunArguments -ProjectPath $winUiProjectPath -RuntimePlatform $Platform -CommandArgs $winUiArgs
-        dotnet @runArgs
-    }
-    finally {
-        if (-not [string]::IsNullOrWhiteSpace($tempBaselinePath)) {
-            Remove-Item -LiteralPath $tempBaselinePath -ErrorAction SilentlyContinue
-        }
+finally {
+    if (-not [string]::IsNullOrWhiteSpace($tempBaselinePath)) {
+        Remove-Item -LiteralPath $tempBaselinePath -ErrorAction SilentlyContinue
     }
 }
 

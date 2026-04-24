@@ -1,5 +1,4 @@
 using BatCave.Runtime.Collectors;
-using BatCave.Runtime.Benchmarking;
 using BatCave.Runtime.Contracts;
 using BatCave.Runtime.Operations;
 using BatCave.Runtime.Persistence;
@@ -27,7 +26,6 @@ public static class RuntimeServiceRegistration
         services.AddSingleton<ISystemMetricsCollector, WindowsSystemMetricsCollector>();
         services.AddSingleton<IRuntimePersistenceStore, LocalJsonRuntimePersistenceStore>();
         services.AddSingleton<ILaunchPolicyGate, WindowsLaunchPolicyGate>();
-        services.AddSingleton<IWinUiBenchmarkRunner, RuntimeWinUiBenchmarkRunner>();
         services.AddSingleton(provider => new RuntimeStore(
             provider.GetRequiredService<IProcessCollector>(),
             provider.GetRequiredService<ISystemMetricsCollector>(),

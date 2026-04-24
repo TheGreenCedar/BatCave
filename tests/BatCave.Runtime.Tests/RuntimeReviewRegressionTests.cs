@@ -703,41 +703,15 @@ public sealed class RuntimeReviewRegressionTests
     }
 
     [Fact]
-    public void BenchmarkRunner_WinUiFallbackExercisesRuntimeReducerWithoutClaimingDispatcher()
+    public async Task CliOperationsHost_RejectsRemovedWinUiBenchmarkHost()
     {
-        BenchmarkSummary summary = BenchmarkRunner.Run(
-            ticks: 1,
-            sleepMs: 0,
-            CancellationToken.None,
-            new BenchmarkGateOptions
-            {
-                Host = "winui",
-                MeasurementOrigin = BenchmarkRunner.WinUiMeasurementOrigin,
-                UsesAttachedDispatcher = false,
-                RssBudgetBytes = 256UL * 1024UL * 1024UL,
-            });
-
-        Assert.Equal("winui", summary.Host);
-        Assert.Equal(BenchmarkRunner.WinUiMeasurementOrigin, summary.MeasurementOrigin);
-        Assert.False(summary.UsesAttachedDispatcher);
-        Assert.NotNull(summary.InteractionProbeP95);
-        Assert.Equal(1, summary.Ticks);
-    }
-
-    [Fact]
-    public async Task CliOperationsHost_DelegatesWinUiBenchmarkToInjectedRunner()
-    {
-        CapturingWinUiBenchmarkRunner runner = new();
-        CliOperationsHost host = new(new PassingLaunchPolicyGate(), new NullRuntimeStore(), [runner]);
+        CliOperationsHost host = new(new PassingLaunchPolicyGate(), new NullRuntimeStore());
 
         int exitCode = await host.ExecuteAsync(
             ["--benchmark", "--benchmark-host", "winui", "--ticks", "1", "--sleep-ms", "0"],
             CancellationToken.None);
 
-        Assert.Equal(0, exitCode);
-        Assert.True(runner.WasCalled);
-        Assert.Equal(1, runner.Ticks);
-        Assert.Equal(0, runner.SleepMs);
+        Assert.Equal(2, exitCode);
     }
 
     [Fact]
@@ -772,8 +746,8 @@ public sealed class RuntimeReviewRegressionTests
                 MeasurementOrigin = BenchmarkRunner.CoreMeasurementOrigin,
                 Baseline = new BenchmarkSummary
                 {
-                    Host = "winui",
-                    MeasurementOrigin = BenchmarkRunner.WinUiMeasurementOrigin,
+                    Host = "tauri",
+                    MeasurementOrigin = "tauri_shell",
                     TickP95Ms = 100_000,
                     SortP95Ms = 100_000,
                 },
@@ -815,7 +789,7 @@ public sealed class RuntimeReviewRegressionTests
     }
 
     [Fact]
-    public void BenchmarkRunner_RequiresComparableWinUiInteractionProbeWhenRequested()
+    public void BenchmarkRunner_RequiresComparableInteractionProbeWhenRequested()
     {
         BenchmarkSummary summary = BenchmarkRunner.Run(
             ticks: 1,
@@ -823,13 +797,13 @@ public sealed class RuntimeReviewRegressionTests
             CancellationToken.None,
             new BenchmarkGateOptions
             {
-                Host = "winui",
-                MeasurementOrigin = BenchmarkRunner.WinUiMeasurementOrigin,
-                UsesAttachedDispatcher = true,
+                Host = "core",
+                MeasurementOrigin = BenchmarkRunner.CoreMeasurementOrigin,
+                UsesAttachedDispatcher = false,
                 Baseline = new BenchmarkSummary
                 {
-                    Host = "winui",
-                    MeasurementOrigin = BenchmarkRunner.WinUiMeasurementOrigin,
+                    Host = "core",
+                    MeasurementOrigin = BenchmarkRunner.CoreMeasurementOrigin,
                     TickP95Ms = 100_000,
                     SortP95Ms = 100_000,
                 },
@@ -979,32 +953,6 @@ public sealed class RuntimeReviewRegressionTests
         }
 
         public Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct) => Task.CompletedTask;
-    }
-
-    private sealed class CapturingWinUiBenchmarkRunner : IWinUiBenchmarkRunner
-    {
-        public bool WasCalled { get; private set; }
-
-        public int Ticks { get; private set; }
-
-        public int SleepMs { get; private set; }
-
-        public ValueTask<BenchmarkSummary> RunAsync(int ticks, int sleepMs, BenchmarkGateOptions gates, CancellationToken ct)
-        {
-            WasCalled = true;
-            Ticks = ticks;
-            SleepMs = sleepMs;
-            return ValueTask.FromResult(new BenchmarkSummary
-            {
-                Host = "winui",
-                MeasurementOrigin = BenchmarkRunner.WinUiMeasurementOrigin,
-                UsesAttachedDispatcher = true,
-                Ticks = ticks,
-                SleepMs = sleepMs,
-                BudgetPassed = true,
-                StrictPassed = true,
-            });
-        }
     }
 
     private sealed class TestProcessCollectorFactory(CollectorActivationResult result) : IProcessCollectorFactory

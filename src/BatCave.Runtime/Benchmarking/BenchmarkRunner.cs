@@ -1,8 +1,5 @@
 using BatCave.Runtime.Collectors;
 using BatCave.Runtime.Contracts;
-using BatCave.Runtime.Persistence;
-using BatCave.Runtime.Presentation;
-using BatCave.Runtime.Store;
 using System.Diagnostics;
 
 namespace BatCave.Runtime.Benchmarking;
@@ -94,25 +91,11 @@ public sealed record BenchmarkSummary
     public bool StrictPassed { get; init; } = true;
 }
 
-public interface IWinUiBenchmarkRunner
-{
-    ValueTask<BenchmarkSummary> RunAsync(int ticks, int sleepMs, BenchmarkGateOptions gates, CancellationToken ct);
-}
-
-public sealed class RuntimeWinUiBenchmarkRunner : IWinUiBenchmarkRunner
-{
-    public ValueTask<BenchmarkSummary> RunAsync(int ticks, int sleepMs, BenchmarkGateOptions gates, CancellationToken ct)
-    {
-        return ValueTask.FromResult(BenchmarkRunner.Run(ticks, sleepMs, ct, gates with { UsesAttachedDispatcher = false }));
-    }
-}
-
 public static class BenchmarkRunner
 {
     public const double CpuBudgetPct = 1.0;
     public const ulong RssBudgetBytes = 150UL * 1024UL * 1024UL;
     public const string CoreMeasurementOrigin = "headless_runtime";
-    public const string WinUiMeasurementOrigin = "live_shell";
 
     public static BenchmarkSummary Run(
         int ticks,
@@ -123,10 +106,6 @@ public static class BenchmarkRunner
         ticks = Math.Max(1, ticks);
         sleepMs = Math.Max(0, sleepMs);
         BenchmarkGateOptions gates = gateOptions ?? new BenchmarkGateOptions();
-        if (IsWinUiHost(gates))
-        {
-            return RunWinUiPath(ticks, sleepMs, ct, gates with { UsesAttachedDispatcher = false });
-        }
 
         WindowsProcessCollector collector = new();
         List<double> tickSamples = new(ticks);
@@ -281,170 +260,6 @@ public static class BenchmarkRunner
         };
     }
 
-    private static BenchmarkSummary RunWinUiPath(
-        int ticks,
-        int sleepMs,
-        CancellationToken ct,
-        BenchmarkGateOptions gates)
-    {
-        List<double> tickSamples = new(ticks);
-        List<double> filterSamples = new(ticks);
-        List<double> sortSamples = new(ticks);
-        List<double> selectionSamples = new(ticks);
-        List<double> uiBatchSamples = new(ticks);
-        List<double> plotSamples = new(ticks);
-        List<double> cpuSamples = new(ticks);
-        List<ulong> rssSamples = new(ticks);
-        RuntimeViewState viewState = new();
-        double[] cpuTrend = new double[60];
-        double[] memoryTrend = new double[60];
-        int trendIndex = 0;
-        Stopwatch total = Stopwatch.StartNew();
-        using Process currentProcess = Process.GetCurrentProcess();
-        TimeSpan previousCpu = currentProcess.TotalProcessorTime;
-        long previousStamp = Stopwatch.GetTimestamp();
-        RuntimeStore store = new(
-            new WindowsProcessCollector(),
-            new WindowsSystemMetricsCollector(),
-            new BenchmarkPersistenceStore(),
-            new RuntimeStoreOptions
-            {
-                TickInterval = TimeSpan.FromHours(1),
-                SubscriberBufferCapacity = 2,
-                WarmCacheWriteIntervalTicks = int.MaxValue,
-                DefaultSettings = new RuntimeSettings
-                {
-                    Paused = true,
-                    MetricWindowSeconds = 60,
-                },
-            });
-
-        try
-        {
-            store.StartAsync(ct).GetAwaiter().GetResult();
-            for (int index = 0; index < ticks; index++)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                Stopwatch tick = Stopwatch.StartNew();
-                store.ExecuteAsync(new RefreshNowCommand(), ct).GetAwaiter().GetResult();
-                RuntimeSnapshot snapshot = store.GetSnapshot();
-                tick.Stop();
-                tickSamples.Add(tick.Elapsed.TotalMilliseconds);
-
-                Stopwatch filter = Stopwatch.StartNew();
-                RuntimeQuery filterQuery = snapshot.Settings.Query with
-                {
-                    FilterText = BuildProbeFilter(snapshot, index),
-                };
-                store.ExecuteAsync(new SetProcessQueryCommand(filterQuery), ct).GetAwaiter().GetResult();
-                snapshot = store.GetSnapshot();
-                filter.Stop();
-                filterSamples.Add(filter.Elapsed.TotalMilliseconds);
-
-                Stopwatch sort = Stopwatch.StartNew();
-                viewState = RuntimeViewReducer.Reduce(viewState, snapshot);
-                sort.Stop();
-                sortSamples.Add(sort.Elapsed.TotalMilliseconds);
-
-                Stopwatch selection = Stopwatch.StartNew();
-                ProcessSample? selected = viewState.SelectedIdentity.HasValue
-                    ? viewState.Rows.FirstOrDefault(row => row.Identity().Equals(viewState.SelectedIdentity.Value))
-                    : viewState.Rows.FirstOrDefault();
-                selection.Stop();
-                selectionSamples.Add(selection.Elapsed.TotalMilliseconds);
-
-                Stopwatch uiBatch = Stopwatch.StartNew();
-                _ = viewState.Rows.Take(200).Select(static row => new BenchmarkRowAdapter(row)).ToArray();
-                uiBatch.Stop();
-                uiBatchSamples.Add(uiBatch.Elapsed.TotalMilliseconds);
-
-                Stopwatch plot = Stopwatch.StartNew();
-                AppendTrend(snapshot, cpuTrend, memoryTrend, ref trendIndex);
-                _ = selected;
-                plot.Stop();
-                plotSamples.Add(plot.Elapsed.TotalMilliseconds);
-
-                currentProcess.Refresh();
-                TimeSpan currentCpu = currentProcess.TotalProcessorTime;
-                long currentStamp = Stopwatch.GetTimestamp();
-                double elapsedMs = Math.Max(1d, (currentStamp - previousStamp) * 1000d / Stopwatch.Frequency);
-                double cpuDeltaMs = Math.Max(0d, (currentCpu - previousCpu).TotalMilliseconds);
-                cpuSamples.Add(cpuDeltaMs / elapsedMs / Math.Max(1, Environment.ProcessorCount) * 100d);
-                rssSamples.Add((ulong)Math.Max(0L, currentProcess.WorkingSet64));
-                previousCpu = currentCpu;
-                previousStamp = currentStamp;
-
-                if (sleepMs > 0)
-                {
-                    Thread.Sleep(sleepMs);
-                }
-            }
-        }
-        finally
-        {
-            store.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            total.Stop();
-        }
-
-        double tickP95 = Percentile95(tickSamples);
-        double sortP95 = Percentile95(sortSamples);
-        double avgCpu = cpuSamples.Count == 0 ? 0d : cpuSamples.Average();
-        ulong avgRss = rssSamples.Count == 0 ? 0UL : (ulong)rssSamples.Average(static value => (double)value);
-        double cpuBudgetPct = gates.CpuBudgetPct <= 0d ? CpuBudgetPct : gates.CpuBudgetPct;
-        ulong rssBudgetBytes = gates.RssBudgetBytes == 0UL ? 256UL * 1024UL * 1024UL : gates.RssBudgetBytes;
-        bool budgetPassed = avgCpu < cpuBudgetPct && avgRss < rssBudgetBytes;
-        BenchmarkInteractionProbeP95 interaction = new()
-        {
-            FilterP95Ms = Math.Round(Percentile95(filterSamples), 4),
-            SortP95Ms = Math.Round(sortP95, 4),
-            SelectionP95Ms = Math.Round(Percentile95(selectionSamples), 4),
-            BatchP95Ms = Math.Round(Percentile95(uiBatchSamples), 4),
-            PlotP95Ms = Math.Round(Percentile95(plotSamples), 4),
-        };
-        double? minSpeedup = NormalizeOptionalPositive(gates.MinSpeedupMultiplier);
-        double? maxP95 = NormalizeOptionalPositive(gates.MaxP95Ms);
-        bool baselineMetadataMatched = BaselineMetadataMatches(gates.Baseline, gates.Host, gates.MeasurementOrigin);
-        BenchmarkSummary? compatibleBaseline = baselineMetadataMatched ? gates.Baseline : null;
-        BenchmarkComparison? comparison = BuildComparison(compatibleBaseline, tickP95, sortP95, minSpeedup);
-        BenchmarkInteractionProbeP95? interactionProbe = NormalizeInteractionProbe(interaction);
-        BenchmarkInteractionComparison? interactionComparison = BuildInteractionComparison(
-            compatibleBaseline?.InteractionProbeP95,
-            interactionProbe,
-            minSpeedup);
-        bool coreSpeedupPassed = minSpeedup is null || (comparison?.MeetsMinSpeedup ?? false);
-        bool interactionSpeedupPassed = InteractionSpeedupPassed(gates.RequireInteractionProbeSpeedup, minSpeedup, interactionComparison);
-        bool maxP95Passed = !maxP95.HasValue || (tickP95 <= maxP95.Value && sortP95 <= maxP95.Value);
-
-        return new BenchmarkSummary
-        {
-            Host = gates.Host,
-            MeasurementOrigin = gates.MeasurementOrigin,
-            UsesAttachedDispatcher = gates.UsesAttachedDispatcher,
-            Ticks = ticks,
-            SleepMs = sleepMs,
-            StartupMs = total.ElapsedMilliseconds,
-            TickP95Ms = Math.Round(tickP95, 4),
-            SortP95Ms = Math.Round(sortP95, 4),
-            AvgAppCpuPct = avgCpu,
-            AvgAppRssBytes = avgRss,
-            CpuBudgetPct = cpuBudgetPct,
-            RssBudgetBytes = rssBudgetBytes,
-            BudgetPassed = budgetPassed,
-            BaselineMetadataMatched = baselineMetadataMatched,
-            BaselineComparison = comparison,
-            InteractionProbeP95 = interactionProbe,
-            InteractionBaselineComparison = interactionComparison,
-            MinSpeedupMultiplier = minSpeedup,
-            MaxP95Ms = maxP95,
-            CoreSpeedupPassed = coreSpeedupPassed,
-            InteractionSpeedupPassed = interactionSpeedupPassed,
-            SpeedupPassed = coreSpeedupPassed && interactionSpeedupPassed,
-            MaxP95Passed = maxP95Passed,
-            StrictPassed = budgetPassed && coreSpeedupPassed && interactionSpeedupPassed && maxP95Passed,
-        };
-    }
-
     private static BenchmarkComparison? BuildComparison(
         BenchmarkSummary? baseline,
         double tickP95,
@@ -527,13 +342,6 @@ public static class BenchmarkRunner
 
         return interactionComparison?.MeetsMinSpeedup == true
                || (interactionComparison is null && !requireInteractionProbeSpeedup);
-    }
-
-    private static bool IsWinUiHost(BenchmarkGateOptions gates)
-    {
-        return string.Equals(gates.Host, "winui", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(gates.MeasurementOrigin, WinUiMeasurementOrigin, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(gates.MeasurementOrigin, "winui_cli", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool BaselineMetadataMatches(
@@ -624,85 +432,6 @@ public static class BenchmarkRunner
     private static double NormalizeNonNegative(double value)
     {
         return double.IsNaN(value) || double.IsInfinity(value) || value < 0d ? 0d : value;
-    }
-
-    private static void AppendTrend(RuntimeSnapshot snapshot, double[] cpuTrend, double[] memoryTrend, ref int trendIndex)
-    {
-        cpuTrend[trendIndex] = snapshot.System.CpuPct.GetValueOrDefault();
-        ulong totalMemoryBytes = snapshot.System.MemoryTotalBytes.GetValueOrDefault();
-        memoryTrend[trendIndex] = totalMemoryBytes == 0
-            ? 0
-            : snapshot.System.MemoryUsedBytes.GetValueOrDefault() * 100d / totalMemoryBytes;
-        trendIndex = (trendIndex + 1) % cpuTrend.Length;
-    }
-
-    private static string BuildProbeFilter(RuntimeSnapshot snapshot, int index)
-    {
-        if (index % 2 != 0)
-        {
-            return string.Empty;
-        }
-
-        string? name = snapshot.Rows.FirstOrDefault(static row => !string.IsNullOrWhiteSpace(row.Name))?.Name;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return "__batcave_probe_no_match__";
-        }
-
-        return name.Length <= 3 ? name : name[..3];
-    }
-
-    private sealed record BenchmarkRowAdapter
-    {
-        public BenchmarkRowAdapter(ProcessSample sample)
-        {
-            Identity = sample.Identity();
-            Name = string.IsNullOrWhiteSpace(sample.Name) ? $"PID {sample.Pid}" : sample.Name;
-            PidText = sample.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            CpuText = sample.CpuPct.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "%";
-            MemoryText = FormatBytes(sample.MemoryBytes);
-            DiskText = FormatBytes(sample.DiskBps) + "/s";
-            OtherIoText = FormatBytes(sample.OtherIoBps) + "/s";
-        }
-
-        public ProcessIdentity Identity { get; }
-        public string Name { get; }
-        public string PidText { get; }
-        public string CpuText { get; }
-        public string MemoryText { get; }
-        public string DiskText { get; }
-        public string OtherIoText { get; }
-    }
-
-    private sealed class BenchmarkPersistenceStore : IRuntimePersistenceStore
-    {
-        public string BaseDirectory { get; } = Path.GetTempPath();
-
-        public RuntimeSettings? LoadSettings() => null;
-
-        public Task SaveSettingsAsync(RuntimeSettings settings, CancellationToken ct) => Task.CompletedTask;
-
-        public WarmCache? LoadWarmCache() => null;
-
-        public Task SaveWarmCacheAsync(WarmCache cache, CancellationToken ct) => Task.CompletedTask;
-
-        public Task AppendDiagnosticAsync(string category, object payload, CancellationToken ct) => Task.CompletedTask;
-    }
-
-    private static string FormatBytes(ulong bytes)
-    {
-        string[] units = ["B", "KB", "MB", "GB", "TB"];
-        double value = bytes;
-        int unit = 0;
-        while (value >= 1024d && unit < units.Length - 1)
-        {
-            value /= 1024d;
-            unit++;
-        }
-
-        return unit == 0
-            ? $"{value:0} {units[unit]}"
-            : $"{value:0.0} {units[unit]}";
     }
 
     private static double Percentile95(IReadOnlyList<double> samples)

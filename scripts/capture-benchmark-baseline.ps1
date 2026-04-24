@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("core", "winui")]
+    [ValidateSet("core")]
     [string]$BenchmarkHost = "core",
     [ValidateSet("x86", "x64", "ARM64")]
     [string]$Platform = "x64",

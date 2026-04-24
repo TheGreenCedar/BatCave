@@ -9,8 +9,7 @@ namespace BatCave.Runtime.Operations;
 
 public sealed class CliOperationsHost(
     ILaunchPolicyGate launchPolicyGate,
-    IRuntimeStore runtimeStore,
-    IEnumerable<IWinUiBenchmarkRunner>? winUiBenchmarkRunners = null)
+    IRuntimeStore runtimeStore)
 {
     private static readonly HashSet<string> CliFlags = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -53,7 +52,6 @@ public sealed class CliOperationsHost(
 
     private readonly ILaunchPolicyGate _launchPolicyGate = launchPolicyGate;
     private readonly IRuntimeStore _runtimeStore = runtimeStore;
-    private readonly IWinUiBenchmarkRunner? _winUiBenchmarkRunner = winUiBenchmarkRunners?.LastOrDefault();
 
     public bool IsCliMode(string[] args) => args.Any(CliFlags.Contains);
 
@@ -119,9 +117,7 @@ public sealed class CliOperationsHost(
             return 2;
         }
 
-        BenchmarkSummary summary = IsWinUiHost(gates) && _winUiBenchmarkRunner is not null
-            ? await _winUiBenchmarkRunner.RunAsync(ticks, sleepMs, gates, ct).ConfigureAwait(false)
-            : BenchmarkRunner.Run(ticks, sleepMs, ct, gates);
+        BenchmarkSummary summary = BenchmarkRunner.Run(ticks, sleepMs, ct, gates);
         WriteJson(summary);
         return strict && !summary.StrictPassed ? 2 : 0;
     }
@@ -139,10 +135,9 @@ public sealed class CliOperationsHost(
             return false;
         }
 
-        if (!string.Equals(host, "core", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(host, "winui", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(host, "core", StringComparison.OrdinalIgnoreCase))
         {
-            error = "--benchmark-host must be 'core' or 'winui'.";
+            error = "--benchmark-host must be 'core'.";
             return false;
         }
 
@@ -158,18 +153,17 @@ public sealed class CliOperationsHost(
             return false;
         }
 
-        bool winuiHost = string.Equals(host, "winui", StringComparison.OrdinalIgnoreCase);
         gates = new BenchmarkGateOptions
         {
-            Host = winuiHost ? "winui" : "core",
-            MeasurementOrigin = winuiHost ? BenchmarkRunner.WinUiMeasurementOrigin : BenchmarkRunner.CoreMeasurementOrigin,
-            UsesAttachedDispatcher = winuiHost,
+            Host = "core",
+            MeasurementOrigin = BenchmarkRunner.CoreMeasurementOrigin,
+            UsesAttachedDispatcher = false,
             CpuBudgetPct = BenchmarkRunner.CpuBudgetPct,
-            RssBudgetBytes = winuiHost ? 256UL * 1024UL * 1024UL : BenchmarkRunner.RssBudgetBytes,
+            RssBudgetBytes = BenchmarkRunner.RssBudgetBytes,
             Baseline = baseline,
             MinSpeedupMultiplier = minSpeedup,
             MaxP95Ms = maxP95,
-            RequireInteractionProbeSpeedup = winuiHost && minSpeedup.HasValue,
+            RequireInteractionProbeSpeedup = false,
         };
         return true;
     }
@@ -274,13 +268,6 @@ public sealed class CliOperationsHost(
     private static Func<string, bool> Is(string optionName)
     {
         return value => string.Equals(value, optionName, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsWinUiHost(BenchmarkGateOptions gates)
-    {
-        return string.Equals(gates.Host, "winui", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(gates.MeasurementOrigin, BenchmarkRunner.WinUiMeasurementOrigin, StringComparison.OrdinalIgnoreCase)
-               || string.Equals(gates.MeasurementOrigin, "winui_cli", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void WriteJson<T>(T value)

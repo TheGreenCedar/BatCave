@@ -3,7 +3,7 @@ import type { ProcessSample, RuntimeSnapshot } from "./types";
 const names = [
   "Code.exe",
   "msedge.exe",
-  "BatCave.App.exe",
+  "batcave-monitor.exe",
   "WindowsTerminal.exe",
   "MsMpEng.exe",
   "explorer.exe",
