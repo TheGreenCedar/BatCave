@@ -67,7 +67,9 @@ public sealed record SystemMetricsSnapshot
     public ulong? MemoryAvailableBytes { get; init; }
     public ulong? DiskReadBps { get; init; }
     public ulong? DiskWriteBps { get; init; }
+    public ulong? NetworkBytesBps { get; init; }
     public ulong? OtherIoBps { get; init; }
+    public IReadOnlyList<double> LogicalCpuPct { get; init; } = [];
     public int LogicalProcessorCount { get; init; } = Environment.ProcessorCount;
     public bool IsReady { get; init; }
 }

@@ -8,6 +8,7 @@ public sealed class AppSourceContractTests
         string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
 
         Assert.Contains("<CommandBar", xaml);
+        Assert.Contains("<NavigationView", xaml);
         Assert.Contains("<ListView", xaml);
         Assert.Contains("<ToggleSwitch", xaml);
         Assert.Contains("<KeyboardAccelerator", xaml);
@@ -15,6 +16,7 @@ public sealed class AppSourceContractTests
         Assert.Contains("AutomationProperties.Name=\"Process List\"", xaml);
         Assert.Contains("AutomationProperties.Name=\"Process Filter\"", xaml);
         Assert.Contains("AutomationProperties.Name=\"Admin Mode\"", xaml);
+        Assert.Contains("AutomationProperties.Name=\"Workflow Navigation\"", xaml);
     }
 
     [Fact]
@@ -22,6 +24,12 @@ public sealed class AppSourceContractTests
     {
         string windowCodeBehind = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml.cs");
 
+        Assert.Contains("WideLayoutMinWidth = 1100", windowCodeBehind);
+        Assert.Contains("PreferredInitialWindowWidth = 1600", windowCodeBehind);
+        Assert.Contains("EnsureUsableInitialWindowSize", windowCodeBehind);
+        Assert.Contains("DisplayArea.GetFromWindowId", windowCodeBehind);
+        Assert.Contains("if (fallbackWidth > 0)", windowCodeBehind);
+        Assert.Contains("ApplyResponsiveLayoutIfChanged(GetResponsiveWidth(Root.ActualWidth))", windowCodeBehind);
         Assert.Contains("NarrowProcessPaneMaxHeight = 360", windowCodeBehind);
         Assert.Contains("CompactProcessListMaxWidth = 1280", windowCodeBehind);
         Assert.Contains("bool compactProcesses = width < CompactProcessListMaxWidth", windowCodeBehind);
@@ -138,7 +146,43 @@ public sealed class AppSourceContractTests
 
         Assert.Contains("ApplyProcessRows", viewModel);
         Assert.DoesNotContain("Rows.Clear()", viewModel);
+        Assert.DoesNotContain("Rows[index] = viewRow", viewModel);
+        Assert.Contains("Rows.Move", viewModel);
+        Assert.Contains("current.Update(sample", viewModel);
+        Assert.Contains("current.UpdateSample(sample)", viewModel);
+        Assert.Contains(": ObservableObject", rowViewModel);
         Assert.Contains("HasSameDisplayState", rowViewModel);
+        Assert.Contains("public void Update(ProcessSample sample", rowViewModel);
+        Assert.Contains("public void UpdateSample(ProcessSample sample", rowViewModel);
+    }
+
+    [Fact]
+    public void ProcessRowsUseOneWayBindingsAndStableSelectionColors()
+    {
+        string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
+
+        Assert.Contains("ListViewItemBackgroundSelected", xaml);
+        Assert.Contains("<TransitionCollection />", xaml);
+        Assert.Contains("Text=\"{x:Bind CpuText, Mode=OneWay}\"", xaml);
+        Assert.Contains("Text=\"{x:Bind MemoryText, Mode=OneWay}\"", xaml);
+        Assert.Contains("Text=\"{x:Bind AttentionBadgeText, Mode=OneWay}\"", xaml);
+        Assert.Contains("Foreground=\"{ThemeResource BatCaveTextPrimaryBrush}\"", xaml);
+    }
+
+    [Fact]
+    public void InspectorTrendsFollowSelectedProcessWithoutRotatingBuffers()
+    {
+        string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
+        string viewModel = ReadRepoFile("src", "BatCave.App", "Presentation", "ShellViewModel.cs");
+        string sparkline = ReadRepoFile("src", "BatCave.App", "Controls", "SparklineControl.xaml");
+
+        Assert.Contains("TrendScopeText", xaml);
+        Assert.Contains("PROCESS CPU TREND", viewModel);
+        Assert.Contains("_processTrendsByIdentity", viewModel);
+        Assert.Contains("SelectedRow is { } selectedRow", viewModel);
+        Assert.DoesNotContain("RotateTrend", viewModel);
+        Assert.Contains("BatCaveChartFillBrush", sparkline);
+        Assert.Contains("x:Name=\"Area\"", sparkline);
     }
 
     [Fact]
@@ -184,14 +228,67 @@ public sealed class AppSourceContractTests
         string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
         string viewModel = ReadRepoFile("src", "BatCave.App", "Presentation", "ShellViewModel.cs");
 
+        Assert.Contains("x:Name=\"TriageCockpit\"", xaml);
+        Assert.Contains("Attention Cockpit", xaml);
+        Assert.Contains("x:Name=\"OverviewChartGrid\"", xaml);
+        Assert.Contains("CPU SIMPLE CHART", xaml);
+        Assert.Contains("CPU MULTI-CORE VIEW", xaml);
+        Assert.Contains("LIVE MEMORY CHART", xaml);
+        Assert.Contains("DISK READ CHART", xaml);
+        Assert.Contains("DISK WRITE CHART", xaml);
+        Assert.Contains("LIVE NETWORK CHART", xaml);
+        Assert.Contains("SystemCpuTrendValues", xaml);
+        Assert.Contains("LogicalCpuCharts", xaml);
+        Assert.Contains("SystemMemoryTrendValues", xaml);
+        Assert.Contains("SystemDiskReadTrendValues", xaml);
+        Assert.Contains("SystemDiskWriteTrendValues", xaml);
+        Assert.Contains("SystemNetworkTrendValues", xaml);
+        Assert.Contains("x:Name=\"HealthPane\"", xaml);
+        Assert.Contains("x:Name=\"ValidationPane\"", xaml);
+        Assert.Contains("WorkflowNav_SelectionChanged", xaml);
+        Assert.Contains("ProcessWorkspaceVisibility", xaml);
+        Assert.Contains("TriageHeadlineText", xaml);
+        Assert.Contains("TriageAttentionTitle", viewModel);
+        Assert.Contains("TriageCpuDetail", viewModel);
+        Assert.Contains("TopAttentionProcess", viewModel);
+        Assert.Contains("ShellWorkflowMode", viewModel);
+        Assert.Contains("SelectWorkflow", viewModel);
         Assert.Contains("<Pivot AutomationProperties.Name=\"Inspector Mode Tabs\">", xaml);
         Assert.Contains("<PivotItem Header=\"Summary\">", xaml);
         Assert.Contains("<PivotItem Header=\"Performance\">", xaml);
         Assert.Contains("<PivotItem Header=\"Details\">", xaml);
+        Assert.Contains("ProcessStoryText", xaml);
+        Assert.Contains("ProcessTimelineItems", xaml);
+        Assert.Contains("RuntimeActionTitle", xaml);
+        Assert.Contains("HealthDiagnosticsText", xaml);
+        Assert.Contains("RUNTIME CHARTS", xaml);
+        Assert.Contains("TickP95TrendValues", xaml);
+        Assert.Contains("SortP95TrendValues", xaml);
+        Assert.Contains("JitterP95TrendValues", xaml);
         Assert.Contains("RuntimeConfidenceText", xaml);
         Assert.Contains("RuntimePerfText", xaml);
         Assert.Contains("RuntimeBudgetText", viewModel);
+        Assert.Contains("LogicalCpuChartViewModel", viewModel);
+        Assert.Contains("SystemNetworkChartText", viewModel);
         Assert.Contains("BenchmarkStatusText", viewModel);
+        Assert.Contains("BenchmarkEvidenceText", viewModel);
+        Assert.Contains("ValidationHeadlineText", xaml);
+    }
+
+    [Fact]
+    public void ProcessRowsExposeContextMenuActions()
+    {
+        string xaml = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml");
+        string windowCodeBehind = ReadRepoFile("src", "BatCave.App", "MainWindow.xaml.cs");
+        string viewModel = ReadRepoFile("src", "BatCave.App", "Presentation", "ShellViewModel.cs");
+
+        Assert.Contains("ProcessRow_RightTapped", xaml);
+        Assert.Contains("ProcessRowMenuItem_Click", xaml);
+        Assert.Contains("Text=\"Copy details\"", xaml);
+        Assert.Contains("Text=\"Copy PID\"", xaml);
+        Assert.Contains("Text=\"Filter to process\"", xaml);
+        Assert.Contains("FilterToSelectedProcess", viewModel);
+        Assert.Contains("CopyTextToClipboard", windowCodeBehind);
     }
 
     [Fact]

@@ -13,17 +13,20 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Graphics;
 using WinRT.Interop;
 
 namespace BatCave.App;
 
 public sealed partial class MainWindow : Window
 {
-    private const double WideLayoutMinWidth = 2000;
+    private const double WideLayoutMinWidth = 1100;
     private const double CompactProcessListMaxWidth = 1280;
     private const double InspectorPaneWidth = 420;
     private const double WorkspaceHorizontalPadding = 32;
     private const double NarrowProcessPaneMaxHeight = 360;
+    private const int PreferredInitialWindowWidth = 1600;
+    private const int PreferredInitialWindowHeight = 1000;
     private AppWindow? _appWindow;
     private DispatcherQueueTimer? _responsiveLayoutTimer;
     private double _lastResponsiveLayoutWidth = double.NaN;
@@ -42,9 +45,11 @@ public sealed partial class MainWindow : Window
     private void Root_Loaded(object sender, RoutedEventArgs e)
     {
         AttachAppWindowEvents();
+        EnsureUsableInitialWindowSize();
         StartResponsiveLayoutWatcher();
         ViewModel.AttachDispatcherQueue(DispatcherQueue);
         ViewModel.Start();
+        WorkflowNav.SelectedItem = OverviewNavItem;
         UpdateSortHeaderVisualState();
         ApplyResponsiveLayoutIfChanged(GetResponsiveWidth(Root.ActualWidth));
     }
@@ -101,6 +106,20 @@ public sealed partial class MainWindow : Window
         appWindow.Changed += AppWindow_Changed;
     }
 
+    private void EnsureUsableInitialWindowSize()
+    {
+        AppWindow appWindow = GetAppWindow();
+        DisplayArea displayArea = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Nearest);
+        int workAreaWidth = displayArea.WorkArea.Width > 0 ? displayArea.WorkArea.Width : PreferredInitialWindowWidth;
+        int workAreaHeight = displayArea.WorkArea.Height > 0 ? displayArea.WorkArea.Height : PreferredInitialWindowHeight;
+        int targetWidth = Math.Min(PreferredInitialWindowWidth, workAreaWidth);
+        int targetHeight = Math.Min(PreferredInitialWindowHeight, workAreaHeight);
+        if (appWindow.Size.Width < Math.Min(WideLayoutMinWidth, targetWidth) || appWindow.Size.Height < 720)
+        {
+            appWindow.Resize(new SizeInt32(targetWidth, targetHeight));
+        }
+    }
+
     private AppWindow GetAppWindow()
     {
         if (_appWindow is not null)
@@ -116,6 +135,11 @@ public sealed partial class MainWindow : Window
 
     private double GetResponsiveWidth(double fallbackWidth)
     {
+        if (fallbackWidth > 0)
+        {
+            return fallbackWidth;
+        }
+
         AppWindow appWindow = GetAppWindow();
         return appWindow.Size.Width > 0 ? appWindow.Size.Width : fallbackWidth;
     }
@@ -124,7 +148,7 @@ public sealed partial class MainWindow : Window
     {
         if (args.DidSizeChange)
         {
-            ApplyResponsiveLayoutIfChanged(sender.Size.Width);
+            ApplyResponsiveLayoutIfChanged(GetResponsiveWidth(Root.ActualWidth));
         }
     }
 
@@ -243,14 +267,63 @@ public sealed partial class MainWindow : Window
 
     private void CopyDetails_Click(object sender, RoutedEventArgs e)
     {
-        string details = ViewModel.CopyDetailsText;
-        if (string.IsNullOrWhiteSpace(details))
+        CopyTextToClipboard(ViewModel.CopyDetailsText);
+    }
+
+    private void WorkflowNav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        if (args.SelectedItem is NavigationViewItem { Tag: string tag })
+        {
+            ViewModel.SelectWorkflow(tag);
+            ApplyResponsiveLayoutIfChanged(GetResponsiveWidth(Root.ActualWidth));
+        }
+    }
+
+    private void ProcessRow_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ProcessRowViewModel row })
+        {
+            ViewModel.SelectedRow = row;
+        }
+    }
+
+    private void ProcessRowMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem { Tag: string action })
+        {
+            return;
+        }
+
+        switch (action)
+        {
+            case "CopyDetails":
+                CopyTextToClipboard(ViewModel.CopyDetailsText);
+                break;
+            case "CopyPid":
+                CopyTextToClipboard(ViewModel.SelectedRow?.PidText ?? string.Empty);
+                break;
+            case "FilterToProcess":
+                ViewModel.FilterToSelectedProcess();
+                break;
+            case "ClearSelection":
+                if (ViewModel.ClearSelectionCommand.CanExecute(null))
+                {
+                    ViewModel.ClearSelectionCommand.Execute(null);
+                }
+
+                break;
+        }
+    }
+
+    private static void CopyTextToClipboard(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
         {
             return;
         }
 
         DataPackage package = new();
-        package.SetText(details);
+        package.SetText(text);
         Clipboard.SetContent(package);
     }
 

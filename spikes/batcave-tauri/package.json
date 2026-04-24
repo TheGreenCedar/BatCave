@@ -1,0 +1,35 @@
+{
+  "name": "batcave-monitor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "oxlint src vite.config.ts --deny-warnings",
+    "format:check": "oxfmt --check src vite.config.ts",
+    "verify": "npm run check && npm run format:check",
+    "check": "npm run build && npm run typecheck && npm run lint",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.10.1",
+    "uplot": "1.6.32"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.0.0",
+    "@tauri-apps/cli": "2.10.1",
+    "@types/node": "24.10.1",
+    "oxfmt": "0.46.0",
+    "oxlint": "1.61.0",
+    "svelte": "5.55.4",
+    "svelte-check": "4.4.6",
+    "tslib": "2.8.1",
+    "typescript": "6.0.3",
+    "vite": "8.0.10"
+  }
+}

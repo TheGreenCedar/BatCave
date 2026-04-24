@@ -267,7 +267,22 @@ public sealed class RuntimeReviewRegressionTests
         Assert.Equal(11UL, snapshot.DiskReadBps);
         Assert.Equal(22UL, snapshot.DiskWriteBps);
         Assert.Equal(33UL, snapshot.OtherIoBps);
+        Assert.Null(snapshot.NetworkBytesBps);
+        Assert.Empty(snapshot.LogicalCpuPct);
         Assert.True(snapshot.IsReady);
+    }
+
+    [Fact]
+    public void SystemMetricsSnapshot_ExposesNetworkAndLogicalCpuTelemetry()
+    {
+        SystemMetricsSnapshot snapshot = new()
+        {
+            NetworkBytesBps = 44UL,
+            LogicalCpuPct = [1.5d, 2.5d],
+        };
+
+        Assert.Equal(44UL, snapshot.NetworkBytesBps);
+        Assert.Equal([1.5d, 2.5d], snapshot.LogicalCpuPct);
     }
 
     [Fact]

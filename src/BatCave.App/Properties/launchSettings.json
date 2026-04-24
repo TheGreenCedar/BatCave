@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "BatCave.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "BatCave.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -15,10 +15,22 @@ namespace BatCave.App.Presentation;
 public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 {
     private const int FilterDebounceMs = 150;
+    private const int TrendPointCount = 60;
 
     private readonly IRuntimeStore _runtimeStore;
     private readonly CancellationTokenSource _subscriptionCts = new();
     private readonly Dictionary<ProcessIdentity, ProcessSample> _previousSamplesByIdentity = [];
+    private readonly Dictionary<ProcessIdentity, ProcessTrendSet> _processTrendsByIdentity = [];
+    private readonly TrendBuffer _systemCpuTrend = new(TrendPointCount);
+    private readonly TrendBuffer _systemKernelCpuTrend = new(TrendPointCount);
+    private readonly TrendBuffer _systemMemoryTrend = new(TrendPointCount);
+    private readonly TrendBuffer _systemDiskReadTrend = new(TrendPointCount);
+    private readonly TrendBuffer _systemDiskWriteTrend = new(TrendPointCount);
+    private readonly TrendBuffer _systemNetworkTrend = new(TrendPointCount);
+    private readonly TrendBuffer _tickP95Trend = new(TrendPointCount);
+    private readonly TrendBuffer _sortP95Trend = new(TrendPointCount);
+    private readonly TrendBuffer _jitterP95Trend = new(TrendPointCount);
+    private readonly List<TrendBuffer> _logicalCpuTrends = [];
     private DispatcherQueue? _dispatcherQueue;
     private Task? _subscriptionTask;
     private CancellationTokenSource? _filterDebounceCts;
@@ -26,6 +38,7 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     private RuntimeViewState _viewState = new();
     private ProcessRowViewModel? _selectedRow;
     private ProcessQuickFilter _quickFilter = ProcessQuickFilter.All;
+    private ShellWorkflowMode _activeWorkflow = ShellWorkflowMode.Overview;
     private string _filterText = string.Empty;
     private string _statusText = "Runtime starting.";
     private string _processCountText = "0 processes";
@@ -38,10 +51,20 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     private bool _adminModeRequested;
     private bool _adminModeEnabled;
     private bool _isPaused;
-    private double[] _cpuTrendValues = new double[60];
-    private double[] _memoryTrendValues = new double[60];
+    private double[] _cpuTrendValues = [];
+    private double[] _memoryTrendValues = [];
+    private double[] _systemCpuTrendValues = [];
+    private double[] _systemKernelCpuTrendValues = [];
+    private double[] _systemMemoryTrendValues = [];
+    private double[] _systemDiskReadTrendValues = [];
+    private double[] _systemDiskWriteTrendValues = [];
+    private double[] _systemNetworkTrendValues = [];
+    private double[] _diskTrendValues = [];
+    private double[] _otherIoTrendValues = [];
+    private double[] _tickP95TrendValues = [];
+    private double[] _sortP95TrendValues = [];
+    private double[] _jitterP95TrendValues = [];
     private BenchmarkSummary? _latestBenchmarkSummary;
-    private int _trendIndex;
 
     public ShellViewModel(IRuntimeStore runtimeStore)
     {
@@ -51,6 +74,10 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     }
 
     public ObservableCollection<ProcessRowViewModel> Rows { get; } = [];
+
+    public ObservableCollection<string> ProcessTimelineItems { get; } = [];
+
+    public ObservableCollection<LogicalCpuChartViewModel> LogicalCpuCharts { get; } = [];
 
     internal ulong SnapshotSeq { get; private set; }
 
@@ -66,25 +93,8 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
                     SelectedIdentity = value?.Identity,
                     SelectedProcess = value?.Sample,
                 };
-                OnPropertyChanged(nameof(InspectorTitle));
-                OnPropertyChanged(nameof(InspectorSubtitle));
-                OnPropertyChanged(nameof(InspectorCpuText));
-                OnPropertyChanged(nameof(InspectorMemoryText));
-                OnPropertyChanged(nameof(InspectorDiskText));
-                OnPropertyChanged(nameof(InspectorOtherIoText));
-                OnPropertyChanged(nameof(InspectorThreadText));
-                OnPropertyChanged(nameof(InspectorParentPidText));
-                OnPropertyChanged(nameof(InspectorStartTimeText));
-                OnPropertyChanged(nameof(InspectorAccessStateText));
-                OnPropertyChanged(nameof(InspectorPrivateMemoryText));
-                OnPropertyChanged(nameof(InspectorHandlesText));
-                OnPropertyChanged(nameof(InspectorAttentionText));
-                OnPropertyChanged(nameof(InspectorLastChangeText));
-                OnPropertyChanged(nameof(CopyDetailsText));
-                OnPropertyChanged(nameof(HasSelectedRow));
-                OnPropertyChanged(nameof(ClearSelectionVisibility));
-                OnPropertyChanged(nameof(CopyDetailsVisibility));
-                ClearSelectionCommand.NotifyCanExecuteChanged();
+                RefreshSelectionProperties();
+                RefreshTrendValues();
             }
         }
     }
@@ -245,6 +255,68 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 
     public string ActiveQuickFilterText => $"View: {QuickFilterLabel(_quickFilter)}";
 
+    public ShellWorkflowMode ActiveWorkflow
+    {
+        get => _activeWorkflow;
+        private set
+        {
+            if (SetProperty(ref _activeWorkflow, value))
+            {
+                RefreshWorkflowProperties();
+            }
+        }
+    }
+
+    public Visibility ProcessWorkspaceVisibility => ActiveWorkflow is ShellWorkflowMode.Overview or ShellWorkflowMode.Processes
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
+    public Visibility InspectorWorkspaceVisibility => ProcessWorkspaceVisibility;
+
+    public Visibility HealthWorkspaceVisibility => ActiveWorkflow == ShellWorkflowMode.Health ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ValidationWorkspaceVisibility => ActiveWorkflow == ShellWorkflowMode.Validation ? Visibility.Visible : Visibility.Collapsed;
+
+    public string WorkflowStatusText => ActiveWorkflow switch
+    {
+        ShellWorkflowMode.Processes => "Process table and inspector",
+        ShellWorkflowMode.Health => "Runtime health and collector confidence",
+        ShellWorkflowMode.Validation => "Benchmark and handoff evidence",
+        _ => "Attention cockpit and live triage",
+    };
+
+    public string TriageHeadlineText => HasWarning
+        ? "Runtime needs attention"
+        : _snapshot.Health.DegradeMode
+            ? "Runtime confidence is degraded"
+            : "Attention cockpit";
+
+    public string TriageSummaryText
+    {
+        get
+        {
+            int limitedCount = _viewState.Rows.Count(static row => row.AccessState != AccessState.Full);
+            int activeIoCount = _viewState.Rows.Count(static row => row.DiskBps + row.OtherIoBps > 0UL);
+            return $"{Rows.Count:n0} visible | {limitedCount:n0} limited access | {activeIoCount:n0} active I/O";
+        }
+    }
+
+    public string TriageAttentionTitle => FormatTriageTitle(TopAttentionProcess(), "No attention target");
+
+    public string TriageAttentionDetail => FormatTriageDetail(TopAttentionProcess(), "Sort by Attention after the runtime warms up.");
+
+    public string TriageCpuTitle => FormatTriageTitle(TopCpuProcess(), "No CPU spike");
+
+    public string TriageCpuDetail => FormatTriageDetail(TopCpuProcess(), "High CPU processes will surface here.");
+
+    public string TriageMemoryTitle => FormatTriageTitle(TopMemoryProcess(), "No memory leader");
+
+    public string TriageMemoryDetail => FormatTriageDetail(TopMemoryProcess(), "Largest working set appears here.");
+
+    public string TriageIoAccessTitle => FormatTriageTitle(TopIoOrLimitedProcess(), "I/O and access quiet");
+
+    public string TriageIoAccessDetail => FormatTriageDetail(TopIoOrLimitedProcess(), "Active I/O or limited access appears here.");
+
     public bool IsPaused
     {
         get => _isPaused;
@@ -268,6 +340,102 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         get => _memoryTrendValues;
         private set => SetProperty(ref _memoryTrendValues, value);
     }
+
+    public double[] SystemCpuTrendValues
+    {
+        get => _systemCpuTrendValues;
+        private set => SetProperty(ref _systemCpuTrendValues, value);
+    }
+
+    public double[] SystemKernelCpuTrendValues
+    {
+        get => _systemKernelCpuTrendValues;
+        private set => SetProperty(ref _systemKernelCpuTrendValues, value);
+    }
+
+    public double[] SystemMemoryTrendValues
+    {
+        get => _systemMemoryTrendValues;
+        private set => SetProperty(ref _systemMemoryTrendValues, value);
+    }
+
+    public double[] SystemDiskReadTrendValues
+    {
+        get => _systemDiskReadTrendValues;
+        private set => SetProperty(ref _systemDiskReadTrendValues, value);
+    }
+
+    public double[] SystemDiskWriteTrendValues
+    {
+        get => _systemDiskWriteTrendValues;
+        private set => SetProperty(ref _systemDiskWriteTrendValues, value);
+    }
+
+    public double[] SystemNetworkTrendValues
+    {
+        get => _systemNetworkTrendValues;
+        private set => SetProperty(ref _systemNetworkTrendValues, value);
+    }
+
+    public double[] DiskTrendValues
+    {
+        get => _diskTrendValues;
+        private set => SetProperty(ref _diskTrendValues, value);
+    }
+
+    public double[] OtherIoTrendValues
+    {
+        get => _otherIoTrendValues;
+        private set => SetProperty(ref _otherIoTrendValues, value);
+    }
+
+    public double[] TickP95TrendValues
+    {
+        get => _tickP95TrendValues;
+        private set => SetProperty(ref _tickP95TrendValues, value);
+    }
+
+    public double[] SortP95TrendValues
+    {
+        get => _sortP95TrendValues;
+        private set => SetProperty(ref _sortP95TrendValues, value);
+    }
+
+    public double[] JitterP95TrendValues
+    {
+        get => _jitterP95TrendValues;
+        private set => SetProperty(ref _jitterP95TrendValues, value);
+    }
+
+    public string SystemCpuChartText => $"CPU {CpuText}";
+
+    public string SystemKernelCpuChartText => $"Kernel {FormatNullablePercent(_snapshot.System.KernelCpuPct)}";
+
+    public string SystemMemoryChartText => $"Memory {MemoryText}";
+
+    public string SystemDiskReadChartText => $"Read {FormatNullableRate(_snapshot.System.DiskReadBps)}";
+
+    public string SystemDiskWriteChartText => $"Write {FormatNullableRate(_snapshot.System.DiskWriteBps)}";
+
+    public string SystemNetworkChartText => $"Network {FormatNetworkRate(_snapshot.System)}";
+
+    public string LogicalCpuChartText => LogicalCpuCharts.Count == 0
+        ? $"Logical processors: {_snapshot.System.LogicalProcessorCount:n0}"
+        : $"{LogicalCpuCharts.Count:n0} logical processors";
+
+    public string TickP95ChartText => $"tick p95 {TickText}";
+
+    public string SortP95ChartText => $"sort p95 {SortText}";
+
+    public string JitterP95ChartText => $"jitter p95 {_snapshot.Health.JitterP95Ms:0.0} ms";
+
+    public string TrendScopeText => SelectedRow is null
+        ? "System overview trend"
+        : $"Selected process trend: {SelectedRow.Name} (PID {SelectedRow.PidText})";
+
+    public string CpuTrendLabelText => SelectedRow is null ? "SYSTEM CPU TREND" : "PROCESS CPU TREND";
+
+    public string MemoryTrendLabelText => SelectedRow is null ? "SYSTEM MEMORY TREND" : "PROCESS MEMORY TREND";
 
     public string InspectorTitle => SelectedRow?.Name ?? "System Overview";
 
@@ -299,6 +467,71 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 
     public string InspectorLastChangeText => SelectedRow?.LastMeaningfulChangeText ?? "System-level metrics update every runtime tick.";
 
+    public string ProcessStoryText => SelectedRow is null
+        ? $"System view is tracking {_snapshot.TotalProcessCount:n0} processes with {Rows.Count:n0} currently visible."
+        : $"{SelectedRow.AttentionSummaryText} {SelectedRow.LastMeaningfulChangeText} Access: {SelectedRow.AccessStateText}.";
+
+    public string HealthHeadlineText => RuntimeActionTitle;
+
+    public string HealthSummaryText => RuntimeActionDetail;
+
+    public string HealthDiagnosticsText =>
+        $"{RuntimePerfText} | {RuntimeBudgetText} | loop {(_snapshot.Health.RuntimeLoopRunning ? "running" : "stopped")}";
+
+    public string AccessSummaryText => AdminModeRequested
+        ? AdminModeEnabled ? "Elevated access is active." : "Admin mode is requested but elevated access is inactive."
+        : "Standard access mode is active.";
+
+    public string LocalDataSummaryText => "Settings, warm cache, benchmark artifacts, and logs stay local under the BatCave workspace and LocalAppData paths.";
+
+    public string RuntimeActionTitle
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(WarningText))
+            {
+                return "Investigate collector warning";
+            }
+
+            if (AdminModeRequested && !AdminModeEnabled)
+            {
+                return "Retry elevated visibility";
+            }
+
+            if (_snapshot.Health.DegradeMode)
+            {
+                return "Run validation before trusting trends";
+            }
+
+            return IsPaused ? "Resume live telemetry" : "Runtime is healthy";
+        }
+    }
+
+    public string RuntimeActionDetail
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(WarningText))
+            {
+                return WarningText;
+            }
+
+            if (AdminModeRequested && !AdminModeEnabled)
+            {
+                return "Admin mode was requested but the effective collector is standard access.";
+            }
+
+            if (_snapshot.Health.DegradeMode)
+            {
+                return RuntimePerfText;
+            }
+
+            return IsPaused
+                ? "The runtime loop is paused; resume when you want fresh samples."
+                : "No warnings, degrade mode, or admin fallback are active.";
+        }
+    }
+
     public string CopyDetailsText => SelectedRow?.ToClipboardText() ?? string.Empty;
 
     public string BenchmarkStatusText => _latestBenchmarkSummary is null
@@ -314,6 +547,18 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 
     public string ValidationCommandText =>
         "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-winui.ps1 -Platform x64";
+
+    public string BenchmarkEvidenceText => _latestBenchmarkSummary is null
+        ? "Run the core benchmark to create a local artifact before claiming performance health."
+        : $"Latest local artifact says budget {PassFail(_latestBenchmarkSummary.BudgetPassed)} and strict gate {PassFail(_latestBenchmarkSummary.StrictPassed)}.";
+
+    public string ValidationHeadlineText => _latestBenchmarkSummary is null
+        ? "No benchmark evidence yet"
+        : $"{_latestBenchmarkSummary.Host} benchmark evidence is available";
+
+    public string ValidationSummaryText => _latestBenchmarkSummary is null
+        ? "Run the benchmark command, then rerun validation before treating the app as ready."
+        : $"{BenchmarkStatusText} {BenchmarkBudgetText}";
 
     public void AttachDispatcherQueue(DispatcherQueue dispatcherQueue)
     {
@@ -407,12 +652,32 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ActiveQuickFilterText));
         ApplyProcessRows(_viewState.Rows, _viewState.SelectedIdentity);
         RefreshProcessTextProperties();
+        RefreshCockpitProperties();
     }
 
     [RelayCommand(CanExecute = nameof(HasSelectedRow))]
     private void ClearSelection()
     {
         SelectedRow = null;
+    }
+
+    public void SelectWorkflow(string? mode)
+    {
+        ActiveWorkflow = Enum.TryParse(mode, ignoreCase: true, out ShellWorkflowMode parsed)
+            ? parsed
+            : ShellWorkflowMode.Overview;
+    }
+
+    public void FilterToSelectedProcess()
+    {
+        if (SelectedRow is null)
+        {
+            return;
+        }
+
+        _quickFilter = ProcessQuickFilter.All;
+        OnPropertyChanged(nameof(ActiveQuickFilterText));
+        FilterText = SelectedRow.Name;
     }
 
     private bool CanPause() => !IsPaused;
@@ -431,6 +696,53 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(CanRetryAdminMode));
         OnPropertyChanged(nameof(RetryAdminModeVisibility));
         RetryAdminModeCommand.NotifyCanExecuteChanged();
+    }
+
+    private void RefreshWorkflowProperties()
+    {
+        OnPropertyChanged(nameof(ProcessWorkspaceVisibility));
+        OnPropertyChanged(nameof(InspectorWorkspaceVisibility));
+        OnPropertyChanged(nameof(HealthWorkspaceVisibility));
+        OnPropertyChanged(nameof(ValidationWorkspaceVisibility));
+        OnPropertyChanged(nameof(WorkflowStatusText));
+    }
+
+    private void RefreshSelectionProperties()
+    {
+        OnPropertyChanged(nameof(InspectorTitle));
+        OnPropertyChanged(nameof(InspectorSubtitle));
+        OnPropertyChanged(nameof(InspectorCpuText));
+        OnPropertyChanged(nameof(InspectorMemoryText));
+        OnPropertyChanged(nameof(InspectorDiskText));
+        OnPropertyChanged(nameof(InspectorOtherIoText));
+        OnPropertyChanged(nameof(InspectorThreadText));
+        OnPropertyChanged(nameof(InspectorParentPidText));
+        OnPropertyChanged(nameof(InspectorStartTimeText));
+        OnPropertyChanged(nameof(InspectorAccessStateText));
+        OnPropertyChanged(nameof(InspectorPrivateMemoryText));
+        OnPropertyChanged(nameof(InspectorHandlesText));
+        OnPropertyChanged(nameof(InspectorAttentionText));
+        OnPropertyChanged(nameof(InspectorLastChangeText));
+        OnPropertyChanged(nameof(ProcessStoryText));
+        OnPropertyChanged(nameof(CopyDetailsText));
+        OnPropertyChanged(nameof(HasSelectedRow));
+        OnPropertyChanged(nameof(ClearSelectionVisibility));
+        OnPropertyChanged(nameof(CopyDetailsVisibility));
+        OnPropertyChanged(nameof(TrendScopeText));
+        OnPropertyChanged(nameof(CpuTrendLabelText));
+        OnPropertyChanged(nameof(MemoryTrendLabelText));
+        OnPropertyChanged(nameof(SystemCpuChartText));
+        OnPropertyChanged(nameof(SystemKernelCpuChartText));
+        OnPropertyChanged(nameof(SystemMemoryChartText));
+        OnPropertyChanged(nameof(SystemDiskReadChartText));
+        OnPropertyChanged(nameof(SystemDiskWriteChartText));
+        OnPropertyChanged(nameof(SystemNetworkChartText));
+        OnPropertyChanged(nameof(LogicalCpuChartText));
+        OnPropertyChanged(nameof(TickP95ChartText));
+        OnPropertyChanged(nameof(SortP95ChartText));
+        OnPropertyChanged(nameof(JitterP95ChartText));
+        RefreshTimelineItems();
+        ClearSelectionCommand.NotifyCanExecuteChanged();
     }
 
     private Task SetQueryAsync(RuntimeQuery query)
@@ -497,6 +809,13 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(FooterCpuText));
         OnPropertyChanged(nameof(FooterTickText));
         OnPropertyChanged(nameof(FooterSortP95Text));
+        OnPropertyChanged(nameof(SystemCpuChartText));
+        OnPropertyChanged(nameof(SystemKernelCpuChartText));
+        OnPropertyChanged(nameof(SystemMemoryChartText));
+        OnPropertyChanged(nameof(SystemDiskReadChartText));
+        OnPropertyChanged(nameof(SystemDiskWriteChartText));
+        OnPropertyChanged(nameof(SystemNetworkChartText));
+        OnPropertyChanged(nameof(LogicalCpuChartText));
         OnPropertyChanged(nameof(ProcessSortText));
         OnPropertyChanged(nameof(CurrentSortColumn));
         OnPropertyChanged(nameof(CurrentSortDirection));
@@ -512,56 +831,95 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         }
 
         ApplyProcessRows(viewState.Rows, selectedIdentity);
-        AppendTrend(snapshot);
+        AppendTrend(snapshot, viewState.Rows);
+        RefreshTrendValues();
         RefreshProcessTextProperties();
-        OnPropertyChanged(nameof(InspectorCpuText));
-        OnPropertyChanged(nameof(InspectorMemoryText));
-        OnPropertyChanged(nameof(InspectorDiskText));
-        OnPropertyChanged(nameof(InspectorOtherIoText));
-        OnPropertyChanged(nameof(InspectorThreadText));
+        RefreshSelectionProperties();
+        RefreshCockpitProperties();
+        RefreshWorkflowProperties();
     }
 
     private void ApplyProcessRows(IReadOnlyList<ProcessSample> rows, ProcessIdentity? selectedIdentity)
     {
         IReadOnlyList<ProcessSample> visibleRows = ApplyQuickFilter(rows);
         Dictionary<ProcessIdentity, ProcessRowViewModel> existing = Rows.ToDictionary(static row => row.Identity);
+        List<ProcessRowViewModel> desiredRows = new(visibleRows.Count);
         for (int index = 0; index < visibleRows.Count; index++)
         {
             ProcessSample sample = visibleRows[index];
             ProcessIdentity identity = sample.Identity();
             _previousSamplesByIdentity.TryGetValue(identity, out ProcessSample? previousSample);
             bool isNew = previousSample is null && SnapshotSeq > 0;
-            ProcessRowViewModel viewRow = existing.TryGetValue(identity, out ProcessRowViewModel? current)
-                && current.HasSameDisplayState(sample)
-                    ? current
-                    : new ProcessRowViewModel(sample, previousSample, isNew);
-
-            if (index < Rows.Count)
+            ProcessRowViewModel viewRow;
+            if (existing.TryGetValue(identity, out ProcessRowViewModel? current))
             {
-                if (!ReferenceEquals(Rows[index], viewRow))
+                bool hasSameDisplayState = current.HasSameDisplayState(sample);
+                if (hasSameDisplayState)
                 {
-                    Rows[index] = viewRow;
+                    current.UpdateSample(sample);
                 }
+                else
+                {
+                    current.Update(sample, previousSample, isNew);
+                }
+
+                viewRow = current;
             }
             else
             {
-                Rows.Add(viewRow);
+                viewRow = new ProcessRowViewModel(sample, previousSample, isNew);
             }
+
+            desiredRows.Add(viewRow);
         }
 
-        while (Rows.Count > visibleRows.Count)
-        {
-            Rows.RemoveAt(Rows.Count - 1);
-        }
+        SyncRows(desiredRows);
 
         foreach (ProcessSample sample in rows)
         {
             _previousSamplesByIdentity[sample.Identity()] = sample;
         }
 
-        SelectedRow = selectedIdentity.HasValue
+        ProcessRowViewModel? previousSelectedRow = SelectedRow;
+        ProcessRowViewModel? nextSelectedRow = selectedIdentity.HasValue
             ? Rows.FirstOrDefault(row => row.Identity.Equals(selectedIdentity.Value))
             : null;
+        SelectedRow = nextSelectedRow;
+        if (ReferenceEquals(previousSelectedRow, nextSelectedRow) && nextSelectedRow is not null)
+        {
+            _viewState = _viewState with
+            {
+                SelectedIdentity = nextSelectedRow.Identity,
+                SelectedProcess = nextSelectedRow.Sample,
+            };
+        }
+    }
+
+    private void SyncRows(IReadOnlyList<ProcessRowViewModel> desiredRows)
+    {
+        for (int targetIndex = 0; targetIndex < desiredRows.Count; targetIndex++)
+        {
+            ProcessRowViewModel desiredRow = desiredRows[targetIndex];
+            if (targetIndex < Rows.Count && ReferenceEquals(Rows[targetIndex], desiredRow))
+            {
+                continue;
+            }
+
+            int currentIndex = Rows.IndexOf(desiredRow);
+            if (currentIndex >= 0)
+            {
+                Rows.Move(currentIndex, targetIndex);
+            }
+            else
+            {
+                Rows.Insert(targetIndex, desiredRow);
+            }
+        }
+
+        while (Rows.Count > desiredRows.Count)
+        {
+            Rows.RemoveAt(Rows.Count - 1);
+        }
     }
 
     private IReadOnlyList<ProcessSample> ApplyQuickFilter(IReadOnlyList<ProcessSample> rows)
@@ -592,29 +950,174 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(EmptyStateText));
     }
 
-    private void AppendTrend(RuntimeSnapshot snapshot)
+    private void RefreshCockpitProperties()
     {
-        double[] cpu = (double[])CpuTrendValues.Clone();
-        double[] memory = (double[])MemoryTrendValues.Clone();
-        cpu[_trendIndex] = snapshot.System.CpuPct.GetValueOrDefault();
-        ulong totalMemoryBytes = snapshot.System.MemoryTotalBytes.GetValueOrDefault();
-        memory[_trendIndex] = totalMemoryBytes == 0
-            ? 0
-            : snapshot.System.MemoryUsedBytes.GetValueOrDefault() * 100d / totalMemoryBytes;
-        _trendIndex = (_trendIndex + 1) % cpu.Length;
-        CpuTrendValues = RotateTrend(cpu, _trendIndex);
-        MemoryTrendValues = RotateTrend(memory, _trendIndex);
+        OnPropertyChanged(nameof(TriageHeadlineText));
+        OnPropertyChanged(nameof(TriageSummaryText));
+        OnPropertyChanged(nameof(TriageAttentionTitle));
+        OnPropertyChanged(nameof(TriageAttentionDetail));
+        OnPropertyChanged(nameof(TriageCpuTitle));
+        OnPropertyChanged(nameof(TriageCpuDetail));
+        OnPropertyChanged(nameof(TriageMemoryTitle));
+        OnPropertyChanged(nameof(TriageMemoryDetail));
+        OnPropertyChanged(nameof(TriageIoAccessTitle));
+        OnPropertyChanged(nameof(TriageIoAccessDetail));
+        OnPropertyChanged(nameof(RuntimeActionTitle));
+        OnPropertyChanged(nameof(RuntimeActionDetail));
+        OnPropertyChanged(nameof(HealthHeadlineText));
+        OnPropertyChanged(nameof(HealthSummaryText));
+        OnPropertyChanged(nameof(HealthDiagnosticsText));
+        OnPropertyChanged(nameof(AccessSummaryText));
+        OnPropertyChanged(nameof(LocalDataSummaryText));
+        OnPropertyChanged(nameof(BenchmarkEvidenceText));
+        OnPropertyChanged(nameof(ValidationHeadlineText));
+        OnPropertyChanged(nameof(ValidationSummaryText));
     }
 
-    private static double[] RotateTrend(double[] values, int start)
+    private void RefreshTimelineItems()
     {
-        double[] rotated = new double[values.Length];
-        for (int index = 0; index < values.Length; index++)
+        ProcessTimelineItems.Clear();
+        if (SelectedRow is { } selectedRow)
         {
-            rotated[index] = values[(start + index) % values.Length];
+            ProcessTimelineItems.Add(selectedRow.AttentionSummaryText);
+            ProcessTimelineItems.Add(selectedRow.LastMeaningfulChangeText);
+            ProcessTimelineItems.Add($"Started {selectedRow.StartTimeText}; parent PID {selectedRow.ParentPidText}.");
+            ProcessTimelineItems.Add($"Access {selectedRow.AccessStateText}; handles {selectedRow.HandlesText}; threads {selectedRow.ThreadsText}.");
+            ProcessTimelineItems.Add($"Current load: {selectedRow.CpuText} CPU, {selectedRow.MemoryText} memory, {selectedRow.DiskText} disk, {selectedRow.OtherIoText} other I/O.");
+            return;
         }
 
-        return rotated;
+        ProcessTimelineItems.Add($"Tracking {_snapshot.TotalProcessCount:n0} processes with {Rows.Count:n0} visible in the current view.");
+        ProcessTimelineItems.Add(RuntimeConfidenceText);
+        ProcessTimelineItems.Add(RuntimePerfText);
+        ProcessTimelineItems.Add($"System load: CPU {CpuText}, memory {MemoryText}, disk {FormatSystemDisk(_snapshot.System)}, other I/O {FormatNullableRate(_snapshot.System.OtherIoBps)}.");
+        ProcessTimelineItems.Add(AccessSummaryText);
+    }
+
+    private void AppendTrend(RuntimeSnapshot snapshot, IReadOnlyList<ProcessSample> rows)
+    {
+        _systemCpuTrend.Append(snapshot.System.CpuPct.GetValueOrDefault());
+        _systemKernelCpuTrend.Append(snapshot.System.KernelCpuPct.GetValueOrDefault());
+        ulong totalMemoryBytes = snapshot.System.MemoryTotalBytes.GetValueOrDefault();
+        _systemMemoryTrend.Append(totalMemoryBytes == 0
+            ? 0
+            : snapshot.System.MemoryUsedBytes.GetValueOrDefault() * 100d / totalMemoryBytes);
+        _systemDiskReadTrend.Append(snapshot.System.DiskReadBps.GetValueOrDefault());
+        _systemDiskWriteTrend.Append(snapshot.System.DiskWriteBps.GetValueOrDefault());
+        _systemNetworkTrend.Append(ResolveNetworkBytes(snapshot.System));
+        SyncLogicalCpuTrends(snapshot.System.LogicalCpuPct);
+        _tickP95Trend.Append(snapshot.Health.TickP95Ms);
+        _sortP95Trend.Append(snapshot.Health.SortP95Ms);
+        _jitterP95Trend.Append(snapshot.Health.JitterP95Ms);
+
+        HashSet<ProcessIdentity> activeIdentities = [];
+        foreach (ProcessSample sample in rows)
+        {
+            ProcessIdentity identity = sample.Identity();
+            activeIdentities.Add(identity);
+            if (!_processTrendsByIdentity.TryGetValue(identity, out ProcessTrendSet? trends))
+            {
+                trends = new ProcessTrendSet(TrendPointCount);
+                _processTrendsByIdentity[identity] = trends;
+            }
+
+            trends.Cpu.Append(sample.CpuPct);
+            trends.Memory.Append((double)sample.MemoryBytes);
+            trends.Disk.Append(sample.DiskBps);
+            trends.OtherIo.Append(sample.OtherIoBps);
+        }
+
+        foreach (ProcessIdentity identity in _processTrendsByIdentity.Keys.ToArray())
+        {
+            if (!activeIdentities.Contains(identity))
+            {
+                _processTrendsByIdentity.Remove(identity);
+            }
+        }
+    }
+
+    private void RefreshTrendValues()
+    {
+        SystemCpuTrendValues = _systemCpuTrend.ToArray();
+        SystemKernelCpuTrendValues = _systemKernelCpuTrend.ToArray();
+        SystemMemoryTrendValues = _systemMemoryTrend.ToArray();
+        SystemDiskReadTrendValues = _systemDiskReadTrend.ToArray();
+        SystemDiskWriteTrendValues = _systemDiskWriteTrend.ToArray();
+        SystemNetworkTrendValues = _systemNetworkTrend.ToArray();
+        RefreshLogicalCpuChartValues();
+        TickP95TrendValues = _tickP95Trend.ToArray();
+        SortP95TrendValues = _sortP95Trend.ToArray();
+        JitterP95TrendValues = _jitterP95Trend.ToArray();
+
+        if (SelectedRow is { } selectedRow)
+        {
+            if (_processTrendsByIdentity.TryGetValue(selectedRow.Identity, out ProcessTrendSet? trends))
+            {
+                CpuTrendValues = trends.Cpu.ToArray();
+                MemoryTrendValues = trends.Memory.ToArray();
+                DiskTrendValues = trends.Disk.ToArray();
+                OtherIoTrendValues = trends.OtherIo.ToArray();
+            }
+            else
+            {
+                CpuTrendValues = [selectedRow.Sample.CpuPct];
+                MemoryTrendValues = [(double)selectedRow.Sample.MemoryBytes];
+                DiskTrendValues = [selectedRow.Sample.DiskBps];
+                OtherIoTrendValues = [selectedRow.Sample.OtherIoBps];
+            }
+        }
+        else
+        {
+            CpuTrendValues = _systemCpuTrend.ToArray();
+            MemoryTrendValues = _systemMemoryTrend.ToArray();
+            DiskTrendValues = _systemDiskReadTrend
+                .ToArray()
+                .Zip(_systemDiskWriteTrend.ToArray(), static (read, write) => read + write)
+                .ToArray();
+            OtherIoTrendValues = _systemNetworkTrend.ToArray();
+        }
+
+        OnPropertyChanged(nameof(TrendScopeText));
+        OnPropertyChanged(nameof(CpuTrendLabelText));
+        OnPropertyChanged(nameof(MemoryTrendLabelText));
+    }
+
+    private void SyncLogicalCpuTrends(IReadOnlyList<double> logicalCpuPct)
+    {
+        int count = logicalCpuPct.Count;
+        while (_logicalCpuTrends.Count < count)
+        {
+            _logicalCpuTrends.Add(new TrendBuffer(TrendPointCount));
+        }
+
+        while (_logicalCpuTrends.Count > count)
+        {
+            _logicalCpuTrends.RemoveAt(_logicalCpuTrends.Count - 1);
+        }
+
+        while (LogicalCpuCharts.Count < count)
+        {
+            int index = LogicalCpuCharts.Count;
+            LogicalCpuCharts.Add(new LogicalCpuChartViewModel($"CPU {index}", []));
+        }
+
+        while (LogicalCpuCharts.Count > count)
+        {
+            LogicalCpuCharts.RemoveAt(LogicalCpuCharts.Count - 1);
+        }
+
+        for (int index = 0; index < count; index++)
+        {
+            _logicalCpuTrends[index].Append(logicalCpuPct[index]);
+        }
+    }
+
+    private void RefreshLogicalCpuChartValues()
+    {
+        for (int index = 0; index < LogicalCpuCharts.Count && index < _logicalCpuTrends.Count; index++)
+        {
+            LogicalCpuCharts[index].Values = _logicalCpuTrends[index].ToArray();
+        }
     }
 
     private static string FormatMemory(SystemMetricsSnapshot snapshot)
@@ -649,6 +1152,94 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
     private static string FormatNullableRate(ulong? bytesPerSecond)
     {
         return bytesPerSecond.HasValue ? ProcessRowViewModel.FormatRate(bytesPerSecond.Value) : "n/a";
+    }
+
+    private static string FormatNullablePercent(double? value)
+    {
+        return value.HasValue ? $"{value.Value:0.0}%" : "warming";
+    }
+
+    private static string FormatNetworkRate(SystemMetricsSnapshot snapshot)
+    {
+        ulong bytesPerSecond = ResolveNetworkBytes(snapshot);
+        if (bytesPerSecond == 0UL && !snapshot.NetworkBytesBps.HasValue && !snapshot.OtherIoBps.HasValue)
+        {
+            return "n/a";
+        }
+
+        return FormatBitsRateFromBytes(bytesPerSecond);
+    }
+
+    private static ulong ResolveNetworkBytes(SystemMetricsSnapshot snapshot)
+    {
+        return snapshot.NetworkBytesBps ?? snapshot.OtherIoBps ?? 0UL;
+    }
+
+    private static string FormatBitsRateFromBytes(ulong bytesPerSecond)
+    {
+        double bitsPerSecond = bytesPerSecond * 8d;
+        string[] units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"];
+        int unit = 0;
+        while (bitsPerSecond >= 1000d && unit < units.Length - 1)
+        {
+            bitsPerSecond /= 1000d;
+            unit++;
+        }
+
+        return bitsPerSecond < 10d && unit > 0
+            ? $"{bitsPerSecond:0.0} {units[unit]}"
+            : $"{bitsPerSecond:0} {units[unit]}";
+    }
+
+    private ProcessSample? TopAttentionProcess()
+    {
+        return _viewState.Rows
+            .OrderByDescending(ProcessAttention.Score)
+            .ThenBy(static row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    private ProcessSample? TopCpuProcess()
+    {
+        return _viewState.Rows
+            .OrderByDescending(static row => row.CpuPct)
+            .ThenBy(static row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    private ProcessSample? TopMemoryProcess()
+    {
+        return _viewState.Rows
+            .OrderByDescending(static row => row.MemoryBytes)
+            .ThenBy(static row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    private ProcessSample? TopIoOrLimitedProcess()
+    {
+        return _viewState.Rows
+            .OrderByDescending(static row => row.AccessState != AccessState.Full)
+            .ThenByDescending(static row => row.DiskBps + row.OtherIoBps)
+            .ThenBy(static row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    private static string FormatTriageTitle(ProcessSample? sample, string fallback)
+    {
+        return sample is null ? fallback : $"{sample.Name} ({sample.Pid})";
+    }
+
+    private static string FormatTriageDetail(ProcessSample? sample, string fallback)
+    {
+        if (sample is null)
+        {
+            return fallback;
+        }
+
+        ulong ioBytes = ulong.MaxValue - sample.DiskBps < sample.OtherIoBps
+            ? ulong.MaxValue
+            : sample.DiskBps + sample.OtherIoBps;
+        return $"{sample.CpuPct:0.0}% CPU | {ProcessRowViewModel.FormatBytes(sample.MemoryBytes)} | {ProcessRowViewModel.FormatRate(ioBytes)} | {ProcessAttention.Label(sample, isNew: false)}";
     }
 
     private static string FormatSortColumn(SortColumn column)
@@ -728,6 +1319,53 @@ public sealed partial class ShellViewModel : ObservableObject, IAsyncDisposable
 
         return null;
     }
+
+    private sealed class ProcessTrendSet
+    {
+        public ProcessTrendSet(int capacity)
+        {
+            Cpu = new TrendBuffer(capacity);
+            Memory = new TrendBuffer(capacity);
+            Disk = new TrendBuffer(capacity);
+            OtherIo = new TrendBuffer(capacity);
+        }
+
+        public TrendBuffer Cpu { get; }
+
+        public TrendBuffer Memory { get; }
+
+        public TrendBuffer Disk { get; }
+
+        public TrendBuffer OtherIo { get; }
+    }
+
+    private sealed class TrendBuffer
+    {
+        private readonly int _capacity;
+        private readonly Queue<double> _values = [];
+
+        public TrendBuffer(int capacity)
+        {
+            _capacity = capacity;
+        }
+
+        public void Append(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0)
+            {
+                value = 0;
+            }
+
+            if (_values.Count == _capacity)
+            {
+                _values.Dequeue();
+            }
+
+            _values.Enqueue(value);
+        }
+
+        public double[] ToArray() => _values.ToArray();
+    }
 }
 
 internal enum ProcessQuickFilter
@@ -737,4 +1375,25 @@ internal enum ProcessQuickFilter
     HighMemory,
     ActiveIo,
     LimitedAccess,
+}
+
+public enum ShellWorkflowMode
+{
+    Overview,
+    Processes,
+    Health,
+    Validation,
+}
+
+public sealed partial class LogicalCpuChartViewModel(string title, double[] values) : ObservableObject
+{
+    private double[] _values = values;
+
+    public string Title { get; } = title;
+
+    public double[] Values
+    {
+        get => _values;
+        set => SetProperty(ref _values, value);
+    }
 }

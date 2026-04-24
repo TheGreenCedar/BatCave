@@ -13,9 +13,14 @@ The app is designed to be useful both as an interactive desktop monitor and as a
 ## Highlights
 
 - Live process explorer with sortable CPU, memory, disk, and network/other I/O columns.
-- System overview with lightweight CPU and memory trend sparklines.
-- Process inspector with dense process resource metrics and stable selection.
-- Runtime health surfacing for jitter, dropped ticks, degrade mode, and collector warnings.
+- Attention cockpit that surfaces the current CPU, memory, I/O, access, and highest-attention process leads before you dig into the table.
+- Live CPU, logical-processor, memory, disk read/write, and network charts stay visible in the overview cockpit.
+- Top-level workflow navigation for overview triage, process inspection, runtime health, and validation evidence.
+- System overview with lightweight CPU, kernel CPU, per-core CPU, memory, disk, and network trend sparklines.
+- Process inspector with dense process resource metrics, timeline-style process story text, context-menu actions, and stable selection.
+- Dedicated runtime health workspace for jitter, dropped ticks, degrade mode, collector warnings, local data posture, access state, and the next action to take.
+- Runtime health charts show tick p95, sort p95, and jitter p95 trends.
+- Dedicated validation workspace that keeps benchmark and handoff commands visible with the latest local benchmark evidence.
 - Admin-mode state preserved in the runtime store; elevated helper handoff remains a script-compatible CLI surface.
 - Repeatable benchmark, baseline capture, validation, and memory-profiling workflows.
 - Local-only persistence and logs under `%LOCALAPPDATA%\BatCaveMonitor`.

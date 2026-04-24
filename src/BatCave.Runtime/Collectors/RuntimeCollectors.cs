@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 
 namespace BatCave.Runtime.Collectors;
@@ -461,7 +462,9 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
     private IntPtr _diskReadCounter;
     private IntPtr _diskWriteCounter;
     private IntPtr _otherIoCounter;
+    private IntPtr[] _logicalCpuCounters = [];
     private bool _rateCountersWarmed;
+    private NetworkTotalSample? _previousNetworkTotal;
 
     public WindowsSystemMetricsCollector()
     {
@@ -480,7 +483,9 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
             ulong nowMs = (ulong)Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             (ulong? used, ulong? total, ulong? available) = SampleMemory();
             (double? cpu, double? kernel) = SampleCpu();
+            ulong? networkBytesBps = SampleNetworkBytesPerSecond(nowMs);
             (ulong? diskReadBps, ulong? diskWriteBps, ulong? otherIoBps) = SampleRateMetrics();
+            double[] logicalCpuPct = SampleLogicalCpu();
 
             return new SystemMetricsSnapshot
             {
@@ -492,9 +497,11 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
                 MemoryAvailableBytes = available,
                 DiskReadBps = diskReadBps,
                 DiskWriteBps = diskWriteBps,
+                NetworkBytesBps = networkBytesBps,
                 OtherIoBps = otherIoBps,
+                LogicalCpuPct = logicalCpuPct,
                 LogicalProcessorCount = Math.Max(1, Environment.ProcessorCount),
-                IsReady = cpu.HasValue || used.HasValue || diskReadBps.HasValue || diskWriteBps.HasValue || otherIoBps.HasValue,
+                IsReady = cpu.HasValue || used.HasValue || diskReadBps.HasValue || diskWriteBps.HasValue || networkBytesBps.HasValue || otherIoBps.HasValue,
             };
         }
     }
@@ -574,8 +581,16 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
         _diskReadCounter = AddEnglishCounter(DiskReadCounterPath);
         _diskWriteCounter = AddEnglishCounter(DiskWriteCounterPath);
         _otherIoCounter = AddEnglishCounter(OtherIoCounterPath);
+        _logicalCpuCounters = Enumerable
+            .Range(0, Math.Max(1, Environment.ProcessorCount))
+            .Select(index => AddEnglishCounter($@"\Processor({index})\% Processor Time"))
+            .Where(static counter => counter != IntPtr.Zero)
+            .ToArray();
 
-        if (_diskReadCounter == IntPtr.Zero && _diskWriteCounter == IntPtr.Zero && _otherIoCounter == IntPtr.Zero)
+        if (_diskReadCounter == IntPtr.Zero
+            && _diskWriteCounter == IntPtr.Zero
+            && _otherIoCounter == IntPtr.Zero
+            && _logicalCpuCounters.Length == 0)
         {
             ClosePdhCounters();
         }
@@ -591,6 +606,111 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
         return PdhAddEnglishCounterW(_pdhQuery, path, IntPtr.Zero, out IntPtr counter) == ErrorSuccess
             ? counter
             : IntPtr.Zero;
+    }
+
+    private double[] SampleLogicalCpu()
+    {
+        if (_logicalCpuCounters.Length == 0)
+        {
+            return [];
+        }
+
+        double[] values = new double[_logicalCpuCounters.Length];
+        for (int index = 0; index < _logicalCpuCounters.Length; index++)
+        {
+            values[index] = ReadPercentCounter(_logicalCpuCounters[index]).GetValueOrDefault();
+        }
+
+        return values;
+    }
+
+    private ulong? SampleNetworkBytesPerSecond(ulong nowMs)
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return null;
+        }
+
+        ulong? totalBytes = SampleNetworkTotalBytes();
+        if (!totalBytes.HasValue)
+        {
+            _previousNetworkTotal = null;
+            return null;
+        }
+
+        NetworkTotalSample current = new(nowMs, totalBytes.Value);
+        if (_previousNetworkTotal is not NetworkTotalSample previous || nowMs <= previous.TsMs)
+        {
+            _previousNetworkTotal = current;
+            return null;
+        }
+
+        _previousNetworkTotal = current;
+        if (current.TotalBytes < previous.TotalBytes)
+        {
+            return null;
+        }
+
+        ulong elapsedMs = current.TsMs - previous.TsMs;
+        if (elapsedMs == 0)
+        {
+            return null;
+        }
+
+        ulong byteDelta = current.TotalBytes - previous.TotalBytes;
+        double bytesPerSecond = byteDelta * 1000d / elapsedMs;
+        if (!double.IsFinite(bytesPerSecond) || bytesPerSecond < 0d)
+        {
+            return null;
+        }
+
+        return bytesPerSecond >= ulong.MaxValue ? ulong.MaxValue : (ulong)bytesPerSecond;
+    }
+
+    private static ulong? SampleNetworkTotalBytes()
+    {
+        try
+        {
+            ulong total = 0;
+            bool sawInterface = false;
+            foreach (NetworkInterface adapter in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (!IsVisibleNetworkInterface(adapter))
+                {
+                    continue;
+                }
+
+                IPv4InterfaceStatistics stats = adapter.GetIPv4Statistics();
+                ulong received = stats.BytesReceived < 0 ? 0UL : (ulong)stats.BytesReceived;
+                ulong sent = stats.BytesSent < 0 ? 0UL : (ulong)stats.BytesSent;
+                total = SaturatingAdd(total, SaturatingAdd(received, sent));
+                sawInterface = true;
+            }
+
+            return sawInterface ? total : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsVisibleNetworkInterface(NetworkInterface adapter)
+    {
+        if (adapter.OperationalStatus != OperationalStatus.Up)
+        {
+            return false;
+        }
+
+        if (adapter.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
+        {
+            return false;
+        }
+
+        string name = $"{adapter.Name} {adapter.Description}";
+        return !name.Contains("loopback", StringComparison.OrdinalIgnoreCase)
+            && !name.Contains("isatap", StringComparison.OrdinalIgnoreCase)
+            && !name.Contains("teredo", StringComparison.OrdinalIgnoreCase);
     }
 
     private (ulong? DiskReadBps, ulong? DiskWriteBps, ulong? OtherIoBps) SampleRateMetrics()
@@ -644,6 +764,28 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
         return candidate >= ulong.MaxValue ? ulong.MaxValue : (ulong)candidate;
     }
 
+    private static double? ReadPercentCounter(IntPtr counter)
+    {
+        if (counter == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        uint status = PdhGetFormattedCounterValue(counter, PdhFmtDouble, out _, out PDH_FMT_COUNTERVALUE_DOUBLE value);
+        if (status != ErrorSuccess || value.CStatus is not (PdhCstatusValidData or PdhCstatusNewData))
+        {
+            return null;
+        }
+
+        double candidate = value.DoubleValue;
+        if (double.IsNaN(candidate) || double.IsInfinity(candidate) || candidate < 0d)
+        {
+            return null;
+        }
+
+        return Math.Clamp(candidate, 0d, 100d);
+    }
+
     internal static (double? CpuPct, double? KernelPct) CalculateCpuPercentages(
         ulong previousIdle,
         ulong previousKernel,
@@ -679,6 +821,7 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
         _diskReadCounter = IntPtr.Zero;
         _diskWriteCounter = IntPtr.Zero;
         _otherIoCounter = IntPtr.Zero;
+        _logicalCpuCounters = [];
         _rateCountersWarmed = false;
     }
 
@@ -689,6 +832,8 @@ public sealed class WindowsSystemMetricsCollector : ISystemMetricsCollector, IDi
     private static ulong SaturatingAdd(ulong left, ulong right) => ulong.MaxValue - left < right ? ulong.MaxValue : left + right;
 
     private readonly record struct SystemTimes(ulong Idle, ulong Kernel, ulong User);
+
+    private readonly record struct NetworkTotalSample(ulong TsMs, ulong TotalBytes);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FILETIME
