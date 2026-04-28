@@ -46,23 +46,29 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
         network_transmitted_bps: 0,
         quality: Some(SystemMetricQuality {
             cpu: Some(
-                quality(MetricQuality::Held, MetricSource::DirectApi).with_message(
+                MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi).with_message(
                     "CPU requires a second sample before native deltas are available.",
                 ),
             ),
             kernel_cpu: Some(
-                quality(MetricQuality::Held, MetricSource::DirectApi).with_message(
+                MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi).with_message(
                     "Kernel CPU requires a second sample before native deltas are available.",
                 ),
             ),
             logical_cpu: None,
-            memory: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
-            swap: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
+            memory: Some(MetricQualityInfo::new(
+                MetricQuality::Native,
+                MetricSource::DirectApi,
+            )),
+            swap: Some(MetricQualityInfo::new(
+                MetricQuality::Native,
+                MetricSource::DirectApi,
+            )),
             disk: Some(
-                quality(MetricQuality::Unavailable, MetricSource::Pdh)
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Pdh)
                     .with_message("Disk counters need the PDH collector layer."),
             ),
-            network: Some(quality(
+            network: Some(MetricQualityInfo::new(
                 MetricQuality::Native,
                 MetricSource::InterfaceAggregate,
             )),
@@ -266,27 +272,6 @@ fn percent(numerator: u64, denominator: u64) -> f64 {
 
 fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
-}
-
-fn quality(quality: MetricQuality, source: MetricSource) -> MetricQualityInfo {
-    MetricQualityInfo {
-        quality,
-        source: Some(source),
-        updated_at_ms: None,
-        age_ms: None,
-        message: None,
-    }
-}
-
-trait MetricQualityMessage {
-    fn with_message(self, message: &str) -> Self;
-}
-
-impl MetricQualityMessage for MetricQualityInfo {
-    fn with_message(mut self, message: &str) -> Self {
-        self.message = Some(message.to_string());
-        self
-    }
 }
 
 #[cfg(test)]

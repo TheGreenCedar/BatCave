@@ -14,6 +14,20 @@ const names = [
   "Rider64.exe",
   "Teams.exe",
 ];
+const backgroundNames = [
+  "RuntimeBroker.exe",
+  "svchost.exe",
+  "conhost.exe",
+  "ShellExperienceHost.exe",
+  "StartMenuExperienceHost.exe",
+  "TextInputHost.exe",
+  "SearchIndexer.exe",
+  "SecurityHealthService.exe",
+  "WidgetService.exe",
+  "NVIDIAContainer.exe",
+  "PhoneExperienceHost.exe",
+  "ApplicationFrameHost.exe",
+];
 
 const baseTs = Date.now();
 
@@ -24,9 +38,10 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
   const logicalCpu = Array.from({ length: 12 }, (_, index) =>
     clamp(wave(tick + index * 2, 24 + index * 1.5, 20, 0.22 + index * 0.017), 1, 96),
   );
-  const processes = names
-    .map((name, index) => makeProcess(name, index, tick))
-    .sort((left, right) => right.cpu_percent - left.cpu_percent);
+  const processCount = 284 + Math.round(Math.sin(tick / 8) * 8);
+  const processes = Array.from({ length: processCount }, (_, index) =>
+    makeProcess(fixtureProcessName(index), index, tick),
+  ).sort((left, right) => right.cpu_percent - left.cpu_percent);
 
   return {
     event_kind: "runtime_snapshot",
@@ -71,7 +86,7 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
       memory_available_bytes: Math.round(memoryTotal * (1 - memoryRatio)),
       swap_used_bytes: Math.round(1.8 * 1024 * 1024 * 1024 + Math.sin(tick / 7) * 220_000_000),
       swap_total_bytes: 8 * 1024 * 1024 * 1024,
-      process_count: 284 + Math.round(Math.sin(tick / 8) * 8),
+      process_count: processes.length,
       disk_read_total_bytes:
         62_000_000_000 + tick * 11_700_000 + Math.round(Math.sin(tick / 2) * 3_000_000),
       disk_write_total_bytes:
@@ -100,15 +115,17 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
   };
 }
 
-export function nextFixtureSnapshot(previousTick: number): RuntimeSnapshot {
-  return makeFixtureSnapshot(previousTick);
-}
-
 function makeProcess(name: string, index: number, tick: number): ProcessSample {
-  const pid = 2100 + index * 137;
-  const baseCpu = index === 2 ? 18 : 2 + index * 1.7;
-  const cpu = clamp(wave(tick + index, baseCpu, 9, 0.42 + index * 0.03), 0.1, 72);
-  const memory = (180 + index * 74 + Math.sin(tick / 5 + index) * 42) * 1024 * 1024;
+  const pid = 2100 + index * 7 + (index % 5) * 17;
+  const priorityCpu = index === 2 ? 18 : index % 37 === 0 ? 11 : index % 13 === 0 ? 6 : 0;
+  const baseCpu = 0.8 + (index % 12) * 0.72 + priorityCpu;
+  const cpu = clamp(
+    wave(tick + index, baseCpu, 3.8 + (index % 5), 0.22 + (index % 13) * 0.012),
+    0.1,
+    72,
+  );
+  const baseMemory = index < names.length ? 180 + index * 74 : 42 + (index % 22) * 28;
+  const memory = (baseMemory + Math.sin(tick / 5 + index) * 28) * 1024 * 1024;
   const networkReceived = Math.max(
     0,
     Math.round((index % 4) * 180_000 + wave(tick, 90_000, 65_000, 0.2 + index * 0.01)),
@@ -150,6 +167,16 @@ function makeProcess(name: string, index: number, tick: number): ProcessSample {
       handles: { quality: "estimated", source: "fixture" },
     },
   };
+}
+
+function fixtureProcessName(index: number): string {
+  if (index < names.length) {
+    return names[index];
+  }
+
+  const family = backgroundNames[index % backgroundNames.length].replace(".exe", "");
+  const suffix = String(index - names.length + 1).padStart(3, "0");
+  return `${family}-${suffix}.exe`;
 }
 
 function wave(tick: number, base: number, amplitude: number, speed: number): number {

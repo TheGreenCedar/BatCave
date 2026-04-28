@@ -288,16 +288,34 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
         network_received_bps: 0,
         network_transmitted_bps: 0,
         quality: Some(SystemMetricQuality {
-            cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+            cpu: Some(MetricQualityInfo::new(
+                MetricQuality::Estimated,
+                MetricSource::Sysinfo,
+            )),
             kernel_cpu: Some(
-                quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                     .with_message("Kernel CPU is unavailable from the sysinfo fallback."),
             ),
-            logical_cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-            memory: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-            swap: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-            disk: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-            network: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+            logical_cpu: Some(MetricQualityInfo::new(
+                MetricQuality::Estimated,
+                MetricSource::Sysinfo,
+            )),
+            memory: Some(MetricQualityInfo::new(
+                MetricQuality::Estimated,
+                MetricSource::Sysinfo,
+            )),
+            swap: Some(MetricQualityInfo::new(
+                MetricQuality::Estimated,
+                MetricSource::Sysinfo,
+            )),
+            disk: Some(MetricQualityInfo::new(
+                MetricQuality::Estimated,
+                MetricSource::Sysinfo,
+            )),
+            network: Some(MetricQualityInfo::new(
+                MetricQuality::Estimated,
+                MetricSource::Sysinfo,
+            )),
         }),
     }
 }
@@ -335,23 +353,32 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                 handles: 0,
                 access_state: AccessState::Partial,
                 quality: Some(ProcessMetricQuality {
-                    cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-                    memory: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-                    disk: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    cpu: Some(MetricQualityInfo::new(
+                        MetricQuality::Estimated,
+                        MetricSource::Sysinfo,
+                    )),
+                    memory: Some(MetricQualityInfo::new(
+                        MetricQuality::Estimated,
+                        MetricSource::Sysinfo,
+                    )),
+                    disk: Some(MetricQualityInfo::new(
+                        MetricQuality::Estimated,
+                        MetricSource::Sysinfo,
+                    )),
                     other_io: Some(
-                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                             .with_message("Other I/O is unavailable from the sysinfo fallback."),
                     ),
                     network: Some(
-                        quality(MetricQuality::Unavailable, MetricSource::Etw)
+                        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
                             .with_message("Waiting for ETW network attribution."),
                     ),
                     threads: Some(
-                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                             .with_message("Thread counts require the native process collector."),
                     ),
                     handles: Some(
-                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                             .with_message("Handle counts require the native process collector."),
                     ),
                 }),
@@ -391,30 +418,43 @@ fn enrich_native_process(
 
 fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> SystemMetricQuality {
     let cpu = if has_native_cpu {
-        quality(MetricQuality::Native, MetricSource::DirectApi)
+        MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
     } else {
-        quality(MetricQuality::Estimated, MetricSource::Sysinfo)
+        MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
             .with_message("First sample uses sysinfo until native CPU deltas are available.")
     };
 
     SystemMetricQuality {
         cpu: Some(cpu.clone()),
         kernel_cpu: Some(cpu),
-        logical_cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-        memory: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
-        swap: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
+        logical_cpu: Some(MetricQualityInfo::new(
+            MetricQuality::Estimated,
+            MetricSource::Sysinfo,
+        )),
+        memory: Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        )),
+        swap: Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        )),
         disk: Some(match disk_quality {
-            DiskQualityState::Native => quality(MetricQuality::Native, MetricSource::Pdh),
+            DiskQualityState::Native => {
+                MetricQualityInfo::new(MetricQuality::Native, MetricSource::Pdh)
+            }
             DiskQualityState::Held(message) => {
-                quality(MetricQuality::Held, MetricSource::Pdh).with_message(&message)
+                MetricQualityInfo::new(MetricQuality::Held, MetricSource::Pdh)
+                    .with_message(&message)
             }
             DiskQualityState::Unavailable(message) => {
-                quality(MetricQuality::Partial, MetricSource::ProcessAggregate).with_message(
-                    &format!("PDH disk rates unavailable; using process I/O totals. {message}"),
-                )
+                MetricQualityInfo::new(MetricQuality::Partial, MetricSource::ProcessAggregate)
+                    .with_message(&format!(
+                        "PDH disk rates unavailable; using process I/O totals. {message}"
+                    ))
             }
         }),
-        network: Some(quality(
+        network: Some(MetricQualityInfo::new(
             MetricQuality::Native,
             MetricSource::InterfaceAggregate,
         )),
@@ -473,14 +513,18 @@ fn apply_network_attribution(
                     .unwrap_or_default();
                 process.network_received_bps = Some(rates.received_bps);
                 process.network_transmitted_bps = Some(rates.transmitted_bps);
-                process_quality(process).network =
-                    Some(quality(MetricQuality::Native, MetricSource::Etw));
+                process_quality(process).network = Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::Etw,
+                ));
             }
         }
         NetworkAttributionSample::Held(message) => {
             for process in processes {
-                process_quality(process).network =
-                    Some(quality(MetricQuality::Held, MetricSource::Etw).with_message(&message));
+                process_quality(process).network = Some(
+                    MetricQualityInfo::new(MetricQuality::Held, MetricSource::Etw)
+                        .with_message(&message),
+                );
             }
         }
         NetworkAttributionSample::Failed(message) => {
@@ -488,7 +532,8 @@ fn apply_network_attribution(
                 process.network_received_bps = None;
                 process.network_transmitted_bps = None;
                 process_quality(process).network = Some(
-                    quality(MetricQuality::Unavailable, MetricSource::Etw).with_message(&message),
+                    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
+                        .with_message(&message),
                 );
             }
         }
@@ -508,7 +553,7 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
         AccessState::Denied => MetricQuality::Unavailable,
     };
     let direct = |message: Option<&str>| {
-        let value = quality(direct_quality, MetricSource::DirectApi);
+        let value = MetricQualityInfo::new(direct_quality, MetricSource::DirectApi);
         match message {
             Some(message) => value.with_message(message),
             None => value,
@@ -517,41 +562,20 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
 
     ProcessMetricQuality {
         cpu: Some(if has_cpu {
-            quality(MetricQuality::Estimated, MetricSource::Sysinfo)
+            MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
         } else {
-            quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                 .with_message("Process CPU needs a second Rust-native timing pass.")
         }),
         memory: Some(direct(None)),
         disk: Some(direct(None)),
         other_io: Some(direct(None)),
         network: Some(
-            quality(MetricQuality::Unavailable, MetricSource::Etw)
+            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
                 .with_message("Waiting for ETW network attribution."),
         ),
         threads: Some(direct(None)),
         handles: Some(direct(None)),
-    }
-}
-
-fn quality(quality: MetricQuality, source: MetricSource) -> MetricQualityInfo {
-    MetricQualityInfo {
-        quality,
-        source: Some(source),
-        updated_at_ms: None,
-        age_ms: None,
-        message: None,
-    }
-}
-
-trait MetricQualityMessage {
-    fn with_message(self, message: &str) -> Self;
-}
-
-impl MetricQualityMessage for MetricQualityInfo {
-    fn with_message(mut self, message: &str) -> Self {
-        self.message = Some(message.to_string());
-        self
     }
 }
 

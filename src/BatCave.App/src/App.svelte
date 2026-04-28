@@ -4,7 +4,9 @@
   import MiniChart from "./lib/MiniChart.svelte";
   import { makeFixtureSnapshot } from "./lib/fixtures";
   import type {
+    MetricQuality,
     MetricQualityInfo,
+    MetricSource,
     ProcessSample,
     RuntimeQuery,
     RuntimeSnapshot,
@@ -39,6 +41,19 @@
     swapFill: string;
   }
 
+  interface MetricCardOption {
+    mode: DetailMode;
+    ariaLabel: string;
+    label: string;
+    value: string;
+    sublabel: string;
+    values: number[];
+    max: number;
+    stroke: string;
+    fill: string;
+    contrastValue: number;
+  }
+
   interface ProcessTrendState {
     cpu: number[];
     memory: number[];
@@ -52,15 +67,12 @@
     otherRate: number;
   }
 
-  interface CoreLoad {
-    index: number;
-    load: number;
-    trend: number[];
-  }
+  const historyPointOptions = [30, 72, 180, 360] as const;
+  type HistoryPointLimit = (typeof historyPointOptions)[number];
 
-  const historyLimit = 72;
   const pollIntervals = [500, 1000, 2000] as const;
   const themeStorageKey = "batcave.monitor.theme";
+  const historyStorageKey = "batcave.monitor.history-points";
   const themeOptions: ThemeOption[] = [
     { name: "cave", label: "Cave" },
     { name: "aurora", label: "Aurora" },
@@ -133,6 +145,29 @@
       swapFill: "rgba(124, 58, 237, 0.12)",
     },
   };
+  const focusOptions: { value: FocusMode; label: string }[] = [
+    { value: "all", label: "All" },
+    { value: "active", label: "Active" },
+    { value: "io", label: "I/O" },
+  ];
+  const sortOptions: { value: SortKey; label: string }[] = [
+    { value: "cpu", label: "CPU" },
+    { value: "memory", label: "Memory" },
+    { value: "io", label: "I/O" },
+    { value: "name", label: "Name" },
+  ];
+  const sortColumnByKey: Record<SortKey, SortColumn> = {
+    cpu: "cpu_pct",
+    memory: "memory_bytes",
+    io: "disk_bps",
+    name: "name",
+  };
+  const sortKeyByColumn: Partial<Record<SortColumn, SortKey>> = {
+    cpu_pct: "cpu",
+    memory_bytes: "memory",
+    disk_bps: "io",
+    name: "name",
+  };
 
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeFixtureSnapshot(fixtureTick);
@@ -148,23 +183,11 @@
   let sortKey: SortKey = "cpu";
   let detailMode: DetailMode = "cpu";
   let themeName: ThemeName = "cave";
-  let history: TrendState = {
-    cpu: [],
-    memory: [],
-    swap: [],
-    diskRead: [],
-    diskWrite: [],
-    netRx: [],
-    netTx: [],
-    cores: [],
-  };
-  let processHistory: ProcessTrendState = {
-    cpu: [],
-    memory: [],
-    readRate: [],
-    writeRate: [],
-  };
+  let historyPointLimit: HistoryPointLimit = 72;
+  let history: TrendState = emptyTrendState();
+  let processHistory: ProcessTrendState = emptyProcessTrendState();
   let processRates: Record<string, ProcessRates> = {};
+  let metricCards: MetricCardOption[] = [];
 
   $: activeTheme = chartPalettes[themeName];
   $: memoryPercent = percentage(snapshot.system.memory_used_bytes, snapshot.system.memory_total_bytes);
@@ -201,6 +224,96 @@
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
+  $: detailTitle =
+    detailMode === "cpu"
+      ? "Logical cores"
+      : detailMode === "memory"
+        ? "Memory detail"
+        : detailMode === "disk"
+          ? "Disk throughput"
+          : "Network throughput";
+  $: detailReadout =
+    detailMode === "cpu"
+      ? `${formatPercent(coreAverage)} avg`
+      : detailMode === "memory"
+        ? `${formatPercent(memoryPercent)} used`
+        : detailMode === "disk"
+          ? formatRate(diskReadRate + diskWriteRate)
+          : formatRate(networkDownRate + networkUpRate);
+  $: metricCards = [
+    {
+      mode: "cpu",
+      ariaLabel: "Open CPU logical core detail",
+      label: "CPU",
+      value: formatPercent(snapshot.system.cpu_percent),
+      sublabel: "Logical cores",
+      values: history.cpu,
+      max: 100,
+      stroke: activeTheme.cpuStroke,
+      fill: activeTheme.cpuFill,
+      contrastValue: snapshot.system.cpu_percent,
+    },
+    {
+      mode: "memory",
+      ariaLabel: "Open memory detail",
+      label: "Memory",
+      value: formatPercent(memoryPercent),
+      sublabel: `${formatBytes(snapshot.system.memory_used_bytes)} used`,
+      values: history.memory,
+      max: 100,
+      stroke: activeTheme.memoryStroke,
+      fill: activeTheme.memoryFill,
+      contrastValue: memoryPercent,
+    },
+    {
+      mode: "disk",
+      ariaLabel: "Open disk detail from read throughput",
+      label: "Disk read",
+      value: formatRate(diskReadRate),
+      sublabel: metricQualityLabel(systemQuality.disk, "Aggregate"),
+      values: history.diskRead,
+      max: diskScaleMax,
+      stroke: activeTheme.diskReadStroke,
+      fill: activeTheme.diskReadFill,
+      contrastValue: diskReadRate,
+    },
+    {
+      mode: "disk",
+      ariaLabel: "Open disk detail from write throughput",
+      label: "Disk write",
+      value: formatRate(diskWriteRate),
+      sublabel: metricQualityLabel(systemQuality.disk, "Aggregate"),
+      values: history.diskWrite,
+      max: diskScaleMax,
+      stroke: activeTheme.diskWriteStroke,
+      fill: activeTheme.diskWriteFill,
+      contrastValue: diskWriteRate,
+    },
+    {
+      mode: "network",
+      ariaLabel: "Open network detail from download throughput",
+      label: "Network down",
+      value: formatRate(networkDownRate),
+      sublabel: metricQualityLabel(systemQuality.network, "Aggregate"),
+      values: history.netRx,
+      max: networkScaleMax,
+      stroke: activeTheme.networkDownStroke,
+      fill: activeTheme.networkDownFill,
+      contrastValue: networkDownRate,
+    },
+    {
+      mode: "network",
+      ariaLabel: "Open network detail from upload throughput",
+      label: "Network up",
+      value: formatRate(networkUpRate),
+      sublabel: metricQualityLabel(systemQuality.network, "Aggregate"),
+      values: history.netTx,
+      max: networkScaleMax,
+      stroke: activeTheme.networkUpStroke,
+      fill: activeTheme.networkUpFill,
+      contrastValue: networkUpRate,
+    },
+  ];
   $: if (filteredProcesses.length > 0 && !filteredProcesses.some((process) => process.pid === selectedPid)) {
     selectProcess(filteredProcesses[0].pid);
   }
@@ -209,9 +322,14 @@
     let timeoutId: number | undefined;
     let disposed = false;
     const savedTheme = window.localStorage.getItem(themeStorageKey);
+    const savedHistoryPointLimit = Number(window.localStorage.getItem(historyStorageKey));
 
     if (isThemeName(savedTheme)) {
       themeName = savedTheme;
+    }
+
+    if (isHistoryPointLimit(savedHistoryPointLimit)) {
+      historyPointLimit = savedHistoryPointLimit;
     }
 
     ingest(snapshot);
@@ -266,9 +384,19 @@
     return themeOptions.some((theme) => theme.name === value);
   }
 
+  function isHistoryPointLimit(value: number): value is HistoryPointLimit {
+    return historyPointOptions.some((option) => option === value);
+  }
+
   function setTheme(name: ThemeName): void {
     themeName = name;
     window.localStorage.setItem(themeStorageKey, name);
+  }
+
+  function setHistoryPointLimit(limit: HistoryPointLimit): void {
+    historyPointLimit = limit;
+    window.localStorage.setItem(historyStorageKey, String(limit));
+    trimHistory();
   }
 
   async function setPaused(nextPaused: boolean): Promise<void> {
@@ -280,13 +408,10 @@
 
     try {
       const next = await invoke<RuntimeSnapshot>(nextPaused ? "pause_runtime" : "resume_runtime");
-      pollState = "native";
-      lastError = "";
-      commandError = "";
-      ingest(next);
+      applyNativeSnapshot(next);
     } catch (error) {
       isPaused = previousPaused;
-      commandError = error instanceof Error ? error.message : "Unable to change runtime pause state.";
+      commandError = commandErrorMessage(error, "Unable to change runtime pause state.");
     }
   }
 
@@ -299,12 +424,9 @@
 
     try {
       const next = await invoke<RuntimeSnapshot>("refresh_now");
-      pollState = "native";
-      lastError = "";
-      commandError = "";
-      ingest(next);
+      applyNativeSnapshot(next);
     } catch (error) {
-      commandError = error instanceof Error ? error.message : "Unable to refresh runtime.";
+      commandError = commandErrorMessage(error, "Unable to refresh runtime.");
     }
   }
 
@@ -315,12 +437,9 @@
 
     try {
       const next = await invoke<RuntimeSnapshot>("set_admin_mode", { enabled });
-      pollState = "native";
-      lastError = "";
-      commandError = "";
-      ingest(next);
+      applyNativeSnapshot(next);
     } catch (error) {
-      commandError = error instanceof Error ? error.message : "Unable to change admin mode.";
+      commandError = commandErrorMessage(error, "Unable to change admin mode.");
     }
   }
 
@@ -348,13 +467,21 @@
 
     try {
       const next = await invoke<RuntimeSnapshot>("set_process_query", { query });
-      pollState = "native";
-      lastError = "";
-      commandError = "";
-      ingest(next);
+      applyNativeSnapshot(next);
     } catch (error) {
-      commandError = error instanceof Error ? error.message : "Unable to update runtime query.";
+      commandError = commandErrorMessage(error, "Unable to update runtime query.");
     }
+  }
+
+  function applyNativeSnapshot(next: RuntimeSnapshot): void {
+    pollState = "native";
+    lastError = "";
+    commandError = "";
+    ingest(next);
+  }
+
+  function commandErrorMessage(error: unknown, fallback: string): string {
+    return error instanceof Error ? error.message : fallback;
   }
 
   function ingest(next: RuntimeSnapshot): void {
@@ -471,7 +598,14 @@
   }
 
   function resetHistory(): void {
-    history = {
+    history = emptyTrendState();
+    if (selectedProcess) {
+      resetProcessHistory(selectedProcess);
+    }
+  }
+
+  function emptyTrendState(): TrendState {
+    return {
       cpu: [],
       memory: [],
       swap: [],
@@ -481,13 +615,42 @@
       netTx: [],
       cores: [],
     };
-    if (selectedProcess) {
-      resetProcessHistory(selectedProcess);
-    }
+  }
+
+  function emptyProcessTrendState(): ProcessTrendState {
+    return {
+      cpu: [],
+      memory: [],
+      readRate: [],
+      writeRate: [],
+    };
+  }
+
+  function trimHistory(): void {
+    history = {
+      cpu: trimPoints(history.cpu),
+      memory: trimPoints(history.memory),
+      swap: trimPoints(history.swap),
+      diskRead: trimPoints(history.diskRead),
+      diskWrite: trimPoints(history.diskWrite),
+      netRx: trimPoints(history.netRx),
+      netTx: trimPoints(history.netTx),
+      cores: history.cores.map(trimPoints),
+    };
+    processHistory = {
+      cpu: trimPoints(processHistory.cpu),
+      memory: trimPoints(processHistory.memory),
+      readRate: trimPoints(processHistory.readRate),
+      writeRate: trimPoints(processHistory.writeRate),
+    };
+  }
+
+  function trimPoints(points: number[]): number[] {
+    return points.slice(-historyPointLimit);
   }
 
   function pushPoint(points: number[], value: number): number[] {
-    return [...points, Number.isFinite(value) ? value : 0].slice(-historyLimit);
+    return trimPoints([...points, Number.isFinite(value) ? value : 0]);
   }
 
   function byteRate(current: number, previous: number, elapsedSeconds: number): number {
@@ -584,36 +747,11 @@
   }
 
   function sortColumnForKey(key: SortKey): SortColumn {
-    switch (key) {
-      case "memory":
-        return "memory_bytes";
-      case "io":
-        return "disk_bps";
-      case "name":
-        return "name";
-      case "cpu":
-      default:
-        return "cpu_pct";
-    }
+    return sortColumnByKey[key];
   }
 
   function sortKeyForColumn(column: SortColumn): SortKey {
-    switch (column) {
-      case "memory_bytes":
-        return "memory";
-      case "disk_bps":
-        return "io";
-      case "name":
-        return "name";
-      case "attention":
-      case "pid":
-      case "cpu_pct":
-      case "threads":
-      case "handles":
-      case "start_time_ms":
-      default:
-        return "cpu";
-    }
+    return sortKeyByColumn[column] ?? "cpu";
   }
 
   function matchesSearch(process: ProcessSample, query: string): boolean {
@@ -674,7 +812,7 @@
     return source ? `${quality} / ${source}` : quality;
   }
 
-  function formatMetricQuality(value: string): string {
+  function formatMetricQuality(value: MetricQuality): string {
     switch (value) {
       case "native":
         return "Native";
@@ -691,7 +829,7 @@
     }
   }
 
-  function formatMetricSource(value: string): string {
+  function formatMetricSource(value: MetricSource): string {
     switch (value) {
       case "direct_api":
         return "direct API";
@@ -801,116 +939,23 @@
   </header>
 
   <section class="metric-band" aria-label="System metrics">
-    <button
-      class="metric-card"
-      class:active={detailMode === "cpu"}
-      type="button"
-      aria-controls="resource-detail-panel"
-      aria-label="Open CPU logical core detail"
-      onclick={() => setDetailMode("cpu")}
-    >
-      <MiniChart values={history.cpu} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
-      <span class="metric-copy" class:on-fill={needsReadoutContrast(snapshot.system.cpu_percent, 100)}>
-        <span>CPU</span>
-        <strong>{formatPercent(snapshot.system.cpu_percent)}</strong>
-        <small>Logical cores</small>
-      </span>
-    </button>
-    <button
-      class="metric-card"
-      class:active={detailMode === "memory"}
-      type="button"
-      aria-controls="resource-detail-panel"
-      aria-label="Open memory detail"
-      onclick={() => setDetailMode("memory")}
-    >
-      <MiniChart values={history.memory} max={100} stroke={activeTheme.memoryStroke} fill={activeTheme.memoryFill} />
-      <span class="metric-copy" class:on-fill={needsReadoutContrast(memoryPercent, 100)}>
-        <span>Memory</span>
-        <strong>{formatPercent(memoryPercent)}</strong>
-        <small>{formatBytes(snapshot.system.memory_used_bytes)} used</small>
-      </span>
-    </button>
-    <button
-      class="metric-card"
-      class:active={detailMode === "disk"}
-      type="button"
-      aria-controls="resource-detail-panel"
-      aria-label="Open disk detail from read throughput"
-      onclick={() => setDetailMode("disk")}
-    >
-      <MiniChart
-        values={history.diskRead}
-        max={diskScaleMax}
-        stroke={activeTheme.diskReadStroke}
-        fill={activeTheme.diskReadFill}
-      />
-      <span class="metric-copy" class:on-fill={needsReadoutContrast(diskReadRate, diskScaleMax)}>
-        <span>Disk read</span>
-        <strong>{formatRate(diskReadRate)}</strong>
-        <small>{metricQualityLabel(systemQuality.disk, "Aggregate")}</small>
-      </span>
-    </button>
-    <button
-      class="metric-card"
-      class:active={detailMode === "disk"}
-      type="button"
-      aria-controls="resource-detail-panel"
-      aria-label="Open disk detail from write throughput"
-      onclick={() => setDetailMode("disk")}
-    >
-      <MiniChart
-        values={history.diskWrite}
-        max={diskScaleMax}
-        stroke={activeTheme.diskWriteStroke}
-        fill={activeTheme.diskWriteFill}
-      />
-      <span class="metric-copy" class:on-fill={needsReadoutContrast(diskWriteRate, diskScaleMax)}>
-        <span>Disk write</span>
-        <strong>{formatRate(diskWriteRate)}</strong>
-        <small>{metricQualityLabel(systemQuality.disk, "Aggregate")}</small>
-      </span>
-    </button>
-    <button
-      class="metric-card"
-      class:active={detailMode === "network"}
-      type="button"
-      aria-controls="resource-detail-panel"
-      aria-label="Open network detail from download throughput"
-      onclick={() => setDetailMode("network")}
-    >
-      <MiniChart
-        values={history.netRx}
-        max={networkScaleMax}
-        stroke={activeTheme.networkDownStroke}
-        fill={activeTheme.networkDownFill}
-      />
-      <span class="metric-copy" class:on-fill={needsReadoutContrast(networkDownRate, networkScaleMax)}>
-        <span>Network down</span>
-        <strong>{formatRate(networkDownRate)}</strong>
-        <small>{metricQualityLabel(systemQuality.network, "Aggregate")}</small>
-      </span>
-    </button>
-    <button
-      class="metric-card"
-      class:active={detailMode === "network"}
-      type="button"
-      aria-controls="resource-detail-panel"
-      aria-label="Open network detail from upload throughput"
-      onclick={() => setDetailMode("network")}
-    >
-      <MiniChart
-        values={history.netTx}
-        max={networkScaleMax}
-        stroke={activeTheme.networkUpStroke}
-        fill={activeTheme.networkUpFill}
-      />
-      <span class="metric-copy" class:on-fill={needsReadoutContrast(networkUpRate, networkScaleMax)}>
-        <span>Network up</span>
-        <strong>{formatRate(networkUpRate)}</strong>
-        <small>{metricQualityLabel(systemQuality.network, "Aggregate")}</small>
-      </span>
-    </button>
+    {#each metricCards as card (card.ariaLabel)}
+      <button
+        class="metric-card"
+        class:active={detailMode === card.mode}
+        type="button"
+        aria-controls="resource-detail-panel"
+        aria-label={card.ariaLabel}
+        onclick={() => setDetailMode(card.mode)}
+      >
+        <MiniChart values={card.values} max={card.max} stroke={card.stroke} fill={card.fill} />
+        <span class="metric-copy" class:on-fill={needsReadoutContrast(card.contrastValue, card.max)}>
+          <span>{card.label}</span>
+          <strong>{card.value}</strong>
+          <small>{card.sublabel}</small>
+        </span>
+      </button>
+    {/each}
   </section>
 
   <section class="triage-grid">
@@ -1153,67 +1198,31 @@
     <div class="control-group focus-group">
       <span>Focus</span>
       <div class="segmented" role="group" aria-label="Process focus">
-        <button
-          class:active={focusMode === "all"}
-          type="button"
-          aria-pressed={focusMode === "all"}
-          onclick={() => (focusMode = "all")}
-        >
-          All
-        </button>
-        <button
-          class:active={focusMode === "active"}
-          type="button"
-          aria-pressed={focusMode === "active"}
-          onclick={() => (focusMode = "active")}
-        >
-          Active
-        </button>
-        <button
-          class:active={focusMode === "io"}
-          type="button"
-          aria-pressed={focusMode === "io"}
-          onclick={() => (focusMode = "io")}
-        >
-          I/O
-        </button>
+        {#each focusOptions as option}
+          <button
+            class:active={focusMode === option.value}
+            type="button"
+            aria-pressed={focusMode === option.value}
+            onclick={() => (focusMode = option.value)}
+          >
+            {option.label}
+          </button>
+        {/each}
       </div>
     </div>
     <div class="control-group sort-group">
       <span>Sort</span>
       <div class="segmented" role="group" aria-label="Process sort">
-        <button
-          class:active={sortKey === "cpu"}
-          type="button"
-          aria-pressed={sortKey === "cpu"}
-          onclick={() => setSortKey("cpu")}
-        >
-          CPU
-        </button>
-        <button
-          class:active={sortKey === "memory"}
-          type="button"
-          aria-pressed={sortKey === "memory"}
-          onclick={() => setSortKey("memory")}
-        >
-          Memory
-        </button>
-        <button
-          class:active={sortKey === "io"}
-          type="button"
-          aria-pressed={sortKey === "io"}
-          onclick={() => setSortKey("io")}
-        >
-          I/O
-        </button>
-        <button
-          class:active={sortKey === "name"}
-          type="button"
-          aria-pressed={sortKey === "name"}
-          onclick={() => setSortKey("name")}
-        >
-          Name
-        </button>
+        {#each sortOptions as option}
+          <button
+            class:active={sortKey === option.value}
+            type="button"
+            aria-pressed={sortKey === option.value}
+            onclick={() => setSortKey(option.value)}
+          >
+            {option.label}
+          </button>
+        {/each}
       </div>
     </div>
     <div class="control-group refresh-group">
@@ -1227,6 +1236,22 @@
             onclick={() => (pollIntervalMs = interval)}
           >
             {formatInterval(interval)}
+          </button>
+        {/each}
+      </div>
+    </div>
+    <div class="control-group history-group">
+      <span>History</span>
+      <div class="segmented" role="group" aria-label="Chart history length">
+        {#each historyPointOptions as option}
+          <button
+            class:active={historyPointLimit === option}
+            type="button"
+            aria-pressed={historyPointLimit === option}
+            aria-label={`Show last ${option} chart samples`}
+            onclick={() => setHistoryPointLimit(option)}
+          >
+            {option}
           </button>
         {/each}
       </div>
@@ -1252,29 +1277,9 @@
       <div class="panel-heading">
         <div>
           <p class="eyebrow">Detail view</p>
-          <h2>
-            {#if detailMode === "cpu"}
-              Logical cores
-            {:else if detailMode === "memory"}
-              Memory detail
-            {:else if detailMode === "disk"}
-              Disk throughput
-            {:else}
-              Network throughput
-            {/if}
-          </h2>
+          <h2>{detailTitle}</h2>
         </div>
-        <strong>
-          {#if detailMode === "cpu"}
-            {formatPercent(coreAverage)} avg
-          {:else if detailMode === "memory"}
-            {formatPercent(memoryPercent)} used
-          {:else if detailMode === "disk"}
-            {formatRate(diskReadRate + diskWriteRate)}
-          {:else}
-            {formatRate(networkDownRate + networkUpRate)}
-          {/if}
-        </strong>
+        <strong>{detailReadout}</strong>
       </div>
       {#if detailMode === "cpu"}
         <div class="detail-summary" aria-label="CPU distribution summary">

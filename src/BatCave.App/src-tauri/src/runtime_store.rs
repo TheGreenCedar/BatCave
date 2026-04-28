@@ -2,9 +2,10 @@ use std::{
     cmp::Ordering, collections::VecDeque, env, fs, path::PathBuf, sync::Mutex, time::Instant,
 };
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 
 use crate::{
+    atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
         ProcessSample, RuntimeHealth, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
         RuntimeWarning, SortColumn, SortDirection, SystemMetricsSnapshot, WarmCache,
@@ -20,6 +21,13 @@ const MAX_WARNINGS: usize = 16;
 const WARM_CACHE_WRITE_INTERVAL_TICKS: u64 = 10;
 const APP_CPU_DEGRADE_PCT: f64 = 6.0;
 const APP_RSS_DEGRADE_BYTES: u64 = 350 * 1024 * 1024;
+const PERSISTENCE_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
+    write_failed: "persistence_write_failed",
+    serialize_failed: "persistence_serialize_failed",
+    replace_failed: "persistence_replace_failed",
+    rename_failed: "persistence_rename_failed",
+    serialize_error_includes_path: true,
+};
 
 pub struct RuntimeState {
     store: Mutex<RuntimeStore>,
@@ -294,9 +302,12 @@ impl RuntimeStore {
         let sort_ms = sort_started.elapsed().as_secs_f64() * 1000.0;
         self.sort_p95.add(sort_ms);
 
-        let app_cpu_percent = current_app_cpu(&self.previous_processes);
-        let app_rss_bytes = current_app_rss(&self.previous_processes);
-        let health = self.build_health(sample.latency_ms, app_cpu_percent, app_rss_bytes);
+        let app_metrics = current_app_metrics(&self.previous_processes);
+        let health = self.build_health(
+            sample.latency_ms,
+            app_metrics.cpu_percent,
+            app_metrics.rss_bytes,
+        );
         self.snapshot = build_snapshot(
             self.seq,
             now_ms(),
@@ -321,11 +332,8 @@ impl RuntimeStore {
             self.add_warning("runtime", message.to_string());
         }
 
-        let health = self.build_health(
-            0,
-            current_app_cpu(&self.previous_processes),
-            current_app_rss(&self.previous_processes),
-        );
+        let app_metrics = current_app_metrics(&self.previous_processes);
+        let health = self.build_health(0, app_metrics.cpu_percent, app_metrics.rss_bytes);
         let rows = shape_rows(&self.previous_processes, &self.settings.query);
         self.snapshot = build_snapshot(
             self.seq,
@@ -387,7 +395,11 @@ impl RuntimeStore {
     }
 
     fn persist_settings(&mut self) {
-        if let Err(error) = write_json_atomic(&self.base_dir.join(SETTINGS_FILE), &self.settings) {
+        if let Err(error) = write_json_atomic(
+            &self.base_dir.join(SETTINGS_FILE),
+            &self.settings,
+            PERSISTENCE_JSON_ERRORS,
+        ) {
             self.add_warning("persistence", error);
         }
     }
@@ -397,7 +409,11 @@ impl RuntimeStore {
             seq: self.seq,
             rows: self.previous_processes.clone(),
         };
-        if let Err(error) = write_json_atomic(&self.base_dir.join(WARM_CACHE_FILE), &cache) {
+        if let Err(error) = write_json_atomic(
+            &self.base_dir.join(WARM_CACHE_FILE),
+            &cache,
+            PERSISTENCE_JSON_ERRORS,
+        ) {
             self.add_warning("persistence", error);
         }
     }
@@ -445,6 +461,12 @@ impl TelemetryTotals {
 struct P95Window {
     values: VecDeque<f64>,
     capacity: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CurrentAppMetrics {
+    cpu_percent: f64,
+    rss_bytes: u64,
 }
 
 impl P95Window {
@@ -657,21 +679,15 @@ fn empty_system() -> SystemMetricsSnapshot {
     }
 }
 
-fn current_app_cpu(processes: &[ProcessSample]) -> f64 {
+fn current_app_metrics(processes: &[ProcessSample]) -> CurrentAppMetrics {
     let current_pid = std::process::id().to_string();
     processes
         .iter()
         .find(|process| process.pid == current_pid)
-        .map(|process| process.cpu_percent)
-        .unwrap_or_default()
-}
-
-fn current_app_rss(processes: &[ProcessSample]) -> u64 {
-    let current_pid = std::process::id().to_string();
-    processes
-        .iter()
-        .find(|process| process.pid == current_pid)
-        .map(|process| process.memory_bytes)
+        .map(|process| CurrentAppMetrics {
+            cpu_percent: process.cpu_percent,
+            rss_bytes: process.memory_bytes,
+        })
         .unwrap_or_default()
 }
 
@@ -702,58 +718,6 @@ fn read_json<T: DeserializeOwned>(path: &PathBuf) -> Result<T, Option<String>> {
             path.display(),
             error
         ))
-    })
-}
-
-fn write_json_atomic<T: Serialize>(path: &PathBuf, value: &T) -> Result<(), String> {
-    let Some(parent) = path.parent() else {
-        return Err(format!(
-            "persistence_write_failed path={} error=MissingParent",
-            path.display()
-        ));
-    };
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "persistence_write_failed path={} error={}",
-            parent.display(),
-            error
-        )
-    })?;
-    let temp_path = path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("json")
-    ));
-    let payload = serde_json::to_string(value).map_err(|error| {
-        format!(
-            "persistence_serialize_failed path={} error={}",
-            path.display(),
-            error
-        )
-    })?;
-    fs::write(&temp_path, payload).map_err(|error| {
-        format!(
-            "persistence_write_failed path={} error={}",
-            temp_path.display(),
-            error
-        )
-    })?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| {
-            format!(
-                "persistence_replace_failed path={} error={}",
-                path.display(),
-                error
-            )
-        })?;
-    }
-    fs::rename(&temp_path, path).map_err(|error| {
-        format!(
-            "persistence_rename_failed path={} error={}",
-            path.display(),
-            error
-        )
     })
 }
 

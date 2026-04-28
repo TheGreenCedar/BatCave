@@ -108,6 +108,23 @@ pub struct MetricQualityInfo {
     pub message: Option<String>,
 }
 
+impl MetricQualityInfo {
+    pub fn new(quality: MetricQuality, source: MetricSource) -> Self {
+        Self {
+            quality,
+            source: Some(source),
+            updated_at_ms: None,
+            age_ms: None,
+            message: None,
+        }
+    }
+
+    pub fn with_message(mut self, message: &str) -> Self {
+        self.message = Some(message.to_string());
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct SystemMetricQuality {
@@ -339,16 +356,31 @@ mod tests {
                 network_received_bps: 500,
                 network_transmitted_bps: 600,
                 quality: Some(SystemMetricQuality {
-                    cpu: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
-                    kernel_cpu: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
-                    logical_cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
-                    memory: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
-                    swap: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
-                    disk: Some(quality(
+                    cpu: Some(MetricQualityInfo::new(
+                        MetricQuality::Native,
+                        MetricSource::DirectApi,
+                    )),
+                    kernel_cpu: Some(MetricQualityInfo::new(
+                        MetricQuality::Native,
+                        MetricSource::DirectApi,
+                    )),
+                    logical_cpu: Some(MetricQualityInfo::new(
+                        MetricQuality::Estimated,
+                        MetricSource::Sysinfo,
+                    )),
+                    memory: Some(MetricQualityInfo::new(
+                        MetricQuality::Native,
+                        MetricSource::DirectApi,
+                    )),
+                    swap: Some(MetricQualityInfo::new(
+                        MetricQuality::Native,
+                        MetricSource::DirectApi,
+                    )),
+                    disk: Some(MetricQualityInfo::new(
                         MetricQuality::Partial,
                         MetricSource::ProcessAggregate,
                     )),
-                    network: Some(quality(
+                    network: Some(MetricQualityInfo::new(
                         MetricQuality::Native,
                         MetricSource::InterfaceAggregate,
                     )),
@@ -366,7 +398,7 @@ mod tests {
 
         let actual = serde_json::to_value(snapshot).expect("snapshot serializes");
 
-        let expected: serde_json::Value = serde_json::from_str(
+        let mut expected: serde_json::Value = serde_json::from_str(
             r#"{
                 "event_kind": "snapshot",
                 "seq": 42,
@@ -429,39 +461,7 @@ mod tests {
                         "network": { "quality": "native", "source": "interface_aggregate" }
                     }
                 },
-                "processes": [{
-                    "pid": "1234",
-                    "parent_pid": "1000",
-                    "start_time_ms": 1699999999000,
-                    "name": "BatCave.App",
-                    "exe": "C:\\Program Files\\BatCave\\BatCave.App.exe",
-                    "status": "run",
-                    "cpu_percent": 8.25,
-                    "kernel_cpu_percent": 1.5,
-                    "memory_bytes": 65536,
-                    "private_bytes": 32768,
-                    "virtual_memory_bytes": 131072,
-                    "disk_read_total_bytes": 123,
-                    "disk_write_total_bytes": 456,
-                    "other_io_total_bytes": 789,
-                    "disk_read_bps": 7,
-                    "disk_write_bps": 8,
-                    "other_io_bps": 9,
-                    "network_received_bps": 0,
-                    "network_transmitted_bps": 0,
-                    "threads": 9,
-                    "handles": 10,
-                    "access_state": "partial",
-                    "quality": {
-                        "cpu": { "quality": "estimated", "source": "sysinfo" },
-                        "memory": { "quality": "native", "source": "direct_api" },
-                        "disk": { "quality": "native", "source": "direct_api" },
-                        "other_io": { "quality": "native", "source": "direct_api" },
-                        "network": { "quality": "unavailable", "source": "etw", "message": "Waiting for ETW network attribution." },
-                        "threads": { "quality": "native", "source": "direct_api" },
-                        "handles": { "quality": "partial", "source": "direct_api" }
-                    }
-                }],
+                "processes": [],
                 "total_process_count": 1,
                 "warnings": [{
                     "seq": 41,
@@ -472,6 +472,7 @@ mod tests {
             }"#,
         )
         .expect("expected JSON parses");
+        expected["processes"] = json!([sample_process_json()]);
 
         assert_eq!(actual, expected);
     }
@@ -575,15 +576,5 @@ mod tests {
                 "handles": { "quality": "partial", "source": "direct_api" }
             }
         })
-    }
-
-    fn quality(quality: MetricQuality, source: MetricSource) -> MetricQualityInfo {
-        MetricQualityInfo {
-            quality,
-            source: Some(source),
-            updated_at_ms: None,
-            age_ms: None,
-            message: None,
-        }
     }
 }

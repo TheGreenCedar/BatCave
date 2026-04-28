@@ -5,7 +5,7 @@ use std::{
 
 use serde::Serialize;
 
-use crate::telemetry::TelemetryCollector;
+use crate::{cli_args, telemetry::TelemetryCollector};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,52 +101,38 @@ fn reject_unknown_args(args: &[String]) -> Result<(), String> {
         "--max-p95-ms",
     ];
     let known_flags = ["--benchmark", "--strict"];
-    let mut index = 0;
-    while index < args.len() {
-        let arg = &args[index];
-        if known_flags.contains(&arg.as_str()) {
-            index += 1;
-        } else if known_with_value.contains(&arg.as_str()) {
-            if index + 1 >= args.len() {
-                return Err(format!("missing_value_for_argument:{arg}"));
-            }
-            if args[index + 1].starts_with("--") {
-                return Err(format!("missing_value_for_argument:{arg}"));
-            }
-            index += 2;
-        } else {
-            return Err(format!("unknown_argument:{arg}"));
-        }
-    }
-
-    Ok(())
+    cli_args::reject_unknown_args(args, &known_with_value, &known_flags)
 }
 
 fn parse_usize(args: &[String], name: &str, default: usize) -> Result<usize, String> {
-    parse_optional_string(args, name)?
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .map_err(|error| format!("invalid_argument:{name}:{error}"))
-        })
-        .unwrap_or(Ok(default))
+    parse_value(args, name, default)
 }
 
 fn parse_u64(args: &[String], name: &str, default: u64) -> Result<u64, String> {
-    parse_optional_string(args, name)?
-        .map(|value| {
-            value
-                .parse::<u64>()
-                .map_err(|error| format!("invalid_argument:{name}:{error}"))
-        })
-        .unwrap_or(Ok(default))
+    parse_value(args, name, default)
 }
 
 fn parse_optional_f64(args: &[String], name: &str) -> Result<Option<f64>, String> {
+    parse_optional_value(args, name)
+}
+
+fn parse_value<T>(args: &[String], name: &str, default: T) -> Result<T, String>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    Ok(parse_optional_value(args, name)?.unwrap_or(default))
+}
+
+fn parse_optional_value<T>(args: &[String], name: &str) -> Result<Option<T>, String>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
     parse_optional_string(args, name)?
         .map(|value| {
             value
-                .parse::<f64>()
+                .parse::<T>()
                 .map_err(|error| format!("invalid_argument:{name}:{error}"))
         })
         .transpose()

@@ -11,11 +11,20 @@ use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
+    cli_args,
     contracts::ProcessSample,
     telemetry::{now_ms, TelemetryCollector},
 };
 
 const HELPER_INTERVAL_MS: u64 = 500;
+const ADMIN_SNAPSHOT_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
+    write_failed: "admin_mode_snapshot_write_failed",
+    serialize_failed: "admin_mode_snapshot_serialize_failed",
+    replace_failed: "admin_mode_snapshot_replace_failed",
+    rename_failed: "admin_mode_snapshot_rename_failed",
+    serialize_error_includes_path: false,
+};
 
 #[derive(Debug, Clone)]
 pub struct ElevatedHelperClient {
@@ -150,45 +159,7 @@ fn write_snapshot(
         seq,
         rows,
     };
-    let Some(parent) = data_file.parent() else {
-        return Err(format!(
-            "admin_mode_snapshot_write_failed path={} error=MissingParent",
-            data_file.display()
-        ));
-    };
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "admin_mode_snapshot_write_failed path={} error={}",
-            parent.display(),
-            error
-        )
-    })?;
-    let temp_file = data_file.with_extension("json.tmp");
-    let payload = serde_json::to_string(&snapshot)
-        .map_err(|error| format!("admin_mode_snapshot_serialize_failed:{error}"))?;
-    fs::write(&temp_file, payload).map_err(|error| {
-        format!(
-            "admin_mode_snapshot_write_failed path={} error={}",
-            temp_file.display(),
-            error
-        )
-    })?;
-    if data_file.exists() {
-        fs::remove_file(data_file).map_err(|error| {
-            format!(
-                "admin_mode_snapshot_replace_failed path={} error={}",
-                data_file.display(),
-                error
-            )
-        })?;
-    }
-    fs::rename(&temp_file, data_file).map_err(|error| {
-        format!(
-            "admin_mode_snapshot_rename_failed path={} error={}",
-            data_file.display(),
-            error
-        )
-    })
+    write_json_atomic(data_file, &snapshot, ADMIN_SNAPSHOT_JSON_ERRORS)
 }
 
 fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
@@ -203,25 +174,7 @@ fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
 fn reject_unknown_helper_args(args: &[String]) -> Result<(), String> {
     let known_with_value = ["--data-file", "--stop-file", "--token"];
     let known_flags = ["--elevated-helper"];
-    let mut index = 0;
-    while index < args.len() {
-        let arg = &args[index];
-        if known_flags.contains(&arg.as_str()) {
-            index += 1;
-        } else if known_with_value.contains(&arg.as_str()) {
-            if index + 1 >= args.len() {
-                return Err(format!("missing_value_for_argument:{arg}"));
-            }
-            if args[index + 1].starts_with("--") {
-                return Err(format!("missing_value_for_argument:{arg}"));
-            }
-            index += 2;
-        } else {
-            return Err(format!("unknown_argument:{arg}"));
-        }
-    }
-
-    Ok(())
+    cli_args::reject_unknown_args(args, &known_with_value, &known_flags)
 }
 
 fn required_value(args: &[String], name: &str) -> Result<String, String> {

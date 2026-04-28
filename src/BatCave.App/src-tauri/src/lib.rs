@@ -1,4 +1,6 @@
+mod atomic_json;
 mod benchmark;
+mod cli_args;
 mod contracts;
 mod elevation;
 mod runtime_store;

@@ -325,7 +325,7 @@ fn filetime_to_unix_ms(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
 }
 
 fn filetime_100ns_to_unix_ms(value: u64) -> u64 {
-    saturating_subtract(value, FILETIME_UNIX_EPOCH_100NS) / FILETIME_100NS_PER_MS
+    value.saturating_sub(FILETIME_UNIX_EPOCH_100NS) / FILETIME_100NS_PER_MS
 }
 
 fn resolve_access_state(successes: usize, failures: usize) -> AccessState {
@@ -336,10 +336,6 @@ fn resolve_access_state(successes: usize, failures: usize) -> AccessState {
     } else {
         AccessState::Partial
     }
-}
-
-fn saturating_subtract(left: u64, right: u64) -> u64 {
-    left.saturating_sub(right)
 }
 
 #[cfg(windows)]
@@ -380,12 +376,6 @@ mod tests {
             resolve_access_state(0, PROCESS_PROBE_COUNT),
             AccessState::Denied
         );
-    }
-
-    #[test]
-    fn saturating_subtract_never_underflows() {
-        assert_eq!(saturating_subtract(4, 7), 0);
-        assert_eq!(saturating_subtract(7, 4), 3);
     }
 
     #[cfg(windows)]
