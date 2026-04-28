@@ -3,7 +3,14 @@
   import { onMount } from "svelte";
   import MiniChart from "./lib/MiniChart.svelte";
   import { makeFixtureSnapshot } from "./lib/fixtures";
-  import type { ProcessSample, RuntimeSnapshot, TrendState } from "./lib/types";
+  import type {
+    MetricQualityInfo,
+    ProcessSample,
+    RuntimeQuery,
+    RuntimeSnapshot,
+    SortColumn,
+    TrendState,
+  } from "./lib/types";
 
   type FocusMode = "all" | "active" | "io";
   type SortKey = "cpu" | "memory" | "io" | "name";
@@ -42,6 +49,7 @@
   interface ProcessRates {
     readRate: number;
     writeRate: number;
+    otherRate: number;
   }
 
   interface CoreLoad {
@@ -131,7 +139,9 @@
   let selectedPid = snapshot.processes[0]?.pid ?? "";
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
+  let commandError = "";
   let isPaused = false;
+  let hasHydratedRuntimeSettings = false;
   let pollIntervalMs: (typeof pollIntervals)[number] = 1000;
   let searchText = "";
   let focusMode: FocusMode = "all";
@@ -166,8 +176,15 @@
     .sort((left, right) => compareProcesses(left, right, sortKey));
   $: selectedProcess = filteredProcesses.find((process) => process.pid === selectedPid) ?? null;
   $: topProcess = filteredProcesses[0] ?? null;
-  $: warnings = snapshot.warnings.length > 0 ? snapshot.warnings : lastError ? [lastError] : [];
-  $: sourceLabel = snapshot.source === "tauri_sysinfo" ? "native telemetry" : "fixture demo";
+  $: warnings =
+    snapshot.warnings.length > 0 ? snapshot.warnings.map((warning) => warning.message) : lastError ? [lastError] : [];
+  $: sourceLabel =
+    snapshot.source === "batcave_runtime" ||
+    snapshot.source === "tauri_runtime" ||
+    snapshot.source === "tauri_sysinfo"
+      ? "native telemetry"
+      : "fixture demo";
+  $: systemQuality = snapshot.system.quality ?? {};
   $: diskReadRate = history.diskRead.at(-1) ?? 0;
   $: diskWriteRate = history.diskWrite.at(-1) ?? 0;
   $: networkDownRate = history.netRx.at(-1) ?? 0;
@@ -254,39 +271,127 @@
     window.localStorage.setItem(themeStorageKey, name);
   }
 
+  async function setPaused(nextPaused: boolean): Promise<void> {
+    const previousPaused = isPaused;
+    isPaused = nextPaused;
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    try {
+      const next = await invoke<RuntimeSnapshot>(nextPaused ? "pause_runtime" : "resume_runtime");
+      pollState = "native";
+      lastError = "";
+      commandError = "";
+      ingest(next);
+    } catch (error) {
+      isPaused = previousPaused;
+      commandError = error instanceof Error ? error.message : "Unable to change runtime pause state.";
+    }
+  }
+
+  async function refreshNow(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      fixtureTick += 1;
+      ingest(makeFixtureSnapshot(fixtureTick));
+      return;
+    }
+
+    try {
+      const next = await invoke<RuntimeSnapshot>("refresh_now");
+      pollState = "native";
+      lastError = "";
+      commandError = "";
+      ingest(next);
+    } catch (error) {
+      commandError = error instanceof Error ? error.message : "Unable to refresh runtime.";
+    }
+  }
+
+  async function setAdminMode(enabled: boolean): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    try {
+      const next = await invoke<RuntimeSnapshot>("set_admin_mode", { enabled });
+      pollState = "native";
+      lastError = "";
+      commandError = "";
+      ingest(next);
+    } catch (error) {
+      commandError = error instanceof Error ? error.message : "Unable to change admin mode.";
+    }
+  }
+
+  function setSortKey(key: SortKey): void {
+    sortKey = key;
+    void syncRuntimeQuery();
+  }
+
+  function setSearchText(value: string): void {
+    searchText = value;
+    void syncRuntimeQuery();
+  }
+
+  async function syncRuntimeQuery(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    const query: RuntimeQuery = {
+      filter_text: searchText,
+      sort_column: sortColumnForKey(sortKey),
+      sort_direction: sortKey === "name" ? "asc" : "desc",
+      limit: 5000,
+    };
+
+    try {
+      const next = await invoke<RuntimeSnapshot>("set_process_query", { query });
+      pollState = "native";
+      lastError = "";
+      commandError = "";
+      ingest(next);
+    } catch (error) {
+      commandError = error instanceof Error ? error.message : "Unable to update runtime query.";
+    }
+  }
+
   function ingest(next: RuntimeSnapshot): void {
     const previous = snapshot;
+    hydrateRuntimeControls(next);
     const previousProcess = previous.processes.find((process) => process.pid === selectedPid);
     const nextProcess = selectedPid ? next.processes.find((process) => process.pid === selectedPid) : next.processes[0];
     const elapsedSeconds = Math.max(0.5, (next.ts_ms - previous.ts_ms) / 1000);
-    const diskRead = byteRate(next.system.disk_read_total_bytes, previous.system.disk_read_total_bytes, elapsedSeconds);
-    const diskWrite = byteRate(
-      next.system.disk_write_total_bytes,
-      previous.system.disk_write_total_bytes,
-      elapsedSeconds,
-    );
-    const netRx = byteRate(
-      next.system.network_received_total_bytes,
-      previous.system.network_received_total_bytes,
-      elapsedSeconds,
-    );
-    const netTx = byteRate(
-      next.system.network_transmitted_total_bytes,
-      previous.system.network_transmitted_total_bytes,
-      elapsedSeconds,
-    );
+    const diskRead =
+      next.system.disk_read_bps ||
+      byteRate(next.system.disk_read_total_bytes, previous.system.disk_read_total_bytes, elapsedSeconds);
+    const diskWrite =
+      next.system.disk_write_bps ||
+      byteRate(next.system.disk_write_total_bytes, previous.system.disk_write_total_bytes, elapsedSeconds);
+    const netRx =
+      next.system.network_received_bps ||
+      byteRate(next.system.network_received_total_bytes, previous.system.network_received_total_bytes, elapsedSeconds);
+    const netTx =
+      next.system.network_transmitted_bps ||
+      byteRate(
+        next.system.network_transmitted_total_bytes,
+        previous.system.network_transmitted_total_bytes,
+        elapsedSeconds,
+      );
     const logicalCpu = next.system.logical_cpu_percent.length
       ? next.system.logical_cpu_percent
       : [next.system.cpu_percent];
     const nextMemoryPercent = percentage(next.system.memory_used_bytes, next.system.memory_total_bytes);
     const nextSwapPercent = percentage(next.system.swap_used_bytes, next.system.swap_total_bytes);
     processRates = buildProcessRates(previous.processes, next.processes, elapsedSeconds);
+    isPaused = next.settings.paused;
 
     if (!selectedPid && nextProcess) {
       selectedPid = nextProcess.pid;
       resetProcessHistory(nextProcess);
     } else if (nextProcess) {
-      const nextRates = processRates[nextProcess.pid] ?? { readRate: 0, writeRate: 0 };
+      const nextRates = processRates[nextProcess.pid] ?? { readRate: 0, writeRate: 0, otherRate: 0 };
       processHistory = {
         cpu: pushPoint(processHistory.cpu, nextProcess.cpu_percent),
         memory: pushPoint(
@@ -316,6 +421,17 @@
       netTx: pushPoint(history.netTx, netTx),
       cores: logicalCpu.map((value, index) => pushPoint(history.cores[index] ?? [], value)),
     };
+  }
+
+  function hydrateRuntimeControls(next: RuntimeSnapshot): void {
+    if (next.source === "fixture" || hasHydratedRuntimeSettings) {
+      return;
+    }
+
+    searchText = next.settings.query.filter_text;
+    sortKey = sortKeyForColumn(next.settings.query.sort_column);
+    isPaused = next.settings.paused;
+    hasHydratedRuntimeSettings = true;
   }
 
   function selectProcess(pid: string): void {
@@ -389,16 +505,23 @@
     for (const process of nextProcesses) {
       const previousProcess = previousByPid.get(process.pid);
       rates[process.pid] = {
-        readRate: byteRate(
-          process.disk_read_total_bytes,
-          previousProcess?.disk_read_total_bytes ?? process.disk_read_total_bytes,
-          elapsedSeconds,
-        ),
-        writeRate: byteRate(
-          process.disk_write_total_bytes,
-          previousProcess?.disk_write_total_bytes ?? process.disk_write_total_bytes,
-          elapsedSeconds,
-        ),
+        readRate:
+          process.disk_read_bps ||
+          byteRate(
+            process.disk_read_total_bytes,
+            previousProcess?.disk_read_total_bytes ?? process.disk_read_total_bytes,
+            elapsedSeconds,
+          ),
+        otherRate:
+          process.other_io_bps ??
+          byteRate(process.other_io_total_bytes ?? 0, previousProcess?.other_io_total_bytes ?? 0, elapsedSeconds),
+        writeRate:
+          process.disk_write_bps ||
+          byteRate(
+            process.disk_write_total_bytes,
+            previousProcess?.disk_write_total_bytes ?? process.disk_write_total_bytes,
+            elapsedSeconds,
+          ),
       };
     }
 
@@ -443,7 +566,7 @@
 
   function processIoRate(process: ProcessSample): number {
     const rates = processRates[process.pid];
-    return (rates?.readRate ?? 0) + (rates?.writeRate ?? 0);
+    return (rates?.readRate ?? 0) + (rates?.writeRate ?? 0) + (rates?.otherRate ?? 0);
   }
 
   function compareProcesses(left: ProcessSample, right: ProcessSample, key: SortKey): number {
@@ -457,6 +580,39 @@
       case "cpu":
       default:
         return right.cpu_percent - left.cpu_percent || right.memory_bytes - left.memory_bytes;
+    }
+  }
+
+  function sortColumnForKey(key: SortKey): SortColumn {
+    switch (key) {
+      case "memory":
+        return "memory_bytes";
+      case "io":
+        return "disk_bps";
+      case "name":
+        return "name";
+      case "cpu":
+      default:
+        return "cpu_pct";
+    }
+  }
+
+  function sortKeyForColumn(column: SortColumn): SortKey {
+    switch (column) {
+      case "memory_bytes":
+        return "memory";
+      case "disk_bps":
+        return "io";
+      case "name":
+        return "name";
+      case "attention":
+      case "pid":
+      case "cpu_pct":
+      case "threads":
+      case "handles":
+      case "start_time_ms":
+      default:
+        return "cpu";
     }
   }
 
@@ -506,6 +662,66 @@
 
   function formatInterval(value: number): string {
     return value < 1000 ? `${value} ms` : `${value / 1000}s`;
+  }
+
+  function metricQualityLabel(metric: MetricQualityInfo | undefined, fallback: string): string {
+    if (!metric) {
+      return fallback;
+    }
+
+    const quality = formatMetricQuality(metric.quality);
+    const source = metric.source ? formatMetricSource(metric.source) : "";
+    return source ? `${quality} / ${source}` : quality;
+  }
+
+  function formatMetricQuality(value: string): string {
+    switch (value) {
+      case "native":
+        return "Native";
+      case "estimated":
+        return "Estimated";
+      case "held":
+        return "Held";
+      case "partial":
+        return "Partial";
+      case "unavailable":
+        return "Unavailable";
+      default:
+        return value;
+    }
+  }
+
+  function formatMetricSource(value: string): string {
+    switch (value) {
+      case "direct_api":
+        return "direct API";
+      case "interface_aggregate":
+        return "interface aggregate";
+      case "process_aggregate":
+        return "process aggregate";
+      default:
+        return value.replaceAll("_", " ");
+    }
+  }
+
+  function accessLabel(process: ProcessSample): string {
+    if (process.access_state === "full") {
+      return "Full";
+    }
+
+    return process.access_state === "partial" ? "Partial" : "Denied";
+  }
+
+  function processNetworkLabel(process: ProcessSample): string {
+    const quality = process.quality?.network;
+    const rate = (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
+
+    if (rate > 0 && quality?.quality !== "unavailable") {
+      const suffix = quality ? ` ${metricQualityLabel(quality, "")}` : "";
+      return `${formatRate(rate)}${suffix}`;
+    }
+
+    return metricQualityLabel(quality, "Unavailable");
   }
 
   function processAccent(process: ProcessSample | undefined): string {
@@ -632,7 +848,7 @@
       <span class="metric-copy" class:on-fill={needsReadoutContrast(diskReadRate, diskScaleMax)}>
         <span>Disk read</span>
         <strong>{formatRate(diskReadRate)}</strong>
-        <small>Open disk view</small>
+        <small>{metricQualityLabel(systemQuality.disk, "Aggregate")}</small>
       </span>
     </button>
     <button
@@ -652,7 +868,7 @@
       <span class="metric-copy" class:on-fill={needsReadoutContrast(diskWriteRate, diskScaleMax)}>
         <span>Disk write</span>
         <strong>{formatRate(diskWriteRate)}</strong>
-        <small>Open disk view</small>
+        <small>{metricQualityLabel(systemQuality.disk, "Aggregate")}</small>
       </span>
     </button>
     <button
@@ -672,7 +888,7 @@
       <span class="metric-copy" class:on-fill={needsReadoutContrast(networkDownRate, networkScaleMax)}>
         <span>Network down</span>
         <strong>{formatRate(networkDownRate)}</strong>
-        <small>Open network view</small>
+        <small>{metricQualityLabel(systemQuality.network, "Aggregate")}</small>
       </span>
     </button>
     <button
@@ -692,7 +908,7 @@
       <span class="metric-copy" class:on-fill={needsReadoutContrast(networkUpRate, networkScaleMax)}>
         <span>Network up</span>
         <strong>{formatRate(networkUpRate)}</strong>
-        <small>Open network view</small>
+        <small>{metricQualityLabel(systemQuality.network, "Aggregate")}</small>
       </span>
     </button>
   </section>
@@ -856,16 +1072,36 @@
             <dd>{selectedProcess.pid}</dd>
           </div>
           <div>
+            <dt>Parent</dt>
+            <dd>{selectedProcess.parent_pid ?? "--"}</dd>
+          </div>
+          <div>
             <dt>CPU</dt>
             <dd>{formatPercent(selectedProcess.cpu_percent)}</dd>
+          </div>
+          <div>
+            <dt>Kernel CPU</dt>
+            <dd>
+              {selectedProcess.kernel_cpu_percent === undefined
+                ? "--"
+                : formatPercent(selectedProcess.kernel_cpu_percent)}
+            </dd>
           </div>
           <div>
             <dt>Memory</dt>
             <dd>{formatBytes(selectedProcess.memory_bytes)}</dd>
           </div>
           <div>
+            <dt>Private</dt>
+            <dd>{formatBytes(selectedProcess.private_bytes)}</dd>
+          </div>
+          <div>
             <dt>Write rate</dt>
             <dd>{formatRate(processWriteRate)}</dd>
+          </div>
+          <div>
+            <dt>Other I/O</dt>
+            <dd>{formatRate(processRates[selectedProcess.pid]?.otherRate ?? selectedProcess.other_io_bps ?? 0)}</dd>
           </div>
           <div>
             <dt>Read total</dt>
@@ -874,6 +1110,22 @@
           <div>
             <dt>Write total</dt>
             <dd>{formatBytes(selectedProcess.disk_write_total_bytes)}</dd>
+          </div>
+          <div>
+            <dt>Threads</dt>
+            <dd>{selectedProcess.threads || "--"}</dd>
+          </div>
+          <div>
+            <dt>Handles</dt>
+            <dd>{selectedProcess.handles || "--"}</dd>
+          </div>
+          <div>
+            <dt>Access</dt>
+            <dd>{accessLabel(selectedProcess)}</dd>
+          </div>
+          <div>
+            <dt>Network</dt>
+            <dd>{processNetworkLabel(selectedProcess)}</dd>
           </div>
         </dl>
         <p class="path">{selectedProcess.exe || "Path unavailable"}</p>
@@ -893,6 +1145,7 @@
         id="process-search"
         class="search-input"
         bind:value={searchText}
+        oninput={(event) => setSearchText(event.currentTarget.value)}
         placeholder="Process, PID, or path"
         autocomplete="off"
       />
@@ -933,7 +1186,7 @@
           class:active={sortKey === "cpu"}
           type="button"
           aria-pressed={sortKey === "cpu"}
-          onclick={() => (sortKey = "cpu")}
+          onclick={() => setSortKey("cpu")}
         >
           CPU
         </button>
@@ -941,7 +1194,7 @@
           class:active={sortKey === "memory"}
           type="button"
           aria-pressed={sortKey === "memory"}
-          onclick={() => (sortKey = "memory")}
+          onclick={() => setSortKey("memory")}
         >
           Memory
         </button>
@@ -949,7 +1202,7 @@
           class:active={sortKey === "io"}
           type="button"
           aria-pressed={sortKey === "io"}
-          onclick={() => (sortKey = "io")}
+          onclick={() => setSortKey("io")}
         >
           I/O
         </button>
@@ -957,7 +1210,7 @@
           class:active={sortKey === "name"}
           type="button"
           aria-pressed={sortKey === "name"}
-          onclick={() => (sortKey = "name")}
+          onclick={() => setSortKey("name")}
         >
           Name
         </button>
@@ -979,8 +1232,12 @@
       </div>
     </div>
     <div class="control-actions">
-      <button class="primary-action" type="button" onclick={() => (isPaused = !isPaused)}>
+      <button class="primary-action" type="button" onclick={() => setPaused(!isPaused)}>
         {isPaused ? "Resume" : "Pause"}
+      </button>
+      <button type="button" onclick={refreshNow}>Refresh</button>
+      <button type="button" onclick={() => setAdminMode(!snapshot.settings.admin_mode_requested)}>
+        {snapshot.settings.admin_mode_requested ? "Use standard" : "Request admin"}
       </button>
       <button type="button" onclick={resetHistory}>Reset</button>
     </div>
@@ -1064,8 +1321,13 @@
             <strong>{formatPercent(swapPercent)}</strong>
           </div>
           <div>
-            <span>Processes</span>
-            <strong>{snapshot.system.process_count}</strong>
+            {#if snapshot.system.memory_available_bytes !== undefined}
+              <span>Available</span>
+              <strong>{formatBytes(snapshot.system.memory_available_bytes)}</strong>
+            {:else}
+              <span>Processes</span>
+              <strong>{snapshot.system.process_count}</strong>
+            {/if}
           </div>
         </div>
         <div class="detail-chart-grid two-up">
@@ -1147,6 +1409,10 @@
             <span>Sent</span>
             <strong>{formatBytes(snapshot.system.network_transmitted_total_bytes)}</strong>
           </div>
+          <div>
+            <span>Source</span>
+            <strong>{metricQualityLabel(systemQuality.network, "Aggregate")}</strong>
+          </div>
         </div>
         <div class="detail-chart-grid two-up">
           <div class="detail-chart-card large">
@@ -1187,8 +1453,50 @@
       </div>
       <dl class="health-list">
         <div>
+          <dt>Status</dt>
+          <dd>{snapshot.health.status_summary}</dd>
+        </div>
+        <div>
           <dt>Source</dt>
           <dd>{sourceLabel}</dd>
+        </div>
+        <div>
+          <dt>CPU quality</dt>
+          <dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd>
+        </div>
+        <div>
+          <dt>Disk quality</dt>
+          <dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd>
+        </div>
+        <div>
+          <dt>Network quality</dt>
+          <dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd>
+        </div>
+        <div>
+          <dt>App CPU</dt>
+          <dd>{formatPercent(snapshot.health.app_cpu_percent)}</dd>
+        </div>
+        <div>
+          <dt>App RSS</dt>
+          <dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd>
+        </div>
+        <div>
+          <dt>Tick p95</dt>
+          <dd>{snapshot.health.tick_p95_ms.toFixed(1)} ms</dd>
+        </div>
+        <div>
+          <dt>Jitter p95</dt>
+          <dd>{snapshot.health.jitter_p95_ms.toFixed(1)} ms</dd>
+        </div>
+        <div>
+          <dt>Admin</dt>
+          <dd>
+            {snapshot.settings.admin_mode_enabled
+              ? "Active"
+              : snapshot.settings.admin_mode_requested
+                ? "Requested (not active)"
+                : "Off"}
+          </dd>
         </div>
         <div>
           <dt>Memory load</dt>
@@ -1203,8 +1511,11 @@
           <dd>{filteredProcesses.length}</dd>
         </div>
       </dl>
+      {#if commandError}
+        <p class="command-error" role="status" aria-live="polite">{commandError}</p>
+      {/if}
       {#if warnings.length}
-        <ul class="warnings" aria-label="Collector warnings">
+        <ul class="warnings" aria-label="Collector warnings" aria-live="polite">
           {#each warnings.slice(0, 3) as warning}
             <li>{warning}</li>
           {/each}

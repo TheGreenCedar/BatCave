@@ -1,54 +1,260 @@
 use std::{
     cmp::Ordering,
-    sync::{
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
-        Mutex,
-    },
+    collections::HashMap,
+    sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use sysinfo::{Networks, System};
 
-use crate::contracts::{ProcessSample, RuntimeHealth, RuntimeSnapshot, SystemMetricsSnapshot};
+use crate::{
+    contracts::{
+        AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
+        ProcessSample, SystemMetricQuality, SystemMetricsSnapshot,
+    },
+    windows_network::{NetworkAttributionMonitor, NetworkAttributionSample},
+    windows_pdh::{PdhDiskSampler, PdhSample},
+    windows_process, windows_system,
+};
 
-pub struct TelemetryState {
-    sequence: AtomicU64,
-    system: Mutex<System>,
-    networks: Mutex<Networks>,
+#[derive(Debug, Clone)]
+pub struct TelemetrySample {
+    pub latency_ms: u64,
+    pub system: SystemMetricsSnapshot,
+    pub processes: Vec<ProcessSample>,
+    pub warnings: Vec<String>,
 }
 
-impl TelemetryState {
+pub struct TelemetryCollector {
+    system: Mutex<System>,
+    networks: Mutex<Networks>,
+    previous_cpu_times: Mutex<Option<windows_system::CpuTimes>>,
+    pdh_disk: Mutex<PdhDiskState>,
+    network_attribution: Mutex<NetworkAttributionState>,
+}
+
+impl TelemetryCollector {
     pub fn new() -> Self {
         Self {
-            sequence: AtomicU64::new(0),
             system: Mutex::new(System::new_all()),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
+            previous_cpu_times: Mutex::new(None),
+            pdh_disk: Mutex::new(PdhDiskState::new()),
+            network_attribution: Mutex::new(NetworkAttributionState::new()),
+        }
+    }
+
+    pub fn collect(&self) -> Result<TelemetrySample, String> {
+        let started = Instant::now();
+        let mut warnings = Vec::new();
+
+        let mut sysinfo_system = self
+            .system
+            .lock()
+            .map_err(|_| "system telemetry lock is poisoned".to_string())?;
+        sysinfo_system.refresh_all();
+
+        let mut sysinfo_networks = self
+            .networks
+            .lock()
+            .map_err(|_| "network telemetry lock is poisoned".to_string())?;
+        sysinfo_networks.refresh(true);
+
+        let sysinfo_processes = collect_sysinfo_processes(&sysinfo_system);
+        let sysinfo_cpu_by_pid = sysinfo_processes
+            .iter()
+            .map(|process| (process.pid.clone(), process.cpu_percent))
+            .collect::<HashMap<_, _>>();
+        let logical_cpu_percent = logical_cpu_percent(&sysinfo_system, &mut warnings);
+        let mut system_snapshot = collect_system_snapshot(
+            &sysinfo_system,
+            &sysinfo_networks,
+            &logical_cpu_percent,
+            &mut warnings,
+            self,
+        )?;
+        let mut processes =
+            collect_processes(&sysinfo_processes, &sysinfo_cpu_by_pid, &mut warnings)?;
+        let network_attribution = self.network_attribution_sample(&mut warnings)?;
+        apply_network_attribution(&mut processes, network_attribution);
+
+        let (disk_read_total_bytes, disk_write_total_bytes) =
+            processes
+                .iter()
+                .fold((0_u64, 0_u64), |(read_total, write_total), process| {
+                    (
+                        read_total.saturating_add(process.disk_read_total_bytes),
+                        write_total.saturating_add(process.disk_write_total_bytes),
+                    )
+                });
+
+        processes.sort_by(|left, right| {
+            right
+                .cpu_percent
+                .partial_cmp(&left.cpu_percent)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| right.memory_bytes.cmp(&left.memory_bytes))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        system_snapshot.disk_read_total_bytes = disk_read_total_bytes;
+        system_snapshot.disk_write_total_bytes = disk_write_total_bytes;
+        system_snapshot.process_count = processes.len();
+
+        Ok(TelemetrySample {
+            latency_ms: started.elapsed().as_millis() as u64,
+            system: system_snapshot,
+            processes,
+            warnings,
+        })
+    }
+}
+
+pub fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn round1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn collect_processes(
+    sysinfo_processes: &[ProcessSample],
+    sysinfo_cpu_by_pid: &HashMap<String, f64>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<ProcessSample>, String> {
+    match windows_process::collect_processes(0) {
+        Ok(native_processes) => Ok(native_processes
+            .into_iter()
+            .map(|process| enrich_native_process(process, sysinfo_cpu_by_pid))
+            .collect()),
+        Err(error) => {
+            warnings.push(format!(
+                "native_process_collector_failed:{error}; using sysinfo fallback"
+            ));
+            Ok(sysinfo_processes.to_vec())
         }
     }
 }
 
-pub fn collect_snapshot(state: &TelemetryState) -> Result<RuntimeSnapshot, String> {
-    let started = Instant::now();
-    let seq = state.sequence.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-    let mut warnings = Vec::new();
+fn collect_system_snapshot(
+    sysinfo_system: &System,
+    sysinfo_networks: &Networks,
+    logical_cpu_percent: &[f64],
+    warnings: &mut Vec<String>,
+    collector: &TelemetryCollector,
+) -> Result<SystemMetricsSnapshot, String> {
+    let sysinfo_snapshot = collect_sysinfo_system(sysinfo_system, sysinfo_networks);
+    let cpu_load = collector.native_cpu_load(warnings)?;
 
-    let mut system = state
-        .system
-        .lock()
-        .map_err(|_| "system telemetry lock is poisoned".to_string())?;
-    system.refresh_all();
+    match windows_system::sample_system() {
+        Ok(mut snapshot) => {
+            snapshot.logical_cpu_percent = logical_cpu_percent.to_vec();
+            if let Some(load) = cpu_load {
+                snapshot.cpu_percent = load.cpu_percent;
+                snapshot.kernel_cpu_percent = load.kernel_cpu_percent;
+            } else {
+                snapshot.cpu_percent = sysinfo_snapshot.cpu_percent;
+                snapshot.kernel_cpu_percent = 0.0;
+            }
+            let disk_quality = collector.apply_pdh_disk_rates(&mut snapshot, warnings)?;
+            snapshot.quality = Some(system_quality(cpu_load.is_some(), disk_quality));
+            Ok(snapshot)
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "native_system_collector_failed:{error}; using sysinfo fallback"
+            ));
+            Ok(sysinfo_snapshot)
+        }
+    }
+}
 
-    let mut networks = state
-        .networks
-        .lock()
-        .map_err(|_| "network telemetry lock is poisoned".to_string())?;
-    networks.refresh(true);
+impl TelemetryCollector {
+    fn apply_pdh_disk_rates(
+        &self,
+        snapshot: &mut SystemMetricsSnapshot,
+        warnings: &mut Vec<String>,
+    ) -> Result<DiskQualityState, String> {
+        let mut state = self
+            .pdh_disk
+            .lock()
+            .map_err(|_| "pdh disk telemetry lock is poisoned".to_string())?;
+        match &mut *state {
+            PdhDiskState::Ready(sampler) => match sampler.sample() {
+                Ok(PdhSample::Ready(rates)) => {
+                    snapshot.disk_read_bps = rates.read_bps;
+                    snapshot.disk_write_bps = rates.write_bps;
+                    Ok(DiskQualityState::Native)
+                }
+                Ok(PdhSample::Held(message)) => Ok(DiskQualityState::Held(message)),
+                Err(error) => {
+                    warnings.push(format!("pdh_disk_collector_failed:{error}"));
+                    *state = PdhDiskState::Failed(error.clone());
+                    Ok(DiskQualityState::Unavailable(error))
+                }
+            },
+            PdhDiskState::Failed(error) => Ok(DiskQualityState::Unavailable(error.clone())),
+        }
+    }
 
-    let logical_cpu_percent = system
-        .cpus()
-        .iter()
-        .map(|cpu| round1(cpu.cpu_usage() as f64))
-        .collect::<Vec<_>>();
+    fn network_attribution_sample(
+        &self,
+        warnings: &mut Vec<String>,
+    ) -> Result<NetworkAttributionSample, String> {
+        let mut state = self
+            .network_attribution
+            .lock()
+            .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
+        match &mut *state {
+            NetworkAttributionState::Ready(monitor) => {
+                let sample = monitor.sample();
+                if let NetworkAttributionSample::Failed(message) = &sample {
+                    warnings.push(format!("network_attribution_failed:{message}"));
+                    *state = NetworkAttributionState::Failed {
+                        message: message.clone(),
+                        warned: true,
+                    };
+                }
+                Ok(sample)
+            }
+            NetworkAttributionState::Failed { message, warned } => {
+                if !*warned {
+                    warnings.push(format!("network_attribution_failed:{message}"));
+                    *warned = true;
+                }
+                Ok(NetworkAttributionSample::Failed(message.clone()))
+            }
+        }
+    }
+
+    fn native_cpu_load(
+        &self,
+        warnings: &mut Vec<String>,
+    ) -> Result<Option<windows_system::CpuLoad>, String> {
+        let current = match windows_system::sample_cpu_times() {
+            Ok(current) => current,
+            Err(error) => {
+                warnings.push(format!(
+                    "native_cpu_collector_failed:{error}; using sysinfo fallback"
+                ));
+                return Ok(None);
+            }
+        };
+        let mut previous = self
+            .previous_cpu_times
+            .lock()
+            .map_err(|_| "cpu telemetry lock is poisoned".to_string())?;
+        let load = previous.map(|previous| windows_system::calculate_cpu_load(previous, current));
+        *previous = Some(current);
+        Ok(load)
+    }
+}
+
+fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetricsSnapshot {
     let (network_received_total_bytes, network_transmitted_total_bytes) =
         networks
             .iter()
@@ -59,7 +265,45 @@ pub fn collect_snapshot(state: &TelemetryState) -> Result<RuntimeSnapshot, Strin
                 )
             });
 
-    let mut processes = system
+    SystemMetricsSnapshot {
+        cpu_percent: round1(system.global_cpu_usage() as f64),
+        kernel_cpu_percent: 0.0,
+        logical_cpu_percent: system
+            .cpus()
+            .iter()
+            .map(|cpu| round1(cpu.cpu_usage() as f64))
+            .collect(),
+        memory_used_bytes: system.used_memory(),
+        memory_total_bytes: system.total_memory(),
+        memory_available_bytes: Some(system.total_memory().saturating_sub(system.used_memory())),
+        swap_used_bytes: system.used_swap(),
+        swap_total_bytes: system.total_swap(),
+        process_count: system.processes().len(),
+        disk_read_total_bytes: 0,
+        disk_write_total_bytes: 0,
+        disk_read_bps: 0,
+        disk_write_bps: 0,
+        network_received_total_bytes,
+        network_transmitted_total_bytes,
+        network_received_bps: 0,
+        network_transmitted_bps: 0,
+        quality: Some(SystemMetricQuality {
+            cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+            kernel_cpu: Some(
+                quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                    .with_message("Kernel CPU is unavailable from the sysinfo fallback."),
+            ),
+            logical_cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+            memory: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+            swap: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+            disk: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+            network: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+        }),
+    }
+}
+
+fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
+    system
         .processes()
         .iter()
         .map(|(pid, process)| {
@@ -67,6 +311,7 @@ pub fn collect_snapshot(state: &TelemetryState) -> Result<RuntimeSnapshot, Strin
             ProcessSample {
                 pid: pid.to_string(),
                 parent_pid: process.parent().map(|parent| parent.to_string()),
+                start_time_ms: process.start_time().saturating_mul(1000),
                 name: process.name().to_string_lossy().into_owned(),
                 exe: process
                     .exe()
@@ -74,77 +319,295 @@ pub fn collect_snapshot(state: &TelemetryState) -> Result<RuntimeSnapshot, Strin
                     .unwrap_or_default(),
                 status: format!("{:?}", process.status()),
                 cpu_percent: round1(process.cpu_usage() as f64),
+                kernel_cpu_percent: None,
                 memory_bytes: process.memory(),
+                private_bytes: process.memory(),
                 virtual_memory_bytes: process.virtual_memory(),
                 disk_read_total_bytes: disk_usage.total_read_bytes,
                 disk_write_total_bytes: disk_usage.total_written_bytes,
+                other_io_total_bytes: None,
+                disk_read_bps: 0,
+                disk_write_bps: 0,
+                other_io_bps: None,
+                network_received_bps: None,
+                network_transmitted_bps: None,
+                threads: 0,
+                handles: 0,
+                access_state: AccessState::Partial,
+                quality: Some(ProcessMetricQuality {
+                    cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    memory: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    disk: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    other_io: Some(
+                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                            .with_message("Other I/O is unavailable from the sysinfo fallback."),
+                    ),
+                    network: Some(
+                        quality(MetricQuality::Unavailable, MetricSource::Etw)
+                            .with_message("Waiting for ETW network attribution."),
+                    ),
+                    threads: Some(
+                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                            .with_message("Thread counts require the native process collector."),
+                    ),
+                    handles: Some(
+                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                            .with_message("Handle counts require the native process collector."),
+                    ),
+                }),
             }
         })
+        .collect()
+}
+
+fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> {
+    let values = system
+        .cpus()
+        .iter()
+        .map(|cpu| round1(cpu.cpu_usage() as f64))
         .collect::<Vec<_>>();
-
-    let (disk_read_total_bytes, disk_write_total_bytes) =
-        processes
-            .iter()
-            .fold((0_u64, 0_u64), |(read_total, write_total), process| {
-                (
-                    read_total.saturating_add(process.disk_read_total_bytes),
-                    write_total.saturating_add(process.disk_write_total_bytes),
-                )
-            });
-
-    processes.sort_by(|left, right| {
-        right
-            .cpu_percent
-            .partial_cmp(&left.cpu_percent)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| right.memory_bytes.cmp(&left.memory_bytes))
-            .then_with(|| left.name.cmp(&right.name))
-    });
-    if logical_cpu_percent.is_empty() {
+    if values.is_empty() {
         warnings.push(
-            "logical_cpu_percent was empty; frontend will fall back to aggregate CPU.".to_string(),
+            "logical_cpu_percent was empty; frontend will fall back to aggregate CPU.".into(),
         );
     }
+    values
+}
 
-    let health = RuntimeHealth {
-        tick_count: seq,
-        snapshot_latency_ms: started.elapsed().as_millis() as u64,
-        degraded: false,
-        collector_warnings: warnings.len(),
+fn enrich_native_process(
+    mut process: ProcessSample,
+    sysinfo_cpu_by_pid: &HashMap<String, f64>,
+) -> ProcessSample {
+    let has_cpu = sysinfo_cpu_by_pid
+        .get(&process.pid)
+        .map(|cpu| {
+            process.cpu_percent = *cpu;
+            true
+        })
+        .unwrap_or(false);
+    process.quality = Some(native_process_quality(process.access_state, has_cpu));
+    process
+}
+
+fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> SystemMetricQuality {
+    let cpu = if has_native_cpu {
+        quality(MetricQuality::Native, MetricSource::DirectApi)
+    } else {
+        quality(MetricQuality::Estimated, MetricSource::Sysinfo)
+            .with_message("First sample uses sysinfo until native CPU deltas are available.")
     };
 
-    Ok(RuntimeSnapshot {
-        event_kind: "runtime_snapshot",
-        seq,
-        ts_ms: now_ms(),
-        source: "tauri_sysinfo",
-        health,
-        system: SystemMetricsSnapshot {
-            cpu_percent: round1(system.global_cpu_usage() as f64),
-            kernel_cpu_percent: 0.0,
-            logical_cpu_percent,
-            memory_used_bytes: system.used_memory(),
-            memory_total_bytes: system.total_memory(),
-            swap_used_bytes: system.used_swap(),
-            swap_total_bytes: system.total_swap(),
-            process_count: system.processes().len(),
-            disk_read_total_bytes,
-            disk_write_total_bytes,
-            network_received_total_bytes,
-            network_transmitted_total_bytes,
-        },
-        processes,
-        warnings,
-    })
+    SystemMetricQuality {
+        cpu: Some(cpu.clone()),
+        kernel_cpu: Some(cpu),
+        logical_cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+        memory: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
+        swap: Some(quality(MetricQuality::Native, MetricSource::DirectApi)),
+        disk: Some(match disk_quality {
+            DiskQualityState::Native => quality(MetricQuality::Native, MetricSource::Pdh),
+            DiskQualityState::Held(message) => {
+                quality(MetricQuality::Held, MetricSource::Pdh).with_message(&message)
+            }
+            DiskQualityState::Unavailable(message) => {
+                quality(MetricQuality::Partial, MetricSource::ProcessAggregate).with_message(
+                    &format!("PDH disk rates unavailable; using process I/O totals. {message}"),
+                )
+            }
+        }),
+        network: Some(quality(
+            MetricQuality::Native,
+            MetricSource::InterfaceAggregate,
+        )),
+    }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
+enum PdhDiskState {
+    Ready(PdhDiskSampler),
+    Failed(String),
 }
 
-fn round1(value: f64) -> f64 {
-    (value * 10.0).round() / 10.0
+impl PdhDiskState {
+    fn new() -> Self {
+        match PdhDiskSampler::new() {
+            Ok(sampler) => Self::Ready(sampler),
+            Err(error) => Self::Failed(error),
+        }
+    }
+}
+
+enum DiskQualityState {
+    Native,
+    Held(String),
+    Unavailable(String),
+}
+
+enum NetworkAttributionState {
+    Ready(NetworkAttributionMonitor),
+    Failed { message: String, warned: bool },
+}
+
+impl NetworkAttributionState {
+    fn new() -> Self {
+        match NetworkAttributionMonitor::new() {
+            Ok(monitor) => Self::Ready(monitor),
+            Err(message) => Self::Failed {
+                message,
+                warned: false,
+            },
+        }
+    }
+}
+
+fn apply_network_attribution(
+    processes: &mut [ProcessSample],
+    attribution: NetworkAttributionSample,
+) {
+    match attribution {
+        NetworkAttributionSample::Ready { rates_by_pid } => {
+            for process in processes {
+                let rates = process
+                    .pid
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|pid| rates_by_pid.get(&pid).copied())
+                    .unwrap_or_default();
+                process.network_received_bps = Some(rates.received_bps);
+                process.network_transmitted_bps = Some(rates.transmitted_bps);
+                process_quality(process).network =
+                    Some(quality(MetricQuality::Native, MetricSource::Etw));
+            }
+        }
+        NetworkAttributionSample::Held(message) => {
+            for process in processes {
+                process_quality(process).network =
+                    Some(quality(MetricQuality::Held, MetricSource::Etw).with_message(&message));
+            }
+        }
+        NetworkAttributionSample::Failed(message) => {
+            for process in processes {
+                process.network_received_bps = None;
+                process.network_transmitted_bps = None;
+                process_quality(process).network = Some(
+                    quality(MetricQuality::Unavailable, MetricSource::Etw).with_message(&message),
+                );
+            }
+        }
+    }
+}
+
+fn process_quality(process: &mut ProcessSample) -> &mut ProcessMetricQuality {
+    process
+        .quality
+        .get_or_insert_with(ProcessMetricQuality::default)
+}
+
+fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMetricQuality {
+    let direct_quality = match access_state {
+        AccessState::Full => MetricQuality::Native,
+        AccessState::Partial => MetricQuality::Partial,
+        AccessState::Denied => MetricQuality::Unavailable,
+    };
+    let direct = |message: Option<&str>| {
+        let value = quality(direct_quality, MetricSource::DirectApi);
+        match message {
+            Some(message) => value.with_message(message),
+            None => value,
+        }
+    };
+
+    ProcessMetricQuality {
+        cpu: Some(if has_cpu {
+            quality(MetricQuality::Estimated, MetricSource::Sysinfo)
+        } else {
+            quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                .with_message("Process CPU needs a second Rust-native timing pass.")
+        }),
+        memory: Some(direct(None)),
+        disk: Some(direct(None)),
+        other_io: Some(direct(None)),
+        network: Some(
+            quality(MetricQuality::Unavailable, MetricSource::Etw)
+                .with_message("Waiting for ETW network attribution."),
+        ),
+        threads: Some(direct(None)),
+        handles: Some(direct(None)),
+    }
+}
+
+fn quality(quality: MetricQuality, source: MetricSource) -> MetricQualityInfo {
+    MetricQualityInfo {
+        quality,
+        source: Some(source),
+        updated_at_ms: None,
+        age_ms: None,
+        message: None,
+    }
+}
+
+trait MetricQualityMessage {
+    fn with_message(self, message: &str) -> Self;
+}
+
+impl MetricQualityMessage for MetricQualityInfo {
+    fn with_message(mut self, message: &str) -> Self {
+        self.message = Some(message.to_string());
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::windows_network::{NetworkAttributionSample, ProcessNetworkRates};
+
+    #[test]
+    fn apply_network_attribution_marks_rows_native_when_monitor_is_ready() {
+        let mut processes = vec![ProcessSample {
+            pid: "42".to_string(),
+            parent_pid: None,
+            start_time_ms: 1,
+            name: "Networked".to_string(),
+            exe: String::new(),
+            status: "running".to_string(),
+            cpu_percent: 0.0,
+            kernel_cpu_percent: None,
+            memory_bytes: 0,
+            private_bytes: 0,
+            virtual_memory_bytes: 0,
+            disk_read_total_bytes: 0,
+            disk_write_total_bytes: 0,
+            other_io_total_bytes: None,
+            disk_read_bps: 0,
+            disk_write_bps: 0,
+            other_io_bps: None,
+            network_received_bps: None,
+            network_transmitted_bps: None,
+            threads: 1,
+            handles: 1,
+            access_state: AccessState::Full,
+            quality: Some(native_process_quality(AccessState::Full, true)),
+        }];
+        let sample = NetworkAttributionSample::ready([(
+            42,
+            ProcessNetworkRates {
+                received_bps: 4096,
+                transmitted_bps: 2048,
+            },
+        )]);
+
+        apply_network_attribution(&mut processes, sample);
+
+        assert_eq!(processes[0].network_received_bps, Some(4096));
+        assert_eq!(processes[0].network_transmitted_bps, Some(2048));
+        let network = processes[0]
+            .quality
+            .as_ref()
+            .unwrap()
+            .network
+            .as_ref()
+            .unwrap();
+        assert_eq!(network.quality, MetricQuality::Native);
+        assert_eq!(network.source, Some(MetricSource::Etw));
+        assert_eq!(network.message, None);
+    }
 }

@@ -1,6 +1,5 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
-    [switch]$SkipDotnetTests,
     [switch]$SkipBundle
 )
 
@@ -25,6 +24,11 @@ try {
         exit $LASTEXITCODE
     }
 
+    cargo test --manifest-path ".\src-tauri\Cargo.toml"
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
     if (-not $SkipBundle) {
         npm run tauri:build
         if ($LASTEXITCODE -ne 0) {
@@ -34,13 +38,6 @@ try {
 }
 finally {
     Pop-Location
-}
-
-if (-not $SkipDotnetTests) {
-    dotnet test (Join-Path $repoRoot "BatCave.slnx")
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
 }
 
 exit 0

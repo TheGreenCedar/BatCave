@@ -1,35 +1,16 @@
-# Build outputs
-[Bb]in/
-[Oo]bj/
-[Ll]og/
-[Ll]ogs/
-[Tt]est[Rr]esult*/
-[Bb]uild[Ll]og.*
+# Generated outputs
 artifacts/
 out/
+[Ll]og/
+[Ll]ogs/
+*.log
 
-# IDE and user-specific files
+# Local editor and user-specific files
 .vs/
 *.user
 *.rsuser
 *.suo
 *.userosscache
-*.sln.docstates
-
-# Visual Studio cache files
-*.VC.db
-*.VC.opendb
-
-# NuGet packages and lock files
-packages/
-*.nupkg
-*.snupkg
-project.lock.json
-project.fragment.lock.json
-
-# WinUI / MSIX packaging outputs
-AppPackages/
-BundleArtifacts/
 
 # Temporary files
 *.tmp

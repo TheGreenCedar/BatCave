@@ -16,8 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$solutionPath = Join-Path $repoRoot "BatCave.slnx"
-$coreProjectPath = Join-Path $repoRoot "src/BatCave.Bench/BatCave.Bench.csproj"
+$cargoManifest = Join-Path $repoRoot "src\BatCave.App\src-tauri\Cargo.toml"
+$benchmarkExe = Join-Path $repoRoot "src\BatCave.App\src-tauri\target\release\batcave-monitor.exe"
 
 if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     throw "Specify either -BaselineJsonPath or -BaselineArtifactPath, not both."
@@ -96,10 +96,14 @@ function Resolve-BaselineSummaryPath {
 }
 
 if (-not $NoBuild) {
-    dotnet build "$solutionPath" "-p:Platform=$Platform"
+    cargo build --manifest-path "$cargoManifest" --release
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
+}
+
+if (-not (Test-Path -LiteralPath $benchmarkExe)) {
+    throw "Benchmark executable not found: $benchmarkExe. Run without -NoBuild first."
 }
 
 $resolvedBaseline = Resolve-BaselineSummaryPath `
@@ -114,31 +118,25 @@ $resolvedBaseline = Resolve-BaselineSummaryPath `
 $effectiveBaselineJsonPath = [string]$resolvedBaseline.BaselinePath
 $tempBaselinePath = [string]$resolvedBaseline.TempPath
 
-$strictArgs = @()
+$benchmarkArgs = @("--benchmark", "--ticks", "$Ticks", "--sleep-ms", "$SleepMs")
 if ($Strict.IsPresent) {
-    $strictArgs = @("--strict")
+    $benchmarkArgs += @("--strict")
 }
-
-$compareArgs = @()
 if (-not [string]::IsNullOrWhiteSpace($effectiveBaselineJsonPath)) {
-    $compareArgs += @("--baseline-json", "$effectiveBaselineJsonPath")
+    $benchmarkArgs += @("--baseline-json", "$effectiveBaselineJsonPath")
 }
-
 if (-not [string]::IsNullOrWhiteSpace($MinSpeedupMultiplier)) {
-    $compareArgs += @("--min-speedup-multiplier", "$MinSpeedupMultiplier")
+    $benchmarkArgs += @("--min-speedup-multiplier", "$MinSpeedupMultiplier")
 }
 elseif ($Strict.IsPresent -and -not [string]::IsNullOrWhiteSpace($effectiveBaselineJsonPath)) {
-    $compareArgs += @("--min-speedup-multiplier", "10")
+    $benchmarkArgs += @("--min-speedup-multiplier", "10")
 }
-
 if (-not [string]::IsNullOrWhiteSpace($MaxP95Ms)) {
-    $compareArgs += @("--max-p95-ms", "$MaxP95Ms")
+    $benchmarkArgs += @("--max-p95-ms", "$MaxP95Ms")
 }
-
-$coreArgs = @("--ticks", "$Ticks", "--sleep-ms", "$SleepMs") + $strictArgs + $compareArgs
 
 try {
-    dotnet run --project "$coreProjectPath" -- @coreArgs
+    & $benchmarkExe @benchmarkArgs
 }
 finally {
     if (-not [string]::IsNullOrWhiteSpace($tempBaselinePath)) {

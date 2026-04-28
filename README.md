@@ -1,8 +1,6 @@
 # BatCave
 
-BatCave is a local-first Windows resource monitor built on Rust, Tauri, and Svelte. The desktop shell lives in `src/BatCave.App`, keeps telemetry local, and renders a dense resource cockpit for CPU, logical cores, memory, disk, network, process triage, and runtime health.
-
-The shared .NET runtime projects remain in the repo for contracts, reducers, persistence, and headless benchmarks while the production desktop UI is now the Tauri shell.
+BatCave is a local-first Windows resource monitor built on Rust, Tauri, and Svelte. The app keeps telemetry local, persists runtime state under `%LOCALAPPDATA%\BatCaveMonitor`, and renders a dense resource cockpit for CPU, logical cores, memory, disk, network, process triage, and runtime health.
 
 ## Quick Start
 
@@ -24,12 +22,6 @@ Validate the app and runtime:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1
 ```
 
-Run the .NET runtime tests:
-
-```powershell
-dotnet test BatCave.slnx
-```
-
 Run a headless runtime benchmark:
 
 ```powershell
@@ -44,10 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-ba
 
 ## Repository Layout
 
-- `src/BatCave.App/`: production Tauri desktop app with Svelte UI, Rust telemetry collector, theme system, and NSIS packaging.
-- `src/BatCave.Runtime/`: shared collectors, immutable runtime contracts, reducer, launch policy, benchmark contracts, and local JSON persistence.
-- `src/BatCave.Bench/`: headless benchmark host for runtime-only performance runs.
-- `tests/BatCave.Runtime.Tests/`: xUnit coverage for runtime contracts, persistence recovery, JSON shape, reducer behavior, and benchmark-facing contracts.
+- `src/BatCave.App/`: production Tauri desktop app with Svelte UI, Rust runtime store, local JSON persistence, native Windows telemetry collectors, benchmark CLI, and NSIS packaging.
 - `scripts/`: repeatable local workflows for app launch, Tauri validation, benchmark runs, and baseline capture.
 - `artifacts/`: generated benchmark and screenshot output.
 
@@ -71,7 +60,7 @@ BatCave is built around local-only telemetry. Do not add outbound analytics, tel
 
 ## Development Notes
 
-- Keep desktop UI work in `src/BatCave.App`.
-- Keep reusable runtime, benchmark, persistence, and reducer behavior in `src/BatCave.Runtime`.
+- Keep desktop UI work in `src/BatCave.App/src`.
+- Keep runtime state, persistence, collectors, helper modes, and benchmarks in `src/BatCave.App/src-tauri`.
 - Keep generated output out of commits: `node_modules`, `dist`, Tauri `target`, app screenshots, and benchmark artifacts are disposable.
-- Before opening a PR, run `scripts/validate-tauri.ps1` when app code changes, and `dotnet test BatCave.slnx` when runtime code changes.
+- Before opening a PR, run `scripts/validate-tauri.ps1`.

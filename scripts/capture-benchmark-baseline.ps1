@@ -76,10 +76,10 @@ Write-Host "Warmup: $WarmupTicks ticks, measured: $MeasuredTicks ticks, sleep: $
 
 $runNoBuild = $NoBuild.IsPresent
 if (-not $NoBuild.IsPresent) {
-    Write-Host "Building solution before baseline capture..."
-    dotnet build (Join-Path $repoRoot "BatCave.slnx")
+    Write-Host "Building Rust benchmark host before baseline capture..."
+    cargo build --manifest-path (Join-Path $repoRoot "src\BatCave.App\src-tauri\Cargo.toml") --release
     if ($LASTEXITCODE -ne 0) {
-        throw "dotnet build failed with exit code $LASTEXITCODE."
+        throw "cargo build failed with exit code $LASTEXITCODE."
     }
 
     $runNoBuild = $true

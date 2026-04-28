@@ -33,11 +33,34 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
     seq: tick,
     ts_ms: baseTs + tick * 1000,
     source: "fixture",
+    settings: {
+      query: {
+        filter_text: "",
+        sort_column: "cpu_pct",
+        sort_direction: "desc",
+        limit: 5000,
+      },
+      admin_mode_requested: false,
+      admin_mode_enabled: false,
+      metric_window_seconds: 60,
+      paused: false,
+    },
     health: {
       tick_count: tick,
       snapshot_latency_ms: 3 + Math.round(Math.abs(Math.sin(tick / 3)) * 9),
       degraded: false,
       collector_warnings: 0,
+      runtime_loop_enabled: true,
+      runtime_loop_running: true,
+      status_summary: "Fixture telemetry is running.",
+      updated_at_ms: baseTs + tick * 1000,
+      tick_p95_ms: 4,
+      sort_p95_ms: 1,
+      jitter_p95_ms: 2,
+      dropped_ticks: 0,
+      app_cpu_percent: 0.4,
+      app_rss_bytes: 96 * 1024 * 1024,
+      last_warning: null,
     },
     system: {
       cpu_percent: clamp(cpu, 0, 100),
@@ -45,6 +68,7 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
       logical_cpu_percent: logicalCpu,
       memory_used_bytes: Math.round(memoryTotal * memoryRatio),
       memory_total_bytes: memoryTotal,
+      memory_available_bytes: Math.round(memoryTotal * (1 - memoryRatio)),
       swap_used_bytes: Math.round(1.8 * 1024 * 1024 * 1024 + Math.sin(tick / 7) * 220_000_000),
       swap_total_bytes: 8 * 1024 * 1024 * 1024,
       process_count: 284 + Math.round(Math.sin(tick / 8) * 8),
@@ -52,12 +76,26 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
         62_000_000_000 + tick * 11_700_000 + Math.round(Math.sin(tick / 2) * 3_000_000),
       disk_write_total_bytes:
         39_000_000_000 + tick * 7_900_000 + Math.round(Math.cos(tick / 4) * 1_700_000),
+      disk_read_bps: 11_700_000 + Math.round(Math.sin(tick / 2) * 3_000_000),
+      disk_write_bps: 7_900_000 + Math.round(Math.cos(tick / 4) * 1_700_000),
       network_received_total_bytes:
         512_000_000_000 + tick * 2_900_000 + Math.round(Math.sin(tick / 3) * 900_000),
       network_transmitted_total_bytes:
         188_000_000_000 + tick * 1_400_000 + Math.round(Math.cos(tick / 5) * 500_000),
+      network_received_bps: 2_900_000 + Math.round(Math.sin(tick / 3) * 900_000),
+      network_transmitted_bps: 1_400_000 + Math.round(Math.cos(tick / 5) * 500_000),
+      quality: {
+        cpu: { quality: "estimated", source: "fixture" },
+        kernel_cpu: { quality: "estimated", source: "fixture" },
+        logical_cpu: { quality: "estimated", source: "fixture" },
+        memory: { quality: "estimated", source: "fixture" },
+        swap: { quality: "estimated", source: "fixture" },
+        disk: { quality: "estimated", source: "fixture" },
+        network: { quality: "estimated", source: "fixture" },
+      },
     },
     processes,
+    total_process_count: processes.length,
     warnings: [],
   };
 }
@@ -71,18 +109,46 @@ function makeProcess(name: string, index: number, tick: number): ProcessSample {
   const baseCpu = index === 2 ? 18 : 2 + index * 1.7;
   const cpu = clamp(wave(tick + index, baseCpu, 9, 0.42 + index * 0.03), 0.1, 72);
   const memory = (180 + index * 74 + Math.sin(tick / 5 + index) * 42) * 1024 * 1024;
+  const networkReceived = Math.max(
+    0,
+    Math.round((index % 4) * 180_000 + wave(tick, 90_000, 65_000, 0.2 + index * 0.01)),
+  );
+  const networkTransmitted = Math.max(
+    0,
+    Math.round((index % 3) * 95_000 + wave(tick, 48_000, 35_000, 0.17 + index * 0.01)),
+  );
 
   return {
     pid: `${pid}`,
     parent_pid: index < 2 ? null : `${1800 + index * 19}`,
+    start_time_ms: baseTs - index * 180_000,
     name,
     exe: `C:\\Program Files\\${name.replace(".exe", "")}\\${name}`,
     status: index % 5 === 0 ? "Run" : "Sleep",
     cpu_percent: round1(cpu),
     memory_bytes: Math.max(18 * 1024 * 1024, Math.round(memory)),
+    private_bytes: Math.max(12 * 1024 * 1024, Math.round(memory * 0.76)),
     virtual_memory_bytes: Math.round(memory * 1.7),
     disk_read_total_bytes: 12_000_000_000 + index * 500_000_000 + tick * (70_000 + index * 9_000),
     disk_write_total_bytes: 8_000_000_000 + index * 290_000_000 + tick * (45_000 + index * 7_000),
+    other_io_total_bytes: 1_000_000_000 + index * 85_000_000 + tick * (11_000 + index * 1_500),
+    disk_read_bps: 70_000 + index * 9_000,
+    disk_write_bps: 45_000 + index * 7_000,
+    other_io_bps: 11_000 + index * 1_500,
+    network_received_bps: networkReceived,
+    network_transmitted_bps: networkTransmitted,
+    threads: 4 + index * 2,
+    handles: 80 + index * 17,
+    access_state: "full",
+    quality: {
+      cpu: { quality: "estimated", source: "fixture" },
+      memory: { quality: "estimated", source: "fixture" },
+      disk: { quality: "estimated", source: "fixture" },
+      other_io: { quality: "estimated", source: "fixture" },
+      network: { quality: "estimated", source: "fixture" },
+      threads: { quality: "estimated", source: "fixture" },
+      handles: { quality: "estimated", source: "fixture" },
+    },
   };
 }
 
