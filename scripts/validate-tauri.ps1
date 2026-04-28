@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $appRoot = Join-Path $repoRoot "src/BatCave.App"
 $cargoManifest = Join-Path $appRoot "src-tauri/Cargo.toml"
+$tauriBuildScript = "tauri:build:windows"
 
 Push-Location $appRoot
 try {
@@ -31,7 +32,7 @@ try {
     }
 
     if (-not $SkipBundle) {
-        npm run tauri:build
+        npm run $tauriBuildScript
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }

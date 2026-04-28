@@ -59,12 +59,12 @@ From `src/BatCave.App`:
 npm install
 npm run dev
 npm run verify
-npm run tauri:dev
-npm run tauri:build
+npm run tauri:dev:windows
+npm run tauri:build:windows
 ```
 
-`npm run tauri:build` emits the release executable and unsigned NSIS installer under `src/BatCave.App/src-tauri/target/release`.
-On Linux, the same command emits `.deb` and AppImage bundles under `src/BatCave.App/src-tauri/target/release/bundle`.
+`npm run tauri:build:windows` emits the release executable and unsigned NSIS installer under `src/BatCave.App/src-tauri/target/release`.
+On Linux, use `npm run tauri:dev:linux` and `npm run tauri:build:linux`; the Linux build emits `.deb` and AppImage bundles under `src/BatCave.App/src-tauri/target/release/bundle`.
 
 ## Data, Logs, and Privacy
 

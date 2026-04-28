@@ -30,6 +30,7 @@ done
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 app_root="$repo_root/src/BatCave.App"
+tauri_dev_script="tauri:dev:linux"
 
 cd "$app_root"
 
@@ -40,7 +41,7 @@ fi
 if [[ "$web_only" -eq 1 ]]; then
   npm run dev
 elif [[ "${#app_args[@]}" -gt 0 ]]; then
-  npm run tauri:dev -- "${app_args[@]}"
+  npm run "$tauri_dev_script" -- "${app_args[@]}"
 else
-  npm run tauri:dev
+  npm run "$tauri_dev_script"
 fi

@@ -18,8 +18,8 @@ The UI is designed for repeated use rather than a landing-page feel:
 npm install
 npm run dev
 npm run verify
-npm run tauri:dev
-npm run tauri:build
+npm run tauri:dev:windows
+npm run tauri:build:windows
 ```
 
 Ubuntu/Debian hosts also need Node.js 24, a current stable Rust toolchain, and the native WebKitGTK/GTK build prerequisites:
@@ -28,7 +28,7 @@ Ubuntu/Debian hosts also need Node.js 24, a current stable Rust toolchain, and t
 bash ../../scripts/install-linux-deps.sh
 npm install
 npm run verify
-npm run tauri:build
+npm run tauri:build:linux
 ```
 
 ## Native Collector

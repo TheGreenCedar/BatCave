@@ -26,3 +26,9 @@ fi
   libayatana-appindicator3-dev \
   librsvg2-dev \
   libxdo-dev
+
+if command -v rustup >/dev/null 2>&1; then
+  rustup component add rustfmt
+else
+  echo "rustup was not found; install a stable Rust toolchain with rustfmt before running scripts/validate-tauri.sh." >&2
+fi
