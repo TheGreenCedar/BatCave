@@ -11,16 +11,18 @@
     RuntimeQuery,
     RuntimeSnapshot,
     SortColumn,
+    SortDirection,
     TrendState,
   } from "./lib/types";
 
   type FocusMode = "all" | "active" | "io";
-  type SortKey = "cpu" | "memory" | "io" | "name";
+  type SortKey = "name" | "pid" | "cpu" | "memory" | "io" | "read" | "write" | "status";
   type DetailMode = "cpu" | "memory" | "disk" | "network";
   type ThemeName = "cave" | "aurora" | "ember" | "daylight";
+  type ThemePreference = "system" | ThemeName;
 
   interface ThemeOption {
-    name: ThemeName;
+    name: ThemePreference;
     label: string;
   }
 
@@ -54,6 +56,12 @@
     contrastValue: number;
   }
 
+  interface ProcessColumn {
+    key: SortKey;
+    label: string;
+    metric?: boolean;
+  }
+
   interface ProcessTrendState {
     cpu: number[];
     memory: number[];
@@ -74,6 +82,7 @@
   const themeStorageKey = "batcave.monitor.theme";
   const historyStorageKey = "batcave.monitor.history-points";
   const themeOptions: ThemeOption[] = [
+    { name: "system", label: "System" },
     { name: "cave", label: "Cave" },
     { name: "aurora", label: "Aurora" },
     { name: "ember", label: "Ember" },
@@ -157,17 +166,32 @@
     { value: "name", label: "Name" },
   ];
   const sortColumnByKey: Record<SortKey, SortColumn> = {
+    name: "name",
+    pid: "pid",
     cpu: "cpu_pct",
     memory: "memory_bytes",
     io: "disk_bps",
-    name: "name",
+    read: "disk_bps",
+    write: "disk_bps",
+    status: "name",
   };
   const sortKeyByColumn: Partial<Record<SortColumn, SortKey>> = {
     cpu_pct: "cpu",
     memory_bytes: "memory",
     disk_bps: "io",
     name: "name",
+    pid: "pid",
   };
+  const processColumns: ProcessColumn[] = [
+    { key: "name", label: "Process" },
+    { key: "pid", label: "PID" },
+    { key: "cpu", label: "CPU", metric: true },
+    { key: "memory", label: "Memory", metric: true },
+    { key: "io", label: "I/O rate", metric: true },
+    { key: "read", label: "Read total", metric: true },
+    { key: "write", label: "Write total", metric: true },
+    { key: "status", label: "Status" },
+  ];
 
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeFixtureSnapshot(fixtureTick);
@@ -181,7 +205,10 @@
   let searchText = "";
   let focusMode: FocusMode = "all";
   let sortKey: SortKey = "cpu";
+  let sortDirection: SortDirection = "desc";
   let detailMode: DetailMode = "cpu";
+  let themePreference: ThemePreference = "system";
+  let systemThemeName: ThemeName = "cave";
   let themeName: ThemeName = "cave";
   let historyPointLimit: HistoryPointLimit = 72;
   let history: TrendState = emptyTrendState();
@@ -189,6 +216,7 @@
   let processRates: Record<string, ProcessRates> = {};
   let metricCards: MetricCardOption[] = [];
 
+  $: themeName = resolveThemeName(themePreference, systemThemeName);
   $: activeTheme = chartPalettes[themeName];
   $: memoryPercent = percentage(snapshot.system.memory_used_bytes, snapshot.system.memory_total_bytes);
   $: swapPercent = percentage(snapshot.system.swap_used_bytes, snapshot.system.swap_total_bytes);
@@ -196,7 +224,7 @@
     .filter((process) => matchesSearch(process, searchText))
     .filter((process) => matchesFocusMode(process, focusMode))
     .slice()
-    .sort((left, right) => compareProcesses(left, right, sortKey));
+    .sort((left, right) => compareProcesses(left, right, sortKey, sortDirection));
   $: selectedProcess = filteredProcesses.find((process) => process.pid === selectedPid) ?? null;
   $: topProcess = filteredProcesses[0] ?? null;
   $: warnings =
@@ -321,11 +349,17 @@
   onMount(() => {
     let timeoutId: number | undefined;
     let disposed = false;
+    const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
     const savedTheme = window.localStorage.getItem(themeStorageKey);
     const savedHistoryPointLimit = Number(window.localStorage.getItem(historyStorageKey));
 
-    if (isThemeName(savedTheme)) {
-      themeName = savedTheme;
+    systemThemeName = systemThemeQuery.matches ? "daylight" : "cave";
+
+    const savedThemePreference = parseThemePreference(savedTheme);
+    if (savedThemePreference) {
+      themePreference = savedThemePreference;
+    } else if (savedTheme !== null) {
+      window.localStorage.removeItem(themeStorageKey);
     }
 
     if (isHistoryPointLimit(savedHistoryPointLimit)) {
@@ -347,8 +381,15 @@
 
     timeoutId = window.setTimeout(loop, 120);
 
+    const handleSystemThemeChange = (event: MediaQueryListEvent) => {
+      systemThemeName = event.matches ? "daylight" : "cave";
+    };
+
+    systemThemeQuery.addEventListener("change", handleSystemThemeChange);
+
     return () => {
       disposed = true;
+      systemThemeQuery.removeEventListener("change", handleSystemThemeChange);
       if (timeoutId !== undefined) {
         window.clearTimeout(timeoutId);
       }
@@ -381,16 +422,28 @@
   }
 
   function isThemeName(value: string | null): value is ThemeName {
-    return themeOptions.some((theme) => theme.name === value);
+    return value === "cave" || value === "aurora" || value === "ember" || value === "daylight";
+  }
+
+  function parseThemePreference(value: string | null): ThemePreference | null {
+    if (value === "system" || value === "auto") {
+      return "system";
+    }
+
+    return isThemeName(value) ? value : null;
+  }
+
+  function resolveThemeName(preference: ThemePreference, systemTheme: ThemeName): ThemeName {
+    return preference === "system" ? systemTheme : preference;
   }
 
   function isHistoryPointLimit(value: number): value is HistoryPointLimit {
     return historyPointOptions.some((option) => option === value);
   }
 
-  function setTheme(name: ThemeName): void {
-    themeName = name;
-    window.localStorage.setItem(themeStorageKey, name);
+  function setTheme(preference: ThemePreference): void {
+    themePreference = preference;
+    window.localStorage.setItem(themeStorageKey, preference);
   }
 
   function setHistoryPointLimit(limit: HistoryPointLimit): void {
@@ -445,6 +498,18 @@
 
   function setSortKey(key: SortKey): void {
     sortKey = key;
+    sortDirection = defaultSortDirection(key);
+    void syncRuntimeQuery();
+  }
+
+  function toggleSortKey(key: SortKey): void {
+    if (sortKey === key) {
+      sortDirection = sortDirection === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDirection = defaultSortDirection(key);
+    }
+
     void syncRuntimeQuery();
   }
 
@@ -461,7 +526,7 @@
     const query: RuntimeQuery = {
       filter_text: searchText,
       sort_column: sortColumnForKey(sortKey),
-      sort_direction: sortKey === "name" ? "asc" : "desc",
+      sort_direction: sortDirection,
       limit: 5000,
     };
 
@@ -557,6 +622,7 @@
 
     searchText = next.settings.query.filter_text;
     sortKey = sortKeyForColumn(next.settings.query.sort_column);
+    sortDirection = next.settings.query.sort_direction;
     isPaused = next.settings.paused;
     hasHydratedRuntimeSettings = true;
   }
@@ -567,6 +633,15 @@
     if (process) {
       resetProcessHistory(process);
     }
+  }
+
+  function selectProcessFromKeyboard(event: KeyboardEvent, pid: string): void {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+    selectProcess(pid);
   }
 
   function setDetailMode(mode: DetailMode): void {
@@ -732,18 +807,56 @@
     return (rates?.readRate ?? 0) + (rates?.writeRate ?? 0) + (rates?.otherRate ?? 0);
   }
 
-  function compareProcesses(left: ProcessSample, right: ProcessSample, key: SortKey): number {
+  function compareProcesses(
+    left: ProcessSample,
+    right: ProcessSample,
+    key: SortKey,
+    direction: SortDirection,
+  ): number {
+    const factor = direction === "asc" ? 1 : -1;
+
     switch (key) {
-      case "memory":
-        return right.memory_bytes - left.memory_bytes || right.cpu_percent - left.cpu_percent;
-      case "io":
-        return processIoRate(right) - processIoRate(left) || right.cpu_percent - left.cpu_percent;
       case "name":
-        return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+        return compareText(left.name, right.name) * factor || compareText(left.pid, right.pid) * factor;
+      case "pid":
+        return comparePid(left.pid, right.pid) * factor || compareText(left.name, right.name) * factor;
+      case "memory":
+        return compareNumber(left.memory_bytes, right.memory_bytes, direction) || compareNumber(left.cpu_percent, right.cpu_percent, "desc");
+      case "io":
+        return compareNumber(processIoRate(left), processIoRate(right), direction) || compareNumber(left.cpu_percent, right.cpu_percent, "desc");
+      case "read":
+        return compareNumber(left.disk_read_total_bytes, right.disk_read_total_bytes, direction) || compareText(left.name, right.name);
+      case "write":
+        return compareNumber(left.disk_write_total_bytes, right.disk_write_total_bytes, direction) || compareText(left.name, right.name);
+      case "status":
+        return compareText(left.status, right.status) * factor || compareText(left.name, right.name);
       case "cpu":
       default:
-        return right.cpu_percent - left.cpu_percent || right.memory_bytes - left.memory_bytes;
+        return compareNumber(left.cpu_percent, right.cpu_percent, direction) || compareNumber(left.memory_bytes, right.memory_bytes, "desc");
     }
+  }
+
+  function compareNumber(left: number, right: number, direction: SortDirection): number {
+    return direction === "asc" ? left - right : right - left;
+  }
+
+  function compareText(left: string, right: string): number {
+    return left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
+  }
+
+  function comparePid(left: string, right: string): number {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      return leftNumber - rightNumber;
+    }
+
+    return compareText(left, right);
+  }
+
+  function defaultSortDirection(key: SortKey): SortDirection {
+    return key === "name" || key === "pid" || key === "status" ? "asc" : "desc";
   }
 
   function sortColumnForKey(key: SortKey): SortColumn {
@@ -752,6 +865,40 @@
 
   function sortKeyForColumn(column: SortColumn): SortKey {
     return sortKeyByColumn[column] ?? "cpu";
+  }
+
+  function sortAriaValue(
+    key: SortKey,
+    activeKey: SortKey,
+    direction: SortDirection,
+  ): "ascending" | "descending" | "none" {
+    if (activeKey !== key) {
+      return "none";
+    }
+
+    return direction === "asc" ? "ascending" : "descending";
+  }
+
+  function sortButtonLabel(
+    column: ProcessColumn,
+    activeKey: SortKey,
+    direction: SortDirection,
+  ): string {
+    if (activeKey === column.key) {
+      const nextDirection = direction === "asc" ? "descending" : "ascending";
+      return `${column.label}, sorted ${direction === "asc" ? "ascending" : "descending"}. Sort ${nextDirection}.`;
+    }
+
+    const defaultDirection = defaultSortDirection(column.key) === "asc" ? "ascending" : "descending";
+    return `Sort by ${column.label} ${defaultDirection}.`;
+  }
+
+  function sortIndicator(key: SortKey, activeKey: SortKey, direction: SortDirection): string {
+    if (activeKey !== key) {
+      return "";
+    }
+
+    return direction === "asc" ? "Asc" : "Desc";
   }
 
   function matchesSearch(process: ProcessSample, query: string): boolean {
@@ -837,6 +984,8 @@
         return "interface aggregate";
       case "process_aggregate":
         return "process aggregate";
+      case "ebpf":
+        return "eBPF";
       default:
         return value.replaceAll("_", " ");
     }
@@ -921,9 +1070,9 @@
       <div class="theme-picker" role="group" aria-label="Theme">
         {#each themeOptions as theme}
           <button
-            class:active={themeName === theme.name}
+            class:active={themePreference === theme.name}
             type="button"
-            aria-pressed={themeName === theme.name}
+            aria-pressed={themePreference === theme.name}
             onclick={() => setTheme(theme.name)}
           >
             {theme.label}
@@ -1006,30 +1155,38 @@
         <table>
           <thead>
             <tr>
-              <th>Process</th>
-              <th>PID</th>
-              <th>CPU</th>
-              <th>Memory</th>
-              <th>I/O rate</th>
-              <th>Read total</th>
-              <th>Write total</th>
-              <th>Status</th>
+              {#each processColumns as column}
+                <th aria-sort={sortAriaValue(column.key, sortKey, sortDirection)} class:metric={column.metric}>
+                  <button
+                    class="sort-header"
+                    class:active={sortKey === column.key}
+                    type="button"
+                    aria-label={sortButtonLabel(column, sortKey, sortDirection)}
+                    aria-pressed={sortKey === column.key}
+                    onclick={() => toggleSortKey(column.key)}
+                  >
+                    <span>{column.label}</span>
+                    <small aria-hidden="true">{sortIndicator(column.key, sortKey, sortDirection)}</small>
+                  </button>
+                </th>
+              {/each}
             </tr>
           </thead>
           <tbody>
             {#each filteredProcesses as process}
-              <tr class:selected={process.pid === selectedPid}>
+              <tr
+                class:selected={process.pid === selectedPid}
+                tabindex="0"
+                aria-selected={process.pid === selectedPid}
+                aria-label={`Select ${process.name}, PID ${process.pid}`}
+                onclick={() => selectProcess(process.pid)}
+                onkeydown={(event) => selectProcessFromKeyboard(event, process.pid)}
+              >
                 <td>
-                  <button
-                    class="process-button"
-                    class:selected={process.pid === selectedPid}
-                    type="button"
-                    aria-pressed={process.pid === selectedPid}
-                    onclick={() => selectProcess(process.pid)}
-                  >
+                  <span class="process-button" class:selected={process.pid === selectedPid}>
                     <span>{process.name}</span>
                     <small>{processHint(process)}</small>
-                  </button>
+                  </span>
                 </td>
                 <td>{process.pid}</td>
                 <td>{formatPercent(process.cpu_percent)}</td>

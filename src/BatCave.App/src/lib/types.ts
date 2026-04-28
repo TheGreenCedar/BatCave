@@ -26,6 +26,8 @@ export type MetricSource =
   | "sysinfo"
   | "runtime"
   | "etw"
+  | "procfs"
+  | "ebpf"
   | "fixture";
 
 export interface MetricQualityInfo {

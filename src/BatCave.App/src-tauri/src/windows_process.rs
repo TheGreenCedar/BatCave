@@ -1,3 +1,5 @@
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
+
 use crate::contracts::{AccessState, ProcessSample};
 
 const FILETIME_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;

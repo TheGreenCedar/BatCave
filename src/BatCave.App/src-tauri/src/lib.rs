@@ -3,11 +3,22 @@ mod benchmark;
 mod cli_args;
 mod contracts;
 mod elevation;
+#[cfg(any(target_os = "linux", test))]
+mod linux_network;
+#[cfg(any(target_os = "linux", test))]
+mod linux_process;
+#[cfg(any(target_os = "linux", test))]
+mod linux_system;
+mod network_attribution;
 mod runtime_store;
 mod telemetry;
+#[cfg(any(windows, test))]
 mod windows_network;
+#[cfg(any(windows, test))]
 mod windows_pdh;
+#[cfg(any(windows, test))]
 mod windows_process;
+#[cfg(any(windows, test))]
 mod windows_system;
 
 use contracts::{RuntimeQuery, RuntimeSnapshot};

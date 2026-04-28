@@ -7,14 +7,24 @@ use std::{
 
 use sysinfo::{Networks, System};
 
+use crate::contracts::{
+    AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
+    ProcessSample, SystemMetricQuality, SystemMetricsSnapshot,
+};
+use crate::network_attribution::NetworkAttributionSample;
+
+#[cfg(windows)]
+use crate::windows_process;
+#[cfg(target_os = "linux")]
 use crate::{
-    contracts::{
-        AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
-        ProcessSample, SystemMetricQuality, SystemMetricsSnapshot,
-    },
-    windows_network::{NetworkAttributionMonitor, NetworkAttributionSample},
+    linux_network::LinuxNetworkAttributionMonitor, linux_process::LinuxProcessCollector,
+    linux_system::LinuxSystemCollector,
+};
+#[cfg(windows)]
+use crate::{
+    windows_network::NetworkAttributionMonitor,
     windows_pdh::{PdhDiskSampler, PdhSample},
-    windows_process, windows_system,
+    windows_system,
 };
 
 #[derive(Debug, Clone)]
@@ -28,8 +38,17 @@ pub struct TelemetrySample {
 pub struct TelemetryCollector {
     system: Mutex<System>,
     networks: Mutex<Networks>,
+    #[cfg(target_os = "linux")]
+    linux_system: Mutex<LinuxSystemCollector>,
+    #[cfg(target_os = "linux")]
+    linux_processes: Mutex<LinuxProcessCollector>,
+    #[cfg(target_os = "linux")]
+    linux_network_attribution: Mutex<LinuxNetworkAttributionState>,
+    #[cfg(windows)]
     previous_cpu_times: Mutex<Option<windows_system::CpuTimes>>,
+    #[cfg(windows)]
     pdh_disk: Mutex<PdhDiskState>,
+    #[cfg(windows)]
     network_attribution: Mutex<NetworkAttributionState>,
 }
 
@@ -38,8 +57,17 @@ impl TelemetryCollector {
         Self {
             system: Mutex::new(System::new_all()),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
+            #[cfg(target_os = "linux")]
+            linux_system: Mutex::new(LinuxSystemCollector::new()),
+            #[cfg(target_os = "linux")]
+            linux_processes: Mutex::new(LinuxProcessCollector::new()),
+            #[cfg(target_os = "linux")]
+            linux_network_attribution: Mutex::new(LinuxNetworkAttributionState::new()),
+            #[cfg(windows)]
             previous_cpu_times: Mutex::new(None),
+            #[cfg(windows)]
             pdh_disk: Mutex::new(PdhDiskState::new()),
+            #[cfg(windows)]
             network_attribution: Mutex::new(NetworkAttributionState::new()),
         }
     }
@@ -74,9 +102,17 @@ impl TelemetryCollector {
             self,
         )?;
         let mut processes =
-            collect_processes(&sysinfo_processes, &sysinfo_cpu_by_pid, &mut warnings)?;
-        let network_attribution = self.network_attribution_sample(&mut warnings)?;
-        apply_network_attribution(&mut processes, network_attribution);
+            collect_processes(&sysinfo_processes, &sysinfo_cpu_by_pid, &mut warnings, self)?;
+        #[cfg(windows)]
+        {
+            let network_attribution = self.network_attribution_sample(&mut warnings)?;
+            apply_network_attribution(&mut processes, network_attribution, MetricSource::Etw);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let network_attribution = self.linux_network_attribution_sample(&mut warnings)?;
+            apply_network_attribution(&mut processes, network_attribution, MetricSource::Ebpf);
+        }
 
         let (disk_read_total_bytes, disk_write_total_bytes) =
             processes
@@ -97,8 +133,11 @@ impl TelemetryCollector {
                 .then_with(|| left.name.cmp(&right.name))
         });
 
-        system_snapshot.disk_read_total_bytes = disk_read_total_bytes;
-        system_snapshot.disk_write_total_bytes = disk_write_total_bytes;
+        if system_snapshot.disk_read_total_bytes == 0 && system_snapshot.disk_write_total_bytes == 0
+        {
+            system_snapshot.disk_read_total_bytes = disk_read_total_bytes;
+            system_snapshot.disk_write_total_bytes = disk_write_total_bytes;
+        }
         system_snapshot.process_count = processes.len();
 
         Ok(TelemetrySample {
@@ -125,18 +164,49 @@ fn collect_processes(
     sysinfo_processes: &[ProcessSample],
     sysinfo_cpu_by_pid: &HashMap<String, f64>,
     warnings: &mut Vec<String>,
+    collector: &TelemetryCollector,
 ) -> Result<Vec<ProcessSample>, String> {
-    match windows_process::collect_processes(0) {
-        Ok(native_processes) => Ok(native_processes
-            .into_iter()
-            .map(|process| enrich_native_process(process, sysinfo_cpu_by_pid))
-            .collect()),
-        Err(error) => {
-            warnings.push(format!(
-                "native_process_collector_failed:{error}; using sysinfo fallback"
-            ));
-            Ok(sysinfo_processes.to_vec())
+    #[cfg(windows)]
+    let _ = collector;
+
+    #[cfg(windows)]
+    {
+        match windows_process::collect_processes(0) {
+            Ok(native_processes) => Ok(native_processes
+                .into_iter()
+                .map(|process| enrich_native_process(process, sysinfo_cpu_by_pid))
+                .collect()),
+            Err(error) => {
+                warnings.push(format!(
+                    "native_process_collector_failed:{error}; using sysinfo fallback"
+                ));
+                Ok(sysinfo_processes.to_vec())
+            }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = sysinfo_cpu_by_pid;
+        let mut linux_processes = collector
+            .linux_processes
+            .lock()
+            .map_err(|_| "linux process telemetry lock is poisoned".to_string())?;
+        match linux_processes.collect() {
+            Ok(processes) => Ok(processes),
+            Err(error) => {
+                warnings.push(format!(
+                    "linux_process_collector_failed:{error}; using sysinfo fallback"
+                ));
+                Ok(sysinfo_processes.to_vec())
+            }
+        }
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    {
+        let _ = (sysinfo_cpu_by_pid, warnings, collector);
+        Ok(sysinfo_processes.to_vec())
     }
 }
 
@@ -148,32 +218,61 @@ fn collect_system_snapshot(
     collector: &TelemetryCollector,
 ) -> Result<SystemMetricsSnapshot, String> {
     let sysinfo_snapshot = collect_sysinfo_system(sysinfo_system, sysinfo_networks);
-    let cpu_load = collector.native_cpu_load(warnings)?;
 
-    match windows_system::sample_system() {
-        Ok(mut snapshot) => {
-            snapshot.logical_cpu_percent = logical_cpu_percent.to_vec();
-            if let Some(load) = cpu_load {
-                snapshot.cpu_percent = load.cpu_percent;
-                snapshot.kernel_cpu_percent = load.kernel_cpu_percent;
-            } else {
-                snapshot.cpu_percent = sysinfo_snapshot.cpu_percent;
-                snapshot.kernel_cpu_percent = 0.0;
+    #[cfg(windows)]
+    {
+        let cpu_load = collector.native_cpu_load(warnings)?;
+
+        match windows_system::sample_system() {
+            Ok(mut snapshot) => {
+                snapshot.logical_cpu_percent = logical_cpu_percent.to_vec();
+                if let Some(load) = cpu_load {
+                    snapshot.cpu_percent = load.cpu_percent;
+                    snapshot.kernel_cpu_percent = load.kernel_cpu_percent;
+                } else {
+                    snapshot.cpu_percent = sysinfo_snapshot.cpu_percent;
+                    snapshot.kernel_cpu_percent = 0.0;
+                }
+                let disk_quality = collector.apply_pdh_disk_rates(&mut snapshot, warnings)?;
+                snapshot.quality = Some(system_quality(cpu_load.is_some(), disk_quality));
+                Ok(snapshot)
             }
-            let disk_quality = collector.apply_pdh_disk_rates(&mut snapshot, warnings)?;
-            snapshot.quality = Some(system_quality(cpu_load.is_some(), disk_quality));
-            Ok(snapshot)
+            Err(error) => {
+                warnings.push(format!(
+                    "native_system_collector_failed:{error}; using sysinfo fallback"
+                ));
+                Ok(sysinfo_snapshot)
+            }
         }
-        Err(error) => {
-            warnings.push(format!(
-                "native_system_collector_failed:{error}; using sysinfo fallback"
-            ));
-            Ok(sysinfo_snapshot)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (sysinfo_system, sysinfo_networks, logical_cpu_percent);
+        let mut linux_system = collector
+            .linux_system
+            .lock()
+            .map_err(|_| "linux system telemetry lock is poisoned".to_string())?;
+        match linux_system.sample() {
+            Ok(snapshot) => Ok(snapshot),
+            Err(error) => {
+                warnings.push(format!(
+                    "linux_system_collector_failed:{error}; using sysinfo fallback"
+                ));
+                Ok(sysinfo_snapshot)
+            }
         }
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    {
+        let _ = (logical_cpu_percent, warnings, collector);
+        Ok(sysinfo_snapshot)
     }
 }
 
 impl TelemetryCollector {
+    #[cfg(windows)]
     fn apply_pdh_disk_rates(
         &self,
         snapshot: &mut SystemMetricsSnapshot,
@@ -201,6 +300,7 @@ impl TelemetryCollector {
         }
     }
 
+    #[cfg(windows)]
     fn network_attribution_sample(
         &self,
         warnings: &mut Vec<String>,
@@ -231,6 +331,7 @@ impl TelemetryCollector {
         }
     }
 
+    #[cfg(windows)]
     fn native_cpu_load(
         &self,
         warnings: &mut Vec<String>,
@@ -251,6 +352,37 @@ impl TelemetryCollector {
         let load = previous.map(|previous| windows_system::calculate_cpu_load(previous, current));
         *previous = Some(current);
         Ok(load)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_network_attribution_sample(
+        &self,
+        warnings: &mut Vec<String>,
+    ) -> Result<NetworkAttributionSample, String> {
+        let mut state = self
+            .linux_network_attribution
+            .lock()
+            .map_err(|_| "linux network attribution telemetry lock is poisoned".to_string())?;
+        match &mut *state {
+            LinuxNetworkAttributionState::Ready(monitor) => {
+                let sample = monitor.sample();
+                if let NetworkAttributionSample::Failed(message) = &sample {
+                    warnings.push(format!("linux_network_attribution_failed:{message}"));
+                    *state = LinuxNetworkAttributionState::Failed {
+                        message: message.clone(),
+                        warned: true,
+                    };
+                }
+                Ok(sample)
+            }
+            LinuxNetworkAttributionState::Failed { message, warned } => {
+                if !*warned {
+                    warnings.push(format!("linux_network_attribution_failed:{message}"));
+                    *warned = true;
+                }
+                Ok(NetworkAttributionSample::Failed(message.clone()))
+            }
+        }
     }
 }
 
@@ -369,10 +501,7 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                         MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                             .with_message("Other I/O is unavailable from the sysinfo fallback."),
                     ),
-                    network: Some(
-                        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
-                            .with_message("Waiting for ETW network attribution."),
-                    ),
+                    network: Some(process_network_quality_unavailable()),
                     threads: Some(
                         MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                             .with_message("Thread counts require the native process collector."),
@@ -385,6 +514,18 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
             }
         })
         .collect()
+}
+
+#[cfg(windows)]
+fn process_network_quality_unavailable() -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
+        .with_message("Waiting for ETW network attribution.")
+}
+
+#[cfg(not(windows))]
+fn process_network_quality_unavailable() -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
+        .with_message("Per-process network attribution is unavailable from the sysinfo fallback.")
 }
 
 fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> {
@@ -401,6 +542,7 @@ fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> 
     values
 }
 
+#[cfg(windows)]
 fn enrich_native_process(
     mut process: ProcessSample,
     sysinfo_cpu_by_pid: &HashMap<String, f64>,
@@ -416,6 +558,7 @@ fn enrich_native_process(
     process
 }
 
+#[cfg(windows)]
 fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> SystemMetricQuality {
     let cpu = if has_native_cpu {
         MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
@@ -461,11 +604,13 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
     }
 }
 
+#[cfg(windows)]
 enum PdhDiskState {
     Ready(PdhDiskSampler),
     Failed(String),
 }
 
+#[cfg(windows)]
 impl PdhDiskState {
     fn new() -> Self {
         match PdhDiskSampler::new() {
@@ -475,17 +620,20 @@ impl PdhDiskState {
     }
 }
 
+#[cfg(windows)]
 enum DiskQualityState {
     Native,
     Held(String),
     Unavailable(String),
 }
 
+#[cfg(windows)]
 enum NetworkAttributionState {
     Ready(NetworkAttributionMonitor),
     Failed { message: String, warned: bool },
 }
 
+#[cfg(windows)]
 impl NetworkAttributionState {
     fn new() -> Self {
         match NetworkAttributionMonitor::new() {
@@ -498,9 +646,30 @@ impl NetworkAttributionState {
     }
 }
 
+#[cfg(target_os = "linux")]
+enum LinuxNetworkAttributionState {
+    Ready(LinuxNetworkAttributionMonitor),
+    Failed { message: String, warned: bool },
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxNetworkAttributionState {
+    fn new() -> Self {
+        match LinuxNetworkAttributionMonitor::start() {
+            Ok(monitor) => Self::Ready(monitor),
+            Err(message) => Self::Failed {
+                message,
+                warned: false,
+            },
+        }
+    }
+}
+
+#[cfg(any(windows, target_os = "linux", test))]
 fn apply_network_attribution(
     processes: &mut [ProcessSample],
     attribution: NetworkAttributionSample,
+    source: MetricSource,
 ) {
     match attribution {
         NetworkAttributionSample::Ready { rates_by_pid } => {
@@ -513,17 +682,14 @@ fn apply_network_attribution(
                     .unwrap_or_default();
                 process.network_received_bps = Some(rates.received_bps);
                 process.network_transmitted_bps = Some(rates.transmitted_bps);
-                process_quality(process).network = Some(MetricQualityInfo::new(
-                    MetricQuality::Native,
-                    MetricSource::Etw,
-                ));
+                process_quality(process).network =
+                    Some(MetricQualityInfo::new(MetricQuality::Native, source));
             }
         }
         NetworkAttributionSample::Held(message) => {
             for process in processes {
                 process_quality(process).network = Some(
-                    MetricQualityInfo::new(MetricQuality::Held, MetricSource::Etw)
-                        .with_message(&message),
+                    MetricQualityInfo::new(MetricQuality::Held, source).with_message(&message),
                 );
             }
         }
@@ -532,7 +698,7 @@ fn apply_network_attribution(
                 process.network_received_bps = None;
                 process.network_transmitted_bps = None;
                 process_quality(process).network = Some(
-                    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
+                    MetricQualityInfo::new(MetricQuality::Unavailable, source)
                         .with_message(&message),
                 );
             }
@@ -540,12 +706,14 @@ fn apply_network_attribution(
     }
 }
 
+#[cfg(any(windows, target_os = "linux", test))]
 fn process_quality(process: &mut ProcessSample) -> &mut ProcessMetricQuality {
     process
         .quality
         .get_or_insert_with(ProcessMetricQuality::default)
 }
 
+#[cfg(any(windows, test))]
 fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMetricQuality {
     let direct_quality = match access_state {
         AccessState::Full => MetricQuality::Native,
@@ -570,10 +738,7 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
         memory: Some(direct(None)),
         disk: Some(direct(None)),
         other_io: Some(direct(None)),
-        network: Some(
-            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
-                .with_message("Waiting for ETW network attribution."),
-        ),
+        network: Some(process_network_quality_unavailable()),
         threads: Some(direct(None)),
         handles: Some(direct(None)),
     }
@@ -582,7 +747,7 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::windows_network::{NetworkAttributionSample, ProcessNetworkRates};
+    use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
 
     #[test]
     fn apply_network_attribution_marks_rows_native_when_monitor_is_ready() {
@@ -619,7 +784,7 @@ mod tests {
             },
         )]);
 
-        apply_network_attribution(&mut processes, sample);
+        apply_network_attribution(&mut processes, sample, MetricSource::Etw);
 
         assert_eq!(processes[0].network_received_bps, Some(4096));
         assert_eq!(processes[0].network_transmitted_bps, Some(2048));
@@ -633,5 +798,33 @@ mod tests {
         assert_eq!(network.quality, MetricQuality::Native);
         assert_eq!(network.source, Some(MetricSource::Etw));
         assert_eq!(network.message, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_collector_reports_procfs_metric_sources() {
+        let collector = TelemetryCollector::new();
+        let sample = collector.collect().unwrap();
+
+        let system_quality = sample.system.quality.unwrap();
+        assert_eq!(
+            system_quality.memory.unwrap().source,
+            Some(MetricSource::Procfs)
+        );
+        assert_eq!(
+            system_quality.network.unwrap().source,
+            Some(MetricSource::Procfs)
+        );
+        assert!(
+            sample.processes.iter().any(|process| {
+                process
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.memory.as_ref())
+                    .and_then(|memory| memory.source)
+                    == Some(MetricSource::Procfs)
+            }),
+            "expected at least one Linux process row sourced from procfs"
+        );
     }
 }

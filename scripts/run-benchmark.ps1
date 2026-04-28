@@ -16,8 +16,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$cargoManifest = Join-Path $repoRoot "src\BatCave.App\src-tauri\Cargo.toml"
-$benchmarkExe = Join-Path $repoRoot "src\BatCave.App\src-tauri\target\release\batcave-monitor.exe"
+$cargoManifest = Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml"
+$releaseDir = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release"
+$isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+$benchmarkExeName = if ($isWindows) { "batcave-monitor.exe" } else { "batcave-monitor" }
+$benchmarkExe = Join-Path $releaseDir $benchmarkExeName
 
 if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     throw "Specify either -BaselineJsonPath or -BaselineArtifactPath, not both."

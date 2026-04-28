@@ -722,10 +722,37 @@ fn read_json<T: DeserializeOwned>(path: &PathBuf) -> Result<T, Option<String>> {
 }
 
 fn default_base_dir() -> PathBuf {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
+    platform_data_dir()
         .unwrap_or_else(env::temp_dir)
         .join("BatCaveMonitor")
+}
+
+fn platform_data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        env::var_os("LOCALAPPDATA")
+            .or_else(|| env::var_os("APPDATA"))
+            .map(PathBuf::from)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library").join("Application Support"))
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    {
+        None
+    }
 }
 
 fn round1(value: f64) -> f64 {

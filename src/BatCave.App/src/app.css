@@ -922,6 +922,7 @@ dd {
 }
 
 .process-panel {
+  height: clamp(360px, calc(100vh - 270px), 680px);
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -929,7 +930,7 @@ dd {
 }
 
 .table-wrap {
-  min-height: 320px;
+  min-height: 0;
   height: 100%;
   overflow: auto;
   border: 1px solid #29313a;
@@ -963,9 +964,14 @@ td {
 }
 
 th {
+  padding: 0;
   color: #a9b2c0;
   font-size: 0.75rem;
   font-weight: 760;
+}
+
+th.metric {
+  text-align: right;
 }
 
 td {
@@ -976,6 +982,59 @@ td {
 tbody tr:hover,
 tbody tr.selected {
   background: rgba(114, 241, 184, 0.09);
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:focus-visible {
+  outline: 3px solid var(--accent-ring);
+  outline-offset: -3px;
+  background: rgba(114, 241, 184, 0.11);
+}
+
+.sort-header {
+  width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 0 12px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+th.metric .sort-header {
+  justify-content: flex-end;
+}
+
+.sort-header:hover,
+.sort-header.active {
+  color: #f4f7fb;
+  background: rgba(114, 241, 184, 0.08);
+}
+
+.sort-header:focus-visible {
+  position: relative;
+  z-index: 2;
+  outline: 3px solid var(--accent-ring);
+  outline-offset: -3px;
+}
+
+.sort-header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-header small {
+  color: #72f1b8;
+  font-size: 0.62rem;
+  font-weight: 760;
+  text-transform: uppercase;
 }
 
 .process-button {
@@ -1014,6 +1073,7 @@ tbody tr.selected {
 .summary-title,
 .card-title-row,
 .card-foot {
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1029,6 +1089,7 @@ tbody tr.selected {
   min-width: 0;
   display: grid;
   gap: 2px;
+  overflow: hidden;
 }
 
 .summary-title small,
@@ -1042,15 +1103,18 @@ tbody tr.selected {
 
 .summary-title strong,
 .card-title-row span {
+  display: block;
   overflow: hidden;
   color: #f4f7fb;
   font-size: 1rem;
   font-weight: 760;
+  line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .summary-title > span:last-child {
+  flex: 0 0 auto;
   border-radius: 5px;
   padding: 4px 7px;
   color: #101316;
@@ -1294,9 +1358,12 @@ tbody tr.selected {
 
 .app-shell .search-input:focus,
 .app-shell .metric-card.active,
+.app-shell .sort-header:hover,
+.app-shell .sort-header.active,
 .app-shell .process-button:hover,
 .app-shell .process-button.selected,
 .app-shell tbody tr:hover,
+.app-shell tbody tr:focus-visible,
 .app-shell tbody tr.selected,
 .app-shell .mobile-process-card:hover,
 .app-shell .mobile-process-card.selected,
@@ -1308,7 +1375,9 @@ tbody tr.selected {
 .app-shell .metric-card:focus-visible,
 .app-shell .segmented button:focus-visible,
 .app-shell .control-actions button:focus-visible,
+.app-shell .sort-header:focus-visible,
 .app-shell .process-button:focus-visible,
+.app-shell tbody tr:focus-visible,
 .app-shell .mobile-process-card:focus-visible {
   outline-color: var(--accent-ring);
   box-shadow: 0 0 0 3px var(--accent-muted);
@@ -1317,6 +1386,7 @@ tbody tr.selected {
 .app-shell .segmented button,
 .app-shell .control-actions button,
 .app-shell .status-stack span,
+.app-shell .sort-header,
 .app-shell .process-button,
 .app-shell .mobile-process-card,
 .app-shell td,
@@ -1381,7 +1451,10 @@ tbody tr.selected {
 }
 
 .app-shell tbody tr:hover,
+.app-shell tbody tr:focus-visible,
 .app-shell tbody tr.selected,
+.app-shell .sort-header:hover,
+.app-shell .sort-header.active,
 .app-shell .process-button:hover,
 .app-shell .process-button.selected,
 .app-shell .mobile-process-card:hover,
@@ -1547,6 +1620,7 @@ tbody tr.selected {
 
   .process-panel {
     order: 3;
+    height: auto;
     min-height: 0;
   }
 

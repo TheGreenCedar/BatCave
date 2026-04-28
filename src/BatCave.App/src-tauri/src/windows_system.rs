@@ -1,3 +1,5 @@
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
+
 use crate::contracts::{
     MetricQuality, MetricQualityInfo, MetricSource, SystemMetricQuality, SystemMetricsSnapshot,
 };

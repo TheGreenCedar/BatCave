@@ -77,7 +77,7 @@ Write-Host "Warmup: $WarmupTicks ticks, measured: $MeasuredTicks ticks, sleep: $
 $runNoBuild = $NoBuild.IsPresent
 if (-not $NoBuild.IsPresent) {
     Write-Host "Building Rust benchmark host before baseline capture..."
-    cargo build --manifest-path (Join-Path $repoRoot "src\BatCave.App\src-tauri\Cargo.toml") --release
+    cargo build --manifest-path (Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml") --release
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE."
     }

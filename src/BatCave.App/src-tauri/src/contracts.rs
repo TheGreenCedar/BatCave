@@ -183,6 +183,8 @@ pub enum MetricSource {
     Sysinfo,
     Runtime,
     Etw,
+    Procfs,
+    Ebpf,
     Fixture,
 }
 

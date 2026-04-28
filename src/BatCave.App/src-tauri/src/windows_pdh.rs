@@ -1,3 +1,5 @@
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiskRates {
     pub read_bps: u64,

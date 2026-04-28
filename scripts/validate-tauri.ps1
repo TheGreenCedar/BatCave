@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $appRoot = Join-Path $repoRoot "src/BatCave.App"
+$cargoManifest = Join-Path $appRoot "src-tauri/Cargo.toml"
 
 Push-Location $appRoot
 try {
@@ -14,17 +15,17 @@ try {
         exit $LASTEXITCODE
     }
 
-    cargo fmt --manifest-path ".\src-tauri\Cargo.toml" --check
+    cargo fmt --manifest-path "$cargoManifest" --check
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 
-    cargo check --manifest-path ".\src-tauri\Cargo.toml"
+    cargo check --manifest-path "$cargoManifest"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 
-    cargo test --manifest-path ".\src-tauri\Cargo.toml"
+    cargo test --manifest-path "$cargoManifest"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
