@@ -4,9 +4,9 @@ BatCave Monitor is a local-first resource cockpit for Windows and Linux. It show
 
 This is a public preview. It is useful now, honest about what it cannot see, and intentionally boring about privacy: BatCave reads local telemetry and keeps it local.
 
-![BatCave process explorer and system overview](docs/images/batcave-overview.png)
+![BatCave Monitor resource cockpit overview](docs/images/batcave-monitor-overview.png)
 
-![BatCave performance detail view](docs/images/batcave-performance-breakdown.png)
+![BatCave Monitor network detail view](docs/images/batcave-monitor-network-detail.png)
 
 ## What It Shows
 
