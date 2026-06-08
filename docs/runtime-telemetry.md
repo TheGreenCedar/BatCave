@@ -36,7 +36,7 @@ The UI talks to the runtime through Tauri commands:
 - `pause_runtime`
 - `resume_runtime`
 - `set_admin_mode`
-- `set_query`
+- `set_process_query`
 
 The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, admin-mode preference, warm cache, health, diagnostics, and persistence belong in Rust.
 
@@ -125,6 +125,8 @@ Capture a reusable benchmark baseline:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-baseline.ps1 -BenchmarkHost core -Platform x64
 ```
+
+In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
 
 ## Remaining Product Work
 

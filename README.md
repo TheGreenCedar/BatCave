@@ -8,9 +8,11 @@ This is a public preview. It is useful now, honest about what it cannot see, and
 
 ![BatCave Monitor network detail view](docs/images/batcave-monitor-network-detail.png)
 
+Screenshots show the cockpit UI. Browser fixture screenshots prove layout and interaction only; native collector proof requires the desktop app with the runtime status/source showing native telemetry.
+
 ## What It Shows
 
-- A live process explorer with CPU, memory, disk, and estimated per-process network columns.
+- A live process explorer with CPU, memory, disk/I/O columns, plus selected-process network attribution when available.
 - A system inspector for CPU, memory, disk, and network detail, including logical-core charts and runtime health.
 - A selected-process panel with PID, parent PID, CPU, kernel CPU, memory, private bytes, disk totals, thread count, handle count, access state, process path, and network attribution when available.
 - Pause/resume, manual refresh, refresh cadence, search, sort, focus modes, chart history length, and theme controls.
@@ -132,6 +134,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-ba
 ```
 
 Linux equivalents are available at `scripts/run-benchmark.sh` and `scripts/capture-benchmark-baseline.sh`.
+
+In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
 
 ## More Documentation
 
