@@ -1192,7 +1192,6 @@
       <button type="button" onclick={() => setAdminMode(!snapshot.settings.admin_mode_requested)}>
         {snapshot.settings.admin_mode_requested ? "Use standard" : "Request admin"}
       </button>
-      <button type="button" onclick={resetHistory}>Reset</button>
     </div>
     {#if commandError}
       <p class="command-error inline-command-error" role="alert">{commandError}</p>
@@ -1257,6 +1256,9 @@
           </button>
         {/each}
       </div>
+    </div>
+    <div class="control-actions reset-actions">
+      <button type="button" onclick={resetHistory}>Reset</button>
     </div>
   </section>
 
