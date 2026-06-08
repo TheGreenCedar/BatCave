@@ -84,6 +84,20 @@ Linux:
 bash scripts/validate-tauri.sh
 ```
 
+Fast recovery loops after a successful full build:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1 -NoBuild
+```
+
+```bash
+bash scripts/validate-tauri.sh --skip-bundle
+bash scripts/run-dev.sh --no-build
+```
+
+Use `-SkipBundle`/`--skip-bundle` and `-NoBuild`/`--no-build` only after a successful full build and only when the edit does not affect packaging or generated assets.
+
 The validation scripts run frontend checks, Rust formatting, Rust check, Rust tests, and the Tauri bundle unless explicitly skipped.
 
 Build platform bundles from this app directory:
@@ -104,7 +118,7 @@ The native app exposes a small snake_case JSON contract through Tauri commands:
 - `pause_runtime`
 - `resume_runtime`
 - `set_admin_mode`
-- `set_query`
+- `set_process_query`
 
 The Rust runtime store owns settings, pause/resume state, refresh cadence, query shaping, admin-mode preference, warm cache, diagnostics, health budgets, byte-rate derivation, and local JSON persistence.
 
@@ -144,6 +158,8 @@ bash scripts/capture-benchmark-baseline.sh --benchmark-host core
 ```
 
 Benchmarks run through the Rust runtime host and emit generated artifacts under `artifacts/benchmarks`.
+
+In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
 
 ## Production Notes
 
