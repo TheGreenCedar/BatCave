@@ -198,13 +198,14 @@
   ];
 
   let fixtureTick = 0;
-  let snapshot: RuntimeSnapshot = makeFixtureSnapshot(fixtureTick);
-  let selectedPid = snapshot.processes[0]?.pid ?? "";
+  let snapshot: RuntimeSnapshot = makeEmptySnapshot();
+  let selectedPid = "";
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
   let commandError = "";
   let copyStatus = "";
   let isPaused = false;
+  let hasNativeSnapshot = false;
   let hasHydratedRuntimeSettings = false;
   let pollIntervalMs: (typeof pollIntervals)[number] = 1000;
   let searchText = "";
@@ -378,7 +379,11 @@
       historyPointLimit = savedHistoryPointLimit;
     }
 
-    ingest(snapshot);
+    if (!hasTauriRuntime()) {
+      snapshot = makeFixtureSnapshot(fixtureTick);
+      selectedPid = snapshot.processes[0]?.pid ?? "";
+      ingest(snapshot);
+    }
 
     const loop = async () => {
       if (!isPaused) {
@@ -420,16 +425,88 @@
       const nativeSnapshot = await invoke<RuntimeSnapshot>("get_snapshot");
       pollState = "native";
       lastError = "";
+      hasNativeSnapshot = true;
       return nativeSnapshot;
     } catch (error) {
       pollState = "error";
       lastError = commandErrorMessage(error, "Native telemetry is unavailable.");
-      return snapshot;
+      return hasNativeSnapshot ? snapshot : makeEmptySnapshot(lastError);
     }
   }
 
   function hasTauriRuntime(): boolean {
-    return "__TAURI_INTERNALS__" in window;
+    return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  }
+
+  function makeEmptySnapshot(statusSummary = "Waiting for native telemetry."): RuntimeSnapshot {
+    const now = Date.now();
+
+    return {
+      event_kind: "runtime_snapshot",
+      seq: 0,
+      ts_ms: now,
+      source: "tauri_runtime",
+      settings: {
+        query: {
+          filter_text: "",
+          sort_column: "attention",
+          sort_direction: "desc",
+          limit: 5000,
+        },
+        admin_mode_requested: false,
+        admin_mode_enabled: false,
+        metric_window_seconds: 60,
+        paused: false,
+      },
+      health: {
+        tick_count: 0,
+        snapshot_latency_ms: 0,
+        degraded: true,
+        collector_warnings: statusSummary ? 1 : 0,
+        runtime_loop_enabled: true,
+        runtime_loop_running: false,
+        status_summary: statusSummary,
+        updated_at_ms: now,
+        tick_p95_ms: 0,
+        sort_p95_ms: 0,
+        jitter_p95_ms: 0,
+        dropped_ticks: 0,
+        app_cpu_percent: 0,
+        app_rss_bytes: 0,
+        last_warning: statusSummary,
+      },
+      system: {
+        cpu_percent: 0,
+        kernel_cpu_percent: 0,
+        logical_cpu_percent: [],
+        memory_used_bytes: 0,
+        memory_total_bytes: 0,
+        memory_available_bytes: 0,
+        swap_used_bytes: 0,
+        swap_total_bytes: 0,
+        process_count: 0,
+        disk_read_total_bytes: 0,
+        disk_write_total_bytes: 0,
+        disk_read_bps: 0,
+        disk_write_bps: 0,
+        network_received_total_bytes: 0,
+        network_transmitted_total_bytes: 0,
+        network_received_bps: 0,
+        network_transmitted_bps: 0,
+        quality: {
+          cpu: { quality: "unavailable", source: "runtime", message: statusSummary },
+          kernel_cpu: { quality: "unavailable", source: "runtime", message: statusSummary },
+          logical_cpu: { quality: "unavailable", source: "runtime", message: statusSummary },
+          memory: { quality: "unavailable", source: "runtime", message: statusSummary },
+          swap: { quality: "unavailable", source: "runtime", message: statusSummary },
+          disk: { quality: "unavailable", source: "runtime", message: statusSummary },
+          network: { quality: "unavailable", source: "runtime", message: statusSummary },
+        },
+      },
+      processes: [],
+      total_process_count: 0,
+      warnings: [],
+    };
   }
 
   function isThemeName(value: string | null): value is ThemeName {
@@ -554,6 +631,7 @@
     lastError = "";
     commandError = "";
     copyStatus = "";
+    hasNativeSnapshot = true;
     ingest(next);
   }
 
@@ -647,7 +725,7 @@
   }
 
   function hydrateRuntimeControls(next: RuntimeSnapshot): void {
-    if (next.source === "fixture" || hasHydratedRuntimeSettings) {
+    if (next.source === "fixture" || hasHydratedRuntimeSettings || (!hasNativeSnapshot && pollState === "error")) {
       return;
     }
 
