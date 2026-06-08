@@ -130,8 +130,11 @@ fn speedup_passed(
     current_tick_p95_ms: f64,
     min_speedup: Option<f64>,
 ) -> bool {
-    let (Some(baseline), Some(min_speedup)) = (baseline, min_speedup) else {
+    let Some(min_speedup) = min_speedup else {
         return true;
+    };
+    let Some(baseline) = baseline else {
+        return false;
     };
     if current_tick_p95_ms <= 0.0 {
         return true;
@@ -277,6 +280,11 @@ mod tests {
 
         assert!(speedup_passed(Some(&baseline), 10.0, Some(2.0)));
         assert!(!speedup_passed(Some(&baseline), 80.0, Some(2.0)));
-        assert!(speedup_passed(None, 80.0, Some(2.0)));
+        assert!(speedup_passed(None, 80.0, None));
+    }
+
+    #[test]
+    fn speedup_gate_fails_when_min_speedup_lacks_baseline() {
+        assert!(!speedup_passed(None, 80.0, Some(2.0)));
     }
 }
