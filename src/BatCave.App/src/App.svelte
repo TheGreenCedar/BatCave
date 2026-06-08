@@ -16,7 +16,7 @@
   } from "./lib/types";
 
   type FocusMode = "all" | "active" | "io";
-  type SortKey = "name" | "pid" | "cpu" | "memory" | "io" | "read" | "write" | "status";
+  type SortKey = "attention" | "name" | "pid" | "cpu" | "memory" | "io" | "read" | "write" | "status";
   type DetailMode = "cpu" | "memory" | "disk" | "network";
   type ThemeName = "cave" | "aurora" | "ember" | "daylight";
   type ThemePreference = "system" | ThemeName;
@@ -24,6 +24,7 @@
   interface ThemeOption {
     name: ThemePreference;
     label: string;
+    ariaLabel: string;
   }
 
   interface ChartPalette {
@@ -82,11 +83,11 @@
   const themeStorageKey = "batcave.monitor.theme";
   const historyStorageKey = "batcave.monitor.history-points";
   const themeOptions: ThemeOption[] = [
-    { name: "system", label: "System" },
-    { name: "cave", label: "Cave" },
-    { name: "aurora", label: "Aurora" },
-    { name: "ember", label: "Ember" },
-    { name: "daylight", label: "Daylight" },
+    { name: "system", label: "System", ariaLabel: "Use system theme" },
+    { name: "cave", label: "Cave", ariaLabel: "Use Cave low-light monitoring theme" },
+    { name: "aurora", label: "Aurora", ariaLabel: "Use Aurora cool monitoring theme" },
+    { name: "ember", label: "Ember", ariaLabel: "Use Ember warm monitoring theme" },
+    { name: "daylight", label: "Daylight", ariaLabel: "Use Daylight high-visibility theme" },
   ];
   const chartPalettes: Record<ThemeName, ChartPalette> = {
     cave: {
@@ -160,12 +161,14 @@
     { value: "io", label: "I/O" },
   ];
   const sortOptions: { value: SortKey; label: string }[] = [
+    { value: "attention", label: "Attention" },
     { value: "cpu", label: "CPU" },
     { value: "memory", label: "Memory" },
     { value: "io", label: "I/O" },
     { value: "name", label: "Name" },
   ];
   const sortColumnByKey: Record<SortKey, SortColumn> = {
+    attention: "attention",
     name: "name",
     pid: "pid",
     cpu: "cpu_pct",
@@ -176,6 +179,7 @@
     status: "name",
   };
   const sortKeyByColumn: Partial<Record<SortColumn, SortKey>> = {
+    attention: "attention",
     cpu_pct: "cpu",
     memory_bytes: "memory",
     disk_bps: "io",
@@ -194,17 +198,19 @@
   ];
 
   let fixtureTick = 0;
-  let snapshot: RuntimeSnapshot = makeFixtureSnapshot(fixtureTick);
-  let selectedPid = snapshot.processes[0]?.pid ?? "";
+  let snapshot: RuntimeSnapshot = makeEmptySnapshot();
+  let selectedPid = "";
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
   let commandError = "";
+  let copyStatus = "";
   let isPaused = false;
+  let hasNativeSnapshot = false;
   let hasHydratedRuntimeSettings = false;
   let pollIntervalMs: (typeof pollIntervals)[number] = 1000;
   let searchText = "";
   let focusMode: FocusMode = "all";
-  let sortKey: SortKey = "cpu";
+  let sortKey: SortKey = "attention";
   let sortDirection: SortDirection = "desc";
   let detailMode: DetailMode = "cpu";
   let themePreference: ThemePreference = "system";
@@ -228,7 +234,14 @@
   $: selectedProcess = filteredProcesses.find((process) => process.pid === selectedPid) ?? null;
   $: topProcess = filteredProcesses[0] ?? null;
   $: warnings =
-    snapshot.warnings.length > 0 ? snapshot.warnings.map((warning) => warning.message) : lastError ? [lastError] : [];
+    snapshot.warnings.length > 0
+      ? snapshot.warnings
+          .slice()
+          .reverse()
+          .map((warning) => warning.message)
+      : lastError
+        ? [lastError]
+        : [];
   $: sourceLabel =
     snapshot.source === "batcave_runtime" ||
     snapshot.source === "tauri_runtime" ||
@@ -366,7 +379,11 @@
       historyPointLimit = savedHistoryPointLimit;
     }
 
-    ingest(snapshot);
+    if (!hasTauriRuntime()) {
+      snapshot = makeFixtureSnapshot(fixtureTick);
+      selectedPid = snapshot.processes[0]?.pid ?? "";
+      ingest(snapshot);
+    }
 
     const loop = async () => {
       if (!isPaused) {
@@ -408,17 +425,88 @@
       const nativeSnapshot = await invoke<RuntimeSnapshot>("get_snapshot");
       pollState = "native";
       lastError = "";
+      hasNativeSnapshot = true;
       return nativeSnapshot;
     } catch (error) {
-      fixtureTick += 1;
-      pollState = "fixture";
-      lastError = error instanceof Error ? error.message : "Native telemetry unavailable in browser dev mode.";
-      return makeFixtureSnapshot(fixtureTick);
+      pollState = "error";
+      lastError = commandErrorMessage(error, "Native telemetry is unavailable.");
+      return hasNativeSnapshot ? snapshot : makeEmptySnapshot(lastError);
     }
   }
 
   function hasTauriRuntime(): boolean {
-    return "__TAURI_INTERNALS__" in window;
+    return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  }
+
+  function makeEmptySnapshot(statusSummary = "Waiting for native telemetry."): RuntimeSnapshot {
+    const now = Date.now();
+
+    return {
+      event_kind: "runtime_snapshot",
+      seq: 0,
+      ts_ms: now,
+      source: "tauri_runtime",
+      settings: {
+        query: {
+          filter_text: "",
+          sort_column: "attention",
+          sort_direction: "desc",
+          limit: 5000,
+        },
+        admin_mode_requested: false,
+        admin_mode_enabled: false,
+        metric_window_seconds: 60,
+        paused: false,
+      },
+      health: {
+        tick_count: 0,
+        snapshot_latency_ms: 0,
+        degraded: true,
+        collector_warnings: statusSummary ? 1 : 0,
+        runtime_loop_enabled: true,
+        runtime_loop_running: false,
+        status_summary: statusSummary,
+        updated_at_ms: now,
+        tick_p95_ms: 0,
+        sort_p95_ms: 0,
+        jitter_p95_ms: 0,
+        dropped_ticks: 0,
+        app_cpu_percent: 0,
+        app_rss_bytes: 0,
+        last_warning: statusSummary,
+      },
+      system: {
+        cpu_percent: 0,
+        kernel_cpu_percent: 0,
+        logical_cpu_percent: [],
+        memory_used_bytes: 0,
+        memory_total_bytes: 0,
+        memory_available_bytes: 0,
+        swap_used_bytes: 0,
+        swap_total_bytes: 0,
+        process_count: 0,
+        disk_read_total_bytes: 0,
+        disk_write_total_bytes: 0,
+        disk_read_bps: 0,
+        disk_write_bps: 0,
+        network_received_total_bytes: 0,
+        network_transmitted_total_bytes: 0,
+        network_received_bps: 0,
+        network_transmitted_bps: 0,
+        quality: {
+          cpu: { quality: "unavailable", source: "runtime", message: statusSummary },
+          kernel_cpu: { quality: "unavailable", source: "runtime", message: statusSummary },
+          logical_cpu: { quality: "unavailable", source: "runtime", message: statusSummary },
+          memory: { quality: "unavailable", source: "runtime", message: statusSummary },
+          swap: { quality: "unavailable", source: "runtime", message: statusSummary },
+          disk: { quality: "unavailable", source: "runtime", message: statusSummary },
+          network: { quality: "unavailable", source: "runtime", message: statusSummary },
+        },
+      },
+      processes: [],
+      total_process_count: 0,
+      warnings: [],
+    };
   }
 
   function isThemeName(value: string | null): value is ThemeName {
@@ -542,11 +630,32 @@
     pollState = "native";
     lastError = "";
     commandError = "";
+    copyStatus = "";
+    hasNativeSnapshot = true;
     ingest(next);
   }
 
   function commandErrorMessage(error: unknown, fallback: string): string {
-    return error instanceof Error ? error.message : fallback;
+    if (error instanceof Error && error.message.trim()) {
+      return error.message;
+    }
+
+    if (typeof error === "string" && error.trim()) {
+      return error;
+    }
+
+    if (error && typeof error === "object") {
+      try {
+        const serialized = JSON.stringify(error);
+        if (serialized) {
+          return serialized;
+        }
+      } catch {
+        return fallback;
+      }
+    }
+
+    return fallback;
   }
 
   function ingest(next: RuntimeSnapshot): void {
@@ -616,7 +725,7 @@
   }
 
   function hydrateRuntimeControls(next: RuntimeSnapshot): void {
-    if (next.source === "fixture" || hasHydratedRuntimeSettings) {
+    if (next.source === "fixture" || hasHydratedRuntimeSettings || (!hasNativeSnapshot && pollState === "error")) {
       return;
     }
 
@@ -629,38 +738,15 @@
 
   function selectProcess(pid: string): void {
     selectedPid = pid;
+    copyStatus = "";
     const process = snapshot.processes.find((candidate) => candidate.pid === pid);
     if (process) {
       resetProcessHistory(process);
     }
   }
 
-  function selectProcessFromKeyboard(event: KeyboardEvent, pid: string): void {
-    if (event.key !== "Enter" && event.key !== " ") {
-      return;
-    }
-
-    event.preventDefault();
-    selectProcess(pid);
-  }
-
   function setDetailMode(mode: DetailMode): void {
     detailMode = mode;
-
-    window.requestAnimationFrame(() => {
-      const detailPanelElement = document.getElementById("resource-detail-panel");
-
-      if (!detailPanelElement) {
-        return;
-      }
-
-      const bounds = detailPanelElement.getBoundingClientRect();
-      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-
-      if (bounds.top > viewportHeight * 0.62) {
-        window.scrollBy({ top: bounds.top - 72, behavior: "auto" });
-      }
-    });
   }
 
   function resetProcessHistory(process: ProcessSample): void {
@@ -816,6 +902,8 @@
     const factor = direction === "asc" ? 1 : -1;
 
     switch (key) {
+      case "attention":
+        return compareNumber(attentionScore(left), attentionScore(right), direction) || compareText(left.name, right.name);
       case "name":
         return compareText(left.name, right.name) * factor || compareText(left.pid, right.pid) * factor;
       case "pid":
@@ -840,6 +928,14 @@
     return direction === "asc" ? left - right : right - left;
   }
 
+  function attentionScore(process: ProcessSample): number {
+    const cpuWeight = process.cpu_percent * 6;
+    const memoryWeight = percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1)) * 2;
+    const ioWeight = Math.min(processIoRate(process) / 1024 / 1024, 100) * 3;
+    const accessWeight = process.access_state === "denied" ? 18 : process.access_state === "partial" ? 8 : 0;
+    return cpuWeight + memoryWeight + ioWeight + accessWeight;
+  }
+
   function compareText(left: string, right: string): number {
     return left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
   }
@@ -856,7 +952,7 @@
   }
 
   function defaultSortDirection(key: SortKey): SortDirection {
-    return key === "name" || key === "pid" || key === "status" ? "asc" : "desc";
+    return key === "attention" || key === "cpu" || key === "memory" || key === "io" ? "desc" : "asc";
   }
 
   function sortColumnForKey(key: SortKey): SortColumn {
@@ -864,7 +960,7 @@
   }
 
   function sortKeyForColumn(column: SortColumn): SortKey {
-    return sortKeyByColumn[column] ?? "cpu";
+    return sortKeyByColumn[column] ?? "attention";
   }
 
   function sortAriaValue(
@@ -959,6 +1055,38 @@
     return source ? `${quality} / ${source}` : quality;
   }
 
+  function metricQualityAction(metric: MetricQualityInfo | undefined): string {
+    if (!metric) {
+      return "no metadata";
+    }
+
+    if (metric.message) {
+      return metric.message;
+    }
+
+    if (metric.quality === "held") {
+      return "waiting for sample";
+    }
+
+    if (metric.quality === "partial") {
+      return "fallback/incomplete source";
+    }
+
+    if (metric.quality === "unavailable") {
+      return "unavailable/permissions";
+    }
+
+    if (metric.source === "etw") {
+      return "Windows ETW active";
+    }
+
+    if (metric.source === "ebpf") {
+      return "Linux eBPF active";
+    }
+
+    return "current runtime source";
+  }
+
   function formatMetricQuality(value: MetricQuality): string {
     switch (value) {
       case "native":
@@ -1011,6 +1139,40 @@
     return metricQualityLabel(quality, "Unavailable");
   }
 
+  function processSummary(process: ProcessSample): string {
+    return [
+      "BatCave process snapshot",
+      `Name: ${process.name}`,
+      `PID: ${process.pid}`,
+      `Parent PID: ${process.parent_pid ?? "--"}`,
+      `Status: ${process.status}`,
+      `CPU: ${formatPercent(process.cpu_percent)}`,
+      `Memory: ${formatBytes(process.memory_bytes)}`,
+      `I/O rate: ${formatRate(processIoRate(process))}`,
+      `Network: ${processNetworkLabel(process)}`,
+      `Access: ${accessLabel(process)}`,
+      `Path: ${process.exe || "Path unavailable"}`,
+      `Snapshot seq: ${snapshot.seq}`,
+      `Snapshot source: ${snapshot.source}`,
+    ].join("\n");
+  }
+
+  async function copySelectedProcessSummary(): Promise<void> {
+    if (!selectedProcess) {
+      copyStatus = "No selected process to copy.";
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(processSummary(selectedProcess));
+      copyStatus = "Process summary copied.";
+      commandError = "";
+    } catch (error) {
+      copyStatus = "";
+      commandError = commandErrorMessage(error, "Unable to copy process summary.");
+    }
+  }
+
   function processAccent(process: ProcessSample | undefined): string {
     if (!process) {
       return "Idle";
@@ -1044,7 +1206,7 @@
       return "I/O lead";
     }
 
-    return "watch";
+    return "steady";
   }
 
   function maxRate(points: number[], fallback: number): number {
@@ -1072,6 +1234,7 @@
           <button
             class:active={themePreference === theme.name}
             type="button"
+            aria-label={theme.ariaLabel}
             aria-pressed={themePreference === theme.name}
             onclick={() => setTheme(theme.name)}
           >
@@ -1087,10 +1250,100 @@
     </div>
   </header>
 
+  <section class="command-bar" aria-label="Monitor controls">
+    <div class="control-group grow">
+      <label for="process-search">Find</label>
+      <input
+        id="process-search"
+        class="search-input"
+        bind:value={searchText}
+        oninput={(event) => setSearchText(event.currentTarget.value)}
+        placeholder="Process, PID, or path"
+        autocomplete="off"
+      />
+    </div>
+    <div class="control-actions">
+      <button class="primary-action" type="button" onclick={() => setPaused(!isPaused)}>
+        {isPaused ? "Resume" : "Pause"}
+      </button>
+      <button type="button" onclick={refreshNow}>Refresh</button>
+      <button type="button" onclick={() => setAdminMode(!snapshot.settings.admin_mode_requested)}>
+        {snapshot.settings.admin_mode_requested ? "Use standard" : "Request admin"}
+      </button>
+    </div>
+    {#if commandError}
+      <p class="command-error inline-command-error" role="alert">{commandError}</p>
+    {/if}
+    <div class="control-group focus-group">
+      <span>Focus</span>
+      <div class="segmented" role="group" aria-label="Process focus">
+        {#each focusOptions as option}
+          <button
+            class:active={focusMode === option.value}
+            type="button"
+            aria-pressed={focusMode === option.value}
+            onclick={() => (focusMode = option.value)}
+          >
+            {option.label}
+          </button>
+        {/each}
+      </div>
+    </div>
+    <div class="control-group sort-group">
+      <span>Sort</span>
+      <div class="segmented" role="group" aria-label="Process sort">
+        {#each sortOptions as option}
+          <button
+            class:active={sortKey === option.value}
+            type="button"
+            aria-pressed={sortKey === option.value}
+            onclick={() => setSortKey(option.value)}
+          >
+            {option.label}
+          </button>
+        {/each}
+      </div>
+    </div>
+    <div class="control-group refresh-group">
+      <span>Refresh rate</span>
+      <div class="segmented" role="group" aria-label="Refresh rate">
+        {#each pollIntervals as interval}
+          <button
+            class:active={pollIntervalMs === interval}
+            type="button"
+            aria-pressed={pollIntervalMs === interval}
+            onclick={() => (pollIntervalMs = interval)}
+          >
+            {formatInterval(interval)}
+          </button>
+        {/each}
+      </div>
+    </div>
+    <div class="control-group history-group">
+      <span>History</span>
+      <div class="segmented" role="group" aria-label="Chart history length">
+        {#each historyPointOptions as option}
+          <button
+            class:active={historyPointLimit === option}
+            type="button"
+            aria-pressed={historyPointLimit === option}
+            aria-label={`Show last ${option} chart samples`}
+            onclick={() => setHistoryPointLimit(option)}
+          >
+            {option}
+          </button>
+        {/each}
+      </div>
+    </div>
+    <div class="control-actions reset-actions">
+      <button type="button" onclick={resetHistory}>Reset</button>
+    </div>
+  </section>
+
   <section class="metric-band" aria-label="System metrics">
     {#each metricCards as card (card.ariaLabel)}
       <button
-        class="metric-card"
+        class={`metric-card metric-card-${card.mode}`}
         class:active={detailMode === card.mode}
         type="button"
         aria-controls="resource-detail-panel"
@@ -1174,19 +1427,19 @@
           </thead>
           <tbody>
             {#each filteredProcesses as process}
-              <tr
-                class:selected={process.pid === selectedPid}
-                tabindex="0"
-                aria-selected={process.pid === selectedPid}
-                aria-label={`Select ${process.name}, PID ${process.pid}`}
-                onclick={() => selectProcess(process.pid)}
-                onkeydown={(event) => selectProcessFromKeyboard(event, process.pid)}
-              >
+              <tr class:selected={process.pid === selectedPid}>
                 <td>
-                  <span class="process-button" class:selected={process.pid === selectedPid}>
+                  <button
+                    class="process-button"
+                    class:selected={process.pid === selectedPid}
+                    type="button"
+                    aria-pressed={process.pid === selectedPid}
+                    aria-label={`Inspect ${process.name}, PID ${process.pid}`}
+                    onclick={() => selectProcess(process.pid)}
+                  >
                     <span>{process.name}</span>
                     <small>{processHint(process)}</small>
-                  </span>
+                  </button>
                 </td>
                 <td>{process.pid}</td>
                 <td>{formatPercent(process.cpu_percent)}</td>
@@ -1248,7 +1501,14 @@
           <p class="eyebrow">Selected process</p>
           <h2>{selectedProcess?.name ?? "No process"}</h2>
         </div>
-        <strong>{processAccent(selectedProcess ?? undefined)}</strong>
+        {#if selectedProcess}
+          <div class="heading-actions">
+            <strong>{processAccent(selectedProcess)}</strong>
+            <button class="subtle-action" type="button" onclick={copySelectedProcessSummary}>Copy</button>
+          </div>
+        {:else}
+          <strong>{processAccent(undefined)}</strong>
+        {/if}
       </div>
       {#if selectedProcess}
         <div class="inspector-charts" aria-label="Selected process trends">
@@ -1331,6 +1591,9 @@
           </div>
         </dl>
         <p class="path">{selectedProcess.exe || "Path unavailable"}</p>
+        {#if copyStatus}
+          <p class="copy-status" role="status" aria-live="polite">{copyStatus}</p>
+        {/if}
       {:else}
         <div class="empty-panel">
           <strong>No selected process</strong>
@@ -1338,91 +1601,6 @@
         </div>
       {/if}
     </aside>
-  </section>
-
-  <section class="command-bar" aria-label="Monitor controls">
-    <div class="control-group grow">
-      <label for="process-search">Find</label>
-      <input
-        id="process-search"
-        class="search-input"
-        bind:value={searchText}
-        oninput={(event) => setSearchText(event.currentTarget.value)}
-        placeholder="Process, PID, or path"
-        autocomplete="off"
-      />
-    </div>
-    <div class="control-group focus-group">
-      <span>Focus</span>
-      <div class="segmented" role="group" aria-label="Process focus">
-        {#each focusOptions as option}
-          <button
-            class:active={focusMode === option.value}
-            type="button"
-            aria-pressed={focusMode === option.value}
-            onclick={() => (focusMode = option.value)}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-group sort-group">
-      <span>Sort</span>
-      <div class="segmented" role="group" aria-label="Process sort">
-        {#each sortOptions as option}
-          <button
-            class:active={sortKey === option.value}
-            type="button"
-            aria-pressed={sortKey === option.value}
-            onclick={() => setSortKey(option.value)}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-group refresh-group">
-      <span>Refresh</span>
-      <div class="segmented" role="group" aria-label="Refresh rate">
-        {#each pollIntervals as interval}
-          <button
-            class:active={pollIntervalMs === interval}
-            type="button"
-            aria-pressed={pollIntervalMs === interval}
-            onclick={() => (pollIntervalMs = interval)}
-          >
-            {formatInterval(interval)}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-group history-group">
-      <span>History</span>
-      <div class="segmented" role="group" aria-label="Chart history length">
-        {#each historyPointOptions as option}
-          <button
-            class:active={historyPointLimit === option}
-            type="button"
-            aria-pressed={historyPointLimit === option}
-            aria-label={`Show last ${option} chart samples`}
-            onclick={() => setHistoryPointLimit(option)}
-          >
-            {option}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-actions">
-      <button class="primary-action" type="button" onclick={() => setPaused(!isPaused)}>
-        {isPaused ? "Resume" : "Pause"}
-      </button>
-      <button type="button" onclick={refreshNow}>Refresh</button>
-      <button type="button" onclick={() => setAdminMode(!snapshot.settings.admin_mode_requested)}>
-        {snapshot.settings.admin_mode_requested ? "Use standard" : "Request admin"}
-      </button>
-      <button type="button" onclick={resetHistory}>Reset</button>
-    </div>
   </section>
 
   <section class="details-grid">
@@ -1434,7 +1612,7 @@
       <div class="panel-heading">
         <div>
           <p class="eyebrow">Detail view</p>
-          <h2>{detailTitle}</h2>
+          <h2 tabindex="-1">{detailTitle}</h2>
         </div>
         <strong>{detailReadout}</strong>
       </div>
@@ -1624,15 +1802,24 @@
         </div>
         <div>
           <dt>CPU quality</dt>
-          <dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd>
+          <dd>
+            {metricQualityLabel(systemQuality.cpu, "Legacy")}
+            <small>{metricQualityAction(systemQuality.cpu)}</small>
+          </dd>
         </div>
         <div>
           <dt>Disk quality</dt>
-          <dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd>
+          <dd>
+            {metricQualityLabel(systemQuality.disk, "Legacy")}
+            <small>{metricQualityAction(systemQuality.disk)}</small>
+          </dd>
         </div>
         <div>
           <dt>Network quality</dt>
-          <dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd>
+          <dd>
+            {metricQualityLabel(systemQuality.network, "Aggregate")}
+            <small>{metricQualityAction(systemQuality.network)}</small>
+          </dd>
         </div>
         <div>
           <dt>App CPU</dt>
@@ -1672,18 +1859,25 @@
           <dt>Visible rows</dt>
           <dd>{filteredProcesses.length}</dd>
         </div>
+        <div>
+          <dt>Warnings</dt>
+          <dd>{snapshot.warnings.length}</dd>
+        </div>
       </dl>
-      {#if commandError}
-        <p class="command-error" role="status" aria-live="polite">{commandError}</p>
-      {/if}
-      {#if warnings.length}
+      {#if pollState === "error"}
+        <p class="command-error" role="status" aria-live="polite">{lastError}</p>
+      {:else if warnings.length}
         <ul class="warnings" aria-label="Collector warnings" aria-live="polite">
           {#each warnings.slice(0, 3) as warning}
             <li>{warning}</li>
           {/each}
         </ul>
+      {:else if pollState === "fixture"}
+        <p class="quiet-note">
+          Browser fixture mode is running deterministic demo telemetry. Native collector proof requires the desktop app.
+        </p>
       {:else}
-        <p class="quiet-note">Collector is steady. Native telemetry is local-only and running without warnings.</p>
+        <p class="quiet-note">Local collectors are steady. Native telemetry is local-only and running without warnings.</p>
       {/if}
     </aside>
   </section>
