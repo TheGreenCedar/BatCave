@@ -27,6 +27,7 @@ npm run verify
 cargo fmt --manifest-path "$cargo_manifest" --check
 cargo check --manifest-path "$cargo_manifest"
 cargo test --manifest-path "$cargo_manifest"
+cargo run --manifest-path "$cargo_manifest" -- --benchmark --ticks 2 --sleep-ms 0 --strict --max-p95-ms 10000
 
 if [[ "$skip_bundle" -eq 0 ]]; then
   npm run "$tauri_build_script"
