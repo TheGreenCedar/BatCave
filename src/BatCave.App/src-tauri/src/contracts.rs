@@ -278,7 +278,7 @@ impl Default for RuntimeQuery {
     fn default() -> Self {
         Self {
             filter_text: String::new(),
-            sort_column: SortColumn::CpuPct,
+            sort_column: SortColumn::Attention,
             sort_direction: SortDirection::Desc,
             limit: default_query_limit(),
         }
@@ -287,7 +287,7 @@ impl Default for RuntimeQuery {
 
 impl Default for SortColumn {
     fn default() -> Self {
-        Self::CpuPct
+        Self::Attention
     }
 }
 
@@ -554,10 +554,41 @@ mod tests {
         .expect("minimal persisted settings deserialize");
 
         assert_eq!(settings.query.filter_text, "code");
+        assert_eq!(settings.query.sort_column, SortColumn::CpuPct);
+        assert_eq!(settings.query.sort_direction, SortDirection::Desc);
+        assert_eq!(settings.query.limit, 5000);
         assert!(!settings.admin_mode_requested);
         assert!(!settings.admin_mode_enabled);
         assert_eq!(settings.metric_window_seconds, 60);
         assert!(!settings.paused);
+    }
+
+    #[test]
+    fn runtime_settings_default_to_attention_triage() {
+        let fresh_settings = RuntimeSettings::default();
+        assert_eq!(fresh_settings.query.sort_column, SortColumn::Attention);
+        assert_eq!(fresh_settings.query.sort_direction, SortDirection::Desc);
+
+        let persisted_settings: RuntimeSettings =
+            serde_json::from_value(json!({})).expect("empty persisted settings deserialize");
+        assert_eq!(persisted_settings.query.sort_column, SortColumn::Attention);
+        assert_eq!(persisted_settings.query.sort_direction, SortDirection::Desc);
+
+        let partial_query_settings: RuntimeSettings = serde_json::from_value(json!({
+            "query": {
+                "filter_text": "code"
+            }
+        }))
+        .expect("partial persisted query deserializes");
+        assert_eq!(partial_query_settings.query.filter_text, "code");
+        assert_eq!(
+            partial_query_settings.query.sort_column,
+            SortColumn::Attention
+        );
+        assert_eq!(
+            partial_query_settings.query.sort_direction,
+            SortDirection::Desc
+        );
     }
 
     #[test]
