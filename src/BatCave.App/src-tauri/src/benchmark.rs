@@ -56,6 +56,9 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
 
 fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> {
     let ticks = parse_usize(args, "--ticks", 120)?;
+    if ticks == 0 {
+        return Err("invalid_argument:--ticks:must_be_greater_than_zero".to_string());
+    }
     let sleep_ms = parse_u64(args, "--sleep-ms", 1000)?;
     let strict = args.iter().any(|arg| arg == "--strict");
     let max_p95_ms = parse_optional_f64(args, "--max-p95-ms")?;
@@ -230,6 +233,18 @@ mod tests {
             reject_unknown_args(&args),
             Err("unknown_argument:--wat".to_string())
         );
+    }
+
+    #[test]
+    fn benchmark_rejects_zero_ticks() {
+        let args = vec![
+            "--benchmark".to_string(),
+            "--ticks".to_string(),
+            "0".to_string(),
+        ];
+
+        let error = run_benchmark_from_args(&args).expect_err("zero ticks fail");
+        assert_eq!(error, "invalid_argument:--ticks:must_be_greater_than_zero");
     }
 
     #[test]
