@@ -23,6 +23,14 @@ struct BenchmarkSummary {
     core_speedup_passed: bool,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct BenchmarkBaseline {
+    ticks: usize,
+    sleep_ms: u64,
+    tick_p95_ms: f64,
+}
+
 pub fn run_cli(args: &[String]) -> Option<i32> {
     if !args.iter().any(|arg| arg == "--benchmark") {
         return None;
@@ -32,7 +40,7 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
         Ok(summary) => match serde_json::to_string_pretty(&summary) {
             Ok(payload) => {
                 println!("{payload}");
-                Some(0)
+                Some(if summary.strict_passed { 0 } else { 1 })
             }
             Err(error) => {
                 eprintln!("benchmark_serialize_failed:{error}");
@@ -48,12 +56,15 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
 
 fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> {
     let ticks = parse_usize(args, "--ticks", 120)?;
+    if ticks == 0 {
+        return Err("invalid_argument:--ticks:must_be_greater_than_zero".to_string());
+    }
     let sleep_ms = parse_u64(args, "--sleep-ms", 1000)?;
     let strict = args.iter().any(|arg| arg == "--strict");
     let max_p95_ms = parse_optional_f64(args, "--max-p95-ms")?;
-    let _baseline_json = parse_optional_string(args, "--baseline-json")?;
-    let _min_speedup = parse_optional_f64(args, "--min-speedup-multiplier")?;
+    let min_speedup = parse_optional_f64(args, "--min-speedup-multiplier")?;
     reject_unknown_args(args)?;
+    let baseline = parse_baseline(args, ticks, sleep_ms)?;
 
     let collector = TelemetryCollector::new();
     let mut tick_values = Vec::with_capacity(ticks);
@@ -75,7 +86,9 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
 
     let tick_p95_ms = round1(p95(&tick_values));
     let sort_p95_ms = round1(p95(&sort_values));
-    let strict_passed = !strict || max_p95_ms.map(|max| tick_p95_ms <= max).unwrap_or(true);
+    let max_p95_passed = max_p95_ms.map(|max| tick_p95_ms <= max).unwrap_or(true);
+    let core_speedup_passed = speedup_passed(baseline.as_ref(), tick_p95_ms, min_speedup);
+    let strict_passed = !strict || (max_p95_passed && core_speedup_passed);
 
     Ok(BenchmarkSummary {
         host: "core".to_string(),
@@ -87,9 +100,50 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
         cpu_budget_pct: 6.0,
         rss_budget_bytes: 350 * 1024 * 1024,
         strict_passed,
-        baseline_metadata_matched: false,
-        core_speedup_passed: !strict,
+        baseline_metadata_matched: baseline.is_some(),
+        core_speedup_passed,
     })
+}
+
+fn parse_baseline(
+    args: &[String],
+    expected_ticks: usize,
+    expected_sleep_ms: u64,
+) -> Result<Option<BenchmarkBaseline>, String> {
+    let Some(path) = parse_optional_string(args, "--baseline-json")? else {
+        return Ok(None);
+    };
+
+    let payload = std::fs::read_to_string(&path)
+        .map_err(|error| format!("baseline_json_read_failed path={path} error={error}"))?;
+    let baseline = serde_json::from_str::<BenchmarkBaseline>(&payload)
+        .map_err(|error| format!("baseline_json_parse_failed path={path} error={error}"))?;
+    if baseline.ticks != expected_ticks || baseline.sleep_ms != expected_sleep_ms {
+        return Err(format!(
+            "baseline_metadata_mismatch expected_ticks={} expected_sleep_ms={} actual_ticks={} actual_sleep_ms={}",
+            expected_ticks, expected_sleep_ms, baseline.ticks, baseline.sleep_ms
+        ));
+    }
+
+    Ok(Some(baseline))
+}
+
+fn speedup_passed(
+    baseline: Option<&BenchmarkBaseline>,
+    current_tick_p95_ms: f64,
+    min_speedup: Option<f64>,
+) -> bool {
+    let Some(min_speedup) = min_speedup else {
+        return true;
+    };
+    let Some(baseline) = baseline else {
+        return false;
+    };
+    if current_tick_p95_ms <= 0.0 {
+        return true;
+    }
+
+    baseline.tick_p95_ms / current_tick_p95_ms >= min_speedup
 }
 
 fn reject_unknown_args(args: &[String]) -> Result<(), String> {
@@ -179,5 +233,73 @@ mod tests {
             reject_unknown_args(&args),
             Err("unknown_argument:--wat".to_string())
         );
+    }
+
+    #[test]
+    fn benchmark_rejects_zero_ticks() {
+        let args = vec![
+            "--benchmark".to_string(),
+            "--ticks".to_string(),
+            "0".to_string(),
+        ];
+
+        let error = run_benchmark_from_args(&args).expect_err("zero ticks fail");
+        assert_eq!(error, "invalid_argument:--ticks:must_be_greater_than_zero");
+    }
+
+    #[test]
+    fn missing_baseline_file_fails() {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-missing-baseline-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let args = vec![
+            "--benchmark".to_string(),
+            "--baseline-json".to_string(),
+            path.display().to_string(),
+        ];
+
+        let error = parse_baseline(&args, 2, 0).expect_err("missing baseline fails");
+
+        assert!(error.contains("baseline_json_read_failed"));
+    }
+
+    #[test]
+    fn baseline_metadata_mismatch_fails() {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-mismatch-baseline-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"ticks":120,"sleep_ms":1000,"tick_p95_ms":10.0}"#)
+            .expect("baseline fixture writes");
+        let args = vec![
+            "--benchmark".to_string(),
+            "--baseline-json".to_string(),
+            path.display().to_string(),
+        ];
+
+        let error = parse_baseline(&args, 2, 0).expect_err("metadata mismatch fails");
+
+        std::fs::remove_file(&path).expect("baseline fixture cleanup");
+        assert!(error.contains("baseline_metadata_mismatch"));
+    }
+
+    #[test]
+    fn speedup_gate_uses_baseline_over_current_ratio() {
+        let baseline = BenchmarkBaseline {
+            ticks: 2,
+            sleep_ms: 0,
+            tick_p95_ms: 100.0,
+        };
+
+        assert!(speedup_passed(Some(&baseline), 10.0, Some(2.0)));
+        assert!(!speedup_passed(Some(&baseline), 80.0, Some(2.0)));
+        assert!(speedup_passed(None, 80.0, None));
+    }
+
+    #[test]
+    fn speedup_gate_fails_when_min_speedup_lacks_baseline() {
+        assert!(!speedup_passed(None, 80.0, Some(2.0)));
     }
 }
