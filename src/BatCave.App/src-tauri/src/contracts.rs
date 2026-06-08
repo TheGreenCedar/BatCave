@@ -200,19 +200,28 @@ pub struct RuntimeWarning {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeSettings {
+    #[serde(default)]
     pub query: RuntimeQuery,
+    #[serde(default)]
     pub admin_mode_requested: bool,
+    #[serde(default)]
     pub admin_mode_enabled: bool,
+    #[serde(default = "default_metric_window_seconds")]
     pub metric_window_seconds: u32,
+    #[serde(default)]
     pub paused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeQuery {
+    #[serde(default)]
     pub filter_text: String,
+    #[serde(default)]
     pub sort_column: SortColumn,
+    #[serde(default)]
     pub sort_direction: SortDirection,
+    #[serde(default = "default_query_limit")]
     pub limit: usize,
 }
 
@@ -259,7 +268,7 @@ impl Default for RuntimeSettings {
             query: RuntimeQuery::default(),
             admin_mode_requested: false,
             admin_mode_enabled: false,
-            metric_window_seconds: 60,
+            metric_window_seconds: default_metric_window_seconds(),
             paused: false,
         }
     }
@@ -269,11 +278,31 @@ impl Default for RuntimeQuery {
     fn default() -> Self {
         Self {
             filter_text: String::new(),
-            sort_column: SortColumn::CpuPct,
+            sort_column: SortColumn::Attention,
             sort_direction: SortDirection::Desc,
-            limit: 5000,
+            limit: default_query_limit(),
         }
     }
+}
+
+impl Default for SortColumn {
+    fn default() -> Self {
+        Self::Attention
+    }
+}
+
+impl Default for SortDirection {
+    fn default() -> Self {
+        Self::Desc
+    }
+}
+
+fn default_metric_window_seconds() -> u32 {
+    60
+}
+
+fn default_query_limit() -> usize {
+    5000
 }
 
 impl Default for RuntimeHealth {
@@ -510,6 +539,55 @@ mod tests {
                 "metric_window_seconds": 15,
                 "paused": false
             })
+        );
+    }
+
+    #[test]
+    fn runtime_settings_accepts_minimal_persisted_json() {
+        let settings: RuntimeSettings = serde_json::from_value(json!({
+            "query": {
+                "filter_text": "code",
+                "sort_column": "cpu_pct",
+                "sort_direction": "desc"
+            }
+        }))
+        .expect("minimal persisted settings deserialize");
+
+        assert_eq!(settings.query.filter_text, "code");
+        assert_eq!(settings.query.sort_column, SortColumn::CpuPct);
+        assert_eq!(settings.query.sort_direction, SortDirection::Desc);
+        assert_eq!(settings.query.limit, 5000);
+        assert!(!settings.admin_mode_requested);
+        assert!(!settings.admin_mode_enabled);
+        assert_eq!(settings.metric_window_seconds, 60);
+        assert!(!settings.paused);
+    }
+
+    #[test]
+    fn runtime_settings_default_to_attention_triage() {
+        let fresh_settings = RuntimeSettings::default();
+        assert_eq!(fresh_settings.query.sort_column, SortColumn::Attention);
+        assert_eq!(fresh_settings.query.sort_direction, SortDirection::Desc);
+
+        let persisted_settings: RuntimeSettings =
+            serde_json::from_value(json!({})).expect("empty persisted settings deserialize");
+        assert_eq!(persisted_settings.query.sort_column, SortColumn::Attention);
+        assert_eq!(persisted_settings.query.sort_direction, SortDirection::Desc);
+
+        let partial_query_settings: RuntimeSettings = serde_json::from_value(json!({
+            "query": {
+                "filter_text": "code"
+            }
+        }))
+        .expect("partial persisted query deserializes");
+        assert_eq!(partial_query_settings.query.filter_text, "code");
+        assert_eq!(
+            partial_query_settings.query.sort_column,
+            SortColumn::Attention
+        );
+        assert_eq!(
+            partial_query_settings.query.sort_direction,
+            SortDirection::Desc
         );
     }
 

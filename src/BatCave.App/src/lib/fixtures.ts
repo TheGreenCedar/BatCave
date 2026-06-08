@@ -51,7 +51,7 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
     settings: {
       query: {
         filter_text: "",
-        sort_column: "cpu_pct",
+        sort_column: "attention",
         sort_direction: "desc",
         limit: 5000,
       },
