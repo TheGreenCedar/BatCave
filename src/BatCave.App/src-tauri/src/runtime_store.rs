@@ -355,11 +355,19 @@ impl RuntimeStore {
     ) -> RuntimeHealth {
         let cpu_degraded = app_cpu_percent >= APP_CPU_DEGRADE_PCT;
         let rss_degraded = app_rss_bytes >= APP_RSS_DEGRADE_BYTES;
+        let warning_degraded_count = self
+            .warnings
+            .iter()
+            .filter(|warning| warning_degrades_health(&warning.category))
+            .count();
+        let warning_degraded = warning_degraded_count > 0;
         let last_warning = self.warnings.back().map(|warning| warning.message.clone());
         let status_summary = if self.settings.paused {
             "Paused.".to_string()
         } else if self.settings.admin_mode_requested && !self.settings.admin_mode_enabled {
             "Standard access: admin mode requested but elevation is inactive.".to_string()
+        } else if warning_degraded {
+            format!("Collector warnings present: {warning_degraded_count} retained.")
         } else if cpu_degraded && rss_degraded {
             "Degraded: app CPU and RSS above budget.".to_string()
         } else if cpu_degraded {
@@ -373,7 +381,7 @@ impl RuntimeStore {
         RuntimeHealth {
             tick_count: self.seq,
             snapshot_latency_ms: latency_ms,
-            degraded: cpu_degraded || rss_degraded,
+            degraded: cpu_degraded || rss_degraded || warning_degraded,
             collector_warnings: self.warnings.len(),
             runtime_loop_enabled: true,
             runtime_loop_running: !self.settings.paused,
@@ -435,6 +443,10 @@ impl RuntimeStore {
                 writeln!(file, "{payload}")
             });
     }
+}
+
+fn warning_degrades_health(category: &str) -> bool {
+    matches!(category, "collector" | "admin_mode" | "persistence")
 }
 
 #[derive(Debug, Clone)]
@@ -865,6 +877,31 @@ mod tests {
         assert_eq!(settings.metric_window_seconds, 15);
         assert_eq!(settings.query.filter_text, "code");
         assert_eq!(settings.query.limit, 20_000);
+    }
+
+    #[test]
+    fn collector_warning_marks_health_degraded() {
+        let mut store = RuntimeStore::new();
+        let base_dir = std::env::temp_dir().join(format!(
+            "batcave-runtime-health-warning-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base_dir);
+        store.base_dir = base_dir.clone();
+        store.settings = RuntimeSettings::default();
+        store.warnings.clear();
+        store.add_warning(
+            "collector",
+            "network_attribution_failed:access_denied".to_string(),
+        );
+
+        let health = store.build_health(3, 0.2, 64 * 1024 * 1024);
+
+        assert!(health.degraded);
+        assert_eq!(health.collector_warnings, 1);
+        assert!(health.status_summary.contains("Collector warnings"));
+
+        let _ = fs::remove_dir_all(&base_dir);
     }
 
     #[test]
