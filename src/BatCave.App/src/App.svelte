@@ -1,67 +1,57 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import MiniChart from "./lib/MiniChart.svelte";
+  import ContextRail from "./lib/components/context/ContextRail.svelte";
+  import type { DetailMode, MetricCardOption } from "./lib/components/metrics/types";
+  import MetricStrip from "./lib/components/metrics/MetricStrip.svelte";
+  import ProcessExplorer from "./lib/components/processes/ProcessExplorer.svelte";
+  import AppShell from "./lib/components/shell/AppShell.svelte";
+  import HealthFooter from "./lib/components/shell/HealthFooter.svelte";
+  import Toolbar from "./lib/components/shell/Toolbar.svelte";
+  import TopBar from "./lib/components/shell/TopBar.svelte";
+  import {
+    accessLabel,
+    formatBytes,
+    formatPercent,
+    formatRate,
+    metricQualityLabel,
+    processBytesLabel,
+    processMemoryQuality,
+  } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
+  import {
+    compareProcesses,
+    defaultSortDirection,
+    focusOptions,
+    matchesFocusMode,
+    matchesSearch,
+    processColumns,
+    processIoRate,
+    sortColumnForKey,
+    sortKeyForColumn,
+    sortOptions,
+    type FocusMode,
+    type ProcessRates,
+    type SortKey,
+  } from "./lib/process";
+  import {
+    chartPalettes,
+    parseThemePreference,
+    resolveThemeName,
+    themeOptions,
+    themeStorageKey,
+    type ThemeName,
+    type ThemePreference,
+  } from "./lib/themes";
   import type {
-    MetricQuality,
+    KernelPoolTag,
     MetricQualityInfo,
-    MetricSource,
     ProcessSample,
     RuntimeQuery,
     RuntimeSnapshot,
-    SortColumn,
     SortDirection,
     TrendState,
   } from "./lib/types";
-
-  type FocusMode = "all" | "active" | "io";
-  type SortKey = "attention" | "name" | "pid" | "cpu" | "memory" | "io" | "read" | "write" | "status";
-  type DetailMode = "cpu" | "memory" | "disk" | "network";
-  type ThemeName = "cave" | "aurora" | "ember" | "daylight";
-  type ThemePreference = "system" | ThemeName;
-
-  interface ThemeOption {
-    name: ThemePreference;
-    label: string;
-    ariaLabel: string;
-  }
-
-  interface ChartPalette {
-    cpuStroke: string;
-    cpuFill: string;
-    memoryStroke: string;
-    memoryFill: string;
-    diskReadStroke: string;
-    diskReadFill: string;
-    diskWriteStroke: string;
-    diskWriteFill: string;
-    networkDownStroke: string;
-    networkDownFill: string;
-    networkUpStroke: string;
-    networkUpFill: string;
-    swapStroke: string;
-    swapFill: string;
-  }
-
-  interface MetricCardOption {
-    mode: DetailMode;
-    ariaLabel: string;
-    label: string;
-    value: string;
-    sublabel: string;
-    values: number[];
-    max: number;
-    stroke: string;
-    fill: string;
-    contrastValue: number;
-  }
-
-  interface ProcessColumn {
-    key: SortKey;
-    label: string;
-    metric?: boolean;
-  }
 
   interface ProcessTrendState {
     cpu: number[];
@@ -70,136 +60,16 @@
     writeRate: number[];
   }
 
-  interface ProcessRates {
-    readRate: number;
-    writeRate: number;
-    otherRate: number;
-  }
-
   const historyPointOptions = [30, 72, 180, 360] as const;
   type HistoryPointLimit = (typeof historyPointOptions)[number];
 
   const pollIntervals = [500, 1000, 2000] as const;
-  const themeStorageKey = "batcave.monitor.theme";
   const historyStorageKey = "batcave.monitor.history-points";
-  const themeOptions: ThemeOption[] = [
-    { name: "system", label: "System", ariaLabel: "Use system theme" },
-    { name: "cave", label: "Cave", ariaLabel: "Use Cave low-light monitoring theme" },
-    { name: "aurora", label: "Aurora", ariaLabel: "Use Aurora cool monitoring theme" },
-    { name: "ember", label: "Ember", ariaLabel: "Use Ember warm monitoring theme" },
-    { name: "daylight", label: "Daylight", ariaLabel: "Use Daylight high-visibility theme" },
-  ];
-  const chartPalettes: Record<ThemeName, ChartPalette> = {
-    cave: {
-      cpuStroke: "#72f1b8",
-      cpuFill: "rgba(114, 241, 184, 0.22)",
-      memoryStroke: "#8bd5ff",
-      memoryFill: "rgba(139, 213, 255, 0.22)",
-      diskReadStroke: "#ffd166",
-      diskReadFill: "rgba(255, 209, 102, 0.2)",
-      diskWriteStroke: "#fca5a5",
-      diskWriteFill: "rgba(252, 165, 165, 0.2)",
-      networkDownStroke: "#a78bfa",
-      networkDownFill: "rgba(167, 139, 250, 0.2)",
-      networkUpStroke: "#fb7185",
-      networkUpFill: "rgba(251, 113, 133, 0.2)",
-      swapStroke: "#a78bfa",
-      swapFill: "rgba(167, 139, 250, 0.16)",
-    },
-    aurora: {
-      cpuStroke: "#5eead4",
-      cpuFill: "rgba(94, 234, 212, 0.22)",
-      memoryStroke: "#93c5fd",
-      memoryFill: "rgba(147, 197, 253, 0.24)",
-      diskReadStroke: "#c4b5fd",
-      diskReadFill: "rgba(196, 181, 253, 0.22)",
-      diskWriteStroke: "#f0abfc",
-      diskWriteFill: "rgba(240, 171, 252, 0.18)",
-      networkDownStroke: "#67e8f9",
-      networkDownFill: "rgba(103, 232, 249, 0.18)",
-      networkUpStroke: "#bef264",
-      networkUpFill: "rgba(190, 242, 100, 0.16)",
-      swapStroke: "#c4b5fd",
-      swapFill: "rgba(196, 181, 253, 0.16)",
-    },
-    ember: {
-      cpuStroke: "#fbbf24",
-      cpuFill: "rgba(251, 191, 36, 0.22)",
-      memoryStroke: "#fb7185",
-      memoryFill: "rgba(251, 113, 133, 0.2)",
-      diskReadStroke: "#fdba74",
-      diskReadFill: "rgba(253, 186, 116, 0.22)",
-      diskWriteStroke: "#f97316",
-      diskWriteFill: "rgba(249, 115, 22, 0.18)",
-      networkDownStroke: "#fca5a5",
-      networkDownFill: "rgba(252, 165, 165, 0.18)",
-      networkUpStroke: "#fde68a",
-      networkUpFill: "rgba(253, 230, 138, 0.16)",
-      swapStroke: "#fb7185",
-      swapFill: "rgba(251, 113, 133, 0.16)",
-    },
-    daylight: {
-      cpuStroke: "#047857",
-      cpuFill: "rgba(4, 120, 87, 0.18)",
-      memoryStroke: "#0369a1",
-      memoryFill: "rgba(3, 105, 161, 0.16)",
-      diskReadStroke: "#b45309",
-      diskReadFill: "rgba(180, 83, 9, 0.15)",
-      diskWriteStroke: "#be123c",
-      diskWriteFill: "rgba(190, 18, 60, 0.14)",
-      networkDownStroke: "#6d28d9",
-      networkDownFill: "rgba(109, 40, 217, 0.14)",
-      networkUpStroke: "#0f766e",
-      networkUpFill: "rgba(15, 118, 110, 0.14)",
-      swapStroke: "#7c3aed",
-      swapFill: "rgba(124, 58, 237, 0.12)",
-    },
-  };
-  const focusOptions: { value: FocusMode; label: string }[] = [
-    { value: "all", label: "All" },
-    { value: "active", label: "Active" },
-    { value: "io", label: "I/O" },
-  ];
-  const sortOptions: { value: SortKey; label: string }[] = [
-    { value: "attention", label: "Attention" },
-    { value: "cpu", label: "CPU" },
-    { value: "memory", label: "Memory" },
-    { value: "io", label: "I/O" },
-    { value: "name", label: "Name" },
-  ];
-  const sortColumnByKey: Record<SortKey, SortColumn> = {
-    attention: "attention",
-    name: "name",
-    pid: "pid",
-    cpu: "cpu_pct",
-    memory: "memory_bytes",
-    io: "disk_bps",
-    read: "disk_bps",
-    write: "disk_bps",
-    status: "name",
-  };
-  const sortKeyByColumn: Partial<Record<SortColumn, SortKey>> = {
-    attention: "attention",
-    cpu_pct: "cpu",
-    memory_bytes: "memory",
-    disk_bps: "io",
-    name: "name",
-    pid: "pid",
-  };
-  const processColumns: ProcessColumn[] = [
-    { key: "name", label: "Process" },
-    { key: "pid", label: "PID" },
-    { key: "cpu", label: "CPU", metric: true },
-    { key: "memory", label: "Memory", metric: true },
-    { key: "io", label: "I/O rate", metric: true },
-    { key: "read", label: "Read total", metric: true },
-    { key: "write", label: "Write total", metric: true },
-    { key: "status", label: "Status" },
-  ];
 
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeEmptySnapshot();
   let selectedPid = "";
+  let contextTab: "process" | "system" = "process";
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
   let commandError = "";
@@ -228,11 +98,12 @@
   $: swapPercent = percentage(snapshot.system.swap_used_bytes, snapshot.system.swap_total_bytes);
   $: filteredProcesses = snapshot.processes
     .filter((process) => matchesSearch(process, searchText))
-    .filter((process) => matchesFocusMode(process, focusMode))
+    .filter((process) => matchesFocusMode(process, focusMode, processRates))
     .slice()
-    .sort((left, right) => compareProcesses(left, right, sortKey, sortDirection));
+    .sort((left, right) =>
+      compareProcesses(left, right, sortKey, sortDirection, processRates, snapshot.system.memory_total_bytes),
+    );
   $: selectedProcess = filteredProcesses.find((process) => process.pid === selectedPid) ?? null;
-  $: topProcess = filteredProcesses[0] ?? null;
   $: warnings =
     snapshot.warnings.length > 0
       ? snapshot.warnings
@@ -249,6 +120,10 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
+  $: memoryAccounting = snapshot.system.memory_accounting;
+  $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
+  $: blockedProcessCount =
+    memoryAccounting?.denied_process_count ?? snapshot.processes.filter((process) => process.access_state === "denied").length;
   $: diskReadRate = history.diskRead.at(-1) ?? 0;
   $: diskWriteRate = history.diskWrite.at(-1) ?? 0;
   $: networkDownRate = history.netRx.at(-1) ?? 0;
@@ -509,22 +384,6 @@
     };
   }
 
-  function isThemeName(value: string | null): value is ThemeName {
-    return value === "cave" || value === "aurora" || value === "ember" || value === "daylight";
-  }
-
-  function parseThemePreference(value: string | null): ThemePreference | null {
-    if (value === "system" || value === "auto") {
-      return "system";
-    }
-
-    return isThemeName(value) ? value : null;
-  }
-
-  function resolveThemeName(preference: ThemePreference, systemTheme: ThemeName): ThemeName {
-    return preference === "system" ? systemTheme : preference;
-  }
-
   function isHistoryPointLimit(value: number): value is HistoryPointLimit {
     return historyPointOptions.some((option) => option === value);
   }
@@ -534,7 +393,11 @@
     window.localStorage.setItem(themeStorageKey, preference);
   }
 
-  function setHistoryPointLimit(limit: HistoryPointLimit): void {
+  function setHistoryPointLimit(limit: number): void {
+    if (!isHistoryPointLimit(limit)) {
+      return;
+    }
+
     historyPointLimit = limit;
     window.localStorage.setItem(historyStorageKey, String(limit));
     trimHistory();
@@ -745,8 +608,9 @@
     }
   }
 
-  function setDetailMode(mode: DetailMode): void {
+  function selectDetailMode(mode: DetailMode): void {
     detailMode = mode;
+    contextTab = "system";
   }
 
   function resetProcessHistory(process: ProcessSample): void {
@@ -888,243 +752,16 @@
     return "cool";
   }
 
-  function processIoRate(process: ProcessSample): number {
-    const rates = processRates[process.pid];
-    return (rates?.readRate ?? 0) + (rates?.writeRate ?? 0) + (rates?.otherRate ?? 0);
+  function topPoolTags(tags: KernelPoolTag[] | undefined): KernelPoolTag[] {
+    return [...(tags ?? [])].sort((left, right) => right.bytes - left.bytes).slice(0, 8);
   }
 
-  function compareProcesses(
-    left: ProcessSample,
-    right: ProcessSample,
-    key: SortKey,
-    direction: SortDirection,
-  ): number {
-    const factor = direction === "asc" ? 1 : -1;
-
-    switch (key) {
-      case "attention":
-        return compareNumber(attentionScore(left), attentionScore(right), direction) || compareText(left.name, right.name);
-      case "name":
-        return compareText(left.name, right.name) * factor || compareText(left.pid, right.pid) * factor;
-      case "pid":
-        return comparePid(left.pid, right.pid) * factor || compareText(left.name, right.name) * factor;
-      case "memory":
-        return compareNumber(left.memory_bytes, right.memory_bytes, direction) || compareNumber(left.cpu_percent, right.cpu_percent, "desc");
-      case "io":
-        return compareNumber(processIoRate(left), processIoRate(right), direction) || compareNumber(left.cpu_percent, right.cpu_percent, "desc");
-      case "read":
-        return compareNumber(left.disk_read_total_bytes, right.disk_read_total_bytes, direction) || compareText(left.name, right.name);
-      case "write":
-        return compareNumber(left.disk_write_total_bytes, right.disk_write_total_bytes, direction) || compareText(left.name, right.name);
-      case "status":
-        return compareText(left.status, right.status) * factor || compareText(left.name, right.name);
-      case "cpu":
-      default:
-        return compareNumber(left.cpu_percent, right.cpu_percent, direction) || compareNumber(left.memory_bytes, right.memory_bytes, "desc");
-    }
-  }
-
-  function compareNumber(left: number, right: number, direction: SortDirection): number {
-    return direction === "asc" ? left - right : right - left;
-  }
-
-  function attentionScore(process: ProcessSample): number {
-    const cpuWeight = process.cpu_percent * 6;
-    const memoryWeight = percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1)) * 2;
-    const ioWeight = Math.min(processIoRate(process) / 1024 / 1024, 100) * 3;
-    const accessWeight = process.access_state === "denied" ? 18 : process.access_state === "partial" ? 8 : 0;
-    return cpuWeight + memoryWeight + ioWeight + accessWeight;
-  }
-
-  function compareText(left: string, right: string): number {
-    return left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
-  }
-
-  function comparePid(left: string, right: string): number {
-    const leftNumber = Number(left);
-    const rightNumber = Number(right);
-
-    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-      return leftNumber - rightNumber;
+  function adminStatusLabel(): string {
+    if (snapshot.settings.admin_mode_enabled) {
+      return blockedProcessCount > 0 ? `Active, ${blockedProcessCount} blocked` : "Active";
     }
 
-    return compareText(left, right);
-  }
-
-  function defaultSortDirection(key: SortKey): SortDirection {
-    return key === "attention" || key === "cpu" || key === "memory" || key === "io" ? "desc" : "asc";
-  }
-
-  function sortColumnForKey(key: SortKey): SortColumn {
-    return sortColumnByKey[key];
-  }
-
-  function sortKeyForColumn(column: SortColumn): SortKey {
-    return sortKeyByColumn[column] ?? "attention";
-  }
-
-  function sortAriaValue(
-    key: SortKey,
-    activeKey: SortKey,
-    direction: SortDirection,
-  ): "ascending" | "descending" | "none" {
-    if (activeKey !== key) {
-      return "none";
-    }
-
-    return direction === "asc" ? "ascending" : "descending";
-  }
-
-  function sortButtonLabel(
-    column: ProcessColumn,
-    activeKey: SortKey,
-    direction: SortDirection,
-  ): string {
-    if (activeKey === column.key) {
-      const nextDirection = direction === "asc" ? "descending" : "ascending";
-      return `${column.label}, sorted ${direction === "asc" ? "ascending" : "descending"}. Sort ${nextDirection}.`;
-    }
-
-    const defaultDirection = defaultSortDirection(column.key) === "asc" ? "ascending" : "descending";
-    return `Sort by ${column.label} ${defaultDirection}.`;
-  }
-
-  function sortIndicator(key: SortKey, activeKey: SortKey, direction: SortDirection): string {
-    if (activeKey !== key) {
-      return "";
-    }
-
-    return direction === "asc" ? "Asc" : "Desc";
-  }
-
-  function matchesSearch(process: ProcessSample, query: string): boolean {
-    const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) {
-      return true;
-    }
-
-    return (
-      process.name.toLocaleLowerCase().includes(normalized) ||
-      process.pid.includes(normalized) ||
-      process.exe.toLocaleLowerCase().includes(normalized)
-    );
-  }
-
-  function matchesFocusMode(process: ProcessSample, mode: FocusMode): boolean {
-    if (mode === "active") {
-      return process.cpu_percent >= 1;
-    }
-
-    if (mode === "io") {
-      return processIoRate(process) > 0;
-    }
-
-    return true;
-  }
-
-  function formatBytes(value: number): string {
-    const units = ["B", "KB", "MB", "GB", "TB"];
-    let amount = Math.max(0, value);
-    let unit = 0;
-    while (amount >= 1024 && unit < units.length - 1) {
-      amount /= 1024;
-      unit += 1;
-    }
-    return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
-  }
-
-  function formatRate(value: number): string {
-    return `${formatBytes(value)}/s`;
-  }
-
-  function formatPercent(value: number): string {
-    return `${Math.round(value)}%`;
-  }
-
-  function formatInterval(value: number): string {
-    return value < 1000 ? `${value} ms` : `${value / 1000}s`;
-  }
-
-  function metricQualityLabel(metric: MetricQualityInfo | undefined, fallback: string): string {
-    if (!metric) {
-      return fallback;
-    }
-
-    const quality = formatMetricQuality(metric.quality);
-    const source = metric.source ? formatMetricSource(metric.source) : "";
-    return source ? `${quality} / ${source}` : quality;
-  }
-
-  function metricQualityAction(metric: MetricQualityInfo | undefined): string {
-    if (!metric) {
-      return "no metadata";
-    }
-
-    if (metric.message) {
-      return metric.message;
-    }
-
-    if (metric.quality === "held") {
-      return "waiting for sample";
-    }
-
-    if (metric.quality === "partial") {
-      return "fallback/incomplete source";
-    }
-
-    if (metric.quality === "unavailable") {
-      return "unavailable/permissions";
-    }
-
-    if (metric.source === "etw") {
-      return "Windows ETW active";
-    }
-
-    if (metric.source === "ebpf") {
-      return "Linux eBPF active";
-    }
-
-    return "current runtime source";
-  }
-
-  function formatMetricQuality(value: MetricQuality): string {
-    switch (value) {
-      case "native":
-        return "Native";
-      case "estimated":
-        return "Estimated";
-      case "held":
-        return "Held";
-      case "partial":
-        return "Partial";
-      case "unavailable":
-        return "Unavailable";
-      default:
-        return value;
-    }
-  }
-
-  function formatMetricSource(value: MetricSource): string {
-    switch (value) {
-      case "direct_api":
-        return "direct API";
-      case "interface_aggregate":
-        return "interface aggregate";
-      case "process_aggregate":
-        return "process aggregate";
-      case "ebpf":
-        return "eBPF";
-      default:
-        return value.replaceAll("_", " ");
-    }
-  }
-
-  function accessLabel(process: ProcessSample): string {
-    if (process.access_state === "full") {
-      return "Full";
-    }
-
-    return process.access_state === "partial" ? "Partial" : "Denied";
+    return snapshot.settings.admin_mode_requested ? "Requested (not active)" : "Off";
   }
 
   function processNetworkLabel(process: ProcessSample): string {
@@ -1147,10 +784,12 @@
       `Parent PID: ${process.parent_pid ?? "--"}`,
       `Status: ${process.status}`,
       `CPU: ${formatPercent(process.cpu_percent)}`,
-      `Memory: ${formatBytes(process.memory_bytes)}`,
-      `I/O rate: ${formatRate(processIoRate(process))}`,
+      `Working set: ${processBytesLabel(process, process.memory_bytes)}`,
+      `Private: ${processBytesLabel(process, process.private_bytes)}`,
+      `I/O rate: ${formatRate(processIoRate(process, processRates))}`,
       `Network: ${processNetworkLabel(process)}`,
-      `Access: ${accessLabel(process)}`,
+      `Access: ${accessLabel(process.access_state)}`,
+      `Memory quality: ${metricQualityLabel(processMemoryQuality(process) as MetricQualityInfo | undefined, "Measured")}`,
       `Path: ${process.exe || "Path unavailable"}`,
       `Snapshot seq: ${snapshot.seq}`,
       `Snapshot source: ${snapshot.source}`,
@@ -1173,42 +812,6 @@
     }
   }
 
-  function processAccent(process: ProcessSample | undefined): string {
-    if (!process) {
-      return "Idle";
-    }
-
-    if (process.cpu_percent >= 30) {
-      return "Hot";
-    }
-
-    if (process.memory_bytes >= 900 * 1024 * 1024) {
-      return "Heavy";
-    }
-
-    if (processIoRate(process) >= 500 * 1024) {
-      return "I/O";
-    }
-
-    return "Stable";
-  }
-
-  function processHint(process: ProcessSample): string {
-    if (process.cpu_percent >= 20) {
-      return "CPU lead";
-    }
-
-    if (process.memory_bytes >= 900 * 1024 * 1024) {
-      return "memory lead";
-    }
-
-    if (processIoRate(process) >= 500 * 1024) {
-      return "I/O lead";
-    }
-
-    return "steady";
-  }
-
   function maxRate(points: number[], fallback: number): number {
     return Math.max(fallback, Math.max(...points, 0) * 1.2);
   }
@@ -1222,663 +825,104 @@
   <title>BatCave Monitor</title>
 </svelte:head>
 
-<main class="app-shell" data-theme={themeName}>
-  <header class="topbar">
-    <div>
-      <p class="eyebrow">BatCave monitor</p>
-      <h1>Resource cockpit</h1>
-    </div>
-    <div class="topbar-tools">
-      <div class="theme-picker" role="group" aria-label="Theme">
-        {#each themeOptions as theme}
-          <button
-            class:active={themePreference === theme.name}
-            type="button"
-            aria-label={theme.ariaLabel}
-            aria-pressed={themePreference === theme.name}
-            onclick={() => setTheme(theme.name)}
-          >
-            {theme.label}
-          </button>
-        {/each}
-      </div>
-      <div class="status-stack" aria-label="Runtime status">
-        <span class:live={pollState === "native"} class:paused={isPaused}>{isPaused ? "paused" : pollState}</span>
-        <span>{snapshot.system.process_count} processes</span>
-        <span>{snapshot.health.snapshot_latency_ms} ms</span>
-      </div>
-    </div>
-  </header>
-
-  <section class="command-bar" aria-label="Monitor controls">
-    <div class="control-group grow">
-      <label for="process-search">Find</label>
-      <input
-        id="process-search"
-        class="search-input"
-        bind:value={searchText}
-        oninput={(event) => setSearchText(event.currentTarget.value)}
-        placeholder="Process, PID, or path"
-        autocomplete="off"
-      />
-    </div>
-    <div class="control-actions">
-      <button class="primary-action" type="button" onclick={() => setPaused(!isPaused)}>
-        {isPaused ? "Resume" : "Pause"}
-      </button>
-      <button type="button" onclick={refreshNow}>Refresh</button>
-      <button type="button" onclick={() => setAdminMode(!snapshot.settings.admin_mode_requested)}>
-        {snapshot.settings.admin_mode_requested ? "Use standard" : "Request admin"}
-      </button>
-    </div>
-    {#if commandError}
-      <p class="command-error inline-command-error" role="alert">{commandError}</p>
-    {/if}
-    <div class="control-group focus-group">
-      <span>Focus</span>
-      <div class="segmented" role="group" aria-label="Process focus">
-        {#each focusOptions as option}
-          <button
-            class:active={focusMode === option.value}
-            type="button"
-            aria-pressed={focusMode === option.value}
-            onclick={() => (focusMode = option.value)}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-group sort-group">
-      <span>Sort</span>
-      <div class="segmented" role="group" aria-label="Process sort">
-        {#each sortOptions as option}
-          <button
-            class:active={sortKey === option.value}
-            type="button"
-            aria-pressed={sortKey === option.value}
-            onclick={() => setSortKey(option.value)}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-group refresh-group">
-      <span>Refresh rate</span>
-      <div class="segmented" role="group" aria-label="Refresh rate">
-        {#each pollIntervals as interval}
-          <button
-            class:active={pollIntervalMs === interval}
-            type="button"
-            aria-pressed={pollIntervalMs === interval}
-            onclick={() => (pollIntervalMs = interval)}
-          >
-            {formatInterval(interval)}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-group history-group">
-      <span>History</span>
-      <div class="segmented" role="group" aria-label="Chart history length">
-        {#each historyPointOptions as option}
-          <button
-            class:active={historyPointLimit === option}
-            type="button"
-            aria-pressed={historyPointLimit === option}
-            aria-label={`Show last ${option} chart samples`}
-            onclick={() => setHistoryPointLimit(option)}
-          >
-            {option}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <div class="control-actions reset-actions">
-      <button type="button" onclick={resetHistory}>Reset</button>
-    </div>
+<AppShell {themeName}>
+  <TopBar
+    {isPaused}
+    {pollState}
+    processCount={snapshot.system.process_count}
+    latencyMs={snapshot.health.snapshot_latency_ms}
+  />
+  <MetricStrip
+    cards={metricCards}
+    activeMode={detailMode}
+    {needsReadoutContrast}
+    onSelect={selectDetailMode}
+  />
+  <Toolbar
+    {searchText}
+    {focusMode}
+    {sortKey}
+    {isPaused}
+    {commandError}
+    {focusOptions}
+    {sortOptions}
+    {themeOptions}
+    {themePreference}
+    {pollIntervals}
+    {pollIntervalMs}
+    {historyPointOptions}
+    {historyPointLimit}
+    adminRequested={snapshot.settings.admin_mode_requested}
+    adminEnabled={snapshot.settings.admin_mode_enabled}
+    onSearch={setSearchText}
+    onFocus={(mode) => (focusMode = mode)}
+    onSort={setSortKey}
+    onPaused={() => void setPaused(!isPaused)}
+    onRefresh={() => void refreshNow()}
+    onTheme={setTheme}
+    onPollInterval={(interval) => (pollIntervalMs = interval as (typeof pollIntervals)[number])}
+    onHistoryLimit={setHistoryPointLimit}
+    onAdminMode={(enabled) => void setAdminMode(enabled)}
+    onResetHistory={resetHistory}
+  />
+  <section class="workspace-grid">
+    <ProcessExplorer
+      processes={filteredProcesses}
+      columns={processColumns}
+      {selectedPid}
+      {sortKey}
+      {sortDirection}
+      {processRates}
+      onSelect={selectProcess}
+      onToggleSort={toggleSortKey}
+    />
+    <ContextRail
+      activeTab={contextTab}
+      onTab={(tab) => (contextTab = tab)}
+      {selectedProcess}
+      {processHistory}
+      {processRates}
+      {processReadRate}
+      {processWriteRate}
+      {copyStatus}
+      {activeTheme}
+      {maxRate}
+      {processNetworkLabel}
+      onCopy={() => void copySelectedProcessSummary()}
+      {detailMode}
+      {detailTitle}
+      {detailReadout}
+      {snapshot}
+      {history}
+      {systemQuality}
+      {memoryPercent}
+      {swapPercent}
+      {memoryAccounting}
+      {topKernelPoolTags}
+      {diskReadRate}
+      {diskWriteRate}
+      {networkDownRate}
+      {networkUpRate}
+      {diskScaleMax}
+      {networkScaleMax}
+      {coreLoads}
+      {corePeak}
+      {coreSpread}
+      {hotCoreCount}
+      {busyCoreCount}
+      {coreTone}
+    />
   </section>
-
-  <section class="metric-band" aria-label="System metrics">
-    {#each metricCards as card (card.ariaLabel)}
-      <button
-        class={`metric-card metric-card-${card.mode}`}
-        class:active={detailMode === card.mode}
-        type="button"
-        aria-controls="resource-detail-panel"
-        aria-label={card.ariaLabel}
-        onclick={() => setDetailMode(card.mode)}
-      >
-        <MiniChart values={card.values} max={card.max} stroke={card.stroke} fill={card.fill} />
-        <span class="metric-copy" class:on-fill={needsReadoutContrast(card.contrastValue, card.max)}>
-          <span>{card.label}</span>
-          <strong>{card.value}</strong>
-          <small>{card.sublabel}</small>
-        </span>
-      </button>
-    {/each}
-  </section>
-
-  <section class="triage-grid">
-    <div class="panel process-panel">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">Attention queue</p>
-          <h2>{topProcess?.name ?? "No matching processes"}</h2>
-        </div>
-        <strong>{topProcess ? formatPercent(topProcess.cpu_percent) : "--"}</strong>
-      </div>
-      {#if selectedProcess}
-        <section class="mobile-selected-summary" aria-label="Selected process summary">
-          <span class="summary-title">
-            <span>
-              <small>Selected</small>
-              <strong>{selectedProcess.name}</strong>
-            </span>
-            <span>{selectedProcess.pid}</span>
-          </span>
-          <span class="summary-metrics" aria-label="Selected process metrics">
-            <span>
-              <em>CPU</em>
-              <b>{formatPercent(selectedProcess.cpu_percent)}</b>
-            </span>
-            <span>
-              <em>Memory</em>
-              <b>{formatBytes(selectedProcess.memory_bytes)}</b>
-            </span>
-            <span>
-              <em>I/O</em>
-              <b>{formatRate(processIoRate(selectedProcess))}</b>
-            </span>
-          </span>
-        </section>
-      {:else}
-        <section class="mobile-selected-summary muted" aria-label="Selected process summary">
-          <span class="summary-title">
-            <span>
-              <small>Selected</small>
-              <strong>No process</strong>
-            </span>
-            <span>--</span>
-          </span>
-        </section>
-      {/if}
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              {#each processColumns as column}
-                <th aria-sort={sortAriaValue(column.key, sortKey, sortDirection)} class:metric={column.metric}>
-                  <button
-                    class="sort-header"
-                    class:active={sortKey === column.key}
-                    type="button"
-                    aria-label={sortButtonLabel(column, sortKey, sortDirection)}
-                    aria-pressed={sortKey === column.key}
-                    onclick={() => toggleSortKey(column.key)}
-                  >
-                    <span>{column.label}</span>
-                    <small aria-hidden="true">{sortIndicator(column.key, sortKey, sortDirection)}</small>
-                  </button>
-                </th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each filteredProcesses as process}
-              <tr class:selected={process.pid === selectedPid}>
-                <td>
-                  <button
-                    class="process-button"
-                    class:selected={process.pid === selectedPid}
-                    type="button"
-                    aria-pressed={process.pid === selectedPid}
-                    aria-label={`Inspect ${process.name}, PID ${process.pid}`}
-                    onclick={() => selectProcess(process.pid)}
-                  >
-                    <span>{process.name}</span>
-                    <small>{processHint(process)}</small>
-                  </button>
-                </td>
-                <td>{process.pid}</td>
-                <td>{formatPercent(process.cpu_percent)}</td>
-                <td>{formatBytes(process.memory_bytes)}</td>
-                <td>{formatRate(processIoRate(process))}</td>
-                <td>{formatBytes(process.disk_read_total_bytes)}</td>
-                <td>{formatBytes(process.disk_write_total_bytes)}</td>
-                <td>{process.status}</td>
-              </tr>
-            {:else}
-              <tr>
-                <td class="empty-state" colspan="8">No process matches this view.</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-      <div class="mobile-process-list" aria-label="Attention queue cards">
-        {#each filteredProcesses.slice(0, 10) as process}
-          <button
-            class="mobile-process-card"
-            class:selected={process.pid === selectedPid}
-            type="button"
-            aria-pressed={process.pid === selectedPid}
-            onclick={() => selectProcess(process.pid)}
-          >
-            <span class="card-title-row">
-              <span>{process.name}</span>
-              <small>{processHint(process)}</small>
-            </span>
-            <span class="card-metrics">
-              <span>
-                <em>CPU</em>
-                <b>{formatPercent(process.cpu_percent)}</b>
-              </span>
-              <span>
-                <em>Memory</em>
-                <b>{formatBytes(process.memory_bytes)}</b>
-              </span>
-              <span>
-                <em>I/O</em>
-                <b>{formatRate(processIoRate(process))}</b>
-              </span>
-            </span>
-            <span class="card-foot">
-              <span>PID {process.pid}</span>
-              <span>{process.status}</span>
-            </span>
-          </button>
-        {:else}
-          <div class="mobile-empty-state">No process matches this view.</div>
-        {/each}
-      </div>
-    </div>
-
-    <aside class="panel inspector" aria-label="Process inspector">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">Selected process</p>
-          <h2>{selectedProcess?.name ?? "No process"}</h2>
-        </div>
-        {#if selectedProcess}
-          <div class="heading-actions">
-            <strong>{processAccent(selectedProcess)}</strong>
-            <button class="subtle-action" type="button" onclick={copySelectedProcessSummary}>Copy</button>
-          </div>
-        {:else}
-          <strong>{processAccent(undefined)}</strong>
-        {/if}
-      </div>
-      {#if selectedProcess}
-        <div class="inspector-charts" aria-label="Selected process trends">
-          <div class="inspector-chart">
-            <span>CPU</span>
-            <strong>{formatPercent(selectedProcess.cpu_percent)}</strong>
-            <MiniChart values={processHistory.cpu} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
-          </div>
-          <div class="inspector-chart">
-            <span>Read</span>
-            <strong>{formatRate(processReadRate)}</strong>
-            <MiniChart
-              values={processHistory.readRate}
-              max={maxRate(processHistory.readRate, 250_000)}
-              stroke={activeTheme.diskReadStroke}
-              fill={activeTheme.diskReadFill}
-            />
-          </div>
-        </div>
-        <dl class="inspector-grid">
-          <div>
-            <dt>PID</dt>
-            <dd>{selectedProcess.pid}</dd>
-          </div>
-          <div>
-            <dt>Parent</dt>
-            <dd>{selectedProcess.parent_pid ?? "--"}</dd>
-          </div>
-          <div>
-            <dt>CPU</dt>
-            <dd>{formatPercent(selectedProcess.cpu_percent)}</dd>
-          </div>
-          <div>
-            <dt>Kernel CPU</dt>
-            <dd>
-              {selectedProcess.kernel_cpu_percent === undefined
-                ? "--"
-                : formatPercent(selectedProcess.kernel_cpu_percent)}
-            </dd>
-          </div>
-          <div>
-            <dt>Memory</dt>
-            <dd>{formatBytes(selectedProcess.memory_bytes)}</dd>
-          </div>
-          <div>
-            <dt>Private</dt>
-            <dd>{formatBytes(selectedProcess.private_bytes)}</dd>
-          </div>
-          <div>
-            <dt>Write rate</dt>
-            <dd>{formatRate(processWriteRate)}</dd>
-          </div>
-          <div>
-            <dt>Other I/O</dt>
-            <dd>{formatRate(processRates[selectedProcess.pid]?.otherRate ?? selectedProcess.other_io_bps ?? 0)}</dd>
-          </div>
-          <div>
-            <dt>Read total</dt>
-            <dd>{formatBytes(selectedProcess.disk_read_total_bytes)}</dd>
-          </div>
-          <div>
-            <dt>Write total</dt>
-            <dd>{formatBytes(selectedProcess.disk_write_total_bytes)}</dd>
-          </div>
-          <div>
-            <dt>Threads</dt>
-            <dd>{selectedProcess.threads || "--"}</dd>
-          </div>
-          <div>
-            <dt>Handles</dt>
-            <dd>{selectedProcess.handles || "--"}</dd>
-          </div>
-          <div>
-            <dt>Access</dt>
-            <dd>{accessLabel(selectedProcess)}</dd>
-          </div>
-          <div>
-            <dt>Network</dt>
-            <dd>{processNetworkLabel(selectedProcess)}</dd>
-          </div>
-        </dl>
-        <p class="path">{selectedProcess.exe || "Path unavailable"}</p>
-        {#if copyStatus}
-          <p class="copy-status" role="status" aria-live="polite">{copyStatus}</p>
-        {/if}
-      {:else}
-        <div class="empty-panel">
-          <strong>No selected process</strong>
-          <span>Clear the search or change the focus filter to inspect a process.</span>
-        </div>
-      {/if}
-    </aside>
-  </section>
-
-  <section class="details-grid">
-    <section
-      id="resource-detail-panel"
-      class="panel detail-panel"
-      aria-label="Resource detail view"
-    >
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">Detail view</p>
-          <h2 tabindex="-1">{detailTitle}</h2>
-        </div>
-        <strong>{detailReadout}</strong>
-      </div>
-      {#if detailMode === "cpu"}
-        <div class="detail-summary" aria-label="CPU distribution summary">
-          <div>
-            <span>Peak</span>
-            <strong>{formatPercent(corePeak)}</strong>
-          </div>
-          <div>
-            <span>Hot cores</span>
-            <strong>{hotCoreCount}</strong>
-          </div>
-          <div>
-            <span>Busy</span>
-            <strong>{busyCoreCount}</strong>
-          </div>
-          <div>
-            <span>Spread</span>
-            <strong>{formatPercent(coreSpread)}</strong>
-          </div>
-        </div>
-        <div class="core-timeseries" aria-label="Logical core time series">
-          {#each coreLoads as core}
-            <div class={`core-trend-card ${coreTone(core.load)}`}>
-              <div>
-                <span>Core {core.index + 1}</span>
-                <strong>{formatPercent(core.load)}</strong>
-              </div>
-              <MiniChart values={core.trend} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
-            </div>
-          {/each}
-        </div>
-      {:else if detailMode === "memory"}
-        <div class="detail-summary" aria-label="Memory summary">
-          <div>
-            <span>Used</span>
-            <strong>{formatBytes(snapshot.system.memory_used_bytes)}</strong>
-          </div>
-          <div>
-            <span>Total</span>
-            <strong>{formatBytes(snapshot.system.memory_total_bytes)}</strong>
-          </div>
-          <div>
-            <span>Swap</span>
-            <strong>{formatPercent(swapPercent)}</strong>
-          </div>
-          <div>
-            {#if snapshot.system.memory_available_bytes !== undefined}
-              <span>Available</span>
-              <strong>{formatBytes(snapshot.system.memory_available_bytes)}</strong>
-            {:else}
-              <span>Processes</span>
-              <strong>{snapshot.system.process_count}</strong>
-            {/if}
-          </div>
-        </div>
-        <div class="detail-chart-grid two-up">
-          <div class="detail-chart-card large">
-            <div>
-              <span>Memory load</span>
-              <strong>{formatPercent(memoryPercent)}</strong>
-            </div>
-            <MiniChart values={history.memory} max={100} stroke={activeTheme.memoryStroke} fill={activeTheme.memoryFill} />
-          </div>
-          <div class="detail-chart-card large">
-            <div>
-              <span>Swap load</span>
-              <strong>{formatPercent(swapPercent)}</strong>
-            </div>
-            <MiniChart values={history.swap} max={100} stroke={activeTheme.swapStroke} fill={activeTheme.swapFill} />
-          </div>
-        </div>
-      {:else if detailMode === "disk"}
-        <div class="detail-summary" aria-label="Disk summary">
-          <div>
-            <span>Read rate</span>
-            <strong>{formatRate(diskReadRate)}</strong>
-          </div>
-          <div>
-            <span>Write rate</span>
-            <strong>{formatRate(diskWriteRate)}</strong>
-          </div>
-          <div>
-            <span>Read total</span>
-            <strong>{formatBytes(snapshot.system.disk_read_total_bytes)}</strong>
-          </div>
-          <div>
-            <span>Write total</span>
-            <strong>{formatBytes(snapshot.system.disk_write_total_bytes)}</strong>
-          </div>
-        </div>
-        <div class="detail-chart-grid two-up">
-          <div class="detail-chart-card large">
-            <div>
-              <span>Read throughput</span>
-              <strong>{formatRate(diskReadRate)}</strong>
-            </div>
-            <MiniChart
-              values={history.diskRead}
-              max={diskScaleMax}
-              stroke={activeTheme.diskReadStroke}
-              fill={activeTheme.diskReadFill}
-            />
-          </div>
-          <div class="detail-chart-card large">
-            <div>
-              <span>Write throughput</span>
-              <strong>{formatRate(diskWriteRate)}</strong>
-            </div>
-            <MiniChart
-              values={history.diskWrite}
-              max={diskScaleMax}
-              stroke={activeTheme.diskWriteStroke}
-              fill={activeTheme.diskWriteFill}
-            />
-          </div>
-        </div>
-      {:else}
-        <div class="detail-summary" aria-label="Network summary">
-          <div>
-            <span>Down</span>
-            <strong>{formatRate(networkDownRate)}</strong>
-          </div>
-          <div>
-            <span>Up</span>
-            <strong>{formatRate(networkUpRate)}</strong>
-          </div>
-          <div>
-            <span>Received</span>
-            <strong>{formatBytes(snapshot.system.network_received_total_bytes)}</strong>
-          </div>
-          <div>
-            <span>Sent</span>
-            <strong>{formatBytes(snapshot.system.network_transmitted_total_bytes)}</strong>
-          </div>
-          <div>
-            <span>Source</span>
-            <strong>{metricQualityLabel(systemQuality.network, "Aggregate")}</strong>
-          </div>
-        </div>
-        <div class="detail-chart-grid two-up">
-          <div class="detail-chart-card large">
-            <div>
-              <span>Download rate</span>
-              <strong>{formatRate(networkDownRate)}</strong>
-            </div>
-            <MiniChart
-              values={history.netRx}
-              max={networkScaleMax}
-              stroke={activeTheme.networkDownStroke}
-              fill={activeTheme.networkDownFill}
-            />
-          </div>
-          <div class="detail-chart-card large">
-            <div>
-              <span>Upload rate</span>
-              <strong>{formatRate(networkUpRate)}</strong>
-            </div>
-            <MiniChart
-              values={history.netTx}
-              max={networkScaleMax}
-              stroke={activeTheme.networkUpStroke}
-              fill={activeTheme.networkUpFill}
-            />
-          </div>
-        </div>
-      {/if}
-    </section>
-
-    <aside class="panel health-panel">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">Runtime</p>
-          <h2>Health</h2>
-        </div>
-        <strong>{snapshot.health.degraded ? "Degraded" : "Clean"}</strong>
-      </div>
-      <dl class="health-list">
-        <div>
-          <dt>Status</dt>
-          <dd>{snapshot.health.status_summary}</dd>
-        </div>
-        <div>
-          <dt>Source</dt>
-          <dd>{sourceLabel}</dd>
-        </div>
-        <div>
-          <dt>CPU quality</dt>
-          <dd>
-            {metricQualityLabel(systemQuality.cpu, "Legacy")}
-            <small>{metricQualityAction(systemQuality.cpu)}</small>
-          </dd>
-        </div>
-        <div>
-          <dt>Disk quality</dt>
-          <dd>
-            {metricQualityLabel(systemQuality.disk, "Legacy")}
-            <small>{metricQualityAction(systemQuality.disk)}</small>
-          </dd>
-        </div>
-        <div>
-          <dt>Network quality</dt>
-          <dd>
-            {metricQualityLabel(systemQuality.network, "Aggregate")}
-            <small>{metricQualityAction(systemQuality.network)}</small>
-          </dd>
-        </div>
-        <div>
-          <dt>App CPU</dt>
-          <dd>{formatPercent(snapshot.health.app_cpu_percent)}</dd>
-        </div>
-        <div>
-          <dt>App RSS</dt>
-          <dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd>
-        </div>
-        <div>
-          <dt>Tick p95</dt>
-          <dd>{snapshot.health.tick_p95_ms.toFixed(1)} ms</dd>
-        </div>
-        <div>
-          <dt>Jitter p95</dt>
-          <dd>{snapshot.health.jitter_p95_ms.toFixed(1)} ms</dd>
-        </div>
-        <div>
-          <dt>Admin</dt>
-          <dd>
-            {snapshot.settings.admin_mode_enabled
-              ? "Active"
-              : snapshot.settings.admin_mode_requested
-                ? "Requested (not active)"
-                : "Off"}
-          </dd>
-        </div>
-        <div>
-          <dt>Memory load</dt>
-          <dd>{formatPercent(memoryPercent)}</dd>
-        </div>
-        <div>
-          <dt>Swap load</dt>
-          <dd>{formatPercent(swapPercent)}</dd>
-        </div>
-        <div>
-          <dt>Visible rows</dt>
-          <dd>{filteredProcesses.length}</dd>
-        </div>
-        <div>
-          <dt>Warnings</dt>
-          <dd>{snapshot.warnings.length}</dd>
-        </div>
-      </dl>
-      {#if pollState === "error"}
-        <p class="command-error" role="status" aria-live="polite">{lastError}</p>
-      {:else if warnings.length}
-        <ul class="warnings" aria-label="Collector warnings" aria-live="polite">
-          {#each warnings.slice(0, 3) as warning}
-            <li>{warning}</li>
-          {/each}
-        </ul>
-      {:else if pollState === "fixture"}
-        <p class="quiet-note">
-          Browser fixture mode is running deterministic demo telemetry. Native collector proof requires the desktop app.
-        </p>
-      {:else}
-        <p class="quiet-note">Local collectors are steady. Native telemetry is local-only and running without warnings.</p>
-      {/if}
-    </aside>
-  </section>
-</main>
+  <HealthFooter
+    {snapshot}
+    {sourceLabel}
+    {systemQuality}
+    {memoryPercent}
+    {swapPercent}
+    visibleRows={filteredProcesses.length}
+    {warnings}
+    {pollState}
+    {lastError}
+    adminStatus={adminStatusLabel()}
+  />
+</AppShell>

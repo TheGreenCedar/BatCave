@@ -42,6 +42,11 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
   const processes = Array.from({ length: processCount }, (_, index) =>
     makeProcess(fixtureProcessName(index), index, tick),
   ).sort((left, right) => right.cpu_percent - left.cpu_percent);
+  const processWorkingSet = processes.reduce((total, process) => total + process.memory_bytes, 0);
+  const processPrivate = processes.reduce((total, process) => total + process.private_bytes, 0);
+  const memoryUsed = Math.round(memoryTotal * memoryRatio);
+  const kernelPaged = Math.round(1.2 * 1024 * 1024 * 1024 + Math.sin(tick / 9) * 80_000_000);
+  const kernelNonpaged = Math.round(760 * 1024 * 1024 + Math.cos(tick / 11) * 50_000_000);
 
   return {
     event_kind: "runtime_snapshot",
@@ -81,7 +86,7 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
       cpu_percent: clamp(cpu, 0, 100),
       kernel_cpu_percent: clamp(cpu * 0.18, 0, 100),
       logical_cpu_percent: logicalCpu,
-      memory_used_bytes: Math.round(memoryTotal * memoryRatio),
+      memory_used_bytes: memoryUsed,
       memory_total_bytes: memoryTotal,
       memory_available_bytes: Math.round(memoryTotal * (1 - memoryRatio)),
       swap_used_bytes: Math.round(1.8 * 1024 * 1024 * 1024 + Math.sin(tick / 7) * 220_000_000),
@@ -99,6 +104,57 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
         188_000_000_000 + tick * 1_400_000 + Math.round(Math.cos(tick / 5) * 500_000),
       network_received_bps: 2_900_000 + Math.round(Math.sin(tick / 3) * 900_000),
       network_transmitted_bps: 1_400_000 + Math.round(Math.cos(tick / 5) * 500_000),
+      memory_accounting: {
+        process_working_set_bytes: processWorkingSet,
+        process_private_bytes: processPrivate,
+        denied_process_count: 0,
+        partial_process_count: 0,
+        unattributed_bytes: Math.max(0, memoryUsed - processWorkingSet),
+        commit_used_bytes: memoryUsed + 2 * 1024 * 1024 * 1024,
+        commit_limit_bytes: memoryTotal + 8 * 1024 * 1024 * 1024,
+        system_cache_bytes: Math.round(2.4 * 1024 * 1024 * 1024),
+        kernel_total_bytes: kernelPaged + kernelNonpaged,
+        kernel_paged_pool_bytes: kernelPaged,
+        kernel_nonpaged_pool_bytes: kernelNonpaged,
+        kernel_pool_tags: [
+          {
+            tag: "Leak",
+            kind: "nonpaged",
+            bytes: Math.round(kernelNonpaged * 0.34),
+            allocations: 42_318 + tick,
+            frees: 8_912,
+            driver_candidates: ["ExampleLeakDriver.sys"],
+            driver_candidates_pending: false,
+          },
+          {
+            tag: "Nvld",
+            kind: "paged",
+            bytes: Math.round(kernelPaged * 0.18),
+            allocations: 88_104 + tick * 2,
+            frees: 87_011,
+            driver_candidates: ["nvlddmkm.sys"],
+            driver_candidates_pending: false,
+          },
+          {
+            tag: "WsLt",
+            kind: "nonpaged",
+            bytes: Math.round(kernelNonpaged * 0.12),
+            allocations: 9_824,
+            frees: 1_032,
+            driver_candidates: [],
+            driver_candidates_pending: false,
+          },
+          {
+            tag: "Pend",
+            kind: "paged",
+            bytes: Math.round(kernelPaged * 0.08),
+            allocations: 1_442,
+            frees: 112,
+            driver_candidates: [],
+            driver_candidates_pending: true,
+          },
+        ],
+      },
       quality: {
         cpu: { quality: "estimated", source: "fixture" },
         kernel_cpu: { quality: "estimated", source: "fixture" },

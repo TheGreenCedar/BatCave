@@ -74,7 +74,35 @@ export interface SystemMetricsSnapshot {
   network_transmitted_total_bytes: number;
   network_received_bps: number;
   network_transmitted_bps: number;
+  memory_accounting?: SystemMemoryAccounting;
   quality?: SystemMetricQuality;
+}
+
+export interface SystemMemoryAccounting {
+  process_working_set_bytes: number;
+  process_private_bytes: number;
+  denied_process_count: number;
+  partial_process_count: number;
+  unattributed_bytes?: number;
+  commit_used_bytes?: number;
+  commit_limit_bytes?: number;
+  system_cache_bytes?: number;
+  kernel_total_bytes?: number;
+  kernel_paged_pool_bytes?: number;
+  kernel_nonpaged_pool_bytes?: number;
+  kernel_pool_tags?: KernelPoolTag[];
+}
+
+export type KernelPoolKind = "paged" | "nonpaged";
+
+export interface KernelPoolTag {
+  tag: string;
+  kind: KernelPoolKind;
+  bytes: number;
+  allocations: number;
+  frees: number;
+  driver_candidates: string[];
+  driver_candidates_pending?: boolean;
 }
 
 export interface SystemMetricQuality {
