@@ -137,6 +137,7 @@ impl LinuxSystemCollector {
             network_transmitted_total_bytes: current.network.write_total_bytes,
             network_received_bps,
             network_transmitted_bps,
+            memory_accounting: None,
             quality: Some(SystemMetricQuality {
                 cpu: Some(cpu_quality.clone()),
                 kernel_cpu: Some(cpu_quality.clone()),

@@ -1,15 +1,25 @@
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
 use crate::contracts::{
-    MetricQuality, MetricQualityInfo, MetricSource, SystemMetricQuality, SystemMetricsSnapshot,
+    KernelPoolKind, KernelPoolTag, MetricQuality, MetricQualityInfo, MetricSource,
+    SystemMemoryAccounting, SystemMetricQuality, SystemMetricsSnapshot,
 };
 
 #[cfg(windows)]
-use std::{mem::size_of, ptr::null_mut, slice};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs,
+    mem::{align_of, size_of},
+    path::{Path, PathBuf},
+    ptr::{null_mut, read_unaligned},
+    slice,
+    sync::{Mutex, OnceLock},
+    thread,
+};
 
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, FILETIME},
+    Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, FILETIME, NTSTATUS},
     NetworkManagement::IpHelper::{
         GetIfTable, IF_OPER_STATUS_CONNECTED, IF_OPER_STATUS_OPERATIONAL,
         IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL, MIB_IFROW, MIB_IFTABLE,
@@ -22,11 +32,37 @@ use windows_sys::Win32::{
 };
 
 #[cfg(windows)]
+use windows_sys::Wdk::System::SystemInformation::{
+    NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS,
+};
+
+#[cfg(windows)]
+const SYSTEM_POOL_TAG_INFORMATION: SYSTEM_INFORMATION_CLASS = 22;
+#[cfg(windows)]
+const STATUS_INFO_LENGTH_MISMATCH: NTSTATUS = 0xC000_0004_u32 as i32;
+#[cfg(windows)]
+const STATUS_BUFFER_OVERFLOW: NTSTATUS = 0x8000_0005_u32 as i32;
+#[cfg(windows)]
+const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC000_0023_u32 as i32;
+#[cfg(windows)]
+const INITIAL_POOL_TAG_BUFFER_BYTES: usize = 128 * 1024;
+#[cfg(windows)]
+const MAX_POOL_TAG_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(windows)]
+const MAX_KERNEL_POOL_TAGS: usize = 8;
+#[cfg(windows)]
+const MAX_DRIVER_CANDIDATES_PER_TAG: usize = 4;
+
+#[cfg(windows)]
 pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
     let memory = sample_memory()?;
     let _cpu_times = sample_cpu_times()?;
     let network = sample_network_totals()?;
-    let process_count = sample_process_count().unwrap_or_default();
+    let performance = sample_performance_metrics().ok();
+    let process_count = performance
+        .as_ref()
+        .map(|metrics| metrics.process_count)
+        .unwrap_or_default();
 
     Ok(SystemMetricsSnapshot {
         cpu_percent: 0.0,
@@ -46,6 +82,7 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
         network_transmitted_total_bytes: network.transmitted_bytes,
         network_received_bps: 0,
         network_transmitted_bps: 0,
+        memory_accounting: performance.map(|metrics| metrics.memory_accounting),
         quality: Some(SystemMetricQuality {
             cpu: Some(
                 MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi).with_message(
@@ -90,6 +127,13 @@ struct MemoryMetrics {
     available_bytes: u64,
     pagefile_used_bytes: u64,
     pagefile_total_bytes: u64,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PerformanceMetrics {
+    process_count: usize,
+    memory_accounting: SystemMemoryAccounting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +219,7 @@ pub(crate) fn sample_cpu_times() -> Result<CpuTimes, String> {
 }
 
 #[cfg(windows)]
-fn sample_process_count() -> Result<usize, String> {
+fn sample_performance_metrics() -> Result<PerformanceMetrics, String> {
     let mut performance = PERFORMANCE_INFORMATION::default();
     performance.cb = size_of::<PERFORMANCE_INFORMATION>() as u32;
 
@@ -184,7 +228,10 @@ fn sample_process_count() -> Result<usize, String> {
         return Err("GetPerformanceInfo failed".to_string());
     }
 
-    Ok(performance.ProcessCount as usize)
+    let mut metrics = performance_metrics_from_info(performance);
+    metrics.memory_accounting.kernel_pool_tags = sample_kernel_pool_tags().unwrap_or_default();
+
+    Ok(metrics)
 }
 
 #[cfg(windows)]
@@ -249,6 +296,381 @@ fn memory_metrics_from_status(
 }
 
 #[cfg(windows)]
+fn performance_metrics_from_info(performance: PERFORMANCE_INFORMATION) -> PerformanceMetrics {
+    let page_size = performance.PageSize;
+    PerformanceMetrics {
+        process_count: performance.ProcessCount as usize,
+        memory_accounting: SystemMemoryAccounting {
+            commit_used_bytes: Some(page_count_bytes(performance.CommitTotal, page_size)),
+            commit_limit_bytes: Some(page_count_bytes(performance.CommitLimit, page_size)),
+            system_cache_bytes: Some(page_count_bytes(performance.SystemCache, page_size)),
+            kernel_total_bytes: Some(page_count_bytes(performance.KernelTotal, page_size)),
+            kernel_paged_pool_bytes: Some(page_count_bytes(performance.KernelPaged, page_size)),
+            kernel_nonpaged_pool_bytes: Some(page_count_bytes(
+                performance.KernelNonpaged,
+                page_size,
+            )),
+            ..SystemMemoryAccounting::default()
+        },
+    }
+}
+
+#[cfg(windows)]
+fn page_count_bytes(pages: usize, page_size: usize) -> u64 {
+    (pages as u64).saturating_mul(page_size as u64)
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SystemPoolTagRaw {
+    tag: [u8; 4],
+    paged_allocs: u32,
+    paged_frees: u32,
+    paged_used: usize,
+    nonpaged_allocs: u32,
+    nonpaged_frees: u32,
+    nonpaged_used: usize,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KernelPoolTagWithBytes {
+    tag_bytes: [u8; 4],
+    tag: KernelPoolTag,
+}
+
+#[cfg(windows)]
+fn sample_kernel_pool_tags() -> Result<Vec<KernelPoolTag>, String> {
+    let rows = query_kernel_pool_tag_rows()?;
+    let mut tags = kernel_pool_tags_from_rows(&rows, MAX_KERNEL_POOL_TAGS);
+    annotate_driver_candidates(&mut tags);
+
+    Ok(tags.into_iter().map(|entry| entry.tag).collect())
+}
+
+#[cfg(windows)]
+fn query_kernel_pool_tag_rows() -> Result<Vec<SystemPoolTagRaw>, String> {
+    let mut buffer_len = INITIAL_POOL_TAG_BUFFER_BYTES;
+
+    loop {
+        let mut buffer = vec![0_u8; buffer_len];
+        let mut return_len = 0_u32;
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_POOL_TAG_INFORMATION,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                &mut return_len,
+            )
+        };
+
+        if nt_success(status) {
+            return pool_tag_rows_from_buffer(&buffer);
+        }
+
+        if is_pool_tag_buffer_too_small(status) && buffer_len < MAX_POOL_TAG_BUFFER_BYTES {
+            let next_len = (return_len as usize).max(buffer_len.saturating_mul(2));
+            buffer_len = next_len.min(MAX_POOL_TAG_BUFFER_BYTES);
+            continue;
+        }
+
+        return Err(format!(
+            "NtQuerySystemInformation(SystemPoolTagInformation) failed with NTSTATUS 0x{:08X}",
+            status as u32
+        ));
+    }
+}
+
+#[cfg(windows)]
+fn nt_success(status: NTSTATUS) -> bool {
+    status >= 0
+}
+
+#[cfg(windows)]
+fn is_pool_tag_buffer_too_small(status: NTSTATUS) -> bool {
+    matches!(
+        status,
+        STATUS_INFO_LENGTH_MISMATCH | STATUS_BUFFER_OVERFLOW | STATUS_BUFFER_TOO_SMALL
+    )
+}
+
+#[cfg(windows)]
+fn pool_tag_rows_from_buffer(buffer: &[u8]) -> Result<Vec<SystemPoolTagRaw>, String> {
+    if buffer.len() < size_of::<u32>() {
+        return Err("SystemPoolTagInformation returned a short header".to_string());
+    }
+
+    let count = unsafe { read_unaligned(buffer.as_ptr().cast::<u32>()) as usize };
+    let row_offset = align_up(size_of::<u32>(), align_of::<SystemPoolTagRaw>());
+    let row_size = size_of::<SystemPoolTagRaw>();
+    let required_len = count
+        .checked_mul(row_size)
+        .and_then(|rows_len| row_offset.checked_add(rows_len))
+        .ok_or_else(|| "SystemPoolTagInformation row count overflowed".to_string())?;
+
+    if required_len > buffer.len() {
+        return Err(format!(
+            "SystemPoolTagInformation returned {count} rows but only {} bytes are available",
+            buffer.len()
+        ));
+    }
+
+    let mut rows = Vec::with_capacity(count);
+    for index in 0..count {
+        let row_ptr = unsafe { buffer.as_ptr().add(row_offset + index * row_size) };
+        rows.push(unsafe { read_unaligned(row_ptr.cast::<SystemPoolTagRaw>()) });
+    }
+
+    Ok(rows)
+}
+
+#[cfg(windows)]
+fn align_up(value: usize, alignment: usize) -> usize {
+    if alignment == 0 {
+        return value;
+    }
+
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+#[cfg(windows)]
+fn kernel_pool_tags_from_rows(
+    rows: &[SystemPoolTagRaw],
+    limit: usize,
+) -> Vec<KernelPoolTagWithBytes> {
+    let mut tags = Vec::new();
+    for row in rows {
+        if row.paged_used > 0 {
+            tags.push(KernelPoolTagWithBytes {
+                tag_bytes: row.tag,
+                tag: KernelPoolTag {
+                    tag: pool_tag_display(row.tag),
+                    kind: KernelPoolKind::Paged,
+                    bytes: row.paged_used as u64,
+                    allocations: row.paged_allocs as u64,
+                    frees: row.paged_frees as u64,
+                    driver_candidates: Vec::new(),
+                    driver_candidates_pending: false,
+                },
+            });
+        }
+
+        if row.nonpaged_used > 0 {
+            tags.push(KernelPoolTagWithBytes {
+                tag_bytes: row.tag,
+                tag: KernelPoolTag {
+                    tag: pool_tag_display(row.tag),
+                    kind: KernelPoolKind::Nonpaged,
+                    bytes: row.nonpaged_used as u64,
+                    allocations: row.nonpaged_allocs as u64,
+                    frees: row.nonpaged_frees as u64,
+                    driver_candidates: Vec::new(),
+                    driver_candidates_pending: false,
+                },
+            });
+        }
+    }
+
+    tags.sort_by(|left, right| {
+        right
+            .tag
+            .bytes
+            .cmp(&left.tag.bytes)
+            .then_with(|| left.tag.tag.cmp(&right.tag.tag))
+            .then_with(|| left.tag.kind.cmp(&right.tag.kind))
+    });
+    tags.truncate(limit);
+    tags
+}
+
+#[cfg(windows)]
+fn pool_tag_display(tag: [u8; 4]) -> String {
+    tag.iter()
+        .map(|byte| {
+            if byte.is_ascii_graphic() {
+                *byte as char
+            } else if *byte == b' ' {
+                '_'
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn annotate_driver_candidates(tags: &mut [KernelPoolTagWithBytes]) {
+    if tags.is_empty() {
+        return;
+    }
+
+    let state = driver_candidate_state();
+    let wanted = tags.iter().map(|tag| tag.tag_bytes).collect::<HashSet<_>>();
+    if let Ok(mut state) = state.lock() {
+        let missing = wanted
+            .iter()
+            .filter(|tag| !state.cache.contains_key(*tag))
+            .copied()
+            .collect::<HashSet<_>>();
+
+        for tag in missing {
+            state.pending.insert(tag);
+        }
+
+        maybe_start_driver_candidate_scan(&mut state);
+
+        for tag in tags {
+            match state.cache.get(&tag.tag_bytes) {
+                Some(candidates) => {
+                    tag.tag.driver_candidates = candidates.clone();
+                    tag.tag.driver_candidates_pending = false;
+                }
+                None => {
+                    tag.tag.driver_candidates.clear();
+                    tag.tag.driver_candidates_pending = true;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default)]
+struct DriverCandidateState {
+    cache: HashMap<[u8; 4], Vec<String>>,
+    pending: HashSet<[u8; 4]>,
+    scan_running: bool,
+}
+
+#[cfg(windows)]
+fn maybe_start_driver_candidate_scan(state: &mut DriverCandidateState) {
+    if state.scan_running || state.pending.is_empty() {
+        return;
+    }
+
+    let tags = std::mem::take(&mut state.pending);
+    state.scan_running = true;
+    let tags_for_scan = tags.clone();
+
+    let spawn_result = thread::Builder::new()
+        .name("batcave-pool-tag-driver-scan".to_string())
+        .spawn(move || {
+            let discovered = scan_driver_candidates(&tags_for_scan);
+            if let Ok(mut state) = driver_candidate_state().lock() {
+                for tag in tags_for_scan {
+                    state
+                        .cache
+                        .insert(tag, discovered.get(&tag).cloned().unwrap_or_default());
+                }
+                state.scan_running = false;
+            }
+        });
+
+    if spawn_result.is_err() {
+        for tag in tags {
+            state.cache.insert(tag, Vec::new());
+        }
+        state.scan_running = false;
+    }
+}
+
+#[cfg(windows)]
+fn driver_candidate_state() -> &'static Mutex<DriverCandidateState> {
+    static STATE: OnceLock<Mutex<DriverCandidateState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(DriverCandidateState::default()))
+}
+
+#[cfg(windows)]
+fn scan_driver_candidates(tags: &HashSet<[u8; 4]>) -> HashMap<[u8; 4], Vec<String>> {
+    let mut candidates = tags
+        .iter()
+        .map(|tag| (*tag, Vec::new()))
+        .collect::<HashMap<_, _>>();
+    let root = driver_root();
+    scan_driver_dir(&root, tags, &mut candidates, 0);
+
+    for matches in candidates.values_mut() {
+        matches.sort();
+        matches.dedup();
+        matches.truncate(MAX_DRIVER_CANDIDATES_PER_TAG);
+    }
+
+    candidates
+}
+
+#[cfg(windows)]
+fn driver_root() -> PathBuf {
+    env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("drivers")
+}
+
+#[cfg(windows)]
+fn scan_driver_dir(
+    dir: &Path,
+    tags: &HashSet<[u8; 4]>,
+    candidates: &mut HashMap<[u8; 4], Vec<String>>,
+    depth: usize,
+) {
+    if depth > 4 {
+        return;
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if file_type.is_dir() {
+            scan_driver_dir(&path, tags, candidates, depth + 1);
+        } else if is_sys_driver(&path) {
+            scan_driver_file(&path, tags, candidates);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_sys_driver(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("sys"))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn scan_driver_file(
+    path: &Path,
+    tags: &HashSet<[u8; 4]>,
+    candidates: &mut HashMap<[u8; 4], Vec<String>>,
+) {
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let Some(name) = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_string())
+    else {
+        return;
+    };
+
+    for tag in tags {
+        if bytes.windows(tag.len()).any(|window| window == tag) {
+            candidates.entry(*tag).or_default().push(name.clone());
+        }
+    }
+}
+
+#[cfg(windows)]
 fn filetime_to_u64(filetime: FILETIME) -> u64 {
     filetime_parts_to_u64(filetime.dwLowDateTime, filetime.dwHighDateTime)
 }
@@ -302,6 +724,104 @@ mod tests {
 
         assert_eq!(metrics.used_bytes, 0);
         assert_eq!(metrics.pagefile_used_bytes, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn performance_metrics_include_commit_and_kernel_pool_bytes() {
+        let metrics = performance_metrics_from_info(PERFORMANCE_INFORMATION {
+            cb: 0,
+            CommitTotal: 2,
+            CommitLimit: 10,
+            CommitPeak: 0,
+            PhysicalTotal: 0,
+            PhysicalAvailable: 0,
+            SystemCache: 3,
+            KernelTotal: 7,
+            KernelPaged: 5,
+            KernelNonpaged: 6,
+            PageSize: 4096,
+            HandleCount: 0,
+            ProcessCount: 42,
+            ThreadCount: 0,
+        });
+
+        assert_eq!(metrics.process_count, 42);
+        assert_eq!(metrics.memory_accounting.commit_used_bytes, Some(8192));
+        assert_eq!(metrics.memory_accounting.commit_limit_bytes, Some(40960));
+        assert_eq!(metrics.memory_accounting.system_cache_bytes, Some(12288));
+        assert_eq!(metrics.memory_accounting.kernel_total_bytes, Some(28672));
+        assert_eq!(
+            metrics.memory_accounting.kernel_paged_pool_bytes,
+            Some(20480)
+        );
+        assert_eq!(
+            metrics.memory_accounting.kernel_nonpaged_pool_bytes,
+            Some(24576)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pool_tag_rows_parse_x64_aligned_buffer() {
+        let row = SystemPoolTagRaw {
+            tag: *b"Leak",
+            paged_allocs: 10,
+            paged_frees: 4,
+            paged_used: 1_024,
+            nonpaged_allocs: 20,
+            nonpaged_frees: 5,
+            nonpaged_used: 4_096,
+        };
+        let row_offset = align_up(size_of::<u32>(), align_of::<SystemPoolTagRaw>());
+        let mut buffer = vec![0_u8; row_offset + size_of::<SystemPoolTagRaw>()];
+        buffer[..size_of::<u32>()].copy_from_slice(&1_u32.to_ne_bytes());
+        let row_bytes = unsafe {
+            slice::from_raw_parts(
+                (&row as *const SystemPoolTagRaw).cast::<u8>(),
+                size_of::<SystemPoolTagRaw>(),
+            )
+        };
+        buffer[row_offset..row_offset + row_bytes.len()].copy_from_slice(row_bytes);
+
+        let rows = pool_tag_rows_from_buffer(&buffer).expect("rows parse");
+
+        assert_eq!(rows, vec![row]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn kernel_pool_tags_are_sorted_and_limited_by_bytes() {
+        let rows = vec![
+            SystemPoolTagRaw {
+                tag: *b"Page",
+                paged_allocs: 2,
+                paged_frees: 1,
+                paged_used: 512,
+                nonpaged_allocs: 0,
+                nonpaged_frees: 0,
+                nonpaged_used: 0,
+            },
+            SystemPoolTagRaw {
+                tag: *b"Leak",
+                paged_allocs: 10,
+                paged_frees: 2,
+                paged_used: 1_024,
+                nonpaged_allocs: 30,
+                nonpaged_frees: 4,
+                nonpaged_used: 4_096,
+            },
+        ];
+
+        let tags = kernel_pool_tags_from_rows(&rows, 2);
+
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].tag.tag, "Leak");
+        assert_eq!(tags[0].tag.kind, KernelPoolKind::Nonpaged);
+        assert_eq!(tags[0].tag.bytes, 4_096);
+        assert_eq!(tags[1].tag.tag, "Leak");
+        assert_eq!(tags[1].tag.kind, KernelPoolKind::Paged);
+        assert_eq!(tags[1].tag.bytes, 1_024);
     }
 
     #[test]

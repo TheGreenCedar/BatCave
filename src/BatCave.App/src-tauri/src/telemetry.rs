@@ -172,10 +172,18 @@ fn collect_processes(
     #[cfg(windows)]
     {
         match windows_process::collect_processes(0) {
-            Ok(native_processes) => Ok(native_processes
-                .into_iter()
-                .map(|process| enrich_native_process(process, sysinfo_cpu_by_pid))
-                .collect()),
+            Ok(native_processes) => {
+                let sysinfo_by_pid = sysinfo_processes
+                    .iter()
+                    .map(|process| (process.pid.clone(), process))
+                    .collect::<HashMap<_, _>>();
+                Ok(native_processes
+                    .into_iter()
+                    .map(|process| {
+                        enrich_native_process(process, sysinfo_cpu_by_pid, &sysinfo_by_pid)
+                    })
+                    .collect())
+            }
             Err(error) => {
                 warnings.push(format!(
                     "native_process_collector_failed:{error}; using sysinfo fallback"
@@ -419,6 +427,7 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
         network_transmitted_total_bytes,
         network_received_bps: 0,
         network_transmitted_bps: 0,
+        memory_accounting: None,
         quality: Some(SystemMetricQuality {
             cpu: Some(MetricQualityInfo::new(
                 MetricQuality::Estimated,
@@ -546,6 +555,7 @@ fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> 
 fn enrich_native_process(
     mut process: ProcessSample,
     sysinfo_cpu_by_pid: &HashMap<String, f64>,
+    sysinfo_by_pid: &HashMap<String, &ProcessSample>,
 ) -> ProcessSample {
     let has_cpu = sysinfo_cpu_by_pid
         .get(&process.pid)
@@ -554,7 +564,34 @@ fn enrich_native_process(
             true
         })
         .unwrap_or(false);
+    let memory_from_sysinfo = if process.memory_bytes == 0
+        && process.private_bytes == 0
+        && process.virtual_memory_bytes == 0
+    {
+        sysinfo_by_pid
+            .get(&process.pid)
+            .filter(|fallback| {
+                fallback.memory_bytes > 0
+                    || fallback.private_bytes > 0
+                    || fallback.virtual_memory_bytes > 0
+            })
+            .map(|fallback| {
+                process.memory_bytes = fallback.memory_bytes;
+                process.private_bytes = fallback.private_bytes;
+                process.virtual_memory_bytes = fallback.virtual_memory_bytes;
+            })
+            .is_some()
+    } else {
+        false
+    };
     process.quality = Some(native_process_quality(process.access_state, has_cpu));
+    if memory_from_sysinfo {
+        process_quality(&mut process).memory = Some(
+            MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo).with_message(
+                "Native process memory counters were denied; using sysinfo fallback memory.",
+            ),
+        );
+    }
     process
 }
 
@@ -748,6 +785,41 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
 mod tests {
     use super::*;
     use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
+    use std::collections::HashMap;
+
+    #[cfg(windows)]
+    #[test]
+    fn enrich_native_process_uses_sysinfo_memory_when_native_memory_is_denied() {
+        let mut native = sample_process("42");
+        native.access_state = AccessState::Denied;
+        native.memory_bytes = 0;
+        native.private_bytes = 0;
+        native.virtual_memory_bytes = 0;
+        let mut fallback = sample_process("42");
+        fallback.memory_bytes = 123;
+        fallback.private_bytes = 45;
+        fallback.virtual_memory_bytes = 678;
+        let sysinfo_cpu_by_pid = HashMap::from([("42".to_string(), 9.0)]);
+        let sysinfo_by_pid = HashMap::from([("42".to_string(), &fallback)]);
+
+        let enriched = enrich_native_process(native, &sysinfo_cpu_by_pid, &sysinfo_by_pid);
+
+        assert_eq!(enriched.access_state, AccessState::Denied);
+        assert_eq!(enriched.cpu_percent, 9.0);
+        assert_eq!(enriched.memory_bytes, 123);
+        assert_eq!(enriched.private_bytes, 45);
+        assert_eq!(enriched.virtual_memory_bytes, 678);
+        let memory_quality = enriched
+            .quality
+            .and_then(|quality| quality.memory)
+            .expect("memory quality exists");
+        assert_eq!(memory_quality.quality, MetricQuality::Estimated);
+        assert_eq!(memory_quality.source, Some(MetricSource::Sysinfo));
+        assert!(memory_quality
+            .message
+            .expect("message exists")
+            .contains("Native process memory counters were denied"));
+    }
 
     #[test]
     fn apply_network_attribution_marks_rows_native_when_monitor_is_ready() {
@@ -826,5 +898,33 @@ mod tests {
             }),
             "expected at least one Linux process row sourced from procfs"
         );
+    }
+
+    fn sample_process(pid: &str) -> ProcessSample {
+        ProcessSample {
+            pid: pid.to_string(),
+            parent_pid: None,
+            start_time_ms: 1,
+            name: "Process".to_string(),
+            exe: String::new(),
+            status: "running".to_string(),
+            cpu_percent: 0.0,
+            kernel_cpu_percent: None,
+            memory_bytes: 0,
+            private_bytes: 0,
+            virtual_memory_bytes: 0,
+            disk_read_total_bytes: 0,
+            disk_write_total_bytes: 0,
+            other_io_total_bytes: None,
+            disk_read_bps: 0,
+            disk_write_bps: 0,
+            other_io_bps: None,
+            network_received_bps: None,
+            network_transmitted_bps: None,
+            threads: 1,
+            handles: 1,
+            access_state: AccessState::Full,
+            quality: Some(native_process_quality(AccessState::Full, true)),
+        }
     }
 }

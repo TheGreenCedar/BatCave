@@ -52,7 +52,7 @@ Implemented runtime surfaces:
 Windows native telemetry:
 
 - Process identity, PID, parent PID, start-time identity, executable path, access state, CPU, kernel CPU, memory, private bytes, process I/O totals, thread count, and handle count.
-- Physical memory, pagefile totals, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
+- Physical memory, pagefile/commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
 - Local elevated-helper snapshots that can carry attributed network rows when standard access lacks kernel trace rights.
 
@@ -66,6 +66,24 @@ Fallback behavior:
 
 - `sysinfo` remains available when a native collector cannot read expected host files.
 - Missing or delayed metrics use quality metadata instead of fabricated values.
+- If native Windows process memory is blocked but `sysinfo` has a value for the same PID, BatCave reports that fallback as estimated memory instead of a native zero.
+
+## Memory Accounting
+
+`memory_used_bytes` is physical memory used by the machine. It includes process working sets, kernel memory, cache, drivers, virtualization/WSL, and other OS-resident memory. It is not expected to equal the sum of process rows.
+
+When available, `system.memory_accounting` adds the reconciliation view:
+
+- `process_working_set_bytes` and `process_private_bytes`: totals across process rows whose memory quality is reported.
+- `denied_process_count` and `partial_process_count`: rows where BatCave did not get complete access.
+- `unattributed_bytes`: physical used memory not covered by reported process working sets. Treat it as an operator clue, not a perfect RAMMap replacement.
+- `commit_used_bytes` and `commit_limit_bytes`: Windows commit charge and limit from `GetPerformanceInfo`.
+- `kernel_paged_pool_bytes`, `kernel_nonpaged_pool_bytes`, `kernel_total_bytes`, and `system_cache_bytes`: Windows OS memory buckets from `GetPerformanceInfo`.
+- `kernel_pool_tags`: top Windows kernel pool tags from `NtQuerySystemInformation(SystemPoolTagInformation)`, split by paged/nonpaged pool and sorted by bytes.
+
+Denied process rows remain visible because blocked access is itself useful telemetry. The UI must render unavailable process memory as blocked/unavailable, not as measured `0 B`.
+
+Pool tags are allocation labels, not guaranteed driver ownership. BatCave may attach `driver_candidates` by scanning local installed `.sys` binaries for the tag bytes, but the UI must present those names as best-effort candidates. The scan runs outside the telemetry hot path, so `driver_candidates_pending` can be true on early snapshots. Unknown tags and missing candidates are expected after the scan completes.
 
 ## Quality States
 

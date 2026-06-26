@@ -34,4 +34,5 @@ windows-sys = { version = "0.60.2", features = [
     "Win32_System_Time",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    "Wdk_System_SystemInformation",
 ] }

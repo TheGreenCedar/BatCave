@@ -131,7 +131,9 @@ The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
 
 ## Platform Telemetry Notes
 
-Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, pagefile totals, interface network totals, and PDH physical-disk rates.
+Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, pagefile/commit totals, kernel paged/nonpaged pool, top kernel pool tags with best-effort local driver candidates, system cache, interface network totals, and PDH physical-disk rates.
+
+Kernel pool tag driver names are candidates, not proof of ownership. BatCave reads current pool-tag usage from Windows and scans local installed `.sys` binaries for matching tag bytes when the app needs a driver clue for a leaking pool bucket. That local driver scan is cached and runs outside the telemetry hot path, so candidate names may appear after the first pool-tag snapshot.
 
 Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If standard access cannot start the kernel logger, the process network quality reports the ETW failure reason. Admin mode can launch a local elevated helper and reuse the same Rust collector for richer snapshots. If elevation is denied or unavailable, standard access remains the fallback path.
 

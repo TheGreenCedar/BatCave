@@ -7,8 +7,9 @@ use serde::de::DeserializeOwned;
 use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
-        ProcessSample, RuntimeHealth, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
-        RuntimeWarning, SortColumn, SortDirection, SystemMetricsSnapshot, WarmCache,
+        MetricQuality, ProcessSample, RuntimeHealth, RuntimeQuery, RuntimeSettings,
+        RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
+        SystemMetricsSnapshot, WarmCache,
     },
     elevation::ElevatedHelperClient,
     telemetry::{now_ms, TelemetryCollector},
@@ -294,6 +295,7 @@ impl RuntimeStore {
 
         let processes =
             add_process_rates(sample_processes, &self.previous_processes, elapsed_seconds);
+        add_process_memory_accounting(&mut system, &processes);
         self.previous_processes = processes;
         self.previous_totals = Some(TelemetryTotals::from_system(&system, sample_ts_ms));
 
@@ -687,8 +689,54 @@ fn empty_system() -> SystemMetricsSnapshot {
         network_transmitted_total_bytes: 0,
         network_received_bps: 0,
         network_transmitted_bps: 0,
+        memory_accounting: None,
         quality: None,
     }
+}
+
+fn add_process_memory_accounting(system: &mut SystemMetricsSnapshot, processes: &[ProcessSample]) {
+    let process_working_set_bytes = processes
+        .iter()
+        .filter(|process| process_memory_is_reported(process))
+        .fold(0_u64, |total, process| {
+            total.saturating_add(process.memory_bytes)
+        });
+    let process_private_bytes = processes
+        .iter()
+        .filter(|process| process_memory_is_reported(process))
+        .fold(0_u64, |total, process| {
+            total.saturating_add(process.private_bytes)
+        });
+    let denied_process_count = processes
+        .iter()
+        .filter(|process| process.access_state == crate::contracts::AccessState::Denied)
+        .count();
+    let partial_process_count = processes
+        .iter()
+        .filter(|process| process.access_state == crate::contracts::AccessState::Partial)
+        .count();
+
+    let accounting = system
+        .memory_accounting
+        .get_or_insert_with(SystemMemoryAccounting::default);
+    accounting.process_working_set_bytes = process_working_set_bytes;
+    accounting.process_private_bytes = process_private_bytes;
+    accounting.denied_process_count = denied_process_count;
+    accounting.partial_process_count = partial_process_count;
+    accounting.unattributed_bytes = Some(
+        system
+            .memory_used_bytes
+            .saturating_sub(process_working_set_bytes),
+    );
+}
+
+fn process_memory_is_reported(process: &ProcessSample) -> bool {
+    process
+        .quality
+        .as_ref()
+        .and_then(|quality| quality.memory.as_ref())
+        .map(|memory| memory.quality != MetricQuality::Unavailable)
+        .unwrap_or(true)
 }
 
 fn current_app_metrics(processes: &[ProcessSample]) -> CurrentAppMetrics {
@@ -774,7 +822,7 @@ fn round1(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::AccessState;
+    use crate::contracts::{AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality};
 
     #[test]
     fn shape_rows_filters_sorts_and_limits_processes() {
@@ -846,6 +894,44 @@ mod tests {
 
         assert_eq!(restarted[0].disk_read_bps, 0);
         assert_eq!(restarted[0].other_io_bps, None);
+    }
+
+    #[test]
+    fn process_memory_accounting_excludes_unavailable_placeholder_memory() {
+        let mut system = empty_system();
+        system.memory_used_bytes = 1_000;
+        system.memory_accounting = Some(SystemMemoryAccounting {
+            kernel_paged_pool_bytes: Some(128),
+            ..SystemMemoryAccounting::default()
+        });
+        let mut reported = sample("10", "Reported", 1.0);
+        reported.memory_bytes = 400;
+        reported.private_bytes = 200;
+        let mut blocked = sample("20", "Blocked", 1.0);
+        blocked.access_state = AccessState::Denied;
+        blocked.memory_bytes = 900;
+        blocked.private_bytes = 800;
+        blocked.quality = Some(ProcessMetricQuality {
+            memory: Some(MetricQualityInfo::new(
+                MetricQuality::Unavailable,
+                MetricSource::DirectApi,
+            )),
+            ..ProcessMetricQuality::default()
+        });
+        let mut partial = sample("30", "Partial", 1.0);
+        partial.access_state = AccessState::Partial;
+        partial.memory_bytes = 100;
+        partial.private_bytes = 50;
+
+        add_process_memory_accounting(&mut system, &[reported, blocked, partial]);
+
+        let accounting = system.memory_accounting.expect("accounting exists");
+        assert_eq!(accounting.process_working_set_bytes, 500);
+        assert_eq!(accounting.process_private_bytes, 250);
+        assert_eq!(accounting.denied_process_count, 1);
+        assert_eq!(accounting.partial_process_count, 1);
+        assert_eq!(accounting.unattributed_bytes, Some(500));
+        assert_eq!(accounting.kernel_paged_pool_bytes, Some(128));
     }
 
     #[test]

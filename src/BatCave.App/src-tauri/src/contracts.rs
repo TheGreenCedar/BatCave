@@ -57,7 +57,56 @@ pub struct SystemMetricsSnapshot {
     pub network_received_bps: u64,
     pub network_transmitted_bps: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_accounting: Option<SystemMemoryAccounting>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<SystemMetricQuality>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SystemMemoryAccounting {
+    pub process_working_set_bytes: u64,
+    pub process_private_bytes: u64,
+    pub denied_process_count: usize,
+    pub partial_process_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unattributed_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_used_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_limit_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_cache_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_paged_pool_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_nonpaged_pool_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernel_pool_tags: Vec<KernelPoolTag>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct KernelPoolTag {
+    pub tag: String,
+    pub kind: KernelPoolKind,
+    pub bytes: u64,
+    pub allocations: u64,
+    pub frees: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub driver_candidates: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub driver_candidates_pending: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelPoolKind {
+    #[default]
+    Paged,
+    Nonpaged,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +354,10 @@ fn default_query_limit() -> usize {
     5000
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl Default for RuntimeHealth {
     fn default() -> Self {
         Self {
@@ -386,6 +439,28 @@ mod tests {
                 network_transmitted_total_bytes: 4_000_000,
                 network_received_bps: 500,
                 network_transmitted_bps: 600,
+                memory_accounting: Some(SystemMemoryAccounting {
+                    process_working_set_bytes: 6_000,
+                    process_private_bytes: 3_000,
+                    denied_process_count: 2,
+                    partial_process_count: 3,
+                    unattributed_bytes: Some(2_000),
+                    commit_used_bytes: Some(11_000),
+                    commit_limit_bytes: Some(32_000),
+                    system_cache_bytes: Some(1_500),
+                    kernel_total_bytes: Some(1_200),
+                    kernel_paged_pool_bytes: Some(700),
+                    kernel_nonpaged_pool_bytes: Some(500),
+                    kernel_pool_tags: vec![KernelPoolTag {
+                        tag: "Leak".to_string(),
+                        kind: KernelPoolKind::Nonpaged,
+                        bytes: 384,
+                        allocations: 12,
+                        frees: 2,
+                        driver_candidates: vec!["leaky.sys".to_string()],
+                        driver_candidates_pending: false,
+                    }],
+                }),
                 quality: Some(SystemMetricQuality {
                     cpu: Some(MetricQualityInfo::new(
                         MetricQuality::Native,
@@ -482,6 +557,27 @@ mod tests {
                     "network_transmitted_total_bytes": 4000000,
                     "network_received_bps": 500,
                     "network_transmitted_bps": 600,
+                    "memory_accounting": {
+                        "process_working_set_bytes": 6000,
+                        "process_private_bytes": 3000,
+                        "denied_process_count": 2,
+                        "partial_process_count": 3,
+                        "unattributed_bytes": 2000,
+                        "commit_used_bytes": 11000,
+                        "commit_limit_bytes": 32000,
+                        "system_cache_bytes": 1500,
+                        "kernel_total_bytes": 1200,
+                        "kernel_paged_pool_bytes": 700,
+                        "kernel_nonpaged_pool_bytes": 500,
+                        "kernel_pool_tags": [{
+                            "tag": "Leak",
+                            "kind": "nonpaged",
+                            "bytes": 384,
+                            "allocations": 12,
+                            "frees": 2,
+                            "driver_candidates": ["leaky.sys"]
+                        }]
+                    },
                     "quality": {
                         "cpu": { "quality": "native", "source": "direct_api" },
                         "kernel_cpu": { "quality": "native", "source": "direct_api" },
