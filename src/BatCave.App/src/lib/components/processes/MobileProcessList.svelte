@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { processHint, processIoRate, type ProcessRates } from "../../process";
+  import { processHint, processIdentity, processIoRate, type ProcessRates } from "../../process";
   import { formatPercent, formatRate, processBytesLabel, processMemoryTitle } from "../../format";
   import type { ProcessSample } from "../../types";
+  import ProcessIcon from "./ProcessIcon.svelte";
 
   export let processes: ProcessSample[] = [];
   export let selectedPid = "";
@@ -11,6 +12,7 @@
 
 <div class="mobile-process-list" aria-label="Attention queue cards">
   {#each processes.slice(0, 10) as process}
+    {@const identity = processIdentity(process)}
     <button
       class="mobile-process-card"
       class:selected={process.pid === selectedPid}
@@ -19,7 +21,13 @@
       onclick={() => onSelect(process.pid)}
     >
       <span class="card-title-row">
-        <span>{process.name}</span>
+        <span class="mobile-process-title">
+          <ProcessIcon kind={identity.icon} child={identity.isChild} />
+          <span>
+            <strong>{process.name}</strong>
+            <small>{identity.group}</small>
+          </span>
+        </span>
         <small>{processHint(process, processRates)}</small>
       </span>
       <span class="card-metrics">

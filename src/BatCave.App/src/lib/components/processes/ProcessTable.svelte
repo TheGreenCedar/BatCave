@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    processIdentity,
     processIoRate,
     processNetworkRate,
     sortAriaValue,
@@ -11,6 +12,7 @@
   } from "../../process";
   import { formatBytes, formatPercent, formatRate, processBytesLabel, processMemoryTitle } from "../../format";
   import type { ProcessSample, SortDirection } from "../../types";
+  import ProcessIcon from "./ProcessIcon.svelte";
 
   export let processes: ProcessSample[] = [];
   export let columns: ProcessColumn[] = [];
@@ -45,7 +47,8 @@
     </thead>
     <tbody>
       {#each processes as process}
-        <tr class:selected={process.pid === selectedPid}>
+        {@const identity = processIdentity(process)}
+        <tr class:selected={process.pid === selectedPid} class:child-row={identity.isChild}>
           {#each columns as column}
             {#if column.key === "pid"}
               <td>{process.pid}</td>
@@ -54,16 +57,20 @@
                 <button
                   class="process-button"
                   class:selected={process.pid === selectedPid}
+                  class:child={identity.isChild}
                   type="button"
                   aria-pressed={process.pid === selectedPid}
                   aria-label={`Inspect ${process.name}, PID ${process.pid}`}
                   onclick={() => onSelect(process.pid)}
                 >
-                  <svg class="process-glyph" viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="4" y="5" width="16" height="14" rx="2" />
-                    <path d="M8 12h3l2-3 3 6h2" />
-                  </svg>
-                  <span>{process.name}</span>
+                  {#if identity.isChild}
+                    <span class="process-tree-branch" aria-hidden="true"></span>
+                  {/if}
+                  <ProcessIcon kind={identity.icon} child={identity.isChild} />
+                  <span class="process-name-stack">
+                    <span>{process.name}</span>
+                    <small>{identity.group}</small>
+                  </span>
                 </button>
               </td>
             {:else if column.key === "status"}

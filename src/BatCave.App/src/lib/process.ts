@@ -26,6 +26,26 @@ export interface ProcessRates {
   otherRate: number;
 }
 
+export type ProcessIconKind =
+  | "batcave"
+  | "browser"
+  | "code"
+  | "chat"
+  | "container"
+  | "database"
+  | "gpu"
+  | "media"
+  | "node"
+  | "process"
+  | "sync"
+  | "windows";
+
+export interface ProcessIdentity {
+  icon: ProcessIconKind;
+  group: string;
+  isChild: boolean;
+}
+
 export const focusOptions: { value: FocusMode; label: string }[] = [
   { value: "all", label: "All" },
   { value: "active", label: "Active" },
@@ -280,6 +300,82 @@ export function processNetworkRate(process: ProcessSample): number {
   return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
 }
 
+export function processIdentity(process: ProcessSample): ProcessIdentity {
+  const haystack = `${process.name} ${process.exe}`.toLocaleLowerCase();
+  const name = process.name.toLocaleLowerCase();
+
+  const isChild =
+    name.startsWith("--") ||
+    haystack.includes("--type=") ||
+    haystack.includes("renderer") ||
+    haystack.includes("gpu-process") ||
+    haystack.includes("utility");
+
+  if (haystack.includes("batcave")) {
+    return { icon: "batcave", group: "BatCave", isChild };
+  }
+
+  if (matchesAny(haystack, ["chrome", "msedge", "firefox", "brave", "browser"])) {
+    return { icon: "browser", group: "Browsers", isChild };
+  }
+
+  if (matchesAny(haystack, ["code.exe", "visual studio code", "\\code\\", "/code/"])) {
+    return { icon: "code", group: "Developer tools", isChild };
+  }
+
+  if (matchesAny(haystack, ["node", "npm", "deno", "bun.exe"])) {
+    return { icon: "node", group: "Runtimes", isChild };
+  }
+
+  if (haystack.includes("docker")) {
+    return { icon: "container", group: "Containers", isChild };
+  }
+
+  if (matchesAny(haystack, ["postgres", "mysql", "redis", "sqlserver", "mariadb"])) {
+    return { icon: "database", group: "Databases", isChild };
+  }
+
+  if (matchesAny(haystack, ["slack", "teams", "discord", "zoom"])) {
+    return { icon: "chat", group: "Communication", isChild };
+  }
+
+  if (matchesAny(haystack, ["spotify", "vlc", "media player"])) {
+    return { icon: "media", group: "Media", isChild };
+  }
+
+  if (matchesAny(haystack, ["dropbox", "onedrive", "googledrive"])) {
+    return { icon: "sync", group: "Sync", isChild };
+  }
+
+  if (matchesAny(haystack, ["nvidia", "amd", "radeon", "intel graphics"])) {
+    return { icon: "gpu", group: "GPU", isChild };
+  }
+
+  if (
+    matchesAny(haystack, [
+      "applicationframehost",
+      "conhost",
+      "ctfmon",
+      "dwm",
+      "explorer.exe",
+      "phoneexperiencehost",
+      "searchindexer",
+      "securityhealthservice",
+      "shellexperiencehost",
+      "sihost",
+      "startmenuexperiencehost",
+      "svchost",
+      "textinputhost",
+      "widgetservice",
+      "windows",
+    ])
+  ) {
+    return { icon: "windows", group: "Windows", isChild };
+  }
+
+  return { icon: "process", group: "Processes", isChild };
+}
+
 function attentionScore(
   process: ProcessSample,
   processRates: Record<string, ProcessRates>,
@@ -318,4 +414,8 @@ function comparePid(left: string, right: string): number {
   }
 
   return compareText(left, right);
+}
+
+function matchesAny(value: string, needles: string[]): boolean {
+  return needles.some((needle) => value.includes(needle));
 }

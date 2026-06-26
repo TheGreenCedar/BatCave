@@ -599,7 +599,8 @@ th.metric .sort-header {
 }
 
 .sort-header span,
-.process-button span {
+.process-button span,
+.mobile-process-title span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -617,10 +618,11 @@ th.metric .sort-header {
 .process-button {
   width: 100%;
   min-height: 37px;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
   justify-content: flex-start;
-  gap: var(--space-2);
+  column-gap: var(--space-2);
   border-radius: var(--radius-sm);
   padding: var(--space-1) var(--space-2);
   color: var(--text-soft);
@@ -628,16 +630,106 @@ th.metric .sort-header {
   text-align: left;
 }
 
-.process-glyph {
+.process-button:not(.child) {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.process-tree-branch {
+  width: 16px;
+  height: 25px;
+  border-left: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  border-bottom-left-radius: var(--radius-sm);
+  opacity: 0.72;
+}
+
+.process-name-stack {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.process-name-stack > span,
+.mobile-process-title strong {
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-name-stack small,
+.mobile-process-title small {
+  display: block;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-icon {
   width: 22px;
   height: 22px;
+  display: grid;
+  place-items: center;
   flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, currentColor 62%, transparent);
+  border-radius: var(--radius-sm);
   color: var(--chart-cpu);
-  fill: var(--accent-muted);
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.process-icon svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.8;
+}
+
+.process-icon-batcave svg,
+.process-icon-windows svg {
+  fill: currentColor;
+  stroke-width: 0;
+}
+
+.process-icon-browser {
+  color: var(--chart-disk-read);
+}
+
+.process-icon-code,
+.process-icon-node {
+  color: var(--chart-memory);
+}
+
+.process-icon-container,
+.process-icon-database,
+.process-icon-sync {
+  color: var(--chart-disk-write);
+}
+
+.process-icon-chat,
+.process-icon-media,
+.process-icon-gpu {
+  color: var(--chart-network-down);
+}
+
+.process-icon-windows,
+.process-icon-process {
+  color: var(--text-muted);
+}
+
+.process-icon.child {
+  opacity: 0.78;
+}
+
+.child-row td:first-child,
+.child-row .process-name-stack > span {
+  color: var(--text-muted);
 }
 
 .status-cell {
@@ -685,10 +777,16 @@ th.metric .sort-header {
 .card-title-row span {
   min-width: 0;
   overflow: hidden;
-  color: var(--text);
   font-weight: 760;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mobile-process-title {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .card-metrics {
@@ -791,15 +889,17 @@ dd {
   margin-bottom: var(--space-4);
 }
 
-.process-avatar {
+.process-identity > .process-icon {
   width: 52px;
   height: 52px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--chart-cpu);
+  border-width: 1px;
   border-radius: var(--radius-md);
-  color: var(--chart-cpu);
-  background: var(--accent-muted);
+}
+
+.process-identity > .process-icon svg {
+  width: 36px;
+  height: 36px;
+  stroke-width: 1.55;
 }
 
 .process-identity strong {
