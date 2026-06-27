@@ -10,6 +10,7 @@
   export let sortKey: SortKey;
   export let sortDirection: SortDirection;
   export let processRates: Record<string, ProcessRates>;
+  export let processIcons: Record<string, string> = {};
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
 </script>
@@ -27,8 +28,9 @@
     {sortKey}
     {sortDirection}
     {processRates}
+    {processIcons}
     {onSelect}
     {onToggleSort}
   />
-  <MobileProcessList {processes} {selectedPid} {processRates} {onSelect} />
+  <MobileProcessList {processes} {selectedPid} {processRates} {processIcons} {onSelect} />
 </section>

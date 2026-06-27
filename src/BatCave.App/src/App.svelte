@@ -90,6 +90,8 @@
   let history: TrendState = emptyTrendState();
   let processHistory: ProcessTrendState = emptyProcessTrendState();
   let processRates: Record<string, ProcessRates> = {};
+  let processIcons: Record<string, string> = {};
+  let requestedProcessIcons = new Set<string>();
   let metricCards: MetricCardOption[] = [];
 
   $: themeName = resolveThemeName(themePreference, systemThemeName);
@@ -133,6 +135,7 @@
   $: selectedRates = selectedProcess ? processRates[selectedProcess.pid] : undefined;
   $: processReadRate = selectedRates?.readRate ?? processHistory.readRate.at(-1) ?? 0;
   $: processWriteRate = selectedRates?.writeRate ?? processHistory.writeRate.at(-1) ?? 0;
+  $: void hydrateProcessIcons(filteredProcesses, selectedProcess);
   $: coreLoads = history.cores.map((core, index) => ({ index, load: currentCoreLoad(core), trend: core }));
   $: coreAverage = average(coreLoads.map((core) => core.load), snapshot.system.cpu_percent);
   $: corePeak = Math.max(...coreLoads.map((core) => core.load), 0);
@@ -608,6 +611,34 @@
     }
   }
 
+  async function hydrateProcessIcons(processes: ProcessSample[], selected: ProcessSample | null): Promise<void> {
+    if (!hasNativeSnapshot) {
+      return;
+    }
+
+    const iconCandidates = selected ? [selected, ...processes.slice(0, 80)] : processes.slice(0, 80);
+    for (const process of iconCandidates) {
+      const key = processIconKey(process);
+      if (!process.exe || processIcons[key] || requestedProcessIcons.has(key)) {
+        continue;
+      }
+
+      requestedProcessIcons.add(key);
+      try {
+        const icon = await invoke<string | null>("get_process_icon", { exe: process.exe });
+        if (icon) {
+          processIcons = { ...processIcons, [key]: icon };
+        }
+      } catch {
+        // Native icon lookup is cosmetic; keep the category fallback when Windows denies it.
+      }
+    }
+  }
+
+  function processIconKey(process: ProcessSample): string {
+    return process.exe || process.name;
+  }
+
   function selectDetailMode(mode: DetailMode): void {
     detailMode = mode;
     contextTab = "system";
@@ -873,6 +904,7 @@
       {sortKey}
       {sortDirection}
       {processRates}
+      {processIcons}
       onSelect={selectProcess}
       onToggleSort={toggleSortKey}
     />
@@ -884,6 +916,7 @@
       {processRates}
       {processReadRate}
       {processWriteRate}
+      {processIcons}
       {copyStatus}
       {activeTheme}
       {maxRate}

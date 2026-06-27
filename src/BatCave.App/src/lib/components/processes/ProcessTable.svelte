@@ -20,6 +20,7 @@
   export let sortKey: SortKey;
   export let sortDirection: SortDirection;
   export let processRates: Record<string, ProcessRates>;
+  export let processIcons: Record<string, string> = {};
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
 </script>
@@ -48,6 +49,7 @@
     <tbody>
       {#each processes as process}
         {@const identity = processIdentity(process)}
+        {@const iconSrc = processIcons[process.exe || process.name]}
         <tr class:selected={process.pid === selectedPid} class:child-row={identity.isChild}>
           {#each columns as column}
             {#if column.key === "pid"}
@@ -66,7 +68,7 @@
                   {#if identity.isChild}
                     <span class="process-tree-branch" aria-hidden="true"></span>
                   {/if}
-                  <ProcessIcon kind={identity.icon} child={identity.isChild} />
+                  <ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} />
                   <span class="process-name-stack">
                     <span>{process.name}</span>
                     <small>{identity.group}</small>

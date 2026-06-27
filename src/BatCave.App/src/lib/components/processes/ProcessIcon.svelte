@@ -3,10 +3,13 @@
 
   export let kind: ProcessIconKind = "process";
   export let child = false;
+  export let src: string | undefined = undefined;
 </script>
 
 <span class:child class={`process-icon process-icon-${kind}`} aria-hidden="true">
-  {#if kind === "batcave"}
+  {#if src}
+    <img src={src} alt="" />
+  {:else if kind === "batcave"}
     <svg viewBox="0 0 24 24">
       <path d="M3 9.2 7.2 6l2.7 2.1L12 5.3l2.1 2.8L16.8 6 21 9.2l-3.4 4-3.1-1.3L12 16.7l-2.5-4.8-3.1 1.3Z" />
     </svg>

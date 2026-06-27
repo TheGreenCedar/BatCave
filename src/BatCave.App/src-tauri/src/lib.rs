@@ -10,6 +10,7 @@ mod linux_process;
 #[cfg(any(target_os = "linux", test))]
 mod linux_system;
 mod network_attribution;
+mod process_icons;
 mod runtime_store;
 mod telemetry;
 #[cfg(any(windows, test))]
@@ -65,6 +66,11 @@ fn set_process_query(
     state.set_query(query)
 }
 
+#[tauri::command]
+fn get_process_icon(exe: String) -> Result<Option<String>, String> {
+    process_icons::icon_data_url(&exe)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(RuntimeState::new())
@@ -74,7 +80,8 @@ pub fn run() {
             pause_runtime,
             resume_runtime,
             set_admin_mode,
-            set_process_query
+            set_process_query,
+            get_process_icon
         ])
         .run(tauri::generate_context!())
         .expect("error while running BatCave Monitor");

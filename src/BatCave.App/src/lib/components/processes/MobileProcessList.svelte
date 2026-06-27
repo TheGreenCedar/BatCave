@@ -7,12 +7,14 @@
   export let processes: ProcessSample[] = [];
   export let selectedPid = "";
   export let processRates: Record<string, ProcessRates>;
+  export let processIcons: Record<string, string> = {};
   export let onSelect: (pid: string) => void;
 </script>
 
 <div class="mobile-process-list" aria-label="Attention queue cards">
   {#each processes.slice(0, 10) as process}
     {@const identity = processIdentity(process)}
+    {@const iconSrc = processIcons[process.exe || process.name]}
     <button
       class="mobile-process-card"
       class:selected={process.pid === selectedPid}
@@ -22,7 +24,7 @@
     >
       <span class="card-title-row">
         <span class="mobile-process-title">
-          <ProcessIcon kind={identity.icon} child={identity.isChild} />
+          <ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} />
           <span>
             <strong>{process.name}</strong>
             <small>{identity.group}</small>

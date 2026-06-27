@@ -13,6 +13,7 @@
   export let processRates: Record<string, ProcessRates>;
   export let processReadRate = 0;
   export let processWriteRate = 0;
+  export let processIcons: Record<string, string> = {};
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
   export let maxRate: (points: number[], fallback: number) => number;
@@ -70,6 +71,7 @@
       {processRates}
       {processReadRate}
       {processWriteRate}
+      {processIcons}
       {copyStatus}
       {activeTheme}
       {maxRate}

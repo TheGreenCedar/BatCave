@@ -20,6 +20,7 @@
   export let processRates: Record<string, ProcessRates>;
   export let processReadRate = 0;
   export let processWriteRate = 0;
+  export let processIcons: Record<string, string> = {};
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
   export let maxRate: (points: number[], fallback: number) => number;
@@ -30,8 +31,9 @@
 <section class="process-inspector" aria-label="Process inspector">
   {#if selectedProcess}
     {@const identity = processIdentity(selectedProcess)}
+    {@const iconSrc = processIcons[selectedProcess.exe || selectedProcess.name]}
     <div class="process-identity">
-      <ProcessIcon kind={identity.icon} child={identity.isChild} />
+      <ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} />
       <span>
         <strong>{selectedProcess.name}</strong>
         <small>{identity.group} / PID {selectedProcess.pid} / {selectedProcess.exe || "Path unavailable"}</small>
