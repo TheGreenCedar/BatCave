@@ -46,6 +46,19 @@ export interface ProcessIdentity {
   isChild: boolean;
 }
 
+export interface ProcessAppGroup {
+  key: string;
+  label: string;
+  category: string;
+  representative: ProcessSample;
+  processes: ProcessSample[];
+  cpuPercent: number;
+  memoryBytes: number;
+  ioRate: number;
+  networkRate: number;
+  threads: number;
+}
+
 export const focusOptions: { value: FocusMode; label: string }[] = [
   { value: "all", label: "All" },
   { value: "active", label: "Active" },
@@ -300,6 +313,43 @@ export function processNetworkRate(process: ProcessSample): number {
   return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
 }
 
+export function groupProcessesByApp(
+  processes: ProcessSample[],
+  processRates: Record<string, ProcessRates>,
+): ProcessAppGroup[] {
+  const groups = new Map<string, ProcessAppGroup>();
+
+  for (const process of processes) {
+    const key = processAppKey(process);
+    let group = groups.get(key);
+    if (!group) {
+      const identity = processIdentity(process);
+      group = {
+        key,
+        label: processAppLabel(process),
+        category: identity.group,
+        representative: process,
+        processes: [],
+        cpuPercent: 0,
+        memoryBytes: 0,
+        ioRate: 0,
+        networkRate: 0,
+        threads: 0,
+      };
+      groups.set(key, group);
+    }
+
+    group.processes.push(process);
+    group.cpuPercent += process.cpu_percent;
+    group.memoryBytes += process.memory_bytes;
+    group.ioRate += processIoRate(process, processRates);
+    group.networkRate += processNetworkRate(process);
+    group.threads += process.threads;
+  }
+
+  return Array.from(groups.values());
+}
+
 export function processIdentity(process: ProcessSample): ProcessIdentity {
   const haystack = `${process.name} ${process.exe}`.toLocaleLowerCase();
   const name = process.name.toLocaleLowerCase();
@@ -374,6 +424,18 @@ export function processIdentity(process: ProcessSample): ProcessIdentity {
   }
 
   return { icon: "process", group: "Processes", isChild };
+}
+
+function processAppKey(process: ProcessSample): string {
+  return (process.exe || normalizedProcessName(process.name)).toLocaleLowerCase();
+}
+
+function processAppLabel(process: ProcessSample): string {
+  return normalizedProcessName(process.name);
+}
+
+function normalizedProcessName(name: string): string {
+  return name.replace(/-\d+(?=\.exe$)/i, "");
 }
 
 function attentionScore(
