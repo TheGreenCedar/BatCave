@@ -1,4 +1,4 @@
-import type { ProcessSample, RuntimeSnapshot } from "./types";
+import type { ProcessSample, ProcessViewRow, RuntimeQuery, RuntimeSnapshot } from "./types";
 
 const names = [
   "Code.exe",
@@ -31,7 +31,10 @@ const backgroundNames = [
 
 const baseTs = Date.now();
 
-export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
+export function makeFixtureSnapshot(
+  tick: number,
+  query: RuntimeQuery = defaultRuntimeQuery(),
+): RuntimeSnapshot {
   const cpu = wave(tick, 31, 14, 0.34);
   const memoryTotal = 32 * 1024 * 1024 * 1024;
   const memoryRatio = 0.55 + Math.sin(tick / 14) * 0.06;
@@ -54,12 +57,7 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
     ts_ms: baseTs + tick * 1000,
     source: "fixture",
     settings: {
-      query: {
-        filter_text: "",
-        sort_column: "attention",
-        sort_direction: "desc",
-        limit: 5000,
-      },
+      query,
       admin_mode_requested: false,
       admin_mode_enabled: false,
       metric_window_seconds: 60,
@@ -166,9 +164,281 @@ export function makeFixtureSnapshot(tick: number): RuntimeSnapshot {
       },
     },
     processes,
+    process_view_rows: shapeProcessView(processes, query),
     total_process_count: processes.length,
     warnings: [],
   };
+}
+
+function defaultRuntimeQuery(): RuntimeQuery {
+  return {
+    filter_text: "",
+    focus_mode: "all",
+    sort_column: "attention",
+    sort_direction: "desc",
+    limit: 5000,
+  };
+}
+
+interface FixtureIdentity {
+  iconKind: string;
+  category: string;
+  isChild: boolean;
+}
+
+interface FixtureProcessGroup {
+  key: string;
+  label: string;
+  category: string;
+  iconKind: string;
+  representative: ProcessSample;
+  processes: ProcessSample[];
+  cpuPercent: number;
+  memoryBytes: number;
+  ioBps: number;
+  networkBps: number;
+  threads: number;
+}
+
+function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): ProcessViewRow[] {
+  const needle = query.filter_text.trim().toLocaleLowerCase();
+  const rows = processes
+    .filter(
+      (process) =>
+        !needle ||
+        process.name.toLocaleLowerCase().includes(needle) ||
+        process.pid.includes(needle) ||
+        process.exe.toLocaleLowerCase().includes(needle),
+    )
+    .filter((process) => matchesFocusMode(process, query.focus_mode))
+    .slice()
+    .sort((left, right) => compareProcess(left, right, query))
+    .slice(0, Math.max(1, query.limit));
+
+  const groups = new Map<string, FixtureProcessGroup>();
+  for (const process of rows) {
+    const key = processAppKey(process);
+    let group = groups.get(key);
+    if (!group) {
+      const identity = processIdentity(process);
+      group = {
+        key,
+        label: normalizedProcessName(process.name),
+        category: identity.category,
+        iconKind: identity.iconKind,
+        representative: process,
+        processes: [],
+        cpuPercent: 0,
+        memoryBytes: 0,
+        ioBps: 0,
+        networkBps: 0,
+        threads: 0,
+      };
+      groups.set(key, group);
+    }
+
+    group.processes.push(process);
+    group.cpuPercent += process.cpu_percent;
+    group.memoryBytes += process.memory_bytes;
+    group.ioBps += processIoRate(process);
+    group.networkBps += processNetworkRate(process);
+    group.threads += process.threads;
+  }
+
+  return [...groups.values()].flatMap((group) => {
+    const grouped = group.processes.length > 1;
+    const processRows = group.processes.map((process) => {
+      const identity = processIdentity(process);
+      const ioBps = processIoRate(process);
+      return {
+        kind: "process" as const,
+        process,
+        group_key: group.key,
+        group_label: group.label,
+        group_category: group.category,
+        group_count: group.processes.length,
+        icon_kind: identity.iconKind,
+        is_child: identity.isChild,
+        is_grouped: grouped,
+        attention_label: attentionLabel(process.cpu_percent, process.memory_bytes, ioBps),
+        cpu_percent: process.cpu_percent,
+        memory_bytes: process.memory_bytes,
+        io_bps: ioBps,
+        network_bps: processNetworkRate(process),
+        threads: process.threads,
+      };
+    });
+
+    if (!grouped) {
+      return processRows;
+    }
+
+    return [
+      {
+        kind: "group" as const,
+        representative: group.representative,
+        group_key: group.key,
+        group_label: group.label,
+        group_category: group.category,
+        group_count: group.processes.length,
+        icon_kind: group.iconKind,
+        is_child: false,
+        is_grouped: true,
+        attention_label: attentionLabel(group.cpuPercent, group.memoryBytes, group.ioBps),
+        cpu_percent: round1(group.cpuPercent),
+        memory_bytes: group.memoryBytes,
+        io_bps: group.ioBps,
+        network_bps: group.networkBps,
+        threads: group.threads,
+      },
+      ...processRows,
+    ];
+  });
+}
+
+function matchesFocusMode(process: ProcessSample, focusMode: RuntimeQuery["focus_mode"]): boolean {
+  if (focusMode === "active") {
+    return process.cpu_percent >= 1;
+  }
+
+  if (focusMode === "io") {
+    return processIoRate(process) > 0;
+  }
+
+  return true;
+}
+
+function compareProcess(left: ProcessSample, right: ProcessSample, query: RuntimeQuery): number {
+  const direction = query.sort_direction === "asc" ? 1 : -1;
+  let comparison = 0;
+
+  if (query.sort_column === "name") {
+    comparison = left.name.localeCompare(right.name, undefined, {
+      sensitivity: "base",
+      numeric: true,
+    });
+  } else if (query.sort_column === "pid") {
+    comparison = Number(left.pid) - Number(right.pid);
+  } else if (query.sort_column === "memory_bytes") {
+    comparison = left.memory_bytes - right.memory_bytes;
+  } else if (query.sort_column === "disk_bps") {
+    comparison = processIoRate(left) - processIoRate(right);
+  } else if (query.sort_column === "threads") {
+    comparison = left.threads - right.threads;
+  } else if (query.sort_column === "handles") {
+    comparison = left.handles - right.handles;
+  } else if (query.sort_column === "start_time_ms") {
+    comparison = left.start_time_ms - right.start_time_ms;
+  } else if (query.sort_column === "cpu_pct") {
+    comparison = left.cpu_percent - right.cpu_percent;
+  } else {
+    comparison = attentionScore(left) - attentionScore(right);
+  }
+
+  return (
+    comparison * direction ||
+    left.name.localeCompare(right.name, undefined, { sensitivity: "base", numeric: true })
+  );
+}
+
+function processIdentity(process: ProcessSample): FixtureIdentity {
+  const haystack = `${process.name} ${process.exe}`.toLocaleLowerCase();
+  const name = process.name.toLocaleLowerCase();
+  const isChild =
+    name.startsWith("--") ||
+    haystack.includes("--type=") ||
+    haystack.includes("renderer") ||
+    haystack.includes("gpu-process") ||
+    haystack.includes("utility");
+
+  if (haystack.includes("batcave")) return { iconKind: "batcave", category: "BatCave", isChild };
+  if (matchesAny(haystack, ["chrome", "msedge", "firefox", "brave", "browser"])) {
+    return { iconKind: "browser", category: "Browsers", isChild };
+  }
+  if (matchesAny(haystack, ["code.exe", "visual studio code", "\\code\\", "/code/"])) {
+    return { iconKind: "code", category: "Developer tools", isChild };
+  }
+  if (matchesAny(haystack, ["node", "npm", "deno", "bun.exe"]))
+    return { iconKind: "node", category: "Runtimes", isChild };
+  if (haystack.includes("docker"))
+    return { iconKind: "container", category: "Containers", isChild };
+  if (matchesAny(haystack, ["postgres", "mysql", "redis", "sqlserver", "mariadb"])) {
+    return { iconKind: "database", category: "Databases", isChild };
+  }
+  if (matchesAny(haystack, ["slack", "teams", "discord", "zoom"])) {
+    return { iconKind: "chat", category: "Communication", isChild };
+  }
+  if (matchesAny(haystack, ["spotify", "vlc", "media player"]))
+    return { iconKind: "media", category: "Media", isChild };
+  if (matchesAny(haystack, ["dropbox", "onedrive", "googledrive"]))
+    return { iconKind: "sync", category: "Sync", isChild };
+  if (matchesAny(haystack, ["nvidia", "amd", "radeon", "intel graphics"]))
+    return { iconKind: "gpu", category: "GPU", isChild };
+  if (
+    matchesAny(haystack, [
+      "applicationframehost",
+      "conhost",
+      "ctfmon",
+      "dwm",
+      "explorer.exe",
+      "phoneexperiencehost",
+      "searchindexer",
+      "securityhealthservice",
+      "shellexperiencehost",
+      "sihost",
+      "startmenuexperiencehost",
+      "svchost",
+      "textinputhost",
+      "widgetservice",
+      "windows",
+    ])
+  ) {
+    return { iconKind: "windows", category: "Windows", isChild };
+  }
+
+  return { iconKind: "process", category: "Processes", isChild };
+}
+
+function processAppKey(process: ProcessSample): string {
+  return normalizedProcessName(executableFileName(process.exe)).toLocaleLowerCase();
+}
+
+function executableFileName(path: string): string {
+  const trimmed = path.trim();
+  return trimmed.split(/[\\/]/).pop() || trimmed;
+}
+
+function normalizedProcessName(name: string): string {
+  return name.replace(/-\d+(?=\.exe$)/i, "");
+}
+
+function matchesAny(haystack: string, needles: string[]): boolean {
+  return needles.some((needle) => haystack.includes(needle));
+}
+
+function processIoRate(process: ProcessSample): number {
+  return process.disk_read_bps + process.disk_write_bps + (process.other_io_bps ?? 0);
+}
+
+function processNetworkRate(process: ProcessSample): number {
+  return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
+}
+
+function attentionScore(process: ProcessSample): number {
+  return (
+    process.cpu_percent * 3 +
+    Math.min(process.memory_bytes / (128 * 1024 * 1024), 20) +
+    Math.min(processIoRate(process) / (512 * 1024), 20) +
+    Math.min(processNetworkRate(process) / (1024 * 1024), 20) +
+    (process.access_state === "full" ? 0 : 12)
+  );
+}
+
+function attentionLabel(cpuPercent: number, memoryBytes: number, ioBps: number): string {
+  if (cpuPercent >= 20) return "CPU lead";
+  if (memoryBytes >= 900 * 1024 * 1024) return "memory lead";
+  if (ioBps >= 500 * 1024) return "I/O lead";
+  return "steady";
 }
 
 function makeProcess(name: string, index: number, tick: number): ProcessSample {

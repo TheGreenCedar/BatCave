@@ -7,6 +7,7 @@ export interface RuntimeSnapshot {
   health: RuntimeHealth;
   system: SystemMetricsSnapshot;
   processes: ProcessSample[];
+  process_view_rows: ProcessViewRow[];
   total_process_count: number;
   warnings: RuntimeWarning[];
 }
@@ -141,6 +142,27 @@ export interface ProcessSample {
   quality?: ProcessMetricQuality;
 }
 
+export type ProcessViewRowKind = "group" | "process";
+
+export interface ProcessViewRow {
+  kind: ProcessViewRowKind;
+  process?: ProcessSample;
+  representative?: ProcessSample;
+  group_key?: string;
+  group_label?: string;
+  group_category?: string;
+  group_count: number;
+  icon_kind: string;
+  is_child: boolean;
+  is_grouped: boolean;
+  attention_label: string;
+  cpu_percent: number;
+  memory_bytes: number;
+  io_bps: number;
+  network_bps: number;
+  threads: number;
+}
+
 export interface ProcessMetricQuality {
   cpu?: MetricQualityInfo;
   memory?: MetricQualityInfo;
@@ -152,6 +174,7 @@ export interface ProcessMetricQuality {
 }
 
 export type AccessState = "full" | "partial" | "denied";
+export type ProcessFocusMode = "all" | "active" | "io";
 export type SortColumn =
   | "attention"
   | "name"
@@ -166,6 +189,7 @@ export type SortDirection = "asc" | "desc";
 
 export interface RuntimeQuery {
   filter_text: string;
+  focus_mode: ProcessFocusMode;
   sort_column: SortColumn;
   sort_direction: SortDirection;
   limit: number;

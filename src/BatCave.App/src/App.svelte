@@ -20,11 +20,8 @@
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
   import {
-    compareProcesses,
     defaultSortDirection,
     focusOptions,
-    matchesFocusMode,
-    matchesSearch,
     processColumns,
     processIoRate,
     sortColumnForKey,
@@ -98,13 +95,8 @@
   $: activeTheme = chartPalettes[themeName];
   $: memoryPercent = percentage(snapshot.system.memory_used_bytes, snapshot.system.memory_total_bytes);
   $: swapPercent = percentage(snapshot.system.swap_used_bytes, snapshot.system.swap_total_bytes);
-  $: filteredProcesses = snapshot.processes
-    .filter((process) => matchesSearch(process, searchText))
-    .filter((process) => matchesFocusMode(process, focusMode, processRates))
-    .slice()
-    .sort((left, right) =>
-      compareProcesses(left, right, sortKey, sortDirection, processRates, snapshot.system.memory_total_bytes),
-    );
+  $: processViewRows = snapshot.process_view_rows;
+  $: filteredProcesses = processViewRows.flatMap((row) => (row.process ? [row.process] : []));
   $: selectedProcess = filteredProcesses.find((process) => process.pid === selectedPid) ?? null;
   $: warnings =
     snapshot.warnings.length > 0
@@ -135,7 +127,7 @@
   $: selectedRates = selectedProcess ? processRates[selectedProcess.pid] : undefined;
   $: processReadRate = selectedRates?.readRate ?? processHistory.readRate.at(-1) ?? 0;
   $: processWriteRate = selectedRates?.writeRate ?? processHistory.writeRate.at(-1) ?? 0;
-  $: void hydrateProcessIcons(filteredProcesses, selectedProcess);
+  $: void hydrateProcessIcons(processViewRows, filteredProcesses, selectedProcess);
   $: coreLoads = history.cores.map((core, index) => ({ index, load: currentCoreLoad(core), trend: core }));
   $: coreAverage = average(coreLoads.map((core) => core.load), snapshot.system.cpu_percent);
   $: corePeak = Math.max(...coreLoads.map((core) => core.load), 0);
@@ -258,7 +250,7 @@
     }
 
     if (!hasTauriRuntime()) {
-      snapshot = makeFixtureSnapshot(fixtureTick);
+      snapshot = makeFixtureSnapshot(fixtureTick, currentRuntimeQuery());
       selectedPid = snapshot.processes[0]?.pid ?? "";
       ingest(snapshot);
     }
@@ -296,7 +288,7 @@
       fixtureTick += 1;
       pollState = "fixture";
       lastError = "";
-      return makeFixtureSnapshot(fixtureTick);
+      return makeFixtureSnapshot(fixtureTick, currentRuntimeQuery());
     }
 
     try {
@@ -327,6 +319,7 @@
       settings: {
         query: {
           filter_text: "",
+          focus_mode: "all",
           sort_column: "attention",
           sort_direction: "desc",
           limit: 5000,
@@ -382,6 +375,7 @@
         },
       },
       processes: [],
+      process_view_rows: [],
       total_process_count: 0,
       warnings: [],
     };
@@ -425,7 +419,7 @@
   async function refreshNow(): Promise<void> {
     if (!hasTauriRuntime()) {
       fixtureTick += 1;
-      ingest(makeFixtureSnapshot(fixtureTick));
+      ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery()));
       return;
     }
 
@@ -472,17 +466,28 @@
     void syncRuntimeQuery();
   }
 
-  async function syncRuntimeQuery(): Promise<void> {
-    if (!hasTauriRuntime()) {
-      return;
-    }
+  function setFocusMode(mode: FocusMode): void {
+    focusMode = mode;
+    void syncRuntimeQuery();
+  }
 
-    const query: RuntimeQuery = {
+  function currentRuntimeQuery(): RuntimeQuery {
+    return {
       filter_text: searchText,
+      focus_mode: focusMode,
       sort_column: sortColumnForKey(sortKey),
       sort_direction: sortDirection,
       limit: 5000,
     };
+  }
+
+  async function syncRuntimeQuery(): Promise<void> {
+    const query = currentRuntimeQuery();
+
+    if (!hasTauriRuntime()) {
+      ingest(makeFixtureSnapshot(fixtureTick, query));
+      return;
+    }
 
     try {
       const next = await invoke<RuntimeSnapshot>("set_process_query", { query });
@@ -611,12 +616,24 @@
     }
   }
 
-  async function hydrateProcessIcons(processes: ProcessSample[], selected: ProcessSample | null): Promise<void> {
+  async function hydrateProcessIcons(
+    rows: RuntimeSnapshot["process_view_rows"],
+    processes: ProcessSample[],
+    selected: ProcessSample | null,
+  ): Promise<void> {
     if (!hasNativeSnapshot) {
       return;
     }
 
-    const iconCandidates = selected ? [selected, ...processes.slice(0, 80)] : processes.slice(0, 80);
+    const visibleRowProcesses = rows.flatMap((row) => {
+      if (row.kind === "group") {
+        return row.representative ? [row.representative] : [];
+      }
+      return !row.is_grouped && row.process ? [row.process] : [];
+    });
+    const iconCandidates = uniqueIconCandidates(
+      selected ? [selected, ...visibleRowProcesses, ...processes.slice(0, 80)] : [...visibleRowProcesses, ...processes.slice(0, 80)],
+    ).slice(0, 120);
     for (const process of iconCandidates) {
       const key = processIconKey(process);
       if (!process.exe || processIcons[key] || requestedProcessIcons.has(key)) {
@@ -637,6 +654,19 @@
 
   function processIconKey(process: ProcessSample): string {
     return process.exe || process.name;
+  }
+
+  function uniqueIconCandidates(processes: ProcessSample[]): ProcessSample[] {
+    const seen = new Set<string>();
+    return processes.filter((process) => {
+      const key = processIconKey(process);
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    });
   }
 
   function selectDetailMode(mode: DetailMode): void {
@@ -886,7 +916,7 @@
     adminRequested={snapshot.settings.admin_mode_requested}
     adminEnabled={snapshot.settings.admin_mode_enabled}
     onSearch={setSearchText}
-    onFocus={(mode) => (focusMode = mode)}
+    onFocus={setFocusMode}
     onSort={setSortKey}
     onPaused={() => void setPaused(!isPaused)}
     onRefresh={() => void refreshNow()}
@@ -899,11 +929,11 @@
   <section class="workspace-grid">
     <ProcessExplorer
       processes={filteredProcesses}
+      processRows={processViewRows}
       columns={processColumns}
       {selectedPid}
       {sortKey}
       {sortDirection}
-      {processRates}
       {processIcons}
       onSelect={selectProcess}
       onToggleSort={toggleSortKey}

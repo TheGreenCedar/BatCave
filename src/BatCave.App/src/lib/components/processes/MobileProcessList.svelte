@@ -1,61 +1,82 @@
 <script lang="ts">
-  import { groupProcessesByApp, processHint, processIdentity, type ProcessRates } from "../../process";
+  import type { ProcessIconKind } from "../../process";
   import { formatPercent, formatRate, processBytesLabel, processMemoryTitle } from "../../format";
-  import type { ProcessSample } from "../../types";
+  import type { ProcessSample, ProcessViewRow } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
-  export let processes: ProcessSample[] = [];
+  export let processRows: ProcessViewRow[] = [];
   export let selectedPid = "";
-  export let processRates: Record<string, ProcessRates> = {};
   export let processIcons: Record<string, string> = {};
-  export let onSelect: (pid: string) => void;
+  export let onSelect: (pid: string) => void = () => {};
 
-  $: processGroups = groupProcessesByApp(processes, processRates);
+  $: cardRows = processRows.filter((row) => row.kind === "group" || !row.is_grouped).slice(0, 10);
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
   }
+
+  function processForRow(row: ProcessViewRow): ProcessSample | undefined {
+    return row.process ?? row.representative;
+  }
+
+  function iconSrc(process: ProcessSample | undefined): string | undefined {
+    return process ? processIcons[process.exe || process.name] : undefined;
+  }
+
+  function iconKind(row: ProcessViewRow): ProcessIconKind {
+    return (row.icon_kind as ProcessIconKind) || "process";
+  }
+
+  function selectedInRow(row: ProcessViewRow): boolean {
+    return row.process?.pid === selectedPid || (!!row.group_key && processRows.some((candidate) => candidate.group_key === row.group_key && candidate.process?.pid === selectedPid));
+  }
+
+  function selectRow(row: ProcessViewRow): void {
+    const process = processForRow(row);
+    if (process) {
+      onSelect(process.pid);
+    }
+  }
 </script>
 
 <div class="mobile-process-list" aria-label="Attention queue cards">
-  {#each processGroups.slice(0, 10) as group}
-    {@const identity = processIdentity(group.representative)}
-    {@const iconSrc = processIcons[group.representative.exe || group.representative.name]}
-    {@const selectedProcess = group.processes.find((process) => process.pid === selectedPid)}
+  {#each cardRows as row}
+    {@const process = processForRow(row)}
+    {@const selected = selectedInRow(row)}
     <button
       class="mobile-process-card"
-      class:selected={!!selectedProcess}
+      class:selected={selected}
       type="button"
-      aria-pressed={!!selectedProcess}
-      onclick={() => onSelect(selectedProcess?.pid ?? group.representative.pid)}
+      aria-pressed={selected}
+      onclick={() => selectRow(row)}
     >
       <span class="card-title-row">
         <span class="mobile-process-title">
-          <ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} />
+          <ProcessIcon kind={iconKind(row)} child={row.is_child} src={iconSrc(process)} />
           <span>
-            <strong>{group.label}</strong>
-            <small>{processCountLabel(group.processes.length)} / {group.category}</small>
+            <strong>{row.group_label ?? process?.name}</strong>
+            <small>{row.kind === "group" ? `${processCountLabel(row.group_count)} / ${row.group_category}` : (row.group_category ?? `PID ${process?.pid}`)}</small>
           </span>
         </span>
-        <small>{processHint(group.representative, processRates)}</small>
+        <small>{row.attention_label}</small>
       </span>
       <span class="card-metrics">
         <span>
           <em>CPU</em>
-          <b>{formatPercent(group.cpuPercent)}</b>
+          <b>{formatPercent(row.cpu_percent)}</b>
         </span>
         <span>
           <em>Working set</em>
-          <b title={processMemoryTitle(group.representative)}>{processBytesLabel(group.representative, group.memoryBytes)}</b>
+          <b title={process ? processMemoryTitle(process) : ""}>{process ? processBytesLabel(process, row.memory_bytes) : ""}</b>
         </span>
         <span>
           <em>I/O</em>
-          <b>{formatRate(group.ioRate)}</b>
+          <b>{formatRate(row.io_bps)}</b>
         </span>
       </span>
       <span class="card-foot">
-        <span>{group.processes.length === 1 ? `PID ${group.representative.pid}` : `${group.processes.length} rows`}</span>
-        <span>{group.processes.length === 1 ? group.representative.status : "grouped"}</span>
+        <span>{row.kind === "group" ? `${row.group_count} rows` : `PID ${process?.pid}`}</span>
+        <span>{row.kind === "group" ? "grouped" : process?.status}</span>
       </span>
     </button>
   {:else}

@@ -1,6 +1,6 @@
-import type { ProcessSample, SortColumn, SortDirection } from "./types";
+import type { ProcessFocusMode, ProcessSample, SortColumn, SortDirection } from "./types";
 
-export type FocusMode = "all" | "active" | "io";
+export type FocusMode = ProcessFocusMode;
 export type SortKey =
   | "attention"
   | "name"
@@ -44,19 +44,6 @@ export interface ProcessIdentity {
   icon: ProcessIconKind;
   group: string;
   isChild: boolean;
-}
-
-export interface ProcessAppGroup {
-  key: string;
-  label: string;
-  category: string;
-  representative: ProcessSample;
-  processes: ProcessSample[];
-  cpuPercent: number;
-  memoryBytes: number;
-  ioRate: number;
-  networkRate: number;
-  threads: number;
 }
 
 export const focusOptions: { value: FocusMode; label: string }[] = [
@@ -115,76 +102,6 @@ export function processIoRate(
   return (rates?.readRate ?? 0) + (rates?.writeRate ?? 0) + (rates?.otherRate ?? 0);
 }
 
-export function compareProcesses(
-  left: ProcessSample,
-  right: ProcessSample,
-  key: SortKey,
-  direction: SortDirection,
-  processRates: Record<string, ProcessRates>,
-  totalMemoryBytes: number,
-): number {
-  const factor = direction === "asc" ? 1 : -1;
-
-  switch (key) {
-    case "attention":
-      return (
-        compareNumber(
-          attentionScore(left, processRates, totalMemoryBytes),
-          attentionScore(right, processRates, totalMemoryBytes),
-          direction,
-        ) || compareText(left.name, right.name)
-      );
-    case "name":
-      return (
-        compareText(left.name, right.name) * factor || compareText(left.pid, right.pid) * factor
-      );
-    case "pid":
-      return (
-        comparePid(left.pid, right.pid) * factor || compareText(left.name, right.name) * factor
-      );
-    case "memory":
-      return (
-        compareNumber(left.memory_bytes, right.memory_bytes, direction) ||
-        compareNumber(left.cpu_percent, right.cpu_percent, "desc")
-      );
-    case "io":
-      return (
-        compareNumber(
-          processIoRate(left, processRates),
-          processIoRate(right, processRates),
-          direction,
-        ) || compareNumber(left.cpu_percent, right.cpu_percent, "desc")
-      );
-    case "network":
-      return (
-        compareNumber(processNetworkRate(left), processNetworkRate(right), direction) ||
-        compareNumber(left.cpu_percent, right.cpu_percent, "desc")
-      );
-    case "read":
-      return (
-        compareNumber(left.disk_read_total_bytes, right.disk_read_total_bytes, direction) ||
-        compareText(left.name, right.name)
-      );
-    case "write":
-      return (
-        compareNumber(left.disk_write_total_bytes, right.disk_write_total_bytes, direction) ||
-        compareText(left.name, right.name)
-      );
-    case "status":
-      return compareText(left.status, right.status) * factor || compareText(left.name, right.name);
-    case "threads":
-      return (
-        compareNumber(left.threads, right.threads, direction) || compareText(left.name, right.name)
-      );
-    case "cpu":
-    default:
-      return (
-        compareNumber(left.cpu_percent, right.cpu_percent, direction) ||
-        compareNumber(left.memory_bytes, right.memory_bytes, "desc")
-      );
-  }
-}
-
 export function defaultSortDirection(key: SortKey): SortDirection {
   return key === "attention" ||
     key === "cpu" ||
@@ -238,35 +155,6 @@ export function sortIndicator(key: SortKey, activeKey: SortKey, direction: SortD
   return direction === "asc" ? "Asc" : "Desc";
 }
 
-export function matchesSearch(process: ProcessSample, query: string): boolean {
-  const normalized = query.trim().toLocaleLowerCase();
-  if (!normalized) {
-    return true;
-  }
-
-  return (
-    process.name.toLocaleLowerCase().includes(normalized) ||
-    process.pid.includes(normalized) ||
-    process.exe.toLocaleLowerCase().includes(normalized)
-  );
-}
-
-export function matchesFocusMode(
-  process: ProcessSample,
-  mode: FocusMode,
-  processRates: Record<string, ProcessRates>,
-): boolean {
-  if (mode === "active") {
-    return process.cpu_percent >= 1;
-  }
-
-  if (mode === "io") {
-    return processIoRate(process, processRates) > 0;
-  }
-
-  return true;
-}
-
 export function processAccent(
   process: ProcessSample | undefined,
   processRates: Record<string, ProcessRates>,
@@ -288,66 +176,6 @@ export function processAccent(
   }
 
   return "Stable";
-}
-
-export function processHint(
-  process: ProcessSample,
-  processRates: Record<string, ProcessRates>,
-): string {
-  if (process.cpu_percent >= 20) {
-    return "CPU lead";
-  }
-
-  if (process.memory_bytes >= 900 * 1024 * 1024) {
-    return "memory lead";
-  }
-
-  if (processIoRate(process, processRates) >= 500 * 1024) {
-    return "I/O lead";
-  }
-
-  return "steady";
-}
-
-export function processNetworkRate(process: ProcessSample): number {
-  return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
-}
-
-export function groupProcessesByApp(
-  processes: ProcessSample[],
-  processRates: Record<string, ProcessRates>,
-): ProcessAppGroup[] {
-  const groups = new Map<string, ProcessAppGroup>();
-
-  for (const process of processes) {
-    const key = processAppKey(process);
-    let group = groups.get(key);
-    if (!group) {
-      const identity = processIdentity(process);
-      group = {
-        key,
-        label: processAppLabel(process),
-        category: identity.group,
-        representative: process,
-        processes: [],
-        cpuPercent: 0,
-        memoryBytes: 0,
-        ioRate: 0,
-        networkRate: 0,
-        threads: 0,
-      };
-      groups.set(key, group);
-    }
-
-    group.processes.push(process);
-    group.cpuPercent += process.cpu_percent;
-    group.memoryBytes += process.memory_bytes;
-    group.ioRate += processIoRate(process, processRates);
-    group.networkRate += processNetworkRate(process);
-    group.threads += process.threads;
-  }
-
-  return Array.from(groups.values());
 }
 
 export function processIdentity(process: ProcessSample): ProcessIdentity {
@@ -424,64 +252,6 @@ export function processIdentity(process: ProcessSample): ProcessIdentity {
   }
 
   return { icon: "process", group: "Processes", isChild };
-}
-
-function processAppKey(process: ProcessSample): string {
-  const executableName = process.exe ? executableFileName(process.exe) : process.name;
-  return normalizedProcessName(executableName).toLocaleLowerCase();
-}
-
-function processAppLabel(process: ProcessSample): string {
-  return normalizedProcessName(process.name);
-}
-
-function executableFileName(path: string): string {
-  const trimmed = path.trim();
-  return trimmed.split(/[\\/]/).pop() || trimmed;
-}
-
-function normalizedProcessName(name: string): string {
-  return name.replace(/-\d+(?=\.exe$)/i, "");
-}
-
-function attentionScore(
-  process: ProcessSample,
-  processRates: Record<string, ProcessRates>,
-  totalMemoryBytes: number,
-): number {
-  const cpuWeight = process.cpu_percent * 6;
-  const memoryWeight = percentage(process.memory_bytes, Math.max(totalMemoryBytes, 1)) * 2;
-  const ioWeight = Math.min(processIoRate(process, processRates) / 1024 / 1024, 100) * 3;
-  const accessWeight =
-    process.access_state === "denied" ? 18 : process.access_state === "partial" ? 8 : 0;
-  return cpuWeight + memoryWeight + ioWeight + accessWeight;
-}
-
-function percentage(value: number, total: number): number {
-  if (total <= 0) {
-    return 0;
-  }
-
-  return Math.min(100, Math.max(0, (value / total) * 100));
-}
-
-function compareNumber(left: number, right: number, direction: SortDirection): number {
-  return direction === "asc" ? left - right : right - left;
-}
-
-function compareText(left: string, right: string): number {
-  return left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
-}
-
-function comparePid(left: string, right: string): number {
-  const leftNumber = Number(left);
-  const rightNumber = Number(right);
-
-  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-    return leftNumber - rightNumber;
-  }
-
-  return compareText(left, right);
 }
 
 function matchesAny(value: string, needles: string[]): boolean {

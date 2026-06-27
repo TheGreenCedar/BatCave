@@ -11,6 +11,7 @@ pub struct RuntimeSnapshot {
     pub health: RuntimeHealth,
     pub system: SystemMetricsSnapshot,
     pub processes: Vec<ProcessSample>,
+    pub process_view_rows: Vec<ProcessViewRow>,
     pub total_process_count: usize,
     pub warnings: Vec<RuntimeWarning>,
 }
@@ -143,6 +144,39 @@ pub struct ProcessSample {
     pub quality: Option<ProcessMetricQuality>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProcessViewRow {
+    pub kind: ProcessViewRowKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process: Option<ProcessSample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub representative: Option<ProcessSample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_category: Option<String>,
+    pub group_count: usize,
+    pub icon_kind: String,
+    pub is_child: bool,
+    pub is_grouped: bool,
+    pub attention_label: String,
+    pub cpu_percent: f64,
+    pub memory_bytes: u64,
+    pub io_bps: u64,
+    pub network_bps: u64,
+    pub threads: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessViewRowKind {
+    Group,
+    Process,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct MetricQualityInfo {
@@ -267,11 +301,21 @@ pub struct RuntimeQuery {
     #[serde(default)]
     pub filter_text: String,
     #[serde(default)]
+    pub focus_mode: ProcessFocusMode,
+    #[serde(default)]
     pub sort_column: SortColumn,
     #[serde(default)]
     pub sort_direction: SortDirection,
     #[serde(default = "default_query_limit")]
     pub limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessFocusMode {
+    All,
+    Active,
+    Io,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,10 +371,17 @@ impl Default for RuntimeQuery {
     fn default() -> Self {
         Self {
             filter_text: String::new(),
+            focus_mode: ProcessFocusMode::All,
             sort_column: SortColumn::Attention,
             sort_direction: SortDirection::Desc,
             limit: default_query_limit(),
         }
+    }
+}
+
+impl Default for ProcessFocusMode {
+    fn default() -> Self {
+        Self::All
     }
 }
 
@@ -395,6 +446,7 @@ mod tests {
             settings: RuntimeSettings {
                 query: RuntimeQuery {
                     filter_text: "bat".to_string(),
+                    focus_mode: ProcessFocusMode::Active,
                     sort_column: SortColumn::MemoryBytes,
                     sort_direction: SortDirection::Asc,
                     limit: 25,
@@ -493,6 +545,7 @@ mod tests {
                 }),
             },
             processes: vec![sample_process()],
+            process_view_rows: vec![sample_process_view_row()],
             total_process_count: 1,
             warnings: vec![RuntimeWarning {
                 seq: 41,
@@ -513,6 +566,7 @@ mod tests {
                 "settings": {
                     "query": {
                         "filter_text": "bat",
+                        "focus_mode": "active",
                         "sort_column": "memory_bytes",
                         "sort_direction": "asc",
                         "limit": 25
@@ -589,6 +643,7 @@ mod tests {
                     }
                 },
                 "processes": [],
+                "process_view_rows": [],
                 "total_process_count": 1,
                 "warnings": [{
                     "seq": 41,
@@ -600,6 +655,7 @@ mod tests {
         )
         .expect("expected JSON parses");
         expected["processes"] = json!([sample_process_json()]);
+        expected["process_view_rows"] = json!([sample_process_view_row_json()]);
 
         assert_eq!(actual, expected);
     }
@@ -609,6 +665,7 @@ mod tests {
         let settings = RuntimeSettings {
             query: RuntimeQuery {
                 filter_text: String::new(),
+                focus_mode: ProcessFocusMode::All,
                 sort_column: SortColumn::MemoryBytes,
                 sort_direction: SortDirection::Asc,
                 limit: 100,
@@ -626,6 +683,7 @@ mod tests {
             json!({
                 "query": {
                     "filter_text": "",
+                    "focus_mode": "all",
                     "sort_column": "memory_bytes",
                     "sort_direction": "asc",
                     "limit": 100
@@ -650,6 +708,7 @@ mod tests {
         .expect("minimal persisted settings deserialize");
 
         assert_eq!(settings.query.filter_text, "code");
+        assert_eq!(settings.query.focus_mode, ProcessFocusMode::All);
         assert_eq!(settings.query.sort_column, SortColumn::CpuPct);
         assert_eq!(settings.query.sort_direction, SortDirection::Desc);
         assert_eq!(settings.query.limit, 5000);
@@ -662,6 +721,7 @@ mod tests {
     #[test]
     fn runtime_settings_default_to_attention_triage() {
         let fresh_settings = RuntimeSettings::default();
+        assert_eq!(fresh_settings.query.focus_mode, ProcessFocusMode::All);
         assert_eq!(fresh_settings.query.sort_column, SortColumn::Attention);
         assert_eq!(fresh_settings.query.sort_direction, SortDirection::Desc);
 
@@ -677,6 +737,10 @@ mod tests {
         }))
         .expect("partial persisted query deserializes");
         assert_eq!(partial_query_settings.query.filter_text, "code");
+        assert_eq!(
+            partial_query_settings.query.focus_mode,
+            ProcessFocusMode::All
+        );
         assert_eq!(
             partial_query_settings.query.sort_column,
             SortColumn::Attention
@@ -716,6 +780,30 @@ mod tests {
 
     fn sample_process() -> ProcessSample {
         serde_json::from_value(sample_process_json()).expect("sample process is valid")
+    }
+
+    fn sample_process_view_row() -> ProcessViewRow {
+        serde_json::from_value(sample_process_view_row_json()).expect("sample view row is valid")
+    }
+
+    fn sample_process_view_row_json() -> serde_json::Value {
+        json!({
+            "kind": "process",
+            "process": sample_process_json(),
+            "group_key": "batcave.app.exe",
+            "group_label": "BatCave.App.exe",
+            "group_category": "BatCave",
+            "group_count": 1,
+            "icon_kind": "batcave",
+            "is_child": false,
+            "is_grouped": false,
+            "attention_label": "steady",
+            "cpu_percent": 8.25,
+            "memory_bytes": 65_536,
+            "io_bps": 24,
+            "network_bps": 0,
+            "threads": 9
+        })
     }
 
     fn sample_process_json() -> serde_json::Value {

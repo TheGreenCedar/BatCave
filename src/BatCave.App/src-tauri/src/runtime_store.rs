@@ -1,5 +1,10 @@
 use std::{
-    cmp::Ordering, collections::VecDeque, env, fs, path::PathBuf, sync::Mutex, time::Instant,
+    cmp::Ordering,
+    collections::{HashMap, VecDeque},
+    env, fs,
+    path::PathBuf,
+    sync::Mutex,
+    time::Instant,
 };
 
 use serde::de::DeserializeOwned;
@@ -7,9 +12,9 @@ use serde::de::DeserializeOwned;
 use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
-        MetricQuality, ProcessSample, RuntimeHealth, RuntimeQuery, RuntimeSettings,
-        RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
-        SystemMetricsSnapshot, WarmCache,
+        MetricQuality, ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind,
+        RuntimeHealth, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn,
+        SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     elevation::ElevatedHelperClient,
     telemetry::{now_ms, TelemetryCollector},
@@ -520,6 +525,7 @@ fn build_snapshot(
     total_process_count: usize,
     warnings: Vec<RuntimeWarning>,
 ) -> RuntimeSnapshot {
+    let process_view_rows = shape_process_view(&processes);
     RuntimeSnapshot {
         event_kind: "runtime_snapshot".to_string(),
         seq,
@@ -529,6 +535,7 @@ fn build_snapshot(
         health,
         system,
         processes,
+        process_view_rows,
         total_process_count,
         warnings,
     }
@@ -576,11 +583,132 @@ fn shape_rows(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessS
                 || process.pid.contains(&needle)
                 || process.exe.to_lowercase().contains(&needle)
         })
+        .filter(|process| matches_focus_mode(process, query.focus_mode))
         .cloned()
         .collect::<Vec<_>>();
 
     rows.sort_by(|left, right| compare_process(left, right, query));
     rows.truncate(query.limit.max(1));
+    rows
+}
+
+#[derive(Debug, Clone)]
+struct ProcessIdentity {
+    icon_kind: &'static str,
+    category: &'static str,
+    is_child: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessAppGroup {
+    key: String,
+    label: String,
+    category: String,
+    icon_kind: String,
+    representative: ProcessSample,
+    processes: Vec<ProcessSample>,
+    cpu_percent: f64,
+    memory_bytes: u64,
+    io_bps: u64,
+    network_bps: u64,
+    threads: u64,
+}
+
+fn shape_process_view(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
+    let mut groups = Vec::<ProcessAppGroup>::new();
+    let mut group_indexes = HashMap::<String, usize>::new();
+
+    for process in processes {
+        let key = process_app_key(process);
+        let index = if let Some(index) = group_indexes.get(&key) {
+            *index
+        } else {
+            let identity = process_identity(process);
+            let index = groups.len();
+            group_indexes.insert(key.clone(), index);
+            groups.push(ProcessAppGroup {
+                key,
+                label: process_app_label(process),
+                category: identity.category.to_string(),
+                icon_kind: identity.icon_kind.to_string(),
+                representative: process.clone(),
+                processes: Vec::new(),
+                cpu_percent: 0.0,
+                memory_bytes: 0,
+                io_bps: 0,
+                network_bps: 0,
+                threads: 0,
+            });
+            index
+        };
+
+        let group = &mut groups[index];
+        group.cpu_percent += process.cpu_percent;
+        group.memory_bytes = group.memory_bytes.saturating_add(process.memory_bytes);
+        group.io_bps = group.io_bps.saturating_add(process_io_rate(process));
+        group.network_bps = group
+            .network_bps
+            .saturating_add(process_network_rate(process));
+        group.threads = group.threads.saturating_add(process.threads as u64);
+        group.processes.push(process.clone());
+    }
+
+    let mut rows = Vec::with_capacity(processes.len() + groups.len());
+    for group in groups {
+        let grouped = group.processes.len() > 1;
+        let group_count = group.processes.len();
+        if grouped {
+            rows.push(ProcessViewRow {
+                kind: ProcessViewRowKind::Group,
+                process: None,
+                representative: Some(group.representative.clone()),
+                group_key: Some(group.key.clone()),
+                group_label: Some(group.label.clone()),
+                group_category: Some(group.category.clone()),
+                group_count,
+                icon_kind: group.icon_kind.clone(),
+                is_child: false,
+                is_grouped: true,
+                attention_label: attention_label(
+                    group.cpu_percent,
+                    group.memory_bytes,
+                    group.io_bps,
+                ),
+                cpu_percent: round1(group.cpu_percent),
+                memory_bytes: group.memory_bytes,
+                io_bps: group.io_bps,
+                network_bps: group.network_bps,
+                threads: group.threads,
+            });
+        }
+
+        for process in group.processes {
+            let identity = process_identity(&process);
+            rows.push(ProcessViewRow {
+                kind: ProcessViewRowKind::Process,
+                process: Some(process.clone()),
+                representative: None,
+                group_key: Some(group.key.clone()),
+                group_label: Some(group.label.clone()),
+                group_category: Some(group.category.clone()),
+                group_count,
+                icon_kind: identity.icon_kind.to_string(),
+                is_child: identity.is_child,
+                is_grouped: grouped,
+                attention_label: attention_label(
+                    process.cpu_percent,
+                    process.memory_bytes,
+                    process_io_rate(&process),
+                ),
+                cpu_percent: process.cpu_percent,
+                memory_bytes: process.memory_bytes,
+                io_bps: process_io_rate(&process),
+                network_bps: process_network_rate(&process),
+                threads: process.threads as u64,
+            });
+        }
+    }
+
     rows
 }
 
@@ -613,6 +741,214 @@ fn compare_process(left: &ProcessSample, right: &ProcessSample, query: &RuntimeQ
     directed.then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
 }
 
+fn matches_focus_mode(process: &ProcessSample, focus_mode: ProcessFocusMode) -> bool {
+    match focus_mode {
+        ProcessFocusMode::All => true,
+        ProcessFocusMode::Active => process.cpu_percent >= 1.0,
+        ProcessFocusMode::Io => process_io_rate(process) > 0,
+    }
+}
+
+fn process_io_rate(process: &ProcessSample) -> u64 {
+    process
+        .disk_read_bps
+        .saturating_add(process.disk_write_bps)
+        .saturating_add(process.other_io_bps.unwrap_or_default())
+}
+
+fn process_network_rate(process: &ProcessSample) -> u64 {
+    process
+        .network_received_bps
+        .unwrap_or_default()
+        .saturating_add(process.network_transmitted_bps.unwrap_or_default())
+}
+
+fn process_identity(process: &ProcessSample) -> ProcessIdentity {
+    let haystack = format!("{} {}", process.name, process.exe).to_lowercase();
+    let name = process.name.to_lowercase();
+    let is_child = name.starts_with("--")
+        || haystack.contains("--type=")
+        || haystack.contains("renderer")
+        || haystack.contains("gpu-process")
+        || haystack.contains("utility");
+
+    if haystack.contains("batcave") {
+        return ProcessIdentity {
+            icon_kind: "batcave",
+            category: "BatCave",
+            is_child,
+        };
+    }
+
+    if matches_any(
+        &haystack,
+        &["chrome", "msedge", "firefox", "brave", "browser"],
+    ) {
+        return ProcessIdentity {
+            icon_kind: "browser",
+            category: "Browsers",
+            is_child,
+        };
+    }
+
+    if matches_any(
+        &haystack,
+        &["code.exe", "visual studio code", "\\code\\", "/code/"],
+    ) {
+        return ProcessIdentity {
+            icon_kind: "code",
+            category: "Developer tools",
+            is_child,
+        };
+    }
+
+    if matches_any(&haystack, &["node", "npm", "deno", "bun.exe"]) {
+        return ProcessIdentity {
+            icon_kind: "node",
+            category: "Runtimes",
+            is_child,
+        };
+    }
+
+    if haystack.contains("docker") {
+        return ProcessIdentity {
+            icon_kind: "container",
+            category: "Containers",
+            is_child,
+        };
+    }
+
+    if matches_any(
+        &haystack,
+        &["postgres", "mysql", "redis", "sqlserver", "mariadb"],
+    ) {
+        return ProcessIdentity {
+            icon_kind: "database",
+            category: "Databases",
+            is_child,
+        };
+    }
+
+    if matches_any(&haystack, &["slack", "teams", "discord", "zoom"]) {
+        return ProcessIdentity {
+            icon_kind: "chat",
+            category: "Communication",
+            is_child,
+        };
+    }
+
+    if matches_any(&haystack, &["spotify", "vlc", "media player"]) {
+        return ProcessIdentity {
+            icon_kind: "media",
+            category: "Media",
+            is_child,
+        };
+    }
+
+    if matches_any(&haystack, &["dropbox", "onedrive", "googledrive"]) {
+        return ProcessIdentity {
+            icon_kind: "sync",
+            category: "Sync",
+            is_child,
+        };
+    }
+
+    if matches_any(&haystack, &["nvidia", "amd", "radeon", "intel graphics"]) {
+        return ProcessIdentity {
+            icon_kind: "gpu",
+            category: "GPU",
+            is_child,
+        };
+    }
+
+    if matches_any(
+        &haystack,
+        &[
+            "applicationframehost",
+            "conhost",
+            "ctfmon",
+            "dwm",
+            "explorer.exe",
+            "phoneexperiencehost",
+            "searchindexer",
+            "securityhealthservice",
+            "shellexperiencehost",
+            "sihost",
+            "startmenuexperiencehost",
+            "svchost",
+            "textinputhost",
+            "widgetservice",
+            "windows",
+        ],
+    ) {
+        return ProcessIdentity {
+            icon_kind: "windows",
+            category: "Windows",
+            is_child,
+        };
+    }
+
+    ProcessIdentity {
+        icon_kind: "process",
+        category: "Processes",
+        is_child,
+    }
+}
+
+fn process_app_key(process: &ProcessSample) -> String {
+    normalized_process_name(executable_file_name(&process.exe)).to_lowercase()
+}
+
+fn process_app_label(process: &ProcessSample) -> String {
+    normalized_process_name(&process.name)
+}
+
+fn executable_file_name(path: &str) -> &str {
+    let trimmed = path.trim();
+    trimmed
+        .rsplit(|candidate| candidate == '\\' || candidate == '/')
+        .next()
+        .filter(|file_name| !file_name.is_empty())
+        .unwrap_or(trimmed)
+}
+
+fn normalized_process_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    if !lower.ends_with(".exe") {
+        return name.to_string();
+    }
+
+    let extension_start = name.len().saturating_sub(4);
+    let stem = &name[..extension_start];
+    if let Some((base, suffix)) = stem.rsplit_once('-') {
+        if !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()) {
+            return format!("{base}.exe");
+        }
+    }
+
+    name.to_string()
+}
+
+fn matches_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn attention_label(cpu_percent: f64, memory_bytes: u64, io_bps: u64) -> String {
+    if cpu_percent >= 20.0 {
+        return "CPU lead".to_string();
+    }
+
+    if memory_bytes >= 900 * 1024 * 1024 {
+        return "memory lead".to_string();
+    }
+
+    if io_bps >= 500 * 1024 {
+        return "I/O lead".to_string();
+    }
+
+    "steady".to_string()
+}
+
 fn normalize_settings(settings: RuntimeSettings) -> RuntimeSettings {
     RuntimeSettings {
         query: normalize_query(settings.query),
@@ -626,16 +962,9 @@ fn normalize_settings(settings: RuntimeSettings) -> RuntimeSettings {
 fn process_attention_score(process: &ProcessSample) -> f64 {
     let mut score = process.cpu_percent * 3.0;
     score += (process.memory_bytes as f64 / (128.0 * 1024.0 * 1024.0)).min(20.0);
-    let other_io_bps = process.other_io_bps.unwrap_or_default();
-    let io_bps = process
-        .disk_read_bps
-        .saturating_add(process.disk_write_bps)
-        .saturating_add(other_io_bps);
+    let io_bps = process_io_rate(process);
     score += (io_bps as f64 / (512.0 * 1024.0)).min(20.0);
-    let network_bps = process
-        .network_received_bps
-        .unwrap_or_default()
-        .saturating_add(process.network_transmitted_bps.unwrap_or_default());
+    let network_bps = process_network_rate(process);
     score += (network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
     if process.access_state != crate::contracts::AccessState::Full {
         score += 12.0;
@@ -647,6 +976,7 @@ fn process_attention_score(process: &ProcessSample) -> f64 {
 fn normalize_query(query: RuntimeQuery) -> RuntimeQuery {
     RuntimeQuery {
         filter_text: query.filter_text.trim().to_string(),
+        focus_mode: query.focus_mode,
         sort_column: query.sort_column,
         sort_direction: query.sort_direction,
         limit: query.limit.clamp(25, 20_000),
@@ -834,6 +1164,7 @@ mod tests {
             ],
             &RuntimeQuery {
                 filter_text: "code".to_string(),
+                focus_mode: ProcessFocusMode::All,
                 sort_column: SortColumn::Name,
                 sort_direction: SortDirection::Asc,
                 limit: 1,
@@ -863,6 +1194,71 @@ mod tests {
 
         assert_eq!(rows[0].name, "Busy");
         assert_eq!(rows[1].name, "Limited");
+    }
+
+    #[test]
+    fn shape_rows_applies_focus_mode_in_runtime_query() {
+        let mut idle_io = sample("20", "IdleIo", 0.0);
+        idle_io.disk_read_bps = 2048;
+        let active = sample("30", "Active", 2.0);
+        let rows = shape_rows(
+            &[sample("10", "Idle", 0.0), active.clone(), idle_io.clone()],
+            &RuntimeQuery {
+                focus_mode: ProcessFocusMode::Active,
+                sort_column: SortColumn::Name,
+                sort_direction: SortDirection::Asc,
+                ..RuntimeQuery::default()
+            },
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Active");
+
+        let io_rows = shape_rows(
+            &[sample("10", "Idle", 0.0), active, idle_io],
+            &RuntimeQuery {
+                focus_mode: ProcessFocusMode::Io,
+                ..RuntimeQuery::default()
+            },
+        );
+
+        assert_eq!(io_rows.len(), 1);
+        assert_eq!(io_rows[0].name, "IdleIo");
+    }
+
+    #[test]
+    fn process_view_groups_suffixed_app_processes() {
+        let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
+        first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        first.disk_read_bps = 256;
+        first.threads = 3;
+        let mut second = sample("20", "SearchIndexer-223.exe", 8.0);
+        second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        second.disk_write_bps = 512;
+        second.threads = 5;
+
+        let rows = shape_process_view(&[first, second]);
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].kind, ProcessViewRowKind::Group);
+        assert_eq!(rows[0].group_label.as_deref(), Some("SearchIndexer.exe"));
+        assert_eq!(rows[0].group_category.as_deref(), Some("Windows"));
+        assert_eq!(rows[0].group_count, 2);
+        assert_eq!(rows[0].cpu_percent, 20.0);
+        assert_eq!(rows[0].io_bps, 768);
+        assert_eq!(rows[0].threads, 8);
+        assert!(rows[1].is_grouped);
+        assert_eq!(rows[1].group_key, rows[0].group_key);
+    }
+
+    #[test]
+    fn process_view_keeps_singletons_as_process_rows() {
+        let rows = shape_process_view(&[sample("10", "Code.exe", 12.0)]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, ProcessViewRowKind::Process);
+        assert!(!rows[0].is_grouped);
+        assert_eq!(rows[0].group_label.as_deref(), Some("Code.exe"));
     }
 
     #[test]
@@ -952,6 +1348,7 @@ mod tests {
             metric_window_seconds: 1,
             query: RuntimeQuery {
                 filter_text: "  code  ".to_string(),
+                focus_mode: ProcessFocusMode::Active,
                 limit: usize::MAX,
                 ..RuntimeQuery::default()
             },
@@ -962,6 +1359,7 @@ mod tests {
         assert!(!settings.admin_mode_enabled);
         assert_eq!(settings.metric_window_seconds, 15);
         assert_eq!(settings.query.filter_text, "code");
+        assert_eq!(settings.query.focus_mode, ProcessFocusMode::Active);
         assert_eq!(settings.query.limit, 20_000);
     }
 

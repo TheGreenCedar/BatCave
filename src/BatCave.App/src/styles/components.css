@@ -603,7 +603,7 @@ th.metric .sort-header {
 }
 
 .sort-header span,
-.process-button span,
+.process-button > .process-name-stack,
 .mobile-process-title span {
   min-width: 0;
   overflow: hidden;
@@ -638,8 +638,9 @@ th.metric .sort-header {
   grid-template-columns: auto minmax(0, 1fr);
 }
 
-.app-group-button {
+.process-button.app-group-button {
   grid-template-columns: auto auto minmax(0, 1fr);
+  justify-items: start;
 }
 
 .app-group-row td {
@@ -651,10 +652,12 @@ th.metric .sort-header {
 
 .group-toggle-indicator {
   width: 18px;
+  min-width: 18px;
   height: 18px;
   display: grid;
   place-items: center;
   color: var(--text-muted);
+  overflow: visible;
   transform: rotate(90deg);
   transition:
     transform 140ms ease,
@@ -687,7 +690,9 @@ th.metric .sort-header {
 
 .app-group-button .process-icon {
   width: 26px;
+  min-width: 26px;
   height: 26px;
+  overflow: visible;
 }
 
 .app-group-button .process-icon img {
@@ -706,8 +711,9 @@ th.metric .sort-header {
 
 .process-name-stack {
   display: grid;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
+  line-height: 1.12;
 }
 
 .process-name-stack > span,
@@ -727,6 +733,28 @@ th.metric .sort-header {
   font-size: var(--text-xs);
   font-weight: 680;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-group-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px var(--space-1);
+  margin-top: 2px;
+}
+
+.process-button .process-group-stats > span {
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--surface-3) 72%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 760;
+  line-height: 1.2;
   white-space: nowrap;
 }
 

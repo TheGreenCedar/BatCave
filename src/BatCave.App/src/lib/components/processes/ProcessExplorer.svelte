@@ -1,15 +1,15 @@
 <script lang="ts">
-  import type { ProcessSample, SortDirection } from "../../types";
-  import type { ProcessColumn, ProcessRates, SortKey } from "../../process";
+  import type { ProcessSample, ProcessViewRow, SortDirection } from "../../types";
+  import type { ProcessColumn, SortKey } from "../../process";
   import ProcessTable from "./ProcessTable.svelte";
   import MobileProcessList from "./MobileProcessList.svelte";
 
   export let processes: ProcessSample[] = [];
+  export let processRows: ProcessViewRow[] = [];
   export let columns: ProcessColumn[] = [];
   export let selectedPid = "";
   export let sortKey: SortKey;
   export let sortDirection: SortDirection;
-  export let processRates: Record<string, ProcessRates>;
   export let processIcons: Record<string, string> = {};
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
@@ -22,15 +22,14 @@
     </div>
   </div>
   <ProcessTable
-    {processes}
+    {processRows}
     {columns}
     {selectedPid}
     {sortKey}
     {sortDirection}
-    {processRates}
     {processIcons}
     {onSelect}
     {onToggleSort}
   />
-  <MobileProcessList {processes} {selectedPid} {processRates} {processIcons} {onSelect} />
+  <MobileProcessList {processRows} {selectedPid} {processIcons} {onSelect} />
 </section>

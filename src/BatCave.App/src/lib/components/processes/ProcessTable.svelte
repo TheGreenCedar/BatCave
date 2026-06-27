@@ -1,31 +1,25 @@
 <script lang="ts">
   import {
-    groupProcessesByApp,
-    processIdentity,
-    processIoRate,
-    processNetworkRate,
     sortAriaValue,
     sortButtonLabel,
     sortIndicator,
     type ProcessColumn,
-    type ProcessRates,
+    type ProcessIconKind,
     type SortKey,
   } from "../../process";
   import { formatPercent, formatRate, processBytesLabel, processMemoryTitle } from "../../format";
-  import type { ProcessSample, SortDirection } from "../../types";
+  import type { ProcessSample, ProcessViewRow, SortDirection } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
-  export let processes: ProcessSample[] = [];
+  export let processRows: ProcessViewRow[] = [];
   export let columns: ProcessColumn[] = [];
   export let selectedPid = "";
   export let sortKey: SortKey;
   export let sortDirection: SortDirection;
-  export let processRates: Record<string, ProcessRates> = {};
   export let processIcons: Record<string, string> = {};
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
 
-  $: processGroups = groupProcessesByApp(processes, processRates);
   let collapsedGroups: Record<string, boolean> = {};
 
   function processCountLabel(count: number): string {
@@ -33,11 +27,31 @@
   }
 
   function isGroupCollapsed(key: string): boolean {
-    return collapsedGroups[key] ?? false;
+    return collapsedGroups[key] ?? true;
   }
 
   function toggleGroup(key: string): void {
     collapsedGroups = { ...collapsedGroups, [key]: !isGroupCollapsed(key) };
+  }
+
+  function processForRow(row: ProcessViewRow): ProcessSample | undefined {
+    return row.process ?? row.representative;
+  }
+
+  function iconSrc(process: ProcessSample | undefined): string | undefined {
+    return process ? processIcons[process.exe || process.name] : undefined;
+  }
+
+  function iconKind(row: ProcessViewRow): ProcessIconKind {
+    return (row.icon_kind as ProcessIconKind) || "process";
+  }
+
+  function isGroupSelected(key: string | undefined): boolean {
+    return !!key && processRows.some((row) => row.group_key === key && row.process?.pid === selectedPid);
+  }
+
+  function isVisibleProcessRow(row: ProcessViewRow): boolean {
+    return !row.is_grouped || !row.group_key || !isGroupCollapsed(row.group_key);
   }
 </script>
 
@@ -63,12 +77,11 @@
       </tr>
     </thead>
     <tbody>
-      {#each processGroups as group}
-        {@const groupIdentity = processIdentity(group.representative)}
-        {@const groupIconSrc = processIcons[group.representative.exe || group.representative.name]}
-        {@const groupSelected = group.processes.some((process) => process.pid === selectedPid)}
-        {@const collapsed = isGroupCollapsed(group.key)}
-        {#if group.processes.length > 1}
+      {#each processRows as row}
+        {#if row.kind === "group"}
+          {@const representative = row.representative}
+          {@const groupSelected = isGroupSelected(row.group_key)}
+          {@const collapsed = row.group_key ? isGroupCollapsed(row.group_key) : false}
           <tr class:group-selected={groupSelected} class="app-group-row">
             {#each columns as column}
               {#if column.key === "pid"}
@@ -80,47 +93,50 @@
                     class:selected={groupSelected}
                     type="button"
                     aria-expanded={!collapsed}
-                    aria-label={`${collapsed ? "Expand" : "Collapse"} ${group.label} group, ${processCountLabel(group.processes.length)}`}
-                    onclick={() => toggleGroup(group.key)}
+                    aria-label={`${collapsed ? "Expand" : "Collapse"} ${row.group_label ?? "process"} group, ${processCountLabel(row.group_count)}`}
+                    onclick={() => row.group_key && toggleGroup(row.group_key)}
                   >
                     <span class="group-toggle-indicator" class:collapsed aria-hidden="true">
                       <svg viewBox="0 0 16 16">
                         <path d="M5.5 3.5 10 8l-4.5 4.5" />
                       </svg>
                     </span>
-                    <ProcessIcon kind={groupIdentity.icon} src={groupIconSrc} />
+                    <ProcessIcon kind={iconKind(row)} src={iconSrc(representative)} />
                     <span class="process-name-stack">
-                      <span>{group.label}</span>
-                      <small>{processCountLabel(group.processes.length)} / {group.category}</small>
+                      <span>{row.group_label}</span>
+                      <small>{processCountLabel(row.group_count)} / {row.group_category}</small>
+                      <span class="process-group-stats" aria-hidden="true">
+                        <span>CPU {formatPercent(row.cpu_percent)}</span>
+                        <span>{representative ? processBytesLabel(representative, row.memory_bytes) : ""}</span>
+                        <span>I/O {formatRate(row.io_bps)}</span>
+                        <span>Net {formatRate(row.network_bps)}</span>
+                      </span>
                     </span>
                   </button>
                 </td>
               {:else if column.key === "status"}
                 <td></td>
               {:else if column.key === "cpu"}
-                <td>{formatPercent(group.cpuPercent)}</td>
+                <td>{formatPercent(row.cpu_percent)}</td>
               {:else if column.key === "memory"}
-                <td>{processBytesLabel(group.representative, group.memoryBytes)}</td>
+                <td>{representative ? processBytesLabel(representative, row.memory_bytes) : ""}</td>
               {:else if column.key === "io"}
-                <td>{formatRate(group.ioRate)}</td>
+                <td>{formatRate(row.io_bps)}</td>
               {:else if column.key === "network"}
-                <td>{formatRate(group.networkRate)}</td>
+                <td>{formatRate(row.network_bps)}</td>
               {:else if column.key === "threads"}
-                <td>{group.threads}</td>
+                <td>{row.threads}</td>
               {:else}
                 <td></td>
               {/if}
             {/each}
           </tr>
-        {/if}
-        {#if group.processes.length === 1 || !collapsed}
-          {#each group.processes as process}
-            {@const identity = processIdentity(process)}
-            {@const iconSrc = processIcons[process.exe || process.name]}
+        {:else if row.process && isVisibleProcessRow(row)}
+          {@const process = row.process}
             <tr
               class:selected={process.pid === selectedPid}
-              class:child-row={group.processes.length > 1 || identity.isChild}
-              class:app-process-row={group.processes.length > 1}
+              class:child-row={row.is_grouped || row.is_child}
+              class:app-process-row={row.is_grouped}
             >
               {#each columns as column}
                 {#if column.key === "pid"}
@@ -130,19 +146,19 @@
                     <button
                       class="process-button"
                       class:selected={process.pid === selectedPid}
-                      class:child={group.processes.length > 1 || identity.isChild}
+                      class:child={row.is_grouped || row.is_child}
                       type="button"
                       aria-pressed={process.pid === selectedPid}
                       aria-label={`Inspect ${process.name}, PID ${process.pid}`}
                       onclick={() => onSelect(process.pid)}
                     >
-                      {#if group.processes.length > 1 || identity.isChild}
+                      {#if row.is_grouped || row.is_child}
                         <span class="process-tree-branch" aria-hidden="true"></span>
                       {/if}
-                      <ProcessIcon kind={identity.icon} child={group.processes.length > 1 || identity.isChild} src={iconSrc} />
+                      <ProcessIcon kind={iconKind(row)} child={row.is_grouped || row.is_child} src={iconSrc(process)} />
                       <span class="process-name-stack">
                         <span>{process.name}</span>
-                        <small>{group.processes.length > 1 ? `PID ${process.pid}` : group.category}</small>
+                        <small>{row.is_grouped ? `PID ${process.pid}` : row.group_category}</small>
                       </span>
                     </button>
                   </td>
@@ -153,9 +169,9 @@
                 {:else if column.key === "memory"}
                   <td title={processMemoryTitle(process)}>{processBytesLabel(process, process.memory_bytes)}</td>
                 {:else if column.key === "io"}
-                  <td>{formatRate(processIoRate(process, processRates))}</td>
+                  <td>{formatRate(row.io_bps)}</td>
                 {:else if column.key === "network"}
-                  <td>{formatRate(processNetworkRate(process))}</td>
+                  <td>{formatRate(row.network_bps)}</td>
                 {:else if column.key === "threads"}
                   <td>{process.threads}</td>
                 {:else}
@@ -163,7 +179,6 @@
                 {/if}
               {/each}
             </tr>
-          {/each}
         {/if}
       {:else}
         <tr>
