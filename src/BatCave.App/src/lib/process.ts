@@ -427,11 +427,17 @@ export function processIdentity(process: ProcessSample): ProcessIdentity {
 }
 
 function processAppKey(process: ProcessSample): string {
-  return (process.exe || normalizedProcessName(process.name)).toLocaleLowerCase();
+  const executableName = process.exe ? executableFileName(process.exe) : process.name;
+  return normalizedProcessName(executableName).toLocaleLowerCase();
 }
 
 function processAppLabel(process: ProcessSample): string {
   return normalizedProcessName(process.name);
+}
+
+function executableFileName(path: string): string {
+  const trimmed = path.trim();
+  return trimmed.split(/[\\/]/).pop() || trimmed;
 }
 
 function normalizedProcessName(name: string): string {

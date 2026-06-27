@@ -638,11 +638,47 @@ th.metric .sort-header {
   grid-template-columns: auto minmax(0, 1fr);
 }
 
+.app-group-button {
+  grid-template-columns: auto auto minmax(0, 1fr);
+}
+
 .app-group-row td {
   border-top: 1px solid var(--border-strong);
   background: color-mix(in srgb, var(--surface-2) 34%, transparent);
   color: var(--text);
   font-weight: 760;
+}
+
+.group-toggle-indicator {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  transform: rotate(90deg);
+  transition:
+    transform 140ms ease,
+    color 140ms ease;
+}
+
+.app-group-button:hover .group-toggle-indicator,
+.app-group-button:focus-visible .group-toggle-indicator,
+.app-group-button.selected .group-toggle-indicator {
+  color: var(--accent);
+}
+
+.group-toggle-indicator.collapsed {
+  transform: rotate(0deg);
+}
+
+.group-toggle-indicator svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .app-group-button .process-name-stack > span {
