@@ -161,10 +161,11 @@ mod windows_impl {
                 CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW,
                 SystemTraceControlGuid, TcpIpGuid, TdhGetEventInformation, TdhGetProperty,
                 TdhGetPropertySize, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP,
-                EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
-                EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE, KERNEL_LOGGER_NAMEW,
-                PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
-                PROPERTY_DATA_DESCRIPTOR, TRACE_EVENT_INFO, WNODE_FLAG_TRACED_GUID,
+                EVENT_TRACE_CONTROL_UPDATE, EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW,
+                EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE,
+                KERNEL_LOGGER_NAMEW, PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD,
+                PROCESS_TRACE_MODE_REAL_TIME, PROPERTY_DATA_DESCRIPTOR, TRACE_EVENT_INFO,
+                WNODE_FLAG_TRACED_GUID,
             },
         },
     };
@@ -209,20 +210,24 @@ mod windows_impl {
                 )
             };
 
-            if start_result == ERROR_ALREADY_EXISTS {
-                return Err("network_attribution_kernel_logger_already_running".to_string());
-            }
-            if start_result != ERROR_SUCCESS {
-                return Err(format!(
-                    "network_attribution_start_trace_failed:{start_result}"
-                ));
-            }
+            let trace_handle = match start_result {
+                ERROR_SUCCESS => trace_handle.Value,
+                ERROR_ALREADY_EXISTS => {
+                    update_existing_trace(&session_name)?;
+                    0
+                }
+                _ => {
+                    return Err(format!(
+                        "network_attribution_start_trace_failed:{start_result}"
+                    ))
+                }
+            };
 
             let shared = Arc::new(NetworkEtwShared::new());
             let process_handle = match open_trace(&session_name, &shared) {
                 Ok(handle) => handle,
                 Err(error) => {
-                    stop_trace(trace_handle.Value, &session_name);
+                    stop_trace(trace_handle, &session_name);
                     return Err(error);
                 }
             };
@@ -231,13 +236,13 @@ mod windows_impl {
                 .name("batcave-network-etw".to_string())
                 .spawn(move || process_trace_loop(process_handle, thread_shared))
                 .map_err(|error| {
-                    stop_trace(trace_handle.Value, &session_name);
+                    stop_trace(trace_handle, &session_name);
                     format!("network_attribution_thread_start_failed:{error}")
                 })?;
 
             Ok(Self {
                 shared,
-                trace_handle: trace_handle.Value,
+                trace_handle,
                 process_thread: Some(process_thread),
                 session_name,
                 previous_counters: Mutex::new(HashMap::new()),
@@ -394,6 +399,24 @@ mod windows_impl {
             Err("network_attribution_open_trace_failed".to_string())
         } else {
             Ok(handle)
+        }
+    }
+
+    fn update_existing_trace(session_name: &[u16]) -> Result<(), String> {
+        let mut properties = trace_properties(session_name);
+        let result = unsafe {
+            ControlTraceW(
+                windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE { Value: 0 },
+                session_name.as_ptr(),
+                properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+                EVENT_TRACE_CONTROL_UPDATE,
+            )
+        };
+
+        if result == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(format!("network_attribution_update_trace_failed:{result}"))
         }
     }
 

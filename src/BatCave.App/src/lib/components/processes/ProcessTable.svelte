@@ -56,6 +56,22 @@
     return trimmed || "--";
   }
 
+  function networkCellLabel(row: ProcessViewRow): string {
+    const quality = (row.process ?? row.representative)?.quality?.network;
+    if (quality?.quality === "unavailable") {
+      return "Unavailable";
+    }
+    if (quality?.quality === "held") {
+      return "Waiting";
+    }
+
+    return formatRate(row.network_bps);
+  }
+
+  function networkCellTitle(row: ProcessViewRow): string {
+    return (row.process ?? row.representative)?.quality?.network?.message ?? "";
+  }
+
 </script>
 
 <div class="table-wrap">
@@ -125,7 +141,7 @@
               {:else if column.key === "io"}
                 <td>{formatRate(row.io_bps)}</td>
               {:else if column.key === "network"}
-                <td>{formatRate(row.network_bps)}</td>
+                <td title={networkCellTitle(row)}>{networkCellLabel(row)}</td>
               {:else if column.key === "threads"}
                 <td>{row.threads}</td>
               {:else}
@@ -173,7 +189,7 @@
                 {:else if column.key === "io"}
                   <td>{formatRate(row.io_bps)}</td>
                 {:else if column.key === "network"}
-                  <td>{formatRate(row.network_bps)}</td>
+                  <td title={networkCellTitle(row)}>{networkCellLabel(row)}</td>
                 {:else if column.key === "threads"}
                   <td>{process.threads}</td>
                 {:else}
