@@ -7,6 +7,8 @@ BatCave has two useful run modes:
 - Native desktop mode talks to the Rust runtime store through Tauri commands and uses platform collectors.
 - Browser fixture mode runs only the Svelte UI with deterministic local fixture telemetry, which is perfect for layout work and useless as collector proof. Beautiful, limited, honest. The holy trinity.
 
+Product screenshots and verification screenshots must come from the native Tauri desktop window, captured with Computer Use. Browser fixture screenshots are layout-only and should not be committed as product evidence.
+
 ## Prerequisites
 
 - Node.js 24

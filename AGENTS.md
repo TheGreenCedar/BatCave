@@ -26,7 +26,7 @@
 ## Testing Guidelines
 - Use Rust unit tests for contract JSON, persistence behavior, runtime store shaping, collector math, helper argument parsing, and benchmark parsing.
 - Run `scripts/validate-tauri.ps1` for app or runtime changes.
-- For screenshot-visible UI work, capture fresh browser/Tauri evidence across desktop and mobile-sized viewports and use the two-lens review loop requested by the user.
+- For screenshot-visible UI work, capture fresh native Tauri app evidence with the Computer Use plugin. Do not use browser fixture screenshots for product docs, PR evidence, or final verification; browser fixture mode is layout-only and must be labeled as such.
 
 ## Commit & Pull Request Guidelines
 - Follow observed commit prefixes: `feat:`, `fix:`, `test:`, `docs:`, and task-oriented entries like `Task 7: ...`.

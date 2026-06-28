@@ -21,6 +21,7 @@ try {
     }
 
     if ($WebOnly) {
+        Write-Warning "Browser fixture mode is layout-only. Do not use it for product screenshots or verification; capture the native Tauri window with Computer Use."
         npm run dev
     }
     elseif ($AppArgs.Count -gt 0) {

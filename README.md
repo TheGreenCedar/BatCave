@@ -20,7 +20,7 @@ This is a public preview. It is useful now, honest about what it cannot see, and
 
 ![BatCave Monitor network detail view in the dark Cave theme](docs/images/batcave-monitor-network-detail-dark.png)
 
-Screenshots show the cockpit UI, grouped process inspector, and network detail view in both the light and dark themes. Browser fixture screenshots prove layout and interaction only; native collector proof requires the desktop app with the runtime status/source showing native telemetry.
+Screenshots show the native Tauri cockpit UI, grouped process inspector, and network detail view in both the light and dark themes. Browser fixture screenshots are layout-only and should not be used as product proof.
 
 ## What It Shows
 

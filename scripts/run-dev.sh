@@ -39,6 +39,7 @@ if [[ "$no_build" -eq 0 ]]; then
 fi
 
 if [[ "$web_only" -eq 1 ]]; then
+  echo "Browser fixture mode is layout-only. Do not use it for product screenshots or verification; capture the native Tauri window with Computer Use." >&2
   npm run dev
 elif [[ "${#app_args[@]}" -gt 0 ]]; then
   npm run "$tauri_dev_script" -- "${app_args[@]}"

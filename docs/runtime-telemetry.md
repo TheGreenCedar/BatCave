@@ -160,6 +160,6 @@ Distribution polish remains outside the runtime contract:
 
 - Add installer signing before broad external distribution.
 - Add automatic updater work when release channels exist.
-- Expand screenshot-based validation when changing visible cockpit layout, metric-quality messaging, theme surfaces, or platform-specific collector states.
+- Expand screenshot-based validation from the native Tauri app when changing visible cockpit layout, metric-quality messaging, theme surfaces, or platform-specific collector states.
 
 The runtime rule stays simple: collect locally, persist locally, report quality explicitly, and keep the UI fed with truth instead of theater.
