@@ -525,7 +525,7 @@ fn build_snapshot(
     total_process_count: usize,
     warnings: Vec<RuntimeWarning>,
 ) -> RuntimeSnapshot {
-    let process_view_rows = shape_process_view(&processes);
+    let process_view_rows = shape_process_view(&processes, &settings.query);
     RuntimeSnapshot {
         event_kind: "runtime_snapshot".to_string(),
         seq,
@@ -614,7 +614,7 @@ struct ProcessAppGroup {
     threads: u64,
 }
 
-fn shape_process_view(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
+fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessViewRow> {
     let mut groups = Vec::<ProcessAppGroup>::new();
     let mut group_indexes = HashMap::<String, usize>::new();
 
@@ -652,6 +652,8 @@ fn shape_process_view(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
         group.threads = group.threads.saturating_add(process.threads as u64);
         group.processes.push(process.clone());
     }
+
+    groups.sort_by(|left, right| compare_process_group(left, right, query));
 
     let mut rows = Vec::with_capacity(processes.len() + groups.len());
     for group in groups {
@@ -721,6 +723,7 @@ fn compare_process(left: &ProcessSample, right: &ProcessSample, query: &RuntimeQ
             .disk_read_bps
             .saturating_add(left.disk_write_bps)
             .cmp(&right.disk_read_bps.saturating_add(right.disk_write_bps)),
+        SortColumn::NetworkBps => process_network_rate(left).cmp(&process_network_rate(right)),
         SortColumn::Threads => left.threads.cmp(&right.threads),
         SortColumn::Handles => left.handles.cmp(&right.handles),
         SortColumn::StartTimeMs => left.start_time_ms.cmp(&right.start_time_ms),
@@ -739,6 +742,43 @@ fn compare_process(left: &ProcessSample, right: &ProcessSample, query: &RuntimeQ
     };
 
     directed.then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+}
+
+fn compare_process_group(
+    left: &ProcessAppGroup,
+    right: &ProcessAppGroup,
+    query: &RuntimeQuery,
+) -> Ordering {
+    let ordering = match query.sort_column {
+        SortColumn::Name => left.label.to_lowercase().cmp(&right.label.to_lowercase()),
+        SortColumn::Pid => left.representative.pid.cmp(&right.representative.pid),
+        SortColumn::MemoryBytes => left.memory_bytes.cmp(&right.memory_bytes),
+        SortColumn::DiskBps => left.io_bps.cmp(&right.io_bps),
+        SortColumn::NetworkBps => left.network_bps.cmp(&right.network_bps),
+        SortColumn::Threads => left.threads.cmp(&right.threads),
+        SortColumn::Handles => left
+            .representative
+            .handles
+            .cmp(&right.representative.handles),
+        SortColumn::StartTimeMs => left
+            .representative
+            .start_time_ms
+            .cmp(&right.representative.start_time_ms),
+        SortColumn::Attention => group_attention_score(left)
+            .partial_cmp(&group_attention_score(right))
+            .unwrap_or(Ordering::Equal),
+        SortColumn::CpuPct => left
+            .cpu_percent
+            .partial_cmp(&right.cpu_percent)
+            .unwrap_or(Ordering::Equal),
+    };
+
+    let directed = match query.sort_direction {
+        SortDirection::Asc => ordering,
+        SortDirection::Desc => ordering.reverse(),
+    };
+
+    directed.then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
 }
 
 fn matches_focus_mode(process: &ProcessSample, focus_mode: ProcessFocusMode) -> bool {
@@ -896,7 +936,17 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
 }
 
 fn process_app_key(process: &ProcessSample) -> String {
-    normalized_process_name(executable_file_name(&process.exe)).to_lowercase()
+    let executable_name = normalized_process_name(executable_file_name(&process.exe));
+    let process_name = normalized_process_name(&process.name);
+    let key = if !executable_name.trim().is_empty() {
+        executable_name
+    } else if !process_name.trim().is_empty() {
+        process_name
+    } else {
+        format!("pid:{}", process.pid)
+    };
+
+    key.to_lowercase()
 }
 
 fn process_app_label(process: &ProcessSample) -> String {
@@ -967,6 +1017,22 @@ fn process_attention_score(process: &ProcessSample) -> f64 {
     let network_bps = process_network_rate(process);
     score += (network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
     if process.access_state != crate::contracts::AccessState::Full {
+        score += 12.0;
+    }
+
+    score
+}
+
+fn group_attention_score(group: &ProcessAppGroup) -> f64 {
+    let mut score = group.cpu_percent * 3.0;
+    score += (group.memory_bytes as f64 / (128.0 * 1024.0 * 1024.0)).min(20.0);
+    score += (group.io_bps as f64 / (512.0 * 1024.0)).min(20.0);
+    score += (group.network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
+    if group
+        .processes
+        .iter()
+        .any(|process| process.access_state != crate::contracts::AccessState::Full)
+    {
         score += 12.0;
     }
 
@@ -1237,7 +1303,7 @@ mod tests {
         second.disk_write_bps = 512;
         second.threads = 5;
 
-        let rows = shape_process_view(&[first, second]);
+        let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
 
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].kind, ProcessViewRowKind::Group);
@@ -1252,13 +1318,71 @@ mod tests {
     }
 
     #[test]
+    fn process_view_uses_process_name_key_when_exe_is_missing() {
+        let mut first = sample("10", "Memory Compression", 12.0);
+        first.exe = String::new();
+        let mut second = sample("20", "Memory Compression", 8.0);
+        second.exe = " ".to_string();
+
+        let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].kind, ProcessViewRowKind::Group);
+        assert_eq!(rows[0].group_key.as_deref(), Some("memory compression"));
+        assert!(rows[1].is_grouped);
+        assert_eq!(rows[1].group_key, rows[0].group_key);
+        assert_eq!(rows[2].group_key, rows[0].group_key);
+    }
+
+    #[test]
     fn process_view_keeps_singletons_as_process_rows() {
-        let rows = shape_process_view(&[sample("10", "Code.exe", 12.0)]);
+        let rows = shape_process_view(&[sample("10", "Code.exe", 12.0)], &RuntimeQuery::default());
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, ProcessViewRowKind::Process);
         assert!(!rows[0].is_grouped);
         assert_eq!(rows[0].group_label.as_deref(), Some("Code.exe"));
+    }
+
+    #[test]
+    fn shape_rows_sorts_by_network_rate() {
+        let quiet = sample("10", "Quiet", 1.0);
+        let mut network_busy = sample("20", "NetworkBusy", 1.0);
+        network_busy.network_received_bps = Some(8_000);
+        network_busy.network_transmitted_bps = Some(2_000);
+
+        let rows = shape_rows(
+            &[quiet, network_busy],
+            &RuntimeQuery {
+                sort_column: SortColumn::NetworkBps,
+                sort_direction: SortDirection::Desc,
+                ..RuntimeQuery::default()
+            },
+        );
+
+        assert_eq!(rows[0].name, "NetworkBusy");
+    }
+
+    #[test]
+    fn process_view_sorts_group_rows_by_visible_aggregate() {
+        let singleton = sample("10", "Code.exe", 70.0);
+        let mut first = sample("20", "SearchIndexer-001.exe", 40.0);
+        first.exe = "C:\\Windows\\System32\\SearchIndexer-001.exe".to_string();
+        let mut second = sample("30", "SearchIndexer-002.exe", 35.0);
+        second.exe = "C:\\Windows\\System32\\SearchIndexer-002.exe".to_string();
+
+        let rows = shape_process_view(
+            &[singleton, first, second],
+            &RuntimeQuery {
+                sort_column: SortColumn::CpuPct,
+                sort_direction: SortDirection::Desc,
+                ..RuntimeQuery::default()
+            },
+        );
+
+        assert_eq!(rows[0].kind, ProcessViewRowKind::Group);
+        assert_eq!(rows[0].group_label.as_deref(), Some("SearchIndexer.exe"));
+        assert_eq!(rows[0].cpu_percent, 75.0);
     }
 
     #[test]

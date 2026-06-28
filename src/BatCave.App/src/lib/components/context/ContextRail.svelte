@@ -9,7 +9,7 @@
   export let activeTab: "process" | "system";
   export let onTab: (tab: "process" | "system") => void;
   export let selectedProcess: ProcessSample | null;
-  export let processHistory: { cpu: number[]; memory: number[]; readRate: number[]; writeRate: number[] };
+  export let processHistory: { cpu: number[]; memory: number[]; readRate: number[]; writeRate: number[]; networkRate: number[] };
   export let processRates: Record<string, ProcessRates>;
   export let processReadRate = 0;
   export let processWriteRate = 0;

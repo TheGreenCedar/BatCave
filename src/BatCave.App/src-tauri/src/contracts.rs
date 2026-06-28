@@ -335,6 +335,7 @@ pub enum SortColumn {
     CpuPct,
     MemoryBytes,
     DiskBps,
+    NetworkBps,
     Threads,
     Handles,
     StartTimeMs,

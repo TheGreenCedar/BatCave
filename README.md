@@ -4,17 +4,29 @@ BatCave Monitor is a local-first resource cockpit for Windows and Linux. It show
 
 This is a public preview. It is useful now, honest about what it cannot see, and intentionally boring about privacy: BatCave reads local telemetry and keeps it local.
 
-![BatCave Monitor resource cockpit overview](docs/images/batcave-monitor-overview.png)
+### Light Theme
 
-![BatCave Monitor network detail view](docs/images/batcave-monitor-network-detail.png)
+![BatCave Monitor resource cockpit overview in the light theme](docs/images/batcave-monitor-overview.png)
 
-Screenshots show the cockpit UI. Browser fixture screenshots prove layout and interaction only; native collector proof requires the desktop app with the runtime status/source showing native telemetry.
+![BatCave Monitor selected process group inspector in the light theme](docs/images/batcave-monitor-group-inspector.png)
+
+![BatCave Monitor network detail view in the light theme](docs/images/batcave-monitor-network-detail.png)
+
+### Dark Theme
+
+![BatCave Monitor resource cockpit overview in the dark Cave theme](docs/images/batcave-monitor-overview-dark.png)
+
+![BatCave Monitor selected process group inspector in the dark Cave theme](docs/images/batcave-monitor-group-inspector-dark.png)
+
+![BatCave Monitor network detail view in the dark Cave theme](docs/images/batcave-monitor-network-detail-dark.png)
+
+Screenshots show the cockpit UI, grouped process inspector, and network detail view in both the light and dark themes. Browser fixture screenshots prove layout and interaction only; native collector proof requires the desktop app with the runtime status/source showing native telemetry.
 
 ## What It Shows
 
-- A live process explorer with CPU, memory, disk/I/O columns, plus selected-process network attribution when available.
+- A live process explorer with expandable, selectable process groups and CPU, memory, disk/I/O, network, and thread columns.
 - A system inspector for CPU, memory, disk, and network detail, including logical-core charts and runtime health.
-- A selected-process panel with PID, parent PID, CPU, kernel CPU, memory, private bytes, disk totals, thread count, handle count, access state, process path, and network attribution when available.
+- A selected process or process-group panel with live CPU, memory, disk, and network history. Process rows also show PID, parent PID, kernel CPU, private bytes, disk totals, thread count, handle count, access state, process path, and network attribution when available.
 - Pause/resume, manual refresh, refresh cadence, search, sort, focus modes, chart history length, and theme controls.
 - Explicit quality states when data is warming up, partially available, blocked by permissions, or unavailable on the current platform.
 

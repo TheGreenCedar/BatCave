@@ -3,6 +3,7 @@
   export let pollState: "starting" | "native" | "fixture" | "error";
   export let processCount: number;
   export let latencyMs: number;
+  export let updatedAtLabel: string;
 </script>
 
 <header class="topbar">
@@ -18,10 +19,11 @@
     </div>
   </div>
   <div class="status-stack" aria-label="Runtime status">
-    <span class:live={pollState === "native"} class:paused={isPaused}>
-      <i aria-hidden="true"></i>{isPaused ? "Paused" : pollState === "native" ? "Live" : pollState}
+    <span class:live={pollState === "native"} class:paused={isPaused} class:fixture={pollState === "fixture"}>
+      <i aria-hidden="true"></i>{isPaused ? "Paused" : pollState === "native" ? "Live" : pollState === "fixture" ? "Fixture data" : pollState}
     </span>
     <span>Processes <b>{processCount}</b></span>
-    <span>Latency <b>{latencyMs} ms</b></span>
+    <span>Updated <b>{updatedAtLabel}</b></span>
+    <span>Collector <b>{latencyMs} ms</b></span>
   </div>
 </header>

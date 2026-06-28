@@ -16,8 +16,8 @@
   import ProcessIcon from "../processes/ProcessIcon.svelte";
 
   export let selectedProcess: ProcessSample | null;
-  export let processHistory: { cpu: number[]; memory: number[]; readRate: number[]; writeRate: number[] };
-  export let processRates: Record<string, ProcessRates>;
+  export let processHistory: { cpu: number[]; memory: number[]; readRate: number[]; writeRate: number[]; networkRate: number[] };
+  export let processRates: Record<string, ProcessRates> = {};
   export let processReadRate = 0;
   export let processWriteRate = 0;
   export let processIcons: Record<string, string> = {};
@@ -26,6 +26,18 @@
   export let maxRate: (points: number[], fallback: number) => number;
   export let processNetworkLabel: (process: ProcessSample) => string;
   export let onCopy: () => void;
+
+  function processTotalIoRate(process: ProcessSample): number {
+    const rates = processRates[process.pid];
+    return processReadRate + processWriteRate + (rates?.otherRate ?? process.other_io_bps ?? 0);
+  }
+
+  function processTrustLabel(process: ProcessSample): string {
+    return metricQualityLabel(
+      process.quality?.cpu ?? process.quality?.memory ?? process.quality?.disk ?? process.quality?.network,
+      "Measured",
+    );
+  }
 </script>
 
 <section class="process-inspector" aria-label="Process inspector">
@@ -43,10 +55,14 @@
         <button class="subtle-action" type="button" onclick={onCopy}>Copy</button>
       </span>
     </div>
+    <div class="trust-strip" aria-label="Selected process metric source">
+      <span>{processTrustLabel(selectedProcess)}</span>
+      <small>CPU/core</small>
+    </div>
     <h3>Resources</h3>
     <div class="resource-list" aria-label="Selected process resources">
       <div class="resource-row">
-        <span>CPU</span>
+        <span>CPU/core</span>
         <strong>{formatPercent(selectedProcess.cpu_percent)}</strong>
         <MiniChart values={processHistory.cpu} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
       </div>
@@ -57,7 +73,7 @@
       </div>
       <div class="resource-row">
         <span>Disk I/O</span>
-        <strong>{formatRate(processReadRate + processWriteRate)}</strong>
+        <strong>{formatRate(processTotalIoRate(selectedProcess))}</strong>
         <MiniChart
           values={processHistory.readRate}
           max={maxRate([...processHistory.readRate, ...processHistory.writeRate], 250_000)}
@@ -67,10 +83,13 @@
       </div>
       <div class="resource-row">
         <span>Network</span>
-        <strong>{processNetworkLabel(selectedProcess)}</strong>
+        <strong class="stacked-value">
+          <span>{processNetworkLabel(selectedProcess)}</span>
+          <small>{metricQualityLabel(selectedProcess.quality?.network, "Measured")}</small>
+        </strong>
         <MiniChart
-          values={processHistory.writeRate}
-          max={maxRate([...processHistory.readRate, ...processHistory.writeRate], 250_000)}
+          values={processHistory.networkRate}
+          max={maxRate(processHistory.networkRate, 250_000)}
           stroke={activeTheme.networkDownStroke}
           fill={activeTheme.networkDownFill}
         />
@@ -87,7 +106,7 @@
         <dd>{selectedProcess.parent_pid ?? "--"}</dd>
       </div>
       <div>
-        <dt>CPU</dt>
+        <dt>CPU/core</dt>
         <dd>{formatPercent(selectedProcess.cpu_percent)}</dd>
       </div>
       <div>

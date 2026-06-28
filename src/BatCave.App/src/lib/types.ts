@@ -182,6 +182,7 @@ export type SortColumn =
   | "cpu_pct"
   | "memory_bytes"
   | "disk_bps"
+  | "network_bps"
   | "threads"
   | "handles"
   | "start_time_ms";

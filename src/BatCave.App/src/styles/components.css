@@ -5,9 +5,7 @@
   gap: 14px;
   padding: 20px;
   color: var(--text);
-  background:
-    radial-gradient(circle at 20% 0, var(--accent-muted), transparent 360px),
-    linear-gradient(180deg, var(--grid-line), transparent 260px), var(--surface-0);
+  background: linear-gradient(180deg, var(--grid-line), transparent 260px), var(--surface-0);
 }
 
 .topbar,
@@ -81,6 +79,7 @@
   min-height: 30px;
   display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   border: 0;
   border-left: 1px solid var(--border-soft);
   border-radius: 0;
@@ -117,6 +116,11 @@
   border-color: var(--accent-border);
   color: var(--accent);
   background: transparent;
+}
+
+.status-stack .fixture {
+  border-color: var(--warning-border);
+  color: var(--warning-text);
 }
 
 .status-stack .paused,
@@ -260,7 +264,6 @@ kbd {
 }
 
 .segmented button.active,
-.toolbar-actions .primary-action,
 .option-grid button.active {
   color: var(--accent-text);
   background: var(--accent);
@@ -274,6 +277,18 @@ kbd {
 .subtle-action {
   border: 1px solid var(--border);
   background: var(--surface-3);
+}
+
+.toolbar-actions .primary-action {
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+  background: var(--warning-soft);
+}
+
+.toolbar-actions .primary-action.resume {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-muted);
 }
 
 .settings-menu {
@@ -351,25 +366,23 @@ legend,
 }
 
 .metric-card {
-  min-height: 176px;
+  min-height: 132px;
   position: relative;
   overflow: hidden;
-  display: block;
-  padding: 14px 12px 10px;
+  display: grid;
+  grid-template-rows: auto minmax(34px, 1fr);
+  gap: var(--space-2);
+  padding: 14px 14px 12px;
   color: var(--text);
-  text-align: center;
+  text-align: left;
   isolation: isolate;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 28%, transparent), transparent),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 16%, transparent), transparent),
     var(--surface-1);
 }
 
 .metric-gauge {
-  position: absolute;
-  inset: 18px 30px auto;
-  height: 92px;
-  color: var(--metric-accent);
-  pointer-events: none;
+  display: none;
 }
 
 .metric-gauge svg {
@@ -392,30 +405,25 @@ legend,
 
 .gauge-value {
   stroke: currentColor;
-  filter: drop-shadow(0 0 8px color-mix(in srgb, currentColor 45%, transparent));
 }
 
 .metric-card.active {
-  border-color: var(--metric-accent);
-  box-shadow:
-    var(--shadow-panel),
-    inset 0 0 0 1px color-mix(in srgb, var(--metric-accent) 70%, transparent);
+  border-color: color-mix(in srgb, var(--metric-accent) 58%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--metric-accent) 36%, transparent);
 }
 
 .metric-readout {
-  position: absolute;
-  inset: 26px 12px auto;
+  position: relative;
+  inset: auto;
   z-index: 1;
-  height: 76px;
+  height: auto;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   gap: 4px;
   min-width: 0;
-  text-shadow:
-    0 1px 10px var(--surface-1),
-    0 0 8px var(--surface-1);
+  text-shadow: none;
 }
 
 .metric-readout > span,
@@ -431,23 +439,23 @@ legend,
 .metric-readout strong {
   color: var(--metric-accent);
   font-family: var(--font-mono);
-  font-size: clamp(1.45rem, 2vw, 2rem);
+  font-size: clamp(1.26rem, 1.45vw, 1.58rem);
   font-weight: 760;
   line-height: 1;
   white-space: nowrap;
 }
 
 .metric-readout.compact strong {
-  font-size: clamp(1.12rem, 1.45vw, 1.48rem);
+  font-size: clamp(1.02rem, 1.16vw, 1.22rem);
 }
 
 .metric-spark {
-  position: absolute;
-  inset: auto 12px 12px;
+  position: relative;
+  inset: auto;
   z-index: 1;
   display: block;
-  height: 38px;
-  opacity: 0.95;
+  height: 32px;
+  opacity: 0.82;
 }
 
 .workspace-grid {
@@ -536,7 +544,7 @@ thead {
 
 th,
 td {
-  height: 40px;
+  height: 44px;
   padding: 0 var(--space-3);
   border-bottom: 1px solid var(--border-soft);
   border-right: 1px solid var(--border-soft);
@@ -547,6 +555,21 @@ td {
 th:last-child,
 td:last-child {
   border-right: 0;
+}
+
+th:nth-child(1),
+td:nth-child(1) {
+  width: 78px;
+  text-align: right;
+}
+
+th:nth-child(2),
+td:nth-child(2) {
+  min-width: 360px;
+}
+
+td:nth-child(n + 4) {
+  text-align: right;
 }
 
 th {
@@ -564,6 +587,7 @@ td {
   color: var(--text-soft);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 tbody tr:nth-child(even) {
@@ -572,7 +596,7 @@ tbody tr:nth-child(even) {
 
 tbody tr:hover,
 tbody tr.selected {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
 }
 
 tbody tr.group-selected {
@@ -599,7 +623,7 @@ th.metric .sort-header {
 .sort-header:hover,
 .sort-header.active {
   color: var(--text);
-  background: var(--accent-muted);
+  background: color-mix(in srgb, var(--accent-muted) 70%, transparent);
 }
 
 .sort-header span,
@@ -621,7 +645,7 @@ th.metric .sort-header {
 
 .process-button {
   width: 100%;
-  min-height: 37px;
+  min-height: 40px;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
@@ -838,9 +862,13 @@ th.metric .sort-header {
   font-weight: 680;
 }
 
+.status-cell.muted {
+  color: var(--text-muted);
+}
+
 .process-button:hover,
 .process-button.selected {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent-soft) 62%, transparent);
 }
 
 .mobile-process-list {
@@ -989,6 +1017,24 @@ dd {
   margin-bottom: var(--space-4);
 }
 
+.trust-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  color: var(--warning-text);
+  background: var(--warning-soft);
+  font-size: var(--text-xs);
+  font-weight: 720;
+}
+
+.trust-strip small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
 .process-identity > .process-icon {
   width: 52px;
   height: 52px;
@@ -1051,8 +1097,7 @@ dd {
 }
 
 .resource-row {
-  height: 42px;
-  min-height: 42px;
+  min-height: 46px;
   display: grid;
   grid-template-columns: 86px minmax(92px, 0.75fr) minmax(110px, 1fr);
   gap: var(--space-2);
@@ -1073,6 +1118,24 @@ dd {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
+}
+
+.resource-row .stacked-value {
+  display: grid;
+  gap: 2px;
+}
+
+.resource-row .stacked-value span {
+  color: var(--text-soft);
+}
+
+.resource-row .stacked-value small {
+  overflow: visible;
+  color: var(--warning-text);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-weight: 680;
+  white-space: normal;
 }
 
 .resource-row .chart-host {
@@ -1474,7 +1537,7 @@ dd small {
 
   .status-stack {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .status-stack span {

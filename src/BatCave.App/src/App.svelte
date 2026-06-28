@@ -55,6 +55,7 @@
     memory: number[];
     readRate: number[];
     writeRate: number[];
+    networkRate: number[];
   }
 
   const historyPointOptions = [30, 72, 180, 360] as const;
@@ -97,7 +98,10 @@
   $: swapPercent = percentage(snapshot.system.swap_used_bytes, snapshot.system.swap_total_bytes);
   $: processViewRows = snapshot.process_view_rows;
   $: filteredProcesses = processViewRows.flatMap((row) => (row.process ? [row.process] : []));
-  $: selectedProcess = filteredProcesses.find((process) => process.pid === selectedPid) ?? null;
+  $: selectedGroupRow = selectedGroupKey(selectedPid)
+    ? (processViewRows.find((row) => row.kind === "group" && row.group_key === selectedGroupKey(selectedPid)) ?? null)
+    : null;
+  $: selectedProcess = selectedGroupRow ? groupProcessFromRow(selectedGroupRow) : (filteredProcesses.find((process) => process.pid === selectedPid) ?? null);
   $: warnings =
     snapshot.warnings.length > 0
       ? snapshot.warnings
@@ -225,7 +229,7 @@
       contrastValue: networkUpRate,
     },
   ];
-  $: if (filteredProcesses.length > 0 && !filteredProcesses.some((process) => process.pid === selectedPid)) {
+  $: if (filteredProcesses.length > 0 && !selectedProcess) {
     selectProcess(filteredProcesses[0].pid);
   }
 
@@ -532,8 +536,8 @@
   function ingest(next: RuntimeSnapshot): void {
     const previous = snapshot;
     hydrateRuntimeControls(next);
-    const previousProcess = previous.processes.find((process) => process.pid === selectedPid);
-    const nextProcess = selectedPid ? next.processes.find((process) => process.pid === selectedPid) : next.processes[0];
+    const previousProcess = selectedPid ? selectedProcessFromSnapshot(previous, selectedPid) : null;
+    const nextProcess = selectedPid ? selectedProcessFromSnapshot(next, selectedPid) : next.processes[0];
     const elapsedSeconds = Math.max(0.5, (next.ts_ms - previous.ts_ms) / 1000);
     const diskRead =
       next.system.disk_read_bps ||
@@ -563,7 +567,7 @@
       selectedPid = nextProcess.pid;
       resetProcessHistory(nextProcess);
     } else if (nextProcess) {
-      const nextRates = processRates[nextProcess.pid] ?? { readRate: 0, writeRate: 0, otherRate: 0 };
+      const nextRates = processTrendRates(nextProcess);
       processHistory = {
         cpu: pushPoint(processHistory.cpu, nextProcess.cpu_percent),
         memory: pushPoint(
@@ -572,6 +576,7 @@
         ),
         readRate: pushPoint(processHistory.readRate, nextRates.readRate),
         writeRate: pushPoint(processHistory.writeRate, nextRates.writeRate),
+        networkRate: pushPoint(processHistory.networkRate, nextRates.networkRate),
       };
     } else if (previousProcess) {
       processHistory = {
@@ -579,6 +584,7 @@
         memory: pushPoint(processHistory.memory, 0),
         readRate: pushPoint(processHistory.readRate, 0),
         writeRate: pushPoint(processHistory.writeRate, 0),
+        networkRate: pushPoint(processHistory.networkRate, 0),
       };
     }
 
@@ -610,7 +616,7 @@
   function selectProcess(pid: string): void {
     selectedPid = pid;
     copyStatus = "";
-    const process = snapshot.processes.find((candidate) => candidate.pid === pid);
+    const process = selectedProcessFromSnapshot(snapshot, pid);
     if (process) {
       resetProcessHistory(process);
     }
@@ -675,11 +681,13 @@
   }
 
   function resetProcessHistory(process: ProcessSample): void {
+    const rates = processTrendRates(process);
     processHistory = {
       cpu: [process.cpu_percent],
       memory: [percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1))],
-      readRate: [0],
-      writeRate: [0],
+      readRate: [rates.readRate],
+      writeRate: [rates.writeRate],
+      networkRate: [rates.networkRate],
     };
   }
 
@@ -709,6 +717,7 @@
       memory: [],
       readRate: [],
       writeRate: [],
+      networkRate: [],
     };
   }
 
@@ -728,6 +737,7 @@
       memory: trimPoints(processHistory.memory),
       readRate: trimPoints(processHistory.readRate),
       writeRate: trimPoints(processHistory.writeRate),
+      networkRate: trimPoints(processHistory.networkRate),
     };
   }
 
@@ -775,6 +785,63 @@
     }
 
     return rates;
+  }
+
+  function groupSelectionKey(key: string): string {
+    return `group:${key}`;
+  }
+
+  function selectedGroupKey(selection: string): string | null {
+    return selection.startsWith("group:") ? selection.slice("group:".length) : null;
+  }
+
+  function selectedProcessFromSnapshot(source: RuntimeSnapshot, selection: string): ProcessSample | null {
+    const key = selectedGroupKey(selection);
+    if (key) {
+      const row = source.process_view_rows.find((candidate) => candidate.kind === "group" && candidate.group_key === key);
+      return row ? groupProcessFromRow(row) : null;
+    }
+
+    return source.processes.find((process) => process.pid === selection) ?? null;
+  }
+
+  function groupProcessFromRow(row: RuntimeSnapshot["process_view_rows"][number]): ProcessSample {
+    const representative = row.representative;
+    return {
+      pid: row.group_key ? groupSelectionKey(row.group_key) : "group",
+      parent_pid: null,
+      start_time_ms: representative?.start_time_ms ?? 0,
+      name: row.group_label ?? representative?.name ?? "Process group",
+      exe: "",
+      status: "Group",
+      cpu_percent: row.cpu_percent,
+      kernel_cpu_percent: representative?.kernel_cpu_percent,
+      memory_bytes: row.memory_bytes,
+      private_bytes: row.memory_bytes,
+      virtual_memory_bytes: row.memory_bytes,
+      disk_read_total_bytes: representative?.disk_read_total_bytes ?? 0,
+      disk_write_total_bytes: representative?.disk_write_total_bytes ?? 0,
+      other_io_total_bytes: representative?.other_io_total_bytes,
+      disk_read_bps: row.io_bps,
+      disk_write_bps: 0,
+      other_io_bps: 0,
+      network_received_bps: row.network_bps,
+      network_transmitted_bps: 0,
+      threads: row.threads,
+      handles: representative?.handles ?? 0,
+      access_state: representative?.access_state ?? "full",
+      quality: representative?.quality,
+    };
+  }
+
+  function processTrendRates(process: ProcessSample): ProcessRates & { networkRate: number } {
+    const rates = processRates[process.pid];
+    return {
+      readRate: rates?.readRate ?? process.disk_read_bps,
+      writeRate: rates?.writeRate ?? process.disk_write_bps,
+      otherRate: rates?.otherRate ?? process.other_io_bps ?? 0,
+      networkRate: (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
+    };
   }
 
   function percentage(value: number, total: number): number {
@@ -829,9 +896,8 @@
     const quality = process.quality?.network;
     const rate = (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
 
-    if (rate > 0 && quality?.quality !== "unavailable") {
-      const suffix = quality ? ` ${metricQualityLabel(quality, "")}` : "";
-      return `${formatRate(rate)}${suffix}`;
+    if (rate > 0) {
+      return formatRate(rate);
     }
 
     return metricQualityLabel(quality, "Unavailable");
@@ -880,6 +946,18 @@
   function needsReadoutContrast(value: number, max: number): boolean {
     return max > 0 && value / max >= 0.82;
   }
+
+  function timeLabel(timestampMs: number): string {
+    if (timestampMs <= 0) {
+      return "--";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(timestampMs));
+  }
 </script>
 
 <svelte:head>
@@ -892,6 +970,7 @@
     {pollState}
     processCount={snapshot.system.process_count}
     latencyMs={snapshot.health.snapshot_latency_ms}
+    updatedAtLabel={timeLabel(snapshot.ts_ms)}
   />
   <MetricStrip
     cards={metricCards}
@@ -930,6 +1009,9 @@
     <ProcessExplorer
       processes={filteredProcesses}
       processRows={processViewRows}
+      totalProcessCount={snapshot.total_process_count || snapshot.system.process_count}
+      {focusMode}
+      {searchText}
       columns={processColumns}
       {selectedPid}
       {sortKey}

@@ -129,6 +129,12 @@ Local state stays under:
 
 The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
 
+## Process Explorer Contract
+
+The process explorer groups rows by executable identity when available, then process name, then PID as a last resort. Group rows should always have a stable key so they can be expanded, collapsed, selected, and inspected.
+
+Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The inspector history should use those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group.
+
 ## Platform Telemetry Notes
 
 Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, pagefile/commit totals, kernel paged/nonpaged pool, top kernel pool tags with best-effort local driver candidates, system cache, interface network totals, and PDH physical-disk rates.

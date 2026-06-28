@@ -7,7 +7,12 @@
     type ProcessIconKind,
     type SortKey,
   } from "../../process";
-  import { formatPercent, formatRate, processBytesLabel, processMemoryTitle } from "../../format";
+  import {
+    formatPercent,
+    formatRate,
+    processBytesLabel,
+    processMemoryTitle,
+  } from "../../format";
   import type { ProcessSample, ProcessViewRow, SortDirection } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
@@ -26,16 +31,12 @@
     return `${count} ${count === 1 ? "process" : "processes"}`;
   }
 
-  function isGroupCollapsed(key: string): boolean {
-    return collapsedGroups[key] ?? true;
-  }
-
   function toggleGroup(key: string): void {
-    collapsedGroups = { ...collapsedGroups, [key]: !isGroupCollapsed(key) };
+    collapsedGroups = { ...collapsedGroups, [key]: !(collapsedGroups[key] ?? true) };
   }
 
-  function processForRow(row: ProcessViewRow): ProcessSample | undefined {
-    return row.process ?? row.representative;
+  function groupSelectionKey(key: string): string {
+    return `group:${key}`;
   }
 
   function iconSrc(process: ProcessSample | undefined): string | undefined {
@@ -47,12 +48,14 @@
   }
 
   function isGroupSelected(key: string | undefined): boolean {
-    return !!key && processRows.some((row) => row.group_key === key && row.process?.pid === selectedPid);
+    return !!key && (selectedPid === groupSelectionKey(key) || processRows.some((row) => row.group_key === key && row.process?.pid === selectedPid));
   }
 
-  function isVisibleProcessRow(row: ProcessViewRow): boolean {
-    return !row.is_grouped || !row.group_key || !isGroupCollapsed(row.group_key);
+  function statusLabel(status: string): string {
+    const trimmed = status.trim();
+    return trimmed || "--";
   }
+
 </script>
 
 <div class="table-wrap">
@@ -81,7 +84,7 @@
         {#if row.kind === "group"}
           {@const representative = row.representative}
           {@const groupSelected = isGroupSelected(row.group_key)}
-          {@const collapsed = row.group_key ? isGroupCollapsed(row.group_key) : false}
+          {@const collapsed = row.group_key ? (collapsedGroups[row.group_key] ?? true) : false}
           <tr class:group-selected={groupSelected} class="app-group-row">
             {#each columns as column}
               {#if column.key === "pid"}
@@ -94,7 +97,12 @@
                     type="button"
                     aria-expanded={!collapsed}
                     aria-label={`${collapsed ? "Expand" : "Collapse"} ${row.group_label ?? "process"} group, ${processCountLabel(row.group_count)}`}
-                    onclick={() => row.group_key && toggleGroup(row.group_key)}
+                    onclick={() => {
+                      if (row.group_key) {
+                        onSelect(groupSelectionKey(row.group_key));
+                        toggleGroup(row.group_key);
+                      }
+                    }}
                   >
                     <span class="group-toggle-indicator" class:collapsed aria-hidden="true">
                       <svg viewBox="0 0 16 16">
@@ -105,17 +113,11 @@
                     <span class="process-name-stack">
                       <span>{row.group_label}</span>
                       <small>{processCountLabel(row.group_count)} / {row.group_category}</small>
-                      <span class="process-group-stats" aria-hidden="true">
-                        <span>CPU {formatPercent(row.cpu_percent)}</span>
-                        <span>{representative ? processBytesLabel(representative, row.memory_bytes) : ""}</span>
-                        <span>I/O {formatRate(row.io_bps)}</span>
-                        <span>Net {formatRate(row.network_bps)}</span>
-                      </span>
                     </span>
                   </button>
                 </td>
               {:else if column.key === "status"}
-                <td></td>
+                <td><span class="status-cell muted">Group</span></td>
               {:else if column.key === "cpu"}
                 <td>{formatPercent(row.cpu_percent)}</td>
               {:else if column.key === "memory"}
@@ -131,7 +133,7 @@
               {/if}
             {/each}
           </tr>
-        {:else if row.process && isVisibleProcessRow(row)}
+        {:else if row.process && (!row.is_grouped || !row.group_key || !(collapsedGroups[row.group_key] ?? true))}
           {@const process = row.process}
             <tr
               class:selected={process.pid === selectedPid}
@@ -163,7 +165,7 @@
                     </button>
                   </td>
                 {:else if column.key === "status"}
-                  <td><span class="status-cell">{process.status}</span></td>
+                  <td><span class="status-cell">{statusLabel(process.status)}</span></td>
                 {:else if column.key === "cpu"}
                   <td>{formatPercent(process.cpu_percent)}</td>
                 {:else if column.key === "memory"}

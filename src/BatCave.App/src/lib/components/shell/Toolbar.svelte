@@ -59,7 +59,7 @@
     <SortSelect options={sortOptions} value={sortKey} onChange={onSort} />
   </div>
   <div class="toolbar-actions">
-    <button class="primary-action" type="button" onclick={onPaused}>
+    <button class="primary-action" class:resume={isPaused} type="button" onclick={onPaused}>
       {#if isPaused}
         <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M8 5v14l11-7z" />

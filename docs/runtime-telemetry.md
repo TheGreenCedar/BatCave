@@ -1,6 +1,6 @@
 # Runtime Telemetry
 
-**Updated**: 2026-04-30
+**Updated**: 2026-06-28
 
 BatCave Monitor is built around a Rust runtime store that collects local telemetry, shapes it into a stable snake_case JSON contract, and tells the UI exactly how trustworthy each metric is. The important part is not just "show numbers." The important part is "show what the machine actually said, and admit when it would not answer."
 
@@ -46,6 +46,7 @@ Implemented runtime surfaces:
 
 - Production snake_case JSON contracts for runtime snapshots, settings, process samples, system metrics, quality metadata, warnings, and health.
 - Runtime settings, warm cache, warnings, diagnostics, health budgets, query shaping, pause/resume, refresh, and admin-mode state in the Rust store.
+- Stable process grouping for runtime process views, including aggregate CPU, memory, disk, network, and thread totals for group rows.
 - Local JSON persistence with atomic writes for settings and runtime state.
 - Rust CLI modes for benchmarking and elevated-helper snapshots.
 
@@ -67,6 +68,7 @@ Fallback behavior:
 - `sysinfo` remains available when a native collector cannot read expected host files.
 - Missing or delayed metrics use quality metadata instead of fabricated values.
 - If native Windows process memory is blocked but `sysinfo` has a value for the same PID, BatCave reports that fallback as estimated memory instead of a native zero.
+- If an executable path is unavailable, process grouping falls back to the process name before using a PID-specific key. Group rows should remain expandable and selectable even for OS/system processes with incomplete executable metadata.
 
 ## Memory Accounting
 
@@ -102,6 +104,12 @@ Examples:
 - Disk rates may be partial if PDH or block-device counters are unavailable.
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
+
+## Process Groups And History
+
+Process groups are UI rows backed by accumulated row telemetry, not placeholders. When a group is selected, the inspector should show the group's aggregate CPU, memory, disk I/O, and network history from the same live values used in the process table.
+
+Network readouts prefer a nonzero live attributed rate when the row has one, while the quality label still reports the source or limitation. This keeps estimated, fixture, partial, or unavailable quality honest without hiding useful accumulated traffic.
 
 ## Local Data
 
@@ -152,6 +160,6 @@ Distribution polish remains outside the runtime contract:
 
 - Add installer signing before broad external distribution.
 - Add automatic updater work when release channels exist.
-- Expand screenshot-based validation when changing visible cockpit layout, metric-quality messaging, or platform-specific collector states.
+- Expand screenshot-based validation when changing visible cockpit layout, metric-quality messaging, theme surfaces, or platform-specific collector states.
 
 The runtime rule stays simple: collect locally, persist locally, report quality explicitly, and keep the UI fed with truth instead of theater.

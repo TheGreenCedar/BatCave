@@ -48,7 +48,7 @@ export interface ProcessIdentity {
 
 export const focusOptions: { value: FocusMode; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "active", label: "Active" },
+  { value: "active", label: "Busy" },
   { value: "io", label: "I/O" },
 ];
 
@@ -64,7 +64,7 @@ export const processColumns: ProcessColumn[] = [
   { key: "pid", label: "PID" },
   { key: "name", label: "Process" },
   { key: "status", label: "Status" },
-  { key: "cpu", label: "CPU %", metric: true },
+  { key: "cpu", label: "CPU/core", metric: true },
   { key: "memory", label: "Memory", metric: true },
   { key: "io", label: "Disk I/O", metric: true },
   { key: "network", label: "Network", metric: true },
@@ -78,7 +78,7 @@ const sortColumnByKey: Record<SortKey, SortColumn> = {
   cpu: "cpu_pct",
   memory: "memory_bytes",
   io: "disk_bps",
-  network: "disk_bps",
+  network: "network_bps",
   read: "disk_bps",
   write: "disk_bps",
   status: "name",
@@ -90,6 +90,7 @@ const sortKeyByColumn: Partial<Record<SortColumn, SortKey>> = {
   cpu_pct: "cpu",
   memory_bytes: "memory",
   disk_bps: "io",
+  network_bps: "network",
   name: "name",
   pid: "pid",
 };
@@ -175,7 +176,7 @@ export function processAccent(
     return "I/O";
   }
 
-  return "Stable";
+  return "Normal";
 }
 
 export function processIdentity(process: ProcessSample): ProcessIdentity {
