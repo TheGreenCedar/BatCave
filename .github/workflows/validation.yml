@@ -12,6 +12,9 @@ jobs:
     name: Windows validation
     runs-on: windows-latest
     steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -20,7 +23,7 @@ jobs:
           cache: npm
           cache-dependency-path: src/BatCave.App/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@1.80.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
 
@@ -51,6 +54,9 @@ jobs:
     name: Linux validation
     runs-on: ubuntu-latest
     steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -59,7 +65,7 @@ jobs:
           cache: npm
           cache-dependency-path: src/BatCave.App/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@1.80.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
 
