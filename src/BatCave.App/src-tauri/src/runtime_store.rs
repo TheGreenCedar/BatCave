@@ -70,6 +70,10 @@ impl RuntimeState {
         self.with_store(|store| store.set_query(query))
     }
 
+    pub fn has_process_exe(&self, exe: &str) -> Result<bool, String> {
+        self.with_store(|store| store.has_process_exe(exe))
+    }
+
     fn with_store<T>(&self, action: impl FnOnce(&mut RuntimeStore) -> T) -> Result<T, String> {
         let mut store = self
             .store
@@ -88,6 +92,7 @@ struct RuntimeStore {
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
     previous_processes: Vec<ProcessSample>,
+    live_process_snapshot: bool,
     tick_p95: P95Window,
     sort_p95: P95Window,
     jitter_p95: P95Window,
@@ -139,6 +144,7 @@ impl RuntimeStore {
             warnings,
             previous_totals: None,
             previous_processes: warm_cache.rows,
+            live_process_snapshot: false,
             tick_p95: P95Window::new(120),
             sort_p95: P95Window::new(120),
             jitter_p95: P95Window::new(120),
@@ -199,6 +205,17 @@ impl RuntimeStore {
         self.persist_settings();
         self.publish_snapshot_only(None);
         self.snapshot.clone()
+    }
+
+    fn has_process_exe(&mut self, exe: &str) -> bool {
+        let exe = exe.trim();
+        self.live_process_snapshot
+            && !exe.is_empty()
+            && self
+                .snapshot
+                .processes
+                .iter()
+                .any(|process| process.exe.eq_ignore_ascii_case(exe))
     }
 
     fn tick(&mut self) -> RuntimeSnapshot {
@@ -302,6 +319,7 @@ impl RuntimeStore {
             add_process_rates(sample_processes, &self.previous_processes, elapsed_seconds);
         add_process_memory_accounting(&mut system, &processes);
         self.previous_processes = processes;
+        self.live_process_snapshot = true;
         self.previous_totals = Some(TelemetryTotals::from_system(&system, sample_ts_ms));
 
         let sort_started = Instant::now();
@@ -1485,6 +1503,30 @@ mod tests {
         assert_eq!(settings.query.filter_text, "code");
         assert_eq!(settings.query.focus_mode, ProcessFocusMode::Active);
         assert_eq!(settings.query.limit, 20_000);
+    }
+
+    #[test]
+    fn process_icon_allowlist_requires_live_snapshot() {
+        let mut store = RuntimeStore::new();
+        let trusted = sample("10", "Trusted", 1.0);
+        let exe = trusted.exe.clone();
+        store.settings = RuntimeSettings::default();
+        store.snapshot = build_snapshot(
+            1,
+            now_ms(),
+            &store.settings,
+            RuntimeHealth::default(),
+            empty_system(),
+            vec![trusted],
+            1,
+            Vec::new(),
+        );
+
+        assert!(!store.has_process_exe(&exe));
+
+        store.live_process_snapshot = true;
+
+        assert!(store.has_process_exe(&exe));
     }
 
     #[test]
