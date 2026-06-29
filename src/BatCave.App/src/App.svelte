@@ -100,6 +100,7 @@
   let processIcons: Record<string, string> = {};
   let requestedProcessIcons = new Set<string>();
   let metricCards: MetricCardOption[] = [];
+  let runtimeQueryRequestSeq = 0;
 
   $: themeName = resolveThemeName(themePreference, systemThemeName);
   $: activeTheme = chartPalettes[themeName];
@@ -496,14 +497,22 @@
     const query = currentRuntimeQuery();
 
     if (!hasTauriRuntime()) {
+      runtimeQueryRequestSeq += 1;
       ingest(makeFixtureSnapshot(fixtureTick, query));
       return;
     }
 
+    const requestSeq = (runtimeQueryRequestSeq += 1);
     try {
       const next = await setRuntimeProcessQuery(invoke, query);
+      if (requestSeq !== runtimeQueryRequestSeq) {
+        return;
+      }
       applyNativeSnapshot(next);
     } catch (error) {
+      if (requestSeq !== runtimeQueryRequestSeq) {
+        return;
+      }
       commandError = commandErrorMessage(error, "Unable to update runtime query.");
     }
   }
@@ -758,7 +767,11 @@
           ),
         otherRate:
           process.other_io_bps ??
-          byteRate(process.other_io_total_bytes ?? 0, previousProcess?.other_io_total_bytes ?? 0, elapsedSeconds),
+          byteRate(
+            process.other_io_total_bytes ?? 0,
+            previousProcess?.other_io_total_bytes ?? process.other_io_total_bytes ?? 0,
+            elapsedSeconds,
+          ),
         writeRate:
           process.disk_write_bps ||
           byteRate(

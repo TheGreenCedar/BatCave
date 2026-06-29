@@ -88,6 +88,7 @@ impl ElevatedHelperClient {
 
     pub fn stop(&self) {
         let _ = fs::write(&self.stop_file, "stop");
+        remove_snapshot_artifacts(&self.data_file);
     }
 }
 
@@ -145,6 +146,7 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
         thread::sleep(Duration::from_millis(HELPER_INTERVAL_MS));
     }
 
+    remove_snapshot_artifacts(&args.data_file);
     0
 }
 
@@ -160,6 +162,21 @@ fn write_snapshot(
         rows,
     };
     write_json_atomic(data_file, &snapshot, ADMIN_SNAPSHOT_JSON_ERRORS)
+}
+
+fn snapshot_temp_file(data_file: &Path) -> PathBuf {
+    data_file.with_extension(format!(
+        "{}.tmp",
+        data_file
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("json")
+    ))
+}
+
+fn remove_snapshot_artifacts(data_file: &Path) {
+    let _ = fs::remove_file(data_file);
+    let _ = fs::remove_file(snapshot_temp_file(data_file));
 }
 
 fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
@@ -266,6 +283,7 @@ fn wide_os(value: &OsStr) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::AccessState;
 
     #[test]
     fn helper_requires_path_token_arguments() {
@@ -292,5 +310,164 @@ mod tests {
             parse_helper_args(&args),
             Err("missing_value_for_argument:--data-file".to_string())
         );
+    }
+
+    #[test]
+    fn poll_rows_returns_none_when_snapshot_is_missing() {
+        let base_dir = test_dir("missing");
+        let mut client = test_client(&base_dir);
+
+        assert!(client
+            .poll_rows()
+            .expect("missing snapshot is ok")
+            .is_none());
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn poll_rows_rejects_token_mismatch() {
+        let base_dir = test_dir("token");
+        let mut client = test_client(&base_dir);
+        write_snapshot(&client.data_file, "wrong", 1, Vec::new()).expect("snapshot writes");
+
+        let error = client.poll_rows().expect_err("token mismatch fails");
+
+        assert_eq!(error, "admin_mode_snapshot_token_mismatch");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn poll_rows_ignores_stale_sequence_and_accepts_newer_rows() {
+        let base_dir = test_dir("seq");
+        let mut client = test_client(&base_dir);
+        write_snapshot(&client.data_file, &client.token, 2, vec![sample("10")])
+            .expect("snapshot writes");
+
+        let first = client
+            .poll_rows()
+            .expect("fresh snapshot reads")
+            .expect("fresh rows exist");
+
+        assert_eq!(first[0].pid, "10");
+
+        write_snapshot(&client.data_file, &client.token, 2, vec![sample("20")])
+            .expect("stale snapshot writes");
+        assert!(client.poll_rows().expect("stale snapshot is ok").is_none());
+
+        write_snapshot(&client.data_file, &client.token, 3, vec![sample("30")])
+            .expect("new snapshot writes");
+        let newer = client
+            .poll_rows()
+            .expect("new snapshot reads")
+            .expect("new rows exist");
+
+        assert_eq!(newer[0].pid, "30");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn poll_rows_surfaces_parse_and_read_failures() {
+        let parse_dir = test_dir("parse");
+        let mut parse_client = test_client(&parse_dir);
+        fs::write(&parse_client.data_file, "{not-json").expect("bad snapshot writes");
+
+        let parse_error = parse_client.poll_rows().expect_err("invalid json fails");
+
+        assert!(parse_error.starts_with("admin_mode_snapshot_parse_failed:"));
+
+        let read_dir = test_dir("read");
+        let mut read_client = test_client(&read_dir);
+        fs::create_dir_all(&read_client.data_file).expect("directory fixture writes");
+
+        let read_error = read_client.poll_rows().expect_err("directory read fails");
+
+        assert!(read_error.starts_with("admin_mode_snapshot_read_failed path="));
+        let _ = fs::remove_dir_all(parse_dir);
+        let _ = fs::remove_dir_all(read_dir);
+    }
+
+    #[test]
+    fn stop_signals_helper_and_removes_snapshot_artifacts() {
+        let base_dir = test_dir("stop");
+        let client = test_client(&base_dir);
+        let temp_file = snapshot_temp_file(&client.data_file);
+        fs::write(&client.data_file, "{}").expect("snapshot fixture writes");
+        fs::write(&temp_file, "{}").expect("temp fixture writes");
+
+        client.stop();
+
+        assert!(client.stop_file.exists());
+        assert!(!client.data_file.exists());
+        assert!(!temp_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn helper_exit_removes_snapshot_artifacts() {
+        let base_dir = test_dir("helper-exit");
+        fs::create_dir_all(&base_dir).expect("test dir exists");
+        let data_file = base_dir.join("snapshot.json");
+        let temp_file = snapshot_temp_file(&data_file);
+        let stop_file = base_dir.join("stop.signal");
+        fs::write(&data_file, "{}").expect("snapshot fixture writes");
+        fs::write(&temp_file, "{}").expect("temp fixture writes");
+        fs::write(&stop_file, "stop").expect("stop fixture writes");
+
+        let exit_code = run_elevated_helper(ElevatedHelperArgs {
+            data_file: data_file.clone(),
+            stop_file,
+            token: "token".to_string(),
+        });
+
+        assert_eq!(exit_code, 0);
+        assert!(!data_file.exists());
+        assert!(!temp_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    fn test_client(base_dir: &Path) -> ElevatedHelperClient {
+        fs::create_dir_all(base_dir).expect("test dir exists");
+        ElevatedHelperClient {
+            data_file: base_dir.join("snapshot.json"),
+            stop_file: base_dir.join("stop.signal"),
+            token: "token".to_string(),
+            last_seq: 0,
+        }
+    }
+
+    fn test_dir(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("batcave-elevation-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
+
+    fn sample(pid: &str) -> ProcessSample {
+        ProcessSample {
+            pid: pid.to_string(),
+            parent_pid: None,
+            start_time_ms: 1,
+            name: "Sample".to_string(),
+            exe: "sample.exe".to_string(),
+            status: "running".to_string(),
+            cpu_percent: 0.0,
+            kernel_cpu_percent: None,
+            memory_bytes: 1,
+            private_bytes: 1,
+            virtual_memory_bytes: 1,
+            disk_read_total_bytes: 0,
+            disk_write_total_bytes: 0,
+            other_io_total_bytes: None,
+            disk_read_bps: 0,
+            disk_write_bps: 0,
+            other_io_bps: None,
+            network_received_bps: None,
+            network_transmitted_bps: None,
+            threads: 1,
+            handles: 1,
+            access_state: AccessState::Full,
+            quality: None,
+        }
     }
 }

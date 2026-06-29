@@ -28,14 +28,23 @@
   }
 
   function selectedInRow(row: ProcessViewRow): boolean {
-    return row.process?.pid === selectedPid || (!!row.group_key && processRows.some((candidate) => candidate.group_key === row.group_key && candidate.process?.pid === selectedPid));
+    return row.process?.pid === selectedPid || (!!row.group_key && selectedPid === groupSelectionKey(row.group_key)) || (!!row.group_key && processRows.some((candidate) => candidate.group_key === row.group_key && candidate.process?.pid === selectedPid));
   }
 
   function selectRow(row: ProcessViewRow): void {
+    if (row.kind === "group" && row.group_key) {
+      onSelect(groupSelectionKey(row.group_key));
+      return;
+    }
+
     const process = processForRow(row);
     if (process) {
       onSelect(process.pid);
     }
+  }
+
+  function groupSelectionKey(key: string): string {
+    return `group:${key}`;
   }
 </script>
 
