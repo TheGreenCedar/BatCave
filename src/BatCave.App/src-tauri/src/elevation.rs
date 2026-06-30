@@ -17,10 +17,11 @@ use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     cli_args,
     contracts::ProcessSample,
-    telemetry::{now_ms, TelemetryCollector},
+    telemetry::TelemetryCollector,
 };
 
 const HELPER_INTERVAL_MS: u64 = 500;
+const HELPER_TOKEN_BYTES: usize = 32;
 const ADMIN_SNAPSHOT_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
     write_failed: "admin_mode_snapshot_write_failed",
     serialize_failed: "admin_mode_snapshot_serialize_failed",
@@ -40,25 +41,16 @@ pub struct ElevatedHelperClient {
 
 impl ElevatedHelperClient {
     pub fn start(base_dir: &Path) -> Result<Self, String> {
-        let helper_dir = base_dir.join("elevated-helper");
-        fs::create_dir_all(&helper_dir).map_err(|error| {
-            format!(
-                "admin_mode_prepare_failed path={} error={}",
-                helper_dir.display(),
-                error
-            )
-        })?;
-        let token = format!("{}-{}", std::process::id(), now_ms());
-        let data_file = helper_dir.join("snapshot.json");
-        let stop_file = helper_dir.join("stop.signal");
         remove_helper_artifacts(base_dir);
+        let session = prepare_helper_session(base_dir)?;
 
-        let process = launch_elevated_helper(&data_file, &stop_file, &token)?;
+        let process =
+            launch_elevated_helper(&session.data_file, &session.stop_file, &session.token)?;
 
         Ok(Self {
-            data_file,
-            stop_file,
-            token,
+            data_file: session.data_file,
+            stop_file: session.stop_file,
+            token: session.token,
             last_seq: 0,
             process,
         })
@@ -181,12 +173,156 @@ fn write_snapshot(
     seq: u64,
     rows: Vec<ProcessSample>,
 ) -> Result<(), String> {
+    validate_helper_output_path(data_file)?;
     let snapshot = ElevatedSnapshot {
         token: token.to_string(),
         seq,
         rows,
     };
     write_json_atomic(data_file, &snapshot, ADMIN_SNAPSHOT_JSON_ERRORS)
+}
+
+#[derive(Debug)]
+struct ElevatedHelperSession {
+    data_file: PathBuf,
+    stop_file: PathBuf,
+    token: String,
+}
+
+fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, String> {
+    let token = new_helper_token()?;
+    let helper_root = base_dir.join("elevated-helper");
+    reject_reparse_path(&helper_root, true)?;
+    fs::create_dir_all(&helper_root).map_err(|error| {
+        format!(
+            "admin_mode_prepare_failed path={} error={}",
+            helper_root.display(),
+            error
+        )
+    })?;
+    reject_reparse_path(&helper_root, true)?;
+
+    let helper_dir = helper_root.join(format!("run-{token}"));
+    fs::create_dir(&helper_dir).map_err(|error| {
+        format!(
+            "admin_mode_prepare_failed path={} error={}",
+            helper_dir.display(),
+            error
+        )
+    })?;
+    reject_reparse_path(&helper_dir, true)?;
+
+    Ok(ElevatedHelperSession {
+        data_file: helper_dir.join("snapshot.json"),
+        stop_file: helper_dir.join("stop.signal"),
+        token,
+    })
+}
+
+fn new_helper_token() -> Result<String, String> {
+    let mut bytes = [0_u8; HELPER_TOKEN_BYTES];
+    fill_random_bytes(&mut bytes)?;
+    Ok(hex_lower(&bytes))
+}
+
+#[cfg(windows)]
+fn fill_random_bytes(bytes: &mut [u8]) -> Result<(), String> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+    };
+
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(format!("admin_mode_token_random_failed status={status}"));
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(windows)))]
+fn fill_random_bytes(bytes: &mut [u8]) -> Result<(), String> {
+    use std::io::Read;
+
+    fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(bytes))
+        .map_err(|error| format!("admin_mode_token_random_failed:{error}"))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn fill_random_bytes(bytes: &mut [u8]) -> Result<(), String> {
+    let seed = format!("{}-{}", std::process::id(), crate::telemetry::now_ms());
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = seed.as_bytes()[index % seed.len()] ^ index as u8;
+    }
+    Ok(())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn validate_helper_output_path(data_file: &Path) -> Result<(), String> {
+    let Some(parent) = data_file.parent() else {
+        return Err(format!(
+            "admin_mode_helper_path_missing_parent path={}",
+            data_file.display()
+        ));
+    };
+    reject_reparse_path(parent, true)?;
+    reject_reparse_path(data_file, false)?;
+    reject_reparse_path(&snapshot_temp_file(data_file), false)
+}
+
+fn reject_reparse_path(path: &Path, allow_directory: bool) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "admin_mode_helper_path_check_failed path={} error={}",
+                path.display(),
+                error
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() || is_windows_reparse_point(&metadata) {
+        return Err(format!(
+            "admin_mode_helper_path_reparse_rejected path={}",
+            path.display()
+        ));
+    }
+    if !allow_directory && path.is_dir() {
+        return Err(format!(
+            "admin_mode_helper_path_not_file path={}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 fn snapshot_temp_file(data_file: &Path) -> PathBuf {
@@ -201,26 +337,56 @@ fn snapshot_temp_file(data_file: &Path) -> PathBuf {
 
 fn remove_helper_artifacts(base_dir: &Path) {
     let helper_dir = base_dir.join("elevated-helper");
-    let data_file = helper_dir.join("snapshot.json");
-    let stop_file = helper_dir.join("stop.signal");
-    let has_artifacts =
-        data_file.exists() || snapshot_temp_file(&data_file).exists() || stop_file.exists();
+    if reject_reparse_path(&helper_dir, true).is_err() {
+        return;
+    }
+    let mut data_files = vec![helper_dir.join("snapshot.json")];
+    if let Ok(entries) = fs::read_dir(&helper_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                data_files.push(entry.path().join("snapshot.json"));
+            }
+        }
+    }
+
+    let mut has_artifacts = false;
+    for data_file in &data_files {
+        let stop_file = data_file.with_file_name("stop.signal");
+        if data_file.exists() || snapshot_temp_file(data_file).exists() || stop_file.exists() {
+            has_artifacts = true;
+            let _ = fs::write(&stop_file, "stop");
+        }
+    }
     if has_artifacts {
-        let _ = fs::create_dir_all(&helper_dir);
-        let _ = fs::write(&stop_file, "stop");
         thread::sleep(Duration::from_millis(HELPER_INTERVAL_MS + 100));
     }
-    remove_artifacts_for_snapshot(&data_file);
+    for data_file in data_files {
+        remove_artifacts_for_snapshot(&data_file);
+    }
 }
 
 fn remove_artifacts_for_snapshot(data_file: &Path) {
     remove_snapshot_artifacts(data_file);
     let _ = fs::remove_file(data_file.with_file_name("stop.signal"));
+    remove_empty_run_dir(data_file);
 }
 
 fn remove_snapshot_artifacts(data_file: &Path) {
     let _ = fs::remove_file(data_file);
     let _ = fs::remove_file(snapshot_temp_file(data_file));
+}
+
+fn remove_empty_run_dir(data_file: &Path) {
+    let Some(parent) = data_file.parent() else {
+        return;
+    };
+    if parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("run-"))
+    {
+        let _ = fs::remove_dir(parent);
+    }
 }
 
 fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
@@ -425,6 +591,92 @@ mod tests {
             .is_none());
 
         let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn helper_session_uses_random_token_and_per_run_paths() {
+        let base_dir = test_dir("session");
+
+        let first = prepare_helper_session(&base_dir).expect("first session prepares");
+        let second = prepare_helper_session(&base_dir).expect("second session prepares");
+
+        assert_eq!(first.token.len(), HELPER_TOKEN_BYTES * 2);
+        assert_eq!(second.token.len(), HELPER_TOKEN_BYTES * 2);
+        assert_ne!(first.token, second.token);
+        assert_eq!(
+            first.data_file.file_name().and_then(|name| name.to_str()),
+            Some("snapshot.json")
+        );
+        assert_eq!(
+            first.stop_file.file_name().and_then(|name| name.to_str()),
+            Some("stop.signal")
+        );
+        assert_eq!(first.data_file.parent(), first.stop_file.parent());
+        assert!(first
+            .data_file
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("run-")));
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn helper_write_rejects_directory_snapshot_target() {
+        let base_dir = test_dir("directory-target");
+        let data_file = base_dir.join("snapshot.json");
+        fs::create_dir_all(&data_file).expect("directory target exists");
+
+        let error = write_snapshot(&data_file, "token", 1, Vec::new())
+            .expect_err("directory target is rejected");
+
+        assert!(error.starts_with("admin_mode_helper_path_not_file path="));
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn helper_session_rejects_reparse_helper_root() {
+        let base_dir = test_dir("reparse-helper-root");
+        let real_dir = base_dir.join("real");
+        let helper_root = base_dir.join("elevated-helper");
+        fs::create_dir_all(&real_dir).expect("real dir exists");
+        if symlink_dir(&real_dir, &helper_root).is_err() {
+            let _ = fs::remove_dir_all(base_dir);
+            return;
+        }
+
+        let error = prepare_helper_session(&base_dir).expect_err("helper root is rejected");
+
+        assert!(error.starts_with("admin_mode_helper_path_reparse_rejected path="));
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_write_rejects_symlink_parent() {
+        let base_dir = test_dir("symlink-parent");
+        let real_dir = base_dir.join("real");
+        let link_dir = base_dir.join("link");
+        fs::create_dir_all(&real_dir).expect("real dir exists");
+        symlink_dir(&real_dir, &link_dir).expect("symlink parent exists");
+
+        let error = write_snapshot(&link_dir.join("snapshot.json"), "token", 1, Vec::new())
+            .expect_err("symlink parent is rejected");
+
+        assert!(error.starts_with("admin_mode_helper_path_reparse_rejected path="));
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(src, dst)
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
     }
 
     #[test]
