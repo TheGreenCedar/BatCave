@@ -19,11 +19,12 @@ use std::{
 
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, FILETIME, NTSTATUS},
+    Foundation::{ERROR_SUCCESS, FILETIME, NTSTATUS},
     NetworkManagement::IpHelper::{
-        GetIfTable, IF_OPER_STATUS_CONNECTED, IF_OPER_STATUS_OPERATIONAL,
-        IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL, MIB_IFROW, MIB_IFTABLE,
+        FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL, MIB_IF_ROW2,
+        MIB_IF_TABLE2,
     },
+    NetworkManagement::Ndis::NET_IF_OPER_STATUS_UP,
     System::{
         ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION},
         SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
@@ -236,46 +237,40 @@ fn sample_performance_metrics() -> Result<PerformanceMetrics, String> {
 
 #[cfg(windows)]
 fn sample_network_totals() -> Result<NetworkTotals, String> {
-    let mut table_size = 0_u32;
-    let sizing_result = unsafe { GetIfTable(null_mut(), &mut table_size, 0) };
-
-    if sizing_result != ERROR_INSUFFICIENT_BUFFER && sizing_result != ERROR_SUCCESS {
-        return Err(format!(
-            "GetIfTable sizing failed with error code {sizing_result}"
-        ));
+    let mut table: *mut MIB_IF_TABLE2 = null_mut();
+    let result = unsafe { GetIfTable2(&mut table) };
+    if result != ERROR_SUCCESS {
+        return Err(format!("GetIfTable2 failed with error code {result}"));
     }
-
-    if table_size == 0 {
+    if table.is_null() {
         return Ok(NetworkTotals::default());
     }
 
-    let mut buffer = vec![0_u8; table_size as usize];
-    let table = buffer.as_mut_ptr() as *mut MIB_IFTABLE;
-
-    let result = unsafe { GetIfTable(table, &mut table_size, 0) };
-    if result != ERROR_SUCCESS {
-        return Err(format!("GetIfTable failed with error code {result}"));
+    let totals = unsafe {
+        let row_count = (*table).NumEntries as usize;
+        let first_row = (*table).Table.as_ptr();
+        network_totals_from_if_rows(slice::from_raw_parts(first_row, row_count))
+    };
+    unsafe {
+        FreeMibTable(table.cast());
     }
 
-    let row_count = unsafe { (*table).dwNumEntries as usize };
-    let first_row = unsafe { (*table).table.as_ptr() };
-    let rows = unsafe { slice::from_raw_parts(first_row, row_count) };
-
-    Ok(rows
-        .iter()
-        .filter(|row| include_network_interface(row))
-        .fold(NetworkTotals::default(), |totals, row| {
-            add_network_totals(totals, row.dwInOctets as u64, row.dwOutOctets as u64)
-        }))
+    Ok(totals)
 }
 
 #[cfg(windows)]
-fn include_network_interface(row: &MIB_IFROW) -> bool {
-    let is_up = matches!(
-        row.dwOperStatus,
-        IF_OPER_STATUS_OPERATIONAL | IF_OPER_STATUS_CONNECTED
-    );
-    let is_loopback_or_tunnel = matches!(row.dwType, IF_TYPE_SOFTWARE_LOOPBACK | IF_TYPE_TUNNEL);
+fn network_totals_from_if_rows(rows: &[MIB_IF_ROW2]) -> NetworkTotals {
+    rows.iter()
+        .filter(|row| include_network_interface(row))
+        .fold(NetworkTotals::default(), |totals, row| {
+            add_network_totals(totals, row.InOctets, row.OutOctets)
+        })
+}
+
+#[cfg(windows)]
+fn include_network_interface(row: &MIB_IF_ROW2) -> bool {
+    let is_up = row.OperStatus == NET_IF_OPER_STATUS_UP;
+    let is_loopback_or_tunnel = matches!(row.Type, IF_TYPE_SOFTWARE_LOOPBACK | IF_TYPE_TUNNEL);
 
     is_up && !is_loopback_or_tunnel
 }
@@ -878,6 +873,23 @@ mod tests {
 
         assert_eq!(totals.received_bytes, u64::MAX);
         assert_eq!(totals.transmitted_bytes, u64::MAX);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn network_totals_use_64_bit_interface_octets() {
+        let row = MIB_IF_ROW2 {
+            Type: 6,
+            OperStatus: NET_IF_OPER_STATUS_UP,
+            InOctets: u32::MAX as u64 + 42,
+            OutOctets: u32::MAX as u64 + 84,
+            ..MIB_IF_ROW2::default()
+        };
+
+        let totals = network_totals_from_if_rows(&[row]);
+
+        assert_eq!(totals.received_bytes, u32::MAX as u64 + 42);
+        assert_eq!(totals.transmitted_bytes, u32::MAX as u64 + 84);
     }
 
     #[cfg(windows)]

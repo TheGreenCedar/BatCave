@@ -17,6 +17,7 @@
   style={`--metric-accent: ${card.stroke}; --metric-fill: ${card.fill}`}
   aria-controls="context-rail"
   aria-label={card.ariaLabel}
+  aria-pressed={activeMode === card.mode}
   onclick={() => onSelect(card.mode)}
 >
   <span class="metric-gauge" aria-hidden="true">

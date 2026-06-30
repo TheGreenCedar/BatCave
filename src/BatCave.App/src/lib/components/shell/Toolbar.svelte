@@ -44,6 +44,7 @@
         class="search-input"
         value={searchText}
         oninput={(event) => onSearch(event.currentTarget.value)}
+        aria-label="Search processes"
         placeholder="Search processes..."
         autocomplete="off"
       />

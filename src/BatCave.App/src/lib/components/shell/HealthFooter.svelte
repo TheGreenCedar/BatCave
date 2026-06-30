@@ -39,7 +39,7 @@
     <span><i></i> Memory {formatPercent(memoryPercent)}</span>
     <span><i></i> Disk {formatRate(snapshot.system.disk_read_bps + snapshot.system.disk_write_bps)}</span>
     <span><i></i> Network {formatRate(snapshot.system.network_received_bps + snapshot.system.network_transmitted_bps)}</span>
-    <span><i></i> {snapshot.health.degraded ? "Degraded" : "Clean"}</span>
+    <span><i></i> {pollState === "error" ? "Stale" : snapshot.health.degraded ? "Degraded" : "Clean"}</span>
   </button>
   {#if expanded}
     <div class="health-detail">

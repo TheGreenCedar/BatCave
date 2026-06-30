@@ -103,7 +103,10 @@ struct RuntimeStore {
 
 impl RuntimeStore {
     fn new() -> Self {
-        let base_dir = default_base_dir();
+        Self::from_base_dir(default_base_dir())
+    }
+
+    fn from_base_dir(base_dir: PathBuf) -> Self {
         let mut warnings = VecDeque::new();
         let settings =
             read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE)).unwrap_or_else(|error| {
@@ -112,8 +115,9 @@ impl RuntimeStore {
                 }
                 RuntimeSettings::default()
             });
-        let warm_cache =
-            read_json::<WarmCache>(&base_dir.join(WARM_CACHE_FILE)).unwrap_or_else(|error| {
+        let settings_requested_admin = settings.admin_mode_requested;
+        let mut warm_cache = read_json::<WarmCache>(&base_dir.join(WARM_CACHE_FILE))
+            .unwrap_or_else(|error| {
                 if let Some(message) = error {
                     push_warning(&mut warnings, 0, "persistence", message);
                 }
@@ -124,6 +128,10 @@ impl RuntimeStore {
             });
         let seq = warm_cache.seq;
         let settings = normalize_settings(settings);
+        if settings_requested_admin {
+            warm_cache.rows.clear();
+            let _ = fs::remove_file(base_dir.join(WARM_CACHE_FILE));
+        }
         let snapshot = build_snapshot(
             seq,
             now_ms(),
@@ -174,6 +182,7 @@ impl RuntimeStore {
     }
 
     fn set_admin_mode(&mut self, enabled: bool) -> RuntimeSnapshot {
+        let was_admin_enabled = self.settings.admin_mode_enabled;
         self.settings.admin_mode_requested = enabled;
         self.settings.admin_mode_enabled = false;
         if enabled {
@@ -181,19 +190,21 @@ impl RuntimeStore {
                 match ElevatedHelperClient::start(&self.base_dir) {
                     Ok(client) => {
                         self.elevated = Some(client);
-                        self.add_warning(
-                            "admin_mode",
-                            "admin_mode_launch_requested waiting for elevated helper data"
-                                .to_string(),
-                        );
                     }
                     Err(error) => {
                         self.add_warning("admin_mode", error);
                     }
                 }
             }
-        } else if let Some(client) = self.elevated.take() {
-            client.stop();
+        } else {
+            if let Some(client) = self.elevated.take() {
+                client.stop();
+            }
+            if was_admin_enabled {
+                self.previous_processes.clear();
+                self.previous_totals = None;
+            }
+            self.purge_warm_cache();
         }
         self.persist_settings();
         self.publish_snapshot_only(None);
@@ -438,6 +449,9 @@ impl RuntimeStore {
     }
 
     fn persist_warm_cache(&mut self) {
+        if self.settings.admin_mode_enabled {
+            return;
+        }
         let cache = WarmCache {
             seq: self.seq,
             rows: self.previous_processes.clone(),
@@ -448,6 +462,22 @@ impl RuntimeStore {
             PERSISTENCE_JSON_ERRORS,
         ) {
             self.add_warning("persistence", error);
+        }
+    }
+
+    fn purge_warm_cache(&mut self) {
+        let path = self.base_dir.join(WARM_CACHE_FILE);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => self.add_warning(
+                "persistence",
+                format!(
+                    "persistence_remove_failed path={} error={}",
+                    path.display(),
+                    error
+                ),
+            ),
         }
     }
 
@@ -1020,7 +1050,7 @@ fn attention_label(cpu_percent: f64, memory_bytes: u64, io_bps: u64) -> String {
 fn normalize_settings(settings: RuntimeSettings) -> RuntimeSettings {
     RuntimeSettings {
         query: normalize_query(settings.query),
-        admin_mode_requested: settings.admin_mode_requested,
+        admin_mode_requested: false,
         admin_mode_enabled: false,
         metric_window_seconds: settings.metric_window_seconds.clamp(15, 600),
         paused: settings.paused,
@@ -1497,7 +1527,7 @@ mod tests {
             paused: false,
         });
 
-        assert!(settings.admin_mode_requested);
+        assert!(!settings.admin_mode_requested);
         assert!(!settings.admin_mode_enabled);
         assert_eq!(settings.metric_window_seconds, 15);
         assert_eq!(settings.query.filter_text, "code");
@@ -1527,6 +1557,88 @@ mod tests {
         store.live_process_snapshot = true;
 
         assert!(store.has_process_exe(&exe));
+    }
+
+    #[test]
+    fn persisted_admin_request_is_session_only_and_drops_warm_cache() {
+        let base_dir = runtime_test_dir("admin-startup");
+        fs::create_dir_all(&base_dir).expect("test dir exists");
+        fs::write(
+            base_dir.join(SETTINGS_FILE),
+            serde_json::to_string(&RuntimeSettings {
+                admin_mode_requested: true,
+                ..RuntimeSettings::default()
+            })
+            .expect("settings serialize"),
+        )
+        .expect("settings fixture writes");
+        fs::write(
+            base_dir.join(WARM_CACHE_FILE),
+            serde_json::to_string(&WarmCache {
+                seq: 7,
+                rows: vec![sample("10", "Elevated", 0.0)],
+            })
+            .expect("cache serializes"),
+        )
+        .expect("cache fixture writes");
+
+        let store = RuntimeStore::from_base_dir(base_dir.clone());
+
+        assert!(!store.settings.admin_mode_requested);
+        assert!(store.previous_processes.is_empty());
+        assert!(store.snapshot.processes.is_empty());
+        assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn disabling_admin_mode_purges_cached_rows_and_warm_cache() {
+        let base_dir = runtime_test_dir("admin-disable");
+        fs::create_dir_all(&base_dir).expect("test dir exists");
+        fs::write(base_dir.join(WARM_CACHE_FILE), "{}").expect("cache fixture writes");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = true;
+        store.previous_processes = vec![sample("10", "Elevated", 0.0)];
+
+        let snapshot = store.set_admin_mode(false);
+
+        assert!(!snapshot.settings.admin_mode_requested);
+        assert!(store.previous_processes.is_empty());
+        assert!(snapshot.processes.is_empty());
+        assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn admin_pending_status_does_not_degrade_without_warning() {
+        let base_dir = runtime_test_dir("admin-pending");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = false;
+        store.warnings.clear();
+
+        let health = store.build_health(0, 0.0, 0);
+
+        assert!(!health.degraded);
+        assert_eq!(health.collector_warnings, 0);
+        assert!(health.status_summary.contains("elevation is inactive"));
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn warm_cache_is_not_written_while_admin_mode_is_enabled() {
+        let base_dir = runtime_test_dir("admin-cache-skip");
+        fs::create_dir_all(&base_dir).expect("test dir exists");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.settings.admin_mode_enabled = true;
+        store.previous_processes = vec![sample("10", "Elevated", 0.0)];
+        store.seq = 10;
+
+        store.persist_warm_cache();
+
+        assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -1568,6 +1680,13 @@ mod tests {
         assert!(error
             .expect("parse warning exists")
             .contains("persistence_parse_failed"));
+    }
+
+    fn runtime_test_dir(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("batcave-runtime-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        path
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {
