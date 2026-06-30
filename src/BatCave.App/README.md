@@ -159,6 +159,7 @@ From the repository root on Windows:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark.ps1 -BenchmarkHost core -Platform x64 -Ticks 120 -SleepMs 1000
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-baseline.ps1 -BenchmarkHost core -Platform x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -BaselineArtifactPath artifacts\benchmarks\baseline-core-YYYYMMDD-HHMMSS.json
 ```
 
 Linux:
@@ -166,11 +167,12 @@ Linux:
 ```bash
 bash scripts/run-benchmark.sh --benchmark-host core --ticks 120 --sleep-ms 1000
 bash scripts/capture-benchmark-baseline.sh --benchmark-host core
+bash scripts/run-benchmark-gate.sh --benchmark-host core --baseline-artifact artifacts/benchmarks/baseline-core-YYYYMMDD-HHMMSS.json
 ```
 
 Benchmarks run through the Rust runtime host and emit generated artifacts under `artifacts/benchmarks`.
 
-In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
+In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs. Use `run-benchmark-gate` for release/local regression checks; it keeps strict mode on, requires either a baseline or explicit p95 budget, and writes a gate report artifact.
 
 ## Production Notes
 

@@ -1,6 +1,15 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
-    [switch]$SkipBundle
+    [switch]$SkipBundle,
+    [switch]$BenchmarkGate,
+    [ValidateSet("x86", "x64", "ARM64")]
+    [string]$BenchmarkPlatform = "x64",
+    [int]$BenchmarkTicks = 120,
+    [int]$BenchmarkSleepMs = 1000,
+    [string]$BenchmarkBaselineJsonPath = "",
+    [string]$BenchmarkBaselineArtifactPath = "",
+    [string]$BenchmarkMinSpeedupMultiplier = "0.90",
+    [string]$BenchmarkMaxP95Ms = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +63,40 @@ try {
         }
         finally {
             Pop-Location
+        }
+    }
+
+    if ($BenchmarkGate.IsPresent) {
+        Run-Step "Rust benchmark regression gate" {
+            Push-Location $repoRoot
+            try {
+                $gateScript = Join-Path $repoRoot "scripts/run-benchmark-gate.ps1"
+                $gateArgs = @{
+                    BenchmarkHost = "core"
+                    Platform = $BenchmarkPlatform
+                    Ticks = $BenchmarkTicks
+                    SleepMs = $BenchmarkSleepMs
+                    NoBuild = $true
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaselineJsonPath)) {
+                    $gateArgs["BaselineJsonPath"] = $BenchmarkBaselineJsonPath
+                }
+                if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaselineArtifactPath)) {
+                    $gateArgs["BaselineArtifactPath"] = $BenchmarkBaselineArtifactPath
+                }
+                if (-not [string]::IsNullOrWhiteSpace($BenchmarkMinSpeedupMultiplier)) {
+                    $gateArgs["MinSpeedupMultiplier"] = $BenchmarkMinSpeedupMultiplier
+                }
+                if (-not [string]::IsNullOrWhiteSpace($BenchmarkMaxP95Ms)) {
+                    $gateArgs["MaxP95Ms"] = $BenchmarkMaxP95Ms
+                }
+
+                & $gateScript @gateArgs
+            }
+            finally {
+                Pop-Location
+            }
         }
     }
 

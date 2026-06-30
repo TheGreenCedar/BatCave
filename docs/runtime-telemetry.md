@@ -152,6 +152,16 @@ Capture a reusable benchmark baseline:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-baseline.ps1 -BenchmarkHost core -Platform x64
 ```
 
+Run the strict regression gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -BaselineArtifactPath artifacts\benchmarks\baseline-core-YYYYMMDD-HHMMSS.json
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -MaxP95Ms 10000
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle -BenchmarkGate -BenchmarkMaxP95Ms 10000
+```
+
+The normal validation scripts keep a two-tick smoke check so regular validation stays quick. Add `-BenchmarkGate` or `--benchmark-gate` only for release/local performance validation. The gate defaults to 120 measured ticks, 1000 ms sleep, strict mode, and a report artifact under `artifacts/benchmarks`. With a baseline artifact or summary, the gate uses `-MinSpeedupMultiplier 0.90` unless a stricter value is supplied. With `-MaxP95Ms`, the gate enforces the explicit p95 budget instead.
+
 In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
 
 ## Remaining Product Work
