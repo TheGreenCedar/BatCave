@@ -8,6 +8,9 @@ use std::{
 #[cfg(windows)]
 use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::HANDLE;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -26,12 +29,13 @@ const ADMIN_SNAPSHOT_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels 
     serialize_error_includes_path: false,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ElevatedHelperClient {
     data_file: PathBuf,
     stop_file: PathBuf,
     token: String,
     last_seq: u64,
+    process: Option<ElevatedHelperProcess>,
 }
 
 impl ElevatedHelperClient {
@@ -47,20 +51,29 @@ impl ElevatedHelperClient {
         let token = format!("{}-{}", std::process::id(), now_ms());
         let data_file = helper_dir.join("snapshot.json");
         let stop_file = helper_dir.join("stop.signal");
-        let _ = fs::remove_file(&data_file);
-        let _ = fs::remove_file(&stop_file);
+        remove_helper_artifacts(base_dir);
 
-        launch_elevated_helper(&data_file, &stop_file, &token)?;
+        let process = launch_elevated_helper(&data_file, &stop_file, &token)?;
 
         Ok(Self {
             data_file,
             stop_file,
             token,
             last_seq: 0,
+            process,
         })
     }
 
     pub fn poll_rows(&mut self) -> Result<Option<Vec<ProcessSample>>, String> {
+        if self
+            .process
+            .as_ref()
+            .is_some_and(ElevatedHelperProcess::has_exited)
+        {
+            remove_artifacts_for_snapshot(&self.data_file);
+            return Err("admin_mode_helper_exited".to_string());
+        }
+
         if !self.data_file.exists() {
             return Ok(None);
         }
@@ -88,7 +101,19 @@ impl ElevatedHelperClient {
 
     pub fn stop(&self) {
         let _ = fs::write(&self.stop_file, "stop");
-        remove_snapshot_artifacts(&self.data_file);
+        if self
+            .process
+            .as_ref()
+            .is_none_or(|process| process.wait(Duration::from_millis(2_000)))
+        {
+            remove_artifacts_for_snapshot(&self.data_file);
+        } else {
+            remove_snapshot_artifacts(&self.data_file);
+        }
+    }
+
+    pub fn remove_stale_artifacts(base_dir: &Path) {
+        remove_helper_artifacts(base_dir);
     }
 }
 
@@ -174,6 +199,25 @@ fn snapshot_temp_file(data_file: &Path) -> PathBuf {
     ))
 }
 
+fn remove_helper_artifacts(base_dir: &Path) {
+    let helper_dir = base_dir.join("elevated-helper");
+    let data_file = helper_dir.join("snapshot.json");
+    let stop_file = helper_dir.join("stop.signal");
+    let has_artifacts =
+        data_file.exists() || snapshot_temp_file(&data_file).exists() || stop_file.exists();
+    if has_artifacts {
+        let _ = fs::create_dir_all(&helper_dir);
+        let _ = fs::write(&stop_file, "stop");
+        thread::sleep(Duration::from_millis(HELPER_INTERVAL_MS + 100));
+    }
+    remove_artifacts_for_snapshot(&data_file);
+}
+
+fn remove_artifacts_for_snapshot(data_file: &Path) {
+    remove_snapshot_artifacts(data_file);
+    let _ = fs::remove_file(data_file.with_file_name("stop.signal"));
+}
+
 fn remove_snapshot_artifacts(data_file: &Path) {
     let _ = fs::remove_file(data_file);
     let _ = fs::remove_file(snapshot_temp_file(data_file));
@@ -209,15 +253,73 @@ fn required_value(args: &[String], name: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn launch_elevated_helper(data_file: &Path, stop_file: &Path, token: &str) -> Result<(), String> {
+#[derive(Debug)]
+struct ElevatedHelperProcess {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for ElevatedHelperProcess {}
+
+#[cfg(windows)]
+impl ElevatedHelperProcess {
+    fn has_exited(&self) -> bool {
+        use windows_sys::Win32::{
+            Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject,
+        };
+
+        unsafe { WaitForSingleObject(self.handle, 0) == WAIT_OBJECT_0 }
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        use windows_sys::Win32::{
+            Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject,
+        };
+
+        unsafe {
+            WaitForSingleObject(
+                self.handle,
+                timeout.as_millis().min(u32::MAX as u128) as u32,
+            ) == WAIT_OBJECT_0
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ElevatedHelperProcess {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[derive(Debug)]
+struct ElevatedHelperProcess;
+
+#[cfg(not(windows))]
+impl ElevatedHelperProcess {
+    fn has_exited(&self) -> bool {
+        false
+    }
+
+    fn wait(&self, _timeout: Duration) -> bool {
+        true
+    }
+}
+
+#[cfg(windows)]
+fn launch_elevated_helper(
+    data_file: &Path,
+    stop_file: &Path,
+    token: &str,
+) -> Result<Option<ElevatedHelperProcess>, String> {
     use std::{mem::size_of, ptr::null};
 
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        UI::{
-            Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
-            WindowsAndMessaging::SW_HIDE,
-        },
+    use windows_sys::Win32::UI::{
+        Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+        WindowsAndMessaging::SW_HIDE,
     };
 
     let exe = std::env::current_exe()
@@ -252,13 +354,13 @@ fn launch_elevated_helper(data_file: &Path, stop_file: &Path, token: &str) -> Re
     if ok == 0 {
         return Err("admin_mode_launch_failed_or_cancelled".to_string());
     }
-    if !info.hProcess.is_null() {
-        unsafe {
-            CloseHandle(info.hProcess);
-        }
+    if info.hProcess.is_null() {
+        return Ok(None);
     }
 
-    Ok(())
+    Ok(Some(ElevatedHelperProcess {
+        handle: info.hProcess,
+    }))
 }
 
 #[cfg(not(windows))]
@@ -266,7 +368,7 @@ fn launch_elevated_helper(
     _data_file: &Path,
     _stop_file: &Path,
     _token: &str,
-) -> Result<(), String> {
+) -> Result<Option<ElevatedHelperProcess>, String> {
     Err("admin_mode_requires_windows".to_string())
 }
 
@@ -397,9 +499,29 @@ mod tests {
 
         client.stop();
 
-        assert!(client.stop_file.exists());
+        assert!(!client.stop_file.exists());
         assert!(!client.data_file.exists());
         assert!(!temp_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn stale_helper_artifacts_are_removed_from_base_dir() {
+        let base_dir = test_dir("stale-artifacts");
+        let helper_dir = base_dir.join("elevated-helper");
+        fs::create_dir_all(&helper_dir).expect("helper dir exists");
+        let data_file = helper_dir.join("snapshot.json");
+        let temp_file = snapshot_temp_file(&data_file);
+        let stop_file = helper_dir.join("stop.signal");
+        fs::write(&data_file, "{}").expect("snapshot fixture writes");
+        fs::write(&temp_file, "{}").expect("temp fixture writes");
+        fs::write(&stop_file, "stop").expect("stop fixture writes");
+
+        ElevatedHelperClient::remove_stale_artifacts(&base_dir);
+
+        assert!(!data_file.exists());
+        assert!(!temp_file.exists());
+        assert!(!stop_file.exists());
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -433,6 +555,7 @@ mod tests {
             stop_file: base_dir.join("stop.signal"),
             token: "token".to_string(),
             last_seq: 0,
+            process: None,
         }
     }
 

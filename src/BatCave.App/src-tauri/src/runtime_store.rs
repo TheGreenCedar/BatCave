@@ -107,6 +107,7 @@ impl RuntimeStore {
     }
 
     fn from_base_dir(base_dir: PathBuf) -> Self {
+        ElevatedHelperClient::remove_stale_artifacts(&base_dir);
         let mut warnings = VecDeque::new();
         let settings =
             read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE)).unwrap_or_else(|error| {
@@ -205,6 +206,7 @@ impl RuntimeStore {
                 self.previous_totals = None;
             }
             self.purge_warm_cache();
+            ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
         }
         self.persist_settings();
         self.publish_snapshot_only(None);
@@ -1562,7 +1564,9 @@ mod tests {
     #[test]
     fn persisted_admin_request_is_session_only_and_drops_warm_cache() {
         let base_dir = runtime_test_dir("admin-startup");
+        let helper_dir = base_dir.join("elevated-helper");
         fs::create_dir_all(&base_dir).expect("test dir exists");
+        fs::create_dir_all(&helper_dir).expect("helper dir exists");
         fs::write(
             base_dir.join(SETTINGS_FILE),
             serde_json::to_string(&RuntimeSettings {
@@ -1581,6 +1585,9 @@ mod tests {
             .expect("cache serializes"),
         )
         .expect("cache fixture writes");
+        fs::write(helper_dir.join("snapshot.json"), "{}").expect("snapshot fixture writes");
+        fs::write(helper_dir.join("snapshot.json.tmp"), "{}").expect("temp fixture writes");
+        fs::write(helper_dir.join("stop.signal"), "stop").expect("stop fixture writes");
 
         let store = RuntimeStore::from_base_dir(base_dir.clone());
 
@@ -1588,18 +1595,29 @@ mod tests {
         assert!(store.previous_processes.is_empty());
         assert!(store.snapshot.processes.is_empty());
         assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        assert!(!helper_dir.join("snapshot.json").exists());
+        assert!(!helper_dir.join("snapshot.json.tmp").exists());
+        assert!(!helper_dir.join("stop.signal").exists());
         let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
     fn disabling_admin_mode_purges_cached_rows_and_warm_cache() {
         let base_dir = runtime_test_dir("admin-disable");
+        let helper_dir = base_dir.join("elevated-helper");
         fs::create_dir_all(&base_dir).expect("test dir exists");
+        fs::create_dir_all(&helper_dir).expect("helper dir exists");
         fs::write(base_dir.join(WARM_CACHE_FILE), "{}").expect("cache fixture writes");
+        fs::write(helper_dir.join("snapshot.json"), "{}").expect("snapshot fixture writes");
+        fs::write(helper_dir.join("snapshot.json.tmp"), "{}").expect("temp fixture writes");
+        fs::write(helper_dir.join("stop.signal"), "stop").expect("stop fixture writes");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.settings.admin_mode_requested = true;
         store.settings.admin_mode_enabled = true;
         store.previous_processes = vec![sample("10", "Elevated", 0.0)];
+        fs::write(helper_dir.join("snapshot.json"), "{}").expect("snapshot fixture rewrites");
+        fs::write(helper_dir.join("snapshot.json.tmp"), "{}").expect("temp fixture rewrites");
+        fs::write(helper_dir.join("stop.signal"), "stop").expect("stop fixture rewrites");
 
         let snapshot = store.set_admin_mode(false);
 
@@ -1607,6 +1625,9 @@ mod tests {
         assert!(store.previous_processes.is_empty());
         assert!(snapshot.processes.is_empty());
         assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        assert!(!helper_dir.join("snapshot.json").exists());
+        assert!(!helper_dir.join("snapshot.json.tmp").exists());
+        assert!(!helper_dir.join("stop.signal").exists());
         let _ = fs::remove_dir_all(base_dir);
     }
 
