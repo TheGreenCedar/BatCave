@@ -62,10 +62,12 @@ export function setRuntimeProcessQuery(
 export async function getRuntimeProcessIcon(
   invoke: RuntimeInvoke,
   exe: string,
+  onError?: (message: string) => void,
 ): Promise<string | null> {
   try {
     return await invoke<string | null>("get_process_icon", { exe });
-  } catch {
+  } catch (error) {
+    onError?.(commandErrorMessage(error, ""));
     return null;
   }
 }

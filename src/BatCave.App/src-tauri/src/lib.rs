@@ -67,8 +67,29 @@ fn set_process_query(
 }
 
 #[tauri::command]
-fn get_process_icon(exe: String) -> Result<Option<String>, String> {
+fn get_process_icon(
+    state: tauri::State<'_, RuntimeState>,
+    exe: String,
+) -> Result<Option<String>, String> {
+    validate_process_icon_request(&exe, |candidate| state.has_process_exe(candidate))?;
     process_icons::icon_data_url(&exe)
+}
+
+fn validate_process_icon_request(
+    exe: &str,
+    mut has_process_exe: impl FnMut(&str) -> Result<bool, String>,
+) -> Result<(), String> {
+    let exe = exe.trim();
+    if exe.is_empty() {
+        return Ok(());
+    }
+    if exe.starts_with(r"\\") || exe.starts_with("//") {
+        return Err("process_icon_unc_path_rejected".to_string());
+    }
+    if !has_process_exe(exe)? {
+        return Err("process_icon_untrusted_exe".to_string());
+    }
+    Ok(())
 }
 
 pub fn run() {
@@ -85,4 +106,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running BatCave Monitor");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_icon_request_rejects_unc_paths() {
+        assert_eq!(
+            validate_process_icon_request(r"\\server\share\app.exe", |_| Ok(true)),
+            Err("process_icon_unc_path_rejected".to_string())
+        );
+        assert_eq!(
+            validate_process_icon_request("//server/share/app.exe", |_| Ok(true)),
+            Err("process_icon_unc_path_rejected".to_string())
+        );
+    }
+
+    #[test]
+    fn process_icon_request_rejects_unseen_paths() {
+        assert_eq!(
+            validate_process_icon_request(r"C:\Windows\System32\notepad.exe", |_| Ok(false)),
+            Err("process_icon_untrusted_exe".to_string())
+        );
+    }
+
+    #[test]
+    fn process_icon_request_allows_seen_paths_and_empty_input() {
+        assert_eq!(
+            validate_process_icon_request(r"C:\Windows\explorer.exe", |_| Ok(true)),
+            Ok(())
+        );
+        assert_eq!(validate_process_icon_request("", |_| Ok(false)), Ok(()));
+    }
 }

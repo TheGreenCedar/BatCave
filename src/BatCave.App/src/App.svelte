@@ -631,9 +631,14 @@
       }
 
       requestedProcessIcons.add(key);
-      const icon = await getRuntimeProcessIcon(invoke, process.exe);
+      let iconError = "";
+      const icon = await getRuntimeProcessIcon(invoke, process.exe, (message) => {
+        iconError = message;
+      });
       if (icon) {
         processIcons = { ...processIcons, [key]: icon };
+      } else if (iconError === "process_icon_untrusted_exe") {
+        requestedProcessIcons.delete(key);
       }
     }
   }
