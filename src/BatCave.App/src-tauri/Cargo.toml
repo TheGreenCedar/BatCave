@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Lightweight BatCave resource monitor"
 authors = ["BatCave"]
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88.0"
 
 [lib]
 name = "batcave_monitor_lib"
