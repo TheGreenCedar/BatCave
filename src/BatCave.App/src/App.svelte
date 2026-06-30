@@ -40,6 +40,15 @@
     type ThemeName,
     type ThemePreference,
   } from "./lib/themes";
+  import {
+    commandErrorMessage,
+    getRuntimeProcessIcon,
+    readNativeSnapshot,
+    refreshRuntime,
+    setRuntimeAdminMode,
+    setRuntimePaused,
+    setRuntimeProcessQuery,
+  } from "./lib/tauriBridge";
   import type {
     KernelPoolTag,
     MetricQualityInfo,
@@ -295,17 +304,15 @@
       return makeFixtureSnapshot(fixtureTick, currentRuntimeQuery());
     }
 
-    try {
-      const nativeSnapshot = await invoke<RuntimeSnapshot>("get_snapshot");
-      pollState = "native";
-      lastError = "";
-      hasNativeSnapshot = true;
-      return nativeSnapshot;
-    } catch (error) {
-      pollState = "error";
-      lastError = commandErrorMessage(error, "Native telemetry is unavailable.");
-      return hasNativeSnapshot ? snapshot : makeEmptySnapshot(lastError);
-    }
+    const next = await readNativeSnapshot(invoke, {
+      currentSnapshot: snapshot,
+      emptySnapshot: makeEmptySnapshot,
+      hasNativeSnapshot,
+    });
+    pollState = next.ok ? "native" : "error";
+    lastError = next.error;
+    hasNativeSnapshot = next.ok || hasNativeSnapshot;
+    return next.snapshot;
   }
 
   function hasTauriRuntime(): boolean {
@@ -412,7 +419,7 @@
     }
 
     try {
-      const next = await invoke<RuntimeSnapshot>(nextPaused ? "pause_runtime" : "resume_runtime");
+      const next = await setRuntimePaused(invoke, nextPaused);
       applyNativeSnapshot(next);
     } catch (error) {
       isPaused = previousPaused;
@@ -428,7 +435,7 @@
     }
 
     try {
-      const next = await invoke<RuntimeSnapshot>("refresh_now");
+      const next = await refreshRuntime(invoke);
       applyNativeSnapshot(next);
     } catch (error) {
       commandError = commandErrorMessage(error, "Unable to refresh runtime.");
@@ -441,7 +448,7 @@
     }
 
     try {
-      const next = await invoke<RuntimeSnapshot>("set_admin_mode", { enabled });
+      const next = await setRuntimeAdminMode(invoke, enabled);
       applyNativeSnapshot(next);
     } catch (error) {
       commandError = commandErrorMessage(error, "Unable to change admin mode.");
@@ -494,7 +501,7 @@
     }
 
     try {
-      const next = await invoke<RuntimeSnapshot>("set_process_query", { query });
+      const next = await setRuntimeProcessQuery(invoke, query);
       applyNativeSnapshot(next);
     } catch (error) {
       commandError = commandErrorMessage(error, "Unable to update runtime query.");
@@ -508,29 +515,6 @@
     copyStatus = "";
     hasNativeSnapshot = true;
     ingest(next);
-  }
-
-  function commandErrorMessage(error: unknown, fallback: string): string {
-    if (error instanceof Error && error.message.trim()) {
-      return error.message;
-    }
-
-    if (typeof error === "string" && error.trim()) {
-      return error;
-    }
-
-    if (error && typeof error === "object") {
-      try {
-        const serialized = JSON.stringify(error);
-        if (serialized) {
-          return serialized;
-        }
-      } catch {
-        return fallback;
-      }
-    }
-
-    return fallback;
   }
 
   function ingest(next: RuntimeSnapshot): void {
@@ -647,13 +631,9 @@
       }
 
       requestedProcessIcons.add(key);
-      try {
-        const icon = await invoke<string | null>("get_process_icon", { exe: process.exe });
-        if (icon) {
-          processIcons = { ...processIcons, [key]: icon };
-        }
-      } catch {
-        // Native icon lookup is cosmetic; keep the category fallback when Windows denies it.
+      const icon = await getRuntimeProcessIcon(invoke, process.exe);
+      if (icon) {
+        processIcons = { ...processIcons, [key]: icon };
       }
     }
   }
