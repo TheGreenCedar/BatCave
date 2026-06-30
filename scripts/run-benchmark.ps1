@@ -26,6 +26,19 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsN
     throw "Specify either -BaselineJsonPath or -BaselineArtifactPath, not both."
 }
 
+function Write-JsonUtf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Value,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), $encoding)
+}
+
 function Resolve-BaselineSummaryPath {
     param(
         [string]$SummaryPath,
@@ -75,13 +88,11 @@ function Resolve-BaselineSummaryPath {
             $resolvedSummaryPath = Join-Path $RepositoryRoot $resolvedSummaryPath
         }
 
-        if (-not (Test-Path -LiteralPath $resolvedSummaryPath)) {
-            throw "Baseline artifact references missing baseline_summary_path: $resolvedSummaryPath"
-        }
-
-        return @{
-            BaselinePath = $resolvedSummaryPath
-            TempPath = ""
+        if (Test-Path -LiteralPath $resolvedSummaryPath) {
+            return @{
+                BaselinePath = $resolvedSummaryPath
+                TempPath = ""
+            }
         }
     }
 
@@ -90,7 +101,7 @@ function Resolve-BaselineSummaryPath {
     }
 
     $tmpPath = Join-Path ([System.IO.Path]::GetTempPath()) ("batcave-baseline-summary-" + [Guid]::NewGuid().ToString("N") + ".json")
-    $artifact.baseline_summary | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $tmpPath -Encoding UTF8
+    Write-JsonUtf8NoBom -Value $artifact.baseline_summary -Path $tmpPath
 
     return @{
         BaselinePath = $tmpPath
