@@ -1,0 +1,83 @@
+name: Validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+
+jobs:
+  windows:
+    name: Windows validation
+    runs-on: windows-latest
+    steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: src/BatCave.App
+
+      - name: Check PowerShell script syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -LiteralPath scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Validate Windows app
+        shell: pwsh
+        run: ./scripts/validate-tauri.ps1 -SkipBundle
+
+  linux:
+    name: Linux validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install Linux native dependencies
+        run: bash scripts/install-linux-deps.sh
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: src/BatCave.App
+
+      - name: Check shell script syntax
+        run: bash -n scripts/*.sh
+
+      - name: Validate Linux app
+        run: bash scripts/validate-tauri.sh --skip-bundle
