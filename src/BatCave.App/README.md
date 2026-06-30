@@ -14,6 +14,7 @@ Product screenshots and verification screenshots must come from the native Tauri
 - Node.js 24
 - A current stable Rust toolchain
 - Windows for `tauri:dev:windows` and `tauri:build:windows`
+- Microsoft Edge WebView2 Evergreen Runtime for Windows installs. The preview NSIS installer uses Tauri's default WebView2 `downloadBootstrapper`, so it can contact Microsoft during install if WebView2 is missing.
 - Ubuntu/Debian plus the native Tauri packages for `tauri:dev:linux` and `tauri:build:linux`
 
 Install Linux native prerequisites from the repository root:
@@ -109,7 +110,7 @@ npm run tauri:build:windows
 npm run tauri:build:linux
 ```
 
-Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts.
+Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. Preview Windows installers either need WebView2 already installed or network access for Tauri's WebView2 bootstrapper. For managed/offline distribution, configure `bundle.windows.webviewInstallMode` as `offlineInstaller` or `fixedRuntime` and inspect the generated installer before shipping. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts.
 
 ## Runtime Behavior
 
