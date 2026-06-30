@@ -145,7 +145,15 @@ Capture a reusable benchmark baseline artifact:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-baseline.ps1 -BenchmarkHost core -Platform x64
 ```
 
-Linux equivalents are available at `scripts/run-benchmark.sh` and `scripts/capture-benchmark-baseline.sh`.
+Run the strict regression gate with either a matching baseline artifact or an explicit p95 budget. The normal validation scripts keep their fast smoke check; this gate is for release/local performance validation and writes a report under `artifacts/benchmarks`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -BaselineArtifactPath artifacts\benchmarks\baseline-core-YYYYMMDD-HHMMSS.json
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -MaxP95Ms 10000
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle -BenchmarkGate -BenchmarkMaxP95Ms 10000
+```
+
+Linux equivalents are available at `scripts/run-benchmark.sh`, `scripts/capture-benchmark-baseline.sh`, and `scripts/run-benchmark-gate.sh`.
 
 In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
 

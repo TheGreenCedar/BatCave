@@ -55,6 +55,19 @@ function Invoke-BenchmarkRun {
     return (Parse-BenchmarkJson -OutputText $raw)
 }
 
+function Write-JsonUtf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Value,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), $encoding)
+}
+
 if ([string]::IsNullOrWhiteSpace($MachineClass)) {
     $MachineClass = $env:COMPUTERNAME
 }
@@ -115,8 +128,8 @@ $artifact = [ordered]@{
     runs = $runs
 }
 
-$artifact | ConvertTo-Json -Depth 30 | Set-Content -Path $artifactPath -Encoding UTF8
-$baselineSummary | ConvertTo-Json -Depth 30 | Set-Content -Path $baselineSummaryPath -Encoding UTF8
+Write-JsonUtf8NoBom -Value $artifact -Path $artifactPath
+Write-JsonUtf8NoBom -Value $baselineSummary -Path $baselineSummaryPath
 
 Write-Host "Baseline artifact written:"
 Write-Host "  $artifactPath"
