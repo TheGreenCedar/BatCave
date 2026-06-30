@@ -1,4 +1,6 @@
 import type { ProcessSample, ProcessViewRow, RuntimeQuery, RuntimeSnapshot } from "./types";
+import { processIdentity } from "./process";
+import { makeDefaultRuntimeQuery } from "./runtimeSnapshot";
 
 const names = [
   "Code.exe",
@@ -33,7 +35,7 @@ const baseTs = Date.now();
 
 export function makeFixtureSnapshot(
   tick: number,
-  query: RuntimeQuery = defaultRuntimeQuery(),
+  query: RuntimeQuery = makeDefaultRuntimeQuery(),
 ): RuntimeSnapshot {
   const cpu = wave(tick, 31, 14, 0.34);
   const memoryTotal = 32 * 1024 * 1024 * 1024;
@@ -185,22 +187,6 @@ export function makeFixtureSnapshot(
   };
 }
 
-function defaultRuntimeQuery(): RuntimeQuery {
-  return {
-    filter_text: "",
-    focus_mode: "all",
-    sort_column: "attention",
-    sort_direction: "desc",
-    limit: 5000,
-  };
-}
-
-interface FixtureIdentity {
-  iconKind: string;
-  category: string;
-  isChild: boolean;
-}
-
 interface FixtureProcessGroup {
   key: string;
   label: string;
@@ -227,7 +213,6 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
     )
     .filter((process) => matchesFocusMode(process, query.focus_mode))
     .slice()
-    .sort((left, right) => compareProcess(left, right, query))
     .slice(0, Math.max(1, query.limit));
 
   const groups = new Map<string, FixtureProcessGroup>();
@@ -239,8 +224,8 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
       group = {
         key,
         label: normalizedProcessName(process.name),
-        category: identity.category,
-        iconKind: identity.iconKind,
+        category: identity.group,
+        iconKind: identity.icon,
         representative: process,
         processes: [],
         cpuPercent: 0,
@@ -260,57 +245,55 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
     group.threads += process.threads;
   }
 
-  return [...groups.values()]
-    .sort((left, right) => compareProcessGroup(left, right, query))
-    .flatMap((group) => {
-      const grouped = group.processes.length > 1;
-      const processRows = group.processes.map((process) => {
-        const identity = processIdentity(process);
-        const ioBps = processIoRate(process);
-        return {
-          kind: "process" as const,
-          process,
-          group_key: group.key,
-          group_label: group.label,
-          group_category: group.category,
-          group_count: group.processes.length,
-          icon_kind: identity.iconKind,
-          is_child: identity.isChild,
-          is_grouped: grouped,
-          attention_label: attentionLabel(process.cpu_percent, process.memory_bytes, ioBps),
-          cpu_percent: process.cpu_percent,
-          memory_bytes: process.memory_bytes,
-          io_bps: ioBps,
-          network_bps: processNetworkRate(process),
-          threads: process.threads,
-        };
-      });
-
-      if (!grouped) {
-        return processRows;
-      }
-
-      return [
-        {
-          kind: "group" as const,
-          representative: group.representative,
-          group_key: group.key,
-          group_label: group.label,
-          group_category: group.category,
-          group_count: group.processes.length,
-          icon_kind: group.iconKind,
-          is_child: false,
-          is_grouped: true,
-          attention_label: attentionLabel(group.cpuPercent, group.memoryBytes, group.ioBps),
-          cpu_percent: round1(group.cpuPercent),
-          memory_bytes: group.memoryBytes,
-          io_bps: group.ioBps,
-          network_bps: group.networkBps,
-          threads: group.threads,
-        },
-        ...processRows,
-      ];
+  return [...groups.values()].flatMap((group) => {
+    const grouped = group.processes.length > 1;
+    const processRows = group.processes.map((process) => {
+      const identity = processIdentity(process);
+      const ioBps = processIoRate(process);
+      return {
+        kind: "process" as const,
+        process,
+        group_key: group.key,
+        group_label: group.label,
+        group_category: group.category,
+        group_count: group.processes.length,
+        icon_kind: identity.icon,
+        is_child: identity.isChild,
+        is_grouped: grouped,
+        attention_label: attentionLabel(process.cpu_percent, process.memory_bytes, ioBps),
+        cpu_percent: process.cpu_percent,
+        memory_bytes: process.memory_bytes,
+        io_bps: ioBps,
+        network_bps: processNetworkRate(process),
+        threads: process.threads,
+      };
     });
+
+    if (!grouped) {
+      return processRows;
+    }
+
+    return [
+      {
+        kind: "group" as const,
+        representative: group.representative,
+        group_key: group.key,
+        group_label: group.label,
+        group_category: group.category,
+        group_count: group.processes.length,
+        icon_kind: group.iconKind,
+        is_child: false,
+        is_grouped: true,
+        attention_label: attentionLabel(group.cpuPercent, group.memoryBytes, group.ioBps),
+        cpu_percent: round1(group.cpuPercent),
+        memory_bytes: group.memoryBytes,
+        io_bps: group.ioBps,
+        network_bps: group.networkBps,
+        threads: group.threads,
+      },
+      ...processRows,
+    ];
+  });
 }
 
 function matchesFocusMode(process: ProcessSample, focusMode: RuntimeQuery["focus_mode"]): boolean {
@@ -323,138 +306,6 @@ function matchesFocusMode(process: ProcessSample, focusMode: RuntimeQuery["focus
   }
 
   return true;
-}
-
-function compareProcess(left: ProcessSample, right: ProcessSample, query: RuntimeQuery): number {
-  const direction = query.sort_direction === "asc" ? 1 : -1;
-  let comparison = 0;
-
-  if (query.sort_column === "name") {
-    comparison = left.name.localeCompare(right.name, undefined, {
-      sensitivity: "base",
-      numeric: true,
-    });
-  } else if (query.sort_column === "pid") {
-    comparison = Number(left.pid) - Number(right.pid);
-  } else if (query.sort_column === "memory_bytes") {
-    comparison = left.memory_bytes - right.memory_bytes;
-  } else if (query.sort_column === "disk_bps") {
-    comparison = processIoRate(left) - processIoRate(right);
-  } else if (query.sort_column === "network_bps") {
-    comparison = processNetworkRate(left) - processNetworkRate(right);
-  } else if (query.sort_column === "threads") {
-    comparison = left.threads - right.threads;
-  } else if (query.sort_column === "handles") {
-    comparison = left.handles - right.handles;
-  } else if (query.sort_column === "start_time_ms") {
-    comparison = left.start_time_ms - right.start_time_ms;
-  } else if (query.sort_column === "cpu_pct") {
-    comparison = left.cpu_percent - right.cpu_percent;
-  } else {
-    comparison = attentionScore(left) - attentionScore(right);
-  }
-
-  return (
-    comparison * direction ||
-    left.name.localeCompare(right.name, undefined, { sensitivity: "base", numeric: true })
-  );
-}
-
-function compareProcessGroup(
-  left: FixtureProcessGroup,
-  right: FixtureProcessGroup,
-  query: RuntimeQuery,
-): number {
-  const direction = query.sort_direction === "asc" ? 1 : -1;
-  let comparison = 0;
-
-  if (query.sort_column === "name") {
-    comparison = left.label.localeCompare(right.label, undefined, {
-      sensitivity: "base",
-      numeric: true,
-    });
-  } else if (query.sort_column === "pid") {
-    comparison = Number(left.representative.pid) - Number(right.representative.pid);
-  } else if (query.sort_column === "memory_bytes") {
-    comparison = left.memoryBytes - right.memoryBytes;
-  } else if (query.sort_column === "disk_bps") {
-    comparison = left.ioBps - right.ioBps;
-  } else if (query.sort_column === "network_bps") {
-    comparison = left.networkBps - right.networkBps;
-  } else if (query.sort_column === "threads") {
-    comparison = left.threads - right.threads;
-  } else if (query.sort_column === "handles") {
-    comparison = left.representative.handles - right.representative.handles;
-  } else if (query.sort_column === "start_time_ms") {
-    comparison = left.representative.start_time_ms - right.representative.start_time_ms;
-  } else if (query.sort_column === "cpu_pct") {
-    comparison = left.cpuPercent - right.cpuPercent;
-  } else {
-    comparison = groupAttentionScore(left) - groupAttentionScore(right);
-  }
-
-  return (
-    comparison * direction ||
-    left.label.localeCompare(right.label, undefined, { sensitivity: "base", numeric: true })
-  );
-}
-
-function processIdentity(process: ProcessSample): FixtureIdentity {
-  const haystack = `${process.name} ${process.exe}`.toLocaleLowerCase();
-  const name = process.name.toLocaleLowerCase();
-  const isChild =
-    name.startsWith("--") ||
-    haystack.includes("--type=") ||
-    haystack.includes("renderer") ||
-    haystack.includes("gpu-process") ||
-    haystack.includes("utility");
-
-  if (haystack.includes("batcave")) return { iconKind: "batcave", category: "BatCave", isChild };
-  if (matchesAny(haystack, ["chrome", "msedge", "firefox", "brave", "browser"])) {
-    return { iconKind: "browser", category: "Browsers", isChild };
-  }
-  if (matchesAny(haystack, ["code.exe", "visual studio code", "\\code\\", "/code/"])) {
-    return { iconKind: "code", category: "Developer tools", isChild };
-  }
-  if (matchesAny(haystack, ["node", "npm", "deno", "bun.exe"]))
-    return { iconKind: "node", category: "Runtimes", isChild };
-  if (haystack.includes("docker"))
-    return { iconKind: "container", category: "Containers", isChild };
-  if (matchesAny(haystack, ["postgres", "mysql", "redis", "sqlserver", "mariadb"])) {
-    return { iconKind: "database", category: "Databases", isChild };
-  }
-  if (matchesAny(haystack, ["slack", "teams", "discord", "zoom"])) {
-    return { iconKind: "chat", category: "Communication", isChild };
-  }
-  if (matchesAny(haystack, ["spotify", "vlc", "media player"]))
-    return { iconKind: "media", category: "Media", isChild };
-  if (matchesAny(haystack, ["dropbox", "onedrive", "googledrive"]))
-    return { iconKind: "sync", category: "Sync", isChild };
-  if (matchesAny(haystack, ["nvidia", "amd", "radeon", "intel graphics"]))
-    return { iconKind: "gpu", category: "GPU", isChild };
-  if (
-    matchesAny(haystack, [
-      "applicationframehost",
-      "conhost",
-      "ctfmon",
-      "dwm",
-      "explorer.exe",
-      "phoneexperiencehost",
-      "searchindexer",
-      "securityhealthservice",
-      "shellexperiencehost",
-      "sihost",
-      "startmenuexperiencehost",
-      "svchost",
-      "textinputhost",
-      "widgetservice",
-      "windows",
-    ])
-  ) {
-    return { iconKind: "windows", category: "Windows", isChild };
-  }
-
-  return { iconKind: "process", category: "Processes", isChild };
 }
 
 function processAppKey(process: ProcessSample): string {
@@ -472,36 +323,12 @@ function normalizedProcessName(name: string): string {
   return name.replace(/-\d+(?=\.exe$)/i, "");
 }
 
-function matchesAny(haystack: string, needles: string[]): boolean {
-  return needles.some((needle) => haystack.includes(needle));
-}
-
 function processIoRate(process: ProcessSample): number {
   return process.disk_read_bps + process.disk_write_bps + (process.other_io_bps ?? 0);
 }
 
 function processNetworkRate(process: ProcessSample): number {
   return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
-}
-
-function attentionScore(process: ProcessSample): number {
-  return (
-    process.cpu_percent * 3 +
-    Math.min(process.memory_bytes / (128 * 1024 * 1024), 20) +
-    Math.min(processIoRate(process) / (512 * 1024), 20) +
-    Math.min(processNetworkRate(process) / (1024 * 1024), 20) +
-    (process.access_state === "full" ? 0 : 12)
-  );
-}
-
-function groupAttentionScore(group: FixtureProcessGroup): number {
-  return (
-    group.cpuPercent * 3 +
-    Math.min(group.memoryBytes / (128 * 1024 * 1024), 20) +
-    Math.min(group.ioBps / (512 * 1024), 20) +
-    Math.min(group.networkBps / (1024 * 1024), 20) +
-    (group.processes.some((process) => process.access_state !== "full") ? 12 : 0)
-  );
 }
 
 function attentionLabel(cpuPercent: number, memoryBytes: number, ioBps: number): string {
