@@ -13,22 +13,11 @@ use windows_sys::Win32::Foundation::HANDLE;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
-    cli_args,
-    contracts::ProcessSample,
-    telemetry::TelemetryCollector,
-};
+use crate::{cli_args, contracts::ProcessSample, telemetry::TelemetryCollector};
 
 const HELPER_INTERVAL_MS: u64 = 500;
 const HELPER_TOKEN_BYTES: usize = 32;
-const ADMIN_SNAPSHOT_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
-    write_failed: "admin_mode_snapshot_write_failed",
-    serialize_failed: "admin_mode_snapshot_serialize_failed",
-    replace_failed: "admin_mode_snapshot_replace_failed",
-    rename_failed: "admin_mode_snapshot_rename_failed",
-    serialize_error_includes_path: false,
-};
+const MAX_PIPE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct ElevatedHelperClient {
@@ -36,6 +25,9 @@ pub struct ElevatedHelperClient {
     stop_file: PathBuf,
     token: String,
     last_seq: u64,
+    read_buffer: Vec<u8>,
+    #[cfg(windows)]
+    pipe: Option<NamedPipeServer>,
     process: Option<ElevatedHelperProcess>,
 }
 
@@ -44,14 +36,20 @@ impl ElevatedHelperClient {
         remove_helper_artifacts(base_dir);
         let session = prepare_helper_session(base_dir)?;
 
+        #[cfg(windows)]
+        let pipe = Some(NamedPipeServer::create(&session.pipe_name)?);
+
         let process =
-            launch_elevated_helper(&session.data_file, &session.stop_file, &session.token)?;
+            launch_elevated_helper(&session.pipe_name, &session.stop_file, &session.token)?;
 
         Ok(Self {
             data_file: session.data_file,
             stop_file: session.stop_file,
             token: session.token,
             last_seq: 0,
+            read_buffer: Vec::new(),
+            #[cfg(windows)]
+            pipe,
             process,
         })
     }
@@ -66,29 +64,18 @@ impl ElevatedHelperClient {
             return Err("admin_mode_helper_exited".to_string());
         }
 
-        if !self.data_file.exists() {
-            return Ok(None);
+        #[cfg(windows)]
+        if let Some(pipe) = &mut self.pipe {
+            let mut rows = None;
+            for payload in pipe.read_payloads(&mut self.read_buffer)? {
+                if let Some(snapshot_rows) = self.accept_snapshot_payload(&payload)? {
+                    rows = Some(snapshot_rows);
+                }
+            }
+            return Ok(rows);
         }
 
-        let payload = fs::read_to_string(&self.data_file).map_err(|error| {
-            format!(
-                "admin_mode_snapshot_read_failed path={} error={}",
-                self.data_file.display(),
-                error
-            )
-        })?;
-        let snapshot = serde_json::from_str::<ElevatedSnapshot>(&payload)
-            .map_err(|error| format!("admin_mode_snapshot_parse_failed:{error}"))?;
-
-        if snapshot.token != self.token {
-            return Err("admin_mode_snapshot_token_mismatch".to_string());
-        }
-        if snapshot.seq <= self.last_seq {
-            return Ok(None);
-        }
-
-        self.last_seq = snapshot.seq;
-        Ok(Some(snapshot.rows))
+        Ok(None)
     }
 
     pub fn stop(&self) {
@@ -106,6 +93,24 @@ impl ElevatedHelperClient {
 
     pub fn remove_stale_artifacts(base_dir: &Path) {
         remove_helper_artifacts(base_dir);
+    }
+
+    fn accept_snapshot_payload(
+        &mut self,
+        payload: &str,
+    ) -> Result<Option<Vec<ProcessSample>>, String> {
+        let snapshot = serde_json::from_str::<ElevatedSnapshot>(payload)
+            .map_err(|error| format!("admin_mode_snapshot_parse_failed:{error}"))?;
+
+        if snapshot.token != self.token {
+            return Err("admin_mode_snapshot_token_mismatch".to_string());
+        }
+        if snapshot.seq <= self.last_seq {
+            return Ok(None);
+        }
+
+        self.last_seq = snapshot.seq;
+        Ok(Some(snapshot.rows))
     }
 }
 
@@ -125,7 +130,7 @@ struct ElevatedSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ElevatedHelperArgs {
-    data_file: PathBuf,
+    pipe_name: String,
     stop_file: PathBuf,
     token: String,
 }
@@ -144,15 +149,23 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
     }
 }
 
+#[cfg(windows)]
 fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
     let mut seq = 0_u64;
+    let pipe = match PipeClient::connect(&args.pipe_name) {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
     let collector = TelemetryCollector::new();
     while !args.stop_file.exists() {
         seq = seq.saturating_add(1);
         match collector
             .collect()
             .map(|sample| sample.processes)
-            .and_then(|rows| write_snapshot(&args.data_file, &args.token, seq, rows))
+            .and_then(|rows| pipe.write_snapshot(&args.token, seq, rows))
         {
             Ok(()) => {}
             Err(error) => {
@@ -163,34 +176,359 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
         thread::sleep(Duration::from_millis(HELPER_INTERVAL_MS));
     }
 
-    remove_snapshot_artifacts(&args.data_file);
     0
 }
 
-fn write_snapshot(
-    data_file: &Path,
-    token: &str,
-    seq: u64,
-    rows: Vec<ProcessSample>,
-) -> Result<(), String> {
-    validate_helper_output_path(data_file)?;
+#[cfg(not(windows))]
+fn run_elevated_helper(_args: ElevatedHelperArgs) -> i32 {
+    eprintln!("admin_mode_requires_windows");
+    1
+}
+
+fn snapshot_payload(token: &str, seq: u64, rows: Vec<ProcessSample>) -> Result<Vec<u8>, String> {
     let snapshot = ElevatedSnapshot {
         token: token.to_string(),
         seq,
         rows,
     };
-    write_json_atomic(data_file, &snapshot, ADMIN_SNAPSHOT_JSON_ERRORS)
+    serde_json::to_vec(&snapshot)
+        .map_err(|error| format!("admin_mode_snapshot_serialize_failed:{error}"))
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct NamedPipeServer {
+    handle: HANDLE,
+    connected: bool,
+}
+
+#[cfg(windows)]
+impl NamedPipeServer {
+    fn create(pipe_name: &str) -> Result<Self, String> {
+        use windows_sys::Win32::{
+            Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND},
+            System::Pipes::{CreateNamedPipeW, PIPE_NOWAIT, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE},
+        };
+
+        let mut pipe_security = PipeSecurity::admin_only()?;
+        let pipe_name_w = wide(pipe_name);
+        let handle = unsafe {
+            CreateNamedPipeW(
+                pipe_name_w.as_ptr(),
+                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
+                1,
+                MAX_PIPE_FRAME_BYTES.min(u32::MAX as usize) as u32,
+                MAX_PIPE_FRAME_BYTES.min(u32::MAX as usize) as u32,
+                0,
+                pipe_security.attributes(),
+            )
+        };
+        if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            return Err(format!("admin_mode_pipe_create_failed error={}", unsafe {
+                windows_sys::Win32::Foundation::GetLastError()
+            }));
+        }
+
+        Ok(Self {
+            handle,
+            connected: false,
+        })
+    }
+
+    fn read_payloads(&mut self, buffer: &mut Vec<u8>) -> Result<Vec<String>, String> {
+        self.connect_if_ready()?;
+        if !self.connected {
+            return Ok(Vec::new());
+        }
+
+        self.read_available(buffer)?;
+        drain_payloads(buffer)
+    }
+
+    fn connect_if_ready(&mut self) -> Result<(), String> {
+        use windows_sys::Win32::{
+            Foundation::{GetLastError, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING},
+            System::Pipes::ConnectNamedPipe,
+        };
+
+        if self.connected {
+            return Ok(());
+        }
+
+        let ok = unsafe { ConnectNamedPipe(self.handle, std::ptr::null_mut()) };
+        if ok != 0 {
+            self.connected = true;
+            return Ok(());
+        }
+
+        match unsafe { GetLastError() } {
+            ERROR_PIPE_CONNECTED => {
+                self.connected = true;
+                Ok(())
+            }
+            ERROR_PIPE_LISTENING => Ok(()),
+            error => Err(format!("admin_mode_pipe_connect_failed error={error}")),
+        }
+    }
+
+    fn read_available(&self, buffer: &mut Vec<u8>) -> Result<(), String> {
+        use windows_sys::Win32::{
+            Foundation::{GetLastError, ERROR_BROKEN_PIPE, ERROR_NO_DATA},
+            Storage::FileSystem::ReadFile,
+            System::Pipes::PeekNamedPipe,
+        };
+
+        loop {
+            let mut available = 0_u32;
+            let ok = unsafe {
+                PeekNamedPipe(
+                    self.handle,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return match unsafe { GetLastError() } {
+                    ERROR_NO_DATA => Ok(()),
+                    ERROR_BROKEN_PIPE => Err("admin_mode_pipe_disconnected".to_string()),
+                    error => Err(format!("admin_mode_pipe_peek_failed error={error}")),
+                };
+            }
+            if available == 0 {
+                return Ok(());
+            }
+
+            let chunk_len = available.min(64 * 1024) as usize;
+            let start = buffer.len();
+            buffer.resize(start + chunk_len, 0);
+            let mut read = 0_u32;
+            let ok = unsafe {
+                ReadFile(
+                    self.handle,
+                    buffer[start..].as_mut_ptr().cast(),
+                    chunk_len as u32,
+                    &mut read,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                buffer.truncate(start);
+                return match unsafe { GetLastError() } {
+                    ERROR_NO_DATA => Ok(()),
+                    ERROR_BROKEN_PIPE => Err("admin_mode_pipe_disconnected".to_string()),
+                    error => Err(format!("admin_mode_pipe_read_failed error={error}")),
+                };
+            }
+            buffer.truncate(start + read as usize);
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe impl Send for NamedPipeServer {}
+
+#[cfg(windows)]
+struct PipeSecurity {
+    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+}
+
+#[cfg(windows)]
+impl PipeSecurity {
+    fn admin_only() -> Result<Self, String> {
+        use windows_sys::Win32::{
+            Foundation::GetLastError,
+            Security::{
+                Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+            },
+        };
+
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let sddl = wide("D:P(A;;GA;;;SY)(A;;GA;;;BA)");
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(format!(
+                "admin_mode_pipe_security_failed error={}",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        Ok(Self {
+            descriptor,
+            attributes: SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.cast(),
+                bInheritHandle: 0,
+            },
+        })
+    }
+
+    fn attributes(&mut self) -> *const windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        &self.attributes
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PipeSecurity {
+    fn drop(&mut self) {
+        if !self.descriptor.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(self.descriptor.cast());
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NamedPipeServer {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct PipeClient {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+impl PipeClient {
+    fn connect(pipe_name: &str) -> Result<Self, String> {
+        use windows_sys::Win32::{
+            Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE},
+            Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING},
+        };
+
+        let pipe_name_w = wide(pipe_name);
+        let handle = unsafe {
+            CreateFileW(
+                pipe_name_w.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(format!("admin_mode_pipe_open_failed error={}", unsafe {
+                windows_sys::Win32::Foundation::GetLastError()
+            }));
+        }
+
+        Ok(Self { handle })
+    }
+
+    fn write_snapshot(
+        &self,
+        token: &str,
+        seq: u64,
+        rows: Vec<ProcessSample>,
+    ) -> Result<(), String> {
+        let payload = snapshot_payload(token, seq, rows)?;
+        if payload.len() > u32::MAX as usize {
+            return Err("admin_mode_snapshot_too_large".to_string());
+        }
+
+        let len = (payload.len() as u32).to_le_bytes();
+        self.write_all(&len)?;
+        self.write_all(&payload)
+    }
+
+    fn write_all(&self, mut bytes: &[u8]) -> Result<(), String> {
+        use windows_sys::Win32::Storage::FileSystem::WriteFile;
+
+        while !bytes.is_empty() {
+            let mut written = 0_u32;
+            let len = bytes.len().min(u32::MAX as usize) as u32;
+            let ok = unsafe {
+                WriteFile(
+                    self.handle,
+                    bytes.as_ptr().cast(),
+                    len,
+                    &mut written,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(format!("admin_mode_pipe_write_failed error={}", unsafe {
+                    windows_sys::Win32::Foundation::GetLastError()
+                }));
+            }
+            if written == 0 {
+                return Err("admin_mode_pipe_write_failed error=zero_bytes".to_string());
+            }
+            bytes = &bytes[written as usize..];
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PipeClient {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+fn drain_payloads(buffer: &mut Vec<u8>) -> Result<Vec<String>, String> {
+    let mut payloads = Vec::new();
+    let mut offset = 0_usize;
+    while buffer.len().saturating_sub(offset) >= 4 {
+        let len = u32::from_le_bytes(
+            buffer[offset..offset + 4]
+                .try_into()
+                .expect("length prefix slice is fixed"),
+        ) as usize;
+        if len > MAX_PIPE_FRAME_BYTES {
+            return Err("admin_mode_snapshot_too_large".to_string());
+        }
+        if buffer.len().saturating_sub(offset + 4) < len {
+            break;
+        }
+
+        let start = offset + 4;
+        let end = start + len;
+        let payload = std::str::from_utf8(&buffer[start..end])
+            .map_err(|error| format!("admin_mode_snapshot_utf8_failed:{error}"))?
+            .to_string();
+        payloads.push(payload);
+        offset = end;
+    }
+
+    buffer.drain(..offset);
+    Ok(payloads)
 }
 
 #[derive(Debug)]
 struct ElevatedHelperSession {
     data_file: PathBuf,
     stop_file: PathBuf,
+    pipe_name: String,
     token: String,
 }
 
 fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, String> {
     let token = new_helper_token()?;
+    let pipe_id = new_helper_token()?;
     let helper_root = base_dir.join("elevated-helper");
     reject_reparse_path(&helper_root, true)?;
     fs::create_dir_all(&helper_root).map_err(|error| {
@@ -215,6 +553,7 @@ fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, Stri
     Ok(ElevatedHelperSession {
         data_file: helper_dir.join("snapshot.json"),
         stop_file: helper_dir.join("stop.signal"),
+        pipe_name: format!(r"\\.\pipe\batcave-elevated-{pipe_id}"),
         token,
     })
 }
@@ -271,18 +610,6 @@ fn hex_lower(bytes: &[u8]) -> String {
         encoded.push(HEX[(byte & 0x0f) as usize] as char);
     }
     encoded
-}
-
-fn validate_helper_output_path(data_file: &Path) -> Result<(), String> {
-    let Some(parent) = data_file.parent() else {
-        return Err(format!(
-            "admin_mode_helper_path_missing_parent path={}",
-            data_file.display()
-        ));
-    };
-    reject_reparse_path(parent, true)?;
-    reject_reparse_path(data_file, false)?;
-    reject_reparse_path(&snapshot_temp_file(data_file), false)
 }
 
 fn reject_reparse_path(path: &Path, allow_directory: bool) -> Result<(), String> {
@@ -392,14 +719,14 @@ fn remove_empty_run_dir(data_file: &Path) {
 fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
     reject_unknown_helper_args(args)?;
     Ok(ElevatedHelperArgs {
-        data_file: PathBuf::from(required_value(args, "--data-file")?),
+        pipe_name: required_value(args, "--pipe-name")?,
         stop_file: PathBuf::from(required_value(args, "--stop-file")?),
         token: required_value(args, "--token")?,
     })
 }
 
 fn reject_unknown_helper_args(args: &[String]) -> Result<(), String> {
-    let known_with_value = ["--data-file", "--stop-file", "--token"];
+    let known_with_value = ["--pipe-name", "--stop-file", "--token"];
     let known_flags = ["--elevated-helper"];
     cli_args::reject_unknown_args(args, &known_with_value, &known_flags)
 }
@@ -477,7 +804,7 @@ impl ElevatedHelperProcess {
 
 #[cfg(windows)]
 fn launch_elevated_helper(
-    data_file: &Path,
+    pipe_name: &str,
     stop_file: &Path,
     token: &str,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
@@ -493,8 +820,8 @@ fn launch_elevated_helper(
     let exe_w = wide_os(exe.as_os_str());
     let verb_w = wide("runas");
     let params_w = wide(&format!(
-        "--elevated-helper --data-file \"{}\" --stop-file \"{}\" --token \"{}\"",
-        data_file.display(),
+        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\"",
+        pipe_name,
         stop_file.display(),
         token
     ));
@@ -531,7 +858,7 @@ fn launch_elevated_helper(
 
 #[cfg(not(windows))]
 fn launch_elevated_helper(
-    _data_file: &Path,
+    _pipe_name: &str,
     _stop_file: &Path,
     _token: &str,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
@@ -559,7 +886,7 @@ mod tests {
 
         assert_eq!(
             parse_helper_args(&args),
-            Err("missing_required_argument:--data-file".to_string())
+            Err("missing_required_argument:--pipe-name".to_string())
         );
     }
 
@@ -567,7 +894,7 @@ mod tests {
     fn helper_rejects_missing_values() {
         let args = vec![
             "--elevated-helper".to_string(),
-            "--data-file".to_string(),
+            "--pipe-name".to_string(),
             "--stop-file".to_string(),
             "stop".to_string(),
             "--token".to_string(),
@@ -576,7 +903,7 @@ mod tests {
 
         assert_eq!(
             parse_helper_args(&args),
-            Err("missing_value_for_argument:--data-file".to_string())
+            Err("missing_value_for_argument:--pipe-name".to_string())
         );
     }
 
@@ -603,6 +930,8 @@ mod tests {
         assert_eq!(first.token.len(), HELPER_TOKEN_BYTES * 2);
         assert_eq!(second.token.len(), HELPER_TOKEN_BYTES * 2);
         assert_ne!(first.token, second.token);
+        assert!(first.pipe_name.starts_with(r"\\.\pipe\batcave-elevated-"));
+        assert!(!first.pipe_name.ends_with(&first.token));
         assert_eq!(
             first.data_file.file_name().and_then(|name| name.to_str()),
             Some("snapshot.json")
@@ -619,19 +948,6 @@ mod tests {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("run-")));
 
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn helper_write_rejects_directory_snapshot_target() {
-        let base_dir = test_dir("directory-target");
-        let data_file = base_dir.join("snapshot.json");
-        fs::create_dir_all(&data_file).expect("directory target exists");
-
-        let error = write_snapshot(&data_file, "token", 1, Vec::new())
-            .expect_err("directory target is rejected");
-
-        assert!(error.starts_with("admin_mode_helper_path_not_file path="));
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -654,19 +970,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn helper_write_rejects_symlink_parent() {
-        let base_dir = test_dir("symlink-parent");
-        let real_dir = base_dir.join("real");
-        let link_dir = base_dir.join("link");
-        fs::create_dir_all(&real_dir).expect("real dir exists");
-        symlink_dir(&real_dir, &link_dir).expect("symlink parent exists");
-
-        let error = write_snapshot(&link_dir.join("snapshot.json"), "token", 1, Vec::new())
-            .expect_err("symlink parent is rejected");
-
-        assert!(error.starts_with("admin_mode_helper_path_reparse_rejected path="));
-        let _ = fs::remove_dir_all(base_dir);
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
     }
 
     #[cfg(windows)]
@@ -674,18 +979,15 @@ mod tests {
         std::os::windows::fs::symlink_dir(src, dst)
     }
 
-    #[cfg(unix)]
-    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(src, dst)
-    }
-
     #[test]
     fn poll_rows_rejects_token_mismatch() {
         let base_dir = test_dir("token");
         let mut client = test_client(&base_dir);
-        write_snapshot(&client.data_file, "wrong", 1, Vec::new()).expect("snapshot writes");
+        let payload = payload("wrong", 1, Vec::new());
 
-        let error = client.poll_rows().expect_err("token mismatch fails");
+        let error = client
+            .accept_snapshot_payload(&payload)
+            .expect_err("token mismatch fails");
 
         assert_eq!(error, "admin_mode_snapshot_token_mismatch");
         let _ = fs::remove_dir_all(base_dir);
@@ -695,24 +997,22 @@ mod tests {
     fn poll_rows_ignores_stale_sequence_and_accepts_newer_rows() {
         let base_dir = test_dir("seq");
         let mut client = test_client(&base_dir);
-        write_snapshot(&client.data_file, &client.token, 2, vec![sample("10")])
-            .expect("snapshot writes");
+        let token = client.token.clone();
 
         let first = client
-            .poll_rows()
+            .accept_snapshot_payload(&payload(&token, 2, vec![sample("10")]))
             .expect("fresh snapshot reads")
             .expect("fresh rows exist");
 
         assert_eq!(first[0].pid, "10");
 
-        write_snapshot(&client.data_file, &client.token, 2, vec![sample("20")])
-            .expect("stale snapshot writes");
-        assert!(client.poll_rows().expect("stale snapshot is ok").is_none());
+        assert!(client
+            .accept_snapshot_payload(&payload(&token, 2, vec![sample("20")]))
+            .expect("stale snapshot is ok")
+            .is_none());
 
-        write_snapshot(&client.data_file, &client.token, 3, vec![sample("30")])
-            .expect("new snapshot writes");
         let newer = client
-            .poll_rows()
+            .accept_snapshot_payload(&payload(&token, 3, vec![sample("30")]))
             .expect("new snapshot reads")
             .expect("new rows exist");
 
@@ -721,24 +1021,37 @@ mod tests {
     }
 
     #[test]
-    fn poll_rows_surfaces_parse_and_read_failures() {
+    fn client_snapshot_payload_surfaces_parse_failures() {
         let parse_dir = test_dir("parse");
         let mut parse_client = test_client(&parse_dir);
-        fs::write(&parse_client.data_file, "{not-json").expect("bad snapshot writes");
 
-        let parse_error = parse_client.poll_rows().expect_err("invalid json fails");
+        let parse_error = parse_client
+            .accept_snapshot_payload("{not-json")
+            .expect_err("invalid json fails");
 
         assert!(parse_error.starts_with("admin_mode_snapshot_parse_failed:"));
-
-        let read_dir = test_dir("read");
-        let mut read_client = test_client(&read_dir);
-        fs::create_dir_all(&read_client.data_file).expect("directory fixture writes");
-
-        let read_error = read_client.poll_rows().expect_err("directory read fails");
-
-        assert!(read_error.starts_with("admin_mode_snapshot_read_failed path="));
         let _ = fs::remove_dir_all(parse_dir);
-        let _ = fs::remove_dir_all(read_dir);
+    }
+
+    #[test]
+    fn length_prefixed_payloads_drain_complete_frames() {
+        let first = payload("token", 1, vec![sample("10")]);
+        let second = payload("token", 2, vec![sample("20")]);
+        let mut buffer = Vec::new();
+        append_frame(&mut buffer, first.as_bytes());
+        append_frame(&mut buffer, second.as_bytes());
+        buffer.extend_from_slice(&3_u32.to_le_bytes());
+        buffer.extend_from_slice(b"ab");
+
+        let drained = drain_payloads(&mut buffer).expect("frames drain");
+
+        assert_eq!(drained, vec![first, second]);
+        assert_eq!(buffer, {
+            let mut partial = Vec::new();
+            partial.extend_from_slice(&3_u32.to_le_bytes());
+            partial.extend_from_slice(b"ab");
+            partial
+        });
     }
 
     #[test]
@@ -777,29 +1090,6 @@ mod tests {
         let _ = fs::remove_dir_all(base_dir);
     }
 
-    #[test]
-    fn helper_exit_removes_snapshot_artifacts() {
-        let base_dir = test_dir("helper-exit");
-        fs::create_dir_all(&base_dir).expect("test dir exists");
-        let data_file = base_dir.join("snapshot.json");
-        let temp_file = snapshot_temp_file(&data_file);
-        let stop_file = base_dir.join("stop.signal");
-        fs::write(&data_file, "{}").expect("snapshot fixture writes");
-        fs::write(&temp_file, "{}").expect("temp fixture writes");
-        fs::write(&stop_file, "stop").expect("stop fixture writes");
-
-        let exit_code = run_elevated_helper(ElevatedHelperArgs {
-            data_file: data_file.clone(),
-            stop_file,
-            token: "token".to_string(),
-        });
-
-        assert_eq!(exit_code, 0);
-        assert!(!data_file.exists());
-        assert!(!temp_file.exists());
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
     fn test_client(base_dir: &Path) -> ElevatedHelperClient {
         fs::create_dir_all(base_dir).expect("test dir exists");
         ElevatedHelperClient {
@@ -807,8 +1097,21 @@ mod tests {
             stop_file: base_dir.join("stop.signal"),
             token: "token".to_string(),
             last_seq: 0,
+            read_buffer: Vec::new(),
+            #[cfg(windows)]
+            pipe: None,
             process: None,
         }
+    }
+
+    fn payload(token: &str, seq: u64, rows: Vec<ProcessSample>) -> String {
+        String::from_utf8(snapshot_payload(token, seq, rows).expect("snapshot serializes"))
+            .expect("snapshot is utf8")
+    }
+
+    fn append_frame(buffer: &mut Vec<u8>, payload: &[u8]) {
+        buffer.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        buffer.extend_from_slice(payload);
     }
 
     fn test_dir(name: &str) -> PathBuf {
