@@ -34,6 +34,38 @@ function Run-Step {
     }
 }
 
+function Get-PeSubsystem {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $reader = New-Object System.IO.BinaryReader($stream)
+    try {
+        $stream.Position = 0x3c
+        $peOffset = $reader.ReadInt32()
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) {
+            throw "'$Path' is not a valid PE executable."
+        }
+
+        $optionalHeaderOffset = $peOffset + 24
+        $stream.Position = $optionalHeaderOffset
+        $magic = $reader.ReadUInt16()
+        if ($magic -notin @(0x10b, 0x20b)) {
+            throw "'$Path' has an unsupported PE optional header."
+        }
+
+        $stream.Position = $optionalHeaderOffset + 0x44
+        return $reader.ReadUInt16()
+    }
+    finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+}
+
 Push-Location $appRoot
 try {
     npm run verify
@@ -59,7 +91,7 @@ try {
     Run-Step "Rust benchmark smoke" {
         Push-Location $repoRoot
         try {
-            cargo run --manifest-path "$cargoManifest" -- --benchmark --ticks 2 --sleep-ms 0 --strict --max-p95-ms 10000
+            cargo run --manifest-path "$cargoManifest" --bin batcave-monitor-cli -- --benchmark --ticks 2 --sleep-ms 0 --strict --max-p95-ms 10000
         }
         finally {
             Pop-Location
@@ -105,6 +137,13 @@ try {
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
+
+        $releaseExecutable = Join-Path $appRoot "src-tauri/target/release/batcave-monitor.exe"
+        $subsystem = Get-PeSubsystem -Path $releaseExecutable
+        if ($subsystem -ne 2) {
+            throw "BatCave must be built as a Windows GUI executable (subsystem 2); found subsystem $subsystem."
+        }
+        Write-Host "Verified Windows GUI subsystem: $releaseExecutable"
     }
 }
 finally {

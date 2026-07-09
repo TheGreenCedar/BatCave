@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   hasSameProcessOrder,
   processViewRowKey,
+  shouldStabilizeProcessOrder,
   stabilizeProcessRows,
 } from "../src/lib/process.ts";
 import type { ProcessViewRow } from "../src/lib/types.ts";
@@ -64,4 +65,13 @@ test("stabilizeProcessRows updates values without moving rows under the user", (
     stable.map((value) => value.cpu_percent),
     [77, 88, 66],
   );
+});
+
+test("only the default attention ranking holds live row order", () => {
+  assert.equal(shouldStabilizeProcessOrder("attention"), true);
+  assert.equal(shouldStabilizeProcessOrder("cpu"), false);
+  assert.equal(shouldStabilizeProcessOrder("memory"), false);
+  assert.equal(shouldStabilizeProcessOrder("io"), false);
+  assert.equal(shouldStabilizeProcessOrder("network"), false);
+  assert.equal(shouldStabilizeProcessOrder("name"), false);
 });

@@ -70,10 +70,10 @@ fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 cargo_manifest="$repo_root/src/BatCave.App/src-tauri/Cargo.toml"
-benchmark_exe="$repo_root/src/BatCave.App/src-tauri/target/release/batcave-monitor"
+benchmark_exe="$repo_root/src/BatCave.App/src-tauri/target/release/batcave-monitor-cli"
 
 if [[ "$no_build" -eq 0 ]]; then
-  cargo build --manifest-path "$cargo_manifest" --release
+  cargo build --manifest-path "$cargo_manifest" --release --bin batcave-monitor-cli
 fi
 
 if [[ ! -x "$benchmark_exe" ]]; then

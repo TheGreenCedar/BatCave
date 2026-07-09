@@ -5,6 +5,7 @@ description = "Lightweight BatCave resource monitor"
 authors = ["BatCave"]
 edition = "2021"
 rust-version = "1.88.0"
+default-run = "batcave-monitor"
 
 [lib]
 name = "batcave_monitor_lib"

@@ -1436,6 +1436,34 @@ mod tests {
     }
 
     #[test]
+    fn process_view_sorts_cpu_values_numerically() {
+        let larger = sample("10", "OneTwentyFour.exe", 124.0);
+        let smaller = sample("20", "TwentyFive.exe", 25.0);
+
+        let descending = shape_process_view(
+            &[smaller.clone(), larger.clone()],
+            &RuntimeQuery {
+                sort_column: SortColumn::CpuPct,
+                sort_direction: SortDirection::Desc,
+                ..RuntimeQuery::default()
+            },
+        );
+        let ascending = shape_process_view(
+            &[larger, smaller],
+            &RuntimeQuery {
+                sort_column: SortColumn::CpuPct,
+                sort_direction: SortDirection::Asc,
+                ..RuntimeQuery::default()
+            },
+        );
+
+        assert_eq!(descending[0].cpu_percent, 124.0);
+        assert_eq!(descending[1].cpu_percent, 25.0);
+        assert_eq!(ascending[0].cpu_percent, 25.0);
+        assert_eq!(ascending[1].cpu_percent, 124.0);
+    }
+
+    #[test]
     fn process_rates_use_pid_and_start_time_identity() {
         let mut previous = sample("10", "Stable", 1.0);
         previous.start_time_ms = 100;

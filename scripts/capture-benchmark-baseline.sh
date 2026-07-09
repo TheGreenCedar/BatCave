@@ -82,7 +82,7 @@ echo "Warmup: $warmup_ticks ticks, measured: $measured_ticks ticks, sleep: $slee
 run_no_build_arg=()
 if [[ "$no_build" -eq 0 ]]; then
   echo "Building Rust benchmark host before baseline capture..."
-  cargo build --manifest-path "$cargo_manifest" --release
+  cargo build --manifest-path "$cargo_manifest" --release --bin batcave-monitor-cli
   run_no_build_arg=(--no-build)
 else
   run_no_build_arg=(--no-build)
