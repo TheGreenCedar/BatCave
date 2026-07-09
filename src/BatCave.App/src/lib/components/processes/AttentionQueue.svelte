@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ProcessColumn, SortKey } from "../../process";
+  import { windowProcessViewRows, type ProcessColumn, type SortKey } from "../../process";
   import type { ProcessFocusMode, ProcessViewRow, SortDirection } from "../../types";
   import MobileProcessList from "./MobileProcessList.svelte";
   import ProcessTable from "./ProcessTable.svelte";
@@ -10,7 +10,7 @@
   export let searchText = "";
   export let columns: ProcessColumn[] = [];
   export let selectedPid = "";
-  export let sortKey: SortKey;
+  export let sortKey: SortKey = "attention";
   export let sortDirection: SortDirection;
   export let processIcons: Record<string, string> = {};
   export let rankingUpdateAvailable = false;
@@ -21,9 +21,12 @@
 
   const resultWindow = 180;
 
-  $: visibleRows = processRows.slice(0, resultWindow);
+  $: visibleRows = windowProcessViewRows(processRows, resultWindow);
   $: rankedCount = processRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
+  $: visibleRankedCount = visibleRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
   $: countLabel = processCountLabel(rankedCount, totalProcessCount, focusMode, searchText);
+  $: queueTitle = focusMode === "active" ? "Attention queue" : focusMode === "io" ? "I/O active" : "All apps";
+  $: queueEyebrow = sortKey === "attention" ? "Live values, stable order while you inspect" : "Live values, sorted as samples update";
 
   function processCountLabel(
     visibleCount: number,
@@ -41,8 +44,8 @@
 <section class="attention-queue" aria-labelledby="attention-queue-title">
   <header class="queue-heading">
     <div>
-      <span>Live values, stable order while you inspect</span>
-      <h2 id="attention-queue-title">Attention queue <small>{countLabel}</small></h2>
+      <span>{queueEyebrow}</span>
+      <h2 id="attention-queue-title">{queueTitle} <small>{countLabel}</small></h2>
     </div>
     {#if rankingUpdateAvailable}<span class="queue-hold-label">Order held while inspecting</span>{/if}
   </header>
@@ -62,7 +65,7 @@
   />
   <MobileProcessList processRows={visibleRows} {selectedPid} {processIcons} {onSelect} />
 
-  {#if processRows.length > visibleRows.length}
-    <p class="result-window-note">Showing the first {visibleRows.length} of {processRows.length} ranked rows. Search to narrow the list.</p>
+  {#if rankedCount > visibleRankedCount}
+    <p class="result-window-note">Showing the first {visibleRankedCount} of {rankedCount} apps and processes. Search to narrow the list.</p>
   {/if}
 </section>

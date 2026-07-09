@@ -114,6 +114,28 @@ export function stabilizeProcessRows(
   return [...stable, ...incoming.filter((row) => !stableKeys.has(processViewRowKey(row)))];
 }
 
+export function windowProcessViewRows(
+  rows: ProcessViewRow[],
+  visibleRowLimit: number,
+): ProcessViewRow[] {
+  const windowed: ProcessViewRow[] = [];
+  let visibleRowCount = 0;
+
+  for (const row of rows) {
+    const isVisibleByDefault = row.kind === "group" || !row.is_grouped;
+    if (isVisibleByDefault) {
+      if (visibleRowCount >= Math.max(1, visibleRowLimit)) {
+        break;
+      }
+      visibleRowCount += 1;
+    }
+
+    windowed.push(row);
+  }
+
+  return windowed;
+}
+
 export function shouldStabilizeProcessOrder(sortKey: SortKey): boolean {
   return sortKey === "attention";
 }

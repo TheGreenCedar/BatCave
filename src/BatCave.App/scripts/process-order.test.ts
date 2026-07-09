@@ -5,6 +5,7 @@ import {
   processViewRowKey,
   shouldStabilizeProcessOrder,
   stabilizeProcessRows,
+  windowProcessViewRows,
 } from "../src/lib/process.ts";
 import type { ProcessViewRow } from "../src/lib/types.ts";
 
@@ -75,3 +76,43 @@ test("only the default attention ranking holds live row order", () => {
   assert.equal(shouldStabilizeProcessOrder("network"), false);
   assert.equal(shouldStabilizeProcessOrder("name"), false);
 });
+
+test("result window counts collapsed groups instead of their hidden children", () => {
+  const firstGroup = groupRows("first", 4);
+  const secondGroup = groupRows("second", 3);
+  const thirdGroup = groupRows("third", 2);
+
+  const windowed = windowProcessViewRows([...firstGroup, ...secondGroup, ...thirdGroup], 2);
+
+  assert.deepEqual(
+    windowed.filter((value) => value.kind === "group").map((value) => value.group_key),
+    ["first", "second"],
+  );
+  assert.equal(windowed.length, firstGroup.length + secondGroup.length);
+  assert.equal(
+    windowed.some((value) => value.group_key === "third"),
+    false,
+  );
+});
+
+function groupRows(groupKey: string, childCount: number): ProcessViewRow[] {
+  const children = Array.from({ length: childCount }, (_, index) => ({
+    ...row(`${groupKey}-${index}`, childCount - index),
+    group_key: groupKey,
+    group_label: `${groupKey}.exe`,
+    group_count: childCount,
+    is_grouped: true,
+  }));
+  const representative = children[0].process;
+
+  return [
+    {
+      ...children[0],
+      kind: "group",
+      process: undefined,
+      representative,
+      is_child: false,
+    },
+    ...children,
+  ];
+}
