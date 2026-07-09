@@ -1,14 +1,15 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import ContextRail from "./lib/components/context/ContextRail.svelte";
-  import type { DetailMode, MetricCardOption } from "./lib/components/metrics/types";
-  import MetricStrip from "./lib/components/metrics/MetricStrip.svelte";
-  import ProcessExplorer from "./lib/components/processes/ProcessExplorer.svelte";
+  import DetailPane from "./lib/components/context/DetailPane.svelte";
+  import SystemSummary from "./lib/components/metrics/SystemSummary.svelte";
+  import type { DetailMode, ResourceSummaryOption } from "./lib/components/metrics/types";
+  import AttentionQueue from "./lib/components/processes/AttentionQueue.svelte";
+  import AppHeader from "./lib/components/shell/AppHeader.svelte";
   import AppShell from "./lib/components/shell/AppShell.svelte";
-  import HealthFooter from "./lib/components/shell/HealthFooter.svelte";
-  import Toolbar from "./lib/components/shell/Toolbar.svelte";
-  import TopBar from "./lib/components/shell/TopBar.svelte";
+  import HealthStatus from "./lib/components/shell/HealthStatus.svelte";
+  import ProcessCommandBar from "./lib/components/shell/ProcessCommandBar.svelte";
+  import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
   import {
     accessLabel,
     formatBytes,
@@ -22,11 +23,13 @@
   import {
     defaultSortDirection,
     focusOptions,
+    hasSameProcessOrder,
     processColumns,
     processIoRate,
     sortColumnForKey,
     sortKeyForColumn,
     sortOptions,
+    stabilizeProcessRows,
     type FocusMode,
     type ProcessRates,
     type SortKey,
@@ -54,6 +57,7 @@
     KernelPoolTag,
     MetricQualityInfo,
     ProcessSample,
+    ProcessViewRow,
     RuntimeQuery,
     RuntimeSnapshot,
     SortDirection,
@@ -77,7 +81,7 @@
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeEmptySnapshot();
   let selectedPid = "";
-  let contextTab: "process" | "system" = "process";
+  let detailSubject: "process" | "system" = "system";
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
   let commandError = "";
@@ -100,28 +104,31 @@
   let processRates: Record<string, ProcessRates> = {};
   let processIcons: Record<string, string> = {};
   let requestedProcessIcons = new Set<string>();
-  let metricCards: MetricCardOption[] = [];
+  let resourceSummaries: ResourceSummaryOption[] = [];
+  let displayProcessRows: ProcessViewRow[] = [];
+  let pendingProcessRows: ProcessViewRow[] = [];
+  let queueInteracting = false;
+  let expandedGroupCount = 0;
+  let rankingUpdateAvailable = false;
+  let settingsOpen = false;
+  let diagnosticsOpen = false;
+  let isCompactDetail = false;
+  let compactDetailOpen = false;
+  let detailReturnFocus: HTMLElement | null = null;
+  let healthTone: "healthy" | "warning" | "danger" = "healthy";
+  let forceRankingRefresh = false;
   let runtimeQueryRequestSeq = 0;
 
   $: themeName = resolveThemeName(themePreference, systemThemeName);
   $: activeTheme = chartPalettes[themeName];
   $: memoryPercent = percentage(snapshot.system.memory_used_bytes, snapshot.system.memory_total_bytes);
   $: swapPercent = percentage(snapshot.system.swap_used_bytes, snapshot.system.swap_total_bytes);
-  $: processViewRows = snapshot.process_view_rows;
+  $: processViewRows = displayProcessRows;
   $: filteredProcesses = processViewRows.flatMap((row) => (row.process ? [row.process] : []));
   $: selectedGroupRow = selectedGroupKey(selectedPid)
     ? (processViewRows.find((row) => row.kind === "group" && row.group_key === selectedGroupKey(selectedPid)) ?? null)
     : null;
   $: selectedProcess = selectedGroupRow ? groupProcessFromRow(selectedGroupRow) : (filteredProcesses.find((process) => process.pid === selectedPid) ?? null);
-  $: warnings =
-    snapshot.warnings.length > 0
-      ? snapshot.warnings
-          .slice()
-          .reverse()
-          .map((warning) => warning.message)
-      : lastError
-        ? [lastError]
-        : [];
   $: sourceLabel =
     snapshot.source === "batcave_runtime" ||
     snapshot.source === "tauri_runtime" ||
@@ -129,6 +136,12 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
+  $: processNetworkAvailable = processViewRows.some((row) => {
+    const quality = (row.process ?? row.representative)?.quality?.network?.quality;
+    return quality !== undefined && quality !== "unavailable" && quality !== "held";
+  });
+  $: visibleProcessColumns =
+    processNetworkAvailable ? processColumns : processColumns.filter((column) => column.key !== "network");
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
@@ -150,6 +163,24 @@
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
+  $: topAttentionRow = processViewRows.find((row) => row.kind === "group" || !row.is_grouped);
+  $: topContributorLabel = topAttentionRow?.group_label ?? topAttentionRow?.process?.name ?? "background activity";
+  $: systemHeadline = systemPressureHeadline(
+    snapshot.system.cpu_percent,
+    memoryPercent,
+    diskReadRate + diskWriteRate,
+    networkDownRate + networkUpRate,
+    topContributorLabel,
+  );
+  $: systemSupportingText = snapshot.health.degraded
+    ? `${snapshot.warnings.length || snapshot.health.collector_warnings} telemetry limitation${(snapshot.warnings.length || snapshot.health.collector_warnings) === 1 ? "" : "s"}; available values remain live.`
+    : "Local telemetry is current. Select a resource or workload to inspect it.";
+  $: healthTone = pollState === "error" ? "danger" : snapshot.health.degraded ? "warning" : "healthy";
+  $: healthLabel = pollState === "error"
+    ? "Telemetry stale"
+    : snapshot.health.degraded
+      ? `${snapshot.warnings.length || snapshot.health.collector_warnings} limitations`
+      : "Telemetry healthy";
   $: detailTitle =
     detailMode === "cpu"
       ? "Logical cores"
@@ -166,92 +197,71 @@
         : detailMode === "disk"
           ? formatRate(diskReadRate + diskWriteRate)
           : formatRate(networkDownRate + networkUpRate);
-  $: metricCards = [
+  $: resourceSummaries = [
     {
       mode: "cpu",
       ariaLabel: "Open CPU logical core detail",
       label: "CPU",
       value: formatPercent(snapshot.system.cpu_percent),
-      sublabel: "Logical cores",
+      supportingLabel: "Peak core",
+      supportingValue: formatPercent(corePeak),
+      statusLabel: resourceStatusLabel(snapshot.system.cpu_percent),
       values: history.cpu,
       max: 100,
       stroke: activeTheme.cpuStroke,
       fill: activeTheme.cpuFill,
-      contrastValue: snapshot.system.cpu_percent,
     },
     {
       mode: "memory",
       ariaLabel: "Open memory detail",
       label: "Memory",
       value: formatPercent(memoryPercent),
-      sublabel: `${formatBytes(snapshot.system.memory_used_bytes)} used`,
+      supportingLabel: "Used",
+      supportingValue: formatBytes(snapshot.system.memory_used_bytes),
+      statusLabel: resourceStatusLabel(memoryPercent),
       values: history.memory,
       max: 100,
       stroke: activeTheme.memoryStroke,
       fill: activeTheme.memoryFill,
-      contrastValue: memoryPercent,
     },
     {
       mode: "disk",
-      ariaLabel: "Open disk detail from read throughput",
-      label: "Disk read",
-      value: formatRate(diskReadRate),
-      sublabel: metricQualityLabel(systemQuality.disk, "Aggregate"),
-      values: history.diskRead,
-      max: diskScaleMax,
-      stroke: activeTheme.diskReadStroke,
-      fill: activeTheme.diskReadFill,
-      contrastValue: diskReadRate,
-    },
-    {
-      mode: "disk",
-      ariaLabel: "Open disk detail from write throughput",
-      label: "Disk write",
-      value: formatRate(diskWriteRate),
-      sublabel: metricQualityLabel(systemQuality.disk, "Aggregate"),
+      ariaLabel: "Open disk throughput detail",
+      label: "Disk",
+      value: formatRate(diskReadRate + diskWriteRate),
+      supportingLabel: "Read / write",
+      supportingValue: `${formatRate(diskReadRate)} / ${formatRate(diskWriteRate)}`,
+      statusLabel: metricQualityLabel(systemQuality.disk, "Aggregate"),
       values: history.diskWrite,
       max: diskScaleMax,
       stroke: activeTheme.diskWriteStroke,
       fill: activeTheme.diskWriteFill,
-      contrastValue: diskWriteRate,
     },
     {
       mode: "network",
-      ariaLabel: "Open network detail from download throughput",
-      label: "Network down",
-      value: formatRate(networkDownRate),
-      sublabel: metricQualityLabel(systemQuality.network, "Aggregate"),
+      ariaLabel: "Open network throughput detail",
+      label: "Network",
+      value: formatRate(networkDownRate + networkUpRate),
+      supportingLabel: "Down / up",
+      supportingValue: `${formatRate(networkDownRate)} / ${formatRate(networkUpRate)}`,
+      statusLabel: metricQualityLabel(systemQuality.network, "Aggregate"),
       values: history.netRx,
       max: networkScaleMax,
       stroke: activeTheme.networkDownStroke,
       fill: activeTheme.networkDownFill,
-      contrastValue: networkDownRate,
-    },
-    {
-      mode: "network",
-      ariaLabel: "Open network detail from upload throughput",
-      label: "Network up",
-      value: formatRate(networkUpRate),
-      sublabel: metricQualityLabel(systemQuality.network, "Aggregate"),
-      values: history.netTx,
-      max: networkScaleMax,
-      stroke: activeTheme.networkUpStroke,
-      fill: activeTheme.networkUpFill,
-      contrastValue: networkUpRate,
     },
   ];
-  $: if (filteredProcesses.length > 0 && !selectedProcess) {
-    selectProcess(filteredProcesses[0].pid);
-  }
 
   onMount(() => {
     let timeoutId: number | undefined;
     let disposed = false;
     const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
+    const compactDetailQuery = window.matchMedia("(max-width: 1120px)");
     const savedTheme = window.localStorage.getItem(themeStorageKey);
     const savedHistoryPointLimit = Number(window.localStorage.getItem(historyStorageKey));
 
     systemThemeName = systemThemeQuery.matches ? "daylight" : "cave";
+    isCompactDetail = compactDetailQuery.matches;
 
     const savedThemePreference = parseThemePreference(savedTheme);
     if (savedThemePreference) {
@@ -265,9 +275,7 @@
     }
 
     if (!hasTauriRuntime()) {
-      snapshot = makeFixtureSnapshot(fixtureTick, currentRuntimeQuery());
-      selectedPid = snapshot.processes[0]?.pid ?? "";
-      ingest(snapshot);
+      ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery()));
     }
 
     const loop = async () => {
@@ -287,11 +295,18 @@
       systemThemeName = event.matches ? "daylight" : "cave";
     };
 
+    const handleCompactDetailChange = (event: MediaQueryListEvent) => {
+      isCompactDetail = event.matches;
+      compactDetailOpen = false;
+    };
+
     systemThemeQuery.addEventListener("change", handleSystemThemeChange);
+    compactDetailQuery.addEventListener("change", handleCompactDetailChange);
 
     return () => {
       disposed = true;
       systemThemeQuery.removeEventListener("change", handleSystemThemeChange);
+      compactDetailQuery.removeEventListener("change", handleCompactDetailChange);
       if (timeoutId !== undefined) {
         window.clearTimeout(timeoutId);
       }
@@ -387,6 +402,7 @@
   function setSortKey(key: SortKey): void {
     sortKey = key;
     sortDirection = defaultSortDirection(key);
+    forceRankingRefresh = true;
     void syncRuntimeQuery();
   }
 
@@ -398,16 +414,19 @@
       sortDirection = defaultSortDirection(key);
     }
 
+    forceRankingRefresh = true;
     void syncRuntimeQuery();
   }
 
   function setSearchText(value: string): void {
     searchText = value;
+    forceRankingRefresh = true;
     void syncRuntimeQuery();
   }
 
   function setFocusMode(mode: FocusMode): void {
     focusMode = mode;
+    forceRankingRefresh = true;
     void syncRuntimeQuery();
   }
 
@@ -458,7 +477,7 @@
     const previous = snapshot;
     hydrateRuntimeControls(next);
     const previousProcess = selectedPid ? selectedProcessFromSnapshot(previous, selectedPid) : null;
-    const nextProcess = selectedPid ? selectedProcessFromSnapshot(next, selectedPid) : next.processes[0];
+    const nextProcess = selectedPid ? selectedProcessFromSnapshot(next, selectedPid) : null;
     const elapsedSeconds = Math.max(0.5, (next.ts_ms - previous.ts_ms) / 1000);
     const diskRead =
       next.system.disk_read_bps ||
@@ -484,10 +503,7 @@
     processRates = buildProcessRates(previous.processes, next.processes, elapsedSeconds);
     isPaused = next.settings.paused;
 
-    if (!selectedPid && nextProcess) {
-      selectedPid = nextProcess.pid;
-      resetProcessHistory(nextProcess);
-    } else if (nextProcess) {
+    if (nextProcess) {
       const nextRates = processTrendRates(nextProcess);
       processHistory = {
         cpu: pushPoint(processHistory.cpu, nextProcess.cpu_percent),
@@ -510,6 +526,7 @@
     }
 
     snapshot = next;
+    updateProcessRows(next.process_view_rows);
     history = {
       cpu: pushPoint(history.cpu, next.system.cpu_percent),
       memory: pushPoint(history.memory, nextMemoryPercent),
@@ -527,16 +544,34 @@
       return;
     }
 
+    const useAttentionByDefault =
+      next.settings.query.focus_mode === "all" &&
+      !next.settings.query.filter_text.trim() &&
+      isSystemPressured(next);
     searchText = next.settings.query.filter_text;
     sortKey = sortKeyForColumn(next.settings.query.sort_column);
     sortDirection = next.settings.query.sort_direction;
+    focusMode = useAttentionByDefault ? "active" : next.settings.query.focus_mode;
     isPaused = next.settings.paused;
     hasHydratedRuntimeSettings = true;
+
+    if (useAttentionByDefault) {
+      window.setTimeout(() => void syncRuntimeQuery(), 0);
+    }
+  }
+
+  function isSystemPressured(next: RuntimeSnapshot): boolean {
+    return (
+      next.system.cpu_percent >= 75 ||
+      percentage(next.system.memory_used_bytes, next.system.memory_total_bytes) >= 85
+    );
   }
 
   function selectProcess(pid: string): void {
     selectedPid = pid;
+    detailSubject = "process";
     copyStatus = "";
+    openCompactDetail();
     const process = selectedProcessFromSnapshot(snapshot, pid);
     if (process) {
       resetProcessHistory(process);
@@ -599,7 +634,78 @@
 
   function selectDetailMode(mode: DetailMode): void {
     detailMode = mode;
-    contextTab = "system";
+    detailSubject = "system";
+    selectedPid = "";
+    openCompactDetail();
+    applyPendingRankingIfReleased();
+  }
+
+  function openCompactDetail(): void {
+    if (!isCompactDetail) {
+      return;
+    }
+
+    if (!compactDetailOpen) {
+      detailReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    compactDetailOpen = true;
+  }
+
+  function closeCompactDetail(): void {
+    compactDetailOpen = false;
+    window.requestAnimationFrame(() => detailReturnFocus?.focus());
+  }
+
+  function handleAppKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape" && compactDetailOpen && !settingsOpen && !diagnosticsOpen) {
+      closeCompactDetail();
+    }
+  }
+
+  function updateProcessRows(incoming: ProcessViewRow[]): void {
+    if (forceRankingRefresh || displayProcessRows.length === 0 || !shouldHoldRanking()) {
+      displayProcessRows = incoming;
+      pendingProcessRows = [];
+      rankingUpdateAvailable = false;
+      forceRankingRefresh = false;
+      return;
+    }
+
+    rankingUpdateAvailable = !hasSameProcessOrder(displayProcessRows, incoming);
+    pendingProcessRows = incoming;
+    displayProcessRows = stabilizeProcessRows(displayProcessRows, incoming);
+  }
+
+  function shouldHoldRanking(): boolean {
+    return queueInteracting || expandedGroupCount > 0 || (detailSubject === "process" && !!selectedPid);
+  }
+
+  function applyPendingRanking(): void {
+    if (pendingProcessRows.length > 0) {
+      displayProcessRows = pendingProcessRows;
+    }
+    pendingProcessRows = [];
+    rankingUpdateAvailable = false;
+  }
+
+  function applyPendingRankingIfReleased(): void {
+    if (!shouldHoldRanking()) {
+      applyPendingRanking();
+    }
+  }
+
+  function setQueueInteraction(active: boolean): void {
+    queueInteracting = active;
+    if (!active) {
+      applyPendingRankingIfReleased();
+    }
+  }
+
+  function setExpandedGroupCount(count: number): void {
+    expandedGroupCount = count;
+    if (count === 0) {
+      applyPendingRankingIfReleased();
+    }
   }
 
   function resetProcessHistory(process: ProcessSample): void {
@@ -869,8 +975,35 @@
     return Math.max(fallback, Math.max(...points, 0) * 1.2);
   }
 
-  function needsReadoutContrast(value: number, max: number): boolean {
-    return max > 0 && value / max >= 0.82;
+  function resourceStatusLabel(percent: number): string {
+    if (percent >= 85) return "High";
+    if (percent >= 65) return "Elevated";
+    return "Steady";
+  }
+
+  function systemPressureHeadline(
+    cpuPercent: number,
+    currentMemoryPercent: number,
+    diskRate: number,
+    networkRate: number,
+    contributor: string,
+  ): string {
+    const pressure = [
+      { label: "CPU", score: cpuPercent / 100 },
+      { label: "memory", score: currentMemoryPercent / 100 },
+      { label: "disk", score: diskRate / (50 * 1024 * 1024) },
+      { label: "network", score: networkRate / (25 * 1024 * 1024) },
+    ].sort((left, right) => right.score - left.score)[0];
+
+    if (pressure.score >= 0.85) {
+      return `High ${pressure.label} pressure - ${contributor} is the top activity.`;
+    }
+
+    if (pressure.score >= 0.65) {
+      return `${pressure.label[0].toLocaleUpperCase()}${pressure.label.slice(1)} is elevated - ${contributor} is the top activity.`;
+    }
+
+    return `System is steady - ${contributor} is the top activity.`;
   }
 
   function timeLabel(timestampMs: number): string {
@@ -890,28 +1023,123 @@
   <title>BatCave Monitor</title>
 </svelte:head>
 
+<svelte:window onkeydown={handleAppKeydown} />
+
 <AppShell {themeName}>
-  <TopBar
+  <AppHeader
     {isPaused}
     {pollState}
-    processCount={snapshot.system.process_count}
-    latencyMs={snapshot.health.snapshot_latency_ms}
     updatedAtLabel={timeLabel(snapshot.ts_ms)}
+    {healthLabel}
+    {healthTone}
+    onOpenDiagnostics={() => (diagnosticsOpen = true)}
   />
-  <MetricStrip
-    cards={metricCards}
+  <SystemSummary
+    resources={resourceSummaries}
     activeMode={detailMode}
-    {needsReadoutContrast}
+    headline={systemHeadline}
+    supportingText={systemSupportingText}
     onSelect={selectDetailMode}
   />
-  <Toolbar
+  <ProcessCommandBar
     {searchText}
     {focusMode}
     {sortKey}
     {isPaused}
     {commandError}
+    {rankingUpdateAvailable}
     {focusOptions}
     {sortOptions}
+    onSearch={setSearchText}
+    onFocus={setFocusMode}
+    onSort={setSortKey}
+    onPaused={() => void setPaused(!isPaused)}
+    onRefresh={() => void refreshNow()}
+    onOpenSettings={() => (settingsOpen = true)}
+    onApplyRanking={applyPendingRanking}
+  />
+  <section class="triage-workspace">
+    <AttentionQueue
+      processRows={processViewRows}
+      totalProcessCount={snapshot.total_process_count || snapshot.system.process_count}
+      {focusMode}
+      {searchText}
+      columns={visibleProcessColumns}
+      {selectedPid}
+      {sortKey}
+      {sortDirection}
+      {processIcons}
+      {rankingUpdateAvailable}
+      onSelect={selectProcess}
+      onToggleSort={toggleSortKey}
+      onInteractionChange={setQueueInteraction}
+      onExpandedChange={setExpandedGroupCount}
+    />
+    {#if !isCompactDetail || compactDetailOpen}
+      {#if isCompactDetail}
+        <button
+          class="detail-drawer-backdrop"
+          type="button"
+          aria-label="Close resource detail"
+          onclick={closeCompactDetail}
+        ></button>
+      {/if}
+      <DetailPane
+        subject={detailSubject}
+        compact={isCompactDetail}
+        onClose={closeCompactDetail}
+        onShowSystem={() => selectDetailMode(detailMode)}
+        {selectedProcess}
+        {processHistory}
+        {processRates}
+        {processReadRate}
+        {processWriteRate}
+        {processIcons}
+        {copyStatus}
+        {activeTheme}
+        {maxRate}
+        {processNetworkLabel}
+        onCopy={() => void copySelectedProcessSummary()}
+        {detailMode}
+        {detailTitle}
+        {detailReadout}
+        {snapshot}
+        {history}
+        {systemQuality}
+        {memoryPercent}
+        {swapPercent}
+        {memoryAccounting}
+        {topKernelPoolTags}
+        {diskReadRate}
+        {diskWriteRate}
+        {networkDownRate}
+        {networkUpRate}
+        {diskScaleMax}
+        {networkScaleMax}
+        {coreLoads}
+        {corePeak}
+        {coreSpread}
+        {hotCoreCount}
+        {busyCoreCount}
+        {coreTone}
+      />
+    {/if}
+  </section>
+
+  <HealthStatus
+    {snapshot}
+    {sourceLabel}
+    {systemQuality}
+    {pollState}
+    {lastError}
+    adminStatus={adminStatusLabel()}
+    open={diagnosticsOpen}
+    onOpen={() => (diagnosticsOpen = true)}
+    onClose={() => (diagnosticsOpen = false)}
+  />
+
+  <SettingsDrawer
+    open={settingsOpen}
     {themeOptions}
     {themePreference}
     {pollIntervals}
@@ -920,80 +1148,11 @@
     {historyPointLimit}
     adminRequested={snapshot.settings.admin_mode_requested}
     adminEnabled={snapshot.settings.admin_mode_enabled}
-    onSearch={setSearchText}
-    onFocus={setFocusMode}
-    onSort={setSortKey}
-    onPaused={() => void setPaused(!isPaused)}
-    onRefresh={() => void refreshNow()}
+    onClose={() => (settingsOpen = false)}
     onTheme={setTheme}
     onPollInterval={(interval) => (pollIntervalMs = interval as (typeof pollIntervals)[number])}
     onHistoryLimit={setHistoryPointLimit}
     onAdminMode={(enabled) => void setAdminMode(enabled)}
     onResetHistory={resetHistory}
-  />
-  <section class="workspace-grid">
-    <ProcessExplorer
-      processes={filteredProcesses}
-      processRows={processViewRows}
-      totalProcessCount={snapshot.total_process_count || snapshot.system.process_count}
-      {focusMode}
-      {searchText}
-      columns={processColumns}
-      {selectedPid}
-      {sortKey}
-      {sortDirection}
-      {processIcons}
-      onSelect={selectProcess}
-      onToggleSort={toggleSortKey}
-    />
-    <ContextRail
-      activeTab={contextTab}
-      onTab={(tab) => (contextTab = tab)}
-      {selectedProcess}
-      {processHistory}
-      {processRates}
-      {processReadRate}
-      {processWriteRate}
-      {processIcons}
-      {copyStatus}
-      {activeTheme}
-      {maxRate}
-      {processNetworkLabel}
-      onCopy={() => void copySelectedProcessSummary()}
-      {detailMode}
-      {detailTitle}
-      {detailReadout}
-      {snapshot}
-      {history}
-      {systemQuality}
-      {memoryPercent}
-      {swapPercent}
-      {memoryAccounting}
-      {topKernelPoolTags}
-      {diskReadRate}
-      {diskWriteRate}
-      {networkDownRate}
-      {networkUpRate}
-      {diskScaleMax}
-      {networkScaleMax}
-      {coreLoads}
-      {corePeak}
-      {coreSpread}
-      {hotCoreCount}
-      {busyCoreCount}
-      {coreTone}
-    />
-  </section>
-  <HealthFooter
-    {snapshot}
-    {sourceLabel}
-    {systemQuality}
-    {memoryPercent}
-    {swapPercent}
-    visibleRows={filteredProcesses.length}
-    {warnings}
-    {pollState}
-    {lastError}
-    adminStatus={adminStatusLabel()}
   />
 </AppShell>

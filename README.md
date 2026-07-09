@@ -6,29 +6,32 @@ This is a public preview. It is useful now, honest about what it cannot see, and
 
 ### Light Theme
 
-![BatCave Monitor resource cockpit overview in the light theme](docs/images/batcave-monitor-overview.png)
+![BatCave Monitor attention-first resource overview in the Daylight theme](docs/images/batcave-monitor-redesign-overview-daylight.jpg)
 
-![BatCave Monitor selected process group inspector in the light theme](docs/images/batcave-monitor-group-inspector.png)
+![BatCave Monitor selected workload detail in the Daylight theme](docs/images/batcave-monitor-redesign-workload-daylight.jpg)
 
-![BatCave Monitor network detail view in the light theme](docs/images/batcave-monitor-network-detail.png)
+![BatCave Monitor plain-language diagnostics drawer in the Daylight theme](docs/images/batcave-monitor-redesign-diagnostics-daylight.jpg)
+
+![BatCave Monitor settings and privileged-access drawer in the Daylight theme](docs/images/batcave-monitor-redesign-settings-daylight.jpg)
 
 ### Dark Theme
 
-![BatCave Monitor resource cockpit overview in the dark Cave theme](docs/images/batcave-monitor-overview-dark.png)
+![BatCave Monitor attention-first resource overview in the dark Cave theme](docs/images/batcave-monitor-redesign-overview-cave.jpg)
 
-![BatCave Monitor selected process group inspector in the dark Cave theme](docs/images/batcave-monitor-group-inspector-dark.png)
+![BatCave Monitor compact card layout in the dark Cave theme](docs/images/batcave-monitor-redesign-narrow-cave.jpg)
 
-![BatCave Monitor network detail view in the dark Cave theme](docs/images/batcave-monitor-network-detail-dark.png)
+![BatCave Monitor dismissible compact detail drawer in the dark Cave theme](docs/images/batcave-monitor-redesign-narrow-detail-cave.jpg)
 
-Screenshots show the native Tauri cockpit UI, grouped process inspector, and network detail view in both the light and dark themes. Browser fixture screenshots are layout-only and should not be used as product proof.
+Screenshots show the native Tauri app with live Windows telemetry. Browser fixture screenshots are layout-only and should not be used as product proof.
 
 ## What It Shows
 
-- A live process explorer with expandable, selectable process groups and CPU, memory, disk/I/O, network, and thread columns.
-- A system inspector for CPU, memory, disk, and network detail, including logical-core charts and runtime health.
-- A selected process or process-group panel with live CPU, memory, disk, and network history. Process rows also show PID, parent PID, kernel CPU, private bytes, disk totals, thread count, handle count, access state, process path, and network attribution when available.
-- Pause/resume, manual refresh, refresh cadence, search, sort, focus modes, chart history length, and theme controls.
-- Explicit quality states when data is warming up, partially available, blocked by permissions, or unavailable on the current platform.
+- An attention-first system summary that identifies the dominant pressure and the largest contributing workload.
+- A stable grouped workload ranking that keeps row identity and scroll position fixed while the user inspects live values.
+- A contextual detail pane with Overview, Resources, and Technical views for the selected workload or system resource.
+- Plain-language telemetry diagnostics that explain impact, next steps, and raw collector detail on demand.
+- Focused drawers for appearance, sampling, privileged access, and local data controls.
+- A compact card layout at narrow window widths, with the same diagnosis path as the desktop table.
 
 BatCave does not pretend. If ETW, eBPF, `/proc`, `/sys`, PDH, or process permissions are unavailable, the app keeps running and marks the affected metric honestly instead of painting fake numbers over the crack.
 
