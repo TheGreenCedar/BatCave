@@ -70,6 +70,7 @@ npm run verify
 
 `npm run verify` runs:
 
+- `npm run test:process-order`
 - `npm run build`
 - `npm run typecheck`
 - `npm run lint`
@@ -132,11 +133,13 @@ Local state stays under:
 
 The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
 
-## Process Explorer Contract
+## Triage UI Contract
 
-The process explorer groups rows by executable identity when available, then process name, then PID as a last resort. Group rows should always have a stable key so they can be expanded, collapsed, selected, and inspected.
+The attention queue groups rows by executable identity when available, then process name, then PID as a last resort. Group rows always have a stable key so they can be expanded, collapsed, selected, and inspected.
 
-Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The inspector history should use those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group.
+Live values may update in place, but ranking order is held while the pointer or keyboard focus is inside the queue, a group is expanded, or a workload is selected. A newer order is applied only through the visible `Ranking updated` control. The desktop queue renders a semantic table; below 820px it becomes a compact list of metric cards.
+
+Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings and diagnostics open as focus-managed side drawers and close with Escape.
 
 ## Platform Telemetry Notes
 

@@ -12,10 +12,15 @@
   } from "../../format";
   import type { DetailMode } from "../metrics/types";
   import type { ChartPalette } from "../../themes";
-  import type { KernelPoolTag, RuntimeSnapshot, SystemMemoryAccounting, SystemMetricQuality, TrendState } from "../../types";
+  import type {
+    KernelPoolTag,
+    RuntimeSnapshot,
+    SystemMemoryAccounting,
+    SystemMetricQuality,
+    TrendState,
+  } from "../../types";
 
   export let detailMode: DetailMode;
-  export let detailTitle: string;
   export let detailReadout: string;
   export let snapshot: RuntimeSnapshot;
   export let history: TrendState;
@@ -37,126 +42,117 @@
   export let hotCoreCount = 0;
   export let busyCoreCount = 0;
   export let coreTone: (load: number) => string;
+
+  $: hottestCores = coreLoads.slice().sort((left, right) => right.load - left.load).slice(0, 8);
 </script>
 
-<section id="resource-detail-panel" class="system-detail" aria-label="Resource detail view">
-  <div class="panel-heading">
-    <div>
-      <span class="section-label">System detail</span>
-      <h2 tabindex="-1">{detailTitle}</h2>
-    </div>
-    <strong>{detailReadout}</strong>
-  </div>
+<section class="system-detail" aria-label="Resource detail view">
   {#if detailMode === "cpu"}
-    <div class="detail-summary" aria-label="CPU distribution summary">
-      <div><span>Peak</span><strong>{formatPercent(corePeak)}</strong></div>
-      <div><span>Hot cores</span><strong>{hotCoreCount}</strong></div>
-      <div><span>Busy</span><strong>{busyCoreCount}</strong></div>
-      <div><span>Spread</span><strong>{formatPercent(coreSpread)}</strong></div>
+    <div class="quality-line">
+      <span>CPU source</span><strong>{metricQualityLabel(systemQuality.cpu, "Measured")}</strong>
     </div>
-    <div class="core-timeseries" aria-label="Logical core time series">
-      {#each coreLoads as core}
-        <div class={`core-trend-card ${coreTone(core.load)}`}>
-          <div>
+    <div class="detail-summary compact-summary" aria-label="CPU summary">
+      <div><span>Average</span><strong>{formatPercent(snapshot.system.cpu_percent)}</strong></div>
+      <div><span>Peak core</span><strong>{formatPercent(corePeak)}</strong></div>
+      <div><span>Hot cores</span><strong>{hotCoreCount}</strong></div>
+      <div><span>Busy cores</span><strong>{busyCoreCount}</strong></div>
+    </div>
+    <div class="detail-hero-chart">
+      <div><span>CPU pressure</span><strong>{detailReadout}</strong></div>
+      <MiniChart values={history.cpu} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
+    </div>
+    <section class="core-distribution" aria-labelledby="core-distribution-title">
+      <header><h3 id="core-distribution-title">Hottest logical cores</h3><span>{formatPercent(coreSpread)} spread</span></header>
+      <div class="core-bars">
+        {#each hottestCores as core (core.index)}
+          <div class={`core-bar ${coreTone(core.load)}`}>
             <span>Core {core.index + 1}</span>
+            <i><b style={`width: ${Math.min(100, Math.max(0, core.load))}%`}></b></i>
             <strong>{formatPercent(core.load)}</strong>
           </div>
-          <MiniChart values={core.trend} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
-        </div>
-      {/each}
-    </div>
-  {:else if detailMode === "memory"}
-    <div class="detail-summary" aria-label="Memory summary">
-      <div><span>Used</span><strong>{formatBytes(snapshot.system.memory_used_bytes)}</strong></div>
-      <div><span>Total</span><strong>{formatBytes(snapshot.system.memory_total_bytes)}</strong></div>
-      <div><span>Swap</span><strong>{formatPercent(swapPercent)}</strong></div>
-      <div>
-        {#if snapshot.system.memory_available_bytes !== undefined}
-          <span>Available</span><strong>{formatBytes(snapshot.system.memory_available_bytes)}</strong>
-        {:else}
-          <span>Processes</span><strong>{snapshot.system.process_count}</strong>
-        {/if}
+        {/each}
       </div>
-      {#if memoryAccounting}
-        <div><span>Process WS</span><strong>{formatBytes(memoryAccounting.process_working_set_bytes)}</strong></div>
-        <div><span>Process private</span><strong>{formatBytes(memoryAccounting.process_private_bytes)}</strong></div>
-        <div><span>Blocked rows</span><strong>{memoryAccounting.denied_process_count}</strong></div>
-        <div><span>Unattributed</span><strong>{optionalBytes(memoryAccounting.unattributed_bytes)}</strong></div>
-        <div>
-          <span>Commit</span>
-          <strong>
-            {memoryAccounting.commit_used_bytes === undefined
-              ? "--"
-              : `${formatBytes(memoryAccounting.commit_used_bytes)} / ${optionalBytes(memoryAccounting.commit_limit_bytes)}`}
-          </strong>
-        </div>
-        <div><span>Kernel paged</span><strong>{optionalBytes(memoryAccounting.kernel_paged_pool_bytes)}</strong></div>
-        <div><span>Kernel nonpaged</span><strong>{optionalBytes(memoryAccounting.kernel_nonpaged_pool_bytes)}</strong></div>
-        <div><span>System cache</span><strong>{optionalBytes(memoryAccounting.system_cache_bytes)}</strong></div>
-      {/if}
+    </section>
+  {:else if detailMode === "memory"}
+    <div class="quality-line">
+      <span>Memory source</span><strong>{metricQualityLabel(systemQuality.memory, "Measured")}</strong>
     </div>
-    {#if topKernelPoolTags.length > 0}
-      <section class="pool-tag-panel" aria-label="Top kernel pool tags">
-        <div class="pool-tag-heading">
-          <div>
-            <span>Top kernel pool tags</span>
-            <small>Pool tags identify kernel allocation categories; driver matches are best-effort candidates.</small>
-          </div>
-          <strong>{topKernelPoolTags.length}</strong>
-        </div>
-        <div class="pool-tag-list">
-          {#each topKernelPoolTags as tag (poolTagKey(tag))}
-            <div class="pool-tag-row">
-              <span><b>{tag.tag}</b><small>{poolKindLabel(tag.kind)}</small></span>
-              <strong>{formatBytes(tag.bytes)}</strong>
-              <span class="pool-tag-counts">{tag.allocations} alloc / {tag.frees} free</span>
-              <span class="pool-tag-candidates">{driverCandidateLabel(tag)}</span>
-            </div>
-          {/each}
-        </div>
-      </section>
-    {/if}
-    <div class="detail-chart-grid two-up">
-      <div class="detail-chart-card large">
+    <div class="detail-summary compact-summary" aria-label="Memory summary">
+      <div><span>Used</span><strong>{formatBytes(snapshot.system.memory_used_bytes)}</strong></div>
+      <div><span>Available</span><strong>{optionalBytes(snapshot.system.memory_available_bytes)}</strong></div>
+      <div><span>Load</span><strong>{formatPercent(memoryPercent)}</strong></div>
+      <div><span>Swap</span><strong>{formatPercent(swapPercent)}</strong></div>
+    </div>
+    <div class="detail-chart-grid two-up compact-charts">
+      <div class="detail-chart-card">
         <div><span>Memory load</span><strong>{formatPercent(memoryPercent)}</strong></div>
         <MiniChart values={history.memory} max={100} stroke={activeTheme.memoryStroke} fill={activeTheme.memoryFill} />
       </div>
-      <div class="detail-chart-card large">
+      <div class="detail-chart-card">
         <div><span>Swap load</span><strong>{formatPercent(swapPercent)}</strong></div>
         <MiniChart values={history.swap} max={100} stroke={activeTheme.swapStroke} fill={activeTheme.swapFill} />
       </div>
     </div>
+    {#if memoryAccounting}
+      <details class="technical-disclosure">
+        <summary>Memory accounting</summary>
+        <dl class="diagnostic-grid">
+          <div><dt>Process working set</dt><dd>{formatBytes(memoryAccounting.process_working_set_bytes)}</dd></div>
+          <div><dt>Process private</dt><dd>{formatBytes(memoryAccounting.process_private_bytes)}</dd></div>
+          <div><dt>Blocked rows</dt><dd>{memoryAccounting.denied_process_count}</dd></div>
+          <div><dt>Unattributed</dt><dd>{optionalBytes(memoryAccounting.unattributed_bytes)}</dd></div>
+          <div><dt>Kernel paged</dt><dd>{optionalBytes(memoryAccounting.kernel_paged_pool_bytes)}</dd></div>
+          <div><dt>Kernel nonpaged</dt><dd>{optionalBytes(memoryAccounting.kernel_nonpaged_pool_bytes)}</dd></div>
+        </dl>
+        {#if topKernelPoolTags.length > 0}
+          <div class="compact-pool-list">
+            {#each topKernelPoolTags as tag (poolTagKey(tag))}
+              <div>
+                <span><b>{tag.tag}</b> {poolKindLabel(tag.kind)}</span>
+                <strong>{formatBytes(tag.bytes)}</strong>
+                <small>{driverCandidateLabel(tag)}</small>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </details>
+    {/if}
   {:else if detailMode === "disk"}
-    <div class="detail-summary" aria-label="Disk summary">
-      <div><span>Read rate</span><strong>{formatRate(diskReadRate)}</strong></div>
-      <div><span>Write rate</span><strong>{formatRate(diskWriteRate)}</strong></div>
+    <div class="quality-line">
+      <span>Disk source</span><strong>{metricQualityLabel(systemQuality.disk, "Aggregate")}</strong>
+    </div>
+    <div class="detail-summary compact-summary" aria-label="Disk summary">
+      <div><span>Read</span><strong>{formatRate(diskReadRate)}</strong></div>
+      <div><span>Write</span><strong>{formatRate(diskWriteRate)}</strong></div>
       <div><span>Read total</span><strong>{formatBytes(snapshot.system.disk_read_total_bytes)}</strong></div>
       <div><span>Write total</span><strong>{formatBytes(snapshot.system.disk_write_total_bytes)}</strong></div>
     </div>
-    <div class="detail-chart-grid two-up">
-      <div class="detail-chart-card large">
+    <div class="detail-chart-grid two-up compact-charts">
+      <div class="detail-chart-card">
         <div><span>Read throughput</span><strong>{formatRate(diskReadRate)}</strong></div>
         <MiniChart values={history.diskRead} max={diskScaleMax} stroke={activeTheme.diskReadStroke} fill={activeTheme.diskReadFill} />
       </div>
-      <div class="detail-chart-card large">
+      <div class="detail-chart-card">
         <div><span>Write throughput</span><strong>{formatRate(diskWriteRate)}</strong></div>
         <MiniChart values={history.diskWrite} max={diskScaleMax} stroke={activeTheme.diskWriteStroke} fill={activeTheme.diskWriteFill} />
       </div>
     </div>
   {:else}
-    <div class="detail-summary" aria-label="Network summary">
-      <div><span>Down</span><strong>{formatRate(networkDownRate)}</strong></div>
-      <div><span>Up</span><strong>{formatRate(networkUpRate)}</strong></div>
+    <div class="quality-line">
+      <span>Network source</span><strong>{metricQualityLabel(systemQuality.network, "Aggregate")}</strong>
+    </div>
+    <div class="detail-summary compact-summary" aria-label="Network summary">
+      <div><span>Download</span><strong>{formatRate(networkDownRate)}</strong></div>
+      <div><span>Upload</span><strong>{formatRate(networkUpRate)}</strong></div>
       <div><span>Received</span><strong>{formatBytes(snapshot.system.network_received_total_bytes)}</strong></div>
       <div><span>Sent</span><strong>{formatBytes(snapshot.system.network_transmitted_total_bytes)}</strong></div>
-      <div><span>Source</span><strong>{metricQualityLabel(systemQuality.network, "Aggregate")}</strong></div>
     </div>
-    <div class="detail-chart-grid two-up">
-      <div class="detail-chart-card large">
+    <div class="detail-chart-grid two-up compact-charts">
+      <div class="detail-chart-card">
         <div><span>Download rate</span><strong>{formatRate(networkDownRate)}</strong></div>
         <MiniChart values={history.netRx} max={networkScaleMax} stroke={activeTheme.networkDownStroke} fill={activeTheme.networkDownFill} />
       </div>
-      <div class="detail-chart-card large">
+      <div class="detail-chart-card">
         <div><span>Upload rate</span><strong>{formatRate(networkUpRate)}</strong></div>
         <MiniChart values={history.netTx} max={networkScaleMax} stroke={activeTheme.networkUpStroke} fill={activeTheme.networkUpFill} />
       </div>

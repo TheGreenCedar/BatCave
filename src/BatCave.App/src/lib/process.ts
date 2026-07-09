@@ -1,4 +1,10 @@
-import type { ProcessFocusMode, ProcessSample, SortColumn, SortDirection } from "./types";
+import type {
+  ProcessFocusMode,
+  ProcessSample,
+  ProcessViewRow,
+  SortColumn,
+  SortDirection,
+} from "./types";
 
 export type FocusMode = ProcessFocusMode;
 export type SortKey =
@@ -47,9 +53,9 @@ export interface ProcessIdentity {
 }
 
 export const focusOptions: { value: FocusMode; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Busy" },
-  { value: "io", label: "I/O" },
+  { value: "all", label: "All apps" },
+  { value: "active", label: "Attention" },
+  { value: "io", label: "I/O active" },
 ];
 
 export const sortOptions: { value: SortKey; label: string }[] = [
@@ -61,15 +67,52 @@ export const sortOptions: { value: SortKey; label: string }[] = [
 ];
 
 export const processColumns: ProcessColumn[] = [
-  { key: "pid", label: "PID" },
-  { key: "name", label: "Process" },
-  { key: "status", label: "Status" },
-  { key: "cpu", label: "CPU/core", metric: true },
+  { key: "name", label: "App or process" },
+  { key: "attention", label: "Impact" },
+  { key: "cpu", label: "CPU", metric: true },
   { key: "memory", label: "Memory", metric: true },
-  { key: "io", label: "Disk I/O", metric: true },
+  { key: "io", label: "I/O", metric: true },
   { key: "network", label: "Network", metric: true },
-  { key: "threads", label: "Threads", metric: true },
 ];
+
+export function processViewRowKey(row: ProcessViewRow): string {
+  if (row.kind === "group") {
+    return `group:${row.group_key ?? row.group_label ?? "unknown"}`;
+  }
+
+  return `process:${row.process?.pid ?? "unknown"}`;
+}
+
+export function hasSameProcessOrder(
+  current: ProcessViewRow[],
+  incoming: ProcessViewRow[],
+): boolean {
+  if (current.length !== incoming.length) {
+    return false;
+  }
+
+  return current.every(
+    (row, index) => processViewRowKey(row) === processViewRowKey(incoming[index]),
+  );
+}
+
+export function stabilizeProcessRows(
+  current: ProcessViewRow[],
+  incoming: ProcessViewRow[],
+): ProcessViewRow[] {
+  if (current.length === 0) {
+    return incoming;
+  }
+
+  const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row]));
+  const stable = current.flatMap((row) => {
+    const next = incomingByKey.get(processViewRowKey(row));
+    return next ? [next] : [];
+  });
+  const stableKeys = new Set(stable.map(processViewRowKey));
+
+  return [...stable, ...incoming.filter((row) => !stableKeys.has(processViewRowKey(row)))];
+}
 
 const sortColumnByKey: Record<SortKey, SortColumn> = {
   attention: "attention",
