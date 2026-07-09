@@ -114,6 +114,10 @@ export function stabilizeProcessRows(
   return [...stable, ...incoming.filter((row) => !stableKeys.has(processViewRowKey(row)))];
 }
 
+export function shouldStabilizeProcessOrder(sortKey: SortKey): boolean {
+  return sortKey === "attention";
+}
+
 const sortColumnByKey: Record<SortKey, SortColumn> = {
   attention: "attention",
   name: "name",

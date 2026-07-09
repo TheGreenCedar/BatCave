@@ -19,7 +19,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $cargoManifest = Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml"
 $releaseDir = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release"
 $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-$benchmarkExeName = if ($isWindows) { "batcave-monitor.exe" } else { "batcave-monitor" }
+$benchmarkExeName = if ($isWindows) { "batcave-monitor-cli.exe" } else { "batcave-monitor-cli" }
 $benchmarkExe = Join-Path $releaseDir $benchmarkExeName
 
 if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
@@ -110,7 +110,7 @@ function Resolve-BaselineSummaryPath {
 }
 
 if (-not $NoBuild) {
-    cargo build --manifest-path "$cargoManifest" --release
+    cargo build --manifest-path "$cargoManifest" --release --bin batcave-monitor-cli
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

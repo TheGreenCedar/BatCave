@@ -494,7 +494,9 @@
 .attention-table td {
   height: 46px;
   min-width: 0;
+  overflow: hidden;
   padding: 0 10px;
+  text-overflow: ellipsis;
 }
 
 .attention-table th:nth-child(1),

@@ -29,6 +29,7 @@
     sortColumnForKey,
     sortKeyForColumn,
     sortOptions,
+    shouldStabilizeProcessOrder,
     stabilizeProcessRows,
     type FocusMode,
     type ProcessRates,
@@ -136,12 +137,7 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
-  $: processNetworkAvailable = processViewRows.some((row) => {
-    const quality = (row.process ?? row.representative)?.quality?.network?.quality;
-    return quality !== undefined && quality !== "unavailable" && quality !== "held";
-  });
-  $: visibleProcessColumns =
-    processNetworkAvailable ? processColumns : processColumns.filter((column) => column.key !== "network");
+  $: visibleProcessColumns = processColumns;
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
@@ -677,7 +673,10 @@
   }
 
   function shouldHoldRanking(): boolean {
-    return queueInteracting || expandedGroupCount > 0 || (detailSubject === "process" && !!selectedPid);
+    return (
+      shouldStabilizeProcessOrder(sortKey) &&
+      (queueInteracting || expandedGroupCount > 0 || (detailSubject === "process" && !!selectedPid))
+    );
   }
 
   function applyPendingRanking(): void {
