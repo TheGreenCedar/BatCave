@@ -23,15 +23,15 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $cargoManifest = Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml"
 $releaseDir = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release"
-$isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-$runtimePlatform = if ($isWindows) { "windows" } else { "linux" }
+$runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+$runtimePlatform = if ($runningOnWindows) { "windows" } else { "linux" }
 $architecture = $Platform.ToLowerInvariant()
-$benchmarkExeName = if ($isWindows) { "batcave-monitor-cli.exe" } else { "batcave-monitor-cli" }
+$benchmarkExeName = if ($runningOnWindows) { "batcave-monitor-cli.exe" } else { "batcave-monitor-cli" }
 $benchmarkExe = Join-Path $releaseDir $benchmarkExeName
 $tempBaselinePath = ""
 
 if ([string]::IsNullOrWhiteSpace($MachineClass)) {
-    $MachineClass = if ($isWindows) { $env:COMPUTERNAME } else { $env:HOSTNAME }
+    $MachineClass = if ($runningOnWindows) { $env:COMPUTERNAME } else { $env:HOSTNAME }
 }
 if ([string]::IsNullOrWhiteSpace($MachineClass)) {
     $MachineClass = "local"
