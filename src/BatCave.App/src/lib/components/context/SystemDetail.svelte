@@ -1,5 +1,6 @@
 <script lang="ts">
   import MiniChart from "../../MiniChart.svelte";
+  import { makeEmptySnapshot } from "../../runtimeSnapshot";
   import {
     driverCandidateLabel,
     formatBytes,
@@ -22,13 +23,13 @@
 
   export let detailMode: DetailMode;
   export let detailReadout: string;
-  export let snapshot: RuntimeSnapshot;
+  export let snapshot: RuntimeSnapshot = makeEmptySnapshot();
   export let history: TrendState;
   export let activeTheme: ChartPalette;
   export let systemQuality: SystemMetricQuality;
   export let memoryPercent: number;
   export let swapPercent: number;
-  export let memoryAccounting: SystemMemoryAccounting | undefined;
+  export let memoryAccounting: SystemMemoryAccounting | undefined = undefined;
   export let topKernelPoolTags: KernelPoolTag[] = [];
   export let diskReadRate = 0;
   export let diskWriteRate = 0;
@@ -44,6 +45,15 @@
   export let coreTone: (load: number) => string;
 
   $: hottestCores = coreLoads.slice().sort((left, right) => right.load - left.load).slice(0, 8);
+  $: hasSwap = snapshot.system.swap_total_bytes !== undefined;
+  $: commitPercent = percent(
+    memoryAccounting?.commit_used_bytes ?? 0,
+    memoryAccounting?.commit_limit_bytes ?? 0,
+  );
+
+  function percent(value: number, total: number): number {
+    return total > 0 ? Math.min(100, Math.max(0, (value / total) * 100)) : 0;
+  }
 </script>
 
 <section class="system-detail" aria-label="Resource detail view">
@@ -81,17 +91,30 @@
       <div><span>Used</span><strong>{formatBytes(snapshot.system.memory_used_bytes)}</strong></div>
       <div><span>Available</span><strong>{optionalBytes(snapshot.system.memory_available_bytes)}</strong></div>
       <div><span>Load</span><strong>{formatPercent(memoryPercent)}</strong></div>
-      <div><span>Swap</span><strong>{formatPercent(swapPercent)}</strong></div>
+      <div>
+        <span>{hasSwap ? "Swap" : "Commit"}</span>
+        <strong>{formatPercent(hasSwap ? swapPercent : commitPercent)}</strong>
+      </div>
     </div>
     <div class="detail-chart-grid two-up compact-charts">
       <div class="detail-chart-card">
         <div><span>Memory load</span><strong>{formatPercent(memoryPercent)}</strong></div>
         <MiniChart values={history.memory} max={100} stroke={activeTheme.memoryStroke} fill={activeTheme.memoryFill} />
       </div>
-      <div class="detail-chart-card">
-        <div><span>Swap load</span><strong>{formatPercent(swapPercent)}</strong></div>
-        <MiniChart values={history.swap} max={100} stroke={activeTheme.swapStroke} fill={activeTheme.swapFill} />
-      </div>
+      {#if hasSwap}
+        <div class="detail-chart-card">
+          <div><span>Swap load</span><strong>{formatPercent(swapPercent)}</strong></div>
+          <MiniChart values={history.swap} max={100} stroke={activeTheme.swapStroke} fill={activeTheme.swapFill} />
+        </div>
+      {:else}
+        <div class="detail-chart-card">
+          <div><span>Commit load</span><strong>{formatPercent(commitPercent)}</strong></div>
+          <p>
+            {optionalBytes(memoryAccounting?.commit_used_bytes)} used of
+            {optionalBytes(memoryAccounting?.commit_limit_bytes)}
+          </p>
+        </div>
+      {/if}
     </div>
     {#if memoryAccounting}
       <details class="technical-disclosure">
@@ -101,6 +124,8 @@
           <div><dt>Process private</dt><dd>{formatBytes(memoryAccounting.process_private_bytes)}</dd></div>
           <div><dt>Blocked rows</dt><dd>{memoryAccounting.denied_process_count}</dd></div>
           <div><dt>Unattributed</dt><dd>{optionalBytes(memoryAccounting.unattributed_bytes)}</dd></div>
+          <div><dt>Commit used</dt><dd>{optionalBytes(memoryAccounting.commit_used_bytes)}</dd></div>
+          <div><dt>Commit limit</dt><dd>{optionalBytes(memoryAccounting.commit_limit_bytes)}</dd></div>
           <div><dt>Kernel paged</dt><dd>{optionalBytes(memoryAccounting.kernel_paged_pool_bytes)}</dd></div>
           <div><dt>Kernel nonpaged</dt><dd>{optionalBytes(memoryAccounting.kernel_nonpaged_pool_bytes)}</dd></div>
         </dl>

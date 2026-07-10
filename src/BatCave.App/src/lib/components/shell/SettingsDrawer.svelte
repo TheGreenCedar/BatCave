@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from "svelte";
   import { formatInterval } from "../../format";
   import type { ThemeOption, ThemePreference } from "../../themes";
 
@@ -12,7 +11,9 @@
   export let historyPointLimit: number;
   export let adminRequested: boolean;
   export let adminEnabled: boolean;
-  export let onClose: () => void;
+  export let adminAvailable = true;
+  export let dataDirectory: string | null = null;
+  export let onClose: () => void = () => {};
   export let onTheme: (theme: ThemePreference) => void;
   export let onPollInterval: (interval: number) => void;
   export let onHistoryLimit: (limit: number) => void;
@@ -20,14 +21,42 @@
   export let onResetHistory: () => void = () => {};
 
   let resetConfirm = false;
-  let closeButton: HTMLButtonElement | null = null;
-  let previouslyOpen = false;
+  let dialog: HTMLDialogElement | null = null;
+  let opener: HTMLElement | null = null;
 
-  $: if (open && !previouslyOpen) {
-    previouslyOpen = true;
-    void tick().then(() => closeButton?.focus());
+  $: if (dialog) syncDialog(dialog, open);
+
+  function syncDialog(element: HTMLDialogElement, shouldOpen: boolean): void {
+    if (shouldOpen && !element.open) {
+      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      element.showModal();
+    } else if (!shouldOpen && element.open) {
+      resetConfirm = false;
+      element.close();
+      restoreOpener();
+    }
   }
-  $: if (!open) previouslyOpen = false;
+
+  function requestClose(): void {
+    resetConfirm = false;
+    dialog?.close();
+    restoreOpener();
+    onClose();
+  }
+
+  function handleClose(): void {
+    resetConfirm = false;
+    restoreOpener();
+  }
+
+  function restoreOpener(): void {
+    opener?.focus();
+    opener = null;
+  }
+
+  function handleBackdropClick(event: MouseEvent): void {
+    if (event.target === event.currentTarget) requestClose();
+  }
 
   function requestReset(): void {
     if (!resetConfirm) {
@@ -40,22 +69,24 @@
   }
 </script>
 
-<svelte:window
-  onkeydown={(event) => {
-    if (open && event.key === "Escape") onClose();
+<dialog
+  bind:this={dialog}
+  class="drawer-layer"
+  aria-labelledby="settings-title"
+  oncancel={(event) => {
+    event.preventDefault();
+    requestClose();
   }}
-/>
-
-{#if open}
-  <div class="drawer-layer">
-    <button class="drawer-backdrop" type="button" aria-label="Close settings" onclick={onClose}></button>
-    <div class="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+  onclose={handleClose}
+  onclick={handleBackdropClick}
+>
+    <div class="settings-drawer">
       <header class="drawer-header">
         <div>
           <span>Preferences</span>
           <h2 id="settings-title">Settings</h2>
         </div>
-        <button bind:this={closeButton} class="icon-action" type="button" aria-label="Close settings" onclick={onClose}>
+        <button class="icon-action" type="button" aria-label="Close settings" onclick={requestClose}>
           <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
         </button>
       </header>
@@ -104,32 +135,35 @@
           </label>
         </section>
 
-        <section class="settings-section privileged-section">
-          <div class="settings-section-heading">
-            <h3>Privileged access</h3>
-            <p>Admin mode can fill permission-shaped gaps. BatCave still falls back safely if elevation is denied.</p>
-          </div>
-          <div class="privileged-card">
-            <div>
-              <strong>Admin mode</strong>
-              <span>{adminEnabled ? "Active" : adminRequested ? "Waiting for Windows" : "Off"}</span>
+        {#if adminAvailable}
+          <section class="settings-section privileged-section">
+            <div class="settings-section-heading">
+              <h3>Privileged access</h3>
+              <p>Admin mode can fill permission-shaped gaps. BatCave still falls back safely if elevation is denied.</p>
             </div>
-            <button
-              class:active={adminRequested}
-              type="button"
-              aria-pressed={adminRequested}
-              onclick={() => onAdminMode(!adminRequested)}
-            >
-              {adminRequested ? "Disable" : "Enable"}
-            </button>
-          </div>
-          <p class="setting-note">Enabling this may open a Windows elevation prompt. Denying it leaves standard monitoring active.</p>
-        </section>
+            <div class="privileged-card">
+              <div>
+                <strong>Admin mode</strong>
+                <span>{adminEnabled ? "Active" : adminRequested ? "Waiting for Windows" : "Off"}</span>
+              </div>
+              <button
+                class:active={adminRequested}
+                type="button"
+                aria-pressed={adminRequested}
+                onclick={() => onAdminMode(!adminRequested)}
+              >
+                {adminRequested ? "Disable" : "Enable"}
+              </button>
+            </div>
+            <p class="setting-note">Enabling this may open a Windows elevation prompt. Denying it leaves standard monitoring active.</p>
+          </section>
+        {/if}
 
         <section class="settings-section">
           <div class="settings-section-heading">
             <h3>Local data</h3>
-            <p>Runtime state stays on this machine under %LOCALAPPDATA%\BatCaveMonitor.</p>
+            <p>Runtime state stays on this machine.</p>
+            <code class="data-directory">{dataDirectory || "Not available"}</code>
           </div>
           <button class="danger-outline" type="button" onclick={requestReset}>
             {resetConfirm ? "Confirm reset history" : "Reset chart history"}
@@ -140,5 +174,4 @@
         </section>
       </div>
     </div>
-  </div>
-{/if}
+</dialog>

@@ -17,15 +17,20 @@
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
   export let onInteractionChange: (active: boolean) => void;
-  export let onExpandedChange: (count: number) => void;
+  export let onExpandedChange: (count: number) => void = () => {};
 
   const resultWindow = 180;
+  let expandedGroups: Record<string, boolean> = {};
 
   $: visibleRows = windowProcessViewRows(processRows, resultWindow);
+  $: visibleGroupKeys = new Set(
+    visibleRows.flatMap((row) => (row.kind === "group" && row.group_key ? [row.group_key] : [])),
+  );
+  $: pruneExpandedGroups(visibleGroupKeys);
   $: rankedCount = processRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
   $: visibleRankedCount = visibleRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
   $: countLabel = processCountLabel(rankedCount, totalProcessCount, focusMode, searchText);
-  $: queueTitle = focusMode === "active" ? "Attention queue" : focusMode === "io" ? "I/O active" : "All apps";
+  $: queueTitle = focusMode === "attention" ? "Attention queue" : focusMode === "io" ? "I/O active" : "All apps";
   $: queueEyebrow = sortKey === "attention" ? "Live values, stable order while you inspect" : "Live values, sorted as samples update";
 
   function processCountLabel(
@@ -34,10 +39,26 @@
     mode: ProcessFocusMode,
     filterText: string,
   ): string {
-    const scope = filterText.trim() ? "matching" : mode === "active" ? "needing attention" : mode === "io" ? "I/O active" : "ranked";
+    const scope = filterText.trim() ? "matching" : mode === "attention" ? "needing attention" : mode === "io" ? "I/O active" : "ranked";
     return totalCount > 0 && visibleCount !== totalCount
       ? `${visibleCount} ${scope} of ${totalCount}`
       : `${visibleCount} ${scope}`;
+  }
+
+  function toggleGroup(key: string): void {
+    const next = { ...expandedGroups };
+    if (next[key]) delete next[key];
+    else next[key] = true;
+    expandedGroups = next;
+    onExpandedChange(Object.keys(next).length);
+  }
+
+  function pruneExpandedGroups(visibleKeys: Set<string>): void {
+    const currentKeys = Object.keys(expandedGroups);
+    if (!currentKeys.some((key) => !visibleKeys.has(key))) return;
+
+    expandedGroups = Object.fromEntries(currentKeys.filter((key) => visibleKeys.has(key)).map((key) => [key, true]));
+    onExpandedChange(Object.keys(expandedGroups).length);
   }
 </script>
 
@@ -52,18 +73,25 @@
 
   <ProcessTable
     processRows={visibleRows}
-    totalRowCount={processRows.length}
     {columns}
     {selectedPid}
     {sortKey}
     {sortDirection}
     {processIcons}
+    {expandedGroups}
     {onSelect}
     {onToggleSort}
+    onToggleGroup={toggleGroup}
     {onInteractionChange}
-    {onExpandedChange}
   />
-  <MobileProcessList processRows={visibleRows} {selectedPid} {processIcons} {onSelect} />
+  <MobileProcessList
+    processRows={visibleRows}
+    {selectedPid}
+    {processIcons}
+    {expandedGroups}
+    {onSelect}
+    onToggleGroup={toggleGroup}
+  />
 
   {#if rankedCount > visibleRankedCount}
     <p class="result-window-note">Showing the first {visibleRankedCount} of {rankedCount} apps and processes. Search to narrow the list.</p>

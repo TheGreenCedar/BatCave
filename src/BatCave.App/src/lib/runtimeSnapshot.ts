@@ -14,12 +14,23 @@ export function makeEmptySnapshot(
   statusSummary = "Waiting for native telemetry.",
 ): RuntimeSnapshot {
   const now = Date.now();
+  const platform =
+    typeof navigator !== "undefined" && navigator.platform.toLocaleLowerCase().includes("linux")
+      ? "linux"
+      : "windows";
 
   return {
     event_kind: "runtime_snapshot",
-    seq: 0,
-    ts_ms: now,
+    publication_seq: 0,
+    published_at_ms: now,
+    sample_seq: 0,
+    sampled_at_ms: null,
     source: "tauri_runtime",
+    environment: {
+      platform,
+      admin_mode_available: false,
+      data_directory: null,
+    },
     settings: {
       query: makeDefaultRuntimeQuery(),
       admin_mode_requested: false,
@@ -51,8 +62,6 @@ export function makeEmptySnapshot(
       memory_used_bytes: 0,
       memory_total_bytes: 0,
       memory_available_bytes: 0,
-      swap_used_bytes: 0,
-      swap_total_bytes: 0,
       process_count: 0,
       disk_read_total_bytes: 0,
       disk_write_total_bytes: 0,
@@ -77,4 +86,11 @@ export function makeEmptySnapshot(
     total_process_count: 0,
     warnings: [],
   };
+}
+
+export function hasNewRuntimeSample(
+  current: Pick<RuntimeSnapshot, "sample_seq">,
+  incoming: Pick<RuntimeSnapshot, "sample_seq">,
+): boolean {
+  return incoming.sample_seq > current.sample_seq;
 }

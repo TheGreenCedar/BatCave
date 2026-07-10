@@ -58,11 +58,21 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 summary:focus-visible {
-  outline: 3px solid var(--accent-ring);
+  outline: 3px solid var(--accent);
   outline-offset: 2px;
   box-shadow:
     0 0 0 3px var(--accent-muted),
-    0 0 0 5px var(--accent-ring);
+    0 0 0 5px var(--accent);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 h1,

@@ -878,12 +878,27 @@ th.metric .sort-header {
 .mobile-process-card {
   width: 100%;
   display: grid;
-  gap: var(--space-2);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
-  padding: var(--space-3);
+  overflow: hidden;
   color: var(--text);
   background: var(--surface-3);
+  text-align: left;
+}
+
+.mobile-process-card.child-card {
+  width: calc(100% - 20px);
+  margin-left: 20px;
+  border-left-color: var(--accent-border);
+}
+
+.mobile-card-select {
+  width: 100%;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  color: inherit;
+  background: transparent;
   text-align: left;
 }
 
@@ -891,6 +906,34 @@ th.metric .sort-header {
 .mobile-process-card.selected {
   border-color: var(--accent-border);
   background: var(--accent-muted);
+}
+
+.mobile-group-expand {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  font-size: var(--text-xs);
+  font-weight: 720;
+}
+
+.mobile-group-expand svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+  transition: transform 120ms ease;
+}
+
+.mobile-group-expand svg.expanded {
+  transform: rotate(90deg);
 }
 
 .card-title-row,

@@ -1,8 +1,11 @@
 export interface RuntimeSnapshot {
   event_kind: "runtime_snapshot";
-  seq: number;
-  ts_ms: number;
+  publication_seq: number;
+  published_at_ms: number;
+  sample_seq: number;
+  sampled_at_ms: number | null;
   source: RuntimeTelemetrySource;
+  environment: RuntimeEnvironment;
   settings: RuntimeSettings;
   health: RuntimeHealth;
   system: SystemMetricsSnapshot;
@@ -10,6 +13,12 @@ export interface RuntimeSnapshot {
   process_view_rows: ProcessViewRow[];
   total_process_count: number;
   warnings: RuntimeWarning[];
+}
+
+export interface RuntimeEnvironment {
+  platform: "windows" | "linux" | "fixture";
+  admin_mode_available: boolean;
+  data_directory: string | null;
 }
 
 export type RuntimeTelemetrySource =
@@ -64,8 +73,8 @@ export interface SystemMetricsSnapshot {
   memory_used_bytes: number;
   memory_total_bytes: number;
   memory_available_bytes?: number;
-  swap_used_bytes: number;
-  swap_total_bytes: number;
+  swap_used_bytes?: number;
+  swap_total_bytes?: number;
   process_count: number;
   disk_read_total_bytes: number;
   disk_write_total_bytes: number;
@@ -127,7 +136,7 @@ export interface ProcessSample {
   kernel_cpu_percent?: number;
   memory_bytes: number;
   private_bytes: number;
-  virtual_memory_bytes: number;
+  virtual_memory_bytes?: number;
   disk_read_total_bytes: number;
   disk_write_total_bytes: number;
   other_io_total_bytes?: number;
@@ -174,7 +183,7 @@ export interface ProcessMetricQuality {
 }
 
 export type AccessState = "full" | "partial" | "denied";
-export type ProcessFocusMode = "all" | "active" | "io";
+export type ProcessFocusMode = "all" | "attention" | "io";
 export type SortColumn =
   | "attention"
   | "name"
@@ -205,8 +214,8 @@ export interface RuntimeSettings {
 }
 
 export interface RuntimeWarning {
-  seq: number;
-  ts_ms: number;
+  publication_seq: number;
+  occurred_at_ms: number;
   category: string;
   message: string;
 }

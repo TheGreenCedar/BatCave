@@ -2,6 +2,7 @@ import type {
   ProcessFocusMode,
   ProcessSample,
   ProcessViewRow,
+  RuntimeQuery,
   SortColumn,
   SortDirection,
 } from "./types";
@@ -54,7 +55,7 @@ export interface ProcessIdentity {
 
 export const focusOptions: { value: FocusMode; label: string }[] = [
   { value: "all", label: "All apps" },
-  { value: "active", label: "Attention" },
+  { value: "attention", label: "Attention" },
   { value: "io", label: "I/O active" },
 ];
 
@@ -63,6 +64,7 @@ export const sortOptions: { value: SortKey; label: string }[] = [
   { value: "cpu", label: "CPU" },
   { value: "memory", label: "Working set" },
   { value: "io", label: "I/O" },
+  { value: "network", label: "Network" },
   { value: "name", label: "Name" },
 ];
 
@@ -80,7 +82,69 @@ export function processViewRowKey(row: ProcessViewRow): string {
     return `group:${row.group_key ?? row.group_label ?? "unknown"}`;
   }
 
-  return `process:${row.process?.pid ?? "unknown"}`;
+  return row.process ? processSelectionKey(row.process) : "process:unknown";
+}
+
+export function processSelectionKey(process: Pick<ProcessSample, "pid" | "start_time_ms">): string {
+  return `process:${process.pid}:${process.start_time_ms}`;
+}
+
+export function processNeedsAttention(process: ProcessSample): boolean {
+  return (
+    process.cpu_percent >= 1 ||
+    process.memory_bytes >= 900 * 1024 * 1024 ||
+    rawProcessIoRate(process) >= 500 * 1024 ||
+    rawProcessNetworkRate(process) >= 1024 * 1024 ||
+    process.access_state !== "full"
+  );
+}
+
+export function compareProcessSamples(
+  left: ProcessSample,
+  right: ProcessSample,
+  query: RuntimeQuery,
+): number {
+  const comparison =
+    query.sort_column === "name"
+      ? left.name.localeCompare(right.name)
+      : query.sort_column === "pid"
+        ? left.pid.localeCompare(right.pid)
+        : query.sort_column === "cpu_pct"
+          ? left.cpu_percent - right.cpu_percent
+          : query.sort_column === "memory_bytes"
+            ? left.memory_bytes - right.memory_bytes
+            : query.sort_column === "disk_bps"
+              ? rawProcessIoRate(left) - rawProcessIoRate(right)
+              : query.sort_column === "network_bps"
+                ? rawProcessNetworkRate(left) - rawProcessNetworkRate(right)
+                : query.sort_column === "threads"
+                  ? left.threads - right.threads
+                  : query.sort_column === "handles"
+                    ? left.handles - right.handles
+                    : query.sort_column === "start_time_ms"
+                      ? left.start_time_ms - right.start_time_ms
+                      : processAttentionScore(left) - processAttentionScore(right);
+
+  const directed = query.sort_direction === "asc" ? comparison : -comparison;
+  return directed || left.name.localeCompare(right.name);
+}
+
+function rawProcessIoRate(process: ProcessSample): number {
+  return process.disk_read_bps + process.disk_write_bps + (process.other_io_bps ?? 0);
+}
+
+function rawProcessNetworkRate(process: ProcessSample): number {
+  return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
+}
+
+function processAttentionScore(process: ProcessSample): number {
+  return (
+    process.cpu_percent * 3 +
+    Math.min(process.memory_bytes / (128 * 1024 * 1024), 20) +
+    Math.min(rawProcessIoRate(process) / (512 * 1024), 20) +
+    Math.min(rawProcessNetworkRate(process) / (1024 * 1024), 20) +
+    (process.access_state === "full" ? 0 : 12)
+  );
 }
 
 export function hasSameProcessOrder(
@@ -168,8 +232,12 @@ export function processIoRate(
   process: ProcessSample,
   processRates: Record<string, ProcessRates>,
 ): number {
-  const rates = processRates[process.pid];
-  return (rates?.readRate ?? 0) + (rates?.writeRate ?? 0) + (rates?.otherRate ?? 0);
+  const rates = processRates[processSelectionKey(process)];
+  return (
+    (rates?.readRate ?? process.disk_read_bps) +
+    (rates?.writeRate ?? process.disk_write_bps) +
+    (rates?.otherRate ?? process.other_io_bps ?? 0)
+  );
 }
 
 export function defaultSortDirection(key: SortKey): SortDirection {

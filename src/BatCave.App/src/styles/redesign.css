@@ -642,12 +642,20 @@
   stroke-width: 2;
 }
 
-.detail-drawer-backdrop {
-  position: fixed;
-  z-index: 38;
-  inset: 0;
-  border: 0;
-  background: color-mix(in srgb, var(--bg-deep) 58%, transparent);
+dialog.detail-pane {
+  margin: 0 0 0 auto;
+  padding: 0;
+  max-width: none;
+  max-height: none;
+  color: var(--text);
+}
+
+dialog.detail-pane:not([open]) {
+  display: none;
+}
+
+dialog.detail-pane::backdrop {
+  background: color-mix(in srgb, var(--surface-0) 58%, transparent);
   backdrop-filter: blur(2px);
 }
 
@@ -1005,13 +1013,25 @@
   position: fixed;
   z-index: 100;
   inset: 0;
-  display: flex;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: none;
   justify-content: flex-end;
+  color: var(--text);
+  background: transparent;
+  overflow: hidden;
 }
 
-.drawer-backdrop {
-  position: absolute;
-  inset: 0;
+.drawer-layer[open] {
+  display: flex;
+}
+
+.drawer-layer::backdrop {
   background: rgba(0, 0, 0, 0.48);
   backdrop-filter: blur(3px);
 }
@@ -1027,6 +1047,13 @@
   color: var(--text);
   background: var(--surface-1);
   box-shadow: -24px 0 64px rgba(0, 0, 0, 0.28);
+}
+
+.data-directory {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 
 .drawer-header {
@@ -1304,9 +1331,11 @@
     right: 0;
     bottom: 0;
     width: min(440px, 92vw);
+    height: 100dvh;
     min-height: 0;
+    margin: 0 0 0 auto;
     border-radius: 16px 0 0 16px;
-    box-shadow: -24px 0 60px color-mix(in srgb, var(--bg-deep) 52%, transparent);
+    box-shadow: -24px 0 60px color-mix(in srgb, var(--surface-0) 52%, transparent);
   }
 }
 

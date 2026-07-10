@@ -9,13 +9,13 @@ import {
 } from "../src/lib/process.ts";
 import type { ProcessViewRow } from "../src/lib/types.ts";
 
-function row(pid: string, cpuPercent: number): ProcessViewRow {
+function row(pid: string, cpuPercent: number, startTimeMs = 0): ProcessViewRow {
   return {
     kind: "process",
     process: {
       pid,
       parent_pid: null,
-      start_time_ms: 0,
+      start_time_ms: startTimeMs,
       name: `${pid}.exe`,
       exe: `C:\\${pid}.exe`,
       status: "running",
@@ -48,6 +48,10 @@ test("processViewRowKey keeps process identity independent of live values", () =
   assert.equal(processViewRowKey(row("42", 1)), processViewRowKey(row("42", 99)));
 });
 
+test("processViewRowKey treats PID reuse as a new process", () => {
+  assert.notEqual(processViewRowKey(row("42", 1, 100)), processViewRowKey(row("42", 1, 200)));
+});
+
 test("hasSameProcessOrder detects a live reorder", () => {
   assert.equal(
     hasSameProcessOrder([row("1", 10), row("2", 20)], [row("2", 30), row("1", 40)]),
@@ -61,7 +65,7 @@ test("stabilizeProcessRows updates values without moving rows under the user", (
     [row("2", 88), row("1", 77), row("3", 66)],
   );
 
-  assert.deepEqual(stable.map(processViewRowKey), ["process:1", "process:2", "process:3"]);
+  assert.deepEqual(stable.map(processViewRowKey), ["process:1:0", "process:2:0", "process:3:0"]);
   assert.deepEqual(
     stable.map((value) => value.cpu_percent),
     [77, 88, 66],

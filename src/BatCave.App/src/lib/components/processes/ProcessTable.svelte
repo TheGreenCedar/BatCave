@@ -3,6 +3,7 @@
     sortAriaValue,
     sortButtonLabel,
     sortIndicator,
+    processSelectionKey,
     type ProcessColumn,
     type ProcessIconKind,
     type SortKey,
@@ -12,26 +13,19 @@
   import ProcessIcon from "./ProcessIcon.svelte";
 
   export let processRows: ProcessViewRow[] = [];
-  export let totalRowCount = 0;
   export let columns: ProcessColumn[] = [];
   export let selectedPid = "";
   export let sortKey: SortKey;
   export let sortDirection: SortDirection;
   export let processIcons: Record<string, string> = {};
+  export let expandedGroups: Record<string, boolean> = {};
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
+  export let onToggleGroup: (key: string) => void = () => {};
   export let onInteractionChange: (active: boolean) => void = () => {};
-  export let onExpandedChange: (count: number) => void = () => {};
-
-  let expandedGroups: Record<string, boolean> = {};
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
-  }
-
-  function toggleGroup(key: string): void {
-    expandedGroups = { ...expandedGroups, [key]: !expandedGroups[key] };
-    onExpandedChange(Object.values(expandedGroups).filter(Boolean).length);
   }
 
   function groupSelectionKey(key: string): string {
@@ -50,7 +44,9 @@
     return (
       !!key &&
       (selectedPid === groupSelectionKey(key) ||
-        processRows.some((row) => row.group_key === key && row.process?.pid === selectedPid))
+        processRows.some(
+          (row) => row.group_key === key && !!row.process && processSelectionKey(row.process) === selectedPid,
+        ))
     );
   }
 
@@ -82,7 +78,7 @@
   onfocusin={() => onInteractionChange(true)}
   onfocusout={handleFocusOut}
 >
-  <table class="attention-table" aria-rowcount={totalRowCount + 1}>
+  <table class="attention-table">
     <thead>
       <tr>
         {#each columns as column}
@@ -119,7 +115,7 @@
                       type="button"
                       aria-expanded={expanded}
                       aria-label={`${expanded ? "Collapse" : "Expand"} ${row.group_label ?? "process"} group, ${processCountLabel(row.group_count)}`}
-                      onclick={() => row.group_key && toggleGroup(row.group_key)}
+                      onclick={() => row.group_key && onToggleGroup(row.group_key)}
                     >
                       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5 10 8l-4.5 4.5" /></svg>
                     </button>
@@ -156,18 +152,19 @@
           </tr>
         {:else if row.process && (!row.is_grouped || !row.group_key || expandedGroups[row.group_key])}
           {@const process = row.process}
-          <tr class:selected={process.pid === selectedPid} class:child-row={row.is_grouped || row.is_child}>
+          {@const selectionKey = processSelectionKey(process)}
+          <tr class:selected={selectionKey === selectedPid} class:child-row={row.is_grouped || row.is_child}>
             {#each columns as column}
               {#if column.key === "name"}
                 <td>
                   <button
                     class="process-button"
-                    class:selected={process.pid === selectedPid}
+                    class:selected={selectionKey === selectedPid}
                     class:child={row.is_grouped || row.is_child}
                     type="button"
-                    aria-pressed={process.pid === selectedPid}
+                    aria-pressed={selectionKey === selectedPid}
                     aria-label={`Inspect ${process.name}, PID ${process.pid}`}
-                    onclick={() => onSelect(process.pid)}
+                    onclick={() => onSelect(selectionKey)}
                   >
                     {#if row.is_grouped || row.is_child}<span class="process-tree-branch" aria-hidden="true"></span>{/if}
                     <ProcessIcon kind={iconKind(row)} child={row.is_grouped || row.is_child} src={iconSrc(process)} />

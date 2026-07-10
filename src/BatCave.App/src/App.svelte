@@ -20,12 +20,16 @@
     processMemoryQuality,
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
+  import { systemPressureHeadline } from "./lib/systemPressure";
   import {
     defaultSortDirection,
     focusOptions,
     hasSameProcessOrder,
     processColumns,
     processIoRate,
+    processNeedsAttention,
+    processSelectionKey,
+    processViewRowKey,
     sortColumnForKey,
     sortKeyForColumn,
     sortOptions,
@@ -35,7 +39,11 @@
     type ProcessRates,
     type SortKey,
   } from "./lib/process";
-  import { makeDefaultRuntimeQuery, makeEmptySnapshot } from "./lib/runtimeSnapshot";
+  import {
+    hasNewRuntimeSample,
+    makeDefaultRuntimeQuery,
+    makeEmptySnapshot,
+  } from "./lib/runtimeSnapshot";
   import {
     chartPalettes,
     parseThemePreference,
@@ -115,21 +123,26 @@
   let diagnosticsOpen = false;
   let isCompactDetail = false;
   let compactDetailOpen = false;
-  let detailReturnFocus: HTMLElement | null = null;
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let forceRankingRefresh = false;
   let runtimeQueryRequestSeq = 0;
+  let searchDebounceId: number | undefined;
 
   $: themeName = resolveThemeName(themePreference, systemThemeName);
   $: activeTheme = chartPalettes[themeName];
   $: memoryPercent = percentage(snapshot.system.memory_used_bytes, snapshot.system.memory_total_bytes);
-  $: swapPercent = percentage(snapshot.system.swap_used_bytes, snapshot.system.swap_total_bytes);
+  $: swapPercent = percentage(
+    snapshot.system.swap_used_bytes ?? 0,
+    snapshot.system.swap_total_bytes ?? 0,
+  );
   $: processViewRows = displayProcessRows;
   $: filteredProcesses = processViewRows.flatMap((row) => (row.process ? [row.process] : []));
   $: selectedGroupRow = selectedGroupKey(selectedPid)
     ? (processViewRows.find((row) => row.kind === "group" && row.group_key === selectedGroupKey(selectedPid)) ?? null)
     : null;
-  $: selectedProcess = selectedGroupRow ? groupProcessFromRow(selectedGroupRow) : (filteredProcesses.find((process) => process.pid === selectedPid) ?? null);
+  $: selectedProcess = selectedGroupRow
+    ? groupProcessFromRow(selectedGroupRow)
+    : (filteredProcesses.find((process) => processSelectionKey(process) === selectedPid) ?? null);
   $: sourceLabel =
     snapshot.source === "batcave_runtime" ||
     snapshot.source === "tauri_runtime" ||
@@ -148,7 +161,7 @@
   $: networkUpRate = history.netTx.at(-1) ?? 0;
   $: diskScaleMax = maxRate([...history.diskRead, ...history.diskWrite], 1_000_000);
   $: networkScaleMax = maxRate([...history.netRx, ...history.netTx], 750_000);
-  $: selectedRates = selectedProcess ? processRates[selectedProcess.pid] : undefined;
+  $: selectedRates = selectedProcess ? processRates[processSelectionKey(selectedProcess)] : undefined;
   $: processReadRate = selectedRates?.readRate ?? processHistory.readRate.at(-1) ?? 0;
   $: processWriteRate = selectedRates?.writeRate ?? processHistory.writeRate.at(-1) ?? 0;
   $: void hydrateProcessIcons(processViewRows, filteredProcesses, selectedProcess);
@@ -159,24 +172,31 @@
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
-  $: topAttentionRow = processViewRows.find((row) => row.kind === "group" || !row.is_grouped);
-  $: topContributorLabel = topAttentionRow?.group_label ?? topAttentionRow?.process?.name ?? "background activity";
   $: systemHeadline = systemPressureHeadline(
     snapshot.system.cpu_percent,
     memoryPercent,
     diskReadRate + diskWriteRate,
     networkDownRate + networkUpRate,
-    topContributorLabel,
+    snapshot.processes,
   );
-  $: systemSupportingText = snapshot.health.degraded
-    ? `${snapshot.warnings.length || snapshot.health.collector_warnings} telemetry limitation${(snapshot.warnings.length || snapshot.health.collector_warnings) === 1 ? "" : "s"}; available values remain live.`
-    : "Local telemetry is current. Select a resource or workload to inspect it.";
-  $: healthTone = pollState === "error" ? "danger" : snapshot.health.degraded ? "warning" : "healthy";
+  $: limitationCount = snapshot.warnings.length || snapshot.health.collector_warnings;
+  $: sampledAtLabel = snapshot.sampled_at_ms ? timeLabel(snapshot.sampled_at_ms) : "no sample yet";
+  $: systemSupportingText = pollState === "error"
+    ? `Telemetry is unavailable; the last successful sample from ${sampledAtLabel} is retained.`
+    : isPaused
+      ? `Collection is paused; values and charts show the last sample from ${sampledAtLabel}.`
+      : snapshot.health.degraded
+        ? `${limitationCount} telemetry limitation${limitationCount === 1 ? "" : "s"}; unaffected values remain current.`
+        : "Local telemetry is current. Select a resource or workload to inspect it.";
+  $: healthTone = pollState === "error" ? "danger" : isPaused || snapshot.health.degraded ? "warning" : "healthy";
   $: healthLabel = pollState === "error"
     ? "Telemetry stale"
-    : snapshot.health.degraded
-      ? `${snapshot.warnings.length || snapshot.health.collector_warnings} limitations`
-      : "Telemetry healthy";
+    : isPaused
+      ? "Telemetry paused"
+      : snapshot.health.degraded
+        ? `${limitationCount} limitation${limitationCount === 1 ? "" : "s"}`
+        : "Telemetry healthy";
+  $: liveStatus = rankingUpdateAvailable ? `${healthLabel}. A new workload ranking is available.` : healthLabel;
   $: detailTitle =
     detailMode === "cpu"
       ? "Logical cores"
@@ -306,6 +326,9 @@
       if (timeoutId !== undefined) {
         window.clearTimeout(timeoutId);
       }
+      if (searchDebounceId !== undefined) {
+        window.clearTimeout(searchDebounceId);
+      }
     };
   });
 
@@ -399,7 +422,7 @@
     sortKey = key;
     sortDirection = defaultSortDirection(key);
     forceRankingRefresh = true;
-    void syncRuntimeQuery();
+    flushRuntimeQuery();
   }
 
   function toggleSortKey(key: SortKey): void {
@@ -411,18 +434,32 @@
     }
 
     forceRankingRefresh = true;
-    void syncRuntimeQuery();
+    flushRuntimeQuery();
   }
 
   function setSearchText(value: string): void {
     searchText = value;
     forceRankingRefresh = true;
-    void syncRuntimeQuery();
+    if (searchDebounceId !== undefined) {
+      window.clearTimeout(searchDebounceId);
+    }
+    searchDebounceId = window.setTimeout(() => {
+      searchDebounceId = undefined;
+      void syncRuntimeQuery();
+    }, 200);
   }
 
   function setFocusMode(mode: FocusMode): void {
     focusMode = mode;
     forceRankingRefresh = true;
+    flushRuntimeQuery();
+  }
+
+  function flushRuntimeQuery(): void {
+    if (searchDebounceId !== undefined) {
+      window.clearTimeout(searchDebounceId);
+      searchDebounceId = undefined;
+    }
     void syncRuntimeQuery();
   }
 
@@ -470,34 +507,28 @@
   }
 
   function ingest(next: RuntimeSnapshot): void {
+    if (next.publication_seq < snapshot.publication_seq) {
+      return;
+    }
+
     const previous = snapshot;
     hydrateRuntimeControls(next);
     const previousProcess = selectedPid ? selectedProcessFromSnapshot(previous, selectedPid) : null;
     const nextProcess = selectedPid ? selectedProcessFromSnapshot(next, selectedPid) : null;
-    const elapsedSeconds = Math.max(0.5, (next.ts_ms - previous.ts_ms) / 1000);
-    const diskRead =
-      next.system.disk_read_bps ||
-      byteRate(next.system.disk_read_total_bytes, previous.system.disk_read_total_bytes, elapsedSeconds);
-    const diskWrite =
-      next.system.disk_write_bps ||
-      byteRate(next.system.disk_write_total_bytes, previous.system.disk_write_total_bytes, elapsedSeconds);
-    const netRx =
-      next.system.network_received_bps ||
-      byteRate(next.system.network_received_total_bytes, previous.system.network_received_total_bytes, elapsedSeconds);
-    const netTx =
-      next.system.network_transmitted_bps ||
-      byteRate(
-        next.system.network_transmitted_total_bytes,
-        previous.system.network_transmitted_total_bytes,
-        elapsedSeconds,
-      );
+    const hasNewSample = hasNewRuntimeSample(previous, next);
     const logicalCpu = next.system.logical_cpu_percent.length
       ? next.system.logical_cpu_percent
       : [next.system.cpu_percent];
     const nextMemoryPercent = percentage(next.system.memory_used_bytes, next.system.memory_total_bytes);
-    const nextSwapPercent = percentage(next.system.swap_used_bytes, next.system.swap_total_bytes);
-    processRates = buildProcessRates(previous.processes, next.processes, elapsedSeconds);
     isPaused = next.settings.paused;
+    snapshot = next;
+    updateProcessRows(next.process_view_rows);
+
+    if (!hasNewSample) {
+      return;
+    }
+
+    processRates = buildProcessRates(next.processes);
 
     if (nextProcess) {
       const nextRates = processTrendRates(nextProcess);
@@ -521,16 +552,17 @@
       };
     }
 
-    snapshot = next;
-    updateProcessRows(next.process_view_rows);
     history = {
       cpu: pushPoint(history.cpu, next.system.cpu_percent),
       memory: pushPoint(history.memory, nextMemoryPercent),
-      swap: pushPoint(history.swap, nextSwapPercent),
-      diskRead: pushPoint(history.diskRead, diskRead),
-      diskWrite: pushPoint(history.diskWrite, diskWrite),
-      netRx: pushPoint(history.netRx, netRx),
-      netTx: pushPoint(history.netTx, netTx),
+      swap:
+        next.system.swap_total_bytes && next.system.swap_used_bytes !== undefined
+          ? pushPoint(history.swap, percentage(next.system.swap_used_bytes, next.system.swap_total_bytes))
+          : history.swap,
+      diskRead: pushPoint(history.diskRead, next.system.disk_read_bps),
+      diskWrite: pushPoint(history.diskWrite, next.system.disk_write_bps),
+      netRx: pushPoint(history.netRx, next.system.network_received_bps),
+      netTx: pushPoint(history.netTx, next.system.network_transmitted_bps),
       cores: logicalCpu.map((value, index) => pushPoint(history.cores[index] ?? [], value)),
     };
   }
@@ -543,11 +575,12 @@
     const useAttentionByDefault =
       next.settings.query.focus_mode === "all" &&
       !next.settings.query.filter_text.trim() &&
-      isSystemPressured(next);
+      isSystemPressured(next) &&
+      next.processes.some(processNeedsAttention);
     searchText = next.settings.query.filter_text;
     sortKey = sortKeyForColumn(next.settings.query.sort_column);
     sortDirection = next.settings.query.sort_direction;
-    focusMode = useAttentionByDefault ? "active" : next.settings.query.focus_mode;
+    focusMode = useAttentionByDefault ? "attention" : next.settings.query.focus_mode;
     isPaused = next.settings.paused;
     hasHydratedRuntimeSettings = true;
 
@@ -563,12 +596,12 @@
     );
   }
 
-  function selectProcess(pid: string): void {
-    selectedPid = pid;
+  function selectProcess(selection: string): void {
+    selectedPid = selection;
     detailSubject = "process";
     copyStatus = "";
     openCompactDetail();
-    const process = selectedProcessFromSnapshot(snapshot, pid);
+    const process = selectedProcessFromSnapshot(snapshot, selection);
     if (process) {
       resetProcessHistory(process);
     }
@@ -640,25 +673,50 @@
     if (!isCompactDetail) {
       return;
     }
-
-    if (!compactDetailOpen) {
-      detailReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    }
     compactDetailOpen = true;
   }
 
   function closeCompactDetail(): void {
     compactDetailOpen = false;
-    window.requestAnimationFrame(() => detailReturnFocus?.focus());
+    applyPendingRankingIfReleased();
   }
 
   function handleAppKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape" && compactDetailOpen && !settingsOpen && !diagnosticsOpen) {
-      closeCompactDetail();
+    const target = event.target;
+    if (event.key === "Enter" && target instanceof HTMLInputElement && target.id === "process-search") {
+      flushRuntimeQuery();
+      return;
+    }
+
+    if (
+      event.key === "/" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !settingsOpen &&
+      !diagnosticsOpen &&
+      !compactDetailOpen &&
+      !(target instanceof HTMLInputElement) &&
+      !(target instanceof HTMLTextAreaElement) &&
+      !(target instanceof HTMLElement && target.isContentEditable)
+    ) {
+      const search = document.querySelector<HTMLInputElement>("#process-search");
+      if (search) {
+        event.preventDefault();
+        search.focus();
+        search.select();
+      }
     }
   }
 
   function updateProcessRows(incoming: ProcessViewRow[]): void {
+    if (selectedPid && !selectionExists(incoming, selectedPid)) {
+      selectedPid = "";
+      detailSubject = "system";
+      compactDetailOpen = false;
+    }
+
     if (forceRankingRefresh || displayProcessRows.length === 0 || !shouldHoldRanking()) {
       displayProcessRows = incoming;
       pendingProcessRows = [];
@@ -673,10 +731,23 @@
   }
 
   function shouldHoldRanking(): boolean {
+    const detailOpen = !isCompactDetail || compactDetailOpen;
+    const selectedWorkloadVisible = !!selectedPid && selectionIsVisible(processViewRows, selectedPid);
     return (
       shouldStabilizeProcessOrder(sortKey) &&
-      (queueInteracting || expandedGroupCount > 0 || (detailSubject === "process" && !!selectedPid))
+      (queueInteracting ||
+        expandedGroupCount > 0 ||
+        (detailSubject === "process" && detailOpen && selectedWorkloadVisible))
     );
+  }
+
+  function selectionExists(rows: ProcessViewRow[], selection: string): boolean {
+    return rows.some((row) => processViewRowKey(row) === selection);
+  }
+
+  function selectionIsVisible(rows: ProcessViewRow[], selection: string): boolean {
+    const row = rows.find((candidate) => processViewRowKey(candidate) === selection);
+    return !!row && (row.kind === "group" || !row.is_grouped || expandedGroupCount > 0);
   }
 
   function applyPendingRanking(): void {
@@ -776,42 +847,14 @@
     return trimPoints([...points, Number.isFinite(value) ? value : 0]);
   }
 
-  function byteRate(current: number, previous: number, elapsedSeconds: number): number {
-    return Math.max(0, (current - previous) / elapsedSeconds);
-  }
-
-  function buildProcessRates(
-    previousProcesses: ProcessSample[],
-    nextProcesses: ProcessSample[],
-    elapsedSeconds: number,
-  ): Record<string, ProcessRates> {
-    const previousByPid = new Map(previousProcesses.map((process) => [process.pid, process]));
+  function buildProcessRates(nextProcesses: ProcessSample[]): Record<string, ProcessRates> {
     const rates: Record<string, ProcessRates> = {};
 
     for (const process of nextProcesses) {
-      const previousProcess = previousByPid.get(process.pid);
-      rates[process.pid] = {
-        readRate:
-          process.disk_read_bps ||
-          byteRate(
-            process.disk_read_total_bytes,
-            previousProcess?.disk_read_total_bytes ?? process.disk_read_total_bytes,
-            elapsedSeconds,
-          ),
-        otherRate:
-          process.other_io_bps ??
-          byteRate(
-            process.other_io_total_bytes ?? 0,
-            previousProcess?.other_io_total_bytes ?? process.other_io_total_bytes ?? 0,
-            elapsedSeconds,
-          ),
-        writeRate:
-          process.disk_write_bps ||
-          byteRate(
-            process.disk_write_total_bytes,
-            previousProcess?.disk_write_total_bytes ?? process.disk_write_total_bytes,
-            elapsedSeconds,
-          ),
+      rates[processSelectionKey(process)] = {
+        readRate: process.disk_read_bps,
+        otherRate: process.other_io_bps ?? 0,
+        writeRate: process.disk_write_bps,
       };
     }
 
@@ -833,7 +876,7 @@
       return row ? groupProcessFromRow(row) : null;
     }
 
-    return source.processes.find((process) => process.pid === selection) ?? null;
+    return source.processes.find((process) => processSelectionKey(process) === selection) ?? null;
   }
 
   function groupProcessFromRow(row: RuntimeSnapshot["process_view_rows"][number]): ProcessSample {
@@ -849,7 +892,7 @@
       kernel_cpu_percent: representative?.kernel_cpu_percent,
       memory_bytes: row.memory_bytes,
       private_bytes: row.memory_bytes,
-      virtual_memory_bytes: row.memory_bytes,
+      virtual_memory_bytes: representative?.virtual_memory_bytes,
       disk_read_total_bytes: representative?.disk_read_total_bytes ?? 0,
       disk_write_total_bytes: representative?.disk_write_total_bytes ?? 0,
       other_io_total_bytes: representative?.other_io_total_bytes,
@@ -866,7 +909,7 @@
   }
 
   function processTrendRates(process: ProcessSample): ProcessRates & { networkRate: number } {
-    const rates = processRates[process.pid];
+    const rates = processRates[processSelectionKey(process)];
     return {
       readRate: rates?.readRate ?? process.disk_read_bps,
       writeRate: rates?.writeRate ?? process.disk_write_bps,
@@ -916,6 +959,10 @@
   }
 
   function adminStatusLabel(): string {
+    if (!snapshot.environment.admin_mode_available) {
+      return `Not available on ${snapshot.environment.platform}`;
+    }
+
     if (snapshot.settings.admin_mode_enabled) {
       return blockedProcessCount > 0 ? `Active, ${blockedProcessCount} blocked` : "Active";
     }
@@ -949,7 +996,8 @@
       `Access: ${accessLabel(process.access_state)}`,
       `Memory quality: ${metricQualityLabel(processMemoryQuality(process) as MetricQualityInfo | undefined, "Measured")}`,
       `Path: ${process.exe || "Path unavailable"}`,
-      `Snapshot seq: ${snapshot.seq}`,
+      `Publication seq: ${snapshot.publication_seq}`,
+      `Sample seq: ${snapshot.sample_seq}`,
       `Snapshot source: ${snapshot.source}`,
     ].join("\n");
   }
@@ -965,8 +1013,27 @@
       copyStatus = "Process summary copied.";
       commandError = "";
     } catch (error) {
-      copyStatus = "";
-      commandError = commandErrorMessage(error, "Unable to copy process summary.");
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const textarea = document.createElement("textarea");
+      textarea.value = processSummary(selectedProcess);
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      let copied = false;
+      try {
+        document.body.append(textarea);
+        textarea.select();
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      } finally {
+        textarea.remove();
+        active?.focus();
+      }
+      copyStatus = copied
+        ? "Process summary copied."
+        : commandErrorMessage(error, "Unable to copy process summary.");
+      commandError = "";
     }
   }
 
@@ -978,31 +1045,6 @@
     if (percent >= 85) return "High";
     if (percent >= 65) return "Elevated";
     return "Steady";
-  }
-
-  function systemPressureHeadline(
-    cpuPercent: number,
-    currentMemoryPercent: number,
-    diskRate: number,
-    networkRate: number,
-    contributor: string,
-  ): string {
-    const pressure = [
-      { label: "CPU", score: cpuPercent / 100 },
-      { label: "memory", score: currentMemoryPercent / 100 },
-      { label: "disk", score: diskRate / (50 * 1024 * 1024) },
-      { label: "network", score: networkRate / (25 * 1024 * 1024) },
-    ].sort((left, right) => right.score - left.score)[0];
-
-    if (pressure.score >= 0.85) {
-      return `High ${pressure.label} pressure - ${contributor} is the top activity.`;
-    }
-
-    if (pressure.score >= 0.65) {
-      return `${pressure.label[0].toLocaleUpperCase()}${pressure.label.slice(1)} is elevated - ${contributor} is the top activity.`;
-    }
-
-    return `System is steady - ${contributor} is the top activity.`;
   }
 
   function timeLabel(timestampMs: number): string {
@@ -1025,10 +1067,11 @@
 <svelte:window onkeydown={handleAppKeydown} />
 
 <AppShell {themeName}>
+  <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{liveStatus}</p>
   <AppHeader
     {isPaused}
     {pollState}
-    updatedAtLabel={timeLabel(snapshot.ts_ms)}
+    updatedAtLabel={snapshot.sampled_at_ms ? timeLabel(snapshot.sampled_at_ms) : "no sample yet"}
     {healthLabel}
     {healthTone}
     onOpenDiagnostics={() => (diagnosticsOpen = true)}
@@ -1075,14 +1118,6 @@
       onExpandedChange={setExpandedGroupCount}
     />
     {#if !isCompactDetail || compactDetailOpen}
-      {#if isCompactDetail}
-        <button
-          class="detail-drawer-backdrop"
-          type="button"
-          aria-label="Close resource detail"
-          onclick={closeCompactDetail}
-        ></button>
-      {/if}
       <DetailPane
         subject={detailSubject}
         compact={isCompactDetail}
@@ -1147,6 +1182,8 @@
     {historyPointLimit}
     adminRequested={snapshot.settings.admin_mode_requested}
     adminEnabled={snapshot.settings.admin_mode_enabled}
+    adminAvailable={snapshot.environment.admin_mode_available}
+    dataDirectory={snapshot.environment.data_directory}
     onClose={() => (settingsOpen = false)}
     onTheme={setTheme}
     onPollInterval={(interval) => (pollIntervalMs = interval as (typeof pollIntervals)[number])}
