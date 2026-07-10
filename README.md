@@ -161,6 +161,8 @@ Linux equivalents are available at `scripts/run-benchmark.sh`, `scripts/capture-
 
 The release benchmark measures the complete `RuntimeState::refresh_now` path plus snapshot JSON serialization in an isolated temporary data directory. The default protocol uses 30 warmup ticks and five 120-tick measured repeats, then gates on the median repeat p95. Baseline artifacts are protocol v2 and include the commit, release-binary hash, platform, architecture, machine class, workload, and every repeat; revision fields append `-dirty` when the measured worktree is not clean. Strict mode requires a matching baseline or an explicit p95 ceiling; baseline comparisons require a speed ratio of at least `0.90` by default.
 
+The complete-remediation release comparison is preserved in [docs/evidence/benchmarks/remediation-20260710.json](docs/evidence/benchmarks/remediation-20260710.json), including source hashes, commit provenance, protocol settings, all repeats, and the strict gate result.
+
 ## Continuous Integration
 
 Pull requests and `codex/**` pushes run Windows and Linux validation without packaging. Pull requests also reject newly introduced dependencies with moderate-or-higher advisories. Pushes to `main` and manual bundle runs produce Windows NSIS plus Linux deb/AppImage artifacts retained for 14 days. A separate Monday/manual audit runs `npm audit --omit=dev` and pinned `cargo-audit 0.22.2`.

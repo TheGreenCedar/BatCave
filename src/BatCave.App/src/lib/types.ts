@@ -9,10 +9,18 @@ export interface RuntimeSnapshot {
   settings: RuntimeSettings;
   health: RuntimeHealth;
   system: SystemMetricsSnapshot;
+  process_contributors: ProcessContributorSummary;
   processes: ProcessSample[];
   process_view_rows: ProcessViewRow[];
   total_process_count: number;
   warnings: RuntimeWarning[];
+}
+
+export interface ProcessContributorSummary {
+  cpu: string | null;
+  memory: string | null;
+  disk: string | null;
+  network: string | null;
 }
 
 export interface RuntimeEnvironment {

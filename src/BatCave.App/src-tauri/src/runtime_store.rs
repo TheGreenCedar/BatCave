@@ -12,10 +12,10 @@ use serde::de::DeserializeOwned;
 use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
-        AccessState, MetricQuality, MetricSource, ProcessFocusMode, ProcessSample, ProcessViewRow,
-        ProcessViewRowKind, RuntimeEnvironment, RuntimeHealth, RuntimePlatform, RuntimeQuery,
-        RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection,
-        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        AccessState, MetricQuality, MetricSource, ProcessContributorSummary, ProcessFocusMode,
+        ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeEnvironment, RuntimeHealth,
+        RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
+        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     elevation::{ElevatedHelperClient, ElevatedPoll},
     telemetry::{now_ms, TelemetryCollector},
@@ -149,8 +149,8 @@ impl RuntimeStore {
             &settings,
             RuntimeHealth::default(),
             empty_system(),
+            &warm_cache.rows,
             shape_rows(&warm_cache.rows, &settings.query),
-            warm_cache.rows.len(),
             warnings.iter().cloned().collect(),
         );
 
@@ -209,13 +209,15 @@ impl RuntimeStore {
                         self.elevated = Some(client);
                     }
                     Err(error) => {
-                        self.add_warning("admin_mode", error);
+                        self.fail_admin_mode(error);
                     }
                 }
             }
         } else {
-            if let Some(client) = self.elevated.take() {
-                client.stop();
+            if let Some(mut client) = self.elevated.take() {
+                if let Err(error) = client.stop() {
+                    self.add_warning("admin_mode", error);
+                }
             }
             if was_admin_enabled {
                 self.previous_processes.clear();
@@ -320,12 +322,15 @@ impl RuntimeStore {
                 self.previous_processes.clear();
             }
             if stop_elevated {
-                if let Some(client) = self.elevated.take() {
-                    client.stop();
+                self.settings.admin_mode_requested = false;
+                if let Some(mut client) = self.elevated.take() {
+                    if let Err(error) = client.stop() {
+                        self.add_warning("admin_mode", error);
+                    }
                 }
             }
             if let Some(error) = admin_warning {
-                self.add_warning("admin_mode", error);
+                self.fail_admin_mode(error);
             }
         } else {
             self.settings.admin_mode_enabled = false;
@@ -402,8 +407,8 @@ impl RuntimeStore {
             &self.settings,
             health,
             system,
+            &self.previous_processes,
             rows,
-            self.previous_processes.len(),
             self.warnings.iter().cloned().collect(),
         );
 
@@ -412,6 +417,12 @@ impl RuntimeStore {
         }
 
         self.snapshot.clone()
+    }
+
+    fn fail_admin_mode(&mut self, error: String) {
+        self.settings.admin_mode_requested = false;
+        self.settings.admin_mode_enabled = false;
+        self.add_warning("admin_mode", error);
     }
 
     fn publish_snapshot_only(&mut self, warning: Option<(&str, String)>) {
@@ -432,8 +443,8 @@ impl RuntimeStore {
             &self.settings,
             health,
             self.snapshot.system.clone(),
+            &self.previous_processes,
             rows,
-            self.previous_processes.len(),
             self.warnings.iter().cloned().collect(),
         );
     }
@@ -632,8 +643,8 @@ fn build_snapshot(
     settings: &RuntimeSettings,
     health: RuntimeHealth,
     system: SystemMetricsSnapshot,
+    all_processes: &[ProcessSample],
     processes: Vec<ProcessSample>,
-    total_process_count: usize,
     warnings: Vec<RuntimeWarning>,
 ) -> RuntimeSnapshot {
     let process_view_rows = shape_process_view(&processes, &settings.query);
@@ -648,9 +659,10 @@ fn build_snapshot(
         settings: settings.clone(),
         health,
         system,
+        process_contributors: summarize_process_contributors(all_processes),
         processes,
         process_view_rows,
-        total_process_count,
+        total_process_count: all_processes.len(),
         warnings,
     }
 }
@@ -959,6 +971,30 @@ fn process_network_rate(process: &ProcessSample) -> u64 {
         .network_received_bps
         .unwrap_or_default()
         .saturating_add(process.network_transmitted_bps.unwrap_or_default())
+}
+
+fn summarize_process_contributors(processes: &[ProcessSample]) -> ProcessContributorSummary {
+    ProcessContributorSummary {
+        cpu: top_process_name(processes, |process| process.cpu_percent),
+        memory: top_process_name(processes, |process| process.memory_bytes),
+        disk: top_process_name(processes, process_io_rate),
+        network: top_process_name(processes, process_network_rate),
+    }
+}
+
+fn top_process_name<T>(
+    processes: &[ProcessSample],
+    metric: impl Fn(&ProcessSample) -> T,
+) -> Option<String>
+where
+    T: Copy + Default + PartialOrd,
+{
+    let process = processes.iter().max_by(|left, right| {
+        metric(left)
+            .partial_cmp(&metric(right))
+            .unwrap_or(Ordering::Equal)
+    })?;
+    (metric(process) > T::default()).then(|| process.name.clone())
 }
 
 fn process_identity(process: &ProcessSample) -> ProcessIdentity {
@@ -1480,6 +1516,60 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_contributors_ignore_search_and_focus() {
+        let cpu = sample("10", "CpuWinner", 80.0);
+        let mut memory = sample("20", "MemoryWinner", 0.0);
+        memory.memory_bytes = 2 * 1024 * 1024 * 1024;
+        let mut disk = sample("30", "DiskWinner", 0.0);
+        disk.disk_read_bps = 8 * 1024 * 1024;
+        let mut network = sample("40", "NetworkWinner", 0.0);
+        network.network_received_bps = Some(16 * 1024 * 1024);
+        let all_processes = vec![cpu, memory, disk, network];
+        let settings = RuntimeSettings {
+            query: RuntimeQuery {
+                filter_text: "diskwinner".to_string(),
+                focus_mode: ProcessFocusMode::Io,
+                ..RuntimeQuery::default()
+            },
+            ..RuntimeSettings::default()
+        };
+        let visible_processes = shape_rows(&all_processes, &settings.query);
+
+        let snapshot = build_snapshot(
+            1,
+            1,
+            1,
+            Some(1),
+            Path::new(""),
+            &settings,
+            RuntimeHealth::default(),
+            empty_system(),
+            &all_processes,
+            visible_processes,
+            Vec::new(),
+        );
+
+        assert_eq!(snapshot.processes.len(), 1);
+        assert_eq!(snapshot.processes[0].name, "DiskWinner");
+        assert_eq!(
+            snapshot.process_contributors.cpu.as_deref(),
+            Some("CpuWinner")
+        );
+        assert_eq!(
+            snapshot.process_contributors.memory.as_deref(),
+            Some("MemoryWinner")
+        );
+        assert_eq!(
+            snapshot.process_contributors.disk.as_deref(),
+            Some("DiskWinner")
+        );
+        assert_eq!(
+            snapshot.process_contributors.network.as_deref(),
+            Some("NetworkWinner")
+        );
+    }
+
+    #[test]
     fn process_view_groups_suffixed_app_processes() {
         let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
         first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
@@ -1756,6 +1846,7 @@ mod tests {
         let mut store = RuntimeStore::new();
         let trusted = sample("10", "Trusted", 1.0);
         let exe = trusted.exe.clone();
+        let all_processes = vec![trusted.clone()];
         store.settings = RuntimeSettings::default();
         store.snapshot = build_snapshot(
             1,
@@ -1766,8 +1857,8 @@ mod tests {
             &store.settings,
             RuntimeHealth::default(),
             empty_system(),
+            &all_processes,
             vec![trusted],
-            1,
             Vec::new(),
         );
 
@@ -1801,6 +1892,24 @@ mod tests {
         assert!(!snapshot.settings.admin_mode_requested);
         assert!(!snapshot.settings.admin_mode_enabled);
         assert!(!snapshot.environment.admin_mode_available);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn admin_failure_clears_requested_and_enabled_state() {
+        let base_dir = runtime_test_dir("admin-failure");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = true;
+
+        store.fail_admin_mode("admin_mode_launch_failed_or_cancelled".to_string());
+
+        assert!(!store.settings.admin_mode_requested);
+        assert!(!store.settings.admin_mode_enabled);
+        assert!(store
+            .warnings
+            .back()
+            .is_some_and(|warning| warning.message == "admin_mode_launch_failed_or_cancelled"));
         let _ = fs::remove_dir_all(base_dir);
     }
 

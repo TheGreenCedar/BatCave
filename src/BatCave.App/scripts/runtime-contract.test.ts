@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compareProcessSamples, processNeedsAttention } from "../src/lib/process.ts";
 import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
-import { systemPressureHeadline } from "../src/lib/systemPressure.ts";
+import { summarizeProcessContributors, systemPressureHeadline } from "../src/lib/systemPressure.ts";
 import type { ProcessSample } from "../src/lib/types.ts";
 
 const canonicalSnapshot = JSON.parse(
@@ -88,9 +88,34 @@ test("pressure attribution follows the dominant resource, not display order", ()
     process({ name: "CPU first", disk_read_bps: 1 }),
     process({ name: "Disk winner", disk_read_bps: 60 * 1024 * 1024 }),
   ];
+  const contributors = summarizeProcessContributors(processes);
 
-  assert.match(systemPressureHeadline(10, 20, 60 * 1024 * 1024, 0, processes), /Disk winner/);
-  assert.equal(systemPressureHeadline(10, 20, 0, 0, processes), "System is steady.");
+  assert.match(systemPressureHeadline(10, 20, 60 * 1024 * 1024, 0, contributors), /Disk winner/);
+  assert.equal(systemPressureHeadline(10, 20, 0, 0, contributors), "System is steady.");
+});
+
+test("search and focus cannot change the headline contributor", () => {
+  const cpuWinner = process({ name: "CPU winner", cpu_percent: 80 });
+  const visibleIo = process({ name: "Visible I/O", disk_read_bps: 1024 });
+  const allProcesses = [cpuWinner, visibleIo];
+  const searchedRows = allProcesses.filter((candidate) => candidate.name.includes("Visible"));
+  const focusedRows = allProcesses.filter(
+    (candidate) => candidate.disk_read_bps + candidate.disk_write_bps > 0,
+  );
+  const contributors = summarizeProcessContributors(allProcesses);
+
+  assert.deepEqual(
+    searchedRows.map((candidate) => candidate.name),
+    ["Visible I/O"],
+  );
+  assert.deepEqual(
+    focusedRows.map((candidate) => candidate.name),
+    ["Visible I/O"],
+  );
+  assert.equal(
+    systemPressureHeadline(90, 0, 0, 0, contributors),
+    "High CPU pressure - CPU winner is the top activity.",
+  );
 });
 
 test("all theme text and focus colors meet contrast floors", () => {

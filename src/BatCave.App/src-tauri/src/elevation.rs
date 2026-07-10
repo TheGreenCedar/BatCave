@@ -17,6 +17,8 @@ use crate::{cli_args, contracts::ProcessSample, telemetry::TelemetryCollector};
 
 const HELPER_INTERVAL_MS: u64 = 500;
 const HELPER_SNAPSHOT_GRACE: Duration = Duration::from_secs(2);
+const HELPER_STOP_GRACE: Duration = Duration::from_secs(2);
+const HELPER_FORCE_EXIT_GRACE: Duration = Duration::from_secs(2);
 const HELPER_TOKEN_BYTES: usize = 32;
 const MAX_PIPE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
@@ -32,6 +34,7 @@ pub struct ElevatedHelperClient {
     #[cfg(windows)]
     pipe: Option<NamedPipeServer>,
     process: Option<ElevatedHelperProcess>,
+    stopped: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -47,10 +50,26 @@ impl ElevatedHelperClient {
         let session = prepare_helper_session(base_dir)?;
 
         #[cfg(windows)]
-        let pipe = Some(NamedPipeServer::create(&session.pipe_name)?);
+        let pipe = match NamedPipeServer::create(&session.pipe_name) {
+            Ok(pipe) => Some(pipe),
+            Err(error) => {
+                remove_artifacts_for_snapshot(&session.data_file);
+                return Err(error);
+            }
+        };
 
-        let process =
-            launch_elevated_helper(&session.pipe_name, &session.stop_file, &session.token)?;
+        let process = match launch_elevated_helper(
+            &session.pipe_name,
+            &session.stop_file,
+            &session.token,
+            std::process::id(),
+        ) {
+            Ok(process) => process,
+            Err(error) => {
+                remove_artifacts_for_snapshot(&session.data_file);
+                return Err(error);
+            }
+        };
 
         Ok(Self {
             data_file: session.data_file,
@@ -63,6 +82,7 @@ impl ElevatedHelperClient {
             #[cfg(windows)]
             pipe,
             process,
+            stopped: false,
         })
     }
 
@@ -101,16 +121,42 @@ impl ElevatedHelperClient {
         })
     }
 
-    pub fn stop(&self) {
-        let _ = fs::write(&self.stop_file, "stop");
-        if self
+    pub fn stop(&mut self) -> Result<(), String> {
+        self.stop_with_timeouts(HELPER_STOP_GRACE, HELPER_FORCE_EXIT_GRACE)
+    }
+
+    fn stop_with_timeouts(
+        &mut self,
+        graceful_timeout: Duration,
+        forced_timeout: Duration,
+    ) -> Result<(), String> {
+        if self.stopped {
+            return Ok(());
+        }
+        self.stopped = true;
+
+        let stop_write_error = fs::write(&self.stop_file, "stop").err();
+        let exited = self
             .process
             .as_ref()
-            .is_none_or(|process| process.wait(Duration::from_millis(2_000)))
-        {
+            .is_none_or(|process| process.wait(graceful_timeout));
+        let exited = if exited {
+            true
+        } else {
+            self.process
+                .as_ref()
+                .is_some_and(|process| process.terminate() && process.wait(forced_timeout))
+        };
+
+        if exited {
             remove_artifacts_for_snapshot(&self.data_file);
+            Ok(())
         } else {
             remove_snapshot_artifacts(&self.data_file);
+            let suffix = stop_write_error
+                .map(|error| format!(":stop_signal_failed:{error}"))
+                .unwrap_or_default();
+            Err(format!("admin_mode_helper_termination_failed{suffix}"))
         }
     }
 
@@ -139,7 +185,7 @@ impl ElevatedHelperClient {
 
 impl Drop for ElevatedHelperClient {
     fn drop(&mut self) {
-        self.stop();
+        let _ = self.stop();
     }
 }
 
@@ -156,6 +202,7 @@ struct ElevatedHelperArgs {
     pipe_name: String,
     stop_file: PathBuf,
     token: String,
+    parent_pid: u32,
 }
 
 pub fn run_cli(args: &[String]) -> Option<i32> {
@@ -175,6 +222,10 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
 #[cfg(windows)]
 fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
     let mut seq = 0_u64;
+    if let Err(error) = start_helper_exit_watchdog(args.parent_pid, args.stop_file.clone()) {
+        eprintln!("{error}");
+        return 1;
+    }
     let pipe = match PipeClient::connect(&args.pipe_name) {
         Ok(pipe) => pipe,
         Err(error) => {
@@ -200,6 +251,51 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
     }
 
     0
+}
+
+#[cfg(windows)]
+fn start_helper_exit_watchdog(parent_pid: u32, stop_file: PathBuf) -> Result<(), String> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+    };
+
+    let parent_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
+    if parent_handle.is_null() {
+        return Err(format!("admin_mode_parent_watch_failed error={}", unsafe {
+            GetLastError()
+        }));
+    }
+    let parent_handle_value = parent_handle as usize;
+
+    thread::Builder::new()
+        .name("batcave-admin-watchdog".to_string())
+        .spawn(move || {
+            let parent_handle = parent_handle_value as HANDLE;
+            loop {
+                if stop_file.exists() {
+                    unsafe { CloseHandle(parent_handle) };
+                    std::process::exit(0);
+                }
+
+                match unsafe { WaitForSingleObject(parent_handle, 50) } {
+                    WAIT_TIMEOUT => {}
+                    WAIT_OBJECT_0 => {
+                        unsafe { CloseHandle(parent_handle) };
+                        std::process::exit(0);
+                    }
+                    _ => {
+                        unsafe { CloseHandle(parent_handle) };
+                        std::process::exit(1);
+                    }
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            unsafe { CloseHandle(parent_handle) };
+            format!("admin_mode_parent_watch_start_failed:{error}")
+        })
 }
 
 #[cfg(not(windows))]
@@ -740,10 +836,17 @@ fn remove_empty_run_dir(data_file: &Path) {
 
 fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
     reject_unknown_helper_args(args)?;
+    let pipe_name = required_value(args, "--pipe-name")?;
+    let stop_file = PathBuf::from(required_value(args, "--stop-file")?);
+    let token = required_value(args, "--token")?;
+    let parent_pid = required_value(args, "--parent-pid")?
+        .parse::<u32>()
+        .map_err(|_| "invalid_elevated_helper_parent_pid".to_string())?;
     Ok(ElevatedHelperArgs {
-        pipe_name: required_value(args, "--pipe-name")?,
-        stop_file: PathBuf::from(required_value(args, "--stop-file")?),
-        token: required_value(args, "--token")?,
+        pipe_name,
+        stop_file,
+        token,
+        parent_pid,
     })
 }
 
@@ -766,6 +869,9 @@ fn validate_helper_args_for_base(
 
     if args.pipe_name != format!(r"\\.\pipe\batcave-elevated-{}", args.token) {
         return Err("invalid_elevated_helper_pipe_name".to_string());
+    }
+    if args.parent_pid == 0 {
+        return Err("invalid_elevated_helper_parent_pid".to_string());
     }
 
     let expected_run_dir = format!("run-{}", args.token);
@@ -796,7 +902,7 @@ fn validate_helper_args_for_base(
 }
 
 fn reject_unknown_helper_args(args: &[String]) -> Result<(), String> {
-    let known_with_value = ["--pipe-name", "--stop-file", "--token"];
+    let known_with_value = ["--pipe-name", "--stop-file", "--token", "--parent-pid"];
     let known_flags = ["--elevated-helper"];
     cli_args::reject_unknown_args(args, &known_with_value, &known_flags)
 }
@@ -846,6 +952,12 @@ impl ElevatedHelperProcess {
             ) == WAIT_OBJECT_0
         }
     }
+
+    fn terminate(&self) -> bool {
+        use windows_sys::Win32::System::Threading::TerminateProcess;
+
+        unsafe { TerminateProcess(self.handle, 1) != 0 }
+    }
 }
 
 #[cfg(windows)]
@@ -870,6 +982,10 @@ impl ElevatedHelperProcess {
     fn wait(&self, _timeout: Duration) -> bool {
         true
     }
+
+    fn terminate(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(windows)]
@@ -877,6 +993,7 @@ fn launch_elevated_helper(
     pipe_name: &str,
     stop_file: &Path,
     token: &str,
+    parent_pid: u32,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
     use std::{mem::size_of, ptr::null};
 
@@ -890,10 +1007,11 @@ fn launch_elevated_helper(
     let exe_w = wide_os(exe.as_os_str());
     let verb_w = wide("runas");
     let params_w = wide(&format!(
-        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\"",
+        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\" --parent-pid {}",
         pipe_name,
         stop_file.display(),
-        token
+        token,
+        parent_pid,
     ));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -918,7 +1036,7 @@ fn launch_elevated_helper(
         return Err("admin_mode_launch_failed_or_cancelled".to_string());
     }
     if info.hProcess.is_null() {
-        return Ok(None);
+        return Err("admin_mode_launch_missing_process_handle".to_string());
     }
 
     Ok(Some(ElevatedHelperProcess {
@@ -931,6 +1049,7 @@ fn launch_elevated_helper(
     _pipe_name: &str,
     _stop_file: &Path,
     _token: &str,
+    _parent_pid: u32,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
     Err("admin_mode_requires_windows".to_string())
 }
@@ -1118,6 +1237,7 @@ mod tests {
             pipe_name: format!(r"\\.\pipe\batcave-elevated-{token}"),
             stop_file: run_dir.join("stop.signal"),
             token: token.clone(),
+            parent_pid: 1,
         };
 
         assert_eq!(
@@ -1146,6 +1266,16 @@ mod tests {
                 &base_dir
             ),
             Err("invalid_elevated_helper_stop_file".to_string())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    parent_pid: 0,
+                    ..valid.clone()
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_parent_pid".to_string())
         );
         assert_eq!(
             validate_helper_args_for_base(
@@ -1204,16 +1334,45 @@ mod tests {
     #[test]
     fn stop_signals_helper_and_removes_snapshot_artifacts() {
         let base_dir = test_dir("stop");
-        let client = test_client(&base_dir);
+        let mut client = test_client(&base_dir);
         let temp_file = snapshot_temp_file(&client.data_file);
         fs::write(&client.data_file, "{}").expect("snapshot fixture writes");
         fs::write(&temp_file, "{}").expect("temp fixture writes");
 
-        client.stop();
+        client.stop().expect("helper stops");
 
         assert!(!client.stop_file.exists());
         assert!(!client.data_file.exists());
         assert!(!temp_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_force_terminates_process_after_grace_timeout() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+
+        let base_dir = test_dir("force-stop");
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"])
+            .spawn()
+            .expect("test process starts");
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, child.id()) };
+        assert!(!handle.is_null(), "test process handle opens");
+
+        let mut client = test_client(&base_dir);
+        client.process = Some(ElevatedHelperProcess { handle });
+        client
+            .stop_with_timeouts(Duration::ZERO, Duration::from_secs(2))
+            .expect("helper is force terminated");
+
+        assert!(client
+            .process
+            .as_ref()
+            .is_some_and(ElevatedHelperProcess::has_exited));
+        child.wait().expect("test process is reaped");
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -1250,6 +1409,7 @@ mod tests {
             #[cfg(windows)]
             pipe: None,
             process: None,
+            stopped: false,
         }
     }
 

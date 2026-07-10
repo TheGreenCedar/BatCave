@@ -80,6 +80,12 @@
       }
     }
   },
+  "process_contributors": {
+    "cpu": "BatCave.App",
+    "memory": "BatCave.App",
+    "disk": "BatCave.App",
+    "network": null
+  },
   "processes": [
     {
       "pid": "1234",

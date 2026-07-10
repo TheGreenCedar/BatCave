@@ -177,7 +177,7 @@
     memoryPercent,
     diskReadRate + diskWriteRate,
     networkDownRate + networkUpRate,
-    snapshot.processes,
+    snapshot.process_contributors,
   );
   $: limitationCount = snapshot.warnings.length || snapshot.health.collector_warnings;
   $: sampledAtLabel = snapshot.sampled_at_ms ? timeLabel(snapshot.sampled_at_ms) : "no sample yet";

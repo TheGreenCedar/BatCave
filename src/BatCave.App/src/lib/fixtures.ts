@@ -1,6 +1,7 @@
 import type { ProcessSample, ProcessViewRow, RuntimeQuery, RuntimeSnapshot } from "./types";
 import { compareProcessSamples, processIdentity, processNeedsAttention } from "./process";
 import { makeDefaultRuntimeQuery } from "./runtimeSnapshot";
+import { summarizeProcessContributors } from "./systemPressure";
 
 const names = [
   "Code.exe",
@@ -187,6 +188,7 @@ export function makeFixtureSnapshot(
         network: { quality: "estimated", source: "fixture" },
       },
     },
+    process_contributors: summarizeProcessContributors(processes),
     processes,
     process_view_rows: shapeProcessView(processes, query),
     total_process_count: processes.length,

@@ -1,0 +1,119 @@
+{
+  "format_version": 1,
+  "purpose": "BatCave complete-remediation release benchmark comparison",
+  "source": {
+    "generated_directory": "artifacts/benchmarks/remediation-20260710-011556",
+    "base_runtime_sha": "161beb6ae4bb14cd4209fcac02b8827a9eff2cd4",
+    "base_reported_sha": "161beb6ae4bb14cd4209fcac02b8827a9eff2cd4-dirty",
+    "candidate_sha": "8d08628bc96ee0425da12f9bc785403c232ec919",
+    "comparison_manifest": {
+      "file": "comparison-manifest.json",
+      "sha256": "9a5aa0834c708035087886cca21cf5dabf1acb6acef16cc26b92771a8921ff8b"
+    },
+    "baseline_artifact": {
+      "file": "baseline-core-20260710-011618.json",
+      "sha256": "deaab1ed3339e78a1b89c47ac63821fd621ac629aa1c04a26ef76cea39e5141a"
+    },
+    "gate_report": {
+      "file": "gate-core-20260710-013222.json",
+      "sha256": "c4789e1efd6fc2cbc3cf83cfc0baa744a5d4c23ce2d390bd687b366c379c6428"
+    },
+    "benchmark_harness": {
+      "file": "src/BatCave.App/src-tauri/src/benchmark.rs",
+      "sha256": "5f5717e3b37c93e3ad8a5be275b79a536bd190e12729412ce646d622f24c8988"
+    },
+    "baseline_note": "The base runtime was measured with the candidate protocol-v2 benchmark harness overlaid; no candidate runtime implementation was included. This is why the generated baseline reported the base revision with a -dirty suffix."
+  },
+  "environment": {
+    "host": "core",
+    "measurement_origin": "runtime_state_refresh_and_json_serialization",
+    "platform": "windows",
+    "architecture": "x64",
+    "machine_class": "ALBERT",
+    "workload_profile": "live-host-default"
+  },
+  "protocol": {
+    "warmup_ticks": 30,
+    "measured_ticks": 120,
+    "sleep_ms": 1000,
+    "repeat_count": 5,
+    "selection": "median-by-tick-p95"
+  },
+  "baseline": {
+    "captured_at_utc": "2026-07-10T05:32:22.2590422Z",
+    "binary_sha256": "fd85bccbf8b949544f0644b20a83ab865eca35ddb759e2b3b2ef882db6958fdb",
+    "repeats": [
+      {
+        "tick_p95_ms": 1275.4,
+        "peak_app_cpu_percent": 16.5,
+        "peak_app_rss_bytes": 32526336
+      },
+      {
+        "tick_p95_ms": 331.1,
+        "peak_app_cpu_percent": 16.7,
+        "peak_app_rss_bytes": 32378880
+      },
+      {
+        "tick_p95_ms": 416.4,
+        "peak_app_cpu_percent": 16.2,
+        "peak_app_rss_bytes": 32473088
+      },
+      {
+        "tick_p95_ms": 602.5,
+        "peak_app_cpu_percent": 17.8,
+        "peak_app_rss_bytes": 33054720
+      },
+      {
+        "tick_p95_ms": 486.2,
+        "peak_app_cpu_percent": 17.7,
+        "peak_app_rss_bytes": 32968704
+      }
+    ],
+    "median_tick_p95_ms": 486.2,
+    "peak_app_cpu_percent": 17.8,
+    "peak_app_rss_bytes": 33054720
+  },
+  "candidate": {
+    "captured_at_utc": "2026-07-10T05:46:20.7291497Z",
+    "binary_sha256": "d382ff53310806d1c75ea9c60cfd5f3474751cca8c6d2aaee2a8ee530863c1bc",
+    "repeats": [
+      {
+        "tick_p95_ms": 405.2,
+        "peak_app_cpu_percent": 17.9,
+        "peak_app_rss_bytes": 30314496
+      },
+      {
+        "tick_p95_ms": 327.3,
+        "peak_app_cpu_percent": 17.6,
+        "peak_app_rss_bytes": 30498816
+      },
+      {
+        "tick_p95_ms": 358.3,
+        "peak_app_cpu_percent": 16.7,
+        "peak_app_rss_bytes": 30408704
+      },
+      {
+        "tick_p95_ms": 326.6,
+        "peak_app_cpu_percent": 16.6,
+        "peak_app_rss_bytes": 30580736
+      },
+      {
+        "tick_p95_ms": 386.8,
+        "peak_app_cpu_percent": 17.5,
+        "peak_app_rss_bytes": 31313920
+      }
+    ],
+    "median_tick_p95_ms": 358.3,
+    "peak_app_cpu_percent": 17.9,
+    "peak_app_rss_bytes": 31313920
+  },
+  "gate": {
+    "calculation": "baseline.median_tick_p95_ms / candidate.median_tick_p95_ms",
+    "speed_ratio": 1.357,
+    "minimum_speed_ratio": 0.9,
+    "baseline_metadata_matched": true,
+    "speed_ratio_passed": true,
+    "strict_passed": true,
+    "exit_code": 0
+  }
+}

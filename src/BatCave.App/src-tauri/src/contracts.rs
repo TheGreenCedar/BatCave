@@ -13,10 +13,20 @@ pub struct RuntimeSnapshot {
     pub settings: RuntimeSettings,
     pub health: RuntimeHealth,
     pub system: SystemMetricsSnapshot,
+    pub process_contributors: ProcessContributorSummary,
     pub processes: Vec<ProcessSample>,
     pub process_view_rows: Vec<ProcessViewRow>,
     pub total_process_count: usize,
     pub warnings: Vec<RuntimeWarning>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProcessContributorSummary {
+    pub cpu: Option<String>,
+    pub memory: Option<String>,
+    pub disk: Option<String>,
+    pub network: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,6 +584,12 @@ mod tests {
                     )),
                 }),
             },
+            process_contributors: ProcessContributorSummary {
+                cpu: Some("BatCave.App".to_string()),
+                memory: Some("BatCave.App".to_string()),
+                disk: Some("BatCave.App".to_string()),
+                network: None,
+            },
             processes: vec![sample_process()],
             process_view_rows: vec![sample_process_view_row()],
             total_process_count: 1,
@@ -678,6 +694,12 @@ mod tests {
                         "disk": { "quality": "partial", "source": "process_aggregate" },
                         "network": { "quality": "native", "source": "interface_aggregate" }
                     }
+                },
+                "process_contributors": {
+                    "cpu": "BatCave.App",
+                    "memory": "BatCave.App",
+                    "disk": "BatCave.App",
+                    "network": null
                 },
                 "processes": [],
                 "process_view_rows": [],

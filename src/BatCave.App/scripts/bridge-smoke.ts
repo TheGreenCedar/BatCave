@@ -80,6 +80,7 @@ function snapshot(seq: number) {
       network_received_bps: 0,
       network_transmitted_bps: 0,
     },
+    process_contributors: { cpu: null, memory: null, disk: null, network: null },
     processes: [],
     process_view_rows: [],
     total_process_count: 0,

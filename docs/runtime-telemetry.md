@@ -1,6 +1,6 @@
 # Runtime Telemetry
 
-**Updated**: 2026-07-09
+**Updated**: 2026-07-10
 
 BatCave Monitor is built around a Rust runtime store that collects local telemetry, shapes it into a stable snake_case JSON contract, and tells the UI exactly how trustworthy each metric is. The important part is not just "show numbers." The important part is "show what the machine actually said, and admit when it would not answer."
 
@@ -44,6 +44,8 @@ The UI should not own long-lived runtime truth. Settings, pause state, refresh c
 Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, admin, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. The UI appends histories and derives rates only when `sample_seq` advances. The required `environment` object reports `platform`, `admin_mode_available`, and the resolved `data_directory`.
 
 This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: active` aliases are not serialized. Process selection and rate identity use `pid` plus `start_time_ms` so PID reuse cannot inherit an earlier process's state. Empty kernel-pool-tag `driver_candidates` are always serialized as `[]`.
+
+`process_contributors` is a compact, query-independent summary of the top CPU, memory, disk, and network process names from the complete sample. Its fields are `null` when no process reports activity for that resource. Search, focus, sorting, and limits still shape `processes` and `process_view_rows` for the workload table, but cannot rewrite the system headline.
 
 ## Current Coverage
 
