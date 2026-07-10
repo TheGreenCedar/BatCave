@@ -181,6 +181,15 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Normalize release filenames
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in Path("dist").iterdir():
+              if " " in path.name:
+                  path.rename(path.with_name(path.name.replace(" ", ".")))
+          PY
+
       - name: Generate checksums
         run: |
           cd dist
