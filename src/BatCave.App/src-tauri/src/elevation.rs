@@ -133,7 +133,6 @@ impl ElevatedHelperClient {
         if self.stopped {
             return Ok(());
         }
-        self.stopped = true;
 
         let stop_write_error = fs::write(&self.stop_file, "stop").err();
         let exited = self
@@ -149,6 +148,7 @@ impl ElevatedHelperClient {
         };
 
         if exited {
+            self.stopped = true;
             remove_artifacts_for_snapshot(&self.data_file);
             Ok(())
         } else {
@@ -1349,7 +1349,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn stop_force_terminates_process_after_grace_timeout() {
+    fn stop_retries_and_force_terminates_after_failed_attempt() {
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
         };
@@ -1359,15 +1359,38 @@ mod tests {
             .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"])
             .spawn()
             .expect("test process starts");
-        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, child.id()) };
-        assert!(!handle.is_null(), "test process handle opens");
+        let sync_only_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child.id()) };
+        assert!(
+            !sync_only_handle.is_null(),
+            "sync-only process handle opens"
+        );
 
         let mut client = test_client(&base_dir);
-        client.process = Some(ElevatedHelperProcess { handle });
+        client.process = Some(ElevatedHelperProcess {
+            handle: sync_only_handle,
+        });
+        assert_eq!(
+            client
+                .stop_with_timeouts(Duration::ZERO, Duration::ZERO)
+                .expect_err("missing terminate access fails"),
+            "admin_mode_helper_termination_failed"
+        );
+        assert!(!client.stopped, "failed termination remains retryable");
+
+        let terminate_handle =
+            unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, child.id()) };
+        assert!(
+            !terminate_handle.is_null(),
+            "terminate process handle opens"
+        );
+        client.process = Some(ElevatedHelperProcess {
+            handle: terminate_handle,
+        });
         client
             .stop_with_timeouts(Duration::ZERO, Duration::from_secs(2))
-            .expect("helper is force terminated");
+            .expect("retry force terminates helper");
 
+        assert!(client.stopped);
         assert!(client
             .process
             .as_ref()
