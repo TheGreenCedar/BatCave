@@ -2,27 +2,27 @@
   "format_version": 1,
   "purpose": "BatCave complete-remediation release benchmark comparison",
   "source": {
-    "generated_directory": "artifacts/benchmarks/remediation-20260710-022754",
+    "generated_directory": "artifacts/benchmarks/remediation-final-full-20260710-031952",
     "base_runtime_sha": "161beb6ae4bb14cd4209fcac02b8827a9eff2cd4",
     "base_reported_sha": "161beb6ae4bb14cd4209fcac02b8827a9eff2cd4-dirty",
-    "candidate_sha": "041661939c557ec838183fc8ac8ee75dc7b0c983",
+    "candidate_sha": "b47b06524f59fd32d06d23656ba1df5591af215d",
     "comparison_manifest": {
       "file": "comparison-manifest.json",
-      "sha256": "88f0aaba718deb508b530e3c5a69bd1120eaa22a2f42ab877cb9ccc68fe00254"
+      "sha256": "c303b57a96e21d8384637bacbf9dd145ea102fa1c4505dd076d90f7ebecdb59c"
     },
     "baseline_artifact": {
-      "file": "baseline-core-20260710-022811.json",
-      "sha256": "dd63bc0566e5f8622fb0ccac7a13742762b435b869166eb621cd73bb30762eaf"
+      "file": "baseline-core-20260710-032011.json",
+      "sha256": "34cb2ee3e75e50d4e5f759a3d72c5db23ddb6dfb41a50f1af416ace027385112"
     },
     "gate_report": {
-      "file": "gate-core-20260710-024232.json",
-      "sha256": "fd553c7fa716ef23cc924ef94bdbb5dd59a153bb104595e23946b0d7c433c2e2"
+      "file": "gate-core-20260710-033434.json",
+      "sha256": "85d0f9cbc59e7b91f13c97c67d890ccbd1100d64d38fd18692886b55e1a46078"
     },
     "benchmark_harness": {
       "file": "src/BatCave.App/src-tauri/src/benchmark.rs",
       "sha256": "5f5717e3b37c93e3ad8a5be275b79a536bd190e12729412ce646d622f24c8988"
     },
-    "baseline_note": "The base runtime was measured with the candidate protocol-v2 benchmark harness overlaid; no candidate runtime implementation was included. This is why the generated baseline reported the base revision with a -dirty suffix."
+    "baseline_note": "The base runtime was measured immediately before the candidate with the same protocol-v2 benchmark harness overlaid; no candidate runtime implementation was included. This is why the generated baseline reported the base revision with a -dirty suffix."
   },
   "environment": {
     "host": "core",
@@ -40,76 +40,76 @@
     "selection": "median-by-tick-p95"
   },
   "baseline": {
-    "captured_at_utc": "2026-07-10T06:42:32.7023309Z",
-    "binary_sha256": "072c0aff0b719af48d2bf19dc3e75038cac2646eb12b4562ff55eb45881ba41c",
+    "captured_at_utc": "2026-07-10T07:34:34.6064484Z",
+    "binary_sha256": "69429d49a8a3dc80536160dce5dab218922b2253ff35a77f7454fbf33943d137",
     "repeats": [
       {
-        "tick_p95_ms": 284.8,
-        "peak_app_cpu_percent": 15.7,
-        "peak_app_rss_bytes": 32362496
+        "tick_p95_ms": 254.6,
+        "peak_app_cpu_percent": 16.4,
+        "peak_app_rss_bytes": 31039488
       },
       {
-        "tick_p95_ms": 258.7,
-        "peak_app_cpu_percent": 17.0,
-        "peak_app_rss_bytes": 32628736
-      },
-      {
-        "tick_p95_ms": 246.4,
-        "peak_app_cpu_percent": 16.5,
-        "peak_app_rss_bytes": 32616448
-      },
-      {
-        "tick_p95_ms": 251.1,
-        "peak_app_cpu_percent": 16.8,
-        "peak_app_rss_bytes": 32927744
-      },
-      {
-        "tick_p95_ms": 258.9,
+        "tick_p95_ms": 292.5,
         "peak_app_cpu_percent": 15.4,
-        "peak_app_rss_bytes": 33406976
+        "peak_app_rss_bytes": 31789056
+      },
+      {
+        "tick_p95_ms": 262.7,
+        "peak_app_cpu_percent": 14.4,
+        "peak_app_rss_bytes": 31842304
+      },
+      {
+        "tick_p95_ms": 278.9,
+        "peak_app_cpu_percent": 14.3,
+        "peak_app_rss_bytes": 31297536
+      },
+      {
+        "tick_p95_ms": 278.6,
+        "peak_app_cpu_percent": 14.4,
+        "peak_app_rss_bytes": 31887360
       }
     ],
-    "median_tick_p95_ms": 258.7,
-    "peak_app_cpu_percent": 17.0,
-    "peak_app_rss_bytes": 33406976
+    "median_tick_p95_ms": 278.6,
+    "peak_app_cpu_percent": 16.4,
+    "peak_app_rss_bytes": 31887360
   },
   "candidate": {
-    "captured_at_utc": "2026-07-10T06:55:37.1112133Z",
-    "binary_sha256": "010febafde16335f841d9665d01e23c0cfed4a2709162eaf0e49d020e4c4bdc2",
+    "captured_at_utc": "2026-07-10T07:47:05.9094768Z",
+    "binary_sha256": "82d90da765717c9192000fdbc6e8e436ae38913032ff697f07195f630387ca30",
     "repeats": [
       {
-        "tick_p95_ms": 248.7,
-        "peak_app_cpu_percent": 15.7,
-        "peak_app_rss_bytes": 31391744
+        "tick_p95_ms": 234.7,
+        "peak_app_cpu_percent": 14.4,
+        "peak_app_rss_bytes": 31027200
       },
       {
-        "tick_p95_ms": 244.4,
-        "peak_app_cpu_percent": 14.1,
-        "peak_app_rss_bytes": 31715328
+        "tick_p95_ms": 303.9,
+        "peak_app_cpu_percent": 17.2,
+        "peak_app_rss_bytes": 30883840
       },
       {
-        "tick_p95_ms": 256.3,
-        "peak_app_cpu_percent": 15.7,
+        "tick_p95_ms": 294.9,
+        "peak_app_cpu_percent": 15.6,
+        "peak_app_rss_bytes": 30920704
+      },
+      {
+        "tick_p95_ms": 269.0,
+        "peak_app_cpu_percent": 15.1,
         "peak_app_rss_bytes": 31674368
       },
       {
-        "tick_p95_ms": 216.0,
-        "peak_app_cpu_percent": 14.8,
-        "peak_app_rss_bytes": 31457280
-      },
-      {
-        "tick_p95_ms": 227.3,
-        "peak_app_cpu_percent": 16.0,
-        "peak_app_rss_bytes": 31842304
+        "tick_p95_ms": 335.5,
+        "peak_app_cpu_percent": 15.6,
+        "peak_app_rss_bytes": 30683136
       }
     ],
-    "median_tick_p95_ms": 244.4,
-    "peak_app_cpu_percent": 16.0,
-    "peak_app_rss_bytes": 31842304
+    "median_tick_p95_ms": 294.9,
+    "peak_app_cpu_percent": 17.2,
+    "peak_app_rss_bytes": 31674368
   },
   "gate": {
     "calculation": "baseline.median_tick_p95_ms / candidate.median_tick_p95_ms",
-    "speed_ratio": 1.059,
+    "speed_ratio": 0.945,
     "minimum_speed_ratio": 0.9,
     "baseline_metadata_matched": true,
     "speed_ratio_passed": true,
