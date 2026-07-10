@@ -2,21 +2,21 @@
   "format_version": 1,
   "purpose": "BatCave complete-remediation release benchmark comparison",
   "source": {
-    "generated_directory": "artifacts/benchmarks/remediation-20260710-011556",
+    "generated_directory": "artifacts/benchmarks/remediation-20260710-022754",
     "base_runtime_sha": "161beb6ae4bb14cd4209fcac02b8827a9eff2cd4",
     "base_reported_sha": "161beb6ae4bb14cd4209fcac02b8827a9eff2cd4-dirty",
-    "candidate_sha": "8d08628bc96ee0425da12f9bc785403c232ec919",
+    "candidate_sha": "041661939c557ec838183fc8ac8ee75dc7b0c983",
     "comparison_manifest": {
       "file": "comparison-manifest.json",
-      "sha256": "9a5aa0834c708035087886cca21cf5dabf1acb6acef16cc26b92771a8921ff8b"
+      "sha256": "88f0aaba718deb508b530e3c5a69bd1120eaa22a2f42ab877cb9ccc68fe00254"
     },
     "baseline_artifact": {
-      "file": "baseline-core-20260710-011618.json",
-      "sha256": "deaab1ed3339e78a1b89c47ac63821fd621ac629aa1c04a26ef76cea39e5141a"
+      "file": "baseline-core-20260710-022811.json",
+      "sha256": "dd63bc0566e5f8622fb0ccac7a13742762b435b869166eb621cd73bb30762eaf"
     },
     "gate_report": {
-      "file": "gate-core-20260710-013222.json",
-      "sha256": "c4789e1efd6fc2cbc3cf83cfc0baa744a5d4c23ce2d390bd687b366c379c6428"
+      "file": "gate-core-20260710-024232.json",
+      "sha256": "fd553c7fa716ef23cc924ef94bdbb5dd59a153bb104595e23946b0d7c433c2e2"
     },
     "benchmark_harness": {
       "file": "src/BatCave.App/src-tauri/src/benchmark.rs",
@@ -40,76 +40,76 @@
     "selection": "median-by-tick-p95"
   },
   "baseline": {
-    "captured_at_utc": "2026-07-10T05:32:22.2590422Z",
-    "binary_sha256": "fd85bccbf8b949544f0644b20a83ab865eca35ddb759e2b3b2ef882db6958fdb",
+    "captured_at_utc": "2026-07-10T06:42:32.7023309Z",
+    "binary_sha256": "072c0aff0b719af48d2bf19dc3e75038cac2646eb12b4562ff55eb45881ba41c",
     "repeats": [
       {
-        "tick_p95_ms": 1275.4,
+        "tick_p95_ms": 284.8,
+        "peak_app_cpu_percent": 15.7,
+        "peak_app_rss_bytes": 32362496
+      },
+      {
+        "tick_p95_ms": 258.7,
+        "peak_app_cpu_percent": 17.0,
+        "peak_app_rss_bytes": 32628736
+      },
+      {
+        "tick_p95_ms": 246.4,
         "peak_app_cpu_percent": 16.5,
-        "peak_app_rss_bytes": 32526336
+        "peak_app_rss_bytes": 32616448
       },
       {
-        "tick_p95_ms": 331.1,
-        "peak_app_cpu_percent": 16.7,
-        "peak_app_rss_bytes": 32378880
+        "tick_p95_ms": 251.1,
+        "peak_app_cpu_percent": 16.8,
+        "peak_app_rss_bytes": 32927744
       },
       {
-        "tick_p95_ms": 416.4,
-        "peak_app_cpu_percent": 16.2,
-        "peak_app_rss_bytes": 32473088
-      },
-      {
-        "tick_p95_ms": 602.5,
-        "peak_app_cpu_percent": 17.8,
-        "peak_app_rss_bytes": 33054720
-      },
-      {
-        "tick_p95_ms": 486.2,
-        "peak_app_cpu_percent": 17.7,
-        "peak_app_rss_bytes": 32968704
+        "tick_p95_ms": 258.9,
+        "peak_app_cpu_percent": 15.4,
+        "peak_app_rss_bytes": 33406976
       }
     ],
-    "median_tick_p95_ms": 486.2,
-    "peak_app_cpu_percent": 17.8,
-    "peak_app_rss_bytes": 33054720
+    "median_tick_p95_ms": 258.7,
+    "peak_app_cpu_percent": 17.0,
+    "peak_app_rss_bytes": 33406976
   },
   "candidate": {
-    "captured_at_utc": "2026-07-10T05:46:20.7291497Z",
-    "binary_sha256": "d382ff53310806d1c75ea9c60cfd5f3474751cca8c6d2aaee2a8ee530863c1bc",
+    "captured_at_utc": "2026-07-10T06:55:37.1112133Z",
+    "binary_sha256": "010febafde16335f841d9665d01e23c0cfed4a2709162eaf0e49d020e4c4bdc2",
     "repeats": [
       {
-        "tick_p95_ms": 405.2,
-        "peak_app_cpu_percent": 17.9,
-        "peak_app_rss_bytes": 30314496
+        "tick_p95_ms": 248.7,
+        "peak_app_cpu_percent": 15.7,
+        "peak_app_rss_bytes": 31391744
       },
       {
-        "tick_p95_ms": 327.3,
-        "peak_app_cpu_percent": 17.6,
-        "peak_app_rss_bytes": 30498816
+        "tick_p95_ms": 244.4,
+        "peak_app_cpu_percent": 14.1,
+        "peak_app_rss_bytes": 31715328
       },
       {
-        "tick_p95_ms": 358.3,
-        "peak_app_cpu_percent": 16.7,
-        "peak_app_rss_bytes": 30408704
+        "tick_p95_ms": 256.3,
+        "peak_app_cpu_percent": 15.7,
+        "peak_app_rss_bytes": 31674368
       },
       {
-        "tick_p95_ms": 326.6,
-        "peak_app_cpu_percent": 16.6,
-        "peak_app_rss_bytes": 30580736
+        "tick_p95_ms": 216.0,
+        "peak_app_cpu_percent": 14.8,
+        "peak_app_rss_bytes": 31457280
       },
       {
-        "tick_p95_ms": 386.8,
-        "peak_app_cpu_percent": 17.5,
-        "peak_app_rss_bytes": 31313920
+        "tick_p95_ms": 227.3,
+        "peak_app_cpu_percent": 16.0,
+        "peak_app_rss_bytes": 31842304
       }
     ],
-    "median_tick_p95_ms": 358.3,
-    "peak_app_cpu_percent": 17.9,
-    "peak_app_rss_bytes": 31313920
+    "median_tick_p95_ms": 244.4,
+    "peak_app_cpu_percent": 16.0,
+    "peak_app_rss_bytes": 31842304
   },
   "gate": {
     "calculation": "baseline.median_tick_p95_ms / candidate.median_tick_p95_ms",
-    "speed_ratio": 1.357,
+    "speed_ratio": 1.059,
     "minimum_speed_ratio": 0.9,
     "baseline_metadata_matched": true,
     "speed_ratio_passed": true,
