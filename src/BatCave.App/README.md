@@ -23,6 +23,8 @@ Install Linux native prerequisites from the repository root:
 bash scripts/install-linux-deps.sh
 ```
 
+Add `--with-bpftrace` only when you want to exercise optional per-process eBPF network attribution.
+
 Install app dependencies from this directory:
 
 ```powershell
@@ -71,6 +73,8 @@ npm run verify
 `npm run verify` runs:
 
 - `npm run test:process-order`
+- `npm run test:runtime-contract`
+- `npm run smoke:bridge`
 - `npm run build`
 - `npm run typecheck`
 - `npm run lint`
@@ -123,6 +127,9 @@ The native app exposes a small snake_case JSON contract through Tauri commands:
 - `resume_runtime`
 - `set_admin_mode`
 - `set_process_query`
+- `get_process_icon`
+
+`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, admin, and error publications cannot create fake chart samples. `environment` reports `platform`, whether admin mode is available, and the resolved local data directory. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
 
 The Rust runtime store owns settings, pause/resume state, refresh cadence, query shaping, admin-mode preference, warm cache, diagnostics, health budgets, byte-rate derivation, and local JSON persistence.
 
@@ -139,19 +146,19 @@ The attention queue groups rows by executable identity when available, then proc
 
 Live values may update in place, but ranking order is held while the pointer or keyboard focus is inside the queue, a group is expanded, or a workload is selected. A newer order is applied only through the visible `Ranking updated` control. The desktop queue renders a semantic table; below 820px it becomes a compact list of metric cards.
 
-Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings and diagnostics open as focus-managed side drawers and close with Escape.
+Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
 
 ## Platform Telemetry Notes
 
-Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, pagefile/commit totals, kernel paged/nonpaged pool, top kernel pool tags with best-effort local driver candidates, system cache, interface network totals, and PDH physical-disk rates.
+Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, commit totals, kernel paged/nonpaged pool, top kernel pool tags with best-effort local driver candidates, system cache, interface network totals, and PDH physical-disk rates. Windows exposes commit through `memory_accounting` and omits cross-platform swap and process virtual-memory fields instead of relabeling commit charge.
 
 Kernel pool tag driver names are candidates, not proof of ownership. BatCave reads current pool-tag usage from Windows and scans local installed `.sys` binaries for matching tag bytes when the app needs a driver clue for a leaking pool bucket. That local driver scan is cached and runs outside the telemetry hot path, so candidate names may appear after the first pool-tag snapshot.
 
-Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If standard access cannot start the kernel logger, the process network quality reports the ETW failure reason. Admin mode can launch a local elevated helper and reuse the same Rust collector for richer snapshots. If elevation is denied or unavailable, standard access remains the fallback path.
+Windows per-process network attribution uses one ETW kernel logger owned by the main runtime. Admin helper rows inherit network values only on an exact PID/start-time match. Elevated helper arguments are restricted to the per-run local pipe and stop path; authenticated rows can be held for two seconds between frames, then fail closed to standard access on expiry, disconnect, or helper exit.
 
 Linux native collectors read aggregate CPU/kernel/logical CPU deltas, memory and swap, block-device I/O totals/rates, interface network totals/rates, process identity, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread counts, and file descriptor counts.
 
-Linux per-process network attribution is optional. It uses `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg` when the app has sufficient host permissions or capabilities. Without those permissions, BatCave keeps running and marks per-process network rates unavailable.
+Linux per-process network attribution is optional. It uses `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg` when the app has sufficient host permissions or capabilities. Install it with `bash scripts/install-linux-deps.sh --with-bpftrace`. Without those permissions or the opt-in package, BatCave keeps running and marks per-process network rates unavailable.
 
 `sysinfo` remains a fallback when native collectors cannot read the expected host files.
 
@@ -173,9 +180,11 @@ bash scripts/capture-benchmark-baseline.sh --benchmark-host core
 bash scripts/run-benchmark-gate.sh --benchmark-host core --baseline-artifact artifacts/benchmarks/baseline-core-YYYYMMDD-HHMMSS.json
 ```
 
-Benchmarks run through the Rust runtime host and emit generated artifacts under `artifacts/benchmarks`.
+Benchmarks build the current release CLI, use an isolated temporary data directory, and time the complete runtime refresh plus snapshot JSON serialization. The default protocol runs 30 warmup ticks and five 120-tick measured repeats, selecting the median repeat p95. Generated protocol-v2 artifacts under `artifacts/benchmarks` record the commit, binary hash, platform, architecture, machine class, workload, protocol, and all repeats; revision fields append `-dirty` when the measured worktree is not clean.
 
-In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs. Use `run-benchmark-gate` for release/local regression checks; it keeps strict mode on, requires either a baseline or explicit p95 budget, and writes a gate report artifact.
+Strict mode is a configuration error without either a baseline or explicit p95 ceiling. A speed multiplier without a baseline is also a configuration error. Matching baselines use `baseline_p95 / candidate_p95` and require at least `0.90` by default. Use `run-benchmark-gate` for release/local regression checks and its generated report artifact.
+
+CI validates Windows and Linux source changes on pull requests and `codex/**` pushes. Pushes to `main` and manual bundle runs retain Windows NSIS plus Linux deb/AppImage artifacts for 14 days. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
 
 ## Production Notes
 
