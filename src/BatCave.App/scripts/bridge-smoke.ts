@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   getRuntimeProcessIcon,
   readNativeSnapshot,
@@ -9,12 +10,29 @@ import {
   type RuntimeInvoke,
 } from "../src/lib/tauriBridge.ts";
 
+const canonicalSnapshot = JSON.parse(
+  readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
+);
+assert.equal(canonicalSnapshot.publication_seq, 42);
+assert.equal(canonicalSnapshot.seq, undefined);
+assert.deepEqual(
+  canonicalSnapshot.system.memory_accounting.kernel_pool_tags[0].driver_candidates,
+  [],
+);
+
 function snapshot(seq: number) {
   return {
-    seq,
     event_kind: "runtime_snapshot",
-    ts_ms: seq,
+    publication_seq: seq,
+    published_at_ms: seq,
+    sample_seq: seq,
+    sampled_at_ms: seq || null,
     source: "batcave_runtime",
+    environment: {
+      platform: "windows",
+      admin_mode_available: true,
+      data_directory: "C:\\Users\\test\\BatCaveMonitor",
+    },
     settings: {
       query: {
         filter_text: "",
@@ -52,8 +70,6 @@ function snapshot(seq: number) {
       memory_used_bytes: 0,
       memory_total_bytes: 1,
       memory_available_bytes: 1,
-      swap_used_bytes: 0,
-      swap_total_bytes: 0,
       process_count: 0,
       disk_read_total_bytes: 0,
       disk_write_total_bytes: 0,
@@ -64,6 +80,7 @@ function snapshot(seq: number) {
       network_received_bps: 0,
       network_transmitted_bps: 0,
     },
+    process_contributors: { cpu: null, memory: null, disk: null, network: null },
     processes: [],
     process_view_rows: [],
     total_process_count: 0,
@@ -94,7 +111,7 @@ const successfulRead = await readNativeSnapshot(
 );
 assert.equal(successfulRead.ok, true);
 assert.equal(successfulRead.error, "");
-assert.equal(successfulRead.snapshot.seq, 7);
+assert.equal(successfulRead.snapshot.publication_seq, 7);
 
 await setRuntimePaused(invoke, true);
 await setRuntimePaused(invoke, false);

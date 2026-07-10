@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+with_bpftrace=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-bpftrace)
+      with_bpftrace=1
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
 if ! command -v apt-get >/dev/null 2>&1; then
   echo "install-linux-deps.sh currently supports Debian/Ubuntu hosts with apt-get." >&2
   exit 2
@@ -11,10 +25,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   sudo_cmd=(sudo)
 fi
 
-"${sudo_cmd[@]}" apt-get update
-"${sudo_cmd[@]}" apt-get install -y \
+packages=(
   build-essential \
-  bpftrace \
   curl \
   wget \
   file \
@@ -26,6 +38,13 @@ fi
   libayatana-appindicator3-dev \
   librsvg2-dev \
   libxdo-dev
+)
+if [[ "$with_bpftrace" -eq 1 ]]; then
+  packages+=(bpftrace)
+fi
+
+"${sudo_cmd[@]}" apt-get update
+"${sudo_cmd[@]}" apt-get install -y "${packages[@]}"
 
 if command -v rustup >/dev/null 2>&1; then
   rustup component add rustfmt

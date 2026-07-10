@@ -83,7 +83,7 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
         kernel_cpu_percent: None,
         memory_bytes: 0,
         private_bytes: 0,
-        virtual_memory_bytes: 0,
+        virtual_memory_bytes: None,
         disk_read_total_bytes: 0,
         disk_write_total_bytes: 0,
         other_io_total_bytes: None,
@@ -126,7 +126,6 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
         Some(memory) => {
             sample.memory_bytes = memory.working_set_bytes;
             sample.private_bytes = memory.private_bytes;
-            sample.virtual_memory_bytes = memory.virtual_memory_bytes;
             succeeded += 1;
         }
         None => failed += 1,
@@ -229,7 +228,6 @@ impl Drop for ProcessHandle {
 struct ProcessMemory {
     working_set_bytes: u64,
     private_bytes: u64,
-    virtual_memory_bytes: u64,
 }
 
 #[cfg(windows)]
@@ -289,7 +287,6 @@ fn query_process_memory(process: HANDLE) -> Option<ProcessMemory> {
     (ok != 0).then(|| ProcessMemory {
         working_set_bytes: usize_to_u64_saturating(counters.WorkingSetSize),
         private_bytes: usize_to_u64_saturating(counters.PrivateUsage),
-        virtual_memory_bytes: usize_to_u64_saturating(counters.PagefileUsage),
     })
 }
 

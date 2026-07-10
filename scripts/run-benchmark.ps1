@@ -1,27 +1,41 @@
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [Alias("Host")]
     [ValidateSet("core")]
     [string]$BenchmarkHost = "core",
     [ValidateSet("x86", "x64", "ARM64")]
     [string]$Platform = "x64",
+    [string]$MachineClass = "",
+    [string]$WorkloadProfile = "fixed-default",
+    [int]$WarmupTicks = 30,
     [int]$Ticks = 120,
     [int]$SleepMs = 1000,
+    [ValidateRange(1, 20)]
+    [int]$Repeats = 5,
     [string]$BaselineJsonPath = "",
     [string]$BaselineArtifactPath = "",
     [string]$MinSpeedupMultiplier = "",
     [string]$MaxP95Ms = "",
-    [switch]$Strict,
-    [switch]$NoBuild
+    [switch]$Strict
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $cargoManifest = Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml"
 $releaseDir = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release"
-$isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-$benchmarkExeName = if ($isWindows) { "batcave-monitor-cli.exe" } else { "batcave-monitor-cli" }
+$runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+$runtimePlatform = if ($runningOnWindows) { "windows" } else { "linux" }
+$architecture = $Platform.ToLowerInvariant()
+$benchmarkExeName = if ($runningOnWindows) { "batcave-monitor-cli.exe" } else { "batcave-monitor-cli" }
 $benchmarkExe = Join-Path $releaseDir $benchmarkExeName
+$tempBaselinePath = ""
 
+if ([string]::IsNullOrWhiteSpace($MachineClass)) {
+    $MachineClass = if ($runningOnWindows) { $env:COMPUTERNAME } else { $env:HOSTNAME }
+}
+if ([string]::IsNullOrWhiteSpace($MachineClass)) {
+    $MachineClass = "local"
+}
 if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath) -and -not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     throw "Specify either -BaselineJsonPath or -BaselineArtifactPath, not both."
 }
@@ -39,118 +53,93 @@ function Write-JsonUtf8NoBom {
     [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 30), $encoding)
 }
 
-function Resolve-BaselineSummaryPath {
+function Assert-ArtifactValue {
     param(
-        [string]$SummaryPath,
-        [string]$ArtifactPath,
-        [string]$BenchmarkHostName,
-        [string]$HostPlatform,
-        [string]$RepositoryRoot,
-        [int]$RequestedTicks,
-        [int]$RequestedSleepMs
+        [object]$Artifact,
+        [string]$Name,
+        [object]$Expected
     )
 
-    if ([string]::IsNullOrWhiteSpace($ArtifactPath)) {
-        return @{
-            BaselinePath = $SummaryPath
-            TempPath = ""
-        }
-    }
-
-    if (-not (Test-Path -LiteralPath $ArtifactPath)) {
-        throw "Baseline artifact not found: $ArtifactPath"
-    }
-
-    $artifact = Get-Content -LiteralPath $ArtifactPath -Raw | ConvertFrom-Json
-    if ($artifact -eq $null) {
-        throw "Baseline artifact is empty: $ArtifactPath"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($artifact.host) -and $artifact.host -ne $BenchmarkHostName) {
-        throw "Baseline artifact host mismatch. Expected '$BenchmarkHostName', found '$($artifact.host)'."
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($artifact.platform) -and $artifact.platform -ne $HostPlatform) {
-        throw "Baseline artifact platform mismatch. Expected '$HostPlatform', found '$($artifact.platform)'."
-    }
-
-    if ($artifact.measured_ticks -and [int]$artifact.measured_ticks -ne $RequestedTicks) {
-        throw "Baseline artifact measured_ticks mismatch. Expected '$RequestedTicks', found '$($artifact.measured_ticks)'."
-    }
-
-    if ($artifact.sleep_ms -and [int]$artifact.sleep_ms -ne $RequestedSleepMs) {
-        throw "Baseline artifact sleep_ms mismatch. Expected '$RequestedSleepMs', found '$($artifact.sleep_ms)'."
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($artifact.baseline_summary_path)) {
-        $resolvedSummaryPath = [string]$artifact.baseline_summary_path
-        if (-not [System.IO.Path]::IsPathRooted($resolvedSummaryPath)) {
-            $resolvedSummaryPath = Join-Path $RepositoryRoot $resolvedSummaryPath
-        }
-
-        if (Test-Path -LiteralPath $resolvedSummaryPath) {
-            return @{
-                BaselinePath = $resolvedSummaryPath
-                TempPath = ""
-            }
-        }
-    }
-
-    if ($artifact.baseline_summary -eq $null) {
-        throw "Baseline artifact missing 'baseline_summary' and 'baseline_summary_path'."
-    }
-
-    $tmpPath = Join-Path ([System.IO.Path]::GetTempPath()) ("batcave-baseline-summary-" + [Guid]::NewGuid().ToString("N") + ".json")
-    Write-JsonUtf8NoBom -Value $artifact.baseline_summary -Path $tmpPath
-
-    return @{
-        BaselinePath = $tmpPath
-        TempPath = $tmpPath
+    $actual = $Artifact.$Name
+    if ($null -eq $actual -or "$actual" -ne "$Expected") {
+        throw "Baseline artifact $Name mismatch. Expected '$Expected', found '$actual'."
     }
 }
 
-if (-not $NoBuild) {
-    cargo build --manifest-path "$cargoManifest" --release --bin batcave-monitor-cli
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
+if (-not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
+    if (-not (Test-Path -LiteralPath $BaselineArtifactPath)) {
+        throw "Baseline artifact not found: $BaselineArtifactPath"
     }
+
+    $artifact = Get-Content -LiteralPath $BaselineArtifactPath -Raw | ConvertFrom-Json
+    Assert-ArtifactValue $artifact "format_version" 2
+    Assert-ArtifactValue $artifact "host" $BenchmarkHost
+    Assert-ArtifactValue $artifact "platform" $runtimePlatform
+    Assert-ArtifactValue $artifact "architecture" $architecture
+    Assert-ArtifactValue $artifact "machine_class" $MachineClass
+    Assert-ArtifactValue $artifact "workload_profile" $WorkloadProfile
+    Assert-ArtifactValue $artifact "warmup_ticks" $WarmupTicks
+    Assert-ArtifactValue $artifact "measured_ticks" $Ticks
+    Assert-ArtifactValue $artifact "sleep_ms" $SleepMs
+    Assert-ArtifactValue $artifact "repeat_count" $Repeats
+
+    $baselineSummary = $artifact.baseline_summary
+    if ($null -eq $baselineSummary -and -not [string]::IsNullOrWhiteSpace($artifact.baseline_summary_path)) {
+        $summaryPath = [string]$artifact.baseline_summary_path
+        if (-not [System.IO.Path]::IsPathRooted($summaryPath)) {
+            $summaryPath = Join-Path $repoRoot $summaryPath
+        }
+        if (Test-Path -LiteralPath $summaryPath) {
+            $baselineSummary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+        }
+    }
+    if ($null -eq $baselineSummary) {
+        throw "Baseline artifact missing baseline_summary and a readable baseline_summary_path."
+    }
+
+    $tempBaselinePath = Join-Path ([System.IO.Path]::GetTempPath()) ("batcave-baseline-summary-" + [Guid]::NewGuid().ToString("N") + ".json")
+    Write-JsonUtf8NoBom -Value $baselineSummary -Path $tempBaselinePath
+    $BaselineJsonPath = $tempBaselinePath
 }
 
+cargo build --manifest-path "$cargoManifest" --release --bin batcave-monitor-cli
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
 if (-not (Test-Path -LiteralPath $benchmarkExe)) {
-    throw "Benchmark executable not found: $benchmarkExe. Run without -NoBuild first."
+    throw "Benchmark executable not found after release build: $benchmarkExe"
 }
 
-$resolvedBaseline = Resolve-BaselineSummaryPath `
-    -SummaryPath $BaselineJsonPath `
-    -ArtifactPath $BaselineArtifactPath `
-    -BenchmarkHostName $BenchmarkHost `
-    -HostPlatform $Platform `
-    -RepositoryRoot $repoRoot `
-    -RequestedTicks $Ticks `
-    -RequestedSleepMs $SleepMs
-
-$effectiveBaselineJsonPath = [string]$resolvedBaseline.BaselinePath
-$tempBaselinePath = [string]$resolvedBaseline.TempPath
-
-$benchmarkArgs = @("--benchmark", "--ticks", "$Ticks", "--sleep-ms", "$SleepMs")
+$benchmarkArgs = @(
+    "--benchmark",
+    "--platform", $runtimePlatform,
+    "--architecture", $architecture,
+    "--machine-class", $MachineClass,
+    "--workload-profile", $WorkloadProfile,
+    "--warmup-ticks", "$WarmupTicks",
+    "--ticks", "$Ticks",
+    "--sleep-ms", "$SleepMs",
+    "--repeats", "$Repeats"
+)
 if ($Strict.IsPresent) {
-    $benchmarkArgs += @("--strict")
+    $benchmarkArgs += "--strict"
 }
-if (-not [string]::IsNullOrWhiteSpace($effectiveBaselineJsonPath)) {
-    $benchmarkArgs += @("--baseline-json", "$effectiveBaselineJsonPath")
+if (-not [string]::IsNullOrWhiteSpace($BaselineJsonPath)) {
+    $benchmarkArgs += @("--baseline-json", $BaselineJsonPath)
 }
 if (-not [string]::IsNullOrWhiteSpace($MinSpeedupMultiplier)) {
-    $benchmarkArgs += @("--min-speedup-multiplier", "$MinSpeedupMultiplier")
+    $benchmarkArgs += @("--min-speedup-multiplier", $MinSpeedupMultiplier)
 }
-elseif ($Strict.IsPresent -and -not [string]::IsNullOrWhiteSpace($effectiveBaselineJsonPath)) {
-    $benchmarkArgs += @("--min-speedup-multiplier", "10")
+elseif ($Strict.IsPresent -and -not [string]::IsNullOrWhiteSpace($BaselineJsonPath)) {
+    $benchmarkArgs += @("--min-speedup-multiplier", "0.90")
 }
 if (-not [string]::IsNullOrWhiteSpace($MaxP95Ms)) {
-    $benchmarkArgs += @("--max-p95-ms", "$MaxP95Ms")
+    $benchmarkArgs += @("--max-p95-ms", $MaxP95Ms)
 }
 
 try {
     & $benchmarkExe @benchmarkArgs
+    $exitCode = $LASTEXITCODE
 }
 finally {
     if (-not [string]::IsNullOrWhiteSpace($tempBaselinePath)) {
@@ -158,4 +147,4 @@ finally {
     }
 }
 
-exit $LASTEXITCODE
+exit $exitCode

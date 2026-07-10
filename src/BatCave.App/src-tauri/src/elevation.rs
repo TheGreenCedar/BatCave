@@ -1,8 +1,8 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(windows)]
@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 use crate::{cli_args, contracts::ProcessSample, telemetry::TelemetryCollector};
 
 const HELPER_INTERVAL_MS: u64 = 500;
+const HELPER_SNAPSHOT_GRACE: Duration = Duration::from_secs(2);
+const HELPER_STOP_GRACE: Duration = Duration::from_secs(2);
+const HELPER_FORCE_EXIT_GRACE: Duration = Duration::from_secs(2);
 const HELPER_TOKEN_BYTES: usize = 32;
 const MAX_PIPE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
@@ -25,10 +28,20 @@ pub struct ElevatedHelperClient {
     stop_file: PathBuf,
     token: String,
     last_seq: u64,
+    started_at: Instant,
+    last_snapshot_at: Option<Instant>,
     read_buffer: Vec<u8>,
     #[cfg(windows)]
     pipe: Option<NamedPipeServer>,
     process: Option<ElevatedHelperProcess>,
+    stopped: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ElevatedPoll {
+    Fresh(Vec<ProcessSample>),
+    Held,
+    Pending,
 }
 
 impl ElevatedHelperClient {
@@ -37,24 +50,43 @@ impl ElevatedHelperClient {
         let session = prepare_helper_session(base_dir)?;
 
         #[cfg(windows)]
-        let pipe = Some(NamedPipeServer::create(&session.pipe_name)?);
+        let pipe = match NamedPipeServer::create(&session.pipe_name) {
+            Ok(pipe) => Some(pipe),
+            Err(error) => {
+                remove_artifacts_for_snapshot(&session.data_file);
+                return Err(error);
+            }
+        };
 
-        let process =
-            launch_elevated_helper(&session.pipe_name, &session.stop_file, &session.token)?;
+        let process = match launch_elevated_helper(
+            &session.pipe_name,
+            &session.stop_file,
+            &session.token,
+            std::process::id(),
+        ) {
+            Ok(process) => process,
+            Err(error) => {
+                remove_artifacts_for_snapshot(&session.data_file);
+                return Err(error);
+            }
+        };
 
         Ok(Self {
             data_file: session.data_file,
             stop_file: session.stop_file,
             token: session.token,
             last_seq: 0,
+            started_at: Instant::now(),
+            last_snapshot_at: None,
             read_buffer: Vec::new(),
             #[cfg(windows)]
             pipe,
             process,
+            stopped: false,
         })
     }
 
-    pub fn poll_rows(&mut self) -> Result<Option<Vec<ProcessSample>>, String> {
+    pub fn poll_rows(&mut self) -> Result<ElevatedPoll, String> {
         if self
             .process
             .as_ref()
@@ -72,22 +104,59 @@ impl ElevatedHelperClient {
                     rows = Some(snapshot_rows);
                 }
             }
-            return Ok(rows);
+            if let Some(rows) = rows {
+                self.last_snapshot_at = Some(Instant::now());
+                return Ok(ElevatedPoll::Fresh(rows));
+            }
         }
 
-        Ok(None)
+        let since = self.last_snapshot_at.unwrap_or(self.started_at).elapsed();
+        if since > HELPER_SNAPSHOT_GRACE {
+            return Err("admin_mode_snapshot_timeout".to_string());
+        }
+        Ok(if self.last_snapshot_at.is_some() {
+            ElevatedPoll::Held
+        } else {
+            ElevatedPoll::Pending
+        })
     }
 
-    pub fn stop(&self) {
-        let _ = fs::write(&self.stop_file, "stop");
-        if self
+    pub fn stop(&mut self) -> Result<(), String> {
+        self.stop_with_timeouts(HELPER_STOP_GRACE, HELPER_FORCE_EXIT_GRACE)
+    }
+
+    fn stop_with_timeouts(
+        &mut self,
+        graceful_timeout: Duration,
+        forced_timeout: Duration,
+    ) -> Result<(), String> {
+        if self.stopped {
+            return Ok(());
+        }
+
+        let stop_write_error = fs::write(&self.stop_file, "stop").err();
+        let exited = self
             .process
             .as_ref()
-            .is_none_or(|process| process.wait(Duration::from_millis(2_000)))
-        {
+            .is_none_or(|process| process.wait(graceful_timeout));
+        let exited = if exited {
+            true
+        } else {
+            self.process
+                .as_ref()
+                .is_some_and(|process| process.terminate() && process.wait(forced_timeout))
+        };
+
+        if exited {
+            self.stopped = true;
             remove_artifacts_for_snapshot(&self.data_file);
+            Ok(())
         } else {
             remove_snapshot_artifacts(&self.data_file);
+            let suffix = stop_write_error
+                .map(|error| format!(":stop_signal_failed:{error}"))
+                .unwrap_or_default();
+            Err(format!("admin_mode_helper_termination_failed{suffix}"))
         }
     }
 
@@ -116,7 +185,7 @@ impl ElevatedHelperClient {
 
 impl Drop for ElevatedHelperClient {
     fn drop(&mut self) {
-        self.stop();
+        let _ = self.stop();
     }
 }
 
@@ -133,6 +202,7 @@ struct ElevatedHelperArgs {
     pipe_name: String,
     stop_file: PathBuf,
     token: String,
+    parent_pid: u32,
 }
 
 pub fn run_cli(args: &[String]) -> Option<i32> {
@@ -140,7 +210,7 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
         return None;
     }
 
-    match parse_helper_args(args) {
+    match parse_helper_args(args).and_then(validate_helper_args) {
         Ok(helper_args) => Some(run_elevated_helper(helper_args)),
         Err(error) => {
             eprintln!("{error}");
@@ -152,6 +222,10 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
 #[cfg(windows)]
 fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
     let mut seq = 0_u64;
+    if let Err(error) = start_helper_exit_watchdog(args.parent_pid, args.stop_file.clone()) {
+        eprintln!("{error}");
+        return 1;
+    }
     let pipe = match PipeClient::connect(&args.pipe_name) {
         Ok(pipe) => pipe,
         Err(error) => {
@@ -159,7 +233,7 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
             return 1;
         }
     };
-    let collector = TelemetryCollector::new();
+    let collector = TelemetryCollector::for_elevated_helper();
     while !args.stop_file.exists() {
         seq = seq.saturating_add(1);
         match collector
@@ -177,6 +251,51 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
     }
 
     0
+}
+
+#[cfg(windows)]
+fn start_helper_exit_watchdog(parent_pid: u32, stop_file: PathBuf) -> Result<(), String> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+    };
+
+    let parent_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
+    if parent_handle.is_null() {
+        return Err(format!("admin_mode_parent_watch_failed error={}", unsafe {
+            GetLastError()
+        }));
+    }
+    let parent_handle_value = parent_handle as usize;
+
+    thread::Builder::new()
+        .name("batcave-admin-watchdog".to_string())
+        .spawn(move || {
+            let parent_handle = parent_handle_value as HANDLE;
+            loop {
+                if stop_file.exists() {
+                    unsafe { CloseHandle(parent_handle) };
+                    std::process::exit(0);
+                }
+
+                match unsafe { WaitForSingleObject(parent_handle, 50) } {
+                    WAIT_TIMEOUT => {}
+                    WAIT_OBJECT_0 => {
+                        unsafe { CloseHandle(parent_handle) };
+                        std::process::exit(0);
+                    }
+                    _ => {
+                        unsafe { CloseHandle(parent_handle) };
+                        std::process::exit(1);
+                    }
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            unsafe { CloseHandle(parent_handle) };
+            format!("admin_mode_parent_watch_start_failed:{error}")
+        })
 }
 
 #[cfg(not(windows))]
@@ -528,7 +647,6 @@ struct ElevatedHelperSession {
 
 fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, String> {
     let token = new_helper_token()?;
-    let pipe_id = new_helper_token()?;
     let helper_root = base_dir.join("elevated-helper");
     reject_reparse_path(&helper_root, true)?;
     fs::create_dir_all(&helper_root).map_err(|error| {
@@ -553,7 +671,7 @@ fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, Stri
     Ok(ElevatedHelperSession {
         data_file: helper_dir.join("snapshot.json"),
         stop_file: helper_dir.join("stop.signal"),
-        pipe_name: format!(r"\\.\pipe\batcave-elevated-{pipe_id}"),
+        pipe_name: format!(r"\\.\pipe\batcave-elevated-{token}"),
         token,
     })
 }
@@ -718,15 +836,73 @@ fn remove_empty_run_dir(data_file: &Path) {
 
 fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
     reject_unknown_helper_args(args)?;
+    let pipe_name = required_value(args, "--pipe-name")?;
+    let stop_file = PathBuf::from(required_value(args, "--stop-file")?);
+    let token = required_value(args, "--token")?;
+    let parent_pid = required_value(args, "--parent-pid")?
+        .parse::<u32>()
+        .map_err(|_| "invalid_elevated_helper_parent_pid".to_string())?;
     Ok(ElevatedHelperArgs {
-        pipe_name: required_value(args, "--pipe-name")?,
-        stop_file: PathBuf::from(required_value(args, "--stop-file")?),
-        token: required_value(args, "--token")?,
+        pipe_name,
+        stop_file,
+        token,
+        parent_pid,
     })
 }
 
+fn validate_helper_args(args: ElevatedHelperArgs) -> Result<ElevatedHelperArgs, String> {
+    validate_helper_args_for_base(args, &crate::runtime_store::default_base_dir())
+}
+
+fn validate_helper_args_for_base(
+    args: ElevatedHelperArgs,
+    base_dir: &Path,
+) -> Result<ElevatedHelperArgs, String> {
+    if args.token.len() != HELPER_TOKEN_BYTES * 2
+        || !args
+            .token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("invalid_elevated_helper_token".to_string());
+    }
+
+    if args.pipe_name != format!(r"\\.\pipe\batcave-elevated-{}", args.token) {
+        return Err("invalid_elevated_helper_pipe_name".to_string());
+    }
+    if args.parent_pid == 0 {
+        return Err("invalid_elevated_helper_parent_pid".to_string());
+    }
+
+    let expected_run_dir = format!("run-{}", args.token);
+    let run_dir = args
+        .stop_file
+        .parent()
+        .ok_or_else(|| "invalid_elevated_helper_stop_file".to_string())?;
+    let helper_root = run_dir
+        .parent()
+        .ok_or_else(|| "invalid_elevated_helper_stop_file".to_string())?;
+    let valid_shape = args.stop_file.is_absolute()
+        && args.stop_file.file_name().and_then(|name| name.to_str()) == Some("stop.signal")
+        && run_dir.file_name().and_then(|name| name.to_str()) == Some(expected_run_dir.as_str())
+        && helper_root.file_name().and_then(|name| name.to_str()) == Some("elevated-helper")
+        && helper_root == base_dir.join("elevated-helper")
+        && !args
+            .stop_file
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir));
+    if !valid_shape {
+        return Err("invalid_elevated_helper_stop_file".to_string());
+    }
+    reject_reparse_path(helper_root, true)?;
+    reject_reparse_path(run_dir, true)?;
+    reject_reparse_path(&args.stop_file, false)?;
+
+    Ok(args)
+}
+
 fn reject_unknown_helper_args(args: &[String]) -> Result<(), String> {
-    let known_with_value = ["--pipe-name", "--stop-file", "--token"];
+    let known_with_value = ["--pipe-name", "--stop-file", "--token", "--parent-pid"];
     let known_flags = ["--elevated-helper"];
     cli_args::reject_unknown_args(args, &known_with_value, &known_flags)
 }
@@ -776,6 +952,12 @@ impl ElevatedHelperProcess {
             ) == WAIT_OBJECT_0
         }
     }
+
+    fn terminate(&self) -> bool {
+        use windows_sys::Win32::System::Threading::TerminateProcess;
+
+        unsafe { TerminateProcess(self.handle, 1) != 0 }
+    }
 }
 
 #[cfg(windows)]
@@ -800,6 +982,10 @@ impl ElevatedHelperProcess {
     fn wait(&self, _timeout: Duration) -> bool {
         true
     }
+
+    fn terminate(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(windows)]
@@ -807,6 +993,7 @@ fn launch_elevated_helper(
     pipe_name: &str,
     stop_file: &Path,
     token: &str,
+    parent_pid: u32,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
     use std::{mem::size_of, ptr::null};
 
@@ -820,10 +1007,11 @@ fn launch_elevated_helper(
     let exe_w = wide_os(exe.as_os_str());
     let verb_w = wide("runas");
     let params_w = wide(&format!(
-        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\"",
+        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\" --parent-pid {}",
         pipe_name,
         stop_file.display(),
-        token
+        token,
+        parent_pid,
     ));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -848,7 +1036,7 @@ fn launch_elevated_helper(
         return Err("admin_mode_launch_failed_or_cancelled".to_string());
     }
     if info.hProcess.is_null() {
-        return Ok(None);
+        return Err("admin_mode_launch_missing_process_handle".to_string());
     }
 
     Ok(Some(ElevatedHelperProcess {
@@ -861,6 +1049,7 @@ fn launch_elevated_helper(
     _pipe_name: &str,
     _stop_file: &Path,
     _token: &str,
+    _parent_pid: u32,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
     Err("admin_mode_requires_windows".to_string())
 }
@@ -908,14 +1097,14 @@ mod tests {
     }
 
     #[test]
-    fn poll_rows_returns_none_when_snapshot_is_missing() {
+    fn poll_rows_returns_pending_before_first_snapshot() {
         let base_dir = test_dir("missing");
         let mut client = test_client(&base_dir);
 
-        assert!(client
-            .poll_rows()
-            .expect("missing snapshot is ok")
-            .is_none());
+        assert!(matches!(
+            client.poll_rows().expect("missing snapshot is pending"),
+            ElevatedPoll::Pending
+        ));
 
         let _ = fs::remove_dir_all(base_dir);
     }
@@ -931,7 +1120,10 @@ mod tests {
         assert_eq!(second.token.len(), HELPER_TOKEN_BYTES * 2);
         assert_ne!(first.token, second.token);
         assert!(first.pipe_name.starts_with(r"\\.\pipe\batcave-elevated-"));
-        assert!(!first.pipe_name.ends_with(&first.token));
+        assert_eq!(
+            first.pipe_name,
+            format!(r"\\.\pipe\batcave-elevated-{}", first.token)
+        );
         assert_eq!(
             first.data_file.file_name().and_then(|name| name.to_str()),
             Some("snapshot.json")
@@ -1034,6 +1226,91 @@ mod tests {
     }
 
     #[test]
+    fn helper_arguments_are_bound_to_one_local_session() {
+        let token = "a".repeat(HELPER_TOKEN_BYTES * 2);
+        let base_dir = test_dir("validated-args");
+        let run_dir = base_dir
+            .join("elevated-helper")
+            .join(format!("run-{token}"));
+        fs::create_dir_all(&run_dir).expect("run dir exists");
+        let valid = ElevatedHelperArgs {
+            pipe_name: format!(r"\\.\pipe\batcave-elevated-{token}"),
+            stop_file: run_dir.join("stop.signal"),
+            token: token.clone(),
+            parent_pid: 1,
+        };
+
+        assert_eq!(
+            validate_helper_args_for_base(valid.clone(), &base_dir),
+            Ok(valid.clone())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    pipe_name: format!(r"\\server\pipe\batcave-elevated-{token}"),
+                    ..valid.clone()
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_pipe_name".to_string())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    stop_file: run_dir
+                        .join("..")
+                        .join(format!("run-{token}"))
+                        .join("stop.signal"),
+                    ..valid.clone()
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_stop_file".to_string())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    parent_pid: 0,
+                    ..valid.clone()
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_parent_pid".to_string())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    token: "A".repeat(HELPER_TOKEN_BYTES * 2),
+                    ..valid
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_token".to_string())
+        );
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn helper_rows_hold_for_two_seconds_then_fail_closed() {
+        let base_dir = test_dir("hold");
+        let mut client = test_client(&base_dir);
+        client.last_snapshot_at = Some(Instant::now());
+        assert!(matches!(
+            client.poll_rows().expect("recent rows hold"),
+            ElevatedPoll::Held
+        ));
+
+        client.last_snapshot_at =
+            Some(Instant::now() - HELPER_SNAPSHOT_GRACE - Duration::from_millis(1));
+        assert_eq!(
+            client.poll_rows().expect_err("expired rows fail closed"),
+            "admin_mode_snapshot_timeout"
+        );
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
     fn length_prefixed_payloads_drain_complete_frames() {
         let first = payload("token", 1, vec![sample("10")]);
         let second = payload("token", 2, vec![sample("20")]);
@@ -1057,16 +1334,68 @@ mod tests {
     #[test]
     fn stop_signals_helper_and_removes_snapshot_artifacts() {
         let base_dir = test_dir("stop");
-        let client = test_client(&base_dir);
+        let mut client = test_client(&base_dir);
         let temp_file = snapshot_temp_file(&client.data_file);
         fs::write(&client.data_file, "{}").expect("snapshot fixture writes");
         fs::write(&temp_file, "{}").expect("temp fixture writes");
 
-        client.stop();
+        client.stop().expect("helper stops");
 
         assert!(!client.stop_file.exists());
         assert!(!client.data_file.exists());
         assert!(!temp_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_retries_and_force_terminates_after_failed_attempt() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+
+        let base_dir = test_dir("force-stop");
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"])
+            .spawn()
+            .expect("test process starts");
+        let sync_only_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child.id()) };
+        assert!(
+            !sync_only_handle.is_null(),
+            "sync-only process handle opens"
+        );
+
+        let mut client = test_client(&base_dir);
+        client.process = Some(ElevatedHelperProcess {
+            handle: sync_only_handle,
+        });
+        assert_eq!(
+            client
+                .stop_with_timeouts(Duration::ZERO, Duration::ZERO)
+                .expect_err("missing terminate access fails"),
+            "admin_mode_helper_termination_failed"
+        );
+        assert!(!client.stopped, "failed termination remains retryable");
+
+        let terminate_handle =
+            unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, child.id()) };
+        assert!(
+            !terminate_handle.is_null(),
+            "terminate process handle opens"
+        );
+        client.process = Some(ElevatedHelperProcess {
+            handle: terminate_handle,
+        });
+        client
+            .stop_with_timeouts(Duration::ZERO, Duration::from_secs(2))
+            .expect("retry force terminates helper");
+
+        assert!(client.stopped);
+        assert!(client
+            .process
+            .as_ref()
+            .is_some_and(ElevatedHelperProcess::has_exited));
+        child.wait().expect("test process is reaped");
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -1097,10 +1426,13 @@ mod tests {
             stop_file: base_dir.join("stop.signal"),
             token: "token".to_string(),
             last_seq: 0,
+            started_at: Instant::now(),
+            last_snapshot_at: None,
             read_buffer: Vec::new(),
             #[cfg(windows)]
             pipe: None,
             process: None,
+            stopped: false,
         }
     }
 
@@ -1133,7 +1465,7 @@ mod tests {
             kernel_cpu_percent: None,
             memory_bytes: 1,
             private_bytes: 1,
-            virtual_memory_bytes: 1,
+            virtual_memory_bytes: Some(1),
             disk_read_total_bytes: 0,
             disk_write_total_bytes: 0,
             other_io_total_bytes: None,

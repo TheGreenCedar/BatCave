@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from "svelte";
   import { formatBytes, metricQualityAction, metricQualityLabel } from "../../format";
   import type { RuntimeSnapshot, RuntimeWarning, SystemMetricQuality } from "../../types";
 
@@ -10,7 +9,7 @@
   export let pollState: "starting" | "native" | "fixture" | "error";
   export let lastError = "";
   export let adminStatus = "";
-  export let onClose: () => void;
+  export let onClose: () => void = () => {};
 
   interface DiagnosticIssue {
     title: string;
@@ -21,14 +20,35 @@
 
   $: issues = snapshot.warnings.slice().reverse().map(toDiagnosticIssue);
 
-  let closeButton: HTMLButtonElement | null = null;
-  let previouslyOpen = false;
+  let dialog: HTMLDialogElement | null = null;
+  let opener: HTMLElement | null = null;
 
-  $: if (open && !previouslyOpen) {
-    previouslyOpen = true;
-    void tick().then(() => closeButton?.focus());
+  $: if (dialog) syncDialog(dialog, open);
+
+  function syncDialog(element: HTMLDialogElement, shouldOpen: boolean): void {
+    if (shouldOpen && !element.open) {
+      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      element.showModal();
+    } else if (!shouldOpen && element.open) {
+      element.close();
+      restoreOpener();
+    }
   }
-  $: if (!open) previouslyOpen = false;
+
+  function requestClose(): void {
+    dialog?.close();
+    restoreOpener();
+    onClose();
+  }
+
+  function restoreOpener(): void {
+    opener?.focus();
+    opener = null;
+  }
+
+  function handleBackdropClick(event: MouseEvent): void {
+    if (event.target === event.currentTarget) requestClose();
+  }
 
   function toDiagnosticIssue(warning: RuntimeWarning): DiagnosticIssue {
     const raw = warning.message;
@@ -76,22 +96,24 @@
   }
 </script>
 
-<svelte:window
-  onkeydown={(event) => {
-    if (open && event.key === "Escape") onClose();
+<dialog
+  bind:this={dialog}
+  class="drawer-layer diagnostics-layer"
+  aria-labelledby="diagnostics-title"
+  oncancel={(event) => {
+    event.preventDefault();
+    requestClose();
   }}
-/>
-
-{#if open}
-  <div class="drawer-layer diagnostics-layer">
-    <button class="drawer-backdrop" type="button" aria-label="Close diagnostics" onclick={onClose}></button>
-    <div class="diagnostics-drawer" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title">
+  onclose={restoreOpener}
+  onclick={handleBackdropClick}
+>
+    <div class="diagnostics-drawer">
       <header class="drawer-header">
         <div>
           <span>Local telemetry</span>
           <h2 id="diagnostics-title">Diagnostics</h2>
         </div>
-        <button bind:this={closeButton} class="icon-action" type="button" aria-label="Close diagnostics" onclick={onClose}>
+        <button class="icon-action" type="button" aria-label="Close diagnostics" onclick={requestClose}>
           <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
         </button>
       </header>
@@ -137,6 +159,11 @@
           <div class="drawer-section-title"><h3>Collector state</h3></div>
           <dl class="diagnostic-grid">
             <div><dt>Source</dt><dd>{sourceLabel}</dd></div>
+            <div><dt>Platform</dt><dd>{snapshot.environment.platform}</dd></div>
+            <div>
+              <dt>Local data</dt>
+              <dd>{snapshot.environment.data_directory ?? "No native runtime directory"}</dd>
+            </div>
             <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
             <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
             <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>
@@ -154,5 +181,4 @@
         </section>
       </div>
     </div>
-  </div>
-{/if}
+</dialog>

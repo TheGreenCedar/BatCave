@@ -6,15 +6,16 @@
   export let healthTone: "healthy" | "warning" | "danger";
   export let onOpenDiagnostics: () => void;
 
-  $: runtimeLabel = isPaused
-    ? "Paused"
-    : pollState === "native"
-      ? "Live"
-      : pollState === "fixture"
-        ? "Fixture data"
-        : pollState === "error"
-          ? "Stale"
-          : "Starting";
+  $: runtimeLabel =
+    pollState === "error"
+      ? "Stale"
+      : isPaused
+        ? "Paused"
+        : pollState === "native"
+          ? "Live"
+          : pollState === "fixture"
+            ? "Fixture data"
+            : "Starting";
 </script>
 
 <header class="app-header">
@@ -35,7 +36,7 @@
       <i aria-hidden="true"></i>
       {runtimeLabel}
     </span>
-    <span class="sample-age">Updated {updatedAtLabel}</span>
+    <span class="sample-age">Sampled {updatedAtLabel}</span>
     <button
       class="health-chip"
       class:warning={healthTone === "warning"}

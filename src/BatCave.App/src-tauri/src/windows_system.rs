@@ -72,8 +72,8 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
         memory_used_bytes: memory.used_bytes,
         memory_total_bytes: memory.total_bytes,
         memory_available_bytes: Some(memory.available_bytes),
-        swap_used_bytes: memory.pagefile_used_bytes,
-        swap_total_bytes: memory.pagefile_total_bytes,
+        swap_used_bytes: None,
+        swap_total_bytes: None,
         process_count,
         disk_read_total_bytes: 0,
         disk_write_total_bytes: 0,
@@ -100,10 +100,10 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
                 MetricQuality::Native,
                 MetricSource::DirectApi,
             )),
-            swap: Some(MetricQualityInfo::new(
-                MetricQuality::Native,
-                MetricSource::DirectApi,
-            )),
+            swap: Some(
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
+                    .with_message("Windows reports commit accounting, not swap usage."),
+            ),
             disk: Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Pdh)
                     .with_message("Disk counters need the PDH collector layer."),
@@ -126,8 +126,6 @@ struct MemoryMetrics {
     used_bytes: u64,
     total_bytes: u64,
     available_bytes: u64,
-    pagefile_used_bytes: u64,
-    pagefile_total_bytes: u64,
 }
 
 #[cfg(windows)]
@@ -191,8 +189,6 @@ fn sample_memory() -> Result<MemoryMetrics, String> {
     Ok(memory_metrics_from_status(
         status.ullTotalPhys,
         status.ullAvailPhys,
-        status.ullTotalPageFile,
-        status.ullAvailPageFile,
     ))
 }
 
@@ -275,18 +271,11 @@ fn include_network_interface(row: &MIB_IF_ROW2) -> bool {
     is_up && !is_loopback_or_tunnel
 }
 
-fn memory_metrics_from_status(
-    total_phys: u64,
-    avail_phys: u64,
-    total_pagefile: u64,
-    avail_pagefile: u64,
-) -> MemoryMetrics {
+fn memory_metrics_from_status(total_phys: u64, avail_phys: u64) -> MemoryMetrics {
     MemoryMetrics {
         used_bytes: total_phys.saturating_sub(avail_phys),
         total_bytes: total_phys,
         available_bytes: avail_phys,
-        pagefile_used_bytes: total_pagefile.saturating_sub(avail_pagefile),
-        pagefile_total_bytes: total_pagefile,
     }
 }
 
@@ -698,8 +687,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn memory_metrics_calculate_used_and_pagefile_bytes() {
-        let metrics = memory_metrics_from_status(1_000, 250, 2_000, 1_250);
+    fn memory_metrics_calculate_used_bytes() {
+        let metrics = memory_metrics_from_status(1_000, 250);
 
         assert_eq!(
             metrics,
@@ -707,18 +696,15 @@ mod tests {
                 used_bytes: 750,
                 total_bytes: 1_000,
                 available_bytes: 250,
-                pagefile_used_bytes: 750,
-                pagefile_total_bytes: 2_000,
             }
         );
     }
 
     #[test]
     fn memory_metrics_saturate_when_available_exceeds_total() {
-        let metrics = memory_metrics_from_status(500, 750, 600, 900);
+        let metrics = memory_metrics_from_status(500, 750);
 
         assert_eq!(metrics.used_bytes, 0);
-        assert_eq!(metrics.pagefile_used_bytes, 0);
     }
 
     #[cfg(windows)]

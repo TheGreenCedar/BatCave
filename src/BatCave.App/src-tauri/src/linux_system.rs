@@ -10,50 +10,39 @@ const SECTOR_SIZE_BYTES: u64 = 512;
 
 #[derive(Debug, Default)]
 pub struct LinuxSystemCollector {
-    previous: Option<LinuxSystemCounters>,
+    previous_cpu: Option<Vec<CpuTimes>>,
+    previous_disk: Option<TimedIoTotals>,
+    previous_network: Option<TimedIoTotals>,
 }
 
 impl LinuxSystemCollector {
     pub fn new() -> Self {
-        Self { previous: None }
+        Self::default()
     }
 
     pub fn sample(&mut self) -> Result<SystemMetricsSnapshot, String> {
         let cpu_times = read_cpu_times()?;
         let memory = read_meminfo()?;
-        let (disk, disk_quality) = match read_block_device_totals() {
-            Ok(disk) => (
-                disk,
-                MetricQualityInfo::new(MetricQuality::Native, MetricSource::Procfs),
-            ),
-            Err(error) => (
-                IoTotals::default(),
-                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Procfs)
-                    .with_message(&error),
-            ),
-        };
-        let (network, network_quality) = match read_network_totals() {
-            Ok(network) => (
-                network,
-                MetricQualityInfo::new(MetricQuality::Native, MetricSource::Procfs),
-            ),
-            Err(error) => (
-                IoTotals::default(),
-                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Procfs)
-                    .with_message(&error),
-            ),
-        };
-        let current = LinuxSystemCounters {
-            cpu_times,
-            disk,
-            network,
-            sampled_at: Instant::now(),
-        };
-        let previous = self.previous.as_ref();
+        let sampled_at = Instant::now();
+        let (disk, disk_read_bps, disk_write_bps, disk_quality) = resolve_io_sample(
+            read_block_device_totals(),
+            &mut self.previous_disk,
+            sampled_at,
+            "Linux disk counters need a second /sys/block sample.",
+        );
+        let (network, network_received_bps, network_transmitted_bps, network_quality) =
+            resolve_io_sample(
+                read_network_totals(),
+                &mut self.previous_network,
+                sampled_at,
+                "Linux network counters need a second /proc/net/dev sample.",
+            );
 
-        let aggregate_cpu = current.cpu_times.first().copied().unwrap_or_default();
-        let (cpu_percent, kernel_cpu_percent, cpu_quality) = previous
-            .and_then(|previous| previous.cpu_times.first().copied())
+        let aggregate_cpu = cpu_times.first().copied().unwrap_or_default();
+        let (cpu_percent, kernel_cpu_percent, cpu_quality) = self
+            .previous_cpu
+            .as_ref()
+            .and_then(|previous| previous.first().copied())
             .map_or(
                 (
                     0.0,
@@ -71,53 +60,18 @@ impl LinuxSystemCollector {
                 },
             );
 
-        let logical_cpu_percent = previous.map_or_else(Vec::new, |previous| {
-            current
-                .cpu_times
-                .iter()
-                .skip(1)
-                .zip(previous.cpu_times.iter().skip(1))
-                .map(|(current, previous)| cpu_load(*previous, *current).0)
-                .collect()
-        });
-
-        let elapsed_seconds = previous
-            .map(|previous| {
-                current
-                    .sampled_at
-                    .duration_since(previous.sampled_at)
-                    .as_secs_f64()
-            })
-            .unwrap_or(1.0);
-
-        let (disk_read_bps, disk_write_bps) = previous.map_or((0, 0), |previous| {
-            (
-                byte_rate(
-                    current.disk.read_total_bytes,
-                    previous.disk.read_total_bytes,
-                    elapsed_seconds,
-                ),
-                byte_rate(
-                    current.disk.write_total_bytes,
-                    previous.disk.write_total_bytes,
-                    elapsed_seconds,
-                ),
-            )
-        });
-        let (network_received_bps, network_transmitted_bps) = previous.map_or((0, 0), |previous| {
-            (
-                byte_rate(
-                    current.network.read_total_bytes,
-                    previous.network.read_total_bytes,
-                    elapsed_seconds,
-                ),
-                byte_rate(
-                    current.network.write_total_bytes,
-                    previous.network.write_total_bytes,
-                    elapsed_seconds,
-                ),
-            )
-        });
+        let logical_cpu_percent = self
+            .previous_cpu
+            .as_ref()
+            .map_or_else(Vec::new, |previous| {
+                cpu_times
+                    .iter()
+                    .skip(1)
+                    .zip(previous.iter().skip(1))
+                    .map(|(current, previous)| cpu_load(*previous, *current).0)
+                    .collect()
+            });
+        self.previous_cpu = Some(cpu_times);
 
         let snapshot = SystemMetricsSnapshot {
             cpu_percent,
@@ -126,15 +80,15 @@ impl LinuxSystemCollector {
             memory_used_bytes: memory.used_bytes,
             memory_total_bytes: memory.total_bytes,
             memory_available_bytes: Some(memory.available_bytes),
-            swap_used_bytes: memory.swap_used_bytes,
-            swap_total_bytes: memory.swap_total_bytes,
+            swap_used_bytes: Some(memory.swap_used_bytes),
+            swap_total_bytes: Some(memory.swap_total_bytes),
             process_count: count_process_dirs(),
-            disk_read_total_bytes: current.disk.read_total_bytes,
-            disk_write_total_bytes: current.disk.write_total_bytes,
+            disk_read_total_bytes: disk.read_total_bytes,
+            disk_write_total_bytes: disk.write_total_bytes,
             disk_read_bps,
             disk_write_bps,
-            network_received_total_bytes: current.network.read_total_bytes,
-            network_transmitted_total_bytes: current.network.write_total_bytes,
+            network_received_total_bytes: network.read_total_bytes,
+            network_transmitted_total_bytes: network.write_total_bytes,
             network_received_bps,
             network_transmitted_bps,
             memory_accounting: None,
@@ -155,16 +109,13 @@ impl LinuxSystemCollector {
             }),
         };
 
-        self.previous = Some(current);
         Ok(snapshot)
     }
 }
 
 #[derive(Debug, Clone)]
-struct LinuxSystemCounters {
-    cpu_times: Vec<CpuTimes>,
-    disk: IoTotals,
-    network: IoTotals,
+struct TimedIoTotals {
+    totals: IoTotals,
     sampled_at: Instant,
 }
 
@@ -218,6 +169,66 @@ struct IoTotals {
     write_total_bytes: u64,
 }
 
+fn resolve_io_sample(
+    current: Result<IoTotals, String>,
+    previous: &mut Option<TimedIoTotals>,
+    sampled_at: Instant,
+    initial_message: &str,
+) -> (IoTotals, u64, u64, MetricQualityInfo) {
+    match current {
+        Ok(totals) => {
+            let (read_bps, write_bps, quality) = previous.as_ref().map_or_else(
+                || {
+                    (
+                        0,
+                        0,
+                        MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
+                            .with_message(initial_message),
+                    )
+                },
+                |previous| {
+                    let elapsed = sampled_at.duration_since(previous.sampled_at).as_secs_f64();
+                    (
+                        byte_rate(
+                            totals.read_total_bytes,
+                            previous.totals.read_total_bytes,
+                            elapsed,
+                        ),
+                        byte_rate(
+                            totals.write_total_bytes,
+                            previous.totals.write_total_bytes,
+                            elapsed,
+                        ),
+                        MetricQualityInfo::new(MetricQuality::Native, MetricSource::Procfs),
+                    )
+                },
+            );
+            *previous = Some(TimedIoTotals { totals, sampled_at });
+            (totals, read_bps, write_bps, quality)
+        }
+        Err(error) => previous.as_ref().map_or_else(
+            || {
+                (
+                    IoTotals::default(),
+                    0,
+                    0,
+                    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Procfs)
+                        .with_message(&error),
+                )
+            },
+            |previous| {
+                (
+                    previous.totals,
+                    0,
+                    0,
+                    MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
+                        .with_message(&error),
+                )
+            },
+        ),
+    }
+}
+
 fn read_cpu_times() -> Result<Vec<CpuTimes>, String> {
     parse_cpu_times(
         &fs::read_to_string("/proc/stat")
@@ -240,13 +251,17 @@ fn read_network_totals() -> Result<IoTotals, String> {
 }
 
 fn read_block_device_totals() -> Result<IoTotals, String> {
+    read_block_device_totals_from(Path::new("/sys/block"))
+}
+
+fn read_block_device_totals_from(block_root: &Path) -> Result<IoTotals, String> {
     let mut totals = IoTotals::default();
-    for entry in fs::read_dir("/sys/block")
-        .map_err(|error| format!("linux_sys_block_read_failed:{error}"))?
+    for entry in
+        fs::read_dir(block_root).map_err(|error| format!("linux_sys_block_read_failed:{error}"))?
     {
         let entry = entry.map_err(|error| format!("linux_sys_block_entry_failed:{error}"))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if should_skip_block_device(&name) {
+        if should_skip_block_device(&name) || block_device_has_holders(&entry.path())? {
             continue;
         }
         let stat_path = entry.path().join("stat");
@@ -378,6 +393,34 @@ fn should_skip_block_device(name: &str) -> bool {
         || name.starts_with("ram")
         || name.starts_with("fd")
         || name.starts_with("sr")
+        || name.starts_with("zram")
+}
+
+fn block_device_has_holders(device: &Path) -> Result<bool, String> {
+    if directory_has_entries(&device.join("holders"))? {
+        return Ok(true);
+    }
+    for entry in fs::read_dir(device)
+        .map_err(|error| format!("linux_sys_block_device_read_failed:{device:?}:{error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("linux_sys_block_device_entry_failed:{error}"))?;
+        let path = entry.path();
+        if path.join("partition").exists() && directory_has_entries(&path.join("holders"))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn directory_has_entries(path: &Path) -> Result<bool, String> {
+    match fs::read_dir(path) {
+        Ok(mut entries) => Ok(entries.next().is_some()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "linux_sys_block_holders_read_failed:{path:?}:{error}"
+        )),
+    }
 }
 
 fn count_process_dirs() -> usize {
@@ -492,5 +535,69 @@ mod tests {
 
         assert_eq!(totals.read_total_bytes, 4096);
         assert_eq!(totals.write_total_bytes, 8192);
+    }
+
+    #[test]
+    fn failed_io_sample_keeps_last_baseline_for_recovery() {
+        let started = Instant::now();
+        let mut previous = None;
+        let _ = resolve_io_sample(
+            Ok(IoTotals {
+                read_total_bytes: 100,
+                write_total_bytes: 200,
+            }),
+            &mut previous,
+            started,
+            "initial",
+        );
+
+        let (held, read_bps, write_bps, quality) = resolve_io_sample(
+            Err("read failed".to_string()),
+            &mut previous,
+            started + std::time::Duration::from_secs(5),
+            "initial",
+        );
+        assert_eq!(held.read_total_bytes, 100);
+        assert_eq!((read_bps, write_bps), (0, 0));
+        assert_eq!(quality.quality, MetricQuality::Held);
+
+        let (_, read_bps, write_bps, quality) = resolve_io_sample(
+            Ok(IoTotals {
+                read_total_bytes: 1_100,
+                write_total_bytes: 2_200,
+            }),
+            &mut previous,
+            started + std::time::Duration::from_secs(10),
+            "initial",
+        );
+        assert_eq!((read_bps, write_bps), (100, 200));
+        assert_eq!(quality.quality, MetricQuality::Native);
+    }
+
+    #[test]
+    fn block_totals_count_only_top_of_stack_devices() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-linux-block-topology-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        create_block_device(&root, "sda", "1 0 100 0 2 0 200 0");
+        fs::create_dir_all(root.join("sda/sda1/holders/dm-0")).unwrap();
+        fs::write(root.join("sda/sda1/partition"), "1").unwrap();
+        create_block_device(&root, "dm-0", "1 0 8 0 2 0 16 0");
+        create_block_device(&root, "nvme0n1", "1 0 2 0 2 0 4 0");
+        create_block_device(&root, "zram0", "1 0 999 0 2 0 999 0");
+
+        let totals = read_block_device_totals_from(&root).expect("topology reads");
+
+        assert_eq!(totals.read_total_bytes, 5_120);
+        assert_eq!(totals.write_total_bytes, 10_240);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn create_block_device(root: &Path, name: &str, stat: &str) {
+        let path = root.join(name);
+        fs::create_dir_all(path.join("holders")).unwrap();
+        fs::write(path.join("stat"), stat).unwrap();
     }
 }

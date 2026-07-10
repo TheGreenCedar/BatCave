@@ -6,21 +6,21 @@ This is a public preview. It is useful now, honest about what it cannot see, and
 
 ### Light Theme
 
-![BatCave Monitor attention-first resource overview in the Daylight theme](docs/images/batcave-monitor-redesign-overview-daylight.jpg)
+![BatCave Monitor attention-first resource overview in the Daylight theme](docs/images/batcave-monitor-remediation-overview-daylight.png)
 
-![BatCave Monitor selected workload detail in the Daylight theme](docs/images/batcave-monitor-redesign-workload-daylight.jpg)
+![BatCave Monitor selected workload detail in the Daylight theme](docs/images/batcave-monitor-remediation-workload-daylight.png)
 
-![BatCave Monitor plain-language diagnostics drawer in the Daylight theme](docs/images/batcave-monitor-redesign-diagnostics-daylight.jpg)
+![BatCave Monitor plain-language diagnostics drawer in the Daylight theme](docs/images/batcave-monitor-remediation-diagnostics-daylight.png)
 
-![BatCave Monitor settings and privileged-access drawer in the Daylight theme](docs/images/batcave-monitor-redesign-settings-daylight.jpg)
+![BatCave Monitor settings and privileged-access drawer in the Daylight theme](docs/images/batcave-monitor-remediation-settings-daylight.png)
 
 ### Dark Theme
 
-![BatCave Monitor attention-first resource overview in the dark Cave theme](docs/images/batcave-monitor-redesign-overview-cave.jpg)
+![BatCave Monitor attention-first resource overview in the dark Cave theme](docs/images/batcave-monitor-remediation-overview-cave.png)
 
-![BatCave Monitor compact card layout in the dark Cave theme](docs/images/batcave-monitor-redesign-narrow-cave.jpg)
+![BatCave Monitor compact card layout in the dark Cave theme](docs/images/batcave-monitor-remediation-narrow-cave.png)
 
-![BatCave Monitor dismissible compact detail drawer in the dark Cave theme](docs/images/batcave-monitor-redesign-narrow-detail-cave.jpg)
+![BatCave Monitor dismissible compact detail drawer in the dark Cave theme](docs/images/batcave-monitor-remediation-narrow-detail-cave.png)
 
 Screenshots show the native Tauri app with live Windows telemetry. Browser fixture screenshots are layout-only and should not be used as product proof.
 
@@ -132,7 +132,7 @@ Theme preference is stored in browser `localStorage` under `batcave.monitor.them
 
 - Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
 - Windows admin mode can launch a local elevated helper for richer snapshots. If elevation is denied or unavailable, BatCave falls back to standard access.
-- Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses `bpftrace`/eBPF when the host has the needed permissions or capabilities.
+- Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses `bpftrace`/eBPF when the host has the needed permissions or capabilities. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
 - Browser fixture mode is for UI work. It is deterministic on purpose and is not proof of native collector behavior.
 
 ## Benchmarks
@@ -159,7 +159,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -
 
 Linux equivalents are available at `scripts/run-benchmark.sh`, `scripts/capture-benchmark-baseline.sh`, and `scripts/run-benchmark-gate.sh`.
 
-In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
+The release benchmark measures the complete `RuntimeState::refresh_now` path plus snapshot JSON serialization in an isolated temporary data directory. The default protocol uses 30 warmup ticks and five 120-tick measured repeats, then gates on the median repeat p95. Baseline artifacts are protocol v2 and include the commit, release-binary hash, platform, architecture, machine class, workload, and every repeat; revision fields append `-dirty` when the measured worktree is not clean. Strict mode requires a matching baseline or an explicit p95 ceiling; baseline comparisons require a speed ratio of at least `0.90` by default.
+
+The complete-remediation release comparison is preserved in [docs/evidence/benchmarks/remediation-20260710.json](docs/evidence/benchmarks/remediation-20260710.json), including source hashes, commit provenance, protocol settings, all repeats, and the strict gate result.
+
+## Continuous Integration
+
+Pull requests and `codex/**` pushes run Windows and Linux validation without packaging. Pull requests also reject newly introduced dependencies with moderate-or-higher advisories. Pushes to `main` and manual bundle runs produce Windows NSIS plus Linux deb/AppImage artifacts retained for 14 days. A separate Monday/manual audit runs `npm audit --omit=dev` and pinned `cargo-audit 0.22.2`.
 
 ## More Documentation
 

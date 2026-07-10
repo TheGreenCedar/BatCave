@@ -175,8 +175,9 @@ fn read_process(
     let exe = fs::read_link(proc_dir.join("exe"))
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+    let measured_private_bytes = read_private_bytes(&proc_dir);
     let private_bytes =
-        read_private_bytes(&proc_dir).unwrap_or_else(|| rss_bytes(stat.rss_pages, page_size));
+        measured_private_bytes.unwrap_or_else(|| rss_bytes(stat.rss_pages, page_size));
     let handles = fs::read_dir(proc_dir.join("fd"))
         .map(|entries| entries.filter_map(Result::ok).count() as u32)
         .unwrap_or_default();
@@ -211,7 +212,7 @@ fn read_process(
             kernel_cpu_percent: None,
             memory_bytes: rss_bytes(stat.rss_pages, page_size),
             private_bytes,
-            virtual_memory_bytes: stat.virtual_memory_bytes,
+            virtual_memory_bytes: Some(stat.virtual_memory_bytes),
             disk_read_total_bytes: io.read_bytes,
             disk_write_total_bytes: io.write_bytes,
             other_io_total_bytes: None,
@@ -223,7 +224,11 @@ fn read_process(
             threads: stat.threads,
             handles,
             access_state,
-            quality: Some(linux_process_quality(access_state, has_io)),
+            quality: Some(linux_process_quality(
+                access_state,
+                has_io,
+                measured_private_bytes.is_some(),
+            )),
         },
     })
 }
@@ -348,7 +353,11 @@ fn read_boot_time_ms() -> Option<u64> {
         })
 }
 
-fn linux_process_quality(access_state: AccessState, has_io: bool) -> ProcessMetricQuality {
+fn linux_process_quality(
+    access_state: AccessState,
+    has_io: bool,
+    has_private_memory: bool,
+) -> ProcessMetricQuality {
     let direct_quality = match access_state {
         AccessState::Full => MetricQuality::Native,
         AccessState::Partial => MetricQuality::Partial,
@@ -361,7 +370,12 @@ fn linux_process_quality(access_state: AccessState, has_io: bool) -> ProcessMetr
             MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
                 .with_message("Linux process CPU needs a second /proc sample."),
         ),
-        memory: Some(procfs(direct_quality)),
+        memory: Some(if has_private_memory {
+            procfs(direct_quality)
+        } else {
+            procfs(MetricQuality::Estimated)
+                .with_message("RssAnon is unavailable; private memory uses RSS as an estimate.")
+        }),
         disk: Some(if has_io {
             procfs(direct_quality)
         } else {
@@ -477,5 +491,18 @@ mod tests {
     fn rss_bytes_saturates_negative_pages_to_zero() {
         assert_eq!(rss_bytes(-1, 4096), 0);
         assert_eq!(rss_bytes(3, 4096), 12_288);
+    }
+
+    #[test]
+    fn rss_private_fallback_is_marked_estimated() {
+        let quality = linux_process_quality(AccessState::Full, true, false)
+            .memory
+            .expect("memory quality exists");
+
+        assert_eq!(quality.quality, MetricQuality::Estimated);
+        assert!(quality
+            .message
+            .expect("fallback message exists")
+            .contains("RssAnon"));
     }
 }

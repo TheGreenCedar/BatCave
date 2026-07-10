@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import type { DetailMode } from "../metrics/types";
   import type { ProcessRates } from "../../process";
   import type { ChartPalette } from "../../themes";
@@ -58,22 +57,52 @@
   export let busyCoreCount = 0;
   export let coreTone: (load: number) => string;
 
-  let closeButton: HTMLButtonElement | null = null;
+  let pane: HTMLElement | null = null;
+  let opener: HTMLElement | null = null;
 
-  onMount(() => {
-    if (compact) {
-      window.requestAnimationFrame(() => closeButton?.focus());
+  $: if (compact && pane instanceof HTMLDialogElement && !pane.open) {
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    pane.showModal();
+  }
+
+  $: if (!compact && opener) restoreOpener();
+
+  function requestClose(): void {
+    if (pane instanceof HTMLDialogElement) {
+      pane.close();
     }
-  });
+    restoreOpener();
+    onClose();
+  }
+
+  function restoreOpener(): void {
+    opener?.focus();
+    opener = null;
+  }
+
+  function handleBackdropClick(event: MouseEvent): void {
+    if (event.target === event.currentTarget && event.currentTarget instanceof HTMLDialogElement) {
+      requestClose();
+    }
+  }
+
+  function handleCancel(event: Event): void {
+    event.preventDefault();
+    requestClose();
+  }
 </script>
 
-<aside
+<svelte:element
+  this={compact ? "dialog" : "aside"}
+  bind:this={pane}
   id="detail-pane"
   class:detail-pane={true}
   class:is-drawer={compact}
-  role={compact ? "dialog" : "complementary"}
+  role={compact ? undefined : "complementary"}
   aria-label="Resource detail"
-  aria-modal={compact ? "true" : undefined}
+  oncancel={handleCancel}
+  onclose={restoreOpener}
+  onclick={handleBackdropClick}
 >
   <header class="detail-pane-heading">
     <div>
@@ -88,11 +117,10 @@
       {/if}
       {#if compact}
         <button
-          bind:this={closeButton}
           class="detail-pane-close"
           type="button"
           aria-label="Close resource detail"
-          onclick={onClose}
+          onclick={requestClose}
         >
           <svg aria-hidden="true" viewBox="0 0 24 24">
             <path d="M6 6l12 12M18 6 6 18"></path>
@@ -144,4 +172,4 @@
       />
     {/if}
   </div>
-</aside>
+</svelte:element>

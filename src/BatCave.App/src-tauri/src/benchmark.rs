@@ -1,34 +1,80 @@
 use std::{
+    ffi::OsString,
+    fs,
+    path::PathBuf,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{cli_args, telemetry::TelemetryCollector};
+use crate::{cli_args, runtime_store::RuntimeState};
+
+const FORMAT_VERSION: u32 = 2;
+const HOST: &str = "core";
+const MEASUREMENT_ORIGIN: &str = "runtime_state_refresh_and_json_serialization";
+const DEFAULT_MIN_SPEED_RATIO: f64 = 0.90;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct BenchmarkRepeat {
+    tick_p95_ms: f64,
+    peak_app_cpu_percent: f64,
+    peak_app_rss_bytes: u64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct BenchmarkSummary {
+    format_version: u32,
     host: String,
     measurement_origin: String,
-    ticks: usize,
+    platform: String,
+    architecture: String,
+    machine_class: String,
+    workload_profile: String,
+    warmup_ticks: usize,
+    measured_ticks: usize,
     sleep_ms: u64,
-    tick_p95_ms: f64,
-    sort_p95_ms: f64,
-    cpu_budget_pct: f64,
-    rss_budget_bytes: u64,
-    strict_passed: bool,
+    repeat_count: usize,
+    repeats: Vec<BenchmarkRepeat>,
+    median_tick_p95_ms: f64,
+    peak_app_cpu_percent: f64,
+    peak_app_rss_bytes: u64,
+    max_p95_passed: bool,
     baseline_metadata_matched: bool,
-    core_speedup_passed: bool,
+    speed_ratio: Option<f64>,
+    speed_ratio_passed: bool,
+    strict_passed: bool,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct BenchmarkBaseline {
-    ticks: usize,
+    format_version: u32,
+    host: String,
+    measurement_origin: String,
+    platform: String,
+    architecture: String,
+    machine_class: String,
+    workload_profile: String,
+    warmup_ticks: usize,
+    measured_ticks: usize,
     sleep_ms: u64,
-    tick_p95_ms: f64,
+    repeat_count: usize,
+    median_tick_p95_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkConfig {
+    platform: String,
+    architecture: String,
+    machine_class: String,
+    workload_profile: String,
+    warmup_ticks: usize,
+    measured_ticks: usize,
+    sleep_ms: u64,
+    repeat_count: usize,
 }
 
 pub fn run_cli(args: &[String]) -> Option<i32> {
@@ -55,101 +101,250 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
 }
 
 fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> {
-    let ticks = parse_usize(args, "--ticks", 120)?;
-    if ticks == 0 {
-        return Err("invalid_argument:--ticks:must_be_greater_than_zero".to_string());
-    }
-    let sleep_ms = parse_u64(args, "--sleep-ms", 1000)?;
+    let config = BenchmarkConfig {
+        platform: parse_string(args, "--platform", std::env::consts::OS)?,
+        architecture: parse_string(args, "--architecture", std::env::consts::ARCH)?,
+        machine_class: parse_string(args, "--machine-class", default_machine_class())?,
+        workload_profile: parse_string(args, "--workload-profile", "fixed-default")?,
+        warmup_ticks: parse_usize(args, "--warmup-ticks", 30)?,
+        measured_ticks: parse_usize(args, "--ticks", 120)?,
+        sleep_ms: parse_u64(args, "--sleep-ms", 1000)?,
+        repeat_count: parse_usize(args, "--repeats", 5)?,
+    };
+    validate_config(&config)?;
+
     let strict = args.iter().any(|arg| arg == "--strict");
     let max_p95_ms = parse_optional_f64(args, "--max-p95-ms")?;
-    let min_speedup = parse_optional_f64(args, "--min-speedup-multiplier")?;
+    let requested_min_speed_ratio = parse_optional_f64(args, "--min-speedup-multiplier")?;
     reject_unknown_args(args)?;
-    let baseline = parse_baseline(args, ticks, sleep_ms)?;
 
-    let collector = TelemetryCollector::new();
-    let mut tick_values = Vec::with_capacity(ticks);
-    let mut sort_values = Vec::with_capacity(ticks);
+    if requested_min_speed_ratio.is_some() && !has_value(args, "--baseline-json") {
+        return Err("invalid_benchmark_gate:min_speedup_requires_baseline".to_string());
+    }
+    if strict && !has_value(args, "--baseline-json") && max_p95_ms.is_none() {
+        return Err("invalid_benchmark_gate:strict_requires_baseline_or_max_p95_ms".to_string());
+    }
+    validate_positive_finite("--max-p95-ms", max_p95_ms)?;
+    validate_positive_finite("--min-speedup-multiplier", requested_min_speed_ratio)?;
+
+    let baseline = parse_baseline(args, &config)?;
+    let min_speed_ratio = requested_min_speed_ratio
+        .or_else(|| (strict && baseline.is_some()).then_some(DEFAULT_MIN_SPEED_RATIO));
+
+    let _runtime_dir = BenchmarkRuntimeDir::new()?;
+    let state = RuntimeState::new();
+    if config.warmup_ticks > 0 {
+        measure_window(&state, config.warmup_ticks, config.sleep_ms)?;
+    }
+
+    let mut repeats = Vec::with_capacity(config.repeat_count);
+    for _ in 0..config.repeat_count {
+        repeats.push(measure_window(
+            &state,
+            config.measured_ticks,
+            config.sleep_ms,
+        )?);
+    }
+
+    let median_tick_p95_ms = median(
+        &repeats
+            .iter()
+            .map(|repeat| repeat.tick_p95_ms)
+            .collect::<Vec<_>>(),
+    );
+    let peak_app_cpu_percent = repeats
+        .iter()
+        .map(|repeat| repeat.peak_app_cpu_percent)
+        .fold(0.0, f64::max);
+    let peak_app_rss_bytes = repeats
+        .iter()
+        .map(|repeat| repeat.peak_app_rss_bytes)
+        .max()
+        .unwrap_or(0);
+    let max_p95_passed = max_p95_ms
+        .map(|maximum| median_tick_p95_ms <= maximum)
+        .unwrap_or(true);
+    let speed_ratio = baseline
+        .as_ref()
+        .map(|baseline| calculate_speed_ratio(baseline.median_tick_p95_ms, median_tick_p95_ms));
+    let speed_ratio_passed = min_speed_ratio
+        .map(|minimum| speed_ratio.is_some_and(|ratio| ratio >= minimum))
+        .unwrap_or(true);
+    let strict_passed = !strict || (max_p95_passed && speed_ratio_passed);
+
+    Ok(BenchmarkSummary {
+        format_version: FORMAT_VERSION,
+        host: HOST.to_string(),
+        measurement_origin: MEASUREMENT_ORIGIN.to_string(),
+        platform: config.platform,
+        architecture: config.architecture,
+        machine_class: config.machine_class,
+        workload_profile: config.workload_profile,
+        warmup_ticks: config.warmup_ticks,
+        measured_ticks: config.measured_ticks,
+        sleep_ms: config.sleep_ms,
+        repeat_count: config.repeat_count,
+        repeats,
+        median_tick_p95_ms: round1(median_tick_p95_ms),
+        peak_app_cpu_percent: round1(peak_app_cpu_percent),
+        peak_app_rss_bytes,
+        max_p95_passed,
+        baseline_metadata_matched: baseline.is_some(),
+        speed_ratio: speed_ratio.map(round3),
+        speed_ratio_passed,
+        strict_passed,
+    })
+}
+
+fn measure_window(
+    state: &RuntimeState,
+    ticks: usize,
+    sleep_ms: u64,
+) -> Result<BenchmarkRepeat, String> {
+    let mut durations = Vec::with_capacity(ticks);
+    let mut peak_app_cpu_percent = 0.0_f64;
+    let mut peak_app_rss_bytes = 0_u64;
+
     for _ in 0..ticks {
         let started = Instant::now();
-        let sample = collector.collect()?;
-        tick_values.push(started.elapsed().as_secs_f64() * 1000.0);
-
-        let sort_started = Instant::now();
-        let mut rows = sample.processes;
-        rows.sort_by(|left, right| left.name.cmp(&right.name));
-        sort_values.push(sort_started.elapsed().as_secs_f64() * 1000.0);
+        let snapshot = state.refresh_now()?;
+        serde_json::to_vec(&snapshot)
+            .map_err(|error| format!("benchmark_snapshot_serialize_failed:{error}"))?;
+        durations.push(started.elapsed().as_secs_f64() * 1000.0);
+        peak_app_cpu_percent = peak_app_cpu_percent.max(snapshot.health.app_cpu_percent);
+        peak_app_rss_bytes = peak_app_rss_bytes.max(snapshot.health.app_rss_bytes);
 
         if sleep_ms > 0 {
             thread::sleep(Duration::from_millis(sleep_ms));
         }
     }
 
-    let tick_p95_ms = round1(p95(&tick_values));
-    let sort_p95_ms = round1(p95(&sort_values));
-    let max_p95_passed = max_p95_ms.map(|max| tick_p95_ms <= max).unwrap_or(true);
-    let core_speedup_passed = speedup_passed(baseline.as_ref(), tick_p95_ms, min_speedup);
-    let strict_passed = !strict || (max_p95_passed && core_speedup_passed);
-
-    Ok(BenchmarkSummary {
-        host: "core".to_string(),
-        measurement_origin: "rust_tauri_runtime".to_string(),
-        ticks,
-        sleep_ms,
-        tick_p95_ms,
-        sort_p95_ms,
-        cpu_budget_pct: 6.0,
-        rss_budget_bytes: 350 * 1024 * 1024,
-        strict_passed,
-        baseline_metadata_matched: baseline.is_some(),
-        core_speedup_passed,
+    Ok(BenchmarkRepeat {
+        tick_p95_ms: round1(p95(&durations)),
+        peak_app_cpu_percent: round1(peak_app_cpu_percent),
+        peak_app_rss_bytes,
     })
 }
 
 fn parse_baseline(
     args: &[String],
-    expected_ticks: usize,
-    expected_sleep_ms: u64,
+    expected: &BenchmarkConfig,
 ) -> Result<Option<BenchmarkBaseline>, String> {
     let Some(path) = parse_optional_string(args, "--baseline-json")? else {
         return Ok(None);
     };
 
-    let payload = std::fs::read_to_string(&path)
+    let payload = fs::read_to_string(&path)
         .map_err(|error| format!("baseline_json_read_failed path={path} error={error}"))?;
     let baseline = serde_json::from_str::<BenchmarkBaseline>(&payload)
         .map_err(|error| format!("baseline_json_parse_failed path={path} error={error}"))?;
-    if baseline.ticks != expected_ticks || baseline.sleep_ms != expected_sleep_ms {
+    if baseline.format_version != FORMAT_VERSION {
         return Err(format!(
-            "baseline_metadata_mismatch expected_ticks={} expected_sleep_ms={} actual_ticks={} actual_sleep_ms={}",
-            expected_ticks, expected_sleep_ms, baseline.ticks, baseline.sleep_ms
+            "baseline_metadata_mismatch field=format_version expected={} actual={}",
+            FORMAT_VERSION, baseline.format_version
         ));
     }
+    require_metadata("host", HOST, &baseline.host)?;
+    require_metadata(
+        "measurement_origin",
+        MEASUREMENT_ORIGIN,
+        &baseline.measurement_origin,
+    )?;
+    require_metadata("platform", &expected.platform, &baseline.platform)?;
+    require_metadata(
+        "architecture",
+        &expected.architecture,
+        &baseline.architecture,
+    )?;
+    require_metadata(
+        "machine_class",
+        &expected.machine_class,
+        &baseline.machine_class,
+    )?;
+    require_metadata(
+        "workload_profile",
+        &expected.workload_profile,
+        &baseline.workload_profile,
+    )?;
+    require_number("warmup_ticks", expected.warmup_ticks, baseline.warmup_ticks)?;
+    require_number(
+        "measured_ticks",
+        expected.measured_ticks,
+        baseline.measured_ticks,
+    )?;
+    require_number("sleep_ms", expected.sleep_ms, baseline.sleep_ms)?;
+    require_number("repeat_count", expected.repeat_count, baseline.repeat_count)?;
+    validate_positive_finite(
+        "baseline.median_tick_p95_ms",
+        Some(baseline.median_tick_p95_ms),
+    )?;
 
     Ok(Some(baseline))
 }
 
-fn speedup_passed(
-    baseline: Option<&BenchmarkBaseline>,
-    current_tick_p95_ms: f64,
-    min_speedup: Option<f64>,
-) -> bool {
-    let Some(min_speedup) = min_speedup else {
-        return true;
-    };
-    let Some(baseline) = baseline else {
-        return false;
-    };
-    if current_tick_p95_ms <= 0.0 {
-        return true;
+fn require_metadata(field: &str, expected: &str, actual: &str) -> Result<(), String> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(format!(
+            "baseline_metadata_mismatch field={field} expected={expected:?} actual={actual:?}"
+        ))
     }
+}
 
-    baseline.tick_p95_ms / current_tick_p95_ms >= min_speedup
+fn require_number<T>(field: &str, expected: T, actual: T) -> Result<(), String>
+where
+    T: std::fmt::Display + PartialEq,
+{
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(format!(
+            "baseline_metadata_mismatch field={field} expected={expected} actual={actual}"
+        ))
+    }
+}
+
+fn validate_config(config: &BenchmarkConfig) -> Result<(), String> {
+    if config.measured_ticks == 0 {
+        return Err("invalid_argument:--ticks:must_be_greater_than_zero".to_string());
+    }
+    if config.repeat_count == 0 {
+        return Err("invalid_argument:--repeats:must_be_greater_than_zero".to_string());
+    }
+    for (name, value) in [
+        ("--platform", &config.platform),
+        ("--architecture", &config.architecture),
+        ("--machine-class", &config.machine_class),
+        ("--workload-profile", &config.workload_profile),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("invalid_argument:{name}:must_not_be_empty"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_positive_finite(name: &str, value: Option<f64>) -> Result<(), String> {
+    if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+        Err(format!(
+            "invalid_argument:{name}:must_be_positive_and_finite"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn reject_unknown_args(args: &[String]) -> Result<(), String> {
     let known_with_value = [
+        "--platform",
+        "--architecture",
+        "--machine-class",
+        "--workload-profile",
+        "--warmup-ticks",
         "--ticks",
         "--sleep-ms",
+        "--repeats",
         "--baseline-json",
         "--min-speedup-multiplier",
         "--max-p95-ms",
@@ -164,6 +359,10 @@ fn parse_usize(args: &[String], name: &str, default: usize) -> Result<usize, Str
 
 fn parse_u64(args: &[String], name: &str, default: u64) -> Result<u64, String> {
     parse_value(args, name, default)
+}
+
+fn parse_string(args: &[String], name: &str, default: impl Into<String>) -> Result<String, String> {
+    Ok(parse_optional_string(args, name)?.unwrap_or_else(|| default.into()))
 }
 
 fn parse_optional_f64(args: &[String], name: &str) -> Result<Option<f64>, String> {
@@ -202,14 +401,47 @@ fn parse_optional_string(args: &[String], name: &str) -> Result<Option<String>, 
         .map(Some)
 }
 
+fn has_value(args: &[String], name: &str) -> bool {
+    args.iter()
+        .position(|arg| arg == name)
+        .is_some_and(|index| {
+            args.get(index + 1)
+                .is_some_and(|value| !value.starts_with("--"))
+        })
+}
+
+fn default_machine_class() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "local".to_string())
+}
+
 fn p95(values: &[f64]) -> f64 {
+    percentile(values, 0.95)
+}
+
+fn median(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut values = values.to_vec();
+    values.sort_by(|left, right| left.total_cmp(right));
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) / 2.0
+    } else {
+        values[middle]
+    }
+}
+
+fn percentile(values: &[f64], quantile: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
 
     let mut values = values.to_vec();
-    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
-    let index = ((values.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
+    values.sort_by(|left, right| left.total_cmp(right));
+    let index = ((values.len() as f64 * quantile).ceil() as usize).saturating_sub(1);
     values[index.min(values.len() - 1)]
 }
 
@@ -217,13 +449,122 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+fn round3(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+fn calculate_speed_ratio(baseline_p95_ms: f64, candidate_p95_ms: f64) -> f64 {
+    baseline_p95_ms / candidate_p95_ms.max(f64::EPSILON)
+}
+
+struct BenchmarkRuntimeDir {
+    path: PathBuf,
+    env_key: &'static str,
+    previous_value: Option<OsString>,
+}
+
+impl BenchmarkRuntimeDir {
+    fn new() -> Result<Self, String> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("benchmark_temp_clock_failed:{error}"))?
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("batcave-benchmark-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).map_err(|error| {
+            format!(
+                "benchmark_temp_directory_create_failed path={} error={error}",
+                path.display()
+            )
+        })?;
+
+        #[cfg(windows)]
+        let env_key = "LOCALAPPDATA";
+        #[cfg(not(windows))]
+        let env_key = "XDG_DATA_HOME";
+        let previous_value = std::env::var_os(env_key);
+        std::env::set_var(env_key, &path);
+
+        Ok(Self {
+            path,
+            env_key,
+            previous_value,
+        })
+    }
+}
+
+impl Drop for BenchmarkRuntimeDir {
+    fn drop(&mut self) {
+        if let Some(value) = &self.previous_value {
+            std::env::set_var(self.env_key, value);
+        } else {
+            std::env::remove_var(self.env_key);
+        }
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn config() -> BenchmarkConfig {
+        BenchmarkConfig {
+            platform: "test-os".to_string(),
+            architecture: "test-arch".to_string(),
+            machine_class: "test-machine".to_string(),
+            workload_profile: "fixed-default".to_string(),
+            warmup_ticks: 0,
+            measured_ticks: 2,
+            sleep_ms: 0,
+            repeat_count: 1,
+        }
+    }
+
+    fn baseline_json(overrides: &str) -> String {
+        format!(
+            r#"{{
+                "format_version": 2,
+                "host": "core",
+                "measurement_origin": "runtime_state_refresh_and_json_serialization",
+                "platform": "test-os",
+                "architecture": "test-arch",
+                "machine_class": "test-machine",
+                "workload_profile": "fixed-default",
+                "warmup_ticks": 0,
+                "measured_ticks": 2,
+                "sleep_ms": 0,
+                "repeat_count": 1,
+                "median_tick_p95_ms": 10.0{}
+            }}"#,
+            overrides
+        )
+    }
+
+    fn write_baseline(payload: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-benchmark-baseline-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::write(&path, payload).expect("baseline fixture writes");
+        path
+    }
+
     #[test]
-    fn p95_uses_nearest_rank() {
+    fn percentiles_use_nearest_rank() {
         assert_eq!(p95(&[1.0, 2.0, 3.0, 4.0]), 4.0);
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0, 5.0]), 3.0);
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
+    }
+
+    #[test]
+    fn speed_ratio_is_baseline_over_candidate() {
+        assert_eq!(calculate_speed_ratio(90.0, 100.0), 0.9);
+        assert_eq!(calculate_speed_ratio(100.0, 50.0), 2.0);
     }
 
     #[test]
@@ -236,70 +577,78 @@ mod tests {
     }
 
     #[test]
-    fn benchmark_rejects_zero_ticks() {
-        let args = vec![
-            "--benchmark".to_string(),
-            "--ticks".to_string(),
-            "0".to_string(),
-        ];
-
-        let error = run_benchmark_from_args(&args).expect_err("zero ticks fail");
-        assert_eq!(error, "invalid_argument:--ticks:must_be_greater_than_zero");
+    fn benchmark_rejects_zero_ticks_and_repeats() {
+        let mut invalid = config();
+        invalid.measured_ticks = 0;
+        assert_eq!(
+            validate_config(&invalid),
+            Err("invalid_argument:--ticks:must_be_greater_than_zero".to_string())
+        );
+        invalid.measured_ticks = 1;
+        invalid.repeat_count = 0;
+        assert_eq!(
+            validate_config(&invalid),
+            Err("invalid_argument:--repeats:must_be_greater_than_zero".to_string())
+        );
     }
 
     #[test]
-    fn missing_baseline_file_fails() {
-        let path = std::env::temp_dir().join(format!(
-            "batcave-missing-baseline-{}.json",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+    fn strict_gate_requires_baseline_or_ceiling() {
+        let args = vec![
+            "--benchmark".to_string(),
+            "--strict".to_string(),
+            "--warmup-ticks".to_string(),
+            "0".to_string(),
+            "--ticks".to_string(),
+            "1".to_string(),
+            "--sleep-ms".to_string(),
+            "0".to_string(),
+            "--repeats".to_string(),
+            "1".to_string(),
+        ];
+        assert_eq!(
+            run_benchmark_from_args(&args).expect_err("missing gate fails"),
+            "invalid_benchmark_gate:strict_requires_baseline_or_max_p95_ms"
+        );
+    }
+
+    #[test]
+    fn speed_ratio_without_baseline_is_configuration_error() {
+        let args = vec![
+            "--benchmark".to_string(),
+            "--min-speedup-multiplier".to_string(),
+            "0.9".to_string(),
+        ];
+        assert_eq!(
+            run_benchmark_from_args(&args).expect_err("missing baseline fails"),
+            "invalid_benchmark_gate:min_speedup_requires_baseline"
+        );
+    }
+
+    #[test]
+    fn baseline_requires_v2_protocol_metadata() {
+        let path = write_baseline(&baseline_json(""));
         let args = vec![
             "--benchmark".to_string(),
             "--baseline-json".to_string(),
             path.display().to_string(),
         ];
-
-        let error = parse_baseline(&args, 2, 0).expect_err("missing baseline fails");
-
-        assert!(error.contains("baseline_json_read_failed"));
+        let parsed = parse_baseline(&args, &config()).expect("matching baseline parses");
+        fs::remove_file(&path).expect("baseline fixture cleanup");
+        assert_eq!(parsed.expect("baseline").median_tick_p95_ms, 10.0);
     }
 
     #[test]
     fn baseline_metadata_mismatch_fails() {
-        let path = std::env::temp_dir().join(format!(
-            "batcave-mismatch-baseline-{}.json",
-            std::process::id()
-        ));
-        std::fs::write(&path, r#"{"ticks":120,"sleep_ms":1000,"tick_p95_ms":10.0}"#)
-            .expect("baseline fixture writes");
+        let payload = baseline_json("").replace("test-machine", "other-machine");
+        let path = write_baseline(&payload);
         let args = vec![
             "--benchmark".to_string(),
             "--baseline-json".to_string(),
             path.display().to_string(),
         ];
-
-        let error = parse_baseline(&args, 2, 0).expect_err("metadata mismatch fails");
-
-        std::fs::remove_file(&path).expect("baseline fixture cleanup");
-        assert!(error.contains("baseline_metadata_mismatch"));
-    }
-
-    #[test]
-    fn speedup_gate_uses_baseline_over_current_ratio() {
-        let baseline = BenchmarkBaseline {
-            ticks: 2,
-            sleep_ms: 0,
-            tick_p95_ms: 100.0,
-        };
-
-        assert!(speedup_passed(Some(&baseline), 10.0, Some(2.0)));
-        assert!(!speedup_passed(Some(&baseline), 80.0, Some(2.0)));
-        assert!(speedup_passed(None, 80.0, None));
-    }
-
-    #[test]
-    fn speedup_gate_fails_when_min_speedup_lacks_baseline() {
-        assert!(!speedup_passed(None, 80.0, Some(2.0)));
+        let error = parse_baseline(&args, &config()).expect_err("metadata mismatch fails");
+        fs::remove_file(&path).expect("baseline fixture cleanup");
+        assert!(error.contains("field=machine_class"));
     }
 }

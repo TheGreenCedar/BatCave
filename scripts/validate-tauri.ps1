@@ -88,16 +88,6 @@ try {
         exit $LASTEXITCODE
     }
 
-    Run-Step "Rust benchmark smoke" {
-        Push-Location $repoRoot
-        try {
-            cargo run --manifest-path "$cargoManifest" --bin batcave-monitor-cli -- --benchmark --ticks 2 --sleep-ms 0 --strict --max-p95-ms 10000
-        }
-        finally {
-            Pop-Location
-        }
-    }
-
     if ($BenchmarkGate.IsPresent) {
         Run-Step "Rust benchmark regression gate" {
             Push-Location $repoRoot
@@ -108,7 +98,6 @@ try {
                     Platform = $BenchmarkPlatform
                     Ticks = $BenchmarkTicks
                     SleepMs = $BenchmarkSleepMs
-                    NoBuild = $true
                 }
 
                 if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaselineJsonPath)) {
@@ -125,6 +114,18 @@ try {
                 }
 
                 & $gateScript @gateArgs
+            }
+            finally {
+                Pop-Location
+            }
+        }
+    }
+    else {
+        Run-Step "Rust benchmark smoke" {
+            Push-Location $repoRoot
+            try {
+                $benchmarkScript = Join-Path $repoRoot "scripts/run-benchmark.ps1"
+                & $benchmarkScript -BenchmarkHost core -Platform $BenchmarkPlatform -WarmupTicks 0 -Ticks 2 -SleepMs 0 -Repeats 1 -Strict -MaxP95Ms 10000
             }
             finally {
                 Pop-Location

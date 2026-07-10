@@ -1,3 +1,4 @@
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [ValidateSet("core")]
     [string]$BenchmarkHost = "core",
@@ -10,8 +11,7 @@ param(
     [int]$SleepMs = 1000,
     [ValidateRange(1, 20)]
     [int]$RepeatCount = 5,
-    [string]$OutputDirectory = "",
-    [switch]$NoBuild
+    [string]$OutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,35 +24,7 @@ function Parse-BenchmarkJson {
     if ($start -lt 0 -or $end -lt $start) {
         throw "Unable to locate benchmark JSON payload in output."
     }
-
-    $json = $OutputText.Substring($start, ($end - $start + 1))
-    return $json | ConvertFrom-Json
-}
-
-function Invoke-BenchmarkRun {
-    param(
-        [int]$Ticks,
-        [switch]$RunNoBuild
-    )
-
-    $scriptPath = Join-Path $PSScriptRoot "run-benchmark.ps1"
-    $benchmarkArgs = @{
-        BenchmarkHost = $BenchmarkHost
-        Platform = $Platform
-        Ticks = $Ticks
-        SleepMs = $SleepMs
-    }
-
-    if ($RunNoBuild.IsPresent) {
-        $benchmarkArgs["NoBuild"] = $true
-    }
-
-    $raw = & $scriptPath @benchmarkArgs | Out-String
-    if ($LASTEXITCODE -ne 0) {
-        throw "Benchmark run failed with exit code $LASTEXITCODE.`n$raw"
-    }
-
-    return (Parse-BenchmarkJson -OutputText $raw)
+    return $OutputText.Substring($start, ($end - $start + 1)) | ConvertFrom-Json
 }
 
 function Write-JsonUtf8NoBom {
@@ -71,67 +43,79 @@ function Write-JsonUtf8NoBom {
 if ([string]::IsNullOrWhiteSpace($MachineClass)) {
     $MachineClass = $env:COMPUTERNAME
 }
+if ([string]::IsNullOrWhiteSpace($MachineClass)) {
+    $MachineClass = "local"
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $repoRoot "artifacts\benchmarks"
 }
-
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $artifactPrefix = "baseline-$BenchmarkHost-$timestamp"
 $artifactPath = Join-Path $OutputDirectory "$artifactPrefix.json"
 $baselineSummaryPath = Join-Path $OutputDirectory "$artifactPrefix.summary.json"
+$runScript = Join-Path $PSScriptRoot "run-benchmark.ps1"
+$runArgs = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runScript,
+    "-BenchmarkHost", $BenchmarkHost,
+    "-Platform", $Platform,
+    "-MachineClass", $MachineClass,
+    "-WorkloadProfile", $WorkloadProfile,
+    "-WarmupTicks", "$WarmupTicks",
+    "-Ticks", "$MeasuredTicks",
+    "-SleepMs", "$SleepMs",
+    "-Repeats", "$RepeatCount"
+)
 
-Write-Host "Capturing baseline benchmark ($BenchmarkHost) with fixed profile '$WorkloadProfile'..."
-Write-Host "Warmup: $WarmupTicks ticks, measured: $MeasuredTicks ticks, sleep: $SleepMs ms, repeats: $RepeatCount."
-
-$runNoBuild = $NoBuild.IsPresent
-if (-not $NoBuild.IsPresent) {
-    Write-Host "Building Rust benchmark host before baseline capture..."
-    cargo build --manifest-path (Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml") --release --bin batcave-monitor-cli
-    if ($LASTEXITCODE -ne 0) {
-        throw "cargo build failed with exit code $LASTEXITCODE."
-    }
-
-    $runNoBuild = $true
+Write-Host "Capturing benchmark protocol v2 baseline ($BenchmarkHost)..."
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $raw = & powershell @runArgs 2>&1 | ForEach-Object { "$_" } | Out-String
+    $exitCode = $LASTEXITCODE
 }
-
-Write-Host "Running warmup window..."
-$null = Invoke-BenchmarkRun -Ticks $WarmupTicks -RunNoBuild:$runNoBuild
-
-$runs = @()
-for ($index = 0; $index -lt $RepeatCount; $index++) {
-    Write-Host ("Running measured repeat {0}/{1}..." -f ($index + 1), $RepeatCount)
-    $run = Invoke-BenchmarkRun -Ticks $MeasuredTicks -RunNoBuild:$runNoBuild
-    $runs += $run
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
 }
+if ($exitCode -ne 0) {
+    throw "Benchmark baseline failed with exit code $exitCode.`n$raw"
+}
+$summary = Parse-BenchmarkJson -OutputText $raw
 
-$medianIndex = [Math]::Floor(($runs.Count - 1) / 2)
-$baselineSummary = $runs | Sort-Object tick_p95_ms | Select-Object -Index $medianIndex
+$binaryPath = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release/batcave-monitor-cli.exe"
+$binarySha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$baseSha = (& git -C $repoRoot rev-parse HEAD | Out-String).Trim()
+if ((& git -C $repoRoot status --porcelain | Out-String).Trim()) {
+    $baseSha = "$baseSha-dirty"
+}
 
 $artifact = [ordered]@{
-    format_version = 1
+    format_version = 2
     captured_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-    machine_class = $MachineClass
-    host = $BenchmarkHost
-    platform = $Platform
-    workload_profile = $WorkloadProfile
-    warmup_ticks = $WarmupTicks
-    measured_ticks = $MeasuredTicks
-    sleep_ms = $SleepMs
-    repeat_count = $RepeatCount
+    base_sha = $baseSha
+    binary_sha256 = $binarySha256
+    host = $summary.host
+    measurement_origin = $summary.measurement_origin
+    platform = $summary.platform
+    architecture = $summary.architecture
+    machine_class = $summary.machine_class
+    workload_profile = $summary.workload_profile
+    warmup_ticks = $summary.warmup_ticks
+    measured_ticks = $summary.measured_ticks
+    sleep_ms = $summary.sleep_ms
+    repeat_count = $summary.repeat_count
     baseline_selection = "median-by-tick-p95"
-    baseline_summary = $baselineSummary
+    baseline_summary = $summary
     baseline_summary_path = $baselineSummaryPath
-    runs = $runs
 }
 
 Write-JsonUtf8NoBom -Value $artifact -Path $artifactPath
-Write-JsonUtf8NoBom -Value $baselineSummary -Path $baselineSummaryPath
+Write-JsonUtf8NoBom -Value $summary -Path $baselineSummaryPath
 
 Write-Host "Baseline artifact written:"
 Write-Host "  $artifactPath"
-Write-Host "Baseline summary for --baseline-json written:"
+Write-Host "Baseline summary written:"
 Write-Host "  $baselineSummaryPath"

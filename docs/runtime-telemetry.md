@@ -1,6 +1,6 @@
 # Runtime Telemetry
 
-**Updated**: 2026-06-28
+**Updated**: 2026-07-10
 
 BatCave Monitor is built around a Rust runtime store that collects local telemetry, shapes it into a stable snake_case JSON contract, and tells the UI exactly how trustworthy each metric is. The important part is not just "show numbers." The important part is "show what the machine actually said, and admit when it would not answer."
 
@@ -37,8 +37,15 @@ The UI talks to the runtime through Tauri commands:
 - `resume_runtime`
 - `set_admin_mode`
 - `set_process_query`
+- `get_process_icon`
 
 The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, admin-mode preference, warm cache, health, diagnostics, and persistence belong in Rust.
+
+Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, admin, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. The UI appends histories and derives rates only when `sample_seq` advances. The required `environment` object reports `platform`, `admin_mode_available`, and the resolved `data_directory`.
+
+This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: active` aliases are not serialized. Process selection and rate identity use `pid` plus `start_time_ms` so PID reuse cannot inherit an earlier process's state. Empty kernel-pool-tag `driver_candidates` are always serialized as `[]`.
+
+`process_contributors` is a compact, query-independent summary of the top CPU, memory, disk, and network process names from the complete sample. Its fields are `null` when no process reports activity for that resource. Search, focus, sorting, and limits still shape `processes` and `process_view_rows` for the workload table, but cannot rewrite the system headline.
 
 ## Current Coverage
 
@@ -47,21 +54,21 @@ Implemented runtime surfaces:
 - Production snake_case JSON contracts for runtime snapshots, settings, process samples, system metrics, quality metadata, warnings, and health.
 - Runtime settings, warm cache, warnings, diagnostics, health budgets, query shaping, pause/resume, refresh, and admin-mode state in the Rust store.
 - Stable process grouping for runtime process views, including aggregate CPU, memory, disk, network, and thread totals for group rows.
-- Local JSON persistence with atomic writes for settings and runtime state.
+- Local JSON persistence with same-directory, per-writer atomic temporary files for settings and runtime state.
 - Rust CLI modes for benchmarking and elevated-helper snapshots.
 
 Windows native telemetry:
 
 - Process identity, PID, parent PID, start-time identity, executable path, access state, CPU, kernel CPU, memory, private bytes, process I/O totals, thread count, and handle count.
-- Physical memory, pagefile/commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
+- Physical memory, Windows commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
-- Local elevated-helper snapshots that can carry attributed network rows when standard access lacks kernel trace rights.
+- Local elevated-helper snapshots when standard process access is incomplete. The main runtime remains the single ETW kernel-logger owner and merges its network data into helper rows only on exact PID/start-time matches.
 
 Linux native telemetry:
 
 - Aggregate CPU, kernel CPU, logical CPU deltas, memory, swap, block-device I/O totals/rates, and interface network totals/rates.
 - Process identity, PID, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread count, and file descriptor count.
-- Optional per-process network attribution through `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg`.
+- Optional per-process network attribution through `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg`. Install this optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; base build dependencies do not include it.
 
 Fallback behavior:
 
@@ -73,6 +80,8 @@ Fallback behavior:
 ## Memory Accounting
 
 `memory_used_bytes` is physical memory used by the machine. It includes process working sets, kernel memory, cache, drivers, virtualization/WSL, and other OS-resident memory. It is not expected to equal the sum of process rows.
+
+On Windows, `swap_used_bytes`, `swap_total_bytes`, and process `virtual_memory_bytes` are omitted because the available native counters represented commit charge, not those cross-platform concepts. Windows commit remains available as `memory_accounting.commit_used_bytes` and `commit_limit_bytes`. Linux reports real swap and process virtual-memory values when available.
 
 When available, `system.memory_accounting` adds the reconciliation view:
 
@@ -95,6 +104,7 @@ Common quality states:
 
 - `native`: collected directly by the platform collector.
 - `held`: temporarily held while the runtime waits for a second sample or rate derivation.
+- `estimated`: supplied by a known fallback, such as Linux RSS when anonymous private memory is unavailable.
 - `partial`: derived from a fallback or incomplete source.
 - `unavailable`: unavailable on this platform or blocked by permissions.
 
@@ -102,6 +112,7 @@ Examples:
 
 - First CPU samples may be held until native deltas are available.
 - Disk rates may be partial if PDH or block-device counters are unavailable.
+- Linux CPU, disk, and network retain independent last-good baselines. A failed read does not replace a baseline with zero, and the first recovered rate is derived only from valid counters.
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
 
@@ -117,6 +128,8 @@ Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
 
 - Windows: `%LOCALAPPDATA%\BatCaveMonitor`
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
+
+The runtime publishes the resolved path through `environment.data_directory`. Admin mode is advertised only when `environment.admin_mode_available` is true. Elevated helper tokens are exactly 64 lowercase hexadecimal characters; pipe and stop-file paths must match the generated local run directory. Authenticated helper rows may be held for up to two seconds between frames, then expire immediately on timeout, disconnect, authentication failure, or helper exit.
 
 Do not add outbound tracking, hosted collection, or remote logging. BatCave is a local instrument panel, not a service backend in a trench coat.
 
@@ -160,9 +173,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.p
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle -BenchmarkGate -BenchmarkMaxP95Ms 10000
 ```
 
-The normal validation scripts keep a two-tick smoke check so regular validation stays quick. Add `-BenchmarkGate` or `--benchmark-gate` only for release/local performance validation. The gate defaults to 120 measured ticks, 1000 ms sleep, strict mode, and a report artifact under `artifacts/benchmarks`. With a baseline artifact or summary, the gate uses `-MinSpeedupMultiplier 0.90` unless a stricter value is supplied. With `-MaxP95Ms`, the gate enforces the explicit p95 budget instead.
+The benchmark builds the current release CLI and measures `RuntimeState::refresh_now` plus snapshot JSON serialization in an isolated temporary data directory. The default protocol is 30 warmup ticks followed by five 120-tick measured repeats at 1000 ms, with the median repeat p95 used for gating. Normal validation overrides that protocol with zero warmup, one two-tick repeat, and no sleep.
 
-In strict benchmark mode, the benchmark exits nonzero when `--max-p95-ms` or `--min-speedup-multiplier` gates fail. Use `capture-benchmark-baseline` to create a matching baseline summary before comparing runs.
+Protocol-v2 baselines record the source commit, release-binary SHA-256, platform, architecture, machine class, workload, measurement origin, protocol parameters, repeat results, and selected median. Revision fields append `-dirty` when the measured worktree is not clean. Baselines with different protocol or host metadata are rejected. Strict mode exits 2 without a baseline or absolute p95 ceiling, and a speed multiplier without a baseline also exits 2. A threshold miss exits 1. Baseline comparisons use `baseline_median_p95 / candidate_median_p95` and default to a minimum ratio of `0.90`.
+
+## Continuous Integration
+
+- Pull requests and `codex/**` pushes run Windows and Linux validation without bundles.
+- Pull requests run dependency review and fail on new moderate-or-higher advisories.
+- Pushes to `main` and manual bundle runs produce Windows NSIS plus Linux deb/AppImage artifacts retained for 14 days.
+- Monday 09:00 UTC and manual advisory runs execute `npm audit --omit=dev --audit-level=moderate` and pinned `cargo-audit 0.22.2`.
 
 ## Remaining Product Work
 

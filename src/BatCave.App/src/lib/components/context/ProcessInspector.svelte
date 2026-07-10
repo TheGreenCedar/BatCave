@@ -10,7 +10,7 @@
     processMemoryQuality,
     processMemoryTitle,
   } from "../../format";
-  import { processAccent, processIdentity, type ProcessRates } from "../../process";
+  import { processAccent, processIdentity, processSelectionKey, type ProcessRates } from "../../process";
   import type { ChartPalette } from "../../themes";
   import type { ProcessSample } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
@@ -34,16 +34,18 @@
   export let onCopy: () => void;
 
   let activeTab: "overview" | "resources" | "technical" = "overview";
-  let previousPid = "";
+  let previousSelection = "";
 
   $: selectedIsGroup = selectedProcess?.pid.startsWith("group:") ?? false;
-  $: if ((selectedProcess?.pid ?? "") !== previousPid) {
-    previousPid = selectedProcess?.pid ?? "";
+  $: selectedKey = selectedProcess ? processSelectionKey(selectedProcess) : "";
+  $: if (selectedKey !== previousSelection) {
+    previousSelection = selectedKey;
     activeTab = "overview";
   }
+  $: copyFailed = copyStatus !== "" && copyStatus !== "Process summary copied.";
 
   function processTotalIoRate(process: ProcessSample): number {
-    const rates = processRates[process.pid];
+    const rates = processRates[processSelectionKey(process)];
     return processReadRate + processWriteRate + (rates?.otherRate ?? process.other_io_bps ?? 0);
   }
 
@@ -78,26 +80,23 @@
       </span>
     </div>
 
-    <div class="inspector-tabs" role="tablist" aria-label="Selected workload detail">
+    <div class="inspector-tabs" role="group" aria-label="Selected workload detail">
       <button
         class:active={activeTab === "overview"}
         type="button"
-        role="tab"
-        aria-selected={activeTab === "overview"}
+        aria-pressed={activeTab === "overview"}
         onclick={() => (activeTab = "overview")}
       >Overview</button>
       <button
         class:active={activeTab === "resources"}
         type="button"
-        role="tab"
-        aria-selected={activeTab === "resources"}
+        aria-pressed={activeTab === "resources"}
         onclick={() => (activeTab = "resources")}
       >Resources</button>
       <button
         class:active={activeTab === "technical"}
         type="button"
-        role="tab"
-        aria-selected={activeTab === "technical"}
+        aria-pressed={activeTab === "technical"}
         onclick={() => (activeTab = "technical")}
       >Technical</button>
     </div>
@@ -173,7 +172,11 @@
       </div>
     {/if}
 
-    {#if copyStatus}<p class="copy-status" role="status" aria-live="polite">{copyStatus}</p>{/if}
+    {#if copyStatus}
+      <p class="copy-status" role={copyFailed ? "alert" : "status"} aria-live={copyFailed ? "assertive" : "polite"}>
+        {copyStatus}
+      </p>
+    {/if}
   {:else}
     <div class="empty-panel">
       <strong>The selected workload is no longer available</strong>

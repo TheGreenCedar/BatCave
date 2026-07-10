@@ -54,6 +54,16 @@ pub struct TelemetryCollector {
 
 impl TelemetryCollector {
     pub fn new() -> Self {
+        Self::new_with_process_network(true)
+    }
+
+    pub(crate) fn for_elevated_helper() -> Self {
+        Self::new_with_process_network(false)
+    }
+
+    fn new_with_process_network(process_network: bool) -> Self {
+        #[cfg(not(windows))]
+        let _ = process_network;
         Self {
             system: Mutex::new(System::new_all()),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
@@ -68,7 +78,11 @@ impl TelemetryCollector {
             #[cfg(windows)]
             pdh_disk: Mutex::new(PdhDiskState::new()),
             #[cfg(windows)]
-            network_attribution: Mutex::new(NetworkAttributionState::new()),
+            network_attribution: Mutex::new(if process_network {
+                NetworkAttributionState::new()
+            } else {
+                NetworkAttributionState::Disabled
+            }),
         }
     }
 
@@ -318,6 +332,9 @@ impl TelemetryCollector {
             .lock()
             .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
         match &mut *state {
+            NetworkAttributionState::Disabled => Ok(NetworkAttributionSample::Held(
+                "Network attribution is owned by the main runtime.".to_string(),
+            )),
             NetworkAttributionState::Ready(monitor) => {
                 let sample = monitor.sample();
                 if let NetworkAttributionSample::Failed(message) = &sample {
@@ -416,8 +433,8 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
         memory_used_bytes: system.used_memory(),
         memory_total_bytes: system.total_memory(),
         memory_available_bytes: Some(system.total_memory().saturating_sub(system.used_memory())),
-        swap_used_bytes: system.used_swap(),
-        swap_total_bytes: system.total_swap(),
+        swap_used_bytes: (!cfg!(windows)).then_some(system.used_swap()),
+        swap_total_bytes: (!cfg!(windows)).then_some(system.total_swap()),
         process_count: system.processes().len(),
         disk_read_total_bytes: 0,
         disk_write_total_bytes: 0,
@@ -445,10 +462,12 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
                 MetricQuality::Estimated,
                 MetricSource::Sysinfo,
             )),
-            swap: Some(MetricQualityInfo::new(
-                MetricQuality::Estimated,
-                MetricSource::Sysinfo,
-            )),
+            swap: Some(if cfg!(windows) {
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                    .with_message("Windows reports commit accounting, not swap usage.")
+            } else {
+                MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
+            }),
             disk: Some(MetricQualityInfo::new(
                 MetricQuality::Estimated,
                 MetricSource::Sysinfo,
@@ -467,6 +486,7 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
         .iter()
         .map(|(pid, process)| {
             let disk_usage = process.disk_usage();
+            let virtual_memory_bytes = process.virtual_memory();
             ProcessSample {
                 pid: pid.to_string(),
                 parent_pid: process.parent().map(|parent| parent.to_string()),
@@ -481,7 +501,8 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                 kernel_cpu_percent: None,
                 memory_bytes: process.memory(),
                 private_bytes: process.memory(),
-                virtual_memory_bytes: process.virtual_memory(),
+                virtual_memory_bytes: (!cfg!(windows) && virtual_memory_bytes > 0)
+                    .then_some(virtual_memory_bytes),
                 disk_read_total_bytes: disk_usage.total_read_bytes,
                 disk_write_total_bytes: disk_usage.total_written_bytes,
                 other_io_total_bytes: None,
@@ -564,26 +585,22 @@ fn enrich_native_process(
             true
         })
         .unwrap_or(false);
-    let memory_from_sysinfo = if process.memory_bytes == 0
-        && process.private_bytes == 0
-        && process.virtual_memory_bytes == 0
-    {
-        sysinfo_by_pid
-            .get(&process.pid)
-            .filter(|fallback| {
-                fallback.memory_bytes > 0
-                    || fallback.private_bytes > 0
-                    || fallback.virtual_memory_bytes > 0
-            })
-            .map(|fallback| {
+    let memory_from_sysinfo = sysinfo_by_pid
+        .get(&process.pid)
+        .map(|fallback| {
+            let mut enriched = false;
+            if process.memory_bytes == 0 && process.private_bytes == 0 {
                 process.memory_bytes = fallback.memory_bytes;
                 process.private_bytes = fallback.private_bytes;
+                enriched = fallback.memory_bytes > 0 || fallback.private_bytes > 0;
+            }
+            if !cfg!(windows) && process.virtual_memory_bytes.is_none() {
                 process.virtual_memory_bytes = fallback.virtual_memory_bytes;
-            })
-            .is_some()
-    } else {
-        false
-    };
+                enriched |= fallback.virtual_memory_bytes.is_some();
+            }
+            enriched
+        })
+        .unwrap_or(false);
     process.quality = Some(native_process_quality(process.access_state, has_cpu));
     if memory_from_sysinfo {
         process_quality(&mut process).memory = Some(
@@ -615,10 +632,10 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
             MetricQuality::Native,
             MetricSource::DirectApi,
         )),
-        swap: Some(MetricQualityInfo::new(
-            MetricQuality::Native,
-            MetricSource::DirectApi,
-        )),
+        swap: Some(
+            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
+                .with_message("Windows reports commit accounting, not swap usage."),
+        ),
         disk: Some(match disk_quality {
             DiskQualityState::Native => {
                 MetricQualityInfo::new(MetricQuality::Native, MetricSource::Pdh)
@@ -666,6 +683,7 @@ enum DiskQualityState {
 
 #[cfg(windows)]
 enum NetworkAttributionState {
+    Disabled,
     Ready(NetworkAttributionMonitor),
     Failed { message: String, warned: bool },
 }
@@ -794,11 +812,11 @@ mod tests {
         native.access_state = AccessState::Denied;
         native.memory_bytes = 0;
         native.private_bytes = 0;
-        native.virtual_memory_bytes = 0;
+        native.virtual_memory_bytes = None;
         let mut fallback = sample_process("42");
         fallback.memory_bytes = 123;
         fallback.private_bytes = 45;
-        fallback.virtual_memory_bytes = 678;
+        fallback.virtual_memory_bytes = Some(678);
         let sysinfo_cpu_by_pid = HashMap::from([("42".to_string(), 9.0)]);
         let sysinfo_by_pid = HashMap::from([("42".to_string(), &fallback)]);
 
@@ -808,7 +826,7 @@ mod tests {
         assert_eq!(enriched.cpu_percent, 9.0);
         assert_eq!(enriched.memory_bytes, 123);
         assert_eq!(enriched.private_bytes, 45);
-        assert_eq!(enriched.virtual_memory_bytes, 678);
+        assert_eq!(enriched.virtual_memory_bytes, None);
         let memory_quality = enriched
             .quality
             .and_then(|quality| quality.memory)
@@ -819,6 +837,15 @@ mod tests {
             .message
             .expect("message exists")
             .contains("Native process memory counters were denied"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn elevated_helper_does_not_start_a_second_etw_monitor() {
+        let collector = TelemetryCollector::for_elevated_helper();
+        let state = collector.network_attribution.lock().unwrap();
+
+        assert!(matches!(&*state, NetworkAttributionState::Disabled));
     }
 
     #[test]
@@ -834,7 +861,7 @@ mod tests {
             kernel_cpu_percent: None,
             memory_bytes: 0,
             private_bytes: 0,
-            virtual_memory_bytes: 0,
+            virtual_memory_bytes: None,
             disk_read_total_bytes: 0,
             disk_write_total_bytes: 0,
             other_io_total_bytes: None,
@@ -912,7 +939,7 @@ mod tests {
             kernel_cpu_percent: None,
             memory_bytes: 0,
             private_bytes: 0,
-            virtual_memory_bytes: 0,
+            virtual_memory_bytes: None,
             disk_read_total_bytes: 0,
             disk_write_total_bytes: 0,
             other_io_total_bytes: None,
