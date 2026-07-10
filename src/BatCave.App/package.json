@@ -1,7 +1,7 @@
 {
   "name": "batcave-monitor",
   "private": true,
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-updater": "2.10.1",
     "uplot": "1.6.32"
   },
   "devDependencies": {

@@ -9,7 +9,7 @@ on:
       tag:
         description: Version tag matching the app version
         required: true
-        default: v0.2.0-rc.1
+        default: v0.2.0-rc.2
       channel:
         description: Release channel
         required: true
@@ -81,6 +81,9 @@ jobs:
           echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
           echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
 
+      - name: Test release contracts
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs
+
   windows:
     name: Build Windows release
     needs: prepare
@@ -106,9 +109,16 @@ jobs:
 
       - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
 
-      - name: Validate and bundle Windows app
+      - name: Validate Windows app
         shell: pwsh
-        run: ./scripts/validate-tauri.ps1
+        run: ./scripts/validate-tauri.ps1 -SkipBundle
+
+      - name: Bundle signed Windows updater
+        working-directory: src/BatCave.App
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
 
       - name: Collect Windows distributables
         shell: pwsh
@@ -117,6 +127,7 @@ jobs:
           Copy-Item -LiteralPath src/BatCave.App/src-tauri/target/release/batcave-monitor.exe -Destination dist/windows/
           Copy-Item -LiteralPath src/BatCave.App/src-tauri/target/release/batcave-monitor-cli.exe -Destination dist/windows/
           Copy-Item -Path 'src/BatCave.App/src-tauri/target/release/bundle/nsis/*.exe' -Destination dist/windows/
+          Copy-Item -Path 'src/BatCave.App/src-tauri/target/release/bundle/nsis/*.sig' -Destination dist/windows/
 
       - uses: actions/upload-artifact@v6
         with:
@@ -149,14 +160,22 @@ jobs:
 
       - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
 
-      - name: Validate and bundle Linux app
-        run: bash scripts/validate-tauri.sh
+      - name: Validate Linux app
+        run: bash scripts/validate-tauri.sh --skip-bundle
+
+      - name: Bundle signed Linux updater
+        working-directory: src/BatCave.App
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
 
       - name: Collect Linux distributables
         run: |
           mkdir -p dist/linux
           cp src/BatCave.App/src-tauri/target/release/bundle/deb/*.deb dist/linux/
           cp src/BatCave.App/src-tauri/target/release/bundle/appimage/*.AppImage dist/linux/
+          cp src/BatCave.App/src-tauri/target/release/bundle/appimage/*.sig dist/linux/
 
       - uses: actions/upload-artifact@v6
         with:
@@ -189,6 +208,9 @@ jobs:
               if " " in path.name:
                   path.rename(path.with_name(path.name.replace(" ", ".")))
           PY
+
+      - name: Generate signed update manifest
+        run: node scripts/build-update-manifest.mjs "${{ needs.prepare.outputs.tag }}" "${{ github.repository }}" dist
 
       - name: Generate checksums
         run: |

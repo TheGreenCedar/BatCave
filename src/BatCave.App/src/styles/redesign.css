@@ -389,7 +389,7 @@
 .privileged-card button,
 .danger-outline,
 .text-action {
-  min-height: 38px;
+  min-height: 44px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 0 12px;
@@ -412,11 +412,16 @@
 }
 
 .icon-action {
-  width: 38px;
+  width: 44px;
   display: grid;
   place-items: center;
   padding: 0;
   font-size: 1.25rem;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .command-bar-error {

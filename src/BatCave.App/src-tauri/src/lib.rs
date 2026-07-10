@@ -94,6 +94,7 @@ fn validate_process_icon_request(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(RuntimeState::new())
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
