@@ -194,6 +194,13 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
       - uses: actions/download-artifact@v8
         with:
           pattern: batcave-release-*-${{ needs.prepare.outputs.tag }}
