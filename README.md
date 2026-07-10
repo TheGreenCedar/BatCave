@@ -43,7 +43,7 @@ BatCave is ready for source-based testing and local preview builds.
 - The Tauri app can run as a native desktop shell or as a browser-only fixture UI for layout testing.
 - Windows bundles currently produce an unsigned executable and NSIS installer.
 - Linux builds produce `.deb` and AppImage bundles.
-- Installer signing, offline Windows installer packaging, and automatic updater work are still future distribution work.
+- Installer signing and automatic updater work are still future distribution work.
 
 ## Try It
 
@@ -51,7 +51,7 @@ Install prerequisites first:
 
 - Node.js 24
 - A current stable Rust toolchain
-- On Windows, Microsoft Edge WebView2 Evergreen Runtime. The preview NSIS installer uses Tauri's default WebView2 `downloadBootstrapper`, so it can contact Microsoft during install if WebView2 is missing.
+- On Windows, Microsoft Edge WebView2 Evergreen Runtime. The NSIS bundle embeds Microsoft's Evergreen Standalone Installer, so installation works without network access when WebView2 is missing.
 - On Linux, the WebKitGTK/GTK/Tauri native packages installed by `scripts/install-linux-deps.sh`
 
 From the repository root on Windows:
@@ -115,7 +115,7 @@ npm run tauri:dev:linux
 npm run tauri:build:linux
 ```
 
-Windows release builds emit the release executable and unsigned NSIS installer under `src/BatCave.App/src-tauri/target/release`. The preview Windows installer expects WebView2 to be present or downloadable by the installer; managed/offline distribution should preinstall WebView2 or switch Tauri `bundle.windows.webviewInstallMode` to `offlineInstaller` or `fixedRuntime` before release. Linux builds emit `.deb` and AppImage bundles under `src/BatCave.App/src-tauri/target/release/bundle`.
+Windows release builds emit the release executable and unsigned, offline-capable NSIS installer under `src/BatCave.App/src-tauri/target/release`. The installer embeds Microsoft's WebView2 Evergreen Standalone Installer. This adds roughly 127 MB to the artifact, avoids install-time network access, and leaves runtime security servicing with the Evergreen updater rather than pinning a fixed WebView2 version. BatCave does not publish a separate online-bootstrapper variant. Building the bundle can still download the Microsoft redistributable into Tauri's build cache; shipping and installation do not require that build-time connection. Distribution remains subject to the [Microsoft Edge WebView2 Runtime license](https://www.microsoft.com/software-download/webview2). Linux builds emit `.deb` and AppImage bundles under `src/BatCave.App/src-tauri/target/release/bundle`.
 
 ## Privacy And Local Data
 

@@ -181,7 +181,7 @@ Protocol-v2 baselines record the source commit, release-binary SHA-256, platform
 
 - Pull requests and `codex/**` pushes run Windows and Linux validation without bundles.
 - Pull requests run dependency review and fail on new moderate-or-higher advisories.
-- Pushes to `main` and manual bundle runs produce Windows NSIS plus Linux deb/AppImage artifacts retained for 14 days.
+- Pushes to `main` and manual bundle runs produce an offline-capable Windows NSIS installer plus Linux deb/AppImage artifacts retained for 14 days. The Windows artifact embeds the WebView2 Evergreen Standalone Installer, trading roughly 127 MB of package size for install-time network independence while retaining Evergreen servicing.
 - Monday 09:00 UTC and manual advisory runs execute `npm audit --omit=dev --audit-level=moderate` and pinned `cargo-audit 0.22.2`.
 
 ## Remaining Product Work
