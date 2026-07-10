@@ -1,6 +1,13 @@
-use std::{fs, path::Path};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use serde::Serialize;
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AtomicJsonErrorLabels {
@@ -41,7 +48,6 @@ fn write_json_atomic_with_replacer<T: Serialize>(
         )
     })?;
 
-    let temp_path = json_temp_path(path);
     let payload = serde_json::to_string(value).map_err(|error| {
         if labels.serialize_error_includes_path {
             format!(
@@ -55,28 +61,67 @@ fn write_json_atomic_with_replacer<T: Serialize>(
         }
     })?;
 
-    fs::write(&temp_path, payload).map_err(|error| {
-        format!(
+    let (temp_path, mut temp_file) = create_temp_file(path, labels.write_failed)?;
+    if let Err(error) = temp_file.write_all(payload.as_bytes()) {
+        drop(temp_file);
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
             "{} path={} error={}",
             labels.write_failed,
             temp_path.display(),
             error
-        )
-    })?;
-    replacer(&temp_path, path).map_err(|error| {
+        ));
+    }
+    drop(temp_file);
+    if let Err(error) = replacer(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
         let (label, error) = error
             .strip_prefix("rename_failed:")
             .map(|error| (labels.rename_failed, error))
             .unwrap_or((labels.replace_failed, error.as_str()));
-        format!("{} path={} error={}", label, path.display(), error)
-    })
+        return Err(format!("{} path={} error={}", label, path.display(), error));
+    }
+    Ok(())
+}
+
+fn create_temp_file(path: &Path, write_label: &str) -> Result<(PathBuf, File), String> {
+    let parent = path.parent().expect("parent checked before temp creation");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("data.json");
+    for _ in 0..128 {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp_path = parent.join(format!("{name}.{}.{}.tmp", std::process::id(), sequence));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "{} path={} error={}",
+                    write_label,
+                    temp_path.display(),
+                    error
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "{} path={} error=TemporaryNameExhausted",
+        write_label,
+        path.display()
+    ))
 }
 
 #[cfg(windows)]
 fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
-        Foundation::GetLastError,
+        Foundation::{GetLastError, ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION},
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
     };
 
@@ -85,33 +130,30 @@ fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
     let mut target_wide = target_path.as_os_str().encode_wide().collect::<Vec<_>>();
     target_wide.push(0);
 
-    let moved = unsafe {
-        MoveFileExW(
-            temp_wide.as_ptr(),
-            target_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
+    for attempt in 0..50 {
+        let moved = unsafe {
+            MoveFileExW(
+                temp_wide.as_ptr(),
+                target_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved != 0 {
+            return Ok(());
+        }
         let error = unsafe { GetLastError() };
+        if attempt < 49 && matches!(error, ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        }
         return Err(format!("MoveFileExW error={error}"));
     }
-
-    Ok(())
+    unreachable!()
 }
 
 #[cfg(not(windows))]
 fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
     fs::rename(temp_path, target_path).map_err(|error| format!("rename_failed:{error}"))
-}
-
-fn json_temp_path(path: &Path) -> std::path::PathBuf {
-    path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("json")
-    ))
 }
 
 #[cfg(test)]
@@ -127,21 +169,20 @@ mod tests {
     };
 
     #[test]
-    fn writes_json_through_matching_temp_path() {
+    fn writes_json_through_unique_temp_path() {
         let path = std::env::temp_dir().join(format!(
             "batcave-atomic-json-{}-settings.json",
             std::process::id()
         ));
-        let temp_path = json_temp_path(&path);
         let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(&temp_path);
+        remove_temp_files(&path);
 
         write_json_atomic(&path, &serde_json::json!({ "ok": true }), TEST_LABELS)
             .expect("json writes");
 
         let payload = fs::read_to_string(&path).expect("json file exists");
         assert_eq!(payload, r#"{"ok":true}"#);
-        assert!(!temp_path.exists());
+        assert!(temp_files(&path).is_empty());
 
         fs::remove_file(&path).expect("json cleanup");
     }
@@ -152,9 +193,8 @@ mod tests {
             "batcave-atomic-json-overwrite-{}-settings.json",
             std::process::id()
         ));
-        let temp_path = json_temp_path(&path);
         let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(&temp_path);
+        remove_temp_files(&path);
         fs::write(&path, r#"{"old":true}"#).expect("old json fixture writes");
 
         write_json_atomic(&path, &serde_json::json!({ "new": true }), TEST_LABELS)
@@ -162,7 +202,7 @@ mod tests {
 
         let payload = fs::read_to_string(&path).expect("json file exists");
         assert_eq!(payload, r#"{"new":true}"#);
-        assert!(!temp_path.exists());
+        assert!(temp_files(&path).is_empty());
 
         fs::remove_file(&path).expect("json cleanup");
     }
@@ -173,9 +213,8 @@ mod tests {
             "batcave-atomic-json-preserve-{}-settings.json",
             std::process::id()
         ));
-        let temp_path = json_temp_path(&path);
         let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(&temp_path);
+        remove_temp_files(&path);
         fs::write(&path, r#"{"old":true}"#).expect("old json fixture writes");
 
         let error = write_json_atomic_with_replacer(
@@ -190,7 +229,44 @@ mod tests {
         let payload = fs::read_to_string(&path).expect("json file remains");
         assert_eq!(payload, r#"{"old":true}"#);
 
-        let _ = fs::remove_file(&temp_path);
+        assert!(temp_files(&path).is_empty());
+        fs::remove_file(&path).expect("json cleanup");
+    }
+
+    #[test]
+    fn concurrent_writers_never_share_temp_files() {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-atomic-json-concurrent-{}-settings.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        remove_temp_files(&path);
+
+        let writers = (0..8)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for value in 0..20 {
+                        write_json_atomic(
+                            &path,
+                            &serde_json::json!({ "writer": writer, "value": value }),
+                            TEST_LABELS,
+                        )?;
+                    }
+                    Ok::<_, String>(())
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer
+                .join()
+                .expect("writer joins")
+                .expect("writer succeeds");
+        }
+
+        let payload = fs::read_to_string(&path).expect("json file exists");
+        serde_json::from_str::<serde_json::Value>(&payload).expect("final payload is valid json");
+        assert!(temp_files(&path).is_empty());
         fs::remove_file(&path).expect("json cleanup");
     }
 
@@ -209,5 +285,30 @@ mod tests {
 
         fs::remove_file(&blocked_parent).expect("blocked parent cleanup");
         assert!(error.starts_with("test_write_failed path="));
+    }
+
+    fn temp_files(path: &Path) -> Vec<PathBuf> {
+        let Some(parent) = path.parent() else {
+            return Vec::new();
+        };
+        let prefix = format!("{}.", path.file_name().unwrap().to_string_lossy());
+        fs::read_dir(parent)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+            })
+            .collect()
+    }
+
+    fn remove_temp_files(path: &Path) {
+        for temp in temp_files(path) {
+            let _ = fs::remove_file(temp);
+        }
     }
 }

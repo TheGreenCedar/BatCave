@@ -2,7 +2,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, VecDeque},
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Mutex,
     time::Instant,
 };
@@ -12,11 +12,12 @@ use serde::de::DeserializeOwned;
 use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
-        MetricQuality, ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind,
-        RuntimeHealth, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn,
-        SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        AccessState, MetricQuality, MetricSource, ProcessFocusMode, ProcessSample, ProcessViewRow,
+        ProcessViewRowKind, RuntimeEnvironment, RuntimeHealth, RuntimePlatform, RuntimeQuery,
+        RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection,
+        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
-    elevation::ElevatedHelperClient,
+    elevation::{ElevatedHelperClient, ElevatedPoll},
     telemetry::{now_ms, TelemetryCollector},
 };
 
@@ -27,6 +28,10 @@ const MAX_WARNINGS: usize = 16;
 const WARM_CACHE_WRITE_INTERVAL_TICKS: u64 = 10;
 const APP_CPU_DEGRADE_PCT: f64 = 6.0;
 const APP_RSS_DEGRADE_BYTES: u64 = 350 * 1024 * 1024;
+const ATTENTION_CPU_PERCENT: f64 = 1.0;
+const ATTENTION_MEMORY_BYTES: u64 = 900 * 1024 * 1024;
+const ATTENTION_IO_BPS: u64 = 500 * 1024;
+const ATTENTION_NETWORK_BPS: u64 = 1024 * 1024;
 const PERSISTENCE_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
     write_failed: "persistence_write_failed",
     serialize_failed: "persistence_serialize_failed",
@@ -98,7 +103,9 @@ struct RuntimeStore {
     jitter_p95: P95Window,
     last_tick_at: Option<Instant>,
     dropped_ticks: u64,
-    seq: u64,
+    publication_seq: u64,
+    sample_seq: u64,
+    sampled_at_ms: Option<u64>,
 }
 
 impl RuntimeStore {
@@ -127,15 +134,18 @@ impl RuntimeStore {
                     rows: Vec::new(),
                 }
             });
-        let seq = warm_cache.seq;
+        let publication_seq = warm_cache.seq;
         let settings = normalize_settings(settings);
         if settings_requested_admin {
             warm_cache.rows.clear();
             let _ = fs::remove_file(base_dir.join(WARM_CACHE_FILE));
         }
         let snapshot = build_snapshot(
-            seq,
+            publication_seq,
             now_ms(),
+            0,
+            None,
+            &base_dir,
             &settings,
             RuntimeHealth::default(),
             empty_system(),
@@ -159,7 +169,9 @@ impl RuntimeStore {
             jitter_p95: P95Window::new(120),
             last_tick_at: None,
             dropped_ticks: 0,
-            seq,
+            publication_seq,
+            sample_seq: 0,
+            sampled_at_ms: None,
         }
     }
 
@@ -177,12 +189,16 @@ impl RuntimeStore {
 
     fn set_paused(&mut self, paused: bool) -> RuntimeSnapshot {
         self.settings.paused = paused;
+        if paused {
+            self.live_process_snapshot = false;
+        }
         self.persist_settings();
         self.publish_snapshot_only(None);
         self.snapshot.clone()
     }
 
     fn set_admin_mode(&mut self, enabled: bool) -> RuntimeSnapshot {
+        let enabled = enabled && cfg!(windows);
         let was_admin_enabled = self.settings.admin_mode_enabled;
         self.settings.admin_mode_requested = enabled;
         self.settings.admin_mode_enabled = false;
@@ -204,6 +220,7 @@ impl RuntimeStore {
             if was_admin_enabled {
                 self.previous_processes.clear();
                 self.previous_totals = None;
+                self.live_process_snapshot = false;
             }
             self.purge_warm_cache();
             ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
@@ -232,14 +249,13 @@ impl RuntimeStore {
     }
 
     fn tick(&mut self) -> RuntimeSnapshot {
-        self.seq = self.seq.saturating_add(1);
+        self.live_process_snapshot = false;
         let tick_started = Instant::now();
         let previous_tick_at = self.last_tick_at.replace(tick_started);
         let sample = match self.collector.collect() {
             Ok(sample) => sample,
             Err(error) => {
-                self.add_warning("collector", error);
-                self.publish_snapshot_only(None);
+                self.publish_snapshot_only(Some(("collector", error)));
                 return self.snapshot.clone();
             }
         };
@@ -271,16 +287,24 @@ impl RuntimeStore {
             .max(0.5);
         let mut system = sample.system;
         let mut sample_processes = sample.processes;
+        let mut process_rows_fresh = true;
         if self.settings.admin_mode_requested {
+            let was_admin_enabled = self.settings.admin_mode_enabled;
             let mut admin_warning = None;
             let mut stop_elevated = false;
             if let Some(elevated) = &mut self.elevated {
                 match elevated.poll_rows() {
-                    Ok(Some(rows)) => {
+                    Ok(ElevatedPoll::Fresh(mut rows)) => {
+                        merge_main_network_attribution(&sample_processes, &mut rows);
                         sample_processes = rows;
                         self.settings.admin_mode_enabled = true;
                     }
-                    Ok(None) => {
+                    Ok(ElevatedPoll::Held) => {
+                        sample_processes = self.previous_processes.clone();
+                        process_rows_fresh = false;
+                        self.settings.admin_mode_enabled = true;
+                    }
+                    Ok(ElevatedPoll::Pending) => {
                         self.settings.admin_mode_enabled = false;
                     }
                     Err(error) => {
@@ -291,6 +315,9 @@ impl RuntimeStore {
                 }
             } else {
                 self.settings.admin_mode_enabled = false;
+            }
+            if was_admin_enabled != self.settings.admin_mode_enabled {
+                self.previous_processes.clear();
             }
             if stop_elevated {
                 if let Some(client) = self.elevated.take() {
@@ -304,7 +331,13 @@ impl RuntimeStore {
             self.settings.admin_mode_enabled = false;
         }
         if let Some(previous) = &self.previous_totals {
-            if system.disk_read_bps == 0 && system.disk_write_bps == 0 {
+            let disk_rates_are_native = system
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.disk.as_ref())
+                .and_then(|quality| quality.source)
+                == Some(MetricSource::Procfs);
+            if !disk_rates_are_native && system.disk_read_bps == 0 && system.disk_write_bps == 0 {
                 system.disk_read_bps = byte_rate(
                     system.disk_read_total_bytes,
                     previous.disk_read_total_bytes,
@@ -316,24 +349,38 @@ impl RuntimeStore {
                     elapsed_seconds,
                 );
             }
-            system.network_received_bps = byte_rate(
-                system.network_received_total_bytes,
-                previous.network_received_total_bytes,
-                elapsed_seconds,
-            );
-            system.network_transmitted_bps = byte_rate(
-                system.network_transmitted_total_bytes,
-                previous.network_transmitted_total_bytes,
-                elapsed_seconds,
-            );
+            let network_rates_are_native = system
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.network.as_ref())
+                .and_then(|quality| quality.source)
+                == Some(MetricSource::Procfs);
+            if !network_rates_are_native {
+                system.network_received_bps = byte_rate(
+                    system.network_received_total_bytes,
+                    previous.network_received_total_bytes,
+                    elapsed_seconds,
+                );
+                system.network_transmitted_bps = byte_rate(
+                    system.network_transmitted_total_bytes,
+                    previous.network_transmitted_total_bytes,
+                    elapsed_seconds,
+                );
+            }
         }
 
-        let processes =
-            add_process_rates(sample_processes, &self.previous_processes, elapsed_seconds);
+        let processes = if process_rows_fresh {
+            add_process_rates(sample_processes, &self.previous_processes, elapsed_seconds)
+        } else {
+            sample_processes
+        };
         add_process_memory_accounting(&mut system, &processes);
         self.previous_processes = processes;
-        self.live_process_snapshot = true;
+        self.live_process_snapshot = process_rows_fresh;
         self.previous_totals = Some(TelemetryTotals::from_system(&system, sample_ts_ms));
+        self.publication_seq = self.publication_seq.saturating_add(1);
+        self.sample_seq = self.sample_seq.saturating_add(1);
+        self.sampled_at_ms = Some(sample_ts_ms);
 
         let sort_started = Instant::now();
         let rows = shape_rows(&self.previous_processes, &self.settings.query);
@@ -347,8 +394,11 @@ impl RuntimeStore {
             app_metrics.rss_bytes,
         );
         self.snapshot = build_snapshot(
-            self.seq,
+            self.publication_seq,
             now_ms(),
+            self.sample_seq,
+            self.sampled_at_ms,
+            &self.base_dir,
             &self.settings,
             health,
             system,
@@ -357,25 +407,28 @@ impl RuntimeStore {
             self.warnings.iter().cloned().collect(),
         );
 
-        if self.seq % WARM_CACHE_WRITE_INTERVAL_TICKS == 0 {
+        if self.sample_seq % WARM_CACHE_WRITE_INTERVAL_TICKS == 0 {
             self.persist_warm_cache();
         }
 
         self.snapshot.clone()
     }
 
-    fn publish_snapshot_only(&mut self, warning: Option<&str>) {
-        self.seq = self.seq.saturating_add(1);
-        if let Some(message) = warning {
-            self.add_warning("runtime", message.to_string());
+    fn publish_snapshot_only(&mut self, warning: Option<(&str, String)>) {
+        self.publication_seq = self.publication_seq.saturating_add(1);
+        if let Some((category, message)) = warning {
+            self.add_warning(category, message);
         }
 
         let app_metrics = current_app_metrics(&self.previous_processes);
         let health = self.build_health(0, app_metrics.cpu_percent, app_metrics.rss_bytes);
         let rows = shape_rows(&self.previous_processes, &self.settings.query);
         self.snapshot = build_snapshot(
-            self.seq,
+            self.publication_seq,
             now_ms(),
+            self.sample_seq,
+            self.sampled_at_ms,
+            &self.base_dir,
             &self.settings,
             health,
             self.snapshot.system.clone(),
@@ -417,7 +470,7 @@ impl RuntimeStore {
         };
 
         RuntimeHealth {
-            tick_count: self.seq,
+            tick_count: self.sample_seq,
             snapshot_latency_ms: latency_ms,
             degraded: cpu_degraded || rss_degraded || warning_degraded,
             collector_warnings: self.warnings.len(),
@@ -436,7 +489,12 @@ impl RuntimeStore {
     }
 
     fn add_warning(&mut self, category: &str, message: String) {
-        push_warning(&mut self.warnings, self.seq, category, message.clone());
+        push_warning(
+            &mut self.warnings,
+            self.publication_seq,
+            category,
+            message.clone(),
+        );
         self.append_diagnostic(category, &message);
     }
 
@@ -455,7 +513,7 @@ impl RuntimeStore {
             return;
         }
         let cache = WarmCache {
-            seq: self.seq,
+            seq: self.publication_seq,
             rows: self.previous_processes.clone(),
         };
         if let Err(error) = write_json_atomic(
@@ -566,8 +624,11 @@ impl P95Window {
 }
 
 fn build_snapshot(
-    seq: u64,
-    ts_ms: u64,
+    publication_seq: u64,
+    published_at_ms: u64,
+    sample_seq: u64,
+    sampled_at_ms: Option<u64>,
+    base_dir: &Path,
     settings: &RuntimeSettings,
     health: RuntimeHealth,
     system: SystemMetricsSnapshot,
@@ -578,9 +639,12 @@ fn build_snapshot(
     let process_view_rows = shape_process_view(&processes, &settings.query);
     RuntimeSnapshot {
         event_kind: "runtime_snapshot".to_string(),
-        seq,
-        ts_ms,
+        publication_seq,
+        published_at_ms,
+        sample_seq,
+        sampled_at_ms,
         source: "tauri_runtime".to_string(),
+        environment: runtime_environment(base_dir),
         settings: settings.clone(),
         health,
         system,
@@ -621,6 +685,35 @@ fn add_process_rates(
     }
 
     processes
+}
+
+fn merge_main_network_attribution(main: &[ProcessSample], elevated: &mut [ProcessSample]) {
+    let by_identity = main
+        .iter()
+        .map(|process| ((process.pid.as_str(), process.start_time_ms), process))
+        .collect::<HashMap<_, _>>();
+    for process in elevated {
+        let already_native = process.network_received_bps.is_some()
+            && process.network_transmitted_bps.is_some()
+            && process
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.network.as_ref())
+                .is_some_and(|quality| quality.quality == MetricQuality::Native);
+        if already_native {
+            continue;
+        }
+        let Some(main) = by_identity.get(&(process.pid.as_str(), process.start_time_ms)) else {
+            continue;
+        };
+        process.network_received_bps = main.network_received_bps;
+        process.network_transmitted_bps = main.network_transmitted_bps;
+        let main_quality = main
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.network.clone());
+        process.quality.get_or_insert_with(Default::default).network = main_quality;
+    }
 }
 
 fn shape_rows(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessSample> {
@@ -725,6 +818,11 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                     group.cpu_percent,
                     group.memory_bytes,
                     group.io_bps,
+                    group.network_bps,
+                    group
+                        .processes
+                        .iter()
+                        .any(|process| process.access_state != AccessState::Full),
                 ),
                 cpu_percent: round1(group.cpu_percent),
                 memory_bytes: group.memory_bytes,
@@ -751,6 +849,8 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                     process.cpu_percent,
                     process.memory_bytes,
                     process_io_rate(&process),
+                    process_network_rate(&process),
+                    process.access_state != AccessState::Full,
                 ),
                 cpu_percent: process.cpu_percent,
                 memory_bytes: process.memory_bytes,
@@ -834,9 +934,17 @@ fn compare_process_group(
 fn matches_focus_mode(process: &ProcessSample, focus_mode: ProcessFocusMode) -> bool {
     match focus_mode {
         ProcessFocusMode::All => true,
-        ProcessFocusMode::Active => process.cpu_percent >= 1.0,
+        ProcessFocusMode::Attention => needs_attention(process),
         ProcessFocusMode::Io => process_io_rate(process) > 0,
     }
+}
+
+fn needs_attention(process: &ProcessSample) -> bool {
+    process.cpu_percent >= ATTENTION_CPU_PERCENT
+        || process.memory_bytes >= ATTENTION_MEMORY_BYTES
+        || process_io_rate(process) >= ATTENTION_IO_BPS
+        || process_network_rate(process) >= ATTENTION_NETWORK_BPS
+        || process.access_state != AccessState::Full
 }
 
 fn process_io_rate(process: &ProcessSample) -> u64 {
@@ -1033,17 +1141,31 @@ fn matches_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
-fn attention_label(cpu_percent: f64, memory_bytes: u64, io_bps: u64) -> String {
-    if cpu_percent >= 20.0 {
-        return "CPU lead".to_string();
+fn attention_label(
+    cpu_percent: f64,
+    memory_bytes: u64,
+    io_bps: u64,
+    network_bps: u64,
+    access_limited: bool,
+) -> String {
+    if cpu_percent >= ATTENTION_CPU_PERCENT {
+        return "CPU activity".to_string();
     }
 
-    if memory_bytes >= 900 * 1024 * 1024 {
-        return "memory lead".to_string();
+    if memory_bytes >= ATTENTION_MEMORY_BYTES {
+        return "memory activity".to_string();
     }
 
-    if io_bps >= 500 * 1024 {
-        return "I/O lead".to_string();
+    if io_bps >= ATTENTION_IO_BPS {
+        return "I/O activity".to_string();
+    }
+
+    if network_bps >= ATTENTION_NETWORK_BPS {
+        return "network activity".to_string();
+    }
+
+    if access_limited {
+        return "access limited".to_string();
     }
 
     "steady".to_string()
@@ -1101,13 +1223,13 @@ fn normalize_query(query: RuntimeQuery) -> RuntimeQuery {
 
 fn push_warning(
     warnings: &mut VecDeque<RuntimeWarning>,
-    seq: u64,
+    publication_seq: u64,
     category: &str,
     message: String,
 ) {
     warnings.push_back(RuntimeWarning {
-        seq,
-        ts_ms: now_ms(),
+        publication_seq,
+        occurred_at_ms: now_ms(),
         category: category.to_string(),
         message,
     });
@@ -1124,8 +1246,8 @@ fn empty_system() -> SystemMetricsSnapshot {
         memory_used_bytes: 0,
         memory_total_bytes: 0,
         memory_available_bytes: None,
-        swap_used_bytes: 0,
-        swap_total_bytes: 0,
+        swap_used_bytes: None,
+        swap_total_bytes: None,
         process_count: 0,
         disk_read_total_bytes: 0,
         disk_write_total_bytes: 0,
@@ -1227,10 +1349,25 @@ fn read_json<T: DeserializeOwned>(path: &PathBuf) -> Result<T, Option<String>> {
     })
 }
 
-fn default_base_dir() -> PathBuf {
+pub(crate) fn default_base_dir() -> PathBuf {
     platform_data_dir()
         .unwrap_or_else(env::temp_dir)
         .join("BatCaveMonitor")
+}
+
+fn runtime_environment(base_dir: &Path) -> RuntimeEnvironment {
+    let platform = if cfg!(windows) {
+        RuntimePlatform::Windows
+    } else if cfg!(target_os = "linux") {
+        RuntimePlatform::Linux
+    } else {
+        RuntimePlatform::Fixture
+    };
+    RuntimeEnvironment {
+        platform,
+        admin_mode_available: cfg!(windows),
+        data_directory: Some(base_dir.display().to_string()),
+    }
 }
 
 fn platform_data_dir() -> Option<PathBuf> {
@@ -1320,7 +1457,7 @@ mod tests {
         let rows = shape_rows(
             &[sample("10", "Idle", 0.0), active.clone(), idle_io.clone()],
             &RuntimeQuery {
-                focus_mode: ProcessFocusMode::Active,
+                focus_mode: ProcessFocusMode::Attention,
                 sort_column: SortColumn::Name,
                 sort_direction: SortDirection::Asc,
                 ..RuntimeQuery::default()
@@ -1543,6 +1680,55 @@ mod tests {
     }
 
     #[test]
+    fn attention_filter_uses_every_attention_dimension() {
+        let quiet = sample("10", "Quiet", 0.1);
+        let cpu = sample("20", "Cpu", ATTENTION_CPU_PERCENT);
+        let mut memory = quiet.clone();
+        memory.pid = "30".to_string();
+        memory.memory_bytes = ATTENTION_MEMORY_BYTES;
+        let mut io = quiet.clone();
+        io.pid = "40".to_string();
+        io.disk_read_bps = ATTENTION_IO_BPS;
+        let mut network = quiet.clone();
+        network.pid = "50".to_string();
+        network.network_received_bps = Some(ATTENTION_NETWORK_BPS);
+        let mut limited = quiet.clone();
+        limited.pid = "60".to_string();
+        limited.access_state = AccessState::Partial;
+
+        assert!(!needs_attention(&quiet));
+        for process in [&cpu, &memory, &io, &network, &limited] {
+            assert!(needs_attention(process), "{} needs attention", process.pid);
+        }
+    }
+
+    #[test]
+    fn elevated_rows_inherit_main_network_only_for_exact_identity() {
+        let mut main = sample("10", "Main", 0.0);
+        main.start_time_ms = 100;
+        main.network_received_bps = Some(4_096);
+        main.network_transmitted_bps = Some(2_048);
+        main.quality = Some(ProcessMetricQuality {
+            network: Some(MetricQualityInfo::new(
+                MetricQuality::Native,
+                MetricSource::Etw,
+            )),
+            ..ProcessMetricQuality::default()
+        });
+        let mut matching = sample("10", "Elevated", 0.0);
+        matching.start_time_ms = 100;
+        let mut reused_pid = matching.clone();
+        reused_pid.start_time_ms = 200;
+        let mut elevated = vec![matching, reused_pid];
+
+        merge_main_network_attribution(&[main], &mut elevated);
+
+        assert_eq!(elevated[0].network_received_bps, Some(4_096));
+        assert_eq!(elevated[0].network_transmitted_bps, Some(2_048));
+        assert_eq!(elevated[1].network_received_bps, None);
+    }
+
+    #[test]
     fn settings_normalization_clears_effective_admin_and_clamps_ranges() {
         let settings = normalize_settings(RuntimeSettings {
             admin_mode_requested: true,
@@ -1550,7 +1736,7 @@ mod tests {
             metric_window_seconds: 1,
             query: RuntimeQuery {
                 filter_text: "  code  ".to_string(),
-                focus_mode: ProcessFocusMode::Active,
+                focus_mode: ProcessFocusMode::Attention,
                 limit: usize::MAX,
                 ..RuntimeQuery::default()
             },
@@ -1561,7 +1747,7 @@ mod tests {
         assert!(!settings.admin_mode_enabled);
         assert_eq!(settings.metric_window_seconds, 15);
         assert_eq!(settings.query.filter_text, "code");
-        assert_eq!(settings.query.focus_mode, ProcessFocusMode::Active);
+        assert_eq!(settings.query.focus_mode, ProcessFocusMode::Attention);
         assert_eq!(settings.query.limit, 20_000);
     }
 
@@ -1574,6 +1760,9 @@ mod tests {
         store.snapshot = build_snapshot(
             1,
             now_ms(),
+            1,
+            Some(now_ms()),
+            &store.base_dir,
             &store.settings,
             RuntimeHealth::default(),
             empty_system(),
@@ -1587,6 +1776,32 @@ mod tests {
         store.live_process_snapshot = true;
 
         assert!(store.has_process_exe(&exe));
+    }
+
+    #[test]
+    fn pausing_revokes_process_icon_authority() {
+        let base_dir = runtime_test_dir("icon-pause");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.live_process_snapshot = true;
+
+        store.set_paused(true);
+
+        assert!(!store.live_process_snapshot);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_admin_request_remains_disabled() {
+        let base_dir = runtime_test_dir("admin-unsupported");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+
+        let snapshot = store.set_admin_mode(true);
+
+        assert!(!snapshot.settings.admin_mode_requested);
+        assert!(!snapshot.settings.admin_mode_enabled);
+        assert!(!snapshot.environment.admin_mode_available);
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -1682,7 +1897,7 @@ mod tests {
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.settings.admin_mode_enabled = true;
         store.previous_processes = vec![sample("10", "Elevated", 0.0)];
-        store.seq = 10;
+        store.publication_seq = 10;
 
         store.persist_warm_cache();
 
@@ -1750,7 +1965,7 @@ mod tests {
             kernel_cpu_percent: None,
             memory_bytes: 64 * 1024 * 1024,
             private_bytes: 32 * 1024 * 1024,
-            virtual_memory_bytes: 128 * 1024 * 1024,
+            virtual_memory_bytes: Some(128 * 1024 * 1024),
             disk_read_total_bytes: 0,
             disk_write_total_bytes: 0,
             other_io_total_bytes: None,

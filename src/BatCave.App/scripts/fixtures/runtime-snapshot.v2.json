@@ -1,0 +1,113 @@
+{
+  "event_kind": "runtime_snapshot",
+  "publication_seq": 42,
+  "published_at_ms": 1700000000123,
+  "sample_seq": 40,
+  "sampled_at_ms": 1700000000000,
+  "source": "batcave_runtime",
+  "environment": {
+    "platform": "windows",
+    "admin_mode_available": true,
+    "data_directory": "C:\\Users\\test\\BatCaveMonitor"
+  },
+  "settings": {
+    "query": {
+      "filter_text": "",
+      "focus_mode": "attention",
+      "sort_column": "attention",
+      "sort_direction": "desc",
+      "limit": 5000
+    },
+    "admin_mode_requested": false,
+    "admin_mode_enabled": false,
+    "metric_window_seconds": 60,
+    "paused": false
+  },
+  "health": {
+    "tick_count": 40,
+    "snapshot_latency_ms": 5,
+    "degraded": false,
+    "collector_warnings": 0,
+    "runtime_loop_enabled": true,
+    "runtime_loop_running": true,
+    "status_summary": "Collecting local telemetry.",
+    "updated_at_ms": 1700000000000,
+    "tick_p95_ms": 5.0,
+    "sort_p95_ms": 1.0,
+    "jitter_p95_ms": 1.0,
+    "dropped_ticks": 0,
+    "app_cpu_percent": 0.5,
+    "app_rss_bytes": 67108864,
+    "last_warning": null
+  },
+  "system": {
+    "cpu_percent": 12.5,
+    "kernel_cpu_percent": 2.5,
+    "logical_cpu_percent": [10.0, 15.0],
+    "memory_used_bytes": 8589934592,
+    "memory_total_bytes": 17179869184,
+    "memory_available_bytes": 8589934592,
+    "process_count": 1,
+    "disk_read_total_bytes": 1000,
+    "disk_write_total_bytes": 2000,
+    "disk_read_bps": 100,
+    "disk_write_bps": 200,
+    "network_received_total_bytes": 3000,
+    "network_transmitted_total_bytes": 4000,
+    "network_received_bps": 300,
+    "network_transmitted_bps": 400,
+    "memory_accounting": {
+      "process_working_set_bytes": 65536,
+      "process_private_bytes": 32768,
+      "denied_process_count": 0,
+      "partial_process_count": 0,
+      "kernel_pool_tags": [
+        {
+          "tag": "None",
+          "kind": "paged",
+          "bytes": 0,
+          "allocations": 0,
+          "frees": 0,
+          "driver_candidates": []
+        }
+      ]
+    },
+    "quality": {
+      "swap": {
+        "quality": "unavailable",
+        "source": "direct_api",
+        "message": "Windows reports commit instead of swap."
+      }
+    }
+  },
+  "processes": [
+    {
+      "pid": "1234",
+      "parent_pid": null,
+      "start_time_ms": 1699999999000,
+      "name": "BatCave.App",
+      "exe": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+      "status": "run",
+      "cpu_percent": 8.25,
+      "memory_bytes": 65536,
+      "private_bytes": 32768,
+      "disk_read_total_bytes": 123,
+      "disk_write_total_bytes": 456,
+      "disk_read_bps": 7,
+      "disk_write_bps": 8,
+      "threads": 9,
+      "handles": 10,
+      "access_state": "full"
+    }
+  ],
+  "process_view_rows": [],
+  "total_process_count": 1,
+  "warnings": [
+    {
+      "publication_seq": 41,
+      "occurred_at_ms": 1700000000400,
+      "category": "collector",
+      "message": "example warning"
+    }
+  ]
+}

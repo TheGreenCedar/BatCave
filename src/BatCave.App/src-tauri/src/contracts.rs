@@ -4,9 +4,12 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeSnapshot {
     pub event_kind: String,
-    pub seq: u64,
-    pub ts_ms: u64,
+    pub publication_seq: u64,
+    pub published_at_ms: u64,
+    pub sample_seq: u64,
+    pub sampled_at_ms: Option<u64>,
     pub source: String,
+    pub environment: RuntimeEnvironment,
     pub settings: RuntimeSettings,
     pub health: RuntimeHealth,
     pub system: SystemMetricsSnapshot,
@@ -14,6 +17,22 @@ pub struct RuntimeSnapshot {
     pub process_view_rows: Vec<ProcessViewRow>,
     pub total_process_count: usize,
     pub warnings: Vec<RuntimeWarning>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimeEnvironment {
+    pub platform: RuntimePlatform,
+    pub admin_mode_available: bool,
+    pub data_directory: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePlatform {
+    Windows,
+    Linux,
+    Fixture,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,8 +65,10 @@ pub struct SystemMetricsSnapshot {
     pub memory_total_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_available_bytes: Option<u64>,
-    pub swap_used_bytes: u64,
-    pub swap_total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_used_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_total_bytes: Option<u64>,
     pub process_count: usize,
     pub disk_read_total_bytes: u64,
     pub disk_write_total_bytes: u64,
@@ -96,7 +117,7 @@ pub struct KernelPoolTag {
     pub bytes: u64,
     pub allocations: u64,
     pub frees: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub driver_candidates: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub driver_candidates_pending: bool,
@@ -124,7 +145,8 @@ pub struct ProcessSample {
     pub kernel_cpu_percent: Option<f64>,
     pub memory_bytes: u64,
     pub private_bytes: u64,
-    pub virtual_memory_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub virtual_memory_bytes: Option<u64>,
     pub disk_read_total_bytes: u64,
     pub disk_write_total_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -274,8 +296,8 @@ pub enum MetricSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeWarning {
-    pub seq: u64,
-    pub ts_ms: u64,
+    pub publication_seq: u64,
+    pub occurred_at_ms: u64,
     pub category: String,
     pub message: String,
 }
@@ -314,7 +336,7 @@ pub struct RuntimeQuery {
 #[serde(rename_all = "snake_case")]
 pub enum ProcessFocusMode {
     All,
-    Active,
+    Attention,
     Io,
 }
 
@@ -441,13 +463,20 @@ mod tests {
     fn runtime_snapshot_serializes_current_snake_case_wire_shape() {
         let snapshot = RuntimeSnapshot {
             event_kind: "snapshot".to_string(),
-            seq: 42,
-            ts_ms: 1_700_000_000_123,
+            publication_seq: 42,
+            published_at_ms: 1_700_000_000_123,
+            sample_seq: 40,
+            sampled_at_ms: Some(1_700_000_000_000),
             source: "rust_runtime".to_string(),
+            environment: RuntimeEnvironment {
+                platform: RuntimePlatform::Windows,
+                admin_mode_available: true,
+                data_directory: Some("C:\\Users\\test\\BatCaveMonitor".to_string()),
+            },
             settings: RuntimeSettings {
                 query: RuntimeQuery {
                     filter_text: "bat".to_string(),
-                    focus_mode: ProcessFocusMode::Active,
+                    focus_mode: ProcessFocusMode::Attention,
                     sort_column: SortColumn::MemoryBytes,
                     sort_direction: SortDirection::Asc,
                     limit: 25,
@@ -481,8 +510,8 @@ mod tests {
                 memory_used_bytes: 8_000,
                 memory_total_bytes: 16_000,
                 memory_available_bytes: Some(8_000),
-                swap_used_bytes: 1_000,
-                swap_total_bytes: 2_000,
+                swap_used_bytes: Some(1_000),
+                swap_total_bytes: Some(2_000),
                 process_count: 99,
                 disk_read_total_bytes: 1_000_000,
                 disk_write_total_bytes: 2_000_000,
@@ -549,8 +578,8 @@ mod tests {
             process_view_rows: vec![sample_process_view_row()],
             total_process_count: 1,
             warnings: vec![RuntimeWarning {
-                seq: 41,
-                ts_ms: 1_700_000_000_400,
+                publication_seq: 41,
+                occurred_at_ms: 1_700_000_000_400,
                 category: "collector".to_string(),
                 message: "partial process access".to_string(),
             }],
@@ -561,13 +590,20 @@ mod tests {
         let mut expected: serde_json::Value = serde_json::from_str(
             r#"{
                 "event_kind": "snapshot",
-                "seq": 42,
-                "ts_ms": 1700000000123,
+                "publication_seq": 42,
+                "published_at_ms": 1700000000123,
+                "sample_seq": 40,
+                "sampled_at_ms": 1700000000000,
                 "source": "rust_runtime",
+                "environment": {
+                    "platform": "windows",
+                    "admin_mode_available": true,
+                    "data_directory": "C:\\Users\\test\\BatCaveMonitor"
+                },
                 "settings": {
                     "query": {
                         "filter_text": "bat",
-                        "focus_mode": "active",
+                        "focus_mode": "attention",
                         "sort_column": "memory_bytes",
                         "sort_direction": "asc",
                         "limit": 25
@@ -647,8 +683,8 @@ mod tests {
                 "process_view_rows": [],
                 "total_process_count": 1,
                 "warnings": [{
-                    "seq": 41,
-                    "ts_ms": 1700000000400,
+                    "publication_seq": 41,
+                    "occurred_at_ms": 1700000000400,
                     "category": "collector",
                     "message": "partial process access"
                 }]
@@ -659,6 +695,40 @@ mod tests {
         expected["process_view_rows"] = json!([sample_process_view_row_json()]);
 
         assert_eq!(actual, expected);
+        assert!(actual.get("seq").is_none());
+        assert!(actual.get("ts_ms").is_none());
+    }
+
+    #[test]
+    fn kernel_pool_tag_always_serializes_driver_candidates() {
+        let tag = KernelPoolTag {
+            tag: "None".to_string(),
+            kind: KernelPoolKind::Paged,
+            bytes: 0,
+            allocations: 0,
+            frees: 0,
+            driver_candidates: Vec::new(),
+            driver_candidates_pending: false,
+        };
+
+        let actual = serde_json::to_value(tag).expect("tag serializes");
+
+        assert_eq!(actual["driver_candidates"], json!([]));
+    }
+
+    #[test]
+    fn shared_runtime_snapshot_fixture_round_trips_through_rust() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../scripts/fixtures/runtime-snapshot.v2.json"
+        ))
+        .expect("shared fixture parses");
+        let snapshot: RuntimeSnapshot =
+            serde_json::from_value(expected.clone()).expect("shared fixture matches Rust contract");
+
+        assert_eq!(
+            serde_json::to_value(snapshot).expect("snapshot serializes"),
+            expected
+        );
     }
 
     #[test]
