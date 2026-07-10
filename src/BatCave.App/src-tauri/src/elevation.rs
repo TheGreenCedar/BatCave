@@ -1,8 +1,8 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(windows)]
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{cli_args, contracts::ProcessSample, telemetry::TelemetryCollector};
 
 const HELPER_INTERVAL_MS: u64 = 500;
+const HELPER_SNAPSHOT_GRACE: Duration = Duration::from_secs(2);
 const HELPER_TOKEN_BYTES: usize = 32;
 const MAX_PIPE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
@@ -25,10 +26,19 @@ pub struct ElevatedHelperClient {
     stop_file: PathBuf,
     token: String,
     last_seq: u64,
+    started_at: Instant,
+    last_snapshot_at: Option<Instant>,
     read_buffer: Vec<u8>,
     #[cfg(windows)]
     pipe: Option<NamedPipeServer>,
     process: Option<ElevatedHelperProcess>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ElevatedPoll {
+    Fresh(Vec<ProcessSample>),
+    Held,
+    Pending,
 }
 
 impl ElevatedHelperClient {
@@ -47,6 +57,8 @@ impl ElevatedHelperClient {
             stop_file: session.stop_file,
             token: session.token,
             last_seq: 0,
+            started_at: Instant::now(),
+            last_snapshot_at: None,
             read_buffer: Vec::new(),
             #[cfg(windows)]
             pipe,
@@ -54,7 +66,7 @@ impl ElevatedHelperClient {
         })
     }
 
-    pub fn poll_rows(&mut self) -> Result<Option<Vec<ProcessSample>>, String> {
+    pub fn poll_rows(&mut self) -> Result<ElevatedPoll, String> {
         if self
             .process
             .as_ref()
@@ -72,10 +84,21 @@ impl ElevatedHelperClient {
                     rows = Some(snapshot_rows);
                 }
             }
-            return Ok(rows);
+            if let Some(rows) = rows {
+                self.last_snapshot_at = Some(Instant::now());
+                return Ok(ElevatedPoll::Fresh(rows));
+            }
         }
 
-        Ok(None)
+        let since = self.last_snapshot_at.unwrap_or(self.started_at).elapsed();
+        if since > HELPER_SNAPSHOT_GRACE {
+            return Err("admin_mode_snapshot_timeout".to_string());
+        }
+        Ok(if self.last_snapshot_at.is_some() {
+            ElevatedPoll::Held
+        } else {
+            ElevatedPoll::Pending
+        })
     }
 
     pub fn stop(&self) {
@@ -140,7 +163,7 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
         return None;
     }
 
-    match parse_helper_args(args) {
+    match parse_helper_args(args).and_then(validate_helper_args) {
         Ok(helper_args) => Some(run_elevated_helper(helper_args)),
         Err(error) => {
             eprintln!("{error}");
@@ -159,7 +182,7 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
             return 1;
         }
     };
-    let collector = TelemetryCollector::new();
+    let collector = TelemetryCollector::for_elevated_helper();
     while !args.stop_file.exists() {
         seq = seq.saturating_add(1);
         match collector
@@ -528,7 +551,6 @@ struct ElevatedHelperSession {
 
 fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, String> {
     let token = new_helper_token()?;
-    let pipe_id = new_helper_token()?;
     let helper_root = base_dir.join("elevated-helper");
     reject_reparse_path(&helper_root, true)?;
     fs::create_dir_all(&helper_root).map_err(|error| {
@@ -553,7 +575,7 @@ fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, Stri
     Ok(ElevatedHelperSession {
         data_file: helper_dir.join("snapshot.json"),
         stop_file: helper_dir.join("stop.signal"),
-        pipe_name: format!(r"\\.\pipe\batcave-elevated-{pipe_id}"),
+        pipe_name: format!(r"\\.\pipe\batcave-elevated-{token}"),
         token,
     })
 }
@@ -723,6 +745,54 @@ fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
         stop_file: PathBuf::from(required_value(args, "--stop-file")?),
         token: required_value(args, "--token")?,
     })
+}
+
+fn validate_helper_args(args: ElevatedHelperArgs) -> Result<ElevatedHelperArgs, String> {
+    validate_helper_args_for_base(args, &crate::runtime_store::default_base_dir())
+}
+
+fn validate_helper_args_for_base(
+    args: ElevatedHelperArgs,
+    base_dir: &Path,
+) -> Result<ElevatedHelperArgs, String> {
+    if args.token.len() != HELPER_TOKEN_BYTES * 2
+        || !args
+            .token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("invalid_elevated_helper_token".to_string());
+    }
+
+    if args.pipe_name != format!(r"\\.\pipe\batcave-elevated-{}", args.token) {
+        return Err("invalid_elevated_helper_pipe_name".to_string());
+    }
+
+    let expected_run_dir = format!("run-{}", args.token);
+    let run_dir = args
+        .stop_file
+        .parent()
+        .ok_or_else(|| "invalid_elevated_helper_stop_file".to_string())?;
+    let helper_root = run_dir
+        .parent()
+        .ok_or_else(|| "invalid_elevated_helper_stop_file".to_string())?;
+    let valid_shape = args.stop_file.is_absolute()
+        && args.stop_file.file_name().and_then(|name| name.to_str()) == Some("stop.signal")
+        && run_dir.file_name().and_then(|name| name.to_str()) == Some(expected_run_dir.as_str())
+        && helper_root.file_name().and_then(|name| name.to_str()) == Some("elevated-helper")
+        && helper_root == base_dir.join("elevated-helper")
+        && !args
+            .stop_file
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir));
+    if !valid_shape {
+        return Err("invalid_elevated_helper_stop_file".to_string());
+    }
+    reject_reparse_path(helper_root, true)?;
+    reject_reparse_path(run_dir, true)?;
+    reject_reparse_path(&args.stop_file, false)?;
+
+    Ok(args)
 }
 
 fn reject_unknown_helper_args(args: &[String]) -> Result<(), String> {
@@ -908,14 +978,14 @@ mod tests {
     }
 
     #[test]
-    fn poll_rows_returns_none_when_snapshot_is_missing() {
+    fn poll_rows_returns_pending_before_first_snapshot() {
         let base_dir = test_dir("missing");
         let mut client = test_client(&base_dir);
 
-        assert!(client
-            .poll_rows()
-            .expect("missing snapshot is ok")
-            .is_none());
+        assert!(matches!(
+            client.poll_rows().expect("missing snapshot is pending"),
+            ElevatedPoll::Pending
+        ));
 
         let _ = fs::remove_dir_all(base_dir);
     }
@@ -931,7 +1001,10 @@ mod tests {
         assert_eq!(second.token.len(), HELPER_TOKEN_BYTES * 2);
         assert_ne!(first.token, second.token);
         assert!(first.pipe_name.starts_with(r"\\.\pipe\batcave-elevated-"));
-        assert!(!first.pipe_name.ends_with(&first.token));
+        assert_eq!(
+            first.pipe_name,
+            format!(r"\\.\pipe\batcave-elevated-{}", first.token)
+        );
         assert_eq!(
             first.data_file.file_name().and_then(|name| name.to_str()),
             Some("snapshot.json")
@@ -1034,6 +1107,80 @@ mod tests {
     }
 
     #[test]
+    fn helper_arguments_are_bound_to_one_local_session() {
+        let token = "a".repeat(HELPER_TOKEN_BYTES * 2);
+        let base_dir = test_dir("validated-args");
+        let run_dir = base_dir
+            .join("elevated-helper")
+            .join(format!("run-{token}"));
+        fs::create_dir_all(&run_dir).expect("run dir exists");
+        let valid = ElevatedHelperArgs {
+            pipe_name: format!(r"\\.\pipe\batcave-elevated-{token}"),
+            stop_file: run_dir.join("stop.signal"),
+            token: token.clone(),
+        };
+
+        assert_eq!(
+            validate_helper_args_for_base(valid.clone(), &base_dir),
+            Ok(valid.clone())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    pipe_name: format!(r"\\server\pipe\batcave-elevated-{token}"),
+                    ..valid.clone()
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_pipe_name".to_string())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    stop_file: run_dir
+                        .join("..")
+                        .join(format!("run-{token}"))
+                        .join("stop.signal"),
+                    ..valid.clone()
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_stop_file".to_string())
+        );
+        assert_eq!(
+            validate_helper_args_for_base(
+                ElevatedHelperArgs {
+                    token: "A".repeat(HELPER_TOKEN_BYTES * 2),
+                    ..valid
+                },
+                &base_dir
+            ),
+            Err("invalid_elevated_helper_token".to_string())
+        );
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn helper_rows_hold_for_two_seconds_then_fail_closed() {
+        let base_dir = test_dir("hold");
+        let mut client = test_client(&base_dir);
+        client.last_snapshot_at = Some(Instant::now());
+        assert!(matches!(
+            client.poll_rows().expect("recent rows hold"),
+            ElevatedPoll::Held
+        ));
+
+        client.last_snapshot_at =
+            Some(Instant::now() - HELPER_SNAPSHOT_GRACE - Duration::from_millis(1));
+        assert_eq!(
+            client.poll_rows().expect_err("expired rows fail closed"),
+            "admin_mode_snapshot_timeout"
+        );
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
     fn length_prefixed_payloads_drain_complete_frames() {
         let first = payload("token", 1, vec![sample("10")]);
         let second = payload("token", 2, vec![sample("20")]);
@@ -1097,6 +1244,8 @@ mod tests {
             stop_file: base_dir.join("stop.signal"),
             token: "token".to_string(),
             last_seq: 0,
+            started_at: Instant::now(),
+            last_snapshot_at: None,
             read_buffer: Vec::new(),
             #[cfg(windows)]
             pipe: None,
@@ -1133,7 +1282,7 @@ mod tests {
             kernel_cpu_percent: None,
             memory_bytes: 1,
             private_bytes: 1,
-            virtual_memory_bytes: 1,
+            virtual_memory_bytes: Some(1),
             disk_read_total_bytes: 0,
             disk_write_total_bytes: 0,
             other_io_total_bytes: None,
