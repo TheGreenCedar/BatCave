@@ -1,27 +1,38 @@
 <script lang="ts">
-  import { formatBytes, metricQualityAction, metricQualityLabel } from "../../format";
-  import type { RuntimeSnapshot, RuntimeWarning, SystemMetricQuality } from "../../types";
+  import { currentDiagnosticIssues } from "../../diagnostics";
+  import { formatBytes, metricQualityLabel, qualityGuidance } from "../../format";
+  import type { RuntimeSnapshot, SystemMetricQuality } from "../../types";
 
   export let open = false;
   export let snapshot = {} as RuntimeSnapshot;
   export let sourceLabel: string;
-  export let systemQuality: SystemMetricQuality;
-  export let pollState: "starting" | "native" | "fixture" | "error";
+  export let systemQuality: SystemMetricQuality = {};
+  export let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   export let lastError = "";
   export let adminStatus = "";
   export let onClose: () => void = () => {};
+  export let onAdminMode: (enabled: boolean) => void = () => {};
 
-  interface DiagnosticIssue {
-    title: string;
-    impact: string;
-    action: string;
-    raw: string;
-  }
-
-  $: issues = snapshot.warnings.slice().reverse().map(toDiagnosticIssue);
+  $: issues = currentDiagnosticIssues(
+    snapshot.warnings,
+    snapshot.admin_mode,
+    snapshot.environment.admin_mode_available,
+  );
+  $: guidance = qualityGuidance(systemQuality);
+  $: overviewLabel =
+    pollState === "error"
+      ? "Stale"
+      : snapshot.admin_mode.state === "requesting"
+        ? "Waiting"
+        : snapshot.admin_mode.state === "recovering"
+          ? "Recovering"
+          : snapshot.health.degraded
+            ? "Limited"
+            : "Healthy";
 
   let dialog: HTMLDialogElement | null = null;
   let opener: HTMLElement | null = null;
+  let copyStatus = "";
 
   $: if (dialog) syncDialog(dialog, open);
 
@@ -50,49 +61,20 @@
     if (event.target === event.currentTarget) requestClose();
   }
 
-  function toDiagnosticIssue(warning: RuntimeWarning): DiagnosticIssue {
-    const raw = warning.message;
-    const value = `${warning.category} ${warning.message}`.toLocaleLowerCase();
-
-    if (value.includes("admin_mode") || value.includes("elevat")) {
-      return {
-        title: "Privileged access is not active",
-        impact: "Restricted process fields may remain unavailable while standard monitoring continues.",
-        action: "Finish or cancel the Windows elevation prompt, then refresh BatCave.",
-        raw,
-      };
-    }
-
-    if (value.includes("network_attribution") || value.includes("etw") || value.includes("ebpf")) {
-      return {
-        title: "Per-process network attribution is limited",
-        impact: "System network totals remain available, but app-level network values may be missing.",
-        action: "Review privileged access if you need app-level network attribution.",
-        raw,
-      };
-    }
-
-    if (value.includes("permission") || value.includes("access") || value.includes("denied")) {
-      return {
-        title: "Some process details are blocked",
-        impact: "BatCave cannot read every field for protected processes.",
-        action: "Use privileged access only when those missing fields matter to the diagnosis.",
-        raw,
-      };
-    }
-
-    return {
-      title: titleCase(warning.category || "Collector limitation"),
-      impact: "A collector reported a limitation. Available telemetry continues to update.",
-      action: "Open technical details below when the missing data affects your diagnosis.",
-      raw,
-    };
+  function runIssueAction(action: "enable" | "retry" | "cancel"): void {
+    onAdminMode(action !== "cancel");
   }
 
-  function titleCase(value: string): string {
-    return value
-      .replaceAll("_", " ")
-      .replace(/\b\w/g, (character) => character.toLocaleUpperCase());
+  async function copyLocalData(): Promise<void> {
+    const path = snapshot.environment.data_directory;
+    if (!path) return;
+
+    try {
+      await navigator.clipboard.writeText(path);
+      copyStatus = "Copied";
+    } catch {
+      copyStatus = "Copy failed";
+    }
   }
 </script>
 
@@ -119,8 +101,8 @@
       </header>
 
       <div class="drawer-scroll">
-        <section class="diagnostic-overview" class:healthy={!snapshot.health.degraded && pollState !== "error"}>
-          <span>{pollState === "error" ? "Stale" : snapshot.health.degraded ? "Limited" : "Healthy"}</span>
+        <section class="diagnostic-overview" class:healthy={overviewLabel === "Healthy"}>
+          <span>{overviewLabel}</span>
           <h3>{pollState === "error" ? lastError : snapshot.health.status_summary}</h3>
           <p>
             {pollState === "fixture"
@@ -143,10 +125,15 @@
                   <h4>{issue.title}</h4>
                   <dl>
                     <div><dt>Impact</dt><dd>{issue.impact}</dd></div>
-                    <div><dt>What to do</dt><dd>{issue.action}</dd></div>
                   </dl>
+                  {#if issue.action && issue.actionLabel}
+                    <button class="diagnostic-action" type="button" onclick={() => runIssueAction(issue.action!)}>
+                      {issue.actionLabel}
+                    </button>
+                  {/if}
                   <details>
-                    <summary>Technical detail</summary>
+                    <summary>Error details</summary>
+                    <small>{issue.key} · {new Date(issue.occurredAtMs).toLocaleString()}</small>
                     <code>{issue.raw}</code>
                   </details>
                 </article>
@@ -156,27 +143,33 @@
         {/if}
 
         <section class="diagnostic-section">
-          <div class="drawer-section-title"><h3>Collector state</h3></div>
-          <dl class="diagnostic-grid">
-            <div><dt>Source</dt><dd>{sourceLabel}</dd></div>
-            <div><dt>Platform</dt><dd>{snapshot.environment.platform}</dd></div>
-            <div>
-              <dt>Local data</dt>
-              <dd>{snapshot.environment.data_directory ?? "No native runtime directory"}</dd>
+          <details class="technical-disclosure collector-details">
+            <summary>Technical details</summary>
+            <dl class="diagnostic-grid">
+              <div><dt>Source</dt><dd>{sourceLabel}</dd></div>
+              <div><dt>Platform</dt><dd>{snapshot.environment.platform}</dd></div>
+              <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
+              <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
+              <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>
+              <div><dt>Privileged access</dt><dd>{adminStatus}</dd></div>
+              <div><dt>Last elevated sample</dt><dd>{snapshot.admin_mode.last_success_at_ms ? new Date(snapshot.admin_mode.last_success_at_ms).toLocaleString() : "None this session"}</dd></div>
+              <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
+              <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>
+              <div><dt>Collector p95</dt><dd>{snapshot.health.tick_p95_ms.toFixed(1)} ms</dd></div>
+            </dl>
+            <div class="local-data-detail">
+              <span><strong>Local data</strong>{snapshot.environment.data_directory ?? "No native runtime directory"}</span>
+              {#if snapshot.environment.data_directory}
+                <button type="button" onclick={copyLocalData}>Copy path</button>
+              {/if}
+              <small aria-live="polite">{copyStatus}</small>
             </div>
-            <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
-            <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
-            <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>
-            <div><dt>Privileged access</dt><dd>{adminStatus}</dd></div>
-            <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
-            <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>
-            <div><dt>Collector p95</dt><dd>{snapshot.health.tick_p95_ms.toFixed(1)} ms</dd></div>
-          </dl>
-          <details class="technical-disclosure">
-            <summary>Quality guidance</summary>
-            <p>{metricQualityAction(systemQuality.cpu)}</p>
-            <p>{metricQualityAction(systemQuality.disk)}</p>
-            <p>{metricQualityAction(systemQuality.network)}</p>
+            {#if guidance.length > 0}
+              <div class="quality-guidance">
+                <h4>Quality guidance</h4>
+                {#each guidance as item}<p>{item}</p>{/each}
+              </div>
+            {/if}
           </details>
         </section>
       </div>

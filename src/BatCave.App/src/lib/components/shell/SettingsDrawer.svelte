@@ -1,5 +1,6 @@
 <script lang="ts">
   import { formatInterval } from "../../format";
+  import type { RuntimeAdminModeState } from "../../types";
   import type { ThemeOption, ThemePreference } from "../../themes";
 
   export let open = false;
@@ -9,8 +10,7 @@
   export let pollIntervalMs: number;
   export let historyPointOptions: readonly number[];
   export let historyPointLimit: number;
-  export let adminRequested: boolean;
-  export let adminEnabled: boolean;
+  export let adminState: RuntimeAdminModeState = "off";
   export let adminAvailable = true;
   export let dataDirectory: string | null = null;
   export let onClose: () => void = () => {};
@@ -23,6 +23,18 @@
   let resetConfirm = false;
   let dialog: HTMLDialogElement | null = null;
   let opener: HTMLElement | null = null;
+
+  $: adminActive = adminState === "requesting" || adminState === "active" || adminState === "recovering";
+  $: adminLabel =
+    adminState === "requesting"
+      ? "Waiting for Windows"
+      : adminState === "active"
+        ? "Active"
+        : adminState === "recovering"
+          ? "Recovering with standard access"
+          : adminState === "failed"
+            ? "Stopped"
+            : "Off";
 
   $: if (dialog) syncDialog(dialog, open);
 
@@ -144,15 +156,21 @@
             <div class="privileged-card">
               <div>
                 <strong>Admin mode</strong>
-                <span>{adminEnabled ? "Active" : adminRequested ? "Waiting for Windows" : "Off"}</span>
+                <span>{adminLabel}</span>
               </div>
               <button
-                class:active={adminRequested}
+                class:active={adminActive}
                 type="button"
-                aria-pressed={adminRequested}
-                onclick={() => onAdminMode(!adminRequested)}
+                aria-pressed={adminActive}
+                onclick={() => onAdminMode(!adminActive)}
               >
-                {adminRequested ? "Disable" : "Enable"}
+                {adminState === "requesting"
+                  ? "Cancel request"
+                  : adminActive
+                    ? "Disable"
+                    : adminState === "failed"
+                      ? "Retry"
+                      : "Enable"}
               </button>
             </div>
             <p class="setting-note">Enabling this may open a Windows elevation prompt. Denying it leaves standard monitoring active.</p>

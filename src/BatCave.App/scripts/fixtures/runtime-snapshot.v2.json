@@ -10,6 +10,11 @@
     "admin_mode_available": true,
     "data_directory": "C:\\Users\\test\\BatCaveMonitor"
   },
+  "admin_mode": {
+    "state": "off",
+    "detail": null,
+    "last_success_at_ms": null
+  },
   "settings": {
     "query": {
       "filter_text": "",
@@ -110,6 +115,7 @@
   "total_process_count": 1,
   "warnings": [
     {
+      "key": "collector.example",
       "publication_seq": 41,
       "occurred_at_ms": 1700000000400,
       "category": "collector",

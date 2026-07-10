@@ -10,6 +10,7 @@ pub struct RuntimeSnapshot {
     pub sampled_at_ms: Option<u64>,
     pub source: String,
     pub environment: RuntimeEnvironment,
+    pub admin_mode: RuntimeAdminModeStatus,
     pub settings: RuntimeSettings,
     pub health: RuntimeHealth,
     pub system: SystemMetricsSnapshot,
@@ -35,6 +36,25 @@ pub struct RuntimeEnvironment {
     pub platform: RuntimePlatform,
     pub admin_mode_available: bool,
     pub data_directory: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimeAdminModeStatus {
+    pub state: RuntimeAdminModeState,
+    pub detail: Option<String>,
+    pub last_success_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAdminModeState {
+    Unavailable,
+    Off,
+    Requesting,
+    Active,
+    Recovering,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +326,7 @@ pub enum MetricSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeWarning {
+    pub key: String,
     pub publication_seq: u64,
     pub occurred_at_ms: u64,
     pub category: String,
@@ -483,6 +504,11 @@ mod tests {
                 admin_mode_available: true,
                 data_directory: Some("C:\\Users\\test\\BatCaveMonitor".to_string()),
             },
+            admin_mode: RuntimeAdminModeStatus {
+                state: RuntimeAdminModeState::Requesting,
+                detail: None,
+                last_success_at_ms: None,
+            },
             settings: RuntimeSettings {
                 query: RuntimeQuery {
                     filter_text: "bat".to_string(),
@@ -594,6 +620,7 @@ mod tests {
             process_view_rows: vec![sample_process_view_row()],
             total_process_count: 1,
             warnings: vec![RuntimeWarning {
+                key: "collector.network_attribution".to_string(),
                 publication_seq: 41,
                 occurred_at_ms: 1_700_000_000_400,
                 category: "collector".to_string(),
@@ -615,6 +642,11 @@ mod tests {
                     "platform": "windows",
                     "admin_mode_available": true,
                     "data_directory": "C:\\Users\\test\\BatCaveMonitor"
+                },
+                "admin_mode": {
+                    "state": "requesting",
+                    "detail": null,
+                    "last_success_at_ms": null
                 },
                 "settings": {
                     "query": {
@@ -705,6 +737,7 @@ mod tests {
                 "process_view_rows": [],
                 "total_process_count": 1,
                 "warnings": [{
+                    "key": "collector.network_attribution",
                     "publication_seq": 41,
                     "occurred_at_ms": 1700000000400,
                     "category": "collector",

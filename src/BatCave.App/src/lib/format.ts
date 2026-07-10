@@ -6,6 +6,7 @@ import type {
   MetricQualityInfo,
   MetricSource,
   ProcessSample,
+  SystemMetricQuality,
 } from "./types";
 
 export function formatBytes(value: number): string {
@@ -48,7 +49,7 @@ export function metricQualityLabel(
 
 export function metricQualityAction(metric: MetricQualityInfo | undefined): string {
   if (!metric) {
-    return "no metadata";
+    return "";
   }
 
   if (metric.message) {
@@ -67,15 +68,13 @@ export function metricQualityAction(metric: MetricQualityInfo | undefined): stri
     return "unavailable/permissions";
   }
 
-  if (metric.source === "etw") {
-    return "Windows ETW active";
-  }
+  return "";
+}
 
-  if (metric.source === "ebpf") {
-    return "Linux eBPF active";
-  }
-
-  return "current runtime source";
+export function qualityGuidance(quality: SystemMetricQuality): string[] {
+  return [quality.cpu, quality.disk, quality.network]
+    .map(metricQualityAction)
+    .filter((guidance) => guidance.length > 0);
 }
 
 export function formatMetricQuality(value: MetricQuality): string {

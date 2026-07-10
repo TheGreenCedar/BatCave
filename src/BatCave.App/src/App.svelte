@@ -10,6 +10,7 @@
   import HealthStatus from "./lib/components/shell/HealthStatus.svelte";
   import ProcessCommandBar from "./lib/components/shell/ProcessCommandBar.svelte";
   import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
+  import { uniqueWarningCount } from "./lib/diagnostics";
   import {
     accessLabel,
     formatBytes,
@@ -179,22 +180,26 @@
     networkDownRate + networkUpRate,
     snapshot.process_contributors,
   );
-  $: limitationCount = snapshot.warnings.length || snapshot.health.collector_warnings;
+  $: limitationCount = uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warnings;
   $: sampledAtLabel = snapshot.sampled_at_ms ? timeLabel(snapshot.sampled_at_ms) : "no sample yet";
   $: systemSupportingText = pollState === "error"
     ? `Telemetry is unavailable; the last successful sample from ${sampledAtLabel} is retained.`
     : isPaused
       ? `Collection is paused; values and charts show the last sample from ${sampledAtLabel}.`
-      : snapshot.health.degraded
+      : limitationCount > 0
         ? `${limitationCount} telemetry limitation${limitationCount === 1 ? "" : "s"}; unaffected values remain current.`
+        : snapshot.health.degraded
+          ? "BatCave resource use is above its budget; telemetry remains current."
         : "Local telemetry is current. Select a resource or workload to inspect it.";
   $: healthTone = pollState === "error" ? "danger" : isPaused || snapshot.health.degraded ? "warning" : "healthy";
   $: healthLabel = pollState === "error"
     ? "Telemetry stale"
     : isPaused
       ? "Telemetry paused"
-      : snapshot.health.degraded
+      : limitationCount > 0
         ? `${limitationCount} limitation${limitationCount === 1 ? "" : "s"}`
+        : snapshot.health.degraded
+          ? "App resource warning"
         : "Telemetry healthy";
   $: liveStatus = rankingUpdateAvailable ? `${healthLabel}. A new workload ranking is available.` : healthLabel;
   $: detailTitle =
@@ -963,11 +968,18 @@
       return `Not available on ${snapshot.environment.platform}`;
     }
 
-    if (snapshot.settings.admin_mode_enabled) {
-      return blockedProcessCount > 0 ? `Active, ${blockedProcessCount} blocked` : "Active";
+    switch (snapshot.admin_mode.state) {
+      case "requesting":
+        return "Waiting for Windows";
+      case "active":
+        return blockedProcessCount > 0 ? `Active, ${blockedProcessCount} blocked` : "Active";
+      case "recovering":
+        return "Recovering with standard access";
+      case "failed":
+        return "Stopped; retry available";
+      default:
+        return "Off";
     }
-
-    return snapshot.settings.admin_mode_requested ? "Requested (not active)" : "Off";
   }
 
   function processNetworkLabel(process: ProcessSample): string {
@@ -1170,6 +1182,7 @@
     open={diagnosticsOpen}
     onOpen={() => (diagnosticsOpen = true)}
     onClose={() => (diagnosticsOpen = false)}
+    onAdminMode={(enabled) => void setAdminMode(enabled)}
   />
 
   <SettingsDrawer
@@ -1180,8 +1193,7 @@
     {pollIntervalMs}
     {historyPointOptions}
     {historyPointLimit}
-    adminRequested={snapshot.settings.admin_mode_requested}
-    adminEnabled={snapshot.settings.admin_mode_enabled}
+    adminState={snapshot.admin_mode.state}
     adminAvailable={snapshot.environment.admin_mode_available}
     dataDirectory={snapshot.environment.data_directory}
     onClose={() => (settingsOpen = false)}

@@ -129,7 +129,7 @@ The native app exposes a small snake_case JSON contract through Tauri commands:
 - `set_process_query`
 - `get_process_icon`
 
-`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, admin, and error publications cannot create fake chart samples. `environment` reports `platform`, whether admin mode is available, and the resolved local data directory. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
+`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, admin, and error publications cannot create fake chart samples. `environment` reports `platform`, whether admin mode is available, and the resolved local data directory. `admin_mode` reports the current session state, raw failure detail, and last successful elevated sample. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
 
 The Rust runtime store owns settings, pause/resume state, refresh cadence, query shaping, admin-mode preference, warm cache, diagnostics, health budgets, byte-rate derivation, and local JSON persistence.
 
@@ -154,7 +154,7 @@ Windows native collectors read process identity, parent PID, start time, CPU, ke
 
 Kernel pool tag driver names are candidates, not proof of ownership. BatCave reads current pool-tag usage from Windows and scans local installed `.sys` binaries for matching tag bytes when the app needs a driver clue for a leaking pool bucket. That local driver scan is cached and runs outside the telemetry hot path, so candidate names may appear after the first pool-tag snapshot.
 
-Windows per-process network attribution uses one ETW kernel logger owned by the main runtime. Admin helper rows inherit network values only on an exact PID/start-time match. Elevated helper arguments are restricted to the per-run local pipe and stop path; authenticated rows can be held for two seconds between frames, then fail closed to standard access on expiry, disconnect, or helper exit.
+Windows per-process network attribution uses one ETW kernel logger. The main runtime keeps ownership when healthy and merges values into helper rows on an exact PID/start-time match; otherwise the elevated helper owns ETW until it stops, then the main runtime retries ownership. Elevated helper arguments are restricted to the per-run local pipe and stop path. Gaps under three seconds hold the last helper rows, gaps through fifteen seconds publish current standard rows as `recovering`, and longer gaps, disconnects, protocol failures, or helper exits fail closed to standard access. Helper collector errors are framed and retried without ending the elevated session.
 
 Linux native collectors read aggregate CPU/kernel/logical CPU deltas, memory and swap, block-device I/O totals/rates, interface network totals/rates, process identity, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread counts, and file descriptor counts.
 
