@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "review_expires_at": "2026-10-10",
+  "warnings": [
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0413",
+      "kind": "unmaintained",
+      "package": "atk",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0416",
+      "kind": "unmaintained",
+      "package": "atk-sys",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0412",
+      "kind": "unmaintained",
+      "package": "gdk",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0418",
+      "kind": "unmaintained",
+      "package": "gdk-sys",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0411",
+      "kind": "unmaintained",
+      "package": "gdkwayland-sys",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0417",
+      "kind": "unmaintained",
+      "package": "gdkx11",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0414",
+      "kind": "unmaintained",
+      "package": "gdkx11-sys",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0415",
+      "kind": "unmaintained",
+      "package": "gtk",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0420",
+      "kind": "unmaintained",
+      "package": "gtk-sys",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0419",
+      "kind": "unmaintained",
+      "package": "gtk3-macros",
+      "version": "0.18.2",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Tauri 2 Linux uses GTK3; removal requires an upstream-supported GTK4 runtime migration."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0370",
+      "kind": "unmaintained",
+      "package": "proc-macro-error",
+      "version": "1.0.4",
+      "runtime_reachability": "Linux build-time macro dependency through the GTK3 bindings.",
+      "upstream_blocker": "Inherited from gtk3-macros 0.18; removal follows the upstream GTK3 replacement."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2025-0081",
+      "kind": "unmaintained",
+      "package": "unic-char-property",
+      "version": "0.9.0",
+      "runtime_reachability": "Tauri URL-pattern parsing used by runtime configuration and build tooling.",
+      "upstream_blocker": "Inherited from tauri-utils 2.9 through urlpattern 0.3; BatCave has no direct dependency to replace."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2025-0075",
+      "kind": "unmaintained",
+      "package": "unic-char-range",
+      "version": "0.9.0",
+      "runtime_reachability": "Tauri URL-pattern parsing used by runtime configuration and build tooling.",
+      "upstream_blocker": "Inherited from tauri-utils 2.9 through urlpattern 0.3; BatCave has no direct dependency to replace."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2025-0080",
+      "kind": "unmaintained",
+      "package": "unic-common",
+      "version": "0.9.0",
+      "runtime_reachability": "Tauri URL-pattern parsing used by runtime configuration and build tooling.",
+      "upstream_blocker": "Inherited from tauri-utils 2.9 through urlpattern 0.3; BatCave has no direct dependency to replace."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2025-0100",
+      "kind": "unmaintained",
+      "package": "unic-ucd-ident",
+      "version": "0.9.0",
+      "runtime_reachability": "Tauri URL-pattern parsing used by runtime configuration and build tooling.",
+      "upstream_blocker": "Inherited from tauri-utils 2.9 through urlpattern 0.3; BatCave has no direct dependency to replace."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2025-0098",
+      "kind": "unmaintained",
+      "package": "unic-ucd-version",
+      "version": "0.9.0",
+      "runtime_reachability": "Tauri URL-pattern parsing used by runtime configuration and build tooling.",
+      "upstream_blocker": "Inherited from tauri-utils 2.9 through urlpattern 0.3; BatCave has no direct dependency to replace."
+    },
+    {
+      "owner": "BatCave maintainers",
+      "reviewed_at": "2026-07-10",
+      "review_expires_at": "2026-10-10",
+      "id": "RUSTSEC-2024-0429",
+      "kind": "unsound",
+      "package": "glib",
+      "version": "0.18.5",
+      "runtime_reachability": "Linux desktop runtime through Tauri 2.11 and WebKitGTK.",
+      "upstream_blocker": "Patched glib 0.20 requires the same upstream GTK4/runtime migration; BatCave does not call VariantStrIter directly."
+    }
+  ]
+}
