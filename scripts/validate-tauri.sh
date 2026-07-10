@@ -67,10 +67,9 @@ npm run verify
 cargo fmt --manifest-path "$cargo_manifest" --check
 cargo check --manifest-path "$cargo_manifest"
 cargo test --manifest-path "$cargo_manifest"
-cargo run --manifest-path "$cargo_manifest" --bin batcave-monitor-cli -- --benchmark --ticks 2 --sleep-ms 0 --strict --max-p95-ms 10000
 
 if [[ "$benchmark_gate" -eq 1 ]]; then
-  gate_args=(--benchmark-host core --platform "$benchmark_platform" --ticks "$benchmark_ticks" --sleep-ms "$benchmark_sleep_ms" --no-build)
+  gate_args=(--benchmark-host core --platform "$benchmark_platform" --ticks "$benchmark_ticks" --sleep-ms "$benchmark_sleep_ms")
   if [[ -n "$benchmark_baseline_json_path" ]]; then
     gate_args+=(--baseline-json "$benchmark_baseline_json_path")
   fi
@@ -85,6 +84,8 @@ if [[ "$benchmark_gate" -eq 1 ]]; then
   fi
 
   bash "$repo_root/scripts/run-benchmark-gate.sh" "${gate_args[@]}"
+else
+  bash "$repo_root/scripts/run-benchmark.sh" --benchmark-host core --platform "$benchmark_platform" --warmup-ticks 0 --ticks 2 --sleep-ms 0 --repeats 1 --strict --max-p95-ms 10000
 fi
 
 if [[ "$skip_bundle" -eq 0 ]]; then
