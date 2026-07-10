@@ -2,15 +2,14 @@
 set -euo pipefail
 
 benchmark_host="core"
-platform="$(uname -m)"
+architecture="$(uname -m)"
 workload_profile="fixed-default"
-machine_class="${HOSTNAME:-linux}"
+machine_class="${HOSTNAME:-local}"
 warmup_ticks=30
 measured_ticks=120
 sleep_ms=1000
 repeat_count=5
 output_directory=""
-no_build=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -19,7 +18,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --platform)
-      platform="${2:?missing value for $1}"
+      architecture="${2:?missing value for $1}"
       shift 2
       ;;
     --workload-profile)
@@ -50,10 +49,6 @@ while [[ $# -gt 0 ]]; do
       output_directory="${2:?missing value for $1}"
       shift 2
       ;;
-    --no-build)
-      no_build=1
-      shift
-      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
@@ -63,8 +58,8 @@ done
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-cargo_manifest="$repo_root/src/BatCave.App/src-tauri/Cargo.toml"
 run_benchmark="$script_dir/run-benchmark.sh"
+benchmark_exe="$repo_root/src/BatCave.App/src-tauri/target/release/batcave-monitor-cli"
 
 if [[ -z "$output_directory" ]]; then
   output_directory="$repo_root/artifacts/benchmarks"
@@ -75,93 +70,67 @@ timestamp="$(date -u +%Y%m%d-%H%M%S)"
 artifact_prefix="baseline-${benchmark_host}-${timestamp}"
 artifact_path="$output_directory/${artifact_prefix}.json"
 baseline_summary_path="$output_directory/${artifact_prefix}.summary.json"
+raw_file="$(mktemp)"
+trap 'rm -f -- "$raw_file"' EXIT
 
-echo "Capturing baseline benchmark ($benchmark_host) with fixed profile '$workload_profile'..."
-echo "Warmup: $warmup_ticks ticks, measured: $measured_ticks ticks, sleep: $sleep_ms ms, repeats: $repeat_count."
+echo "Capturing benchmark protocol v2 baseline ($benchmark_host)..."
+bash "$run_benchmark" \
+  --benchmark-host "$benchmark_host" \
+  --platform "$architecture" \
+  --machine-class "$machine_class" \
+  --workload-profile "$workload_profile" \
+  --warmup-ticks "$warmup_ticks" \
+  --ticks "$measured_ticks" \
+  --sleep-ms "$sleep_ms" \
+  --repeats "$repeat_count" >"$raw_file"
 
-run_no_build_arg=()
-if [[ "$no_build" -eq 0 ]]; then
-  echo "Building Rust benchmark host before baseline capture..."
-  cargo build --manifest-path "$cargo_manifest" --release --bin batcave-monitor-cli
-  run_no_build_arg=(--no-build)
-else
-  run_no_build_arg=(--no-build)
+base_sha="$(git -C "$repo_root" rev-parse HEAD)"
+if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
+  base_sha="${base_sha}-dirty"
 fi
+binary_sha256="$(sha256sum "$benchmark_exe" | awk '{print $1}')"
 
-echo "Running warmup window..."
-bash "$run_benchmark" --benchmark-host "$benchmark_host" --platform "$platform" --ticks "$warmup_ticks" --sleep-ms "$sleep_ms" "${run_no_build_arg[@]}" >/dev/null
-
-runs_file="$(mktemp)"
-trap 'rm -f "$runs_file"' EXIT
-
-for ((index = 1; index <= repeat_count; index++)); do
-  echo "Running measured repeat $index/$repeat_count..."
-  raw="$(bash "$run_benchmark" --benchmark-host "$benchmark_host" --platform "$platform" --ticks "$measured_ticks" --sleep-ms "$sleep_ms" "${run_no_build_arg[@]}")"
-  python3 - "$runs_file" "$raw" <<'PY'
-import json
-import sys
-
-runs_file, raw = sys.argv[1:]
-start = raw.find("{")
-end = raw.rfind("}")
-if start < 0 or end < start:
-    raise SystemExit("Unable to locate benchmark JSON payload in output.")
-run = json.loads(raw[start : end + 1])
-with open(runs_file, "a", encoding="utf-8") as handle:
-    handle.write(json.dumps(run) + "\n")
-PY
-done
-
-python3 - "$runs_file" "$artifact_path" "$baseline_summary_path" "$machine_class" "$benchmark_host" "$platform" "$workload_profile" "$warmup_ticks" "$measured_ticks" "$sleep_ms" "$repeat_count" <<'PY'
+python3 - "$raw_file" "$artifact_path" "$baseline_summary_path" "$base_sha" "$binary_sha256" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 
-(
-    runs_file,
-    artifact_path,
-    baseline_summary_path,
-    machine_class,
-    host,
-    platform,
-    workload_profile,
-    warmup_ticks,
-    measured_ticks,
-    sleep_ms,
-    repeat_count,
-) = sys.argv[1:]
+raw_file, artifact_path, summary_path, base_sha, binary_sha256 = sys.argv[1:]
+with open(raw_file, "r", encoding="utf-8") as handle:
+    raw = handle.read()
+start = raw.find("{")
+end = raw.rfind("}")
+if start < 0 or end < start:
+    raise SystemExit("Unable to locate benchmark JSON payload in output.")
+summary = json.loads(raw[start : end + 1])
 
-with open(runs_file, "r", encoding="utf-8") as handle:
-    runs = [json.loads(line) for line in handle if line.strip()]
-
-if not runs:
-    raise SystemExit("No benchmark runs were captured.")
-
-baseline_summary = sorted(runs, key=lambda run: run.get("tick_p95_ms", 0))[max(0, (len(runs) - 1) // 2)]
 artifact = {
-    "format_version": 1,
+    "format_version": 2,
     "captured_at_utc": datetime.now(timezone.utc).isoformat(),
-    "machine_class": machine_class,
-    "host": host,
-    "platform": platform,
-    "workload_profile": workload_profile,
-    "warmup_ticks": int(warmup_ticks),
-    "measured_ticks": int(measured_ticks),
-    "sleep_ms": int(sleep_ms),
-    "repeat_count": int(repeat_count),
+    "base_sha": base_sha,
+    "binary_sha256": binary_sha256,
+    "host": summary["host"],
+    "measurement_origin": summary["measurement_origin"],
+    "platform": summary["platform"],
+    "architecture": summary["architecture"],
+    "machine_class": summary["machine_class"],
+    "workload_profile": summary["workload_profile"],
+    "warmup_ticks": summary["warmup_ticks"],
+    "measured_ticks": summary["measured_ticks"],
+    "sleep_ms": summary["sleep_ms"],
+    "repeat_count": summary["repeat_count"],
     "baseline_selection": "median-by-tick-p95",
-    "baseline_summary": baseline_summary,
-    "baseline_summary_path": baseline_summary_path,
-    "runs": runs,
+    "baseline_summary": summary,
+    "baseline_summary_path": summary_path,
 }
 
 with open(artifact_path, "w", encoding="utf-8") as handle:
     json.dump(artifact, handle, indent=2)
-with open(baseline_summary_path, "w", encoding="utf-8") as handle:
-    json.dump(baseline_summary, handle, indent=2)
+with open(summary_path, "w", encoding="utf-8") as handle:
+    json.dump(summary, handle, indent=2)
 PY
 
 echo "Baseline artifact written:"
 echo "  $artifact_path"
-echo "Baseline summary for --baseline-json written:"
+echo "Baseline summary written:"
 echo "  $baseline_summary_path"
