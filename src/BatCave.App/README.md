@@ -184,7 +184,7 @@ Benchmarks build the current release CLI, use an isolated temporary data directo
 
 Strict mode is a configuration error without either a baseline or explicit p95 ceiling. A speed multiplier without a baseline is also a configuration error. Matching baselines use `baseline_p95 / candidate_p95` and require at least `0.90` by default. Use `run-benchmark-gate` for release/local regression checks and its generated report artifact.
 
-CI validates Windows and Linux source changes on pull requests and `codex/**` pushes. Pushes to `main` and manual bundle runs retain Windows NSIS plus Linux deb/AppImage artifacts for 14 days. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
+CI validates Windows and Linux source changes on pull requests and `codex/**` pushes. Pushes to `main` and manual bundle runs retain Windows NSIS plus Linux deb/AppImage artifacts for 14 days. The versioned release workflow validates the shared SemVer and produces checksums plus GitHub build provenance before an optional durable release. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
 
 ## Production Notes
 

@@ -1,0 +1,212 @@
+name: Versioned release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag matching the app version
+        required: true
+        default: v0.2.0-rc.1
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        options:
+          - prerelease
+          - stable
+        default: prerelease
+      publish:
+        description: Create the GitHub Release after successful builds
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Validate release identity
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Validate tag, channel, and protected-main ancestry
+        id: release
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            [[ "${GITHUB_REF}" == "refs/heads/main" ]] || { echo "Manual releases must run from main." >&2; exit 1; }
+            tag="${INPUT_TAG}"
+            channel="${INPUT_CHANNEL}"
+            publish="${INPUT_PUBLISH}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            publish="true"
+            [[ "${tag#v}" == *-* ]] && channel="prerelease" || channel="stable"
+          fi
+
+          node scripts/verify-release-version.mjs "${tag}"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main || { echo "Release commit is not on protected main." >&2; exit 1; }
+
+          prerelease="false"
+          [[ "${tag#v}" == *-* ]] && prerelease="true"
+          [[ "${channel}" == "prerelease" && "${prerelease}" == "true" ]] ||
+            [[ "${channel}" == "stable" && "${prerelease}" == "false" ]] || {
+              echo "Channel ${channel} does not match tag ${tag}." >&2
+              exit 1
+            }
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+          echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
+
+  windows:
+    name: Build Windows release
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - run: npm ci
+        working-directory: src/BatCave.App
+
+      - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
+
+      - name: Validate and bundle Windows app
+        shell: pwsh
+        run: ./scripts/validate-tauri.ps1
+
+      - name: Collect Windows distributables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/windows | Out-Null
+          Copy-Item -LiteralPath src/BatCave.App/src-tauri/target/release/batcave-monitor.exe -Destination dist/windows/
+          Copy-Item -LiteralPath src/BatCave.App/src-tauri/target/release/batcave-monitor-cli.exe -Destination dist/windows/
+          Copy-Item -Path 'src/BatCave.App/src-tauri/target/release/bundle/nsis/*.exe' -Destination dist/windows/
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: batcave-release-windows-${{ needs.prepare.outputs.tag }}
+          path: dist/windows/*
+          if-no-files-found: error
+          retention-days: 30
+
+  linux:
+    name: Build Linux release
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - run: bash scripts/install-linux-deps.sh
+
+      - run: npm ci
+        working-directory: src/BatCave.App
+
+      - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
+
+      - name: Validate and bundle Linux app
+        run: bash scripts/validate-tauri.sh
+
+      - name: Collect Linux distributables
+        run: |
+          mkdir -p dist/linux
+          cp src/BatCave.App/src-tauri/target/release/bundle/deb/*.deb dist/linux/
+          cp src/BatCave.App/src-tauri/target/release/bundle/appimage/*.AppImage dist/linux/
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: batcave-release-linux-${{ needs.prepare.outputs.tag }}
+          path: dist/linux/*
+          if-no-files-found: error
+          retention-days: 30
+
+  finalize:
+    name: Checksums, provenance, and release
+    needs: [prepare, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: batcave-release-*-${{ needs.prepare.outputs.tag }}
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+
+      - name: Generate build provenance
+        id: attest
+        uses: actions/attest@v4
+        with:
+          subject-checksums: dist/SHA256SUMS.txt
+
+      - name: Retain provenance with release files
+        run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/BatCave-${{ needs.prepare.outputs.tag }}-provenance.json"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: batcave-release-${{ needs.prepare.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          args=(release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "BatCave ${RELEASE_TAG}" --generate-notes)
+          [[ "${PRERELEASE}" == "true" ]] && args+=(--prerelease)
+          while IFS= read -r -d '' file; do args+=("${file}"); done < <(find dist -maxdepth 1 -type f -print0)
+          gh "${args[@]}"

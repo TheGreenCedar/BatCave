@@ -165,12 +165,13 @@ The complete-remediation release comparison is preserved in [docs/evidence/bench
 
 ## Continuous Integration
 
-Pull requests and `codex/**` pushes run Windows and Linux validation without packaging. Pull requests also reject newly introduced dependencies with moderate-or-higher advisories. Pushes to `main` and manual bundle runs produce Windows NSIS plus Linux deb/AppImage artifacts retained for 14 days. A separate Monday/manual audit runs `npm audit --omit=dev` and pinned `cargo-audit 0.22.2`.
+Pull requests and `codex/**` pushes run Windows and Linux validation without packaging. Pull requests also reject newly introduced dependencies with moderate-or-higher advisories. Pushes to `main` and manual bundle runs produce Windows NSIS plus Linux deb/AppImage artifacts retained for 14 days. The versioned release workflow produces 30-day dry-run artifacts or durable GitHub Releases with aligned versions, checksums, and build provenance. A separate Monday/manual audit runs `npm audit --omit=dev` and pinned `cargo-audit 0.22.2`.
 
 ## More Documentation
 
 - [App runbook](src/BatCave.App/README.md) covers native/browser run modes, app scripts, and platform troubleshooting.
 - [Runtime telemetry](docs/runtime-telemetry.md) covers the Rust runtime store, native collectors, quality states, admin helper behavior, and benchmark surfaces.
+- [Release channels and verification](docs/releases.md) covers version alignment, stable/prerelease policy, checksums, provenance, and publication.
 
 ## Contributing
 
