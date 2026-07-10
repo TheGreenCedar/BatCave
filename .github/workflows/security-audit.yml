@@ -33,10 +33,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install pinned cargo-audit
         run: cargo install cargo-audit --version 0.22.2 --locked
 
-      - run: cargo audit
+      - name: Test the reviewed-warning gate
+        run: node --test scripts/validate-cargo-audit-baseline.test.mjs
+
+      - name: Audit Rust dependencies
+        run: cargo audit --json > cargo-audit.json
         working-directory: src/BatCave.App/src-tauri
+
+      - name: Enforce the reviewed-warning baseline
+        run: node scripts/validate-cargo-audit-baseline.mjs src/BatCave.App/src-tauri/cargo-audit.json .github/security/cargo-audit-baseline.json

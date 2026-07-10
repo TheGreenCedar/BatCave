@@ -24,12 +24,12 @@
     "tauri:build:linux": "tauri build --config src-tauri/tauri.linux.conf.json"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/api": "2.11.1",
     "uplot": "1.6.32"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.0.0",
-    "@tauri-apps/cli": "2.10.1",
+    "@tauri-apps/cli": "2.11.4",
     "@types/node": "24.10.1",
     "oxfmt": "0.46.0",
     "oxlint": "1.61.0",
