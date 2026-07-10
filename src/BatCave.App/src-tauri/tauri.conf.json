@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "BatCave Monitor",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "identifier": "dev.batcave.monitor",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,5 +31,16 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYwODI4ODg4QjVDRjBDOEQKUldTTkRNKzFpSWlDWUpuK2ZyWkVScVMrUVlYRUJsakU0U0h0elRUQldDZGQrcmR3cE9Uc2hyVjgK",
+      "endpoints": [
+        "https://github.com/TheGreenCedar/BatCave/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

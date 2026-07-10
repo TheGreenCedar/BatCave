@@ -92,5 +92,8 @@ jobs:
       - name: Check shell script syntax
         run: bash -n scripts/*.sh
 
+      - name: Test release contracts
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs
+
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle

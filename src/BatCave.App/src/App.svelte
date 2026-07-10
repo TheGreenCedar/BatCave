@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { check, type Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";
   import DetailPane from "./lib/components/context/DetailPane.svelte";
   import SystemSummary from "./lib/components/metrics/SystemSummary.svelte";
@@ -128,6 +129,9 @@
   let forceRankingRefresh = false;
   let runtimeQueryRequestSeq = 0;
   let searchDebounceId: number | undefined;
+  let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
+  let updateMessage = "Checks only when you ask.";
+  let pendingUpdate: Update | null = null;
 
   $: themeName = resolveThemeName(themePreference, systemThemeName);
   $: activeTheme = chartPalettes[themeName];
@@ -420,6 +424,40 @@
       applyNativeSnapshot(next);
     } catch (error) {
       commandError = commandErrorMessage(error, "Unable to change admin mode.");
+    }
+  }
+
+  async function checkForStableUpdate(): Promise<void> {
+    updateStatus = "checking";
+    updateMessage = "Checking the stable release channel…";
+    pendingUpdate = null;
+    try {
+      pendingUpdate = await check({ timeout: 15_000 });
+      if (pendingUpdate) {
+        updateStatus = "available";
+        updateMessage = `Version ${pendingUpdate.version} is available.`;
+      } else {
+        updateStatus = "current";
+        updateMessage = "BatCave is up to date.";
+      }
+    } catch {
+      updateStatus = "error";
+      updateMessage = "Unable to check for updates. Monitoring remains available offline.";
+    }
+  }
+
+  async function installStableUpdate(): Promise<void> {
+    if (!pendingUpdate) return;
+    updateStatus = "installing";
+    updateMessage = "Downloading and verifying the signed update…";
+    try {
+      await pendingUpdate.downloadAndInstall();
+      pendingUpdate = null;
+      updateStatus = "current";
+      updateMessage = "Update installed. Restart BatCave to finish.";
+    } catch {
+      updateStatus = "error";
+      updateMessage = "Update verification or installation failed. BatCave was not changed.";
     }
   }
 
@@ -1201,6 +1239,10 @@
     onPollInterval={(interval) => (pollIntervalMs = interval as (typeof pollIntervals)[number])}
     onHistoryLimit={setHistoryPointLimit}
     onAdminMode={(enabled) => void setAdminMode(enabled)}
+    {updateStatus}
+    {updateMessage}
+    onCheckForUpdates={() => void checkForStableUpdate()}
+    onInstallUpdate={() => void installStableUpdate()}
     onResetHistory={resetHistory}
   />
 </AppShell>

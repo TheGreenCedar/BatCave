@@ -13,11 +13,15 @@
   export let adminState: RuntimeAdminModeState = "off";
   export let adminAvailable = true;
   export let dataDirectory: string | null = null;
+  export let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
+  export let updateMessage = "Checks only when you ask.";
   export let onClose: () => void = () => {};
   export let onTheme: (theme: ThemePreference) => void;
   export let onPollInterval: (interval: number) => void;
   export let onHistoryLimit: (limit: number) => void;
   export let onAdminMode: (enabled: boolean) => void;
+  export let onCheckForUpdates: () => void = () => {};
+  export let onInstallUpdate: () => void = () => {};
   export let onResetHistory: () => void = () => {};
 
   let resetConfirm = false;
@@ -176,6 +180,37 @@
             <p class="setting-note">Enabling this may open a Windows elevation prompt. Denying it leaves standard monitoring active.</p>
           </section>
         {/if}
+
+        <section class="settings-section">
+          <div class="settings-section-heading">
+            <h3>Updates</h3>
+            <p>BatCave checks the stable GitHub release channel only when you ask.</p>
+          </div>
+          <div class="privileged-card">
+            <div>
+              <strong>Stable channel</strong>
+              <span aria-live="polite">{updateMessage}</span>
+            </div>
+            <button
+              type="button"
+              disabled={updateStatus === "checking" || updateStatus === "installing"}
+              onclick={updateStatus === "available" ? onInstallUpdate : onCheckForUpdates}
+            >
+              {updateStatus === "checking"
+                ? "Checking…"
+                : updateStatus === "installing"
+                  ? "Installing…"
+                  : updateStatus === "available"
+                    ? "Download and install"
+                    : updateStatus === "error"
+                      ? "Retry"
+                      : "Check now"}
+            </button>
+          </div>
+          <p class="setting-note">
+            Checks contact github.com. Prereleases and downgrades are never installed automatically; invalid signatures are rejected.
+          </p>
+        </section>
 
         <section class="settings-section">
           <div class="settings-section-heading">
