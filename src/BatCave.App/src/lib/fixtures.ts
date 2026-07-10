@@ -85,6 +85,11 @@ export function makeFixtureSnapshot(
       admin_mode_available: false,
       data_directory: null,
     },
+    admin_mode: {
+      state: "unavailable",
+      detail: null,
+      last_success_at_ms: null,
+    },
     settings: {
       query,
       admin_mode_requested: false,

@@ -1,9 +1,12 @@
 use std::{
     cmp::Ordering,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     env, fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        mpsc::{self, Receiver, TryRecvError},
+        Mutex,
+    },
     time::Instant,
 };
 
@@ -13,9 +16,10 @@ use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
         AccessState, MetricQuality, MetricSource, ProcessContributorSummary, ProcessFocusMode,
-        ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeEnvironment, RuntimeHealth,
-        RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
-        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
+        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimePlatform, RuntimeQuery,
+        RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection,
+        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     elevation::{ElevatedHelperClient, ElevatedPoll},
     telemetry::{now_ms, TelemetryCollector},
@@ -92,7 +96,9 @@ struct RuntimeStore {
     collector: TelemetryCollector,
     base_dir: PathBuf,
     settings: RuntimeSettings,
+    admin_mode: RuntimeAdminModeStatus,
     elevated: Option<ElevatedHelperClient>,
+    elevated_request: Option<Receiver<Result<ElevatedHelperClient, String>>>,
     snapshot: RuntimeSnapshot,
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
@@ -140,6 +146,7 @@ impl RuntimeStore {
             warm_cache.rows.clear();
             let _ = fs::remove_file(base_dir.join(WARM_CACHE_FILE));
         }
+        let admin_mode = initial_admin_mode_status();
         let snapshot = build_snapshot(
             publication_seq,
             now_ms(),
@@ -147,6 +154,7 @@ impl RuntimeStore {
             None,
             &base_dir,
             &settings,
+            &admin_mode,
             RuntimeHealth::default(),
             empty_system(),
             &warm_cache.rows,
@@ -158,7 +166,9 @@ impl RuntimeStore {
             collector: TelemetryCollector::new(),
             base_dir,
             settings,
+            admin_mode,
             elevated: None,
+            elevated_request: None,
             snapshot,
             warnings,
             previous_totals: None,
@@ -203,22 +213,31 @@ impl RuntimeStore {
         self.settings.admin_mode_requested = enabled;
         self.settings.admin_mode_enabled = false;
         if enabled {
-            if self.elevated.is_none() {
-                match ElevatedHelperClient::start(&self.base_dir) {
-                    Ok(client) => {
-                        self.elevated = Some(client);
-                    }
-                    Err(error) => {
-                        self.fail_admin_mode(error);
-                    }
-                }
+            self.admin_mode.state = RuntimeAdminModeState::Requesting;
+            self.admin_mode.detail = None;
+            self.clear_warning("admin_mode");
+            if self.elevated.is_none() && self.elevated_request.is_none() {
+                let collect_process_network =
+                    !self.collector.process_network_ready().unwrap_or(false);
+                let base_dir = self.base_dir.clone();
+                let (sender, receiver) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = sender.send(ElevatedHelperClient::start(
+                        &base_dir,
+                        collect_process_network,
+                    ));
+                });
+                self.elevated_request = Some(receiver);
             }
         } else {
+            self.admin_mode = initial_admin_mode_status();
+            self.clear_warning("admin_mode");
             if let Some(mut client) = self.elevated.take() {
                 if let Err(error) = client.stop() {
                     self.add_warning("admin_mode", error);
                 }
             }
+            let _ = self.collector.retry_process_network();
             if was_admin_enabled {
                 self.previous_processes.clear();
                 self.previous_totals = None;
@@ -274,9 +293,7 @@ impl RuntimeStore {
         }
 
         let sample_ts_ms = now_ms();
-        for warning in &sample.warnings {
-            self.add_warning("collector", warning.clone());
-        }
+        let mut active_collector_warnings = sample.warnings;
 
         let elapsed_seconds = self
             .previous_totals
@@ -290,24 +307,52 @@ impl RuntimeStore {
         let mut system = sample.system;
         let mut sample_processes = sample.processes;
         let mut process_rows_fresh = true;
+        self.resolve_elevated_request();
         if self.settings.admin_mode_requested {
             let was_admin_enabled = self.settings.admin_mode_enabled;
             let mut admin_warning = None;
+            let mut admin_recovered = false;
             let mut stop_elevated = false;
             if let Some(elevated) = &mut self.elevated {
+                let collects_process_network = elevated.collects_process_network();
                 match elevated.poll_rows() {
-                    Ok(ElevatedPoll::Fresh(mut rows)) => {
+                    Ok(ElevatedPoll::Fresh { mut rows, warnings }) => {
                         merge_main_network_attribution(&sample_processes, &mut rows);
                         sample_processes = rows;
                         self.settings.admin_mode_enabled = true;
+                        self.admin_mode.state = RuntimeAdminModeState::Active;
+                        self.admin_mode.detail = None;
+                        self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
+                        admin_recovered = true;
+                        if collects_process_network {
+                            active_collector_warnings.retain(|warning| {
+                                warning_key("collector", warning) != "collector.network_attribution"
+                            });
+                        }
+                        active_collector_warnings.extend(warnings);
                     }
-                    Ok(ElevatedPoll::Held) => {
+                    Ok(ElevatedPoll::Held { warnings }) => {
                         sample_processes = self.previous_processes.clone();
                         process_rows_fresh = false;
                         self.settings.admin_mode_enabled = true;
+                        self.admin_mode.state = RuntimeAdminModeState::Active;
+                        self.admin_mode.detail = None;
+                        if collects_process_network {
+                            active_collector_warnings.retain(|warning| {
+                                warning_key("collector", warning) != "collector.network_attribution"
+                            });
+                        }
+                        active_collector_warnings.extend(warnings);
+                    }
+                    Ok(ElevatedPoll::Recovering(detail)) => {
+                        self.settings.admin_mode_enabled = false;
+                        self.admin_mode.state = RuntimeAdminModeState::Recovering;
+                        self.admin_mode.detail = Some(detail);
                     }
                     Ok(ElevatedPoll::Pending) => {
                         self.settings.admin_mode_enabled = false;
+                        self.admin_mode.state = RuntimeAdminModeState::Requesting;
+                        self.admin_mode.detail = None;
                     }
                     Err(error) => {
                         self.settings.admin_mode_enabled = false;
@@ -320,6 +365,9 @@ impl RuntimeStore {
             }
             if was_admin_enabled != self.settings.admin_mode_enabled {
                 self.previous_processes.clear();
+            }
+            if admin_recovered {
+                self.clear_warning("admin_mode");
             }
             if stop_elevated {
                 self.settings.admin_mode_requested = false;
@@ -335,6 +383,7 @@ impl RuntimeStore {
         } else {
             self.settings.admin_mode_enabled = false;
         }
+        self.sync_collector_warnings(active_collector_warnings);
         if let Some(previous) = &self.previous_totals {
             let disk_rates_are_native = system
                 .quality
@@ -405,6 +454,7 @@ impl RuntimeStore {
             self.sampled_at_ms,
             &self.base_dir,
             &self.settings,
+            &self.admin_mode,
             health,
             system,
             &self.previous_processes,
@@ -422,7 +472,36 @@ impl RuntimeStore {
     fn fail_admin_mode(&mut self, error: String) {
         self.settings.admin_mode_requested = false;
         self.settings.admin_mode_enabled = false;
+        self.admin_mode.state = RuntimeAdminModeState::Failed;
+        self.admin_mode.detail = Some(error.clone());
         self.add_warning("admin_mode", error);
+        let _ = self.collector.retry_process_network();
+        self.persist_settings();
+    }
+
+    fn resolve_elevated_request(&mut self) {
+        let result = match self.elevated_request.as_ref().map(Receiver::try_recv) {
+            Some(Ok(result)) => Some(result),
+            Some(Err(TryRecvError::Disconnected)) => {
+                Some(Err("admin_mode_launch_channel_closed".to_string()))
+            }
+            Some(Err(TryRecvError::Empty)) | None => None,
+        };
+        let Some(result) = result else {
+            return;
+        };
+        self.elevated_request = None;
+
+        match (self.settings.admin_mode_requested, result) {
+            (true, Ok(client)) => self.elevated = Some(client),
+            (true, Err(error)) => self.fail_admin_mode(error),
+            (false, Ok(mut client)) => {
+                if let Err(error) = client.stop() {
+                    self.fail_admin_mode(error);
+                }
+            }
+            (false, Err(_)) => {}
+        }
     }
 
     fn publish_snapshot_only(&mut self, warning: Option<(&str, String)>) {
@@ -441,6 +520,7 @@ impl RuntimeStore {
             self.sampled_at_ms,
             &self.base_dir,
             &self.settings,
+            &self.admin_mode,
             health,
             self.snapshot.system.clone(),
             &self.previous_processes,
@@ -466,10 +546,15 @@ impl RuntimeStore {
         let last_warning = self.warnings.back().map(|warning| warning.message.clone());
         let status_summary = if self.settings.paused {
             "Paused.".to_string()
-        } else if self.settings.admin_mode_requested && !self.settings.admin_mode_enabled {
-            "Standard access: admin mode requested but elevation is inactive.".to_string()
+        } else if self.admin_mode.state == RuntimeAdminModeState::Requesting {
+            "Waiting for Windows approval.".to_string()
+        } else if self.admin_mode.state == RuntimeAdminModeState::Recovering {
+            "Privileged collection is recovering; standard monitoring remains current.".to_string()
         } else if warning_degraded {
-            format!("Collector warnings present: {warning_degraded_count} retained.")
+            format!(
+                "{warning_degraded_count} telemetry limitation{}.",
+                if warning_degraded_count == 1 { "" } else { "s" }
+            )
         } else if cpu_degraded && rss_degraded {
             "Degraded: app CPU and RSS above budget.".to_string()
         } else if cpu_degraded {
@@ -484,7 +569,7 @@ impl RuntimeStore {
             tick_count: self.sample_seq,
             snapshot_latency_ms: latency_ms,
             degraded: cpu_degraded || rss_degraded || warning_degraded,
-            collector_warnings: self.warnings.len(),
+            collector_warnings: warning_degraded_count,
             runtime_loop_enabled: true,
             runtime_loop_running: !self.settings.paused,
             status_summary,
@@ -500,6 +585,17 @@ impl RuntimeStore {
     }
 
     fn add_warning(&mut self, category: &str, message: String) {
+        let key = warning_key(category, &message);
+        if self
+            .warnings
+            .iter()
+            .any(|warning| warning.key == key && warning.message == message)
+        {
+            return;
+        }
+        if let Some(index) = self.warnings.iter().position(|warning| warning.key == key) {
+            self.warnings.remove(index);
+        }
         push_warning(
             &mut self.warnings,
             self.publication_seq,
@@ -509,10 +605,39 @@ impl RuntimeStore {
         self.append_diagnostic(category, &message);
     }
 
+    fn sync_collector_warnings(&mut self, messages: Vec<String>) {
+        let active = messages
+            .iter()
+            .map(|message| warning_key("collector", message))
+            .collect::<HashSet<_>>();
+        let stale = self
+            .warnings
+            .iter()
+            .filter(|warning| warning.category == "collector" && !active.contains(&warning.key))
+            .map(|warning| warning.key.clone())
+            .collect::<Vec<_>>();
+        for key in stale {
+            self.clear_warning(&key);
+        }
+        for message in messages {
+            self.add_warning("collector", message);
+        }
+    }
+
+    fn clear_warning(&mut self, key: &str) {
+        if let Some(index) = self.warnings.iter().position(|warning| warning.key == key) {
+            let warning = self.warnings.remove(index).expect("warning index exists");
+            self.append_diagnostic("recovery", &format!("{} resolved", warning.key));
+        }
+    }
+
     fn persist_settings(&mut self) {
+        let mut persisted = self.settings.clone();
+        persisted.admin_mode_requested = false;
+        persisted.admin_mode_enabled = false;
         if let Err(error) = write_json_atomic(
             &self.base_dir.join(SETTINGS_FILE),
-            &self.settings,
+            &persisted,
             PERSISTENCE_JSON_ERRORS,
         ) {
             self.add_warning("persistence", error);
@@ -641,6 +766,7 @@ fn build_snapshot(
     sampled_at_ms: Option<u64>,
     base_dir: &Path,
     settings: &RuntimeSettings,
+    admin_mode: &RuntimeAdminModeStatus,
     health: RuntimeHealth,
     system: SystemMetricsSnapshot,
     all_processes: &[ProcessSample],
@@ -656,6 +782,7 @@ fn build_snapshot(
         sampled_at_ms,
         source: "tauri_runtime".to_string(),
         environment: runtime_environment(base_dir),
+        admin_mode: admin_mode.clone(),
         settings: settings.clone(),
         health,
         system,
@@ -1264,6 +1391,7 @@ fn push_warning(
     message: String,
 ) {
     warnings.push_back(RuntimeWarning {
+        key: warning_key(category, &message),
         publication_seq,
         occurred_at_ms: now_ms(),
         category: category.to_string(),
@@ -1272,6 +1400,20 @@ fn push_warning(
     while warnings.len() > MAX_WARNINGS {
         warnings.pop_front();
     }
+}
+
+fn warning_key(category: &str, message: &str) -> String {
+    if category == "admin_mode" {
+        return "admin_mode".to_string();
+    }
+
+    let code = message
+        .split([':', ';', ' '])
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown")
+        .trim_end_matches("_failed");
+    format!("{category}.{code}")
 }
 
 fn empty_system() -> SystemMetricsSnapshot {
@@ -1403,6 +1545,18 @@ fn runtime_environment(base_dir: &Path) -> RuntimeEnvironment {
         platform,
         admin_mode_available: cfg!(windows),
         data_directory: Some(base_dir.display().to_string()),
+    }
+}
+
+fn initial_admin_mode_status() -> RuntimeAdminModeStatus {
+    RuntimeAdminModeStatus {
+        state: if cfg!(windows) {
+            RuntimeAdminModeState::Off
+        } else {
+            RuntimeAdminModeState::Unavailable
+        },
+        detail: None,
+        last_success_at_ms: None,
     }
 }
 
@@ -1542,6 +1696,7 @@ mod tests {
             Some(1),
             Path::new(""),
             &settings,
+            &initial_admin_mode_status(),
             RuntimeHealth::default(),
             empty_system(),
             &all_processes,
@@ -1855,6 +2010,7 @@ mod tests {
             Some(now_ms()),
             &store.base_dir,
             &store.settings,
+            &store.admin_mode,
             RuntimeHealth::default(),
             empty_system(),
             &all_processes,
@@ -1906,10 +2062,39 @@ mod tests {
 
         assert!(!store.settings.admin_mode_requested);
         assert!(!store.settings.admin_mode_enabled);
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
+        assert_eq!(
+            store.admin_mode.detail.as_deref(),
+            Some("admin_mode_launch_failed_or_cancelled")
+        );
         assert!(store
             .warnings
             .back()
             .is_some_and(|warning| warning.message == "admin_mode_launch_failed_or_cancelled"));
+        let persisted = read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE))
+            .expect("settings read succeeds");
+        assert!(!persisted.admin_mode_requested);
+        assert!(!persisted.admin_mode_enabled);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn failed_background_elevation_request_becomes_retryable() {
+        let base_dir = runtime_test_dir("admin-background-failure");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let (sender, receiver) = mpsc::channel();
+        store.settings.admin_mode_requested = true;
+        store.admin_mode.state = RuntimeAdminModeState::Requesting;
+        store.elevated_request = Some(receiver);
+        sender
+            .send(Err("admin_mode_launch_failed_or_cancelled".to_string()))
+            .expect("test result sends");
+
+        store.resolve_elevated_request();
+
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
+        assert!(store.elevated_request.is_none());
+        assert!(!store.settings.admin_mode_requested);
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -1989,13 +2174,14 @@ mod tests {
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.settings.admin_mode_requested = true;
         store.settings.admin_mode_enabled = false;
+        store.admin_mode.state = RuntimeAdminModeState::Requesting;
         store.warnings.clear();
 
         let health = store.build_health(0, 0.0, 0);
 
         assert!(!health.degraded);
         assert_eq!(health.collector_warnings, 0);
-        assert!(health.status_summary.contains("elevation is inactive"));
+        assert!(health.status_summary.contains("Windows approval"));
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -2034,9 +2220,32 @@ mod tests {
 
         assert!(health.degraded);
         assert_eq!(health.collector_warnings, 1);
-        assert!(health.status_summary.contains("Collector warnings"));
+        assert!(health.status_summary.contains("1 telemetry limitation"));
 
         let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn collector_warnings_replace_by_key_and_clear_on_recovery() {
+        let base_dir = runtime_test_dir("warning-reconcile");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.warnings.clear();
+
+        store
+            .sync_collector_warnings(vec!["network_attribution_failed: access denied".to_string()]);
+        store
+            .sync_collector_warnings(vec!["network_attribution_failed: retry pending".to_string()]);
+
+        assert_eq!(store.warnings.len(), 1);
+        assert_eq!(store.warnings[0].key, "collector.network_attribution");
+        assert_eq!(
+            store.warnings[0].message,
+            "network_attribution_failed: retry pending"
+        );
+
+        store.sync_collector_warnings(Vec::new());
+        assert!(store.warnings.is_empty());
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]

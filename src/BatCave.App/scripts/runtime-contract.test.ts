@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compareProcessSamples, processNeedsAttention } from "../src/lib/process.ts";
+import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
+import { qualityGuidance } from "../src/lib/format.ts";
 import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
 import { summarizeProcessContributors, systemPressureHeadline } from "../src/lib/systemPressure.ts";
-import type { ProcessSample } from "../src/lib/types.ts";
+import type { ProcessSample, RuntimeAdminModeStatus, RuntimeWarning } from "../src/lib/types.ts";
 
 const canonicalSnapshot = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
@@ -53,6 +55,48 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
   );
   assert.equal(canonicalSnapshot.seq, undefined);
   assert.equal(canonicalSnapshot.ts_ms, undefined);
+  assert.deepEqual(canonicalSnapshot.admin_mode, {
+    state: "off",
+    detail: null,
+    last_success_at_ms: null,
+  });
+});
+
+test("diagnostics render one limitation per stable key with the current admin action", () => {
+  const warnings: RuntimeWarning[] = [
+    warning("collector.network_attribution", "network_attribution_failed: access denied", 1),
+    warning("collector.network_attribution", "network_attribution_failed: retry failed", 2),
+  ];
+
+  assert.deepEqual(
+    currentDiagnosticIssues(warnings, adminMode("off"), true).map((issue) => [
+      issue.key,
+      issue.action,
+    ]),
+    [["collector.network_attribution", "enable"]],
+  );
+  assert.equal(
+    currentDiagnosticIssues(warnings, adminMode("requesting"), true)[0].action,
+    "cancel",
+  );
+  assert.equal(currentDiagnosticIssues(warnings, adminMode("failed"), true)[0].action, "retry");
+  assert.equal(currentDiagnosticIssues(warnings, adminMode("active"), true)[0].action, null);
+  assert.equal(uniqueWarningCount(warnings), 1);
+});
+
+test("native metrics omit empty quality guidance", () => {
+  assert.deepEqual(
+    qualityGuidance({
+      cpu: { quality: "native", source: "direct_api" },
+      disk: { quality: "native", source: "pdh" },
+      network: { quality: "native", source: "interface_aggregate" },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    qualityGuidance({ network: { quality: "unavailable", message: "ETW access denied" } }),
+    ["ETW access denied"],
+  );
 });
 
 test("attention includes each scored resource and limited access", () => {
@@ -152,4 +196,18 @@ function luminance(color: string): number {
     value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
   );
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function warning(key: string, message: string, publicationSeq: number): RuntimeWarning {
+  return {
+    key,
+    message,
+    publication_seq: publicationSeq,
+    occurred_at_ms: publicationSeq,
+    category: "collector",
+  };
+}
+
+function adminMode(state: RuntimeAdminModeStatus["state"]): RuntimeAdminModeStatus {
+  return { state, detail: null, last_success_at_ms: null };
 }

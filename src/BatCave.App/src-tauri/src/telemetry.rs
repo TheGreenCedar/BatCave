@@ -57,8 +57,35 @@ impl TelemetryCollector {
         Self::new_with_process_network(true)
     }
 
-    pub(crate) fn for_elevated_helper() -> Self {
-        Self::new_with_process_network(false)
+    pub(crate) fn for_elevated_helper(process_network: bool) -> Self {
+        Self::new_with_process_network(process_network)
+    }
+
+    pub(crate) fn process_network_ready(&self) -> Result<bool, String> {
+        #[cfg(windows)]
+        {
+            let state = self
+                .network_attribution
+                .lock()
+                .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
+            Ok(matches!(&*state, NetworkAttributionState::Ready(_)))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(false)
+        }
+    }
+
+    pub(crate) fn retry_process_network(&self) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            let mut state = self
+                .network_attribution
+                .lock()
+                .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
+            *state = NetworkAttributionState::new();
+        }
+        Ok(())
     }
 
     fn new_with_process_network(process_network: bool) -> Self {
@@ -318,7 +345,10 @@ impl TelemetryCollector {
                     Ok(DiskQualityState::Unavailable(error))
                 }
             },
-            PdhDiskState::Failed(error) => Ok(DiskQualityState::Unavailable(error.clone())),
+            PdhDiskState::Failed(error) => {
+                warnings.push(format!("pdh_disk_collector_failed:{error}"));
+                Ok(DiskQualityState::Unavailable(error.clone()))
+            }
         }
     }
 
@@ -347,10 +377,8 @@ impl TelemetryCollector {
                 Ok(sample)
             }
             NetworkAttributionState::Failed { message, warned } => {
-                if !*warned {
-                    warnings.push(format!("network_attribution_failed:{message}"));
-                    *warned = true;
-                }
+                warnings.push(format!("network_attribution_failed:{message}"));
+                *warned = true;
                 Ok(NetworkAttributionSample::Failed(message.clone()))
             }
         }
@@ -842,7 +870,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn elevated_helper_does_not_start_a_second_etw_monitor() {
-        let collector = TelemetryCollector::for_elevated_helper();
+        let collector = TelemetryCollector::for_elevated_helper(false);
         let state = collector.network_attribution.lock().unwrap();
 
         assert!(matches!(&*state, NetworkAttributionState::Disabled));

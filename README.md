@@ -131,7 +131,7 @@ Theme preference is stored in browser `localStorage` under `batcave.monitor.them
 ## Platform Notes
 
 - Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
-- Windows admin mode can launch a local elevated helper for richer snapshots. If elevation is denied or unavailable, BatCave falls back to standard access.
+- Windows admin mode launches a local elevated helper for the current BatCave session only. It keeps standard rows current while recovering from short helper gaps, retries recoverable collector errors without another prompt, and falls back safely if elevation fails. Restarting BatCave always begins with admin mode off.
 - Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses `bpftrace`/eBPF when the host has the needed permissions or capabilities. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
 - Browser fixture mode is for UI work. It is deterministic on purpose and is not proof of native collector behavior.
 

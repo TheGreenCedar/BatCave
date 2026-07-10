@@ -6,6 +6,7 @@ export interface RuntimeSnapshot {
   sampled_at_ms: number | null;
   source: RuntimeTelemetrySource;
   environment: RuntimeEnvironment;
+  admin_mode: RuntimeAdminModeStatus;
   settings: RuntimeSettings;
   health: RuntimeHealth;
   system: SystemMetricsSnapshot;
@@ -27,6 +28,20 @@ export interface RuntimeEnvironment {
   platform: "windows" | "linux" | "fixture";
   admin_mode_available: boolean;
   data_directory: string | null;
+}
+
+export type RuntimeAdminModeState =
+  | "unavailable"
+  | "off"
+  | "requesting"
+  | "active"
+  | "recovering"
+  | "failed";
+
+export interface RuntimeAdminModeStatus {
+  state: RuntimeAdminModeState;
+  detail: string | null;
+  last_success_at_ms: number | null;
 }
 
 export type RuntimeTelemetrySource =
@@ -222,6 +237,7 @@ export interface RuntimeSettings {
 }
 
 export interface RuntimeWarning {
+  key: string;
   publication_seq: number;
   occurred_at_ms: number;
   category: string;

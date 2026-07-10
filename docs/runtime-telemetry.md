@@ -39,9 +39,9 @@ The UI talks to the runtime through Tauri commands:
 - `set_process_query`
 - `get_process_icon`
 
-The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, admin-mode preference, warm cache, health, diagnostics, and persistence belong in Rust.
+The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, session-scoped admin state, warm cache, health, diagnostics, and persistence belong in Rust.
 
-Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, admin, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. The UI appends histories and derives rates only when `sample_seq` advances. The required `environment` object reports `platform`, `admin_mode_available`, and the resolved `data_directory`.
+Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, admin, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. The UI appends histories and derives rates only when `sample_seq` advances. The required `environment` object reports `platform`, `admin_mode_available`, and the resolved `data_directory`. `admin_mode` reports `unavailable`, `off`, `requesting`, `active`, `recovering`, or `failed`, plus raw failure detail and the last successful elevated-snapshot time.
 
 This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: active` aliases are not serialized. Process selection and rate identity use `pid` plus `start_time_ms` so PID reuse cannot inherit an earlier process's state. Empty kernel-pool-tag `driver_candidates` are always serialized as `[]`.
 
@@ -52,7 +52,7 @@ This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: activ
 Implemented runtime surfaces:
 
 - Production snake_case JSON contracts for runtime snapshots, settings, process samples, system metrics, quality metadata, warnings, and health.
-- Runtime settings, warm cache, warnings, diagnostics, health budgets, query shaping, pause/resume, refresh, and admin-mode state in the Rust store.
+- Runtime settings, warm cache, keyed current warnings, diagnostics transition history, health budgets, query shaping, pause/resume, refresh, and admin-mode state in the Rust store.
 - Stable process grouping for runtime process views, including aggregate CPU, memory, disk, network, and thread totals for group rows.
 - Local JSON persistence with same-directory, per-writer atomic temporary files for settings and runtime state.
 - Rust CLI modes for benchmarking and elevated-helper snapshots.
@@ -62,7 +62,7 @@ Windows native telemetry:
 - Process identity, PID, parent PID, start-time identity, executable path, access state, CPU, kernel CPU, memory, private bytes, process I/O totals, thread count, and handle count.
 - Physical memory, Windows commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
-- Local elevated-helper snapshots when standard process access is incomplete. The main runtime remains the single ETW kernel-logger owner and merges its network data into helper rows only on exact PID/start-time matches.
+- Local elevated-helper snapshots when standard process access is incomplete. The main runtime keeps ETW ownership when healthy and merges its network data into helper rows only on exact PID/start-time matches. If main ETW is unavailable, the helper owns the single ETW session until it stops.
 
 Linux native telemetry:
 
@@ -129,7 +129,7 @@ Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
 - Windows: `%LOCALAPPDATA%\BatCaveMonitor`
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
 
-The runtime publishes the resolved path through `environment.data_directory`. Admin mode is advertised only when `environment.admin_mode_available` is true. Elevated helper tokens are exactly 64 lowercase hexadecimal characters; pipe and stop-file paths must match the generated local run directory. Authenticated helper rows may be held for up to two seconds between frames, then expire immediately on timeout, disconnect, authentication failure, or helper exit.
+The runtime publishes the resolved path through `environment.data_directory`. Admin mode is advertised only when `environment.admin_mode_available` is true. Admin request and enabled booleans are always persisted as false because elevation is valid only for the running session. Elevated helper tokens are exactly 64 lowercase hexadecimal characters; pipe and stop-file paths must match the generated local run directory. Authenticated helper rows are held for gaps under three seconds. From three through fifteen seconds the runtime publishes current standard-access rows as `recovering`; longer gaps, disconnects, authentication failures, protocol failures, or helper exit fail closed. Recoverable helper collector errors stay in the pipe protocol and return to `active` on the next good frame.
 
 Do not add outbound tracking, hosted collection, or remote logging. BatCave is a local instrument panel, not a service backend in a trench coat.
 

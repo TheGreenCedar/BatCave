@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::{cli_args, contracts::ProcessSample, telemetry::TelemetryCollector};
 
 const HELPER_INTERVAL_MS: u64 = 500;
-const HELPER_SNAPSHOT_GRACE: Duration = Duration::from_secs(2);
+const HELPER_STALE_GRACE: Duration = Duration::from_secs(3);
+const HELPER_FAILURE_GRACE: Duration = Duration::from_secs(15);
 const HELPER_STOP_GRACE: Duration = Duration::from_secs(2);
 const HELPER_FORCE_EXIT_GRACE: Duration = Duration::from_secs(2);
 const HELPER_TOKEN_BYTES: usize = 32;
@@ -30,6 +31,9 @@ pub struct ElevatedHelperClient {
     last_seq: u64,
     started_at: Instant,
     last_snapshot_at: Option<Instant>,
+    collect_process_network: bool,
+    last_warnings: Vec<String>,
+    recovering_detail: Option<String>,
     read_buffer: Vec<u8>,
     #[cfg(windows)]
     pipe: Option<NamedPipeServer>,
@@ -39,13 +43,19 @@ pub struct ElevatedHelperClient {
 
 #[derive(Debug, Clone)]
 pub enum ElevatedPoll {
-    Fresh(Vec<ProcessSample>),
-    Held,
+    Fresh {
+        rows: Vec<ProcessSample>,
+        warnings: Vec<String>,
+    },
+    Held {
+        warnings: Vec<String>,
+    },
+    Recovering(String),
     Pending,
 }
 
 impl ElevatedHelperClient {
-    pub fn start(base_dir: &Path) -> Result<Self, String> {
+    pub fn start(base_dir: &Path, collect_process_network: bool) -> Result<Self, String> {
         remove_helper_artifacts(base_dir);
         let session = prepare_helper_session(base_dir)?;
 
@@ -63,6 +73,7 @@ impl ElevatedHelperClient {
             &session.stop_file,
             &session.token,
             std::process::id(),
+            collect_process_network,
         ) {
             Ok(process) => process,
             Err(error) => {
@@ -78,6 +89,9 @@ impl ElevatedHelperClient {
             last_seq: 0,
             started_at: Instant::now(),
             last_snapshot_at: None,
+            collect_process_network,
+            last_warnings: Vec::new(),
+            recovering_detail: None,
             read_buffer: Vec::new(),
             #[cfg(windows)]
             pipe,
@@ -98,27 +112,48 @@ impl ElevatedHelperClient {
 
         #[cfg(windows)]
         if let Some(pipe) = &mut self.pipe {
-            let mut rows = None;
+            let mut snapshot = None;
             for payload in pipe.read_payloads(&mut self.read_buffer)? {
-                if let Some(snapshot_rows) = self.accept_snapshot_payload(&payload)? {
-                    rows = Some(snapshot_rows);
+                if let Some(next) = self.accept_snapshot_payload(&payload)? {
+                    if matches!(next, ElevatedPoll::Fresh { .. }) {
+                        self.last_snapshot_at = Some(Instant::now());
+                    }
+                    snapshot = Some(next);
                 }
             }
-            if let Some(rows) = rows {
-                self.last_snapshot_at = Some(Instant::now());
-                return Ok(ElevatedPoll::Fresh(rows));
+            if let Some(snapshot) = snapshot {
+                if matches!(snapshot, ElevatedPoll::Recovering(_))
+                    && self.last_snapshot_at.unwrap_or(self.started_at).elapsed()
+                        > HELPER_FAILURE_GRACE
+                {
+                    return Err("admin_mode_snapshot_timeout".to_string());
+                }
+                return Ok(snapshot);
             }
         }
 
         let since = self.last_snapshot_at.unwrap_or(self.started_at).elapsed();
-        if since > HELPER_SNAPSHOT_GRACE {
+        if since > HELPER_FAILURE_GRACE {
             return Err("admin_mode_snapshot_timeout".to_string());
         }
-        Ok(if self.last_snapshot_at.is_some() {
-            ElevatedPoll::Held
-        } else {
-            ElevatedPoll::Pending
-        })
+        if let Some(detail) = &self.recovering_detail {
+            return Ok(ElevatedPoll::Recovering(detail.clone()));
+        }
+        Ok(
+            if self.last_snapshot_at.is_some() && since > HELPER_STALE_GRACE {
+                ElevatedPoll::Recovering("admin_mode_snapshot_delayed".to_string())
+            } else if self.last_snapshot_at.is_some() {
+                ElevatedPoll::Held {
+                    warnings: self.last_warnings.clone(),
+                }
+            } else {
+                ElevatedPoll::Pending
+            },
+        )
+    }
+
+    pub fn collects_process_network(&self) -> bool {
+        self.collect_process_network
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
@@ -164,10 +199,7 @@ impl ElevatedHelperClient {
         remove_helper_artifacts(base_dir);
     }
 
-    fn accept_snapshot_payload(
-        &mut self,
-        payload: &str,
-    ) -> Result<Option<Vec<ProcessSample>>, String> {
+    fn accept_snapshot_payload(&mut self, payload: &str) -> Result<Option<ElevatedPoll>, String> {
         let snapshot = serde_json::from_str::<ElevatedSnapshot>(payload)
             .map_err(|error| format!("admin_mode_snapshot_parse_failed:{error}"))?;
 
@@ -179,7 +211,17 @@ impl ElevatedHelperClient {
         }
 
         self.last_seq = snapshot.seq;
-        Ok(Some(snapshot.rows))
+        Ok(Some(if let Some(error) = snapshot.error {
+            self.recovering_detail = Some(error.clone());
+            ElevatedPoll::Recovering(error)
+        } else {
+            self.recovering_detail = None;
+            self.last_warnings = snapshot.warnings.clone();
+            ElevatedPoll::Fresh {
+                rows: snapshot.rows,
+                warnings: snapshot.warnings,
+            }
+        }))
     }
 }
 
@@ -195,6 +237,10 @@ struct ElevatedSnapshot {
     token: String,
     seq: u64,
     rows: Vec<ProcessSample>,
+    #[serde(default)]
+    warnings: Vec<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +249,7 @@ struct ElevatedHelperArgs {
     stop_file: PathBuf,
     token: String,
     parent_pid: u32,
+    collect_process_network: bool,
 }
 
 pub fn run_cli(args: &[String]) -> Option<i32> {
@@ -233,19 +280,20 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
             return 1;
         }
     };
-    let collector = TelemetryCollector::for_elevated_helper();
+    let collector = TelemetryCollector::for_elevated_helper(args.collect_process_network);
     while !args.stop_file.exists() {
         seq = seq.saturating_add(1);
-        match collector
-            .collect()
-            .map(|sample| sample.processes)
-            .and_then(|rows| pipe.write_snapshot(&args.token, seq, rows))
-        {
-            Ok(()) => {}
-            Err(error) => {
-                eprintln!("{error}");
-                return 1;
+        let write = match collector.collect() {
+            Ok(sample) => {
+                pipe.write_snapshot(&args.token, seq, sample.processes, sample.warnings, None)
             }
+            Err(error) => {
+                pipe.write_snapshot(&args.token, seq, Vec::new(), Vec::new(), Some(error))
+            }
+        };
+        if let Err(error) = write {
+            eprintln!("{error}");
+            return 1;
         }
         thread::sleep(Duration::from_millis(HELPER_INTERVAL_MS));
     }
@@ -304,11 +352,19 @@ fn run_elevated_helper(_args: ElevatedHelperArgs) -> i32 {
     1
 }
 
-fn snapshot_payload(token: &str, seq: u64, rows: Vec<ProcessSample>) -> Result<Vec<u8>, String> {
+fn snapshot_payload(
+    token: &str,
+    seq: u64,
+    rows: Vec<ProcessSample>,
+    warnings: Vec<String>,
+    error: Option<String>,
+) -> Result<Vec<u8>, String> {
     let snapshot = ElevatedSnapshot {
         token: token.to_string(),
         seq,
         rows,
+        warnings,
+        error,
     };
     serde_json::to_vec(&snapshot)
         .map_err(|error| format!("admin_mode_snapshot_serialize_failed:{error}"))
@@ -558,8 +614,10 @@ impl PipeClient {
         token: &str,
         seq: u64,
         rows: Vec<ProcessSample>,
+        warnings: Vec<String>,
+        error: Option<String>,
     ) -> Result<(), String> {
-        let payload = snapshot_payload(token, seq, rows)?;
+        let payload = snapshot_payload(token, seq, rows, warnings, error)?;
         if payload.len() > u32::MAX as usize {
             return Err("admin_mode_snapshot_too_large".to_string());
         }
@@ -842,11 +900,15 @@ fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
     let parent_pid = required_value(args, "--parent-pid")?
         .parse::<u32>()
         .map_err(|_| "invalid_elevated_helper_parent_pid".to_string())?;
+    let collect_process_network = required_value(args, "--collect-process-network")?
+        .parse::<bool>()
+        .map_err(|_| "invalid_elevated_helper_process_network".to_string())?;
     Ok(ElevatedHelperArgs {
         pipe_name,
         stop_file,
         token,
         parent_pid,
+        collect_process_network,
     })
 }
 
@@ -902,7 +964,13 @@ fn validate_helper_args_for_base(
 }
 
 fn reject_unknown_helper_args(args: &[String]) -> Result<(), String> {
-    let known_with_value = ["--pipe-name", "--stop-file", "--token", "--parent-pid"];
+    let known_with_value = [
+        "--pipe-name",
+        "--stop-file",
+        "--token",
+        "--parent-pid",
+        "--collect-process-network",
+    ];
     let known_flags = ["--elevated-helper"];
     cli_args::reject_unknown_args(args, &known_with_value, &known_flags)
 }
@@ -994,6 +1062,7 @@ fn launch_elevated_helper(
     stop_file: &Path,
     token: &str,
     parent_pid: u32,
+    collect_process_network: bool,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
     use std::{mem::size_of, ptr::null};
 
@@ -1007,11 +1076,12 @@ fn launch_elevated_helper(
     let exe_w = wide_os(exe.as_os_str());
     let verb_w = wide("runas");
     let params_w = wide(&format!(
-        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\" --parent-pid {}",
+        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\" --parent-pid {} --collect-process-network {}",
         pipe_name,
         stop_file.display(),
         token,
         parent_pid,
+        collect_process_network,
     ));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -1050,6 +1120,7 @@ fn launch_elevated_helper(
     _stop_file: &Path,
     _token: &str,
     _parent_pid: u32,
+    _collect_process_network: bool,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
     Err("admin_mode_requires_windows".to_string())
 }
@@ -1196,6 +1267,9 @@ mod tests {
             .expect("fresh snapshot reads")
             .expect("fresh rows exist");
 
+        let ElevatedPoll::Fresh { rows: first, .. } = first else {
+            panic!("fresh rows expected");
+        };
         assert_eq!(first[0].pid, "10");
 
         assert!(client
@@ -1208,6 +1282,9 @@ mod tests {
             .expect("new snapshot reads")
             .expect("new rows exist");
 
+        let ElevatedPoll::Fresh { rows: newer, .. } = newer else {
+            panic!("fresh rows expected");
+        };
         assert_eq!(newer[0].pid, "30");
         let _ = fs::remove_dir_all(base_dir);
     }
@@ -1238,6 +1315,7 @@ mod tests {
             stop_file: run_dir.join("stop.signal"),
             token: token.clone(),
             parent_pid: 1,
+            collect_process_network: false,
         };
 
         assert_eq!(
@@ -1292,21 +1370,66 @@ mod tests {
     }
 
     #[test]
-    fn helper_rows_hold_for_two_seconds_then_fail_closed() {
+    fn helper_rows_recover_before_hard_timeout() {
         let base_dir = test_dir("hold");
         let mut client = test_client(&base_dir);
         client.last_snapshot_at = Some(Instant::now());
         assert!(matches!(
             client.poll_rows().expect("recent rows hold"),
-            ElevatedPoll::Held
+            ElevatedPoll::Held { .. }
         ));
 
         client.last_snapshot_at =
-            Some(Instant::now() - HELPER_SNAPSHOT_GRACE - Duration::from_millis(1));
+            Some(Instant::now() - HELPER_STALE_GRACE - Duration::from_millis(1));
+        assert!(matches!(
+            client.poll_rows().expect("delayed rows recover"),
+            ElevatedPoll::Recovering(_)
+        ));
+
+        client.last_snapshot_at =
+            Some(Instant::now() - HELPER_FAILURE_GRACE - Duration::from_millis(1));
         assert_eq!(
             client.poll_rows().expect_err("expired rows fail closed"),
             "admin_mode_snapshot_timeout"
         );
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn helper_error_frame_recovers_with_next_snapshot() {
+        let base_dir = test_dir("recover-frame");
+        let mut client = test_client(&base_dir);
+        let token = client.token.clone();
+        let error_payload = String::from_utf8(
+            snapshot_payload(
+                &token,
+                1,
+                Vec::new(),
+                Vec::new(),
+                Some("temporary collector failure".to_string()),
+            )
+            .expect("error snapshot serializes"),
+        )
+        .expect("snapshot is utf8");
+
+        assert!(matches!(
+            client
+                .accept_snapshot_payload(&error_payload)
+                .expect("error frame is valid")
+                .expect("error frame advances"),
+            ElevatedPoll::Recovering(_)
+        ));
+        assert!(matches!(
+            client.poll_rows().expect("error state remains recovering"),
+            ElevatedPoll::Recovering(_)
+        ));
+        assert!(matches!(
+            client
+                .accept_snapshot_payload(&payload(&token, 2, vec![sample("10")]))
+                .expect("fresh frame is valid")
+                .expect("fresh frame advances"),
+            ElevatedPoll::Fresh { .. }
+        ));
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -1428,6 +1551,9 @@ mod tests {
             last_seq: 0,
             started_at: Instant::now(),
             last_snapshot_at: None,
+            collect_process_network: false,
+            last_warnings: Vec::new(),
+            recovering_detail: None,
             read_buffer: Vec::new(),
             #[cfg(windows)]
             pipe: None,
@@ -1437,8 +1563,10 @@ mod tests {
     }
 
     fn payload(token: &str, seq: u64, rows: Vec<ProcessSample>) -> String {
-        String::from_utf8(snapshot_payload(token, seq, rows).expect("snapshot serializes"))
-            .expect("snapshot is utf8")
+        String::from_utf8(
+            snapshot_payload(token, seq, rows, Vec::new(), None).expect("snapshot serializes"),
+        )
+        .expect("snapshot is utf8")
     }
 
     fn append_frame(buffer: &mut Vec<u8>, payload: &[u8]) {

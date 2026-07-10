@@ -1049,6 +1049,10 @@ dialog.detail-pane::backdrop {
   box-shadow: -24px 0 64px rgba(0, 0, 0, 0.28);
 }
 
+.diagnostics-drawer {
+  width: min(560px, calc(100vw - 24px));
+}
+
 .data-directory {
   overflow-wrap: anywhere;
   color: var(--text-soft);
@@ -1264,6 +1268,72 @@ dialog.detail-pane::backdrop {
   color: var(--text-muted);
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
+}
+
+.diagnostic-issue small {
+  display: block;
+  margin-top: 7px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.diagnostic-action {
+  min-height: 44px;
+  margin-bottom: 8px;
+  color: var(--warning-text);
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+}
+
+.collector-details {
+  margin-top: 0;
+}
+
+.collector-details .diagnostic-grid {
+  grid-template-columns: 1fr;
+  margin-top: 8px;
+}
+
+.local-data-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.local-data-detail span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.local-data-detail span strong {
+  color: var(--text-soft);
+  font-family: var(--font-ui);
+}
+
+.local-data-detail button {
+  min-height: 44px;
+}
+
+.local-data-detail small {
+  grid-column: 1 / -1;
+  min-height: 1em;
+  color: var(--text-muted);
+}
+
+.quality-guidance {
+  margin-top: 14px;
+}
+
+.quality-guidance h4,
+.quality-guidance p {
+  margin: 5px 0 0;
 }
 
 .diagnostic-grid {
