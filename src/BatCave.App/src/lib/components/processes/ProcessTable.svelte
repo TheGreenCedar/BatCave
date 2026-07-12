@@ -1,15 +1,16 @@
 <script lang="ts">
+  import { ArrowDown, ArrowUp, CaretRight } from "phosphor-svelte";
   import {
     sortAriaValue,
     sortButtonLabel,
-    sortIndicator,
     processSelectionKey,
     type ProcessColumn,
     type ProcessIconKind,
     type SortKey,
   } from "../../process";
-  import { formatPercent, formatRate, processBytesLabel, processMemoryTitle } from "../../format";
-  import type { ProcessSample, ProcessViewRow, SortDirection } from "../../types";
+  import { formatPercent, formatRate, processMemoryTitle } from "../../format";
+  import { residentMemoryValue } from "../../platformPresentation";
+  import type { ProcessSample, ProcessViewRow, RuntimePlatform, SortDirection } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
   export let processRows: ProcessViewRow[] = [];
@@ -23,6 +24,7 @@
   export let onToggleSort: (key: SortKey) => void;
   export let onToggleGroup: (key: string) => void = () => {};
   export let onInteractionChange: (active: boolean) => void = () => {};
+  export let platform: RuntimePlatform = "fixture";
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
@@ -78,7 +80,7 @@
   onfocusin={() => onInteractionChange(true)}
   onfocusout={handleFocusOut}
 >
-  <table class="attention-table">
+  <table class="attention-table" class:without-network={!columns.some((column) => column.key === "network")}>
     <thead>
       <tr>
         {#each columns as column}
@@ -92,7 +94,15 @@
               onclick={() => onToggleSort(column.key)}
             >
               <span>{column.label}</span>
-              <small aria-hidden="true">{sortIndicator(column.key, sortKey, sortDirection)}</small>
+              {#if sortKey === column.key}
+                <small class="sort-direction-icon" aria-hidden="true">
+                  {#if sortDirection === "asc"}
+                    <ArrowUp size={13} weight="bold" />
+                  {:else}
+                    <ArrowDown size={13} weight="bold" />
+                  {/if}
+                </small>
+              {/if}
             </button>
           </th>
         {/each}
@@ -117,7 +127,7 @@
                       aria-label={`${expanded ? "Collapse" : "Expand"} ${row.group_label ?? "process"} group, ${processCountLabel(row.group_count)}`}
                       onclick={() => row.group_key && onToggleGroup(row.group_key)}
                     >
-                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5 10 8l-4.5 4.5" /></svg>
+                      <CaretRight size={15} weight="bold" aria-hidden="true" />
                     </button>
                     <button
                       class="process-button app-group-button"
@@ -140,7 +150,7 @@
               {:else if column.key === "cpu"}
                 <td>{formatPercent(row.cpu_percent)}</td>
               {:else if column.key === "memory"}
-                <td>{representative ? processBytesLabel(representative, row.memory_bytes) : "--"}</td>
+                <td>{representative ? residentMemoryValue({ ...representative, memory_bytes: row.memory_bytes }, platform) : "--"}</td>
               {:else if column.key === "io"}
                 <td>{formatRate(row.io_bps)}</td>
               {:else if column.key === "network"}
@@ -179,7 +189,7 @@
               {:else if column.key === "cpu"}
                 <td>{formatPercent(process.cpu_percent)}</td>
               {:else if column.key === "memory"}
-                <td title={processMemoryTitle(process)}>{processBytesLabel(process, process.memory_bytes)}</td>
+                <td title={processMemoryTitle(process)}>{residentMemoryValue(process, platform)}</td>
               {:else if column.key === "io"}
                 <td>{formatRate(row.io_bps)}</td>
               {:else if column.key === "network"}

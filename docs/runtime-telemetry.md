@@ -25,6 +25,7 @@ Svelte cockpit
           -> ETW per-process network attribution
           -> Linux /proc and /sys telemetry
           -> Linux optional bpftrace/eBPF network attribution
+          -> macOS sysinfo and libproc telemetry
           -> privileged in-process Windows collectors in installed releases
           -> Rust benchmark CLI
 ```
@@ -70,6 +71,13 @@ Linux native telemetry:
 - Process identity, PID, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread count, and file descriptor count.
 - Optional per-process network attribution through `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg`. Install this optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; base build dependencies do not include it.
 
+macOS native telemetry:
+
+- Sysinfo aggregate CPU, logical CPU, available/used memory, swap, and interface network counters.
+- Local libproc enrichment for resident memory, physical footprint, virtual memory, process disk totals, thread count, and file-descriptor count when process access allows.
+- System disk totals derived from accessible process totals and labeled `partial/process_aggregate`; denied processes and kernel I/O are explicitly excluded.
+- Per-process network attribution and privileged helper mode are unavailable in this release. Rows remain visible with quality messages rather than fabricated zero rates.
+
 Fallback behavior:
 
 - `sysinfo` remains available when a native collector cannot read expected host files.
@@ -81,7 +89,7 @@ Fallback behavior:
 
 `memory_used_bytes` is physical memory used by the machine. It includes process working sets, kernel memory, cache, drivers, virtualization/WSL, and other OS-resident memory. It is not expected to equal the sum of process rows.
 
-On Windows, `swap_used_bytes`, `swap_total_bytes`, and process `virtual_memory_bytes` are omitted because the available native counters represented commit charge, not those cross-platform concepts. Windows commit remains available as `memory_accounting.commit_used_bytes` and `commit_limit_bytes`. Linux reports real swap and process virtual-memory values when available.
+On Windows, `swap_used_bytes`, `swap_total_bytes`, and process `virtual_memory_bytes` are omitted because the available native counters represented commit charge, not those cross-platform concepts. Windows commit remains available as `memory_accounting.commit_used_bytes` and `commit_limit_bytes`. Linux reports real swap and process virtual-memory values when available. macOS reports available memory directly and uses libproc physical footprint as its private-memory presentation when accessible.
 
 When available, `system.memory_accounting` adds the reconciliation view:
 
@@ -115,6 +123,8 @@ Examples:
 - Linux CPU, disk, and network retain independent last-good baselines. A failed read does not replace a baseline with zero, and the first recovered rate is derived only from valid counters.
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
+- macOS aggregate disk quality is `partial/process_aggregate` when accessible process totals exist and `unavailable` when no trustworthy aggregate can be produced.
+- macOS libproc failures retain the sysinfo process row and identify physical footprint, thread, descriptor, disk, or network limitations independently.
 
 ## Process Groups And History
 
@@ -128,8 +138,9 @@ Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
 
 - Windows: `%LOCALAPPDATA%\BatCaveMonitor`
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
+- macOS: `~/Library/Application Support/BatCaveMonitor`
 
-The runtime publishes the resolved path through `environment.data_directory` and identifies NSIS, AppImage, deb, or portable installation through `environment.install_kind`. Installed Windows release binaries request administrator access in their embedded manifest; debug builds do not. Debian packages never invoke the AppImage updater.
+The runtime publishes the resolved path through `environment.data_directory` and identifies NSIS, AppImage, deb, DMG, or portable installation through the typed `environment.install_kind`. Installed Windows release binaries request administrator access in their embedded manifest; debug builds do not. Debian packages never invoke the AppImage updater, and macOS always reports admin mode unavailable.
 
 Do not add outbound tracking, hosted collection, or remote logging. BatCave is a local instrument panel, not a service backend in a trench coat.
 
@@ -147,10 +158,18 @@ Run full Windows validation:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1
 ```
 
-Run full Linux validation:
+Run full Linux or macOS validation:
 
 ```bash
 bash scripts/validate-tauri.sh
+```
+
+The macOS bundle path requires both Rust targets and produces one universal DMG:
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cd src/BatCave.App
+npm run tauri:build:macos:universal
 ```
 
 Run a headless benchmark:
@@ -180,16 +199,18 @@ Protocol-v3 baselines record the source commit, release-binary SHA-256, binary-d
 ## Continuous Integration
 
 - Pull requests and `codex/**` pushes run Windows and Linux validation without bundles.
+- Pull requests and `codex/**` pushes also check and lint both Apple architectures and build the universal target without packaging.
 - Pull requests run dependency review and fail on new moderate-or-higher advisories.
-- Pushes to `main` and manual bundle runs produce an offline-capable Windows NSIS installer plus Linux deb/AppImage artifacts retained for 14 days. The Windows artifact embeds the WebView2 Evergreen Standalone Installer, trading roughly 127 MB of package size for install-time network independence while retaining Evergreen servicing.
+- Pushes to `main` and manual bundle runs produce an offline-capable Windows NSIS installer, Linux deb/AppImage artifacts, and an ad-hoc-signed universal Mac `.app`/DMG retained for 14 days. The Windows artifact embeds the WebView2 Evergreen Standalone Installer, trading roughly 127 MB of package size for install-time network independence while retaining Evergreen servicing.
 - Monday 09:00 UTC and manual advisory runs execute `npm audit --omit=dev --audit-level=moderate` and pinned `cargo-audit 0.22.2`. Rust vulnerabilities fail immediately; informational warnings must match the owned, expiring baseline documented in `docs/dependency-advisories.md`.
 
 ## Remaining Product Work
 
-Distribution polish remains outside the runtime contract:
+Distribution polish that remains outside the runtime contract:
 
 - Add installer signing before broad external distribution.
 - Promote the stable channel only after Authenticode signing proof is available.
+- Supply the documented Apple Developer ID and notarization secrets for public Mac releases; ad-hoc main-branch bundles are test artifacts only.
 - Expand screenshot-based validation from the native Tauri app when changing visible cockpit layout, metric-quality messaging, theme surfaces, or platform-specific collector states.
 
 The runtime rule stays simple: collect locally, persist locally, report quality explicitly, and keep the UI fed with truth instead of theater.

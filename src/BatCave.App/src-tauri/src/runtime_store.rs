@@ -22,9 +22,9 @@ use crate::{
     contracts::{
         AccessState, MetricQuality, MetricSource, ProcessContributorSummary, ProcessFocusMode,
         ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
-        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimePlatform, RuntimeQuery,
-        RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection,
-        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimeInstallKind,
+        RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
+        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     telemetry::{now_ms, TelemetryCollector},
 };
@@ -55,8 +55,12 @@ pub struct RuntimeState {
 
 impl RuntimeState {
     pub fn new() -> Self {
+        Self::from_base_dir(default_base_dir())
+    }
+
+    pub(crate) fn from_base_dir(base_dir: PathBuf) -> Self {
         Self {
-            store: Arc::new(Mutex::new(RuntimeStore::new())),
+            store: Arc::new(Mutex::new(RuntimeStore::from_base_dir(base_dir))),
             worker_started: AtomicBool::new(false),
         }
     }
@@ -146,6 +150,7 @@ struct RuntimeStore {
 }
 
 impl RuntimeStore {
+    #[cfg(test)]
     fn new() -> Self {
         Self::from_base_dir(default_base_dir())
     }
@@ -1619,6 +1624,8 @@ fn runtime_environment(base_dir: &Path) -> RuntimeEnvironment {
         RuntimePlatform::Windows
     } else if cfg!(target_os = "linux") {
         RuntimePlatform::Linux
+    } else if cfg!(target_os = "macos") {
+        RuntimePlatform::Macos
     } else {
         RuntimePlatform::Fixture
     };
@@ -1626,15 +1633,16 @@ fn runtime_environment(base_dir: &Path) -> RuntimeEnvironment {
         platform,
         admin_mode_available: cfg!(windows),
         install_kind: if cfg!(windows) {
-            "nsis"
+            RuntimeInstallKind::Nsis
         } else if env::var_os("APPIMAGE").is_some() {
-            "appimage"
+            RuntimeInstallKind::Appimage
         } else if cfg!(target_os = "linux") {
-            "deb"
+            RuntimeInstallKind::Deb
+        } else if cfg!(target_os = "macos") {
+            RuntimeInstallKind::Dmg
         } else {
-            "portable"
-        }
-        .to_string(),
+            RuntimeInstallKind::Portable
+        },
         data_directory: Some(base_dir.display().to_string()),
     }
 }
@@ -2154,6 +2162,36 @@ mod tests {
         assert!(!snapshot.settings.admin_mode_enabled);
         assert!(!snapshot.environment.admin_mode_available);
         let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_environment_uses_dmg_and_disables_admin_mode() {
+        let base_dir = PathBuf::from("/Users/test/Library/Application Support/BatCaveMonitor");
+        let environment = runtime_environment(&base_dir);
+
+        assert_eq!(environment.platform, RuntimePlatform::Macos);
+        assert_eq!(environment.install_kind, RuntimeInstallKind::Dmg);
+        assert!(!environment.admin_mode_available);
+        assert_eq!(
+            environment.data_directory.as_deref(),
+            Some("/Users/test/Library/Application Support/BatCaveMonitor")
+        );
+        assert_eq!(
+            initial_admin_mode_status().state,
+            RuntimeAdminModeState::Unavailable
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_default_data_directory_is_application_support() {
+        let expected_root = env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("macOS test has a home directory")
+            .join("Library")
+            .join("Application Support");
+        assert_eq!(default_base_dir(), expected_root.join("BatCaveMonitor"));
     }
 
     #[test]

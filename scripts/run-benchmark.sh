@@ -92,6 +92,20 @@ cargo_manifest="$repo_root/src/BatCave.App/src-tauri/Cargo.toml"
 benchmark_exe="$repo_root/src/BatCave.App/src-tauri/target/release/batcave-monitor-cli"
 runtime_platform="linux"
 
+case "$(uname -s)" in
+  Darwin)
+    runtime_platform="macos"
+    [[ "$architecture" == "arm64" ]] && architecture="aarch64"
+    ;;
+  Linux)
+    runtime_platform="linux"
+    ;;
+  *)
+    echo "run-benchmark.sh supports Linux and macOS. Use scripts/run-benchmark.ps1 on Windows." >&2
+    exit 2
+    ;;
+esac
+
 cleanup() {
   if [[ -n "$temp_baseline_path" ]]; then
     rm -f -- "$temp_baseline_path"

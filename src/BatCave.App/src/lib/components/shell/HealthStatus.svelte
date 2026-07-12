@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { RuntimeSnapshot, SystemMetricQuality } from "../../types";
-  import { uniqueWarningCount } from "../../diagnostics";
   import DiagnosticsDrawer from "./DiagnosticsDrawer.svelte";
 
   export let snapshot = {} as RuntimeSnapshot;
@@ -10,46 +9,9 @@
   export let lastError = "";
   export let adminStatus = "";
   export let open = false;
-  export let onOpen: () => void;
   export let onClose: () => void;
 
-  $: limitationCount = uniqueWarningCount(snapshot.warnings);
-  $: stateLabel =
-    pollState === "error"
-      ? "Telemetry is stale"
-      : snapshot.settings.paused
-        ? "Telemetry paused"
-        : pollState === "fixture"
-          ? "Fixture telemetry"
-          : limitationCount > 0
-            ? `${limitationCount || snapshot.health.collector_warnings} telemetry limitation${(limitationCount || snapshot.health.collector_warnings) === 1 ? "" : "s"}`
-            : snapshot.health.degraded
-              ? "BatCave resource warning"
-            : "Telemetry healthy";
 </script>
-
-<footer
-  class="health-status"
-  class:warning={snapshot.settings.paused || snapshot.health.degraded}
-  class:danger={pollState === "error"}
->
-  <div>
-    <i aria-hidden="true"></i>
-    <strong>{stateLabel}</strong>
-    <span>
-      {pollState === "error"
-        ? lastError
-        : snapshot.settings.paused
-          ? "Values and charts remain at the last successful sample."
-          : limitationCount > 0
-            ? "Unaffected data remains current; open diagnostics for impact and next steps."
-            : snapshot.health.degraded
-              ? "Monitoring remains current; BatCave resource use is above its budget."
-            : "Local collectors are current."}
-    </span>
-  </div>
-  <button type="button" onclick={onOpen}>View diagnostics</button>
-</footer>
 
 <DiagnosticsDrawer
   {open}

@@ -39,6 +39,7 @@ fn write_json_atomic_with_replacer<T: Serialize>(
             path.display()
         ));
     };
+    let parent_was_created = !parent.exists();
     fs::create_dir_all(parent).map_err(|error| {
         format!(
             "{} path={} error={}",
@@ -48,15 +49,17 @@ fn write_json_atomic_with_replacer<T: Serialize>(
         )
     })?;
     #[cfg(unix)]
-    fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700)).map_err(
-        |error| {
-            format!(
-                "{} path={} error={error}",
-                labels.write_failed,
-                parent.display()
-            )
-        },
-    )?;
+    if parent_was_created {
+        fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700)).map_err(
+            |error| {
+                format!(
+                    "{} path={} error={error}",
+                    labels.write_failed,
+                    parent.display()
+                )
+            },
+        )?;
+    }
 
     let payload = serde_json::to_string(value).map_err(|error| {
         if labels.serialize_error_includes_path {
@@ -308,6 +311,54 @@ mod tests {
 
         fs::remove_file(&blocked_parent).expect("blocked parent cleanup");
         assert!(error.starts_with("test_write_failed path="));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_parent_permissions_are_preserved() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let parent = std::env::temp_dir().join(format!(
+            "batcave-atomic-json-permissions-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir(&parent).expect("owned parent fixture");
+        fs::set_permissions(&parent, PermissionsExt::from_mode(0o755))
+            .expect("fixture permissions");
+
+        write_json_atomic(
+            &parent.join("settings.json"),
+            &serde_json::json!({ "ok": true }),
+            TEST_LABELS,
+        )
+        .expect("json writes");
+
+        assert_eq!(fs::metadata(&parent).unwrap().mode() & 0o777, 0o755);
+        fs::remove_dir_all(parent).expect("fixture cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn newly_created_parent_is_private() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "batcave-atomic-json-private-{}",
+            std::process::id()
+        ));
+        let parent = root.join("owned-child");
+        let _ = fs::remove_dir_all(&root);
+
+        write_json_atomic(
+            &parent.join("settings.json"),
+            &serde_json::json!({ "ok": true }),
+            TEST_LABELS,
+        )
+        .expect("json writes");
+
+        assert_eq!(fs::metadata(&parent).unwrap().mode() & 0o777, 0o700);
+        fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     fn temp_files(path: &Path) -> Vec<PathBuf> {

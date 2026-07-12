@@ -1,7 +1,7 @@
 {
   "name": "batcave-monitor",
-  "private": true,
   "version": "0.2.0-rc.2",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
@@ -12,20 +12,25 @@
     "format:check": "oxfmt --check src scripts vite.config.ts",
     "smoke:bridge": "node scripts/bridge-smoke.ts",
     "test:process-order": "node --test scripts/process-order.test.ts",
+    "test:presentation": "node --test scripts/presentation.test.ts",
     "test:runtime-contract": "node --test scripts/runtime-contract.test.ts",
     "verify": "npm run check && npm run format:check",
-    "check": "npm run test:process-order && npm run test:runtime-contract && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
+    "check": "npm run test:process-order && npm run test:presentation && npm run test:runtime-contract && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:dev:windows": "tauri dev --config src-tauri/tauri.windows.conf.json",
     "tauri:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
     "tauri:dev:linux": "tauri dev --config src-tauri/tauri.linux.conf.json",
-    "tauri:build:linux": "tauri build --config src-tauri/tauri.linux.conf.json"
+    "tauri:build:linux": "tauri build --config src-tauri/tauri.linux.conf.json",
+    "tauri:dev:macos": "tauri dev --config src-tauri/tauri.macos.conf.json",
+    "tauri:build:macos": "tauri build --config src-tauri/tauri.macos.conf.json",
+    "tauri:build:macos:universal": "tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-updater": "2.10.1",
+    "phosphor-svelte": "3.1.0",
     "uplot": "1.6.32"
   },
   "devDependencies": {

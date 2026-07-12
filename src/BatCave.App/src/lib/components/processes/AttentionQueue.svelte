@@ -1,6 +1,6 @@
 <script lang="ts">
   import { windowProcessViewRows, type ProcessColumn, type SortKey } from "../../process";
-  import type { ProcessFocusMode, ProcessViewRow, SortDirection } from "../../types";
+  import type { ProcessFocusMode, ProcessViewRow, RuntimePlatform, SortDirection } from "../../types";
   import MobileProcessList from "./MobileProcessList.svelte";
   import ProcessTable from "./ProcessTable.svelte";
 
@@ -14,6 +14,7 @@
   export let sortDirection: SortDirection;
   export let processIcons: Record<string, string> = {};
   export let rankingUpdateAvailable = false;
+  export let platform: RuntimePlatform = "fixture";
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
   export let onInteractionChange: (active: boolean) => void;
@@ -62,13 +63,16 @@
   }
 </script>
 
-<section class="attention-queue" aria-labelledby="attention-queue-title">
+<section
+  class="attention-queue"
+  aria-labelledby="attention-queue-title"
+  data-order-held={rankingUpdateAvailable || undefined}
+>
   <header class="queue-heading">
     <div>
       <span>{queueEyebrow}</span>
       <h2 id="attention-queue-title">{queueTitle} <small>{countLabel}</small></h2>
     </div>
-    {#if rankingUpdateAvailable}<span class="queue-hold-label">Order held while inspecting</span>{/if}
   </header>
 
   <ProcessTable
@@ -83,6 +87,7 @@
     {onToggleSort}
     onToggleGroup={toggleGroup}
     {onInteractionChange}
+    {platform}
   />
   <MobileProcessList
     processRows={visibleRows}
@@ -91,6 +96,7 @@
     {expandedGroups}
     {onSelect}
     onToggleGroup={toggleGroup}
+    {platform}
   />
 
   {#if rankedCount > visibleRankedCount}

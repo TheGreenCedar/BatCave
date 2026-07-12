@@ -8,6 +8,7 @@ export interface ResourceSummaryOption {
   supportingLabel: string;
   supportingValue: string;
   statusLabel: string;
+  shortStatusLabel: string;
   values: number[];
   max: number;
   stroke: string;

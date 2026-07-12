@@ -35,7 +35,7 @@ pub struct ProcessContributorSummary {
 pub struct RuntimeEnvironment {
     pub platform: RuntimePlatform,
     pub admin_mode_available: bool,
-    pub install_kind: String,
+    pub install_kind: RuntimeInstallKind,
     pub data_directory: Option<String>,
 }
 
@@ -63,7 +63,18 @@ pub enum RuntimeAdminModeState {
 pub enum RuntimePlatform {
     Windows,
     Linux,
+    Macos,
     Fixture,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInstallKind {
+    Nsis,
+    Appimage,
+    Deb,
+    Dmg,
+    Portable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,6 +495,22 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn macos_environment_enums_use_snake_case_wire_values() {
+        assert_eq!(
+            serde_json::to_value(RuntimePlatform::Macos).unwrap(),
+            json!("macos")
+        );
+        assert_eq!(
+            serde_json::to_value(RuntimeInstallKind::Dmg).unwrap(),
+            json!("dmg")
+        );
+        assert_eq!(
+            serde_json::from_value::<RuntimeInstallKind>(json!("appimage")).unwrap(),
+            RuntimeInstallKind::Appimage
+        );
+    }
+
+    #[test]
     fn runtime_snapshot_serializes_current_snake_case_wire_shape() {
         let snapshot = RuntimeSnapshot {
             event_kind: "snapshot".to_string(),
@@ -495,7 +522,7 @@ mod tests {
             environment: RuntimeEnvironment {
                 platform: RuntimePlatform::Windows,
                 admin_mode_available: true,
-                install_kind: "nsis".to_string(),
+                install_kind: RuntimeInstallKind::Nsis,
                 data_directory: Some("C:\\Users\\test\\BatCaveMonitor".to_string()),
             },
             admin_mode: RuntimeAdminModeStatus {

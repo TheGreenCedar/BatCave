@@ -83,3 +83,49 @@ jobs:
             src/BatCave.App/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 14
+
+  macos:
+    name: macOS universal ad-hoc bundle
+    runs-on: macos-15
+    steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: src/BatCave.App
+
+      - name: Validate macOS app
+        run: bash scripts/validate-tauri.sh --skip-bundle
+
+      - name: Build ad-hoc signed universal DMG
+        working-directory: src/BatCave.App
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+          CI: "true"
+        run: npm run tauri:build:macos:universal -- --ci
+
+      - name: Verify universal app and DMG
+        run: bash scripts/verify-macos-bundle.sh --mode adhoc
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: batcave-macos-universal-dmg-${{ github.run_id }}
+          path: |
+            src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error
+          retention-days: 14

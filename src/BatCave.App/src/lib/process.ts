@@ -35,6 +35,7 @@ export interface ProcessRates {
 
 export type ProcessIconKind =
   | "batcave"
+  | "apple"
   | "browser"
   | "code"
   | "chat"
@@ -45,6 +46,7 @@ export type ProcessIconKind =
   | "node"
   | "process"
   | "sync"
+  | "terminal"
   | "windows";
 
 export interface ProcessIdentity {
@@ -62,18 +64,18 @@ export const focusOptions: { value: FocusMode; label: string }[] = [
 export const sortOptions: { value: SortKey; label: string }[] = [
   { value: "attention", label: "Attention" },
   { value: "cpu", label: "CPU" },
-  { value: "memory", label: "Working set" },
+  { value: "memory", label: "Resident memory" },
   { value: "io", label: "I/O" },
   { value: "network", label: "Network" },
   { value: "name", label: "Name" },
 ];
 
 export const processColumns: ProcessColumn[] = [
-  { key: "name", label: "App or process" },
-  { key: "attention", label: "Impact" },
-  { key: "cpu", label: "CPU (100% = 1 core)", metric: true },
-  { key: "memory", label: "Memory", metric: true },
-  { key: "io", label: "I/O", metric: true },
+  { key: "name", label: "Workload" },
+  { key: "attention", label: "Status" },
+  { key: "cpu", label: "CPU", metric: true },
+  { key: "memory", label: "Resident memory", metric: true },
+  { key: "io", label: "Disk R/W", metric: true },
   { key: "network", label: "Network", metric: true },
 ];
 
@@ -331,7 +333,7 @@ export function processIdentity(process: ProcessSample): ProcessIdentity {
     return { icon: "batcave", group: "BatCave", isChild };
   }
 
-  if (matchesAny(haystack, ["chrome", "msedge", "firefox", "brave", "browser"])) {
+  if (matchesAny(haystack, ["chrome", "msedge", "firefox", "brave", "browser", "safari"])) {
     return { icon: "browser", group: "Browsers", isChild };
   }
 
@@ -341,6 +343,10 @@ export function processIdentity(process: ProcessSample): ProcessIdentity {
 
   if (matchesAny(haystack, ["node", "npm", "deno", "bun.exe"])) {
     return { icon: "node", group: "Runtimes", isChild };
+  }
+
+  if (matchesAny(haystack, ["iterm", "terminal.app", "windowsterminal", "kitty"])) {
+    return { icon: "terminal", group: "Terminals", isChild };
   }
 
   if (haystack.includes("docker")) {
@@ -365,6 +371,12 @@ export function processIdentity(process: ProcessSample): ProcessIdentity {
 
   if (matchesAny(haystack, ["nvidia", "amd", "radeon", "intel graphics"])) {
     return { icon: "gpu", group: "GPU", isChild };
+  }
+
+  if (
+    matchesAny(haystack, ["finder", "kernel_task", "windowserver", "controlcenter", "mds_stores"])
+  ) {
+    return { icon: "apple", group: "macOS", isChild };
   }
 
   if (

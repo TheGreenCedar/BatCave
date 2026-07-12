@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { X } from "phosphor-svelte";
   import type { DetailMode } from "../metrics/types";
   import type { ProcessRates } from "../../process";
+  import type { PlatformPresentation } from "../../platformPresentation";
   import type { ChartPalette } from "../../themes";
   import type {
     KernelPoolTag,
@@ -31,7 +33,7 @@
   export let processIcons: Record<string, string> = {};
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
-  export let maxRate: (points: number[], fallback: number) => number;
+  export let presentation: PlatformPresentation;
   export let processNetworkLabel: (process: ProcessSample) => string;
   export let onCopy: () => void;
   export let detailMode: DetailMode;
@@ -63,6 +65,7 @@
   $: if (compact && pane instanceof HTMLDialogElement && !pane.open) {
     opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     pane.showModal();
+    pane.focus({ preventScroll: true });
   }
 
   $: if (!compact && opener) restoreOpener();
@@ -90,6 +93,13 @@
     event.preventDefault();
     requestClose();
   }
+
+  function handleKeydown(event: KeyboardEvent): void {
+    if (compact && event.key === "Escape") {
+      event.preventDefault();
+      requestClose();
+    }
+  }
 </script>
 
 <svelte:element
@@ -98,10 +108,13 @@
   id="detail-pane"
   class:detail-pane={true}
   class:is-drawer={compact}
+  class:process-detail={subject === "process"}
   role={compact ? undefined : "complementary"}
+  tabindex={compact ? -1 : undefined}
   aria-label="Resource detail"
   oncancel={handleCancel}
   onclose={restoreOpener}
+  onkeydown={handleKeydown}
   onclick={handleBackdropClick}
 >
   <header class="detail-pane-heading">
@@ -111,7 +124,7 @@
     </div>
     <div class="detail-pane-actions">
       {#if subject === "process"}
-        <button type="button" onclick={onShowSystem}>System overview</button>
+        <button class="system-overview-action" type="button" onclick={onShowSystem}>System overview</button>
       {:else}
         <strong>{detailReadout}</strong>
       {/if}
@@ -122,9 +135,7 @@
           aria-label="Close resource detail"
           onclick={requestClose}
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M6 6l12 12M18 6 6 18"></path>
-          </svg>
+          <X size={19} weight="bold" aria-hidden="true" />
         </button>
       {/if}
     </div>
@@ -141,7 +152,8 @@
         {processIcons}
         {copyStatus}
         {activeTheme}
-        {maxRate}
+        {presentation}
+        platform={snapshot.environment.platform}
         {processNetworkLabel}
         {onCopy}
       />
@@ -152,6 +164,7 @@
         {snapshot}
         {history}
         {activeTheme}
+        {presentation}
         {systemQuality}
         {memoryPercent}
         {swapPercent}

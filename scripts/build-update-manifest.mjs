@@ -6,6 +6,8 @@ import { verifyReleaseVersion } from "./verify-release-version.mjs";
 const TARGETS = [
   ["windows-x86_64", "_x64-setup.exe"],
   ["linux-x86_64", "_amd64.AppImage"],
+  ["darwin-aarch64", ".app.tar.gz"],
+  ["darwin-x86_64", ".app.tar.gz"],
 ];
 
 export function buildUpdateManifest(tag, repository, artifacts) {

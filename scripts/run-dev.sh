@@ -30,7 +30,19 @@ done
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 app_root="$repo_root/src/BatCave.App"
-tauri_dev_script="tauri:dev:linux"
+
+case "$(uname -s)" in
+  Darwin)
+    tauri_dev_script="tauri:dev:macos"
+    ;;
+  Linux)
+    tauri_dev_script="tauri:dev:linux"
+    ;;
+  *)
+    echo "run-dev.sh supports Linux and macOS. Use scripts/run-dev.ps1 on Windows." >&2
+    exit 2
+    ;;
+esac
 
 cd "$app_root"
 

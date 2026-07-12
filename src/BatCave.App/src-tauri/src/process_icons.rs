@@ -43,7 +43,88 @@ fn load_icon_data_url(exe: &str) -> Option<String> {
     ))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn load_icon_data_url(exe: &str) -> Option<String> {
+    let icon_path = find_macos_icns(std::path::Path::new(exe))?;
+    let metadata = std::fs::metadata(&icon_path).ok()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 32 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = std::fs::read(icon_path).ok()?;
+    let png = decode_icns_to_png(&bytes)?;
+    Some(format!("data:image/png;base64,{}", base64_encode(&png)))
+}
+
+#[cfg(target_os = "macos")]
+fn decode_icns_to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    let family = icns::IconFamily::read(std::io::Cursor::new(bytes)).ok()?;
+    let mut icon_types = family.available_icons();
+    icon_types.sort_by_key(|icon_type| {
+        (
+            icon_type.pixel_width().abs_diff(128),
+            std::cmp::Reverse(icon_type.pixel_width()),
+        )
+    });
+
+    icon_types.into_iter().find_map(|icon_type| {
+        let image = family.get_icon_with_type(icon_type).ok()?;
+        let mut png = Vec::new();
+        image.write_png(&mut png).ok()?;
+        Some(png)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn find_macos_icns(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !executable.is_absolute() {
+        return None;
+    }
+    let bundle = executable.ancestors().find(|candidate| {
+        candidate
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    })?;
+    let canonical_bundle = bundle.canonicalize().ok()?;
+    let resources = bundle.join("Contents").join("Resources");
+    let bundle_stem = bundle
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut icons = std::fs::read_dir(resources)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("icns"))
+        })
+        .collect::<Vec<_>>();
+    icons.sort_by_key(|path| {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let preferred_bundle_name = format!("{bundle_stem}.icns");
+        match name.as_str() {
+            "appicon.icns" => (0, name),
+            _ if name == preferred_bundle_name => (1, name),
+            "icon.icns" => (2, name),
+            _ => (3, name),
+        }
+    });
+    icons.into_iter().find_map(|path| {
+        let canonical = path.canonicalize().ok()?;
+        canonical
+            .starts_with(&canonical_bundle)
+            .then_some(canonical)
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn load_icon_data_url(_exe: &str) -> Option<String> {
     None
 }
@@ -187,6 +268,7 @@ fn icon_to_ico_bytes(icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON) -
     result
 }
 
+#[cfg(windows)]
 fn ico_bytes(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
     let mask_stride = width.div_ceil(32) * 4;
     let mask_size = mask_stride * height;
@@ -221,6 +303,7 @@ fn ico_bytes(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
     bytes
 }
 
+#[cfg(windows)]
 fn icon_dimension(value: u32) -> u8 {
     if value >= 256 {
         0
@@ -229,14 +312,17 @@ fn icon_dimension(value: u32) -> u8 {
     }
 }
 
+#[cfg(windows)]
 fn write_u16(bytes: &mut Vec<u8>, value: u16) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(windows)]
 fn write_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(windows)]
 fn write_i32(bytes: &mut Vec<u8>, value: i32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
@@ -281,6 +367,44 @@ mod tests {
     #[test]
     fn empty_exe_has_no_icon() {
         assert_eq!(icon_data_url("").unwrap(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_bundle_icns_is_returned_as_png_data_url() {
+        let mut family = icns::IconFamily::new();
+        let mut image = icns::Image::new(icns::PixelFormat::RGBA, 128, 128);
+        for pixel in image.data_mut().chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[0x72, 0xf1, 0xb8, 0xff]);
+        }
+        family.add_icon(&image).expect("ICNS icon encodes");
+        let mut icns_bytes = Vec::new();
+        family.write(&mut icns_bytes).expect("ICNS family writes");
+
+        let root = std::env::temp_dir().join(format!(
+            "batcave-macos-icon-{}-{}",
+            std::process::id(),
+            crate::telemetry::now_ms()
+        ));
+        let executable = root
+            .join("Example.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("Example");
+        let icon = root
+            .join("Example.app")
+            .join("Contents")
+            .join("Resources")
+            .join("AppIcon.icns");
+        std::fs::create_dir_all(executable.parent().unwrap()).expect("executable directory");
+        std::fs::create_dir_all(icon.parent().unwrap()).expect("icon directory");
+        std::fs::write(&executable, b"binary").expect("executable fixture");
+        std::fs::write(&icon, icns_bytes).expect("icon fixture");
+
+        let data_url = load_icon_data_url(&executable.to_string_lossy()).expect("icon data URL");
+        assert!(data_url.starts_with("data:image/png;base64,iVBORw0KGgo"));
+
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     #[cfg(windows)]

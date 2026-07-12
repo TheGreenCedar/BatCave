@@ -14,6 +14,7 @@ use crate::contracts::{
     AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
     ProcessSample, SystemMetricQuality, SystemMetricsSnapshot,
 };
+#[cfg(any(windows, target_os = "linux", test))]
 use crate::network_attribution::NetworkAttributionSample;
 
 #[cfg(windows)]
@@ -23,6 +24,8 @@ use crate::{
     linux_network::LinuxNetworkAttributionMonitor, linux_process::LinuxProcessCollector,
     linux_system::LinuxSystemCollector,
 };
+#[cfg(target_os = "macos")]
+use crate::{macos_process::MacosProcessCollector, macos_system::MacosSystemCollector};
 #[cfg(windows)]
 use crate::{
     windows_network::NetworkAttributionMonitor,
@@ -47,6 +50,10 @@ pub struct TelemetryCollector {
     linux_processes: Mutex<LinuxProcessCollector>,
     #[cfg(target_os = "linux")]
     linux_network_attribution: Mutex<LinuxNetworkAttributionState>,
+    #[cfg(target_os = "macos")]
+    macos_system: Mutex<MacosSystemCollector>,
+    #[cfg(target_os = "macos")]
+    macos_processes: Mutex<MacosProcessCollector>,
     #[cfg(windows)]
     previous_cpu_times: Mutex<Option<windows_system::CpuTimes>>,
     #[cfg(windows)]
@@ -60,7 +67,7 @@ impl TelemetryCollector {
         Self::new_with_process_network(true)
     }
 
-    #[cfg(test)]
+    #[cfg(windows)]
     pub(crate) fn for_elevated_helper(process_network: bool) -> Self {
         Self::new_with_process_network(process_network)
     }
@@ -107,6 +114,10 @@ impl TelemetryCollector {
             linux_processes: Mutex::new(LinuxProcessCollector::new()),
             #[cfg(target_os = "linux")]
             linux_network_attribution: Mutex::new(LinuxNetworkAttributionState::new()),
+            #[cfg(target_os = "macos")]
+            macos_system: Mutex::new(MacosSystemCollector::new()),
+            #[cfg(target_os = "macos")]
+            macos_processes: Mutex::new(MacosProcessCollector::new()),
             #[cfg(windows)]
             previous_cpu_times: Mutex::new(None),
             #[cfg(windows)]
@@ -142,15 +153,16 @@ impl TelemetryCollector {
             .map(|process| (process.pid.clone(), process.cpu_percent))
             .collect::<HashMap<_, _>>();
         let logical_cpu_percent = logical_cpu_percent(&sysinfo_system, &mut warnings);
+        let mut processes =
+            collect_processes(&sysinfo_processes, &sysinfo_cpu_by_pid, &mut warnings, self)?;
         let mut system_snapshot = collect_system_snapshot(
             &sysinfo_system,
             &sysinfo_networks,
             &logical_cpu_percent,
+            &processes,
             &mut warnings,
             self,
         )?;
-        let mut processes =
-            collect_processes(&sysinfo_processes, &sysinfo_cpu_by_pid, &mut warnings, self)?;
         #[cfg(windows)]
         {
             let network_attribution = self.network_attribution_sample(&mut warnings)?;
@@ -258,7 +270,31 @@ fn collect_processes(
         }
     }
 
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = sysinfo_cpu_by_pid;
+        let mut macos_processes = collector
+            .macos_processes
+            .lock()
+            .map_err(|_| "macOS process telemetry lock is poisoned".to_string())?;
+        let mut processes = sysinfo_processes.to_vec();
+        let process_count = processes.len();
+        let collection = macos_processes.enrich(&mut processes);
+        if process_count > 0
+            && collection
+                .denied_count
+                .saturating_add(collection.partial_count)
+                == process_count
+        {
+            warnings.push(format!(
+                "macos_process_collector_no_full_access:denied={} partial={}",
+                collection.denied_count, collection.partial_count
+            ));
+        }
+        Ok(processes)
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
         let _ = (sysinfo_cpu_by_pid, warnings, collector);
         Ok(sysinfo_processes.to_vec())
@@ -269,6 +305,7 @@ fn collect_system_snapshot(
     sysinfo_system: &System,
     sysinfo_networks: &Networks,
     logical_cpu_percent: &[f64],
+    processes: &[ProcessSample],
     warnings: &mut Vec<String>,
     collector: &TelemetryCollector,
 ) -> Result<SystemMetricsSnapshot, String> {
@@ -276,6 +313,7 @@ fn collect_system_snapshot(
 
     #[cfg(windows)]
     {
+        let _ = processes;
         let cpu_load = collector.native_cpu_load(warnings)?;
 
         match windows_system::sample_system() {
@@ -303,7 +341,12 @@ fn collect_system_snapshot(
 
     #[cfg(target_os = "linux")]
     {
-        let _ = (sysinfo_system, sysinfo_networks, logical_cpu_percent);
+        let _ = (
+            sysinfo_system,
+            sysinfo_networks,
+            logical_cpu_percent,
+            processes,
+        );
         let mut linux_system = collector
             .linux_system
             .lock()
@@ -319,9 +362,26 @@ fn collect_system_snapshot(
         }
     }
 
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
     {
-        let _ = (logical_cpu_percent, warnings, collector);
+        let _ = (
+            sysinfo_system,
+            sysinfo_networks,
+            logical_cpu_percent,
+            warnings,
+        );
+        let mut snapshot = sysinfo_snapshot;
+        let mut macos_system = collector
+            .macos_system
+            .lock()
+            .map_err(|_| "macOS system telemetry lock is poisoned".to_string())?;
+        macos_system.enrich(&mut snapshot, processes);
+        Ok(snapshot)
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
+    {
+        let _ = (logical_cpu_percent, processes, warnings, collector);
         Ok(sysinfo_snapshot)
     }
 }
@@ -478,7 +538,7 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
             .collect(),
         memory_used_bytes: system.used_memory(),
         memory_total_bytes: system.total_memory(),
-        memory_available_bytes: Some(system.total_memory().saturating_sub(system.used_memory())),
+        memory_available_bytes: Some(system.available_memory()),
         swap_used_bytes: (!cfg!(windows)).then_some(system.used_swap()),
         swap_total_bytes: (!cfg!(windows)).then_some(system.total_swap()),
         process_count: system.processes().len(),
@@ -598,10 +658,16 @@ fn process_network_quality_unavailable() -> MetricQualityInfo {
         .with_message("Waiting for ETW network attribution.")
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn process_network_quality_unavailable() -> MetricQualityInfo {
     MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
         .with_message("Per-process network attribution is unavailable from the sysinfo fallback.")
+}
+
+#[cfg(target_os = "macos")]
+fn process_network_quality_unavailable() -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
+        .with_message("Per-process network attribution is unavailable on macOS.")
 }
 
 fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> {
@@ -848,6 +914,7 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
 mod tests {
     use super::*;
     use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
+    #[cfg(windows)]
     use std::collections::HashMap;
 
     #[cfg(windows)]
@@ -972,6 +1039,57 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_collector_reports_native_process_and_honest_system_sources() {
+        let collector = TelemetryCollector::new();
+        let sample = collector.collect().expect("macOS telemetry sample");
+
+        assert!(sample.system.memory_available_bytes.is_some());
+        let system_quality = sample.system.quality.as_ref().expect("system quality");
+        assert_eq!(
+            system_quality
+                .memory
+                .as_ref()
+                .and_then(|quality| quality.source),
+            Some(MetricSource::Sysinfo)
+        );
+        let disk = system_quality.disk.as_ref().expect("disk quality");
+        assert_eq!(disk.source, Some(MetricSource::ProcessAggregate));
+        assert!(matches!(
+            disk.quality,
+            MetricQuality::Partial | MetricQuality::Unavailable
+        ));
+        assert_eq!(
+            system_quality
+                .network
+                .as_ref()
+                .and_then(|quality| quality.source),
+            Some(MetricSource::InterfaceAggregate)
+        );
+
+        let current_pid = std::process::id().to_string();
+        let current = sample
+            .processes
+            .iter()
+            .find(|process| process.pid == current_pid)
+            .expect("collector includes current process");
+        assert!(current.private_bytes > 0);
+        assert!(current.threads > 0);
+        let quality = current.quality.as_ref().expect("process quality");
+        assert_eq!(
+            quality.memory.as_ref().and_then(|quality| quality.source),
+            Some(MetricSource::DirectApi)
+        );
+        assert_eq!(
+            quality.network.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+        assert_eq!(current.network_received_bps, None);
+        assert_eq!(current.network_transmitted_bps, None);
+    }
+
+    #[cfg(windows)]
     fn sample_process(pid: &str) -> ProcessSample {
         ProcessSample {
             pid: pid.to_string(),

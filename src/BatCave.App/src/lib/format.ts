@@ -47,6 +47,34 @@ export function metricQualityLabel(
   return source ? `${quality} / ${source}` : quality;
 }
 
+/**
+ * Returns the compact quality vocabulary used in high-density summaries.
+ * The detailed, source-aware label remains available through metricQualityLabel.
+ */
+export function metricQualityShortLabel(
+  metric: MetricQualityInfo | undefined,
+  fallback: string,
+): string {
+  if (!metric) {
+    return fallback;
+  }
+
+  switch (metric.quality) {
+    case "native":
+      return "Native";
+    case "partial":
+      return "Partial";
+    case "estimated":
+      return "Estimated";
+    case "held":
+      return "Held";
+    case "unavailable":
+      return "Unavailable";
+    default:
+      return fallback;
+  }
+}
+
 export function metricQualityAction(metric: MetricQualityInfo | undefined): string {
   if (!metric) {
     return "";

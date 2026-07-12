@@ -11,6 +11,11 @@ mod linux_network;
 mod linux_process;
 #[cfg(any(target_os = "linux", test))]
 mod linux_system;
+#[cfg(target_os = "macos")]
+mod macos_process;
+#[cfg(target_os = "macos")]
+mod macos_system;
+#[cfg(any(windows, target_os = "linux", test))]
 mod network_attribution;
 mod process_icons;
 mod runtime_store;

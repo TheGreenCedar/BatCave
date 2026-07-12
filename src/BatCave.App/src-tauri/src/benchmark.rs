@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsString,
     fs,
     path::PathBuf,
     thread,
@@ -150,8 +149,8 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
     let min_speed_ratio = requested_min_speed_ratio
         .or_else(|| (strict && baseline.is_some()).then_some(DEFAULT_MIN_SPEED_RATIO));
 
-    let _runtime_dir = BenchmarkRuntimeDir::new()?;
-    let state = RuntimeState::new();
+    let runtime_dir = BenchmarkRuntimeDir::new()?;
+    let state = RuntimeState::from_base_dir(runtime_dir.path().to_path_buf());
     if config.warmup_ticks > 0 {
         measure_window(&state, config.warmup_ticks, config.sleep_ms)?;
     }
@@ -510,8 +509,6 @@ fn calculate_speed_ratio(baseline_p95_ms: f64, candidate_p95_ms: f64) -> f64 {
 
 struct BenchmarkRuntimeDir {
     path: PathBuf,
-    env_key: &'static str,
-    previous_value: Option<OsString>,
 }
 
 impl BenchmarkRuntimeDir {
@@ -529,28 +526,16 @@ impl BenchmarkRuntimeDir {
             )
         })?;
 
-        #[cfg(windows)]
-        let env_key = "LOCALAPPDATA";
-        #[cfg(not(windows))]
-        let env_key = "XDG_DATA_HOME";
-        let previous_value = std::env::var_os(env_key);
-        std::env::set_var(env_key, &path);
+        Ok(Self { path })
+    }
 
-        Ok(Self {
-            path,
-            env_key,
-            previous_value,
-        })
+    fn path(&self) -> &std::path::Path {
+        &self.path
     }
 }
 
 impl Drop for BenchmarkRuntimeDir {
     fn drop(&mut self) {
-        if let Some(value) = &self.previous_value {
-            std::env::set_var(self.env_key, value);
-        } else {
-            std::env::remove_var(self.env_key);
-        }
         let _ = fs::remove_dir_all(&self.path);
     }
 }
@@ -616,6 +601,22 @@ mod tests {
     fn speed_ratio_is_baseline_over_candidate() {
         assert_eq!(calculate_speed_ratio(90.0, 100.0), 0.9);
         assert_eq!(calculate_speed_ratio(100.0, 50.0), 2.0);
+    }
+
+    #[test]
+    fn apple_arm64_normalizes_to_contract_architecture() {
+        assert_eq!(canonical_architecture("arm64"), "aarch64");
+        assert_eq!(canonical_architecture("aarch64"), "aarch64");
+    }
+
+    #[test]
+    fn benchmark_runtime_directory_does_not_mutate_data_environment() {
+        let before_xdg = std::env::var_os("XDG_DATA_HOME");
+        let before_local = std::env::var_os("LOCALAPPDATA");
+        let directory = BenchmarkRuntimeDir::new().expect("benchmark directory");
+        assert!(directory.path().is_dir());
+        assert_eq!(std::env::var_os("XDG_DATA_HOME"), before_xdg);
+        assert_eq!(std::env::var_os("LOCALAPPDATA"), before_local);
     }
 
     #[test]
