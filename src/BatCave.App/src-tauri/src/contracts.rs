@@ -35,6 +35,7 @@ pub struct ProcessContributorSummary {
 pub struct RuntimeEnvironment {
     pub platform: RuntimePlatform,
     pub admin_mode_available: bool,
+    pub install_kind: String,
     pub data_directory: Option<String>,
 }
 
@@ -344,6 +345,8 @@ pub struct RuntimeSettings {
     pub admin_mode_enabled: bool,
     #[serde(default = "default_metric_window_seconds")]
     pub metric_window_seconds: u32,
+    #[serde(default = "default_sample_interval_ms")]
+    pub sample_interval_ms: u32,
     #[serde(default)]
     pub paused: bool,
 }
@@ -363,9 +366,10 @@ pub struct RuntimeQuery {
     pub limit: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessFocusMode {
+    #[default]
     All,
     Attention,
     Io,
@@ -379,9 +383,10 @@ pub enum AccessState {
     Denied,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SortColumn {
+    #[default]
     Attention,
     Name,
     Pid,
@@ -394,10 +399,11 @@ pub enum SortColumn {
     StartTimeMs,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SortDirection {
     Asc,
+    #[default]
     Desc,
 }
 
@@ -416,6 +422,7 @@ impl Default for RuntimeSettings {
             admin_mode_requested: false,
             admin_mode_enabled: false,
             metric_window_seconds: default_metric_window_seconds(),
+            sample_interval_ms: default_sample_interval_ms(),
             paused: false,
         }
     }
@@ -433,26 +440,12 @@ impl Default for RuntimeQuery {
     }
 }
 
-impl Default for ProcessFocusMode {
-    fn default() -> Self {
-        Self::All
-    }
-}
-
-impl Default for SortColumn {
-    fn default() -> Self {
-        Self::Attention
-    }
-}
-
-impl Default for SortDirection {
-    fn default() -> Self {
-        Self::Desc
-    }
-}
-
 fn default_metric_window_seconds() -> u32 {
     60
+}
+
+fn default_sample_interval_ms() -> u32 {
+    1_000
 }
 
 fn default_query_limit() -> usize {
@@ -502,6 +495,7 @@ mod tests {
             environment: RuntimeEnvironment {
                 platform: RuntimePlatform::Windows,
                 admin_mode_available: true,
+                install_kind: "nsis".to_string(),
                 data_directory: Some("C:\\Users\\test\\BatCaveMonitor".to_string()),
             },
             admin_mode: RuntimeAdminModeStatus {
@@ -520,6 +514,7 @@ mod tests {
                 admin_mode_requested: true,
                 admin_mode_enabled: false,
                 metric_window_seconds: 30,
+                sample_interval_ms: 1_000,
                 paused: true,
             },
             health: RuntimeHealth {
@@ -641,6 +636,7 @@ mod tests {
                 "environment": {
                     "platform": "windows",
                     "admin_mode_available": true,
+                    "install_kind": "nsis",
                     "data_directory": "C:\\Users\\test\\BatCaveMonitor"
                 },
                 "admin_mode": {
@@ -659,6 +655,7 @@ mod tests {
                     "admin_mode_requested": true,
                     "admin_mode_enabled": false,
                     "metric_window_seconds": 30,
+                    "sample_interval_ms": 1000,
                     "paused": true
                 },
                 "health": {
@@ -799,6 +796,7 @@ mod tests {
             admin_mode_requested: false,
             admin_mode_enabled: false,
             metric_window_seconds: 15,
+            sample_interval_ms: 1_000,
             paused: false,
         };
 
@@ -817,6 +815,7 @@ mod tests {
                 "admin_mode_requested": false,
                 "admin_mode_enabled": false,
                 "metric_window_seconds": 15,
+                "sample_interval_ms": 1000,
                 "paused": false
             })
         );

@@ -5,7 +5,10 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use sysinfo::{Networks, System};
+use sysinfo::{
+    CpuRefreshKind, MemoryRefreshKind, Networks, ProcessRefreshKind, RefreshKind, System,
+    UpdateKind,
+};
 
 use crate::contracts::{
     AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
@@ -57,10 +60,12 @@ impl TelemetryCollector {
         Self::new_with_process_network(true)
     }
 
+    #[cfg(test)]
     pub(crate) fn for_elevated_helper(process_network: bool) -> Self {
         Self::new_with_process_network(process_network)
     }
 
+    #[cfg(test)]
     pub(crate) fn process_network_ready(&self) -> Result<bool, String> {
         #[cfg(windows)]
         {
@@ -76,6 +81,7 @@ impl TelemetryCollector {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn retry_process_network(&self) -> Result<(), String> {
         #[cfg(windows)]
         {
@@ -83,6 +89,7 @@ impl TelemetryCollector {
                 .network_attribution
                 .lock()
                 .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
+            *state = NetworkAttributionState::Disabled;
             *state = NetworkAttributionState::new();
         }
         Ok(())
@@ -92,7 +99,7 @@ impl TelemetryCollector {
         #[cfg(not(windows))]
         let _ = process_network;
         Self {
-            system: Mutex::new(System::new_all()),
+            system: Mutex::new(System::new_with_specifics(sysinfo_refresh_kind())),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
             #[cfg(target_os = "linux")]
             linux_system: Mutex::new(LinuxSystemCollector::new()),
@@ -121,7 +128,7 @@ impl TelemetryCollector {
             .system
             .lock()
             .map_err(|_| "system telemetry lock is poisoned".to_string())?;
-        sysinfo_system.refresh_all();
+        sysinfo_system.refresh_specifics(sysinfo_refresh_kind());
 
         let mut sysinfo_networks = self
             .networks
@@ -155,16 +162,6 @@ impl TelemetryCollector {
             apply_network_attribution(&mut processes, network_attribution, MetricSource::Ebpf);
         }
 
-        let (disk_read_total_bytes, disk_write_total_bytes) =
-            processes
-                .iter()
-                .fold((0_u64, 0_u64), |(read_total, write_total), process| {
-                    (
-                        read_total.saturating_add(process.disk_read_total_bytes),
-                        write_total.saturating_add(process.disk_write_total_bytes),
-                    )
-                });
-
         processes.sort_by(|left, right| {
             right
                 .cpu_percent
@@ -174,11 +171,6 @@ impl TelemetryCollector {
                 .then_with(|| left.name.cmp(&right.name))
         });
 
-        if system_snapshot.disk_read_total_bytes == 0 && system_snapshot.disk_write_total_bytes == 0
-        {
-            system_snapshot.disk_read_total_bytes = disk_read_total_bytes;
-            system_snapshot.disk_write_total_bytes = disk_write_total_bytes;
-        }
         system_snapshot.process_count = processes.len();
 
         Ok(TelemetrySample {
@@ -188,6 +180,20 @@ impl TelemetryCollector {
             warnings,
         })
     }
+}
+
+fn sysinfo_refresh_kind() -> RefreshKind {
+    RefreshKind::nothing()
+        .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+        .with_memory(MemoryRefreshKind::everything())
+        .with_processes(
+            ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory()
+                .with_disk_usage()
+                .with_exe(UpdateKind::OnlyIfNotSet)
+                .without_tasks(),
+        )
 }
 
 pub fn now_ms() -> u64 {
@@ -331,6 +337,10 @@ impl TelemetryCollector {
             .pdh_disk
             .lock()
             .map_err(|_| "pdh disk telemetry lock is poisoned".to_string())?;
+        if matches!(&*state, PdhDiskState::Failed(_, failed_at) if failed_at.elapsed() >= std::time::Duration::from_secs(30))
+        {
+            *state = PdhDiskState::new();
+        }
         match &mut *state {
             PdhDiskState::Ready(sampler) => match sampler.sample() {
                 Ok(PdhSample::Ready(rates)) => {
@@ -341,11 +351,11 @@ impl TelemetryCollector {
                 Ok(PdhSample::Held(message)) => Ok(DiskQualityState::Held(message)),
                 Err(error) => {
                     warnings.push(format!("pdh_disk_collector_failed:{error}"));
-                    *state = PdhDiskState::Failed(error.clone());
+                    *state = PdhDiskState::Failed(error.clone(), Instant::now());
                     Ok(DiskQualityState::Unavailable(error))
                 }
             },
-            PdhDiskState::Failed(error) => {
+            PdhDiskState::Failed(error, _) => {
                 warnings.push(format!("pdh_disk_collector_failed:{error}"));
                 Ok(DiskQualityState::Unavailable(error.clone()))
             }
@@ -371,14 +381,19 @@ impl TelemetryCollector {
                     warnings.push(format!("network_attribution_failed:{message}"));
                     *state = NetworkAttributionState::Failed {
                         message: message.clone(),
-                        warned: true,
+                        failed_at: Instant::now(),
                     };
                 }
                 Ok(sample)
             }
-            NetworkAttributionState::Failed { message, warned } => {
+            NetworkAttributionState::Failed { message, failed_at } => {
+                if failed_at.elapsed() >= std::time::Duration::from_secs(30) {
+                    *state = NetworkAttributionState::new();
+                    return Ok(NetworkAttributionSample::Held(
+                        "ETW network attribution is retrying.".to_string(),
+                    ));
+                }
                 warnings.push(format!("network_attribution_failed:{message}"));
-                *warned = true;
                 Ok(NetworkAttributionSample::Failed(message.clone()))
             }
         }
@@ -423,16 +438,19 @@ impl TelemetryCollector {
                     warnings.push(format!("linux_network_attribution_failed:{message}"));
                     *state = LinuxNetworkAttributionState::Failed {
                         message: message.clone(),
-                        warned: true,
+                        failed_at: Instant::now(),
                     };
                 }
                 Ok(sample)
             }
-            LinuxNetworkAttributionState::Failed { message, warned } => {
-                if !*warned {
-                    warnings.push(format!("linux_network_attribution_failed:{message}"));
-                    *warned = true;
+            LinuxNetworkAttributionState::Failed { message, failed_at } => {
+                if failed_at.elapsed() >= std::time::Duration::from_secs(30) {
+                    *state = LinuxNetworkAttributionState::new();
+                    return Ok(NetworkAttributionSample::Held(
+                        "Linux network attribution is retrying.".to_string(),
+                    ));
                 }
+                warnings.push(format!("linux_network_attribution_failed:{message}"));
                 Ok(NetworkAttributionSample::Failed(message.clone()))
             }
         }
@@ -673,10 +691,9 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
                     .with_message(&message)
             }
             DiskQualityState::Unavailable(message) => {
-                MetricQualityInfo::new(MetricQuality::Partial, MetricSource::ProcessAggregate)
-                    .with_message(&format!(
-                        "PDH disk rates unavailable; using process I/O totals. {message}"
-                    ))
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Pdh).with_message(
+                    &format!("PDH physical disk telemetry is unavailable. {message}"),
+                )
             }
         }),
         network: Some(MetricQualityInfo::new(
@@ -689,7 +706,7 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
 #[cfg(windows)]
 enum PdhDiskState {
     Ready(PdhDiskSampler),
-    Failed(String),
+    Failed(String, Instant),
 }
 
 #[cfg(windows)]
@@ -697,7 +714,7 @@ impl PdhDiskState {
     fn new() -> Self {
         match PdhDiskSampler::new() {
             Ok(sampler) => Self::Ready(sampler),
-            Err(error) => Self::Failed(error),
+            Err(error) => Self::Failed(error, Instant::now()),
         }
     }
 }
@@ -713,7 +730,7 @@ enum DiskQualityState {
 enum NetworkAttributionState {
     Disabled,
     Ready(NetworkAttributionMonitor),
-    Failed { message: String, warned: bool },
+    Failed { message: String, failed_at: Instant },
 }
 
 #[cfg(windows)]
@@ -723,7 +740,7 @@ impl NetworkAttributionState {
             Ok(monitor) => Self::Ready(monitor),
             Err(message) => Self::Failed {
                 message,
-                warned: false,
+                failed_at: Instant::now(),
             },
         }
     }
@@ -732,7 +749,7 @@ impl NetworkAttributionState {
 #[cfg(target_os = "linux")]
 enum LinuxNetworkAttributionState {
     Ready(LinuxNetworkAttributionMonitor),
-    Failed { message: String, warned: bool },
+    Failed { message: String, failed_at: Instant },
 }
 
 #[cfg(target_os = "linux")]
@@ -742,7 +759,7 @@ impl LinuxNetworkAttributionState {
             Ok(monitor) => Self::Ready(monitor),
             Err(message) => Self::Failed {
                 message,
-                warned: false,
+                failed_at: Instant::now(),
             },
         }
     }

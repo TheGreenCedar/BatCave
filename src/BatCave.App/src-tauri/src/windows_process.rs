@@ -78,7 +78,7 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
         start_time_ms: 0,
         name,
         exe: String::new(),
-        status: "running".to_string(),
+        status: "unknown".to_string(),
         cpu_percent: 0.0,
         kernel_cpu_percent: None,
         memory_bytes: 0,
@@ -294,7 +294,7 @@ fn query_process_memory(process: HANDLE) -> Option<ProcessMemory> {
 fn query_process_io(process: HANDLE) -> Option<ProcessIo> {
     let mut counters = IO_COUNTERS::default();
     let ok = unsafe { GetProcessIoCounters(process, &mut counters) };
-    (ok != 0).then(|| ProcessIo {
+    (ok != 0).then_some(ProcessIo {
         read_bytes: counters.ReadTransferCount,
         write_bytes: counters.WriteTransferCount,
         other_bytes: counters.OtherTransferCount,

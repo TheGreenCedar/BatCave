@@ -43,6 +43,7 @@
     activeTab = "overview";
   }
   $: copyFailed = copyStatus !== "" && copyStatus !== "Process summary copied.";
+  $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...processHistory.cpu) / 100) * 100);
 
   function processTotalIoRate(process: ProcessSample): number {
     const rates = processRates[processSelectionKey(process)];
@@ -108,21 +109,21 @@
         <p>{processTrustLabel(selectedProcess)} CPU data. Missing fields stay marked instead of being estimated silently.</p>
       </div>
       <div class="overview-metrics">
-        <div><span>CPU</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
+        <div><span>CPU (100% = 1 core)</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
         <div><span>Memory</span><strong>{processBytesLabel(selectedProcess, selectedProcess.memory_bytes)}</strong></div>
         <div><span>I/O</span><strong>{formatRate(processTotalIoRate(selectedProcess))}</strong></div>
         <div><span>Network</span><strong>{processNetworkLabel(selectedProcess)}</strong></div>
       </div>
       <div class="inspector-hero-chart">
         <div><span>CPU trend</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
-        <MiniChart values={processHistory.cpu} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
+        <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
       </div>
     {:else if activeTab === "resources"}
       <div class="resource-list" aria-label="Selected process resources">
         <div class="resource-row">
-          <span>CPU</span>
+          <span>CPU (100% = 1 core)</span>
           <strong>{formatPercent(selectedProcess.cpu_percent)}</strong>
-          <MiniChart values={processHistory.cpu} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
+          <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
         </div>
         <div class="resource-row">
           <span>Memory</span>

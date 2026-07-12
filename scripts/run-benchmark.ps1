@@ -25,7 +25,11 @@ $cargoManifest = Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml"
 $releaseDir = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release"
 $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 $runtimePlatform = if ($runningOnWindows) { "windows" } else { "linux" }
-$architecture = $Platform.ToLowerInvariant()
+$architecture = switch ($Platform.ToLowerInvariant()) {
+    "x64" { "x86_64" }
+    "arm64" { "aarch64" }
+    default { $Platform.ToLowerInvariant() }
+}
 $benchmarkExeName = if ($runningOnWindows) { "batcave-monitor-cli.exe" } else { "batcave-monitor-cli" }
 $benchmarkExe = Join-Path $releaseDir $benchmarkExeName
 $tempBaselinePath = ""
@@ -72,7 +76,7 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     }
 
     $artifact = Get-Content -LiteralPath $BaselineArtifactPath -Raw | ConvertFrom-Json
-    Assert-ArtifactValue $artifact "format_version" 2
+    Assert-ArtifactValue $artifact "format_version" 3
     Assert-ArtifactValue $artifact "host" $BenchmarkHost
     Assert-ArtifactValue $artifact "platform" $runtimePlatform
     Assert-ArtifactValue $artifact "architecture" $architecture

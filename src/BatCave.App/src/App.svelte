@@ -57,12 +57,12 @@
   } from "./lib/themes";
   import {
     commandErrorMessage,
-    getRuntimeProcessIcon,
+    getRuntimeProcessIcons,
     readNativeSnapshot,
     refreshRuntime,
-    setRuntimeAdminMode,
     setRuntimePaused,
     setRuntimeProcessQuery,
+    setRuntimeSampleInterval,
   } from "./lib/tauriBridge";
   import type {
     KernelPoolTag,
@@ -414,20 +414,23 @@
     }
   }
 
-  async function setAdminMode(enabled: boolean): Promise<void> {
-    if (!hasTauriRuntime()) {
-      return;
-    }
+  async function setPollInterval(interval: number): Promise<void> {
+    pollIntervalMs = interval as (typeof pollIntervals)[number];
+    if (!hasTauriRuntime()) return;
 
     try {
-      const next = await setRuntimeAdminMode(invoke, enabled);
-      applyNativeSnapshot(next);
+      applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
     } catch (error) {
-      commandError = commandErrorMessage(error, "Unable to change admin mode.");
+      commandError = commandErrorMessage(error, "Unable to change sampling cadence.");
     }
   }
 
   async function checkForStableUpdate(): Promise<void> {
+    if (snapshot.environment.install_kind === "deb") {
+      updateStatus = "current";
+      updateMessage = "Debian packages update through your package manager or a downloaded .deb release.";
+      return;
+    }
     updateStatus = "checking";
     updateMessage = "Checking the stable release channel…";
     pendingUpdate = null;
@@ -440,9 +443,11 @@
         updateStatus = "current";
         updateMessage = "BatCave is up to date.";
       }
-    } catch {
+    } catch (error) {
       updateStatus = "error";
-      updateMessage = "Unable to check for updates. Monitoring remains available offline.";
+      updateMessage = String(error).includes("404")
+        ? "No stable release is published yet."
+        : "Unable to reach the update service. Monitoring remains available offline.";
     }
   }
 
@@ -451,10 +456,8 @@
     updateStatus = "installing";
     updateMessage = "Downloading and verifying the signed update…";
     try {
+      updateMessage = "Installing the verified update. BatCave will close when installation begins.";
       await pendingUpdate.downloadAndInstall();
-      pendingUpdate = null;
-      updateStatus = "current";
-      updateMessage = "Update installed. Restart BatCave to finish.";
     } catch {
       updateStatus = "error";
       updateMessage = "Update verification or installation failed. BatCave was not changed.";
@@ -564,6 +567,9 @@
       : [next.system.cpu_percent];
     const nextMemoryPercent = percentage(next.system.memory_used_bytes, next.system.memory_total_bytes);
     isPaused = next.settings.paused;
+    if (pollIntervals.includes(next.settings.sample_interval_ms as (typeof pollIntervals)[number])) {
+      pollIntervalMs = next.settings.sample_interval_ms as (typeof pollIntervals)[number];
+    }
     snapshot = next;
     updateProcessRows(next.process_view_rows);
 
@@ -668,23 +674,34 @@
     const iconCandidates = uniqueIconCandidates(
       selected ? [selected, ...visibleRowProcesses, ...processes.slice(0, 80)] : [...visibleRowProcesses, ...processes.slice(0, 80)],
     ).slice(0, 120);
-    for (const process of iconCandidates) {
+    const pending = iconCandidates.filter((process) => {
       const key = processIconKey(process);
       if (!process.exe || processIcons[key] || requestedProcessIcons.has(key)) {
-        continue;
+        return false;
       }
-
       requestedProcessIcons.add(key);
-      let iconError = "";
-      const icon = await getRuntimeProcessIcon(invoke, process.exe, (message) => {
-        iconError = message;
-      });
+      return true;
+    });
+    if (!pending.length) return;
+
+    let iconError = "";
+    const icons = await getRuntimeProcessIcons(
+      invoke,
+      pending.map((process) => process.exe),
+      (message) => (iconError = message),
+    );
+    for (const process of pending) {
+      const key = processIconKey(process);
+      const icon = icons[process.exe];
       if (icon) {
         processIcons = { ...processIcons, [key]: icon };
       } else if (iconError === "process_icon_untrusted_exe") {
         requestedProcessIcons.delete(key);
       }
     }
+    const cached = Object.entries(processIcons);
+    if (cached.length > 256) processIcons = Object.fromEntries(cached.slice(-256));
+    requestedProcessIcons = new Set(iconCandidates.map(processIconKey));
   }
 
   function processIconKey(process: ProcessSample): string {
@@ -736,12 +753,15 @@
       !event.altKey &&
       !event.ctrlKey &&
       !event.metaKey &&
+      !event.altKey &&
       !event.shiftKey &&
       !settingsOpen &&
       !diagnosticsOpen &&
       !compactDetailOpen &&
       !(target instanceof HTMLInputElement) &&
       !(target instanceof HTMLTextAreaElement) &&
+      !(target instanceof HTMLSelectElement) &&
+      !(target instanceof HTMLButtonElement) &&
       !(target instanceof HTMLElement && target.isContentEditable)
     ) {
       const search = document.querySelector<HTMLInputElement>("#process-search");
@@ -754,6 +774,7 @@
   }
 
   function updateProcessRows(incoming: ProcessViewRow[]): void {
+    incoming = incoming.slice(0, 180);
     if (selectedPid && !selectionExists(incoming, selectedPid)) {
       selectedPid = "";
       detailSubject = "system";
@@ -1220,7 +1241,6 @@
     open={diagnosticsOpen}
     onOpen={() => (diagnosticsOpen = true)}
     onClose={() => (diagnosticsOpen = false)}
-    onAdminMode={(enabled) => void setAdminMode(enabled)}
   />
 
   <SettingsDrawer
@@ -1236,9 +1256,8 @@
     dataDirectory={snapshot.environment.data_directory}
     onClose={() => (settingsOpen = false)}
     onTheme={setTheme}
-    onPollInterval={(interval) => (pollIntervalMs = interval as (typeof pollIntervals)[number])}
+    onPollInterval={(interval) => void setPollInterval(interval)}
     onHistoryLimit={setHistoryPointLimit}
-    onAdminMode={(enabled) => void setAdminMode(enabled)}
     {updateStatus}
     {updateMessage}
     onCheckForUpdates={() => void checkForStableUpdate()}

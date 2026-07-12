@@ -129,13 +129,17 @@ if ((& git -C $repoRoot status --porcelain | Out-String).Trim()) {
     $candidateSha = "$candidateSha-dirty"
 }
 $report = [ordered]@{
-    format_version = 2
+    format_version = 3
     captured_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     candidate_sha = $candidateSha
     binary_sha256 = $binarySha256
     host = $BenchmarkHost
     platform = "windows"
-    architecture = $Platform.ToLowerInvariant()
+    architecture = switch ($Platform.ToLowerInvariant()) {
+        "x64" { "x86_64" }
+        "arm64" { "aarch64" }
+        default { $Platform.ToLowerInvariant() }
+    }
     machine_class = $MachineClass
     workload_profile = $WorkloadProfile
     warmup_ticks = $WarmupTicks

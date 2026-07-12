@@ -12,7 +12,6 @@
   export let open = false;
   export let onOpen: () => void;
   export let onClose: () => void;
-  export let onAdminMode: (enabled: boolean) => void;
 
   $: limitationCount = uniqueWarningCount(snapshot.warnings);
   $: stateLabel =
@@ -61,5 +60,4 @@
   {lastError}
   {adminStatus}
   {onClose}
-  {onAdminMode}
 />

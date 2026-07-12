@@ -47,6 +47,16 @@ fn write_json_atomic_with_replacer<T: Serialize>(
             error
         )
     })?;
+    #[cfg(unix)]
+    fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700)).map_err(
+        |error| {
+            format!(
+                "{} path={} error={error}",
+                labels.write_failed,
+                parent.display()
+            )
+        },
+    )?;
 
     let payload = serde_json::to_string(value).map_err(|error| {
         if labels.serialize_error_includes_path {
@@ -63,6 +73,16 @@ fn write_json_atomic_with_replacer<T: Serialize>(
 
     let (temp_path, mut temp_file) = create_temp_file(path, labels.write_failed)?;
     if let Err(error) = temp_file.write_all(payload.as_bytes()) {
+        drop(temp_file);
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
+            "{} path={} error={}",
+            labels.write_failed,
+            temp_path.display(),
+            error
+        ));
+    }
+    if let Err(error) = temp_file.sync_all() {
         drop(temp_file);
         let _ = fs::remove_file(&temp_path);
         return Err(format!(
@@ -93,11 +113,11 @@ fn create_temp_file(path: &Path, write_label: &str) -> Result<(PathBuf, File), S
     for _ in 0..128 {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temp_path = parent.join(format!("{name}.{}.{}.tmp", std::process::id(), sequence));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        match options.open(&temp_path) {
             Ok(file) => return Ok((temp_path, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -153,7 +173,10 @@ fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
-    fs::rename(temp_path, target_path).map_err(|error| format!("rename_failed:{error}"))
+    fs::rename(temp_path, target_path).map_err(|error| format!("rename_failed:{error}"))?;
+    File::open(target_path.parent().ok_or("rename_failed:missing_parent")?)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("rename_failed:{error}"))
 }
 
 #[cfg(test)]

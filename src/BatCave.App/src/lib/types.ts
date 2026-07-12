@@ -27,6 +27,7 @@ export interface ProcessContributorSummary {
 export interface RuntimeEnvironment {
   platform: "windows" | "linux" | "fixture";
   admin_mode_available: boolean;
+  install_kind: "nsis" | "appimage" | "deb" | "portable";
   data_directory: string | null;
 }
 
@@ -233,6 +234,7 @@ export interface RuntimeSettings {
   admin_mode_requested: boolean;
   admin_mode_enabled: boolean;
   metric_window_seconds: number;
+  sample_interval_ms: number;
   paused: boolean;
 }
 

@@ -21,10 +21,15 @@ pub fn icon_data_url(exe: &str) -> Result<Option<String>, String> {
     }
 
     let icon = load_icon_data_url(exe);
-    cache
+    let mut cache = cache
         .lock()
-        .map_err(|_| "process_icon_cache_poisoned".to_string())?
-        .insert(key, icon.clone());
+        .map_err(|_| "process_icon_cache_poisoned".to_string())?;
+    if cache.len() >= 256 {
+        if let Some(oldest) = cache.keys().next().cloned() {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(key, icon.clone());
     Ok(icon)
 }
 

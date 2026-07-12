@@ -73,7 +73,7 @@ baseline_summary_path="$output_directory/${artifact_prefix}.summary.json"
 raw_file="$(mktemp)"
 trap 'rm -f -- "$raw_file"' EXIT
 
-echo "Capturing benchmark protocol v2 baseline ($benchmark_host)..."
+echo "Capturing benchmark protocol v3 baseline ($benchmark_host)..."
 bash "$run_benchmark" \
   --benchmark-host "$benchmark_host" \
   --platform "$architecture" \
@@ -105,7 +105,7 @@ if start < 0 or end < start:
 summary = json.loads(raw[start : end + 1])
 
 artifact = {
-    "format_version": 2,
+    "format_version": 3,
     "captured_at_utc": datetime.now(timezone.utc).isoformat(),
     "base_sha": base_sha,
     "binary_sha256": binary_sha256,

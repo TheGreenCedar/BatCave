@@ -7,14 +7,9 @@ use crate::contracts::{
 
 #[cfg(windows)]
 use std::{
-    collections::{HashMap, HashSet},
-    env, fs,
     mem::{align_of, size_of},
-    path::{Path, PathBuf},
     ptr::{null_mut, read_unaligned},
     slice,
-    sync::{Mutex, OnceLock},
-    thread,
 };
 
 #[cfg(windows)]
@@ -52,8 +47,6 @@ const MAX_POOL_TAG_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(windows)]
 const MAX_KERNEL_POOL_TAGS: usize = 8;
 #[cfg(windows)]
-const MAX_DRIVER_CANDIDATES_PER_TAG: usize = 4;
-
 #[cfg(windows)]
 pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
     let memory = sample_memory()?;
@@ -178,8 +171,10 @@ pub(crate) fn calculate_cpu_load(previous: CpuTimes, current: CpuTimes) -> CpuLo
 
 #[cfg(windows)]
 fn sample_memory() -> Result<MemoryMetrics, String> {
-    let mut status = MEMORYSTATUSEX::default();
-    status.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
 
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
     if ok == 0 {
@@ -217,8 +212,10 @@ pub(crate) fn sample_cpu_times() -> Result<CpuTimes, String> {
 
 #[cfg(windows)]
 fn sample_performance_metrics() -> Result<PerformanceMetrics, String> {
-    let mut performance = PERFORMANCE_INFORMATION::default();
-    performance.cb = size_of::<PERFORMANCE_INFORMATION>() as u32;
+    let mut performance = PERFORMANCE_INFORMATION {
+        cb: size_of::<PERFORMANCE_INFORMATION>() as u32,
+        ..Default::default()
+    };
 
     let ok = unsafe { GetPerformanceInfo(&mut performance, performance.cb) };
     if ok == 0 {
@@ -320,7 +317,6 @@ struct SystemPoolTagRaw {
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct KernelPoolTagWithBytes {
-    tag_bytes: [u8; 4],
     tag: KernelPoolTag,
 }
 
@@ -427,7 +423,6 @@ fn kernel_pool_tags_from_rows(
     for row in rows {
         if row.paged_used > 0 {
             tags.push(KernelPoolTagWithBytes {
-                tag_bytes: row.tag,
                 tag: KernelPoolTag {
                     tag: pool_tag_display(row.tag),
                     kind: KernelPoolKind::Paged,
@@ -442,7 +437,6 @@ fn kernel_pool_tags_from_rows(
 
         if row.nonpaged_used > 0 {
             tags.push(KernelPoolTagWithBytes {
-                tag_bytes: row.tag,
                 tag: KernelPoolTag {
                     tag: pool_tag_display(row.tag),
                     kind: KernelPoolKind::Nonpaged,
@@ -485,172 +479,9 @@ fn pool_tag_display(tag: [u8; 4]) -> String {
 
 #[cfg(windows)]
 fn annotate_driver_candidates(tags: &mut [KernelPoolTagWithBytes]) {
-    if tags.is_empty() {
-        return;
-    }
-
-    let state = driver_candidate_state();
-    let wanted = tags.iter().map(|tag| tag.tag_bytes).collect::<HashSet<_>>();
-    if let Ok(mut state) = state.lock() {
-        let missing = wanted
-            .iter()
-            .filter(|tag| !state.cache.contains_key(*tag))
-            .copied()
-            .collect::<HashSet<_>>();
-
-        for tag in missing {
-            state.pending.insert(tag);
-        }
-
-        maybe_start_driver_candidate_scan(&mut state);
-
-        for tag in tags {
-            match state.cache.get(&tag.tag_bytes) {
-                Some(candidates) => {
-                    tag.tag.driver_candidates = candidates.clone();
-                    tag.tag.driver_candidates_pending = false;
-                }
-                None => {
-                    tag.tag.driver_candidates.clear();
-                    tag.tag.driver_candidates_pending = true;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-#[derive(Debug, Default)]
-struct DriverCandidateState {
-    cache: HashMap<[u8; 4], Vec<String>>,
-    pending: HashSet<[u8; 4]>,
-    scan_running: bool,
-}
-
-#[cfg(windows)]
-fn maybe_start_driver_candidate_scan(state: &mut DriverCandidateState) {
-    if state.scan_running || state.pending.is_empty() {
-        return;
-    }
-
-    let tags = std::mem::take(&mut state.pending);
-    state.scan_running = true;
-    let tags_for_scan = tags.clone();
-
-    let spawn_result = thread::Builder::new()
-        .name("batcave-pool-tag-driver-scan".to_string())
-        .spawn(move || {
-            let discovered = scan_driver_candidates(&tags_for_scan);
-            if let Ok(mut state) = driver_candidate_state().lock() {
-                for tag in tags_for_scan {
-                    state
-                        .cache
-                        .insert(tag, discovered.get(&tag).cloned().unwrap_or_default());
-                }
-                state.scan_running = false;
-            }
-        });
-
-    if spawn_result.is_err() {
-        for tag in tags {
-            state.cache.insert(tag, Vec::new());
-        }
-        state.scan_running = false;
-    }
-}
-
-#[cfg(windows)]
-fn driver_candidate_state() -> &'static Mutex<DriverCandidateState> {
-    static STATE: OnceLock<Mutex<DriverCandidateState>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(DriverCandidateState::default()))
-}
-
-#[cfg(windows)]
-fn scan_driver_candidates(tags: &HashSet<[u8; 4]>) -> HashMap<[u8; 4], Vec<String>> {
-    let mut candidates = tags
-        .iter()
-        .map(|tag| (*tag, Vec::new()))
-        .collect::<HashMap<_, _>>();
-    let root = driver_root();
-    scan_driver_dir(&root, tags, &mut candidates, 0);
-
-    for matches in candidates.values_mut() {
-        matches.sort();
-        matches.dedup();
-        matches.truncate(MAX_DRIVER_CANDIDATES_PER_TAG);
-    }
-
-    candidates
-}
-
-#[cfg(windows)]
-fn driver_root() -> PathBuf {
-    env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("System32")
-        .join("drivers")
-}
-
-#[cfg(windows)]
-fn scan_driver_dir(
-    dir: &Path,
-    tags: &HashSet<[u8; 4]>,
-    candidates: &mut HashMap<[u8; 4], Vec<String>>,
-    depth: usize,
-) {
-    if depth > 4 {
-        return;
-    }
-
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-
-        if file_type.is_dir() {
-            scan_driver_dir(&path, tags, candidates, depth + 1);
-        } else if is_sys_driver(&path) {
-            scan_driver_file(&path, tags, candidates);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn is_sys_driver(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("sys"))
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn scan_driver_file(
-    path: &Path,
-    tags: &HashSet<[u8; 4]>,
-    candidates: &mut HashMap<[u8; 4], Vec<String>>,
-) {
-    let Ok(bytes) = fs::read(path) else {
-        return;
-    };
-    let Some(name) = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_string())
-    else {
-        return;
-    };
-
     for tag in tags {
-        if bytes.windows(tag.len()).any(|window| window == tag) {
-            candidates.entry(*tag).or_default().push(name.clone());
-        }
+        tag.tag.driver_candidates.clear();
+        tag.tag.driver_candidates_pending = false;
     }
 }
 

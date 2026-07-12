@@ -47,6 +47,7 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
   assert.deepEqual(canonicalSnapshot.environment, {
     platform: "windows",
     admin_mode_available: true,
+    install_kind: "portable",
     data_directory: "C:\\Users\\test\\BatCaveMonitor",
   });
   assert.deepEqual(
@@ -103,7 +104,7 @@ test("attention includes each scored resource and limited access", () => {
   const quiet = process();
 
   assert.equal(processNeedsAttention(quiet), false);
-  assert.equal(processNeedsAttention(process({ cpu_percent: 1 })), true);
+  assert.equal(processNeedsAttention(process({ cpu_percent: 10 })), true);
   assert.equal(processNeedsAttention(process({ memory_bytes: 900 * 1024 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ disk_read_bps: 500 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ network_received_bps: 1024 * 1024 })), true);

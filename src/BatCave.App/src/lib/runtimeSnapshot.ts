@@ -29,6 +29,7 @@ export function makeEmptySnapshot(
     environment: {
       platform,
       admin_mode_available: false,
+      install_kind: "portable",
       data_directory: null,
     },
     admin_mode: {
@@ -41,6 +42,7 @@ export function makeEmptySnapshot(
       admin_mode_requested: false,
       admin_mode_enabled: false,
       metric_window_seconds: 60,
+      sample_interval_ms: 1000,
       paused: false,
     },
     health: {

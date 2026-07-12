@@ -35,6 +35,8 @@ jobs:
 
       - name: Validate and bundle Windows app
         shell: pwsh
+        env:
+          BATCAVE_INSTALLED_RELEASE: "1"
         run: ./scripts/validate-tauri.ps1
 
       - uses: actions/upload-artifact@v6

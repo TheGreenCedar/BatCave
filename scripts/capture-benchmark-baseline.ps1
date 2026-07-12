@@ -70,7 +70,7 @@ $runArgs = @(
     "-Repeats", "$RepeatCount"
 )
 
-Write-Host "Capturing benchmark protocol v2 baseline ($BenchmarkHost)..."
+Write-Host "Capturing benchmark protocol v3 baseline ($BenchmarkHost)..."
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
@@ -93,7 +93,7 @@ if ((& git -C $repoRoot status --porcelain | Out-String).Trim()) {
 }
 
 $artifact = [ordered]@{
-    format_version = 2
+    format_version = 3
     captured_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     base_sha = $baseSha
     binary_sha256 = $binarySha256

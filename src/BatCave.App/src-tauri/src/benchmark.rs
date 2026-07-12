@@ -10,10 +10,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{cli_args, runtime_store::RuntimeState};
 
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 const HOST: &str = "core";
 const MEASUREMENT_ORIGIN: &str = "runtime_state_refresh_and_json_serialization";
 const DEFAULT_MIN_SPEED_RATIO: f64 = 0.90;
+const MAX_APP_CPU_PERCENT: f64 = 25.0;
+const MAX_APP_RSS_BYTES: u64 = 350 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,6 +23,7 @@ struct BenchmarkRepeat {
     tick_p95_ms: f64,
     peak_app_cpu_percent: f64,
     peak_app_rss_bytes: u64,
+    samples_advanced: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +48,8 @@ struct BenchmarkSummary {
     baseline_metadata_matched: bool,
     speed_ratio: Option<f64>,
     speed_ratio_passed: bool,
+    resource_budget_passed: bool,
+    sample_quality_passed: bool,
     strict_passed: bool,
 }
 
@@ -101,9 +106,23 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
 }
 
 fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> {
+    let requested_platform = parse_string(args, "--platform", std::env::consts::OS)?;
+    let requested_architecture = parse_string(args, "--architecture", std::env::consts::ARCH)?;
+    let platform = std::env::consts::OS.to_string();
+    let architecture = canonical_architecture(std::env::consts::ARCH).to_string();
+    if canonical_platform(&requested_platform) != platform {
+        return Err(format!(
+            "invalid_argument:--platform:does_not_match_binary:{platform}"
+        ));
+    }
+    if canonical_architecture(&requested_architecture) != architecture {
+        return Err(format!(
+            "invalid_argument:--architecture:does_not_match_binary:{architecture}"
+        ));
+    }
     let config = BenchmarkConfig {
-        platform: parse_string(args, "--platform", std::env::consts::OS)?,
-        architecture: parse_string(args, "--architecture", std::env::consts::ARCH)?,
+        platform,
+        architecture,
         machine_class: parse_string(args, "--machine-class", default_machine_class())?,
         workload_profile: parse_string(args, "--workload-profile", "fixed-default")?,
         warmup_ticks: parse_usize(args, "--warmup-ticks", 30)?,
@@ -170,7 +189,14 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
     let speed_ratio_passed = min_speed_ratio
         .map(|minimum| speed_ratio.is_some_and(|ratio| ratio >= minimum))
         .unwrap_or(true);
-    let strict_passed = !strict || (max_p95_passed && speed_ratio_passed);
+    let resource_budget_passed =
+        peak_app_cpu_percent <= MAX_APP_CPU_PERCENT && peak_app_rss_bytes <= MAX_APP_RSS_BYTES;
+    let sample_quality_passed = repeats.iter().all(|repeat| repeat.samples_advanced);
+    let strict_passed = !strict
+        || (max_p95_passed
+            && speed_ratio_passed
+            && resource_budget_passed
+            && sample_quality_passed);
 
     Ok(BenchmarkSummary {
         format_version: FORMAT_VERSION,
@@ -192,6 +218,8 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
         baseline_metadata_matched: baseline.is_some(),
         speed_ratio: speed_ratio.map(round3),
         speed_ratio_passed,
+        resource_budget_passed,
+        sample_quality_passed,
         strict_passed,
     })
 }
@@ -204,6 +232,8 @@ fn measure_window(
     let mut durations = Vec::with_capacity(ticks);
     let mut peak_app_cpu_percent = 0.0_f64;
     let mut peak_app_rss_bytes = 0_u64;
+    let mut previous_sample_seq = None;
+    let mut samples_advanced = true;
 
     for _ in 0..ticks {
         let started = Instant::now();
@@ -213,6 +243,9 @@ fn measure_window(
         durations.push(started.elapsed().as_secs_f64() * 1000.0);
         peak_app_cpu_percent = peak_app_cpu_percent.max(snapshot.health.app_cpu_percent);
         peak_app_rss_bytes = peak_app_rss_bytes.max(snapshot.health.app_rss_bytes);
+        samples_advanced &=
+            previous_sample_seq.is_none_or(|previous| snapshot.sample_seq > previous);
+        previous_sample_seq = Some(snapshot.sample_seq);
 
         if sleep_ms > 0 {
             thread::sleep(Duration::from_millis(sleep_ms));
@@ -223,7 +256,25 @@ fn measure_window(
         tick_p95_ms: round1(p95(&durations)),
         peak_app_cpu_percent: round1(peak_app_cpu_percent),
         peak_app_rss_bytes,
+        samples_advanced,
     })
+}
+
+fn canonical_platform(value: &str) -> String {
+    match value.to_ascii_lowercase().as_str() {
+        "win32" | "win64" | "windows" => "windows".to_string(),
+        "linux" => "linux".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn canonical_architecture(value: &str) -> String {
+    match value.to_ascii_lowercase().as_str() {
+        "x64" | "amd64" | "x86_64" => "x86_64".to_string(),
+        "arm64" | "aarch64" => "aarch64".to_string(),
+        "x86" | "i686" => "x86".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn parse_baseline(
@@ -427,7 +478,7 @@ fn median(values: &[f64]) -> f64 {
     let mut values = values.to_vec();
     values.sort_by(|left, right| left.total_cmp(right));
     let middle = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         (values[middle - 1] + values[middle]) / 2.0
     } else {
         values[middle]
@@ -524,7 +575,7 @@ mod tests {
     fn baseline_json(overrides: &str) -> String {
         format!(
             r#"{{
-                "format_version": 2,
+                "format_version": 3,
                 "host": "core",
                 "measurement_origin": "runtime_state_refresh_and_json_serialization",
                 "platform": "test-os",
@@ -626,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn baseline_requires_v2_protocol_metadata() {
+    fn baseline_requires_v3_protocol_metadata() {
         let path = write_baseline(&baseline_json(""));
         let args = vec![
             "--benchmark".to_string(),

@@ -38,7 +38,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Install frontend dependencies
         run: npm ci
@@ -63,6 +63,9 @@ jobs:
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle
 
+      - name: Reject Rust warnings
+        run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
+
   linux:
     name: Linux validation
     runs-on: ubuntu-latest
@@ -78,9 +81,9 @@ jobs:
           cache: npm
           cache-dependency-path: src/BatCave.App/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Install Linux native dependencies
         run: bash scripts/install-linux-deps.sh
@@ -97,3 +100,6 @@ jobs:
 
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle
+
+      - name: Reject Rust warnings on the MSRV
+        run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings

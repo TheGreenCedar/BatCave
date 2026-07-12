@@ -11,7 +11,6 @@
   export let lastError = "";
   export let adminStatus = "";
   export let onClose: () => void = () => {};
-  export let onAdminMode: (enabled: boolean) => void = () => {};
 
   $: issues = currentDiagnosticIssues(
     snapshot.warnings,
@@ -59,10 +58,6 @@
 
   function handleBackdropClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) requestClose();
-  }
-
-  function runIssueAction(action: "enable" | "retry" | "cancel"): void {
-    onAdminMode(action !== "cancel");
   }
 
   async function copyLocalData(): Promise<void> {
@@ -126,11 +121,6 @@
                   <dl>
                     <div><dt>Impact</dt><dd>{issue.impact}</dd></div>
                   </dl>
-                  {#if issue.action && issue.actionLabel}
-                    <button class="diagnostic-action" type="button" onclick={() => runIssueAction(issue.action!)}>
-                      {issue.actionLabel}
-                    </button>
-                  {/if}
                   <details>
                     <summary>Error details</summary>
                     <small>{issue.key} · {new Date(issue.occurredAtMs).toLocaleString()}</small>

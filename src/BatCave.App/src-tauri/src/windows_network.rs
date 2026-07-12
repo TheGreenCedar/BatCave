@@ -122,10 +122,7 @@ fn classify_direction(
     }
 }
 
-fn first_matching_property<'a>(
-    properties: &'a HashMap<String, u64>,
-    candidates: &[&str],
-) -> Option<u64> {
+fn first_matching_property(properties: &HashMap<String, u64>, candidates: &[&str]) -> Option<u64> {
     candidates.iter().find_map(|candidate| {
         properties
             .iter()
@@ -158,11 +155,10 @@ mod windows_impl {
                 ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
             },
             System::Diagnostics::Etw::{
-                CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW,
-                SystemTraceControlGuid, TcpIpGuid, TdhGetEventInformation, TdhGetProperty,
-                TdhGetPropertySize, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP,
-                EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
-                EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE, KERNEL_LOGGER_NAMEW,
+                CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW, TcpIpGuid,
+                TdhGetEventInformation, TdhGetProperty, TdhGetPropertySize, EVENT_RECORD,
+                EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW,
+                EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE,
                 PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
                 PROPERTY_DATA_DESCRIPTOR, TRACE_EVENT_INFO, WNODE_FLAG_TRACED_GUID,
             },
@@ -175,7 +171,13 @@ mod windows_impl {
     };
 
     const INVALID_PROCESSTRACE_HANDLE: u64 = u64::MAX;
-    const LOGGER_NAME: &str = "NT Kernel Logger";
+    const LOGGER_NAME: &str = "BatCave Process Network";
+    const LOGGER_GUID: GUID = GUID {
+        data1: 0x4cbda9c4,
+        data2: 0x64aa,
+        data3: 0x4c39,
+        data4: [0x91, 0xd3, 0x45, 0x1d, 0xb1, 0x87, 0x54, 0xe7],
+    };
     const ETW_WARMUP_MS: u128 = 1500;
     const PROPERTY_SIZE_NAMES: [&str; 6] = [
         "size",
@@ -192,7 +194,6 @@ mod windows_impl {
         trace_handle: u64,
         process_thread: Option<JoinHandle<()>>,
         session_name: Vec<u16>,
-        previous_counters: Mutex<HashMap<u32, NetworkByteCounters>>,
         previous_sample_at: Mutex<Instant>,
     }
 
@@ -204,7 +205,7 @@ mod windows_impl {
             let start_result = unsafe {
                 StartTraceW(
                     &mut trace_handle,
-                    KERNEL_LOGGER_NAMEW,
+                    session_name.as_ptr(),
                     properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
                 )
             };
@@ -233,7 +234,6 @@ mod windows_impl {
                 trace_handle,
                 process_thread: Some(process_thread),
                 session_name,
-                previous_counters: Mutex::new(HashMap::new()),
                 previous_sample_at: Mutex::new(Instant::now()),
             })
         }
@@ -243,7 +243,7 @@ mod windows_impl {
                 return NetworkAttributionSample::Failed(error);
             }
 
-            let current = self.shared.snapshot_counters();
+            let current = self.shared.drain_counters();
             let now = Instant::now();
             let mut previous_sample_at = match self.previous_sample_at.lock() {
                 Ok(value) => value,
@@ -256,16 +256,7 @@ mod windows_impl {
             let elapsed_seconds = now.duration_since(*previous_sample_at).as_secs_f64();
             *previous_sample_at = now;
 
-            let mut previous_counters = match self.previous_counters.lock() {
-                Ok(value) => value,
-                Err(_) => {
-                    return NetworkAttributionSample::Failed(
-                        "network_attribution_counter_lock_poisoned".to_string(),
-                    )
-                }
-            };
-            let rates_by_pid = rate_map_from_deltas(&current, &previous_counters, elapsed_seconds);
-            *previous_counters = current;
+            let rates_by_pid = rate_map_from_deltas(&current, &HashMap::new(), elapsed_seconds);
 
             if self.shared.events_seen() == 0
                 && self.shared.started_at.elapsed().as_millis() < ETW_WARMUP_MS
@@ -320,10 +311,10 @@ mod windows_impl {
             }
         }
 
-        fn snapshot_counters(&self) -> HashMap<u32, NetworkByteCounters> {
+        fn drain_counters(&self) -> HashMap<u32, NetworkByteCounters> {
             self.counters_by_pid
                 .lock()
-                .map(|value| value.clone())
+                .map(|mut value| std::mem::take(&mut *value))
                 .unwrap_or_default()
         }
 
@@ -417,14 +408,15 @@ mod windows_impl {
         }
     }
 
-    fn trace_properties(session_name: &[u16]) -> Vec<u8> {
+    fn trace_properties(session_name: &[u16]) -> Vec<u64> {
         let properties_size = size_of::<EVENT_TRACE_PROPERTIES>();
         let name_bytes = std::mem::size_of_val(session_name);
-        let mut buffer = vec![0_u8; properties_size + name_bytes];
+        let buffer_bytes = properties_size + name_bytes;
+        let mut buffer = vec![0_u64; buffer_bytes.div_ceil(size_of::<u64>())];
         unsafe {
             let properties = &mut *(buffer.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES);
-            properties.Wnode.BufferSize = buffer.len() as u32;
-            properties.Wnode.Guid = SystemTraceControlGuid;
+            properties.Wnode.BufferSize = buffer_bytes as u32;
+            properties.Wnode.Guid = LOGGER_GUID;
             properties.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
             properties.BufferSize = 64;
             properties.MinimumBuffers = 4;
@@ -434,7 +426,7 @@ mod windows_impl {
             properties.EnableFlags = EVENT_TRACE_FLAG_NETWORK_TCPIP;
             properties.LoggerNameOffset = properties_size as u32;
 
-            let name_target = buffer.as_mut_ptr().add(properties_size) as *mut u16;
+            let name_target = (buffer.as_mut_ptr() as *mut u8).add(properties_size) as *mut u16;
             std::ptr::copy_nonoverlapping(session_name.as_ptr(), name_target, session_name.len());
         }
 
@@ -466,7 +458,8 @@ mod windows_impl {
     }
 
     struct EventMetadata {
-        buffer: Vec<u8>,
+        buffer: Vec<u64>,
+        buffer_size: usize,
         event_name_offset: u32,
         task_name_offset: u32,
         opcode_name_offset: u32,
@@ -475,7 +468,11 @@ mod windows_impl {
 
     impl EventMetadata {
         fn string_at(&self, offset: u32) -> Option<String> {
-            wide_string_at(&self.buffer, offset)
+            wide_string_at(self.bytes(), offset)
+        }
+
+        fn bytes(&self) -> &[u8] {
+            unsafe { slice::from_raw_parts(self.buffer.as_ptr() as *const u8, self.buffer_size) }
         }
 
         fn numeric_properties(&self, event_record: *mut EVENT_RECORD) -> HashMap<String, u64> {
@@ -497,7 +494,8 @@ mod windows_impl {
             return None;
         }
 
-        let mut buffer = vec![0_u8; buffer_size as usize];
+        let requested_size = buffer_size as usize;
+        let mut buffer = vec![0_u64; requested_size.div_ceil(size_of::<u64>())];
         let status = unsafe {
             TdhGetEventInformation(
                 event_record,
@@ -520,12 +518,15 @@ mod windows_impl {
         let properties = unsafe { slice::from_raw_parts(first_property, property_count) }
             .iter()
             .filter_map(|property| {
-                wide_string_at(&buffer, property.NameOffset).map(|name| (name.clone(), name))
+                let bytes =
+                    unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, requested_size) };
+                wide_string_at(bytes, property.NameOffset).map(|name| (name.clone(), name))
             })
             .collect();
 
         Some(EventMetadata {
             buffer,
+            buffer_size: requested_size,
             event_name_offset,
             task_name_offset,
             opcode_name_offset,

@@ -125,11 +125,11 @@ The native app exposes a small snake_case JSON contract through Tauri commands:
 - `refresh_now`
 - `pause_runtime`
 - `resume_runtime`
-- `set_admin_mode`
+- `set_sample_interval`
 - `set_process_query`
 - `get_process_icon`
 
-`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, admin, and error publications cannot create fake chart samples. `environment` reports `platform`, whether admin mode is available, and the resolved local data directory. `admin_mode` reports the current session state, raw failure detail, and last successful elevated sample. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
+`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, cadence, and error publications cannot create fake chart samples. `environment` reports `platform`, `install_kind`, and the resolved local data directory. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
 
 The Rust runtime store owns settings, pause/resume state, refresh cadence, query shaping, admin-mode preference, warm cache, diagnostics, health budgets, byte-rate derivation, and local JSON persistence.
 

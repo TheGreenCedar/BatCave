@@ -43,7 +43,7 @@ BatCave is ready for source-based testing and local preview builds.
 - The Tauri app can run as a native desktop shell or as a browser-only fixture UI for layout testing.
 - Windows bundles currently produce an unsigned executable and NSIS installer.
 - Linux builds produce `.deb` and AppImage bundles.
-- Installer signing and automatic updater work are still future distribution work.
+- The signed updater is implemented; Windows Authenticode release promotion remains gated on SignPath approval.
 
 ## Try It
 
@@ -131,7 +131,7 @@ Theme preference is stored in browser `localStorage` under `batcave.monitor.them
 ## Platform Notes
 
 - Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
-- Windows admin mode launches a local elevated helper for the current BatCave session only. It keeps standard rows current while recovering from short helper gaps, retries recoverable collector errors without another prompt, and falls back safely if elevation fails. Restarting BatCave always begins with admin mode off.
+- Installed Windows releases request administrator access at startup so protected telemetry is always available. Development builds remain unelevated. The release is single-instance and the per-machine installer is the only supported installed configuration.
 - Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses `bpftrace`/eBPF when the host has the needed permissions or capabilities. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
 - Browser fixture mode is for UI work. It is deterministic on purpose and is not proof of native collector behavior.
 
@@ -159,7 +159,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -
 
 Linux equivalents are available at `scripts/run-benchmark.sh`, `scripts/capture-benchmark-baseline.sh`, and `scripts/run-benchmark-gate.sh`.
 
-The release benchmark measures the complete `RuntimeState::refresh_now` path plus snapshot JSON serialization in an isolated temporary data directory. The default protocol uses 30 warmup ticks and five 120-tick measured repeats, then gates on the median repeat p95. Baseline artifacts are protocol v2 and include the commit, release-binary hash, platform, architecture, machine class, workload, and every repeat; revision fields append `-dirty` when the measured worktree is not clean. Strict mode requires a matching baseline or an explicit p95 ceiling; baseline comparisons require a speed ratio of at least `0.90` by default.
+The release benchmark measures the complete `RuntimeState::refresh_now` path plus snapshot JSON serialization in an isolated temporary data directory. Protocol v3 derives platform and architecture from the executing binary, requires samples to advance, and gates strict runs on latency, speed ratio, app CPU, and RSS. Baseline artifacts include the commit, release-binary hash, machine class, workload, and every repeat.
 
 The complete-remediation release comparison is preserved in [docs/evidence/benchmarks/remediation-20260710.json](docs/evidence/benchmarks/remediation-20260710.json), including source hashes, commit provenance, protocol settings, all repeats, and the strict gate result.
 

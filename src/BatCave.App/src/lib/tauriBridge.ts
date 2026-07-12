@@ -45,13 +45,6 @@ export function refreshRuntime(invoke: RuntimeInvoke): Promise<RuntimeSnapshot> 
   return invoke<RuntimeSnapshot>("refresh_now");
 }
 
-export function setRuntimeAdminMode(
-  invoke: RuntimeInvoke,
-  enabled: boolean,
-): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>("set_admin_mode", { enabled });
-}
-
 export function setRuntimeProcessQuery(
   invoke: RuntimeInvoke,
   query: RuntimeQuery,
@@ -59,16 +52,23 @@ export function setRuntimeProcessQuery(
   return invoke<RuntimeSnapshot>("set_process_query", { query });
 }
 
-export async function getRuntimeProcessIcon(
+export function setRuntimeSampleInterval(
   invoke: RuntimeInvoke,
-  exe: string,
+  sampleIntervalMs: number,
+): Promise<RuntimeSnapshot> {
+  return invoke<RuntimeSnapshot>("set_sample_interval", { sampleIntervalMs });
+}
+
+export async function getRuntimeProcessIcons(
+  invoke: RuntimeInvoke,
+  exes: string[],
   onError?: (message: string) => void,
-): Promise<string | null> {
+): Promise<Record<string, string | null>> {
   try {
-    return await invoke<string | null>("get_process_icon", { exe });
+    return await invoke<Record<string, string | null>>("get_process_icons", { exes });
   } catch (error) {
     onError?.(commandErrorMessage(error, ""));
-    return null;
+    return {};
   }
 }
 

@@ -19,7 +19,6 @@
   export let onTheme: (theme: ThemePreference) => void;
   export let onPollInterval: (interval: number) => void;
   export let onHistoryLimit: (limit: number) => void;
-  export let onAdminMode: (enabled: boolean) => void;
   export let onCheckForUpdates: () => void = () => {};
   export let onInstallUpdate: () => void = () => {};
   export let onResetHistory: () => void = () => {};
@@ -28,7 +27,6 @@
   let dialog: HTMLDialogElement | null = null;
   let opener: HTMLElement | null = null;
 
-  $: adminActive = adminState === "requesting" || adminState === "active" || adminState === "recovering";
   $: adminLabel =
     adminState === "requesting"
       ? "Waiting for Windows"
@@ -155,29 +153,15 @@
           <section class="settings-section privileged-section">
             <div class="settings-section-heading">
               <h3>Privileged access</h3>
-              <p>Admin mode can fill permission-shaped gaps. BatCave still falls back safely if elevation is denied.</p>
+              <p>Installed Windows releases run with administrator access so collectors can read protected process data.</p>
             </div>
             <div class="privileged-card">
               <div>
                 <strong>Admin mode</strong>
                 <span>{adminLabel}</span>
               </div>
-              <button
-                class:active={adminActive}
-                type="button"
-                aria-pressed={adminActive}
-                onclick={() => onAdminMode(!adminActive)}
-              >
-                {adminState === "requesting"
-                  ? "Cancel request"
-                  : adminActive
-                    ? "Disable"
-                    : adminState === "failed"
-                      ? "Retry"
-                      : "Enable"}
-              </button>
             </div>
-            <p class="setting-note">Enabling this may open a Windows elevation prompt. Denying it leaves standard monitoring active.</p>
+            <p class="setting-note">Development builds stay unelevated. Windows may ask for approval when an installed release starts.</p>
           </section>
         {/if}
 

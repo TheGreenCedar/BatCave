@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  getRuntimeProcessIcon,
+  getRuntimeProcessIcons,
   readNativeSnapshot,
   refreshRuntime,
-  setRuntimeAdminMode,
   setRuntimePaused,
   setRuntimeProcessQuery,
+  setRuntimeSampleInterval,
   type RuntimeInvoke,
 } from "../src/lib/tauriBridge.ts";
 
@@ -31,6 +31,7 @@ function snapshot(seq: number) {
     environment: {
       platform: "windows",
       admin_mode_available: true,
+      install_kind: "nsis",
       data_directory: "C:\\Users\\test\\BatCaveMonitor",
     },
     settings: {
@@ -44,6 +45,7 @@ function snapshot(seq: number) {
       admin_mode_requested: false,
       admin_mode_enabled: false,
       metric_window_seconds: 60,
+      sample_interval_ms: 1000,
       paused: false,
     },
     health: {
@@ -91,7 +93,7 @@ function snapshot(seq: number) {
 const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
 const invoke: RuntimeInvoke = async (command, args) => {
   calls.push({ command, args });
-  if (command === "get_process_icon") {
+  if (command === "get_process_icons") {
     throw new Error("access denied");
   }
 
@@ -116,7 +118,7 @@ assert.equal(successfulRead.snapshot.publication_seq, 7);
 await setRuntimePaused(invoke, true);
 await setRuntimePaused(invoke, false);
 await refreshRuntime(invoke);
-await setRuntimeAdminMode(invoke, true);
+await setRuntimeSampleInterval(invoke, 2000);
 await setRuntimeProcessQuery(invoke, {
   filter_text: "chrome",
   focus_mode: "io",
@@ -124,7 +126,7 @@ await setRuntimeProcessQuery(invoke, {
   sort_direction: "desc",
   limit: 25,
 });
-assert.equal(await getRuntimeProcessIcon(invoke, "C:\\Windows\\explorer.exe"), null);
+assert.deepEqual(await getRuntimeProcessIcons(invoke, ["C:\\Windows\\explorer.exe"]), {});
 
 assert.deepEqual(
   calls.map((call) => [call.command, call.args]),
@@ -132,7 +134,7 @@ assert.deepEqual(
     ["pause_runtime", undefined],
     ["resume_runtime", undefined],
     ["refresh_now", undefined],
-    ["set_admin_mode", { enabled: true }],
+    ["set_sample_interval", { sampleIntervalMs: 2000 }],
     [
       "set_process_query",
       {
@@ -145,7 +147,7 @@ assert.deepEqual(
         },
       },
     ],
-    ["get_process_icon", { exe: "C:\\Windows\\explorer.exe" }],
+    ["get_process_icons", { exes: ["C:\\Windows\\explorer.exe"] }],
   ],
 );
 

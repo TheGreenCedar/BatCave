@@ -25,7 +25,7 @@ Svelte cockpit
           -> ETW per-process network attribution
           -> Linux /proc and /sys telemetry
           -> Linux optional bpftrace/eBPF network attribution
-          -> local elevated-helper snapshot mode
+          -> privileged in-process Windows collectors in installed releases
           -> Rust benchmark CLI
 ```
 
@@ -35,13 +35,13 @@ The UI talks to the runtime through Tauri commands:
 - `refresh_now`
 - `pause_runtime`
 - `resume_runtime`
-- `set_admin_mode`
+- `set_sample_interval`
 - `set_process_query`
 - `get_process_icon`
 
 The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, session-scoped admin state, warm cache, health, diagnostics, and persistence belong in Rust.
 
-Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, admin, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. The UI appends histories and derives rates only when `sample_seq` advances. The required `environment` object reports `platform`, `admin_mode_available`, and the resolved `data_directory`. `admin_mode` reports `unavailable`, `off`, `requesting`, `active`, `recovering`, or `failed`, plus raw failure detail and the last successful elevated-snapshot time.
+Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, cadence, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. A Rust worker owns sampling; frontend reads are passive. The required `environment` object reports `platform`, `install_kind`, and the resolved `data_directory`.
 
 This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: active` aliases are not serialized. Process selection and rate identity use `pid` plus `start_time_ms` so PID reuse cannot inherit an earlier process's state. Empty kernel-pool-tag `driver_candidates` are always serialized as `[]`.
 
@@ -55,14 +55,14 @@ Implemented runtime surfaces:
 - Runtime settings, warm cache, keyed current warnings, diagnostics transition history, health budgets, query shaping, pause/resume, refresh, and admin-mode state in the Rust store.
 - Stable process grouping for runtime process views, including aggregate CPU, memory, disk, network, and thread totals for group rows.
 - Local JSON persistence with same-directory, per-writer atomic temporary files for settings and runtime state.
-- Rust CLI modes for benchmarking and elevated-helper snapshots.
+- Rust CLI mode for deterministic benchmark snapshots.
 
 Windows native telemetry:
 
 - Process identity, PID, parent PID, start-time identity, executable path, access state, CPU, kernel CPU, memory, private bytes, process I/O totals, thread count, and handle count.
 - Physical memory, Windows commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
-- Local elevated-helper snapshots when standard process access is incomplete. The main runtime keeps ETW ownership when healthy and merges its network data into helper rows only on exact PID/start-time matches. If main ETW is unavailable, the helper owns the single ETW session until it stops.
+- Installed Windows releases run privileged collectors in process. Development and portable builds keep standard access and mark permission-shaped gaps explicitly.
 
 Linux native telemetry:
 
@@ -129,7 +129,7 @@ Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
 - Windows: `%LOCALAPPDATA%\BatCaveMonitor`
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
 
-The runtime publishes the resolved path through `environment.data_directory`. Admin mode is advertised only when `environment.admin_mode_available` is true. Admin request and enabled booleans are always persisted as false because elevation is valid only for the running session. Elevated helper tokens are exactly 64 lowercase hexadecimal characters; pipe and stop-file paths must match the generated local run directory. Authenticated helper rows are held for gaps under three seconds. From three through fifteen seconds the runtime publishes current standard-access rows as `recovering`; longer gaps, disconnects, authentication failures, protocol failures, or helper exit fail closed. Recoverable helper collector errors stay in the pipe protocol and return to `active` on the next good frame.
+The runtime publishes the resolved path through `environment.data_directory` and identifies NSIS, AppImage, deb, or portable installation through `environment.install_kind`. Installed Windows release binaries request administrator access in their embedded manifest; debug builds do not. Debian packages never invoke the AppImage updater.
 
 Do not add outbound tracking, hosted collection, or remote logging. BatCave is a local instrument panel, not a service backend in a trench coat.
 
@@ -175,7 +175,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -
 
 The benchmark builds the current release CLI and measures `RuntimeState::refresh_now` plus snapshot JSON serialization in an isolated temporary data directory. The default protocol is 30 warmup ticks followed by five 120-tick measured repeats at 1000 ms, with the median repeat p95 used for gating. Normal validation overrides that protocol with zero warmup, one two-tick repeat, and no sleep.
 
-Protocol-v2 baselines record the source commit, release-binary SHA-256, platform, architecture, machine class, workload, measurement origin, protocol parameters, repeat results, and selected median. Revision fields append `-dirty` when the measured worktree is not clean. Baselines with different protocol or host metadata are rejected. Strict mode exits 2 without a baseline or absolute p95 ceiling, and a speed multiplier without a baseline also exits 2. A threshold miss exits 1. Baseline comparisons use `baseline_median_p95 / candidate_median_p95` and default to a minimum ratio of `0.90`.
+Protocol-v3 baselines record the source commit, release-binary SHA-256, binary-derived platform and architecture, machine class, workload, protocol parameters, repeat results, and selected median. Strict mode also requires advancing samples, app CPU at or below 25%, and RSS at or below 350 MiB.
 
 ## Continuous Integration
 
@@ -189,7 +189,7 @@ Protocol-v2 baselines record the source commit, release-binary SHA-256, platform
 Distribution polish remains outside the runtime contract:
 
 - Add installer signing before broad external distribution.
-- Add automatic updater work when release channels exist.
+- Promote the stable channel only after Authenticode signing proof is available.
 - Expand screenshot-based validation from the native Tauri app when changing visible cockpit layout, metric-quality messaging, theme surfaces, or platform-specific collector states.
 
 The runtime rule stays simple: collect locally, persist locally, report quality explicitly, and keep the UI fed with truth instead of theater.

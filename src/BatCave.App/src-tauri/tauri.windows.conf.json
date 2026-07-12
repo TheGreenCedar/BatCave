@@ -3,6 +3,9 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      },
       "webviewInstallMode": {
         "type": "offlineInstaller"
       }

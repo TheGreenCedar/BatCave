@@ -2,6 +2,8 @@ mod atomic_json;
 mod benchmark;
 mod cli_args;
 mod contracts;
+#[cfg(test)]
+#[allow(dead_code)]
 mod elevation;
 #[cfg(any(target_os = "linux", test))]
 mod linux_network;
@@ -24,10 +26,12 @@ mod windows_system;
 
 use contracts::{RuntimeQuery, RuntimeSnapshot};
 use runtime_store::RuntimeState;
+use std::collections::HashMap;
+use tauri::Manager;
 
 pub fn run_cli_from_env() -> Option<i32> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    benchmark::run_cli(&args).or_else(|| elevation::run_cli(&args))
+    benchmark::run_cli(&args)
 }
 
 #[tauri::command]
@@ -51,14 +55,6 @@ fn resume_runtime(state: tauri::State<'_, RuntimeState>) -> Result<RuntimeSnapsh
 }
 
 #[tauri::command]
-fn set_admin_mode(
-    state: tauri::State<'_, RuntimeState>,
-    enabled: bool,
-) -> Result<RuntimeSnapshot, String> {
-    state.set_admin_mode(enabled)
-}
-
-#[tauri::command]
 fn set_process_query(
     state: tauri::State<'_, RuntimeState>,
     query: RuntimeQuery,
@@ -67,12 +63,27 @@ fn set_process_query(
 }
 
 #[tauri::command]
-fn get_process_icon(
+fn set_sample_interval(
     state: tauri::State<'_, RuntimeState>,
-    exe: String,
-) -> Result<Option<String>, String> {
-    validate_process_icon_request(&exe, |candidate| state.has_process_exe(candidate))?;
-    process_icons::icon_data_url(&exe)
+    sample_interval_ms: u32,
+) -> Result<RuntimeSnapshot, String> {
+    state.set_sample_interval(sample_interval_ms)
+}
+
+#[tauri::command]
+fn get_process_icons(
+    state: tauri::State<'_, RuntimeState>,
+    exes: Vec<String>,
+) -> Result<HashMap<String, Option<String>>, String> {
+    if exes.len() > 120 {
+        return Err("process_icon_batch_too_large".to_string());
+    }
+    exes.into_iter()
+        .map(|exe| {
+            validate_process_icon_request(&exe, |candidate| state.has_process_exe(candidate))?;
+            Ok((exe.clone(), process_icons::icon_data_url(&exe)?))
+        })
+        .collect()
 }
 
 fn validate_process_icon_request(
@@ -94,16 +105,27 @@ fn validate_process_icon_request(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(RuntimeState::new())
+        .setup(|app| {
+            let state = RuntimeState::new();
+            state.start();
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             refresh_now,
             pause_runtime,
             resume_runtime,
-            set_admin_mode,
             set_process_query,
-            get_process_icon
+            set_sample_interval,
+            get_process_icons
         ])
         .run(tauri::generate_context!())
         .expect("error while running BatCave Monitor");

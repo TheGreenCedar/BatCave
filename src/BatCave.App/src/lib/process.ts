@@ -71,7 +71,7 @@ export const sortOptions: { value: SortKey; label: string }[] = [
 export const processColumns: ProcessColumn[] = [
   { key: "name", label: "App or process" },
   { key: "attention", label: "Impact" },
-  { key: "cpu", label: "CPU", metric: true },
+  { key: "cpu", label: "CPU (100% = 1 core)", metric: true },
   { key: "memory", label: "Memory", metric: true },
   { key: "io", label: "I/O", metric: true },
   { key: "network", label: "Network", metric: true },
@@ -91,7 +91,7 @@ export function processSelectionKey(process: Pick<ProcessSample, "pid" | "start_
 
 export function processNeedsAttention(process: ProcessSample): boolean {
   return (
-    process.cpu_percent >= 1 ||
+    process.cpu_percent >= 10 ||
     process.memory_bytes >= 900 * 1024 * 1024 ||
     rawProcessIoRate(process) >= 500 * 1024 ||
     rawProcessNetworkRate(process) >= 1024 * 1024 ||
@@ -108,7 +108,7 @@ export function compareProcessSamples(
     query.sort_column === "name"
       ? left.name.localeCompare(right.name)
       : query.sort_column === "pid"
-        ? left.pid.localeCompare(right.pid)
+        ? Number(left.pid) - Number(right.pid)
         : query.sort_column === "cpu_pct"
           ? left.cpu_percent - right.cpu_percent
           : query.sort_column === "memory_bytes"

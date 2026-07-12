@@ -125,7 +125,7 @@ with open(artifact_path, "r", encoding="utf-8") as handle:
     artifact = json.load(handle)
 
 expected = {
-    "format_version": 2,
+    "format_version": 3,
     "host": host,
     "platform": platform,
     "architecture": architecture,

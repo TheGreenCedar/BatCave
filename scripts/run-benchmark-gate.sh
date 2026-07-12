@@ -183,7 +183,7 @@ elif int(exit_code) == 0:
     raise SystemExit("Unable to locate benchmark JSON payload in output.")
 
 report = {
-    "format_version": 2,
+    "format_version": 3,
     "captured_at_utc": datetime.now(timezone.utc).isoformat(),
     "candidate_sha": candidate_sha,
     "binary_sha256": binary_sha256,
