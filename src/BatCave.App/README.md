@@ -16,6 +16,7 @@ Product screenshots and verification screenshots must come from the native Tauri
 - Windows for `tauri:dev:windows` and `tauri:build:windows`
 - Microsoft Edge WebView2 Evergreen Runtime for Windows installs. The NSIS bundle embeds Microsoft's Evergreen Standalone Installer and does not need network access during installation.
 - Ubuntu/Debian plus the native Tauri packages for `tauri:dev:linux` and `tauri:build:linux`
+- macOS 12 or newer plus Xcode Command Line Tools for `tauri:dev:macos`; universal builds require both Apple Rust targets
 
 Install Linux native prerequisites from the repository root:
 
@@ -52,12 +53,21 @@ bash scripts/run-dev.sh
 bash scripts/run-dev.sh --web-only
 ```
 
+The same shell entry points detect macOS automatically:
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+bash scripts/run-dev.sh
+bash scripts/run-dev.sh --web-only
+```
+
 From this app directory, the lower-level commands are:
 
 ```powershell
 npm run dev
 npm run tauri:dev:windows
 npm run tauri:dev:linux
+npm run tauri:dev:macos
 ```
 
 `npm run dev` starts Vite at `http://127.0.0.1:1420`. The platform-specific Tauri commands launch the native shell around that UI.
@@ -86,7 +96,7 @@ Full repository validation from the repository root:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1
 ```
 
-Linux:
+Linux or macOS:
 
 ```bash
 bash scripts/validate-tauri.sh
@@ -113,9 +123,10 @@ Build platform bundles from this app directory:
 ```powershell
 npm run tauri:build:windows
 npm run tauri:build:linux
+npm run tauri:build:macos:universal
 ```
 
-Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. `tauri.windows.conf.json` selects `offlineInstaller`, so the NSIS artifact embeds Microsoft's WebView2 Evergreen Standalone Installer. The trade-off is roughly 127 MB of additional package size in exchange for installation without network access and continued Evergreen runtime servicing. There is no online-bootstrapper artifact. Build hosts can still need network access to populate Tauri's WebView2 download cache. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts.
+Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. `tauri.windows.conf.json` selects `offlineInstaller`, so the NSIS artifact embeds Microsoft's WebView2 Evergreen Standalone Installer. The trade-off is roughly 127 MB of additional package size in exchange for installation without network access and continued Evergreen runtime servicing. There is no online-bootstrapper artifact. Build hosts can still need network access to populate Tauri's WebView2 download cache. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts. The Mac universal `.app` and DMG land under `src-tauri/target/universal-apple-darwin/release/bundle`; local builds are not notarized and main-branch CI artifacts are ad-hoc signed.
 
 ## Runtime Behavior
 
@@ -137,6 +148,7 @@ Local state stays under:
 
 - Windows: `%LOCALAPPDATA%\BatCaveMonitor`
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
+- macOS: `~/Library/Application Support/BatCaveMonitor`
 
 The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
 
@@ -144,7 +156,7 @@ The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
 
 The attention queue groups rows by executable identity when available, then process name, then PID as a last resort. Group rows always have a stable key so they can be expanded, collapsed, selected, and inspected.
 
-Live values may update in place, but ranking order is held while the pointer or keyboard focus is inside the queue, a group is expanded, or a workload is selected. A newer order is applied only through the visible `Ranking updated` control. The desktop queue renders a semantic table; below 820px it becomes a compact list of metric cards.
+Live values may update in place, but ranking order is held while the pointer or keyboard focus is inside the queue, a group is expanded, or a workload is selected. A newer order is applied only through the visible `Ranking updated` control. At 1280px and wider the resource rail and inspector remain visible; from 900–1279px the resource selector becomes horizontal and the inspector becomes a drawer; below 900px the workload queue becomes a compact list of metric cards.
 
 Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
 
@@ -162,6 +174,8 @@ Linux per-process network attribution is optional. It uses `bpftrace`/eBPF kretp
 
 `sysinfo` remains a fallback when native collectors cannot read the expected host files.
 
+macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, disk totals, thread count, and file-descriptor count when access allows. Aggregate disk rate is explicitly identified as a partial process aggregate. Per-process network attribution and privileged helper mode are unavailable on macOS in this release.
+
 ## Benchmarking
 
 From the repository root on Windows:
@@ -172,7 +186,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-ba
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -BaselineArtifactPath artifacts\benchmarks\baseline-core-YYYYMMDD-HHMMSS.json
 ```
 
-Linux:
+Linux or macOS:
 
 ```bash
 bash scripts/run-benchmark.sh --benchmark-host core --ticks 120 --sleep-ms 1000
@@ -184,7 +198,7 @@ Benchmarks build the current release CLI, use an isolated temporary data directo
 
 Strict mode is a configuration error without either a baseline or explicit p95 ceiling. A speed multiplier without a baseline is also a configuration error. Matching baselines use `baseline_p95 / candidate_p95` and require at least `0.90` by default. Use `run-benchmark-gate` for release/local regression checks and its generated report artifact.
 
-CI validates Windows and Linux source changes on pull requests and `codex/**` pushes. Pushes to `main` and manual bundle runs retain Windows NSIS plus Linux deb/AppImage artifacts for 14 days. The versioned release workflow validates the shared SemVer and produces checksums plus GitHub build provenance before an optional durable release. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
+CI validates Windows, Linux, and both macOS architectures on pull requests and `codex/**` pushes. Pushes to `main` and manual bundle runs retain Windows NSIS, Linux deb/AppImage, and ad-hoc-signed universal Mac artifacts for 14 days. The versioned release workflow validates the shared SemVer and produces checksums plus GitHub build provenance before an optional durable release; its Mac job additionally enforces Developer ID signing, notarization, stapling, universal slices, and DMG integrity. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
 
 ## Production Notes
 

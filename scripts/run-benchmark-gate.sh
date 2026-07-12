@@ -15,6 +15,19 @@ min_speedup_multiplier="0.90"
 max_p95_ms=""
 output_directory=""
 
+case "$(uname -s)" in
+  Darwin)
+    runtime_platform="macos"
+    ;;
+  Linux)
+    runtime_platform="linux"
+    ;;
+  *)
+    echo "run-benchmark-gate.sh supports Linux and macOS. Use scripts/run-benchmark-gate.ps1 on Windows." >&2
+    exit 2
+    ;;
+esac
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --benchmark-host|--host)
@@ -75,6 +88,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$runtime_platform" == "macos" && "$architecture" == "arm64" ]]; then
+  architecture="aarch64"
+fi
 
 if [[ -n "$baseline_json_path" && -n "$baseline_artifact_path" ]]; then
   echo "Specify either --baseline-json or --baseline-artifact, not both." >&2
@@ -139,10 +156,14 @@ if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
 fi
 binary_sha256=""
 if [[ -x "$benchmark_exe" ]]; then
-  binary_sha256="$(sha256sum "$benchmark_exe" | awk '{print $1}')"
+  if command -v sha256sum >/dev/null 2>&1; then
+    binary_sha256="$(sha256sum "$benchmark_exe" | awk '{print $1}')"
+  else
+    binary_sha256="$(shasum -a 256 "$benchmark_exe" | awk '{print $1}')"
+  fi
 fi
 
-python3 - "$raw_file" "$report_path" "$benchmark_host" "$architecture" "$machine_class" "$workload_profile" "$warmup_ticks" "$ticks" "$sleep_ms" "$repeats" "$baseline_json_path" "$baseline_artifact_path" "$min_speedup_multiplier" "$max_p95_ms" "$has_baseline" "$candidate_sha" "$binary_sha256" "$exit_code" <<'PY'
+python3 - "$raw_file" "$report_path" "$benchmark_host" "$runtime_platform" "$architecture" "$machine_class" "$workload_profile" "$warmup_ticks" "$ticks" "$sleep_ms" "$repeats" "$baseline_json_path" "$baseline_artifact_path" "$min_speedup_multiplier" "$max_p95_ms" "$has_baseline" "$candidate_sha" "$binary_sha256" "$exit_code" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -151,6 +172,7 @@ from datetime import datetime, timezone
     raw_file,
     report_path,
     host,
+    platform,
     architecture,
     machine_class,
     workload_profile,
@@ -188,7 +210,7 @@ report = {
     "candidate_sha": candidate_sha,
     "binary_sha256": binary_sha256,
     "host": host,
-    "platform": "linux",
+    "platform": platform,
     "architecture": architecture,
     "machine_class": machine_class,
     "workload_profile": workload_profile,

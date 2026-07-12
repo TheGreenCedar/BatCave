@@ -25,11 +25,14 @@ export interface ProcessContributorSummary {
 }
 
 export interface RuntimeEnvironment {
-  platform: "windows" | "linux" | "fixture";
+  platform: RuntimePlatform;
   admin_mode_available: boolean;
-  install_kind: "nsis" | "appimage" | "deb" | "portable";
+  install_kind: RuntimeInstallKind;
   data_directory: string | null;
 }
+
+export type RuntimePlatform = "windows" | "linux" | "macos" | "fixture";
+export type RuntimeInstallKind = "nsis" | "appimage" | "deb" | "dmg" | "portable";
 
 export type RuntimeAdminModeState =
   | "unavailable"

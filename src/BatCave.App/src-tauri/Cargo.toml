@@ -46,3 +46,7 @@ windows-sys = { version = "0.60.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Wdk_System_SystemInformation",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+icns = { version = "0.4", default-features = false, features = ["pngio"] }
+libc = "0.2"

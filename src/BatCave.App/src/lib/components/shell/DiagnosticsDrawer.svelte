@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { X } from "phosphor-svelte";
   import { currentDiagnosticIssues } from "../../diagnostics";
   import { formatBytes, metricQualityLabel, qualityGuidance } from "../../format";
+  import { platformPresentation } from "../../platformPresentation";
   import type { RuntimeSnapshot, SystemMetricQuality } from "../../types";
 
   export let open = false;
@@ -18,6 +20,8 @@
     snapshot.environment.admin_mode_available,
   );
   $: guidance = qualityGuidance(systemQuality);
+  $: hasQualityLimitations = guidance.length > 0;
+  $: presentation = platformPresentation(snapshot.environment);
   $: overviewLabel =
     pollState === "error"
       ? "Stale"
@@ -25,7 +29,7 @@
         ? "Waiting"
         : snapshot.admin_mode.state === "recovering"
           ? "Recovering"
-          : snapshot.health.degraded
+          : snapshot.health.degraded || hasQualityLimitations
             ? "Limited"
             : "Healthy";
 
@@ -91,18 +95,24 @@
           <h2 id="diagnostics-title">Diagnostics</h2>
         </div>
         <button class="icon-action" type="button" aria-label="Close diagnostics" onclick={requestClose}>
-          <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          <X size={20} weight="bold" aria-hidden="true" />
         </button>
       </header>
 
       <div class="drawer-scroll">
         <section class="diagnostic-overview" class:healthy={overviewLabel === "Healthy"}>
           <span>{overviewLabel}</span>
-          <h3>{pollState === "error" ? lastError : snapshot.health.status_summary}</h3>
+          <h3>
+            {pollState === "error"
+              ? lastError
+              : hasQualityLimitations && !snapshot.health.degraded
+                ? "Core telemetry is current with known limitations."
+                : snapshot.health.status_summary}
+          </h3>
           <p>
             {pollState === "fixture"
               ? "Fixture data is useful for layout work, not native collector proof."
-              : snapshot.health.degraded
+              : snapshot.health.degraded || hasQualityLimitations
                 ? "BatCave keeps the trustworthy parts running and marks the gaps instead of inventing data."
                 : "Collectors are current and no limitations are active."}
           </p>
@@ -132,12 +142,29 @@
           </section>
         {/if}
 
+        {#if guidance.length > 0}
+          <section class="diagnostic-section" aria-labelledby="quality-limitations-title">
+            <div class="drawer-section-title">
+              <h3 id="quality-limitations-title">Data limitations</h3>
+              <span>{guidance.length}</span>
+            </div>
+            <div class="diagnostic-list">
+              {#each guidance as item}
+                <article class="diagnostic-issue">
+                  <h4>Metric coverage</h4>
+                  <p>{item}</p>
+                </article>
+              {/each}
+            </div>
+          </section>
+        {/if}
+
         <section class="diagnostic-section">
           <details class="technical-disclosure collector-details">
             <summary>Technical details</summary>
             <dl class="diagnostic-grid">
               <div><dt>Source</dt><dd>{sourceLabel}</dd></div>
-              <div><dt>Platform</dt><dd>{snapshot.environment.platform}</dd></div>
+              <div><dt>Platform</dt><dd>{presentation.platformName}</dd></div>
               <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
               <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
               <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>

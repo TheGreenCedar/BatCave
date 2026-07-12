@@ -13,7 +13,9 @@ use windows_sys::Win32::Foundation::HANDLE;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{cli_args, contracts::ProcessSample, telemetry::TelemetryCollector};
+#[cfg(windows)]
+use crate::telemetry::TelemetryCollector;
+use crate::{cli_args, contracts::ProcessSample};
 
 const HELPER_INTERVAL_MS: u64 = 500;
 const HELPER_STALE_GRACE: Duration = Duration::from_secs(3);

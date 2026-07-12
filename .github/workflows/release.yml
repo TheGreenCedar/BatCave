@@ -185,9 +185,140 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  macos:
+    name: Build notarized universal macOS release
+    needs: prepare
+    runs-on: macos-15
+    steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - run: npm ci
+        working-directory: src/BatCave.App
+
+      - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
+
+      - name: Validate macOS app
+        run: bash scripts/validate-tauri.sh --skip-bundle
+
+      - name: Prepare Apple signing credentials
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          required=(APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_CONTENT APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+          for name in "${required[@]}"; do
+            [[ -n "${!name:-}" ]] || { echo "Required release secret ${name} is missing." >&2; exit 1; }
+          done
+
+          key_path="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY}.p8"
+          certificate_path="${RUNNER_TEMP}/batcave-developer-id.p12"
+          keychain_path="${RUNNER_TEMP}/batcave-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+
+          echo "::add-mask::${keychain_password}"
+          {
+            echo "APPLE_API_KEY_PATH=${key_path}"
+            echo "APPLE_CERTIFICATE_PATH=${certificate_path}"
+            echo "APPLE_KEYCHAIN_PATH=${keychain_path}"
+          } >> "${GITHUB_ENV}"
+
+          printf '%s' "${APPLE_API_KEY_CONTENT}" > "${key_path}"
+          chmod 600 "${key_path}"
+          printf '%s' "${APPLE_CERTIFICATE}" | openssl base64 -d -A -out "${certificate_path}"
+          chmod 600 "${certificate_path}"
+
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${certificate_path}" -k "${keychain_path}" -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${keychain_password}" "${keychain_path}"
+          existing_keychains=()
+          while IFS= read -r keychain; do existing_keychains+=("$keychain"); done < <(security list-keychains -d user | tr -d '"' | sed 's/^[[:space:]]*//')
+          security list-keychains -d user -s "${keychain_path}" "${existing_keychains[@]}"
+          security default-keychain -d user -s "${keychain_path}"
+          security find-identity -v -p codesigning "${keychain_path}" | grep -F "${APPLE_SIGNING_IDENTITY}"
+
+      - name: Bundle signed and notarized universal macOS updater
+        working-directory: src/BatCave.App
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CI: "true"
+        run: npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.updater.conf.json --ci
+
+      - name: Sign, notarize, and staple the DMG
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          [[ "${#dmgs[@]}" -eq 1 ]] || { echo "Expected exactly one universal DMG; found ${#dmgs[@]}." >&2; exit 1; }
+          codesign --force --timestamp --sign "${APPLE_SIGNING_IDENTITY}" "${dmgs[0]}"
+          xcrun notarytool submit "${dmgs[0]}" --key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY}" --issuer "${APPLE_API_ISSUER}" --wait
+          xcrun stapler staple "${dmgs[0]}"
+
+      - name: Verify signing, notarization, universal binary, and DMG
+        run: bash scripts/verify-macos-bundle.sh --mode release
+
+      - name: Collect macOS distributables
+        run: |
+          mkdir -p dist/macos
+          cp src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg dist/macos/
+          cp src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz dist/macos/
+          cp src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig dist/macos/
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: batcave-release-macos-${{ needs.prepare.outputs.tag }}
+          path: dist/macos/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary Apple credentials
+        if: always()
+        run: |
+          if [[ -n "${APPLE_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "${APPLE_KEYCHAIN_PATH}" || true
+          fi
+          credential_files=()
+          [[ -n "${APPLE_API_KEY_PATH:-}" ]] && credential_files+=("${APPLE_API_KEY_PATH}")
+          [[ -n "${APPLE_CERTIFICATE_PATH:-}" ]] && credential_files+=("${APPLE_CERTIFICATE_PATH}")
+          if [[ "${#credential_files[@]}" -gt 0 ]]; then
+            rm -f -- "${credential_files[@]}"
+          fi
+
   finalize:
     name: Checksums, provenance, and release
-    needs: [prepare, windows, linux]
+    needs: [prepare, windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

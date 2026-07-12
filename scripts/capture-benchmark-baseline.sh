@@ -56,6 +56,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$(uname -s)" == "Darwin" && "$architecture" == "arm64" ]]; then
+  architecture="aarch64"
+fi
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 run_benchmark="$script_dir/run-benchmark.sh"
@@ -88,7 +92,11 @@ base_sha="$(git -C "$repo_root" rev-parse HEAD)"
 if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
   base_sha="${base_sha}-dirty"
 fi
-binary_sha256="$(sha256sum "$benchmark_exe" | awk '{print $1}')"
+if command -v sha256sum >/dev/null 2>&1; then
+  binary_sha256="$(sha256sum "$benchmark_exe" | awk '{print $1}')"
+else
+  binary_sha256="$(shasum -a 256 "$benchmark_exe" | awk '{print $1}')"
+fi
 
 python3 - "$raw_file" "$artifact_path" "$baseline_summary_path" "$base_sha" "$binary_sha256" <<'PY'
 import json

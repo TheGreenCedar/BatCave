@@ -1,48 +1,75 @@
 <script lang="ts">
+  import {
+    ArrowClockwise,
+    CaretDown,
+    Circle,
+    GearSix,
+    MagnifyingGlass,
+    Pause,
+    Play,
+  } from "phosphor-svelte";
+
+  export let searchText = "";
   export let isPaused = false;
   export let pollState: "starting" | "native" | "fixture" | "error" = "starting";
-  export let updatedAtLabel: string;
   export let healthLabel: string;
   export let healthTone: "healthy" | "warning" | "danger";
+  export let onSearch: (value: string) => void;
+  export let onPaused: () => void;
+  export let onRefresh: () => void;
+  export let onOpenSettings: () => void;
   export let onOpenDiagnostics: () => void;
 
-  $: runtimeLabel =
-    pollState === "error"
-      ? "Stale"
-      : isPaused
-        ? "Paused"
-        : pollState === "native"
-          ? "Live"
-          : pollState === "fixture"
-            ? "Fixture data"
-            : "Starting";
+  const brandIconUrl = new URL("../../../../src-tauri/icons/64x64.png", import.meta.url).href;
 </script>
 
 <header class="app-header">
   <div class="brand-lockup">
-    <span class="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 48 28">
-        <path d="M4 11 L13 5 L19 9 L24 3 L29 9 L35 5 L44 11 L37 18 L31 15 L24 24 L17 15 L11 18 Z" />
-      </svg>
-    </span>
+    <img class="brand-mark" src={brandIconUrl} alt="" />
     <div>
       <h1>BatCave</h1>
       <p>Local resource triage</p>
     </div>
   </div>
 
-  <div class="header-status" aria-label="Runtime status">
-    <span class="runtime-state" class:paused={isPaused} class:error={pollState === "error"}>
-      <i aria-hidden="true"></i>
-      {runtimeLabel}
-    </span>
-    <span class="sample-age">Sampled {updatedAtLabel}</span>
-    <button
-      class="health-chip"
-      class:warning={healthTone === "warning"}
-      class:danger={healthTone === "danger"}
-      type="button"
-      onclick={onOpenDiagnostics}
-    >{healthLabel}</button>
-  </div>
+  <label class="header-search" for="process-search">
+    <MagnifyingGlass size={19} weight="regular" aria-hidden="true" />
+    <input
+      id="process-search"
+      value={searchText}
+      oninput={(event) => onSearch(event.currentTarget.value)}
+      aria-label="Search apps and processes"
+      placeholder="Search apps and processes"
+      autocomplete="off"
+    />
+    <kbd>/</kbd>
+  </label>
+
+  <nav class="header-actions" aria-label="Telemetry controls">
+    <button class="header-action" class:resume={isPaused} type="button" onclick={onPaused}>
+      {#if isPaused}<Play size={18} weight="fill" aria-hidden="true" />{:else}<Pause size={18} weight="fill" aria-hidden="true" />{/if}
+      <span>{isPaused ? "Resume" : "Pause"}</span>
+    </button>
+    <button class="header-action" type="button" onclick={onRefresh}>
+      <ArrowClockwise size={18} weight="bold" aria-hidden="true" />
+      <span>Refresh</span>
+    </button>
+    <button class="header-action" type="button" onclick={onOpenSettings}>
+      <GearSix size={19} weight="regular" aria-hidden="true" />
+      <span>Settings</span>
+    </button>
+  </nav>
+
+  <button
+    class="health-chip"
+    class:warning={healthTone === "warning"}
+    class:danger={healthTone === "danger"}
+    type="button"
+    aria-label={`${healthLabel}. Open diagnostics.`}
+    onclick={onOpenDiagnostics}
+  >
+    <Circle size={10} weight="fill" aria-hidden="true" />
+    <span>{pollState === "fixture" ? "Fixture" : healthLabel}</span>
+    <CaretDown size={14} weight="bold" aria-hidden="true" />
+  </button>
 </header>

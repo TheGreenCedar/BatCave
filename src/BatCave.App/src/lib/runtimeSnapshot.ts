@@ -1,4 +1,4 @@
-import type { RuntimeQuery, RuntimeSnapshot } from "./types";
+import type { RuntimePlatform, RuntimeQuery, RuntimeSnapshot } from "./types";
 
 export function makeDefaultRuntimeQuery(): RuntimeQuery {
   return {
@@ -14,10 +14,7 @@ export function makeEmptySnapshot(
   statusSummary = "Waiting for native telemetry.",
 ): RuntimeSnapshot {
   const now = Date.now();
-  const platform =
-    typeof navigator !== "undefined" && navigator.platform.toLocaleLowerCase().includes("linux")
-      ? "linux"
-      : "windows";
+  const platform = browserPlatform();
 
   return {
     event_kind: "runtime_snapshot",
@@ -94,6 +91,14 @@ export function makeEmptySnapshot(
     total_process_count: 0,
     warnings: [],
   };
+}
+
+function browserPlatform(): RuntimePlatform {
+  if (typeof navigator === "undefined") return "windows";
+  const value = `${navigator.platform} ${navigator.userAgent}`.toLocaleLowerCase();
+  if (value.includes("mac")) return "macos";
+  if (value.includes("linux")) return "linux";
+  return "windows";
 }
 
 export function hasNewRuntimeSample(

@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { X } from "phosphor-svelte";
   import { formatInterval } from "../../format";
+  import { platformPresentation, type PlatformPresentation } from "../../platformPresentation";
   import type { RuntimeAdminModeState } from "../../types";
   import type { ThemeOption, ThemePreference } from "../../themes";
 
@@ -13,6 +15,7 @@
   export let adminState: RuntimeAdminModeState = "off";
   export let adminAvailable = true;
   export let dataDirectory: string | null = null;
+  export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
   export let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
   export let updateMessage = "Checks only when you ask.";
   export let onClose: () => void = () => {};
@@ -29,7 +32,7 @@
 
   $: adminLabel =
     adminState === "requesting"
-      ? "Waiting for Windows"
+      ? presentation.adminRequestLabel
       : adminState === "active"
         ? "Active"
         : adminState === "recovering"
@@ -101,7 +104,7 @@
           <h2 id="settings-title">Settings</h2>
         </div>
         <button class="icon-action" type="button" aria-label="Close settings" onclick={requestClose}>
-          <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          <X size={20} weight="bold" aria-hidden="true" />
         </button>
       </header>
 
@@ -152,8 +155,8 @@
         {#if adminAvailable}
           <section class="settings-section privileged-section">
             <div class="settings-section-heading">
-              <h3>Privileged access</h3>
-              <p>Installed Windows releases run with administrator access so collectors can read protected process data.</p>
+              <h3>{presentation.privilegedAccessLabel}</h3>
+              <p>{presentation.privilegedAccessDescription}</p>
             </div>
             <div class="privileged-card">
               <div>
@@ -161,7 +164,7 @@
                 <span>{adminLabel}</span>
               </div>
             </div>
-            <p class="setting-note">Development builds stay unelevated. Windows may ask for approval when an installed release starts.</p>
+            <p class="setting-note">BatCave falls back to standard access when elevated collection is denied or unavailable.</p>
           </section>
         {/if}
 

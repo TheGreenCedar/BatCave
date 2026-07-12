@@ -13,6 +13,7 @@
   } from "../../format";
   import type { DetailMode } from "../metrics/types";
   import type { ChartPalette } from "../../themes";
+  import type { PlatformPresentation } from "../../platformPresentation";
   import type {
     KernelPoolTag,
     RuntimeSnapshot,
@@ -26,7 +27,8 @@
   export let snapshot: RuntimeSnapshot = makeEmptySnapshot();
   export let history: TrendState;
   export let activeTheme: ChartPalette;
-  export let systemQuality: SystemMetricQuality;
+  export let presentation: PlatformPresentation;
+  export let systemQuality: SystemMetricQuality = {};
   export let memoryPercent: number;
   export let swapPercent: number;
   export let memoryAccounting: SystemMemoryAccounting | undefined = undefined;
@@ -45,7 +47,11 @@
   export let coreTone: (load: number) => string;
 
   $: hottestCores = coreLoads.slice().sort((left, right) => right.load - left.load).slice(0, 8);
-  $: hasSwap = snapshot.system.swap_total_bytes !== undefined;
+  $: hasSwap =
+    snapshot.system.swap_total_bytes !== undefined &&
+    snapshot.system.swap_total_bytes > 0 &&
+    systemQuality.swap?.quality !== "unavailable";
+  $: hasCommit = (memoryAccounting?.commit_limit_bytes ?? 0) > 0;
   $: commitPercent = percent(
     memoryAccounting?.commit_used_bytes ?? 0,
     memoryAccounting?.commit_limit_bytes ?? 0,
@@ -92,8 +98,8 @@
       <div><span>Available</span><strong>{optionalBytes(snapshot.system.memory_available_bytes)}</strong></div>
       <div><span>Load</span><strong>{formatPercent(memoryPercent)}</strong></div>
       <div>
-        <span>{hasSwap ? "Swap" : "Commit"}</span>
-        <strong>{formatPercent(hasSwap ? swapPercent : commitPercent)}</strong>
+        <span>{hasSwap ? "Swap" : hasCommit ? "Commit" : "Swap"}</span>
+        <strong>{hasSwap ? formatPercent(swapPercent) : hasCommit ? formatPercent(commitPercent) : "Unavailable"}</strong>
       </div>
     </div>
     <div class="detail-chart-grid two-up compact-charts">
@@ -106,7 +112,7 @@
           <div><span>Swap load</span><strong>{formatPercent(swapPercent)}</strong></div>
           <MiniChart values={history.swap} max={100} stroke={activeTheme.swapStroke} fill={activeTheme.swapFill} />
         </div>
-      {:else}
+      {:else if hasCommit}
         <div class="detail-chart-card">
           <div><span>Commit load</span><strong>{formatPercent(commitPercent)}</strong></div>
           <p>
@@ -114,14 +120,19 @@
             {optionalBytes(memoryAccounting?.commit_limit_bytes)}
           </p>
         </div>
+      {:else}
+        <div class="detail-chart-card unavailable-card">
+          <div><span>Swap pressure</span><strong>Unavailable</strong></div>
+          <p>{systemQuality.swap?.message ?? "This collector does not expose swap pressure."}</p>
+        </div>
       {/if}
     </div>
     {#if memoryAccounting}
       <details class="technical-disclosure">
         <summary>Memory accounting</summary>
         <dl class="diagnostic-grid">
-          <div><dt>Process working set</dt><dd>{formatBytes(memoryAccounting.process_working_set_bytes)}</dd></div>
-          <div><dt>Process private</dt><dd>{formatBytes(memoryAccounting.process_private_bytes)}</dd></div>
+          <div><dt>{presentation.memoryLabel}</dt><dd>{formatBytes(memoryAccounting.process_working_set_bytes)}</dd></div>
+          <div><dt>{presentation.privateMemoryLabel}</dt><dd>{formatBytes(memoryAccounting.process_private_bytes)}</dd></div>
           <div><dt>Blocked rows</dt><dd>{memoryAccounting.denied_process_count}</dd></div>
           <div><dt>Unattributed</dt><dd>{optionalBytes(memoryAccounting.unattributed_bytes)}</dd></div>
           <div><dt>Commit used</dt><dd>{optionalBytes(memoryAccounting.commit_used_bytes)}</dd></div>

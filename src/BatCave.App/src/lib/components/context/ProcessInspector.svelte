@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Copy } from "phosphor-svelte";
   import MiniChart from "../../MiniChart.svelte";
   import {
     accessLabel,
@@ -6,10 +7,14 @@
     formatPercent,
     formatRate,
     metricQualityLabel,
-    processBytesLabel,
     processMemoryQuality,
-    processMemoryTitle,
   } from "../../format";
+  import {
+    platformPresentation,
+    privateMemoryValue,
+    residentMemoryValue,
+    type PlatformPresentation,
+  } from "../../platformPresentation";
   import { processAccent, processIdentity, processSelectionKey, type ProcessRates } from "../../process";
   import type { ChartPalette } from "../../themes";
   import type { ProcessSample } from "../../types";
@@ -29,19 +34,12 @@
   export let processIcons: Record<string, string> = {};
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
-  export let maxRate: (points: number[], fallback: number) => number;
+  export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
+  export let platform: "windows" | "linux" | "macos" | "fixture" = "fixture";
   export let processNetworkLabel: (process: ProcessSample) => string;
   export let onCopy: () => void;
 
-  let activeTab: "overview" | "resources" | "technical" = "overview";
-  let previousSelection = "";
-
   $: selectedIsGroup = selectedProcess?.pid.startsWith("group:") ?? false;
-  $: selectedKey = selectedProcess ? processSelectionKey(selectedProcess) : "";
-  $: if (selectedKey !== previousSelection) {
-    previousSelection = selectedKey;
-    activeTab = "overview";
-  }
   $: copyFailed = copyStatus !== "" && copyStatus !== "Process summary copied.";
   $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...processHistory.cpu) / 100) * 100);
 
@@ -58,112 +56,85 @@
   }
 
   function findingCopy(process: ProcessSample): string {
-    if (process.cpu_percent >= 30) return "CPU is the dominant signal for this workload right now.";
-    if (process.memory_bytes >= 900 * 1024 * 1024) return "Memory is the dominant signal for this workload right now.";
-    if (processTotalIoRate(process) >= 500 * 1024) return "Disk activity is the dominant signal for this workload right now.";
-    return "This workload is visible but is not creating unusual pressure right now.";
+    if (process.cpu_percent >= 30) return "High CPU usage relative to other workloads.";
+    if (process.memory_bytes >= 900 * 1024 * 1024) return `High ${presentation.memoryLabel.toLocaleLowerCase()} relative to other workloads.`;
+    if (processTotalIoRate(process) >= 500 * 1024) return "High disk activity relative to other workloads.";
+    return "No unusual pressure is visible for this workload right now.";
+  }
+
+  function accentTone(accent: string): "hot" | "heavy" | "io" | "normal" {
+    if (accent === "Hot") return "hot";
+    if (accent === "Heavy") return "heavy";
+    if (accent === "I/O") return "io";
+    return "normal";
   }
 </script>
 
-<section class="process-inspector" aria-label="Process inspector">
+<section class="process-inspector" aria-label="Workload inspector">
   {#if selectedProcess}
     {@const identity = processIdentity(selectedProcess)}
     {@const iconSrc = processIcons[selectedProcess.exe || selectedProcess.name]}
+    {@const accent = processAccent(selectedProcess, processRates)}
     <div class="process-identity redesigned-identity">
-      <ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} />
-      <span>
-        <strong>{selectedProcess.name}</strong>
-        <small>{selectedIsGroup ? `${identity.group} / grouped workload` : `${identity.group} / PID ${selectedProcess.pid}`}</small>
+      <span class="identity-icon"><ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} /></span>
+      <span class="identity-copy">
+        <span class="identity-title-row">
+          <strong title={selectedProcess.name}>{selectedProcess.name}</strong>
+          <small class="identity-chip">{selectedIsGroup ? "Grouped" : `PID ${selectedProcess.pid}`}</small>
+        </span>
+        <span class="identity-meta-row">
+          <small class="identity-category">{selectedIsGroup ? `${identity.group} · aggregated workload` : identity.group}</small>
+          <em class={`identity-status tone-${accentTone(accent)}`}>{accent}</em>
+        </span>
       </span>
       <span class="identity-actions">
-        <em>{processAccent(selectedProcess, processRates)}</em>
-        <button class="subtle-action" type="button" onclick={onCopy}>Copy summary</button>
+        <button
+          class="icon-action inspector-copy"
+          type="button"
+          aria-label="Copy workload summary"
+          title="Copy summary"
+          onclick={onCopy}
+        >
+          <Copy size={18} weight="regular" aria-hidden="true" />
+        </button>
       </span>
     </div>
 
-    <div class="inspector-tabs" role="group" aria-label="Selected workload detail">
-      <button
-        class:active={activeTab === "overview"}
-        type="button"
-        aria-pressed={activeTab === "overview"}
-        onclick={() => (activeTab = "overview")}
-      >Overview</button>
-      <button
-        class:active={activeTab === "resources"}
-        type="button"
-        aria-pressed={activeTab === "resources"}
-        onclick={() => (activeTab = "resources")}
-      >Resources</button>
-      <button
-        class:active={activeTab === "technical"}
-        type="button"
-        aria-pressed={activeTab === "technical"}
-        onclick={() => (activeTab = "technical")}
-      >Technical</button>
+    <div class="finding-card">
+      <span>Finding</span>
+      <h3>{findingCopy(selectedProcess)}</h3>
+      <p>
+        {selectedProcess.name} is using {formatPercent(selectedProcess.cpu_percent)} of one CPU core.
+        {processTrustLabel(selectedProcess)} data; missing fields stay explicitly unavailable.
+      </p>
     </div>
 
-    {#if activeTab === "overview"}
-      <div class="finding-card">
-        <span>Current finding</span>
-        <h3>{findingCopy(selectedProcess)}</h3>
-        <p>{processTrustLabel(selectedProcess)} CPU data. Missing fields stay marked instead of being estimated silently.</p>
-      </div>
-      <div class="overview-metrics">
-        <div><span>CPU (100% = 1 core)</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
-        <div><span>Memory</span><strong>{processBytesLabel(selectedProcess, selectedProcess.memory_bytes)}</strong></div>
-        <div><span>I/O</span><strong>{formatRate(processTotalIoRate(selectedProcess))}</strong></div>
-        <div><span>Network</span><strong>{processNetworkLabel(selectedProcess)}</strong></div>
-      </div>
-      <div class="inspector-hero-chart">
-        <div><span>CPU trend</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
-        <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
-      </div>
-    {:else if activeTab === "resources"}
-      <div class="resource-list" aria-label="Selected process resources">
-        <div class="resource-row">
-          <span>CPU (100% = 1 core)</span>
-          <strong>{formatPercent(selectedProcess.cpu_percent)}</strong>
-          <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
-        </div>
-        <div class="resource-row">
-          <span>Memory</span>
-          <strong title={processMemoryTitle(selectedProcess)}>{processBytesLabel(selectedProcess, selectedProcess.memory_bytes)}</strong>
-          <MiniChart values={processHistory.memory} max={100} stroke={activeTheme.memoryStroke} fill={activeTheme.memoryFill} />
-        </div>
-        <div class="resource-row">
-          <span>Disk I/O</span>
-          <strong>{formatRate(processTotalIoRate(selectedProcess))}</strong>
-          <MiniChart
-            values={processHistory.readRate}
-            max={maxRate([...processHistory.readRate, ...processHistory.writeRate], 250_000)}
-            stroke={activeTheme.diskReadStroke}
-            fill={activeTheme.diskReadFill}
-          />
-        </div>
-        <div class="resource-row">
-          <span>Network</span>
-          <strong class="stacked-value">
-            <span>{processNetworkLabel(selectedProcess)}</span>
-            <small>{metricQualityLabel(selectedProcess.quality?.network, "Measured")}</small>
-          </strong>
-          <MiniChart
-            values={processHistory.networkRate}
-            max={maxRate(processHistory.networkRate, 250_000)}
-            stroke={activeTheme.networkDownStroke}
-            fill={activeTheme.networkDownFill}
-          />
-        </div>
-      </div>
-    {:else}
+    <section class="key-metrics" aria-labelledby="key-metrics-title">
+      <h3 id="key-metrics-title">Key metrics</h3>
+      <dl>
+        <div class="metric-cpu"><dt>CPU <small>Percent</small></dt><dd>{formatPercent(selectedProcess.cpu_percent)}</dd></div>
+        <div class="metric-memory"><dt>{presentation.memoryLabel} <small>Bytes</small></dt><dd>{residentMemoryValue(selectedProcess, platform)}</dd></div>
+        <div class="metric-disk"><dt>Disk R/W <small>Bytes/s</small></dt><dd>{formatRate(processTotalIoRate(selectedProcess))}</dd></div>
+        <div class="metric-network"><dt>Network <small>Bytes/s</small></dt><dd>{processNetworkLabel(selectedProcess)}</dd></div>
+      </dl>
+    </section>
+
+    <div class="inspector-hero-chart">
+      <div><span>CPU usage over time</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
+      <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
+    </div>
+
+    <details class="technical-disclosure inspector-technical" open>
+      <summary>Technical details</summary>
       <dl class="key-value-grid technical-grid">
-        <div><dt>PID</dt><dd>{selectedProcess.pid}</dd></div>
-        <div><dt>Parent</dt><dd>{selectedProcess.parent_pid ?? "--"}</dd></div>
-        <div><dt>Kernel CPU</dt><dd>{selectedProcess.kernel_cpu_percent === undefined ? "--" : formatPercent(selectedProcess.kernel_cpu_percent)}</dd></div>
-        <div><dt>Private memory</dt><dd>{processBytesLabel(selectedProcess, selectedProcess.private_bytes)}</dd></div>
+        <div><dt>Process ID</dt><dd>{selectedProcess.pid}</dd></div>
+        <div><dt>Parent</dt><dd>{selectedProcess.parent_pid ?? "Unavailable"}</dd></div>
+        <div><dt>Kernel CPU</dt><dd>{selectedProcess.kernel_cpu_percent === undefined ? "Unavailable" : formatPercent(selectedProcess.kernel_cpu_percent)}</dd></div>
+        <div><dt>{presentation.privateMemoryLabel}</dt><dd>{privateMemoryValue(selectedProcess, platform)}</dd></div>
         <div><dt>Read total</dt><dd>{formatBytes(selectedProcess.disk_read_total_bytes)}</dd></div>
         <div><dt>Write total</dt><dd>{formatBytes(selectedProcess.disk_write_total_bytes)}</dd></div>
-        <div><dt>Threads</dt><dd>{selectedProcess.threads || "--"}</dd></div>
-        <div><dt>Handles</dt><dd>{selectedProcess.handles || "--"}</dd></div>
+        <div><dt>Threads</dt><dd>{selectedProcess.threads || "Unavailable"}</dd></div>
+        <div><dt>{presentation.handlesLabel}</dt><dd>{selectedProcess.handles || "Unavailable"}</dd></div>
         <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>
         <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Measured")}</dd></div>
       </dl>
@@ -171,7 +142,7 @@
         <span>Executable path</span>
         <code>{selectedIsGroup ? "Expand this group to inspect individual executable paths." : selectedProcess.exe || "Path unavailable"}</code>
       </div>
-    {/if}
+    </details>
 
     {#if copyStatus}
       <p class="copy-status" role={copyFailed ? "alert" : "status"} aria-live={copyFailed ? "assertive" : "polite"}>
@@ -181,7 +152,7 @@
   {:else}
     <div class="empty-panel">
       <strong>The selected workload is no longer available</strong>
-      <span>Return to the system overview or choose another row from the attention queue.</span>
+      <span>Return to the system overview or choose another row from the workload queue.</span>
     </div>
   {/if}
 </section>

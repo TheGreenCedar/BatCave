@@ -1,4 +1,11 @@
-import type { ProcessSample, ProcessViewRow, RuntimeQuery, RuntimeSnapshot } from "./types";
+import type {
+  ProcessSample,
+  ProcessViewRow,
+  RuntimeInstallKind,
+  RuntimePlatform,
+  RuntimeQuery,
+  RuntimeSnapshot,
+} from "./types";
 import { compareProcessSamples, processIdentity, processNeedsAttention } from "./process";
 import { makeDefaultRuntimeQuery } from "./runtimeSnapshot";
 import { summarizeProcessContributors } from "./systemPressure";
@@ -17,6 +24,34 @@ const names = [
   "Rider64.exe",
   "Teams.exe",
 ];
+const macNames = [
+  "Visual Studio Code",
+  "Safari",
+  "Docker Desktop",
+  "kernel_task",
+  "Finder",
+  "postgres",
+  "iTerm2",
+  "Slack",
+  "WindowServer",
+  "mds_stores",
+  "rapportd",
+  "ControlCenter",
+];
+const linuxNames = [
+  "code",
+  "firefox",
+  "dockerd",
+  "gnome-shell",
+  "systemd",
+  "postgres",
+  "kitty",
+  "slack",
+  "Xorg",
+  "NetworkManager",
+  "containerd",
+  "pipewire",
+];
 const backgroundNames = [
   "RuntimeBroker.exe",
   "svchost.exe",
@@ -31,14 +66,43 @@ const backgroundNames = [
   "PhoneExperienceHost.exe",
   "ApplicationFrameHost.exe",
 ];
+const macBackgroundNames = [
+  "launchservicesd",
+  "runningboardd",
+  "coreaudiod",
+  "sharingd",
+  "locationd",
+  "airportd",
+  "distnoted",
+  "cfprefsd",
+  "analyticsd",
+  "trustd",
+  "logd",
+  "symptomsd",
+];
+const linuxBackgroundNames = [
+  "systemd-journald",
+  "systemd-resolved",
+  "dbus-daemon",
+  "pipewire-pulse",
+  "xdg-desktop-portal",
+  "gvfsd",
+  "udisksd",
+  "upowerd",
+  "polkitd",
+  "tracker-miner-fs",
+  "cron",
+  "sshd",
+];
 
 const baseTs = Date.now();
 
 export function makeFixtureSnapshot(
   tick: number,
   query: RuntimeQuery = makeDefaultRuntimeQuery(),
+  platform: RuntimePlatform = "fixture",
 ): RuntimeSnapshot {
-  const cpu = wave(tick, 31, 14, 0.34);
+  const cpu = platform === "macos" ? wave(tick, 71, 7, 0.18) : wave(tick, 31, 14, 0.34);
   const memoryTotal = 32 * 1024 * 1024 * 1024;
   const memoryRatio = 0.55 + Math.sin(tick / 14) * 0.06;
   const logicalCpu = Array.from({ length: 12 }, (_, index) =>
@@ -46,7 +110,7 @@ export function makeFixtureSnapshot(
   );
   const processCount = 284 + Math.round(Math.sin(tick / 8) * 8);
   const processes = Array.from({ length: processCount }, (_, index) =>
-    makeProcess(fixtureProcessName(index), index, tick),
+    makeProcess(fixtureProcessName(index, platform), index, tick, platform),
   ).sort((left, right) => right.cpu_percent - left.cpu_percent);
   const processDiskReadBps = processes.reduce((total, process) => total + process.disk_read_bps, 0);
   const processDiskWriteBps = processes.reduce(
@@ -81,10 +145,10 @@ export function makeFixtureSnapshot(
     sampled_at_ms: baseTs + tick * 1000,
     source: "fixture",
     environment: {
-      platform: "fixture",
+      platform,
       admin_mode_available: false,
-      install_kind: "portable",
-      data_directory: null,
+      install_kind: fixtureInstallKind(platform),
+      data_directory: fixtureDataDirectory(platform),
     },
     admin_mode: {
       state: "unavailable",
@@ -123,8 +187,11 @@ export function makeFixtureSnapshot(
       memory_used_bytes: memoryUsed,
       memory_total_bytes: memoryTotal,
       memory_available_bytes: Math.round(memoryTotal * (1 - memoryRatio)),
-      swap_used_bytes: Math.round(1.8 * 1024 * 1024 * 1024 + Math.sin(tick / 7) * 220_000_000),
-      swap_total_bytes: 8 * 1024 * 1024 * 1024,
+      swap_used_bytes:
+        platform === "macos"
+          ? undefined
+          : Math.round(1.8 * 1024 * 1024 * 1024 + Math.sin(tick / 7) * 220_000_000),
+      swap_total_bytes: platform === "macos" ? undefined : 8 * 1024 * 1024 * 1024,
       process_count: processes.length,
       disk_read_total_bytes: 62_000_000_000 + tick * diskReadBps,
       disk_write_total_bytes: 39_000_000_000 + tick * diskWriteBps,
@@ -190,7 +257,14 @@ export function makeFixtureSnapshot(
         kernel_cpu: { quality: "estimated", source: "fixture" },
         logical_cpu: { quality: "estimated", source: "fixture" },
         memory: { quality: "estimated", source: "fixture" },
-        swap: { quality: "estimated", source: "fixture" },
+        swap:
+          platform === "macos"
+            ? {
+                quality: "unavailable",
+                source: "fixture",
+                message: "Swap pressure is not available in this macOS layout fixture.",
+              }
+            : { quality: "estimated", source: "fixture" },
         disk: { quality: "estimated", source: "fixture" },
         network: { quality: "estimated", source: "fixture" },
       },
@@ -420,10 +494,35 @@ function attentionLabel(
   return "steady";
 }
 
-function makeProcess(name: string, index: number, tick: number): ProcessSample {
+function makeProcess(
+  name: string,
+  index: number,
+  tick: number,
+  platform: RuntimePlatform,
+): ProcessSample {
   const pid = 2100 + index * 7 + (index % 5) * 17;
-  const priorityCpu = index === 2 ? 18 : index % 37 === 0 ? 11 : index % 13 === 0 ? 6 : 0;
-  const baseCpu = 0.8 + (index % 12) * 0.72 + priorityCpu;
+  const priorityCpu =
+    platform === "macos"
+      ? index === 0
+        ? 27
+        : index === 1
+          ? 13
+          : index === 2
+            ? 8
+            : index % 37 === 0
+              ? 5
+              : 0
+      : index === 2
+        ? 18
+        : index % 37 === 0
+          ? 11
+          : index % 13 === 0
+            ? 6
+            : 0;
+  const baseCpu =
+    platform === "macos" && index >= macNames.length
+      ? 0.25 + (index % 6) * 0.16
+      : 0.8 + (index % 12) * 0.72 + priorityCpu;
   const cpu = clamp(
     wave(tick + index, baseCpu, 3.8 + (index % 5), 0.22 + (index % 13) * 0.012),
     0.1,
@@ -453,12 +552,13 @@ function makeProcess(name: string, index: number, tick: number): ProcessSample {
   );
   const otherIoBps = Math.max(0, Math.round(1_100 + (index % 10) * 150 + priorityCpu * 180));
 
+  const networkUnavailable = platform === "macos";
   return {
     pid: `${pid}`,
     parent_pid: index < 2 ? null : `${1800 + index * 19}`,
     start_time_ms: baseTs - index * 180_000,
     name,
-    exe: `C:\\Program Files\\${name.replace(".exe", "")}\\${name}`,
+    exe: fixtureExecutable(name, platform),
     status: cpu >= 2 ? "Run" : "Idle",
     cpu_percent: round1(cpu),
     memory_bytes: Math.max(18 * 1024 * 1024, Math.round(memory)),
@@ -470,8 +570,8 @@ function makeProcess(name: string, index: number, tick: number): ProcessSample {
     disk_read_bps: diskReadBps,
     disk_write_bps: diskWriteBps,
     other_io_bps: otherIoBps,
-    network_received_bps: networkReceived,
-    network_transmitted_bps: networkTransmitted,
+    network_received_bps: networkUnavailable ? undefined : networkReceived,
+    network_transmitted_bps: networkUnavailable ? undefined : networkTransmitted,
     threads: 4 + index * 2,
     handles: 80 + index * 17,
     access_state: "full",
@@ -480,21 +580,68 @@ function makeProcess(name: string, index: number, tick: number): ProcessSample {
       memory: { quality: "estimated", source: "fixture" },
       disk: { quality: "estimated", source: "fixture" },
       other_io: { quality: "estimated", source: "fixture" },
-      network: { quality: "estimated", source: "fixture" },
+      network: networkUnavailable
+        ? {
+            quality: "unavailable",
+            source: "fixture",
+            message: "Per-process network attribution is unavailable on macOS.",
+          }
+        : { quality: "estimated", source: "fixture" },
       threads: { quality: "estimated", source: "fixture" },
       handles: { quality: "estimated", source: "fixture" },
     },
   };
 }
 
-function fixtureProcessName(index: number): string {
-  if (index < names.length) {
-    return names[index];
+function fixtureProcessName(index: number, platform: RuntimePlatform): string {
+  const primaryNames = platform === "macos" ? macNames : platform === "linux" ? linuxNames : names;
+  if (index < primaryNames.length) {
+    return primaryNames[index];
   }
 
-  const family = backgroundNames[index % backgroundNames.length].replace(".exe", "");
-  const suffix = String(index - names.length + 1).padStart(3, "0");
-  return `${family}-${suffix}.exe`;
+  const backgroundPool =
+    platform === "macos"
+      ? macBackgroundNames
+      : platform === "linux"
+        ? linuxBackgroundNames
+        : backgroundNames;
+  const family = backgroundPool[index % backgroundPool.length].replace(".exe", "");
+  const suffix = String(index - primaryNames.length + 1).padStart(3, "0");
+  return platform === "windows" || platform === "fixture"
+    ? `${family}-${suffix}.exe`
+    : `${family.toLocaleLowerCase()}-${suffix}`;
+}
+
+function fixtureInstallKind(platform: RuntimePlatform): RuntimeInstallKind {
+  if (platform === "macos") return "dmg";
+  if (platform === "linux") return "appimage";
+  if (platform === "windows") return "nsis";
+  return "portable";
+}
+
+function fixtureDataDirectory(platform: RuntimePlatform): string | null {
+  if (platform === "macos") return "~/Library/Application Support/BatCaveMonitor";
+  if (platform === "linux") return "~/.local/share/BatCaveMonitor";
+  if (platform === "windows") return "%LOCALAPPDATA%\\BatCaveMonitor";
+  return null;
+}
+
+function fixtureExecutable(name: string, platform: RuntimePlatform): string {
+  if (platform === "macos") {
+    const bundleNames = new Set([
+      "Visual Studio Code",
+      "Safari",
+      "Docker Desktop",
+      "Finder",
+      "iTerm2",
+      "Slack",
+    ]);
+    return bundleNames.has(name)
+      ? `/Applications/${name}.app/Contents/MacOS/${name}`
+      : `/usr/${name.startsWith("kernel_") ? "sbin" : "bin"}/${name}`;
+  }
+  if (platform === "linux") return `/usr/bin/${name}`;
+  return `C:\\Program Files\\${name.replace(".exe", "")}\\${name}`;
 }
 
 function wave(tick: number, base: number, amplitude: number, speed: number): number {

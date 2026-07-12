@@ -7,9 +7,11 @@ const artifacts = {
   "BatCave.Monitor_0.3.0_x64-setup.exe.sig": "windows-signature\n",
   "BatCave.Monitor_0.3.0_amd64.AppImage": "",
   "BatCave.Monitor_0.3.0_amd64.AppImage.sig": "linux-signature\n",
+  "BatCave.Monitor.app.tar.gz": "",
+  "BatCave.Monitor.app.tar.gz.sig": "macos-signature\n",
 };
 
-test("builds stable signed update entries for Windows and Linux", () => {
+test("builds stable signed update entries for Windows, Linux, and universal macOS", () => {
   assert.deepEqual(buildUpdateManifest("v0.3.0", "TheGreenCedar/BatCave", artifacts), {
     version: "0.3.0",
     notes: "BatCave v0.3.0",
@@ -21,6 +23,14 @@ test("builds stable signed update entries for Windows and Linux", () => {
       "linux-x86_64": {
         signature: "linux-signature",
         url: "https://github.com/TheGreenCedar/BatCave/releases/download/v0.3.0/BatCave.Monitor_0.3.0_amd64.AppImage",
+      },
+      "darwin-aarch64": {
+        signature: "macos-signature",
+        url: "https://github.com/TheGreenCedar/BatCave/releases/download/v0.3.0/BatCave.Monitor.app.tar.gz",
+      },
+      "darwin-x86_64": {
+        signature: "macos-signature",
+        url: "https://github.com/TheGreenCedar/BatCave/releases/download/v0.3.0/BatCave.Monitor.app.tar.gz",
       },
     },
   });
@@ -38,6 +48,18 @@ test("rejects missing signatures", () => {
         "BatCave.Monitor_0.3.0_x64-setup.exe.sig": "",
       }),
     /missing or empty/,
+  );
+});
+
+test("requires exactly one universal macOS updater archive", () => {
+  assert.throws(
+    () =>
+      buildUpdateManifest("v0.3.0", "owner/repo", {
+        ...artifacts,
+        "another.app.tar.gz": "",
+        "another.app.tar.gz.sig": "other-signature",
+      }),
+    /darwin-aarch64 requires exactly one \.app\.tar\.gz asset/,
   );
 });
 

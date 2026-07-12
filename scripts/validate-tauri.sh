@@ -59,7 +59,19 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 app_root="$repo_root/src/BatCave.App"
 cargo_manifest="$app_root/src-tauri/Cargo.toml"
-tauri_build_script="tauri:build:linux"
+
+case "$(uname -s)" in
+  Darwin)
+    tauri_build_script="tauri:build:macos:universal"
+    ;;
+  Linux)
+    tauri_build_script="tauri:build:linux"
+    ;;
+  *)
+    echo "validate-tauri.sh supports Linux and macOS. Use scripts/validate-tauri.ps1 on Windows." >&2
+    exit 2
+    ;;
+esac
 
 cd "$app_root"
 
@@ -89,5 +101,17 @@ else
 fi
 
 if [[ "$skip_bundle" -eq 0 ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    missing_targets=()
+    for target in aarch64-apple-darwin x86_64-apple-darwin; do
+      if ! rustup target list --installed | grep -qx "$target"; then
+        missing_targets+=("$target")
+      fi
+    done
+    if [[ "${#missing_targets[@]}" -gt 0 ]]; then
+      echo "Universal macOS bundling requires: rustup target add ${missing_targets[*]}" >&2
+      exit 2
+    fi
+  fi
   npm run "$tauri_build_script"
 fi

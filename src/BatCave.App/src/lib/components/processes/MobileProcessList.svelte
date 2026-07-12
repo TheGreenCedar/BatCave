@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { CaretRight } from "phosphor-svelte";
   import { processSelectionKey, type ProcessIconKind } from "../../process";
-  import { formatPercent, formatRate, processBytesLabel, processMemoryTitle } from "../../format";
-  import type { ProcessSample, ProcessViewRow } from "../../types";
+  import { formatPercent, formatRate, processMemoryTitle } from "../../format";
+  import { residentMemoryValue } from "../../platformPresentation";
+  import type { ProcessSample, ProcessViewRow, RuntimePlatform } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
   export let processRows: ProcessViewRow[] = [];
@@ -10,6 +12,7 @@
   export let expandedGroups: Record<string, boolean> = {};
   export let onSelect: (pid: string) => void = () => {};
   export let onToggleGroup: (key: string) => void = () => {};
+  export let platform: RuntimePlatform = "fixture";
 
   $: cardRows = processRows.filter(
     (row) => row.kind === "group" || !row.is_grouped || (!!row.group_key && !!expandedGroups[row.group_key]),
@@ -100,7 +103,7 @@
           </span>
           <span>
             <em>Working set</em>
-            <b title={process ? processMemoryTitle(process) : ""}>{process ? processBytesLabel(process, row.memory_bytes) : ""}</b>
+            <b title={process ? processMemoryTitle(process) : ""}>{process ? residentMemoryValue({ ...process, memory_bytes: row.memory_bytes }, platform) : ""}</b>
           </span>
           <span>
             <em>I/O</em>
@@ -119,7 +122,7 @@
           aria-expanded={expanded}
           onclick={() => onToggleGroup(row.group_key ?? "")}
         >
-          <svg class:expanded viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5 10 8l-4.5 4.5" /></svg>
+          <CaretRight class={expanded ? "expanded" : ""} size={15} weight="bold" aria-hidden="true" />
           {expanded ? "Collapse" : "Expand"} {processCountLabel(row.group_count)}
         </button>
       {/if}
