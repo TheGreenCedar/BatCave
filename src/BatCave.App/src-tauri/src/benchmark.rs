@@ -571,9 +571,8 @@ mod tests {
                 "measured_ticks": 2,
                 "sleep_ms": 0,
                 "repeat_count": 1,
-                "median_tick_p95_ms": 10.0{}
-            }}"#,
-            overrides
+                "median_tick_p95_ms": 10.0{overrides}
+            }}"#
         )
     }
 

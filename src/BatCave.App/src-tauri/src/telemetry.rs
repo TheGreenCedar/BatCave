@@ -67,7 +67,7 @@ impl TelemetryCollector {
         Self::new_with_process_network(true)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub(crate) fn for_elevated_helper(process_network: bool) -> Self {
         Self::new_with_process_network(process_network)
     }
