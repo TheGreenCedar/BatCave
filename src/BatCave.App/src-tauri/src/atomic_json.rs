@@ -9,7 +9,6 @@ use serde::Serialize;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicWriteOperation {
     CreateDirectory,
@@ -17,14 +16,25 @@ pub(crate) enum AtomicWriteOperation {
     CreateTemporary,
     Write,
     SyncFile,
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "MoveFileEx replacement is Windows-only")
+    )]
     Replace,
     Rename,
     SyncDirectory,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AtomicWriteEffect {
+    NotCommitted,
+    CommittedDurabilityUncertain,
+}
+
 #[derive(Debug)]
 pub(crate) struct AtomicWriteError {
     pub operation: AtomicWriteOperation,
+    pub effect: AtomicWriteEffect,
     pub path: PathBuf,
     pub error: io::Error,
 }
@@ -33,6 +43,20 @@ impl AtomicWriteError {
     fn new(operation: AtomicWriteOperation, path: impl Into<PathBuf>, error: io::Error) -> Self {
         Self {
             operation,
+            effect: AtomicWriteEffect::NotCommitted,
+            path: path.into(),
+            error,
+        }
+    }
+
+    fn committed_durability_uncertain(
+        operation: AtomicWriteOperation,
+        path: impl Into<PathBuf>,
+        error: io::Error,
+    ) -> Self {
+        Self {
+            operation,
+            effect: AtomicWriteEffect::CommittedDurabilityUncertain,
             path: path.into(),
             error,
         }
@@ -270,7 +294,11 @@ fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), AtomicWriteE
     File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
-            AtomicWriteError::new(AtomicWriteOperation::SyncDirectory, target_path, error)
+            AtomicWriteError::committed_durability_uncertain(
+                AtomicWriteOperation::SyncDirectory,
+                target_path,
+                error,
+            )
         })
 }
 
@@ -347,6 +375,42 @@ mod tests {
         let payload = fs::read_to_string(&path).expect("json file remains");
         assert_eq!(payload, r#"{"old":true}"#);
 
+        assert!(temp_files(&path).is_empty());
+        fs::remove_file(&path).expect("json cleanup");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn post_commit_directory_sync_failure_reports_installed_target() {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-atomic-json-post-commit-{}-settings.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        remove_temp_files(&path);
+        fs::write(&path, r#"{"old":true}"#).expect("old json fixture writes");
+
+        let error = write_bytes_atomic_with_replacer(&path, br#"{"new":true}"#, |temp, target| {
+            fs::rename(temp, target).expect("replacement commits");
+            Err(AtomicWriteError::committed_durability_uncertain(
+                AtomicWriteOperation::SyncDirectory,
+                target,
+                io::Error::new(
+                    io::ErrorKind::ReadOnlyFilesystem,
+                    "forced directory sync failure",
+                ),
+            ))
+        })
+        .expect_err("directory sync failure is surfaced");
+
+        assert_eq!(
+            error.effect,
+            AtomicWriteEffect::CommittedDurabilityUncertain
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("new target remains installed"),
+            r#"{"new":true}"#
+        );
         assert!(temp_files(&path).is_empty());
         fs::remove_file(&path).expect("json cleanup");
     }
