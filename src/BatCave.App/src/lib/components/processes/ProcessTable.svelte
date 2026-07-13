@@ -6,11 +6,14 @@
     processRowSecondaryLabel,
     processViewRowKey,
     processViewRowMetrics,
+    workloadSelectionHighlightsRow,
+    workloadSelectionMatchesRow,
     type ProcessColumn,
     type ProcessIconKind,
     type SortKey,
   } from "../../process";
   import {
+    displayGroupMetricValue,
     displayProcessMetricValue,
     formatBytes,
     formatPercent,
@@ -46,28 +49,17 @@
     return (row.icon_kind as ProcessIconKind) || "process";
   }
 
-  function isGroupSelected(key: string | undefined): boolean {
-    return (
-      !!key &&
-      (selectedWorkloadId === `group:${key}` ||
-        processRows.some(
-          (row) =>
-            row.kind === "process" &&
-            row.group_key === key &&
-            row.detail.workload_id === selectedWorkloadId,
-        ))
-    );
-  }
-
   function networkCellLabel(row: ProcessViewRow): string {
-    const quality =
-      row.kind === "group" ? row.detail.quality.network : row.detail.process.quality?.network;
-    if (row.kind === "process") {
-      return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        row.detail.network_bps,
+        row.detail.quality.network,
+        row.detail.coverage.network,
+        formatRate,
+      );
     }
-    if (quality?.quality === "unavailable") return "Not available";
-    if (quality?.quality === "held") return "Waiting";
-    return formatRate(processViewRowMetrics(row).networkBps);
+    const quality = row.detail.process.quality?.network;
+    return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
   }
 
   function networkCellTitle(row: ProcessViewRow): string {
@@ -79,7 +71,14 @@
 
   function cpuCellLabel(row: ProcessViewRow): string {
     const metrics = processViewRowMetrics(row);
-    if (row.kind === "group") return formatPercent(metrics.cpuPercent);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        metrics.cpuPercent,
+        row.detail.quality.cpu,
+        row.detail.coverage.cpu,
+        formatPercent,
+      );
+    }
     return displayProcessMetricValue(
       metrics.cpuPercent,
       row.detail.process.quality?.cpu,
@@ -89,13 +88,20 @@
 
   function ioCellLabel(row: ProcessViewRow): string {
     const metrics = processViewRowMetrics(row);
-    if (row.kind === "group") return formatRate(metrics.ioBps);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        metrics.ioBps,
+        row.detail.quality.io,
+        row.detail.coverage.io,
+        formatRate,
+      );
+    }
     return displayProcessMetricValue(metrics.ioBps, row.detail.process.quality?.io, formatRate);
   }
 
   function metricCellTitle(row: ProcessViewRow, metric: "cpu" | "io"): string {
     return row.kind === "group"
-      ? row.detail.quality[metric].message
+      ? (row.detail.quality[metric].message ?? "")
       : (row.detail.process.quality?.[metric]?.message ?? "");
   }
 
@@ -148,10 +154,11 @@
       {#each processRows as row (processViewRowKey(row))}
         {@const metrics = processViewRowMetrics(row)}
         {#if row.kind === "group"}
-          {@const groupSelected = isGroupSelected(row.detail.group_key)}
+          {@const groupHighlighted = workloadSelectionHighlightsRow(processRows, row, selectedWorkloadId)}
+          {@const groupActionSelected = workloadSelectionMatchesRow(row, selectedWorkloadId)}
           {@const expanded = !!expandedGroups[row.detail.group_key]}
           {@const secondaryLabel = processRowSecondaryLabel(row)}
-          <tr class:group-selected={groupSelected} class="app-group-row">
+          <tr class:group-selected={groupHighlighted} class="app-group-row">
             {#each columns as column}
               {#if column.key === "name"}
                 <td>
@@ -168,9 +175,9 @@
                     </button>
                     <button
                       class="process-button app-group-button"
-                      class:selected={groupSelected}
+                      class:selected={groupActionSelected}
                       type="button"
-                      aria-pressed={groupSelected}
+                      aria-pressed={groupActionSelected}
                       aria-label={`Inspect ${row.detail.label} group`}
                       onclick={() => onSelect(row.detail.workload_id)}
                     >
@@ -190,7 +197,7 @@
               {:else if column.key === "cpu"}
                 <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
               {:else if column.key === "memory"}
-                <td>{formatBytes(metrics.memoryBytes)}</td>
+                <td>{displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</td>
               {:else if column.key === "io"}
                 <td title={metricCellTitle(row, "io")}>{ioCellLabel(row)}</td>
               {:else if column.key === "network"}

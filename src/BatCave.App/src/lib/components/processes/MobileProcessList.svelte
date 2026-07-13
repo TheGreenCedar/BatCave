@@ -4,9 +4,12 @@
     processRowSecondaryLabel,
     processViewRowKey,
     processViewRowMetrics,
+    workloadSelectionHighlightsRow,
+    workloadSelectionMatchesRow,
     type ProcessIconKind,
   } from "../../process";
   import {
+    displayGroupMetricValue,
     displayProcessMetricValue,
     formatBytes,
     formatPercent,
@@ -47,30 +50,21 @@
     return (row.icon_kind as ProcessIconKind) || "process";
   }
 
-  function selectedInRow(row: ProcessViewRow): boolean {
-    if (row.detail.workload_id === selectedWorkloadId) return true;
-    if (row.kind === "process") return false;
-    return processRows.some(
-      (candidate) =>
-        candidate.kind === "process" &&
-        candidate.group_key === row.detail.group_key &&
-        candidate.detail.workload_id === selectedWorkloadId,
-    );
-  }
-
   function selectRow(row: ProcessViewRow): void {
     onSelect(row.detail.workload_id);
   }
 
   function networkLabel(row: ProcessViewRow): string {
-    const quality =
-      row.kind === "group" ? row.detail.quality.network : row.detail.process.quality?.network;
-    if (row.kind === "process") {
-      return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        row.detail.network_bps,
+        row.detail.quality.network,
+        row.detail.coverage.network,
+        formatRate,
+      );
     }
-    if (quality?.quality === "unavailable") return "Unavailable";
-    if (quality?.quality === "held") return "Waiting";
-    return formatRate(processViewRowMetrics(row).networkBps);
+    const quality = row.detail.process.quality?.network;
+    return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
   }
 
   function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
@@ -82,7 +76,14 @@
 
   function cpuLabel(row: ProcessViewRow): string {
     const metrics = processViewRowMetrics(row);
-    if (row.kind === "group") return formatPercent(metrics.cpuPercent);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        metrics.cpuPercent,
+        row.detail.quality.cpu,
+        row.detail.coverage.cpu,
+        formatPercent,
+      );
+    }
     return displayProcessMetricValue(
       metrics.cpuPercent,
       row.detail.process.quality?.cpu,
@@ -92,7 +93,14 @@
 
   function ioLabel(row: ProcessViewRow): string {
     const metrics = processViewRowMetrics(row);
-    if (row.kind === "group") return formatRate(metrics.ioBps);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        metrics.ioBps,
+        row.detail.quality.io,
+        row.detail.coverage.io,
+        formatRate,
+      );
+    }
     return displayProcessMetricValue(metrics.ioBps, row.detail.process.quality?.io, formatRate);
   }
 </script>
@@ -109,18 +117,19 @@
   {#each cardRows as row (processViewRowKey(row))}
     {@const process = processForRow(row)}
     {@const metrics = processViewRowMetrics(row)}
-    {@const selected = selectedInRow(row)}
+    {@const highlighted = workloadSelectionHighlightsRow(processRows, row, selectedWorkloadId)}
+    {@const actionSelected = workloadSelectionMatchesRow(row, selectedWorkloadId)}
     {@const expanded = row.kind === "group" ? !!expandedGroups[row.detail.group_key] : false}
     {@const secondaryLabel = processRowSecondaryLabel(row)}
     <article
       class="mobile-process-card"
-      class:selected={selected}
+      class:selected={highlighted}
       class:child-card={row.kind === "process" && row.is_grouped}
     >
       <button
         class="mobile-card-select"
         type="button"
-        aria-pressed={selected}
+        aria-pressed={actionSelected}
         aria-label={row.kind === "group" ? `Inspect ${row.detail.label} group` : `Inspect ${process?.name}, PID ${process?.pid}`}
         onclick={() => selectRow(row)}
       >
@@ -145,7 +154,7 @@
           </span>
           <span>
             <em>Working set</em>
-            <b title={process ? processMemoryTitle(process) : ""}>{process ? residentMemoryValue(process, platform) : formatBytes(metrics.memoryBytes)}</b>
+            <b title={process ? processMemoryTitle(process) : ""}>{row.kind === "process" ? residentMemoryValue(row.detail.process, platform) : displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</b>
           </span>
           <span>
             <em>I/O</em>

@@ -2,6 +2,7 @@ import type {
   AccessState,
   KernelPoolKind,
   KernelPoolTag,
+  MetricCoverage,
   MetricQuality,
   MetricQualityInfo,
   MetricSource,
@@ -215,6 +216,44 @@ export function processTrustLabel(process: ProcessSample): string {
   if (reported.every((quality) => quality.quality === "unavailable")) return "Unavailable";
   if (reported.every((quality) => quality.quality === "native")) return "Native";
   return "Partial coverage";
+}
+
+export function groupMetricCanDisplay(
+  metric: MetricQualityInfo | undefined,
+  coverage: MetricCoverage | undefined,
+): boolean {
+  return (
+    !!metric &&
+    !!coverage &&
+    coverage.available > 0 &&
+    metric.quality !== "held" &&
+    metric.quality !== "unavailable"
+  );
+}
+
+export function displayGroupMetricValue<T>(
+  value: T,
+  metric: MetricQualityInfo | undefined,
+  coverage: MetricCoverage | undefined,
+  formatter: (value: T) => string,
+): string {
+  if (!metric || !coverage || (metric.quality === "partial" && coverage.available === 0)) {
+    return "Limited";
+  }
+  if (metric.quality === "held") {
+    return "Pending";
+  }
+  if (metric.quality === "unavailable") {
+    return "Unavailable";
+  }
+  if (coverage.available === 0) {
+    return "Limited";
+  }
+  const formatted = formatter(value);
+  if (metric.quality === "partial" || coverage.available < coverage.total) {
+    return `${formatted} · ${coverage.available}/${coverage.total} · limited`;
+  }
+  return metric.quality === "estimated" ? `${formatted} · estimated` : formatted;
 }
 
 export function metricQualityAction(metric: MetricQualityInfo | undefined): string {

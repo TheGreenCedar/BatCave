@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { buildResourceBrief } from "../src/lib/cockpit.ts";
 import {
   displayMetricValue,
+  displayGroupMetricValue,
   displayProcessMetricValue,
   formatOptionalRate,
   formatPercent,
   formatRate,
+  groupMetricCanDisplay,
   logicalCpuMetricQuality,
   metricQualityLabel,
   metricQualityShortLabel,
@@ -649,6 +652,49 @@ test("native high network activity is never described as normal", () => {
     processFindingLabel(networked, 0, networkRate, "Working set"),
     "High network activity relative to other workloads.",
   );
+});
+
+test("group metric values require publishable coverage", () => {
+  const native = { quality: "native" as const, source: "process_aggregate" as const };
+  const held = { quality: "held" as const, source: "process_aggregate" as const };
+  const unavailable = {
+    quality: "unavailable" as const,
+    source: "process_aggregate" as const,
+  };
+  const unknown = { quality: "partial" as const, source: "process_aggregate" as const };
+  const estimated = { quality: "estimated" as const, source: "process_aggregate" as const };
+
+  assert.equal(displayGroupMetricValue(10, native, { available: 2, total: 2 }, String), "10");
+  assert.equal(
+    displayGroupMetricValue(10, unknown, { available: 1, total: 2 }, String),
+    "10 · 1/2 · limited",
+  );
+  assert.equal(
+    displayGroupMetricValue(10, estimated, { available: 2, total: 2 }, String),
+    "10 · estimated",
+  );
+  assert.equal(displayGroupMetricValue(0, held, { available: 0, total: 2 }, String), "Pending");
+  assert.equal(
+    displayGroupMetricValue(0, unavailable, { available: 0, total: 2 }, String),
+    "Unavailable",
+  );
+  assert.equal(displayGroupMetricValue(0, unknown, { available: 0, total: 2 }, String), "Limited");
+  assert.equal(groupMetricCanDisplay(native, { available: 1, total: 2 }), true);
+  assert.equal(groupMetricCanDisplay(unknown, { available: 0, total: 2 }), false);
+});
+
+test("group inspection actions expose exact selection state on desktop and mobile", () => {
+  const desktop = readFileSync(
+    new URL("../src/lib/components/processes/ProcessTable.svelte", import.meta.url),
+    "utf8",
+  );
+  const mobile = readFileSync(
+    new URL("../src/lib/components/processes/MobileProcessList.svelte", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(desktop, /aria-pressed=\{groupActionSelected\}/);
+  assert.match(mobile, /aria-pressed=\{actionSelected\}/);
 });
 
 test("sort helpers expose state and the next accessible action", () => {

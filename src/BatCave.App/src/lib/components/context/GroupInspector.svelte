@@ -1,7 +1,14 @@
 <script lang="ts">
   import { Copy } from "phosphor-svelte";
   import MiniChart from "../../MiniChart.svelte";
-  import { formatBytes, formatPercent, formatRate, metricQualityLabel } from "../../format";
+  import {
+    displayGroupMetricValue,
+    formatBytes,
+    formatPercent,
+    formatRate,
+    groupMetricCanDisplay,
+    metricQualityLabel,
+  } from "../../format";
   import type { ProcessIconKind } from "../../process";
   import type { ChartPalette } from "../../themes";
   import type { GroupDetail, MetricCoverage } from "../../types";
@@ -18,7 +25,9 @@
   export let onCopy: () => void;
 
   $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
-  $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...processHistory.cpu) / 100) * 100);
+  $: cpuCanDisplay = groupMetricCanDisplay(detail.quality.cpu, detail.coverage.cpu);
+  $: cpuHistory = cpuCanDisplay ? processHistory.cpu : [];
+  $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...cpuHistory) / 100) * 100);
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
@@ -29,17 +38,42 @@
   }
 
   function networkLabel(): string {
-    if (detail.quality.network.quality === "unavailable") return "Unavailable";
-    if (detail.quality.network.quality === "held") return "Waiting";
-    return formatRate(detail.network_bps);
+    return displayGroupMetricValue(
+      detail.network_bps,
+      detail.quality.network,
+      detail.coverage.network,
+      formatRate,
+    );
   }
 
   function findingCopy(): string {
-    if (detail.cpu_percent >= 30) return "Aggregate CPU use is high right now.";
-    if (detail.memory_bytes >= 900 * 1024 * 1024)
+    if (cpuCanDisplay && detail.cpu_percent >= 30) return "Aggregate CPU use is high right now.";
+    if (
+      groupMetricCanDisplay(detail.quality.memory, detail.coverage.memory) &&
+      detail.memory_bytes >= 900 * 1024 * 1024
+    )
       return "Aggregate memory use is high right now.";
-    if (detail.io_bps >= 500 * 1024)
+    if (
+      groupMetricCanDisplay(detail.quality.io, detail.coverage.io) &&
+      detail.io_bps >= 500 * 1024
+    )
       return "Aggregate read/write I/O is high right now.";
+    if (
+      !cpuCanDisplay ||
+      !groupMetricCanDisplay(detail.quality.memory, detail.coverage.memory) ||
+      !groupMetricCanDisplay(detail.quality.io, detail.coverage.io) ||
+      !groupMetricCanDisplay(detail.quality.threads, detail.coverage.threads)
+    ) {
+      return "Some aggregate activity is limited by process telemetry coverage.";
+    }
+    if (
+      detail.coverage.cpu.available < detail.coverage.cpu.total ||
+      detail.coverage.memory.available < detail.coverage.memory.total ||
+      detail.coverage.io.available < detail.coverage.io.total ||
+      detail.coverage.threads.available < detail.coverage.threads.total
+    ) {
+      return "Coverage is partial; no unusual activity is visible in the reported aggregates.";
+    }
     return "No unusual aggregate activity is visible for this group right now.";
   }
 </script>
@@ -82,17 +116,17 @@
   <section class="key-metrics" aria-labelledby="group-key-metrics-title">
     <h3 id="group-key-metrics-title">Aggregate metrics</h3>
     <dl>
-      <div class="metric-cpu"><dt>CPU <small>One-core equivalent</small></dt><dd>{formatPercent(detail.cpu_percent)}</dd></div>
-      <div class="metric-memory"><dt>Memory <small>Bytes</small></dt><dd>{formatBytes(detail.memory_bytes)}</dd></div>
-      <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{formatRate(detail.io_bps)}</dd></div>
+      <div class="metric-cpu"><dt>CPU <small>One-core equivalent</small></dt><dd>{displayGroupMetricValue(detail.cpu_percent, detail.quality.cpu, detail.coverage.cpu, formatPercent)}</dd></div>
+      <div class="metric-memory"><dt>Memory <small>Bytes</small></dt><dd>{displayGroupMetricValue(detail.memory_bytes, detail.quality.memory, detail.coverage.memory, formatBytes)}</dd></div>
+      <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{displayGroupMetricValue(detail.io_bps, detail.quality.io, detail.coverage.io, formatRate)}</dd></div>
       <div class="metric-network"><dt>Network <small>Bytes/s</small></dt><dd>{networkLabel()}</dd></div>
     </dl>
   </section>
 
   <div class="inspector-hero-chart">
-    <div><span>Aggregate CPU over time</span><strong>{formatPercent(detail.cpu_percent)}</strong></div>
+    <div><span>Aggregate CPU over time</span><strong>{displayGroupMetricValue(detail.cpu_percent, detail.quality.cpu, detail.coverage.cpu, formatPercent)}</strong></div>
     <MiniChart
-      values={processHistory.cpu}
+      values={cpuHistory}
       max={cpuChartMax}
       stroke={activeTheme.cpuStroke}
       fill={activeTheme.cpuFill}
@@ -103,7 +137,7 @@
     <summary>Coverage and quality</summary>
     <dl class="key-value-grid technical-grid">
       <div><dt>Processes</dt><dd>{detail.process_count}</dd></div>
-      <div><dt>Total threads</dt><dd>{detail.threads}</dd></div>
+      <div><dt>Total threads</dt><dd>{displayGroupMetricValue(detail.threads, detail.quality.threads, detail.coverage.threads, String)}</dd></div>
       <div><dt>CPU</dt><dd>{metricQualityLabel(detail.quality.cpu, "Aggregate")} · {coverageLabel(detail.coverage.cpu)}</dd></div>
       <div><dt>Memory</dt><dd>{metricQualityLabel(detail.quality.memory, "Aggregate")} · {coverageLabel(detail.coverage.memory)}</dd></div>
       <div><dt>Read/write I/O</dt><dd>{metricQualityLabel(detail.quality.io, "Aggregate")} · {coverageLabel(detail.coverage.io)}</dd></div>

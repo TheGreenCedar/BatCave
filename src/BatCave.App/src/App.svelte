@@ -16,11 +16,13 @@
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
     accessLabel,
+    displayGroupMetricValue,
     displayProcessMetricValue,
     formatBytes,
     formatOptionalRate,
     formatPercent,
     formatRate,
+    groupMetricCanDisplay,
     logicalCpuMetricQuality,
     metricQualityLabel,
     metricQualityShortLabel,
@@ -43,7 +45,7 @@
     processIdentity,
     processNeedsAttention,
     processOtherIoRate,
-    reconcileWorkloadSelection,
+    prepareProcessViewRows,
     processSelectionKey,
     processViewRowKey,
     selectedWorkloadDetail,
@@ -165,7 +167,9 @@
     row.kind === "process" ? [row.detail.process] : [],
   );
   $: selectedRow =
-    processViewRows.find((row) => processViewRowKey(row) === selectedWorkloadId) ?? null;
+    processViewRows.find((row) => processViewRowKey(row) === selectedWorkloadId) ??
+    snapshot.process_view_rows.find((row) => processViewRowKey(row) === selectedWorkloadId) ??
+    null;
   $: selectedWorkload = selectedRow?.detail ?? null;
   $: selectedProcess =
     selectedWorkload?.kind === "process" ? selectedWorkload.process : null;
@@ -718,51 +722,37 @@
     if (nextWorkload) {
       const nextRates = workloadTrendRates(nextWorkload);
       const nextMetrics = workloadMetrics(nextWorkload);
-      const nextProcess = nextWorkload.kind === "process" ? nextWorkload.process : null;
       processHistory = {
-        cpu: nextProcess
-          ? nextProcessMetricHistory(
-              processHistory.cpu,
-              nextMetrics.cpuPercent,
-              nextProcess.quality?.cpu,
-              historyPointLimit,
-            )
-          : pushPoint(processHistory.cpu, nextMetrics.cpuPercent),
-        memory: nextProcess
-          ? nextProcessMetricHistory(
-              processHistory.memory,
-              percentage(nextMetrics.memoryBytes, Math.max(next.system.memory_total_bytes, 1)),
-              processMemoryQuality(nextProcess),
-              historyPointLimit,
-            )
-          : pushPoint(
-              processHistory.memory,
-              percentage(nextMetrics.memoryBytes, Math.max(next.system.memory_total_bytes, 1)),
-            ),
-        readRate: nextProcess
-          ? nextProcessMetricHistory(
-              processHistory.readRate,
-              nextRates.readRate,
-              nextProcess.quality?.io,
-              historyPointLimit,
-            )
-          : pushPoint(processHistory.readRate, nextRates.readRate),
-        writeRate: nextProcess
-          ? nextProcessMetricHistory(
-              processHistory.writeRate,
-              nextRates.writeRate,
-              nextProcess.quality?.io,
-              historyPointLimit,
-            )
-          : pushPoint(processHistory.writeRate, nextRates.writeRate),
-        networkRate: nextProcess
-          ? nextProcessMetricHistory(
-              processHistory.networkRate,
-              nextRates.networkRate,
-              nextProcess.quality?.network,
-              historyPointLimit,
-            )
-          : pushPoint(processHistory.networkRate, nextRates.networkRate),
+        cpu: nextWorkloadHistory(
+          processHistory.cpu,
+          nextMetrics.cpuPercent,
+          nextWorkload,
+          "cpu",
+        ),
+        memory: nextWorkloadHistory(
+          processHistory.memory,
+          percentage(nextMetrics.memoryBytes, Math.max(next.system.memory_total_bytes, 1)),
+          nextWorkload,
+          "memory",
+        ),
+        readRate: nextWorkloadHistory(
+          processHistory.readRate,
+          nextRates.readRate,
+          nextWorkload,
+          "io",
+        ),
+        writeRate: nextWorkloadHistory(
+          processHistory.writeRate,
+          nextRates.writeRate,
+          nextWorkload,
+          "io",
+        ),
+        networkRate: nextWorkloadHistory(
+          processHistory.networkRate,
+          nextRates.networkRate,
+          nextWorkload,
+          "network",
+        ),
       };
     } else if (previousWorkload) {
       processHistory = emptyProcessTrendState();
@@ -981,13 +971,13 @@
   }
 
   function updateProcessRows(incoming: ProcessViewRow[]): void {
-    incoming = incoming.slice(0, 180);
-    const reconciledSelection = reconcileWorkloadSelection(incoming, selectedWorkloadId);
-    if (selectedWorkloadId && !reconciledSelection) {
+    const prepared = prepareProcessViewRows(incoming, selectedWorkloadId, 180);
+    if (selectedWorkloadId && !prepared.selection) {
       selectedWorkloadId = "";
       detailSubject = "system";
       compactDetailOpen = false;
     }
+    incoming = prepared.rows;
 
     if (forceRankingRefresh || displayProcessRows.length === 0 || !shouldHoldRanking()) {
       displayProcessRows = incoming;
@@ -1050,28 +1040,16 @@
   function resetWorkloadHistory(workload: WorkloadDetail): void {
     const rates = workloadTrendRates(workload);
     const metrics = workloadMetrics(workload);
-    const process = workload.kind === "process" ? workload.process : null;
     processHistory = {
-      cpu: process
-        ? nextProcessMetricHistory([], metrics.cpuPercent, process.quality?.cpu, historyPointLimit)
-        : [metrics.cpuPercent],
-      memory: process
-        ? nextProcessMetricHistory(
-            [],
-            percentage(metrics.memoryBytes, Math.max(snapshot.system.memory_total_bytes, 1)),
-            processMemoryQuality(process),
-            historyPointLimit,
-          )
-        : [percentage(metrics.memoryBytes, Math.max(snapshot.system.memory_total_bytes, 1))],
-      readRate: process
-        ? nextProcessMetricHistory([], rates.readRate, process.quality?.io, historyPointLimit)
-        : [rates.readRate],
-      writeRate: process
-        ? nextProcessMetricHistory([], rates.writeRate, process.quality?.io, historyPointLimit)
-        : [rates.writeRate],
-      networkRate: process
-        ? nextProcessMetricHistory([], rates.networkRate, process.quality?.network, historyPointLimit)
-        : [rates.networkRate],
+      cpu: initialWorkloadHistory(metrics.cpuPercent, workload, "cpu"),
+      memory: initialWorkloadHistory(
+        percentage(metrics.memoryBytes, Math.max(snapshot.system.memory_total_bytes, 1)),
+        workload,
+        "memory",
+      ),
+      readRate: initialWorkloadHistory(rates.readRate, workload, "io"),
+      writeRate: initialWorkloadHistory(rates.writeRate, workload, "io"),
+      networkRate: initialWorkloadHistory(rates.networkRate, workload, "network"),
     };
   }
 
@@ -1253,6 +1231,39 @@
     };
   }
 
+  type HistoricalGroupMetric = "cpu" | "memory" | "io" | "network";
+
+  function initialWorkloadHistory(
+    value: number,
+    workload: WorkloadDetail,
+    metric: HistoricalGroupMetric,
+  ): number[] {
+    if (workload.kind === "group") {
+      return groupMetricCanDisplay(workload.quality[metric], workload.coverage[metric])
+        ? [value]
+        : [];
+    }
+    const quality =
+      metric === "memory" ? processMemoryQuality(workload.process) : workload.process.quality?.[metric];
+    return nextProcessMetricHistory([], value, quality, historyPointLimit);
+  }
+
+  function nextWorkloadHistory(
+    values: number[],
+    value: number,
+    workload: WorkloadDetail,
+    metric: HistoricalGroupMetric,
+  ): number[] {
+    if (workload.kind === "group") {
+      return groupMetricCanDisplay(workload.quality[metric], workload.coverage[metric])
+        ? pushPoint(values, value)
+        : [];
+    }
+    const quality =
+      metric === "memory" ? processMemoryQuality(workload.process) : workload.process.quality?.[metric];
+    return nextProcessMetricHistory(values, value, quality, historyPointLimit);
+  }
+
   function percentage(value: number, total: number): number {
     if (total <= 0) {
       return 0;
@@ -1338,12 +1349,12 @@
       `Name: ${group.label}`,
       `Category: ${group.category}`,
       `Processes: ${group.process_count}`,
-      `CPU (one-core-equivalent aggregate): ${formatPercent(group.cpu_percent)}`,
-      `Memory: ${formatBytes(group.memory_bytes)}`,
-      `Read/write I/O rate: ${formatRate(group.io_bps)}`,
-      `Other I/O rate: ${formatOptionalRate(group.other_io_bps)}`,
-      `Network: ${group.quality.network.quality === "unavailable" ? "Unavailable" : formatRate(group.network_bps)}`,
-      `Threads: ${group.threads}`,
+      `CPU (one-core-equivalent aggregate): ${displayGroupMetricValue(group.cpu_percent, group.quality.cpu, group.coverage.cpu, formatPercent)}`,
+      `Memory: ${displayGroupMetricValue(group.memory_bytes, group.quality.memory, group.coverage.memory, formatBytes)}`,
+      `Read/write I/O rate: ${displayGroupMetricValue(group.io_bps, group.quality.io, group.coverage.io, formatRate)}`,
+      `Other I/O rate: ${displayGroupMetricValue(group.other_io_bps ?? 0, group.quality.other_io, group.coverage.other_io, formatRate)}`,
+      `Network: ${displayGroupMetricValue(group.network_bps, group.quality.network, group.coverage.network, formatRate)}`,
+      `Threads: ${displayGroupMetricValue(group.threads, group.quality.threads, group.coverage.threads, String)}`,
       `CPU coverage: ${group.coverage.cpu.available}/${group.coverage.cpu.total}`,
       `Memory coverage: ${group.coverage.memory.available}/${group.coverage.memory.total}`,
       `Read/write I/O coverage: ${group.coverage.io.available}/${group.coverage.io.total}`,

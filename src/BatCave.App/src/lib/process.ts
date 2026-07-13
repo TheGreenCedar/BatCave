@@ -305,6 +305,38 @@ export function windowProcessViewRows(
   return windowed;
 }
 
+export function prepareProcessViewRows(
+  rows: ProcessViewRow[],
+  selection: string,
+  visibleRowLimit: number,
+): { rows: ProcessViewRow[]; selection: string } {
+  return {
+    rows: windowProcessViewRows(rows, visibleRowLimit),
+    selection: reconcileWorkloadSelection(rows, selection),
+  };
+}
+
+export function workloadSelectionMatchesRow(row: ProcessViewRow, selection: string): boolean {
+  return row.detail.workload_id === selection;
+}
+
+export function workloadSelectionHighlightsRow(
+  rows: ProcessViewRow[],
+  row: ProcessViewRow,
+  selection: string,
+): boolean {
+  if (workloadSelectionMatchesRow(row, selection) || row.kind === "process") {
+    return workloadSelectionMatchesRow(row, selection);
+  }
+
+  return rows.some(
+    (candidate) =>
+      candidate.kind === "process" &&
+      candidate.group_key === row.detail.group_key &&
+      workloadSelectionMatchesRow(candidate, selection),
+  );
+}
+
 export function shouldStabilizeProcessOrder(sortKey: SortKey): boolean {
   return sortKey === "attention";
 }

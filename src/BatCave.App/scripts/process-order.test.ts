@@ -4,12 +4,15 @@ import {
   hasSameProcessOrder,
   processViewRowKey,
   processViewRowMetrics,
+  prepareProcessViewRows,
   reconcileWorkloadSelection,
   selectedWorkloadDetail,
   shouldHoldProcessOrder,
   shouldStabilizeProcessOrder,
   stabilizeProcessRows,
   windowProcessViewRows,
+  workloadSelectionHighlightsRow,
+  workloadSelectionMatchesRow,
 } from "../src/lib/process.ts";
 import type { ProcessViewRow } from "../src/lib/types.ts";
 
@@ -125,6 +128,40 @@ test("result window counts collapsed groups instead of their hidden children", (
     ),
     false,
   );
+});
+
+test("visible workload budgeting preserves later identities behind a large collapsed group", () => {
+  const largeGroup = groupRows("large", 220);
+  const laterRows = Array.from({ length: 179 }, (_, index) => row(`later-${index}`, 1));
+  const selected = processViewRowKey(laterRows.at(-1)!);
+  const rawRows = [...largeGroup, ...laterRows];
+
+  const prepared = prepareProcessViewRows(rawRows, selected, 180);
+
+  assert.equal(rawRows.indexOf(laterRows.at(-1)!), 399);
+  assert.equal(prepared.selection, selected);
+  assert.equal(reconcileWorkloadSelection(prepared.rows, selected), selected);
+  assert.equal(
+    prepared.rows.filter((candidate) => candidate.kind === "group" || !candidate.is_grouped).length,
+    180,
+  );
+  assert.equal(
+    prepared.rows.filter(
+      (candidate) => candidate.kind === "process" && candidate.group_key === "large",
+    ).length,
+    220,
+  );
+});
+
+test("child selection highlights its group without pressing the group inspection action", () => {
+  const rows = groupRows("workers", 2);
+  const group = rows[0];
+  const child = rows[1];
+  const selection = processViewRowKey(child);
+
+  assert.equal(workloadSelectionHighlightsRow(rows, group, selection), true);
+  assert.equal(workloadSelectionMatchesRow(group, selection), false);
+  assert.equal(workloadSelectionMatchesRow(child, selection), true);
 });
 
 function groupRows(groupKey: string, childCount: number): ProcessViewRow[] {

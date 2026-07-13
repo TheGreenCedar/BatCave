@@ -301,8 +301,7 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
     )
     .filter((process) => matchesFocusMode(process, query.focus_mode))
     .slice()
-    .sort((left, right) => compareProcessSamples(left, right, query))
-    .slice(0, Math.max(1, query.limit));
+    .sort((left, right) => compareProcessSamples(left, right, query));
 
   const groups = new Map<string, FixtureProcessGroup>();
   for (const process of rows) {
@@ -327,15 +326,18 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
     }
 
     group.processes.push(process);
-    group.cpuPercent += process.cpu_percent;
-    group.memoryBytes += process.memory_bytes;
-    group.ioBps += processIoRate(process);
-    group.networkBps += processNetworkRate(process);
-    group.threads += process.threads;
+    if (groupMetricAvailable(process, "cpu")) group.cpuPercent += process.cpu_percent;
+    if (groupMetricAvailable(process, "memory")) group.memoryBytes += process.memory_bytes;
+    if (groupMetricAvailable(process, "io")) group.ioBps += processIoRate(process);
+    if (groupMetricAvailable(process, "network")) {
+      group.networkBps += processNetworkRate(process);
+    }
+    if (groupMetricAvailable(process, "threads")) group.threads += process.threads;
   }
 
   return [...groups.values()]
     .sort((left, right) => compareGroups(left, right, query))
+    .slice(0, Math.max(1, query.limit))
     .flatMap((group) => {
       const grouped = group.processes.length > 1;
       const processRows = group.processes.map((process) => {
@@ -442,21 +444,29 @@ function groupMetricSummary(
   const availableQualities = availableProcesses
     .map((process) => groupMetricQuality(process, metric)?.quality)
     .filter((quality): quality is MetricQualityInfo["quality"] => !!quality);
+  const reportedQualities = processes
+    .map((process) => groupMetricQuality(process, metric)?.quality)
+    .filter((quality): quality is MetricQualityInfo["quality"] => !!quality);
+  const missingQuality = processes.length - reportedQualities.length;
+  const valueCount = processes.filter((process) => groupMetricHasValue(process, metric)).length;
   const coverage: MetricCoverage = {
     available: availableProcesses.length,
     total: processes.length,
   };
   const quality: MetricQualityInfo["quality"] =
-    coverage.available === 0
+    metric === "other_io" || valueCount === 0
       ? "unavailable"
-      : coverage.available < coverage.total ||
-          availableQualities.some((value) => value === "partial" || value === "unavailable") ||
-          (availableQualities.some((value) => value === "held") &&
-            !availableQualities.every((value) => value === "held"))
-        ? "partial"
-        : availableQualities.length > 0 && availableQualities.every((value) => value === "held")
-          ? "held"
-          : availableQualities.some((value) => value === "estimated")
+      : coverage.available === 0
+        ? missingQuality > 0
+          ? "partial"
+          : reportedQualities.every((value) => value === "held")
+            ? "held"
+            : reportedQualities.every((value) => value === "unavailable")
+              ? "unavailable"
+              : "partial"
+        : coverage.available < coverage.total || availableQualities.includes("partial")
+          ? "partial"
+          : availableQualities.includes("estimated")
             ? "estimated"
             : "native";
 
@@ -474,12 +484,22 @@ function groupMetricSummary(
 }
 
 function groupMetricAvailable(process: ProcessSample, metric: GroupMetricKey): boolean {
+  const quality = groupMetricQuality(process, metric)?.quality;
+  return (
+    groupMetricHasValue(process, metric) &&
+    quality !== undefined &&
+    quality !== "unavailable" &&
+    quality !== "held"
+  );
+}
+
+function groupMetricHasValue(process: ProcessSample, metric: GroupMetricKey): boolean {
   if (metric === "other_io") return false;
-  const hasValue =
+  return (
     metric !== "network" ||
     process.network_received_bps !== undefined ||
-    process.network_transmitted_bps !== undefined;
-  return hasValue && groupMetricQuality(process, metric)?.quality !== "unavailable";
+    process.network_transmitted_bps !== undefined
+  );
 }
 
 function groupMetricQuality(

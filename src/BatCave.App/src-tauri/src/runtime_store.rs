@@ -860,7 +860,7 @@ fn build_snapshot(
     processes: Vec<ProcessSample>,
     warnings: Vec<RuntimeWarning>,
 ) -> RuntimeSnapshot {
-    let process_view_rows = shape_process_view(&processes, &settings.query);
+    let process_view_rows = shape_process_view(all_processes, &settings.query);
     RuntimeSnapshot {
         event_kind: "runtime_snapshot".to_string(),
         publication_seq,
@@ -1085,6 +1085,12 @@ fn merge_main_network_attribution(main: &[ProcessSample], elevated: &mut [Proces
 }
 
 fn shape_rows(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessSample> {
+    let mut rows = rank_processes(processes, query);
+    rows.truncate(query.limit.max(1));
+    rows
+}
+
+fn rank_processes(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessSample> {
     let needle = query.filter_text.trim().to_lowercase();
     let mut rows = processes
         .iter()
@@ -1099,7 +1105,6 @@ fn shape_rows(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessS
         .collect::<Vec<_>>();
 
     rows.sort_by(|left, right| compare_process(left, right, query));
-    rows.truncate(query.limit.max(1));
     rows
 }
 
@@ -1126,10 +1131,11 @@ struct ProcessAppGroup {
 }
 
 fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessViewRow> {
+    let processes = rank_processes(processes, query);
     let mut groups = Vec::<ProcessAppGroup>::new();
     let mut group_indexes = HashMap::<String, usize>::new();
 
-    for process in processes {
+    for process in &processes {
         let key = process_app_key(process);
         let index = if let Some(index) = group_indexes.get(&key) {
             *index
@@ -1154,20 +1160,30 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
         };
 
         let group = &mut groups[index];
-        group.cpu_percent += process.cpu_percent;
-        group.memory_bytes = group.memory_bytes.saturating_add(process.memory_bytes);
-        group.io_bps = group.io_bps.saturating_add(process_io_rate(process));
-        group.network_bps = group
-            .network_bps
-            .saturating_add(process_network_rate(process));
-        group.threads = group.threads.saturating_add(process.threads as u64);
+        if group_metric_available(process, GroupMetric::Cpu) {
+            group.cpu_percent += process.cpu_percent;
+        }
+        if group_metric_available(process, GroupMetric::Memory) {
+            group.memory_bytes = group.memory_bytes.saturating_add(process.memory_bytes);
+        }
+        if group_metric_available(process, GroupMetric::Io) {
+            group.io_bps = group.io_bps.saturating_add(process_io_rate(process));
+        }
+        if group_metric_available(process, GroupMetric::Network) {
+            group.network_bps = group
+                .network_bps
+                .saturating_add(process_network_rate(process));
+        }
+        if group_metric_available(process, GroupMetric::Threads) {
+            group.threads = group.threads.saturating_add(process.threads as u64);
+        }
         group.processes.push(process.clone());
     }
 
     groups.sort_by(|left, right| compare_process_group(left, right, query));
 
     let mut rows = Vec::with_capacity(processes.len() + groups.len());
-    for group in groups {
+    for group in groups.into_iter().take(query.limit.max(1)) {
         let grouped = group.processes.len() > 1;
         let group_count = group.processes.len();
         if grouped {
@@ -1222,7 +1238,7 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
     rows
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum GroupMetric {
     Cpu,
     Memory,
@@ -1293,24 +1309,37 @@ fn group_metric_summary(
         .map(|quality| quality.quality)
         .collect::<Vec<_>>();
 
-    let quality = if available == 0 {
+    let reported_quality = processes
+        .iter()
+        .filter_map(|process| group_metric_quality(process, metric))
+        .map(|quality| quality.quality)
+        .collect::<Vec<_>>();
+    let missing_quality = total.saturating_sub(reported_quality.len());
+    let value_count = processes
+        .iter()
+        .filter(|process| group_metric_has_value(process, metric))
+        .count();
+
+    let quality = if metric == GroupMetric::OtherIo || value_count == 0 {
         MetricQuality::Unavailable
-    } else if available < total
-        || available_quality
-            .iter()
-            .any(|quality| matches!(quality, MetricQuality::Partial | MetricQuality::Unavailable))
-        || (available_quality.contains(&MetricQuality::Held)
-            && !available_quality
-                .iter()
-                .all(|quality| *quality == MetricQuality::Held))
-    {
-        MetricQuality::Partial
-    } else if !available_quality.is_empty()
-        && available_quality
+    } else if available == 0 {
+        if missing_quality > 0 {
+            MetricQuality::Partial
+        } else if reported_quality
             .iter()
             .all(|quality| *quality == MetricQuality::Held)
-    {
-        MetricQuality::Held
+        {
+            MetricQuality::Held
+        } else if reported_quality
+            .iter()
+            .all(|quality| *quality == MetricQuality::Unavailable)
+        {
+            MetricQuality::Unavailable
+        } else {
+            MetricQuality::Partial
+        }
+    } else if available < total || available_quality.contains(&MetricQuality::Partial) {
+        MetricQuality::Partial
     } else if available_quality.contains(&MetricQuality::Estimated) {
         MetricQuality::Estimated
     } else {
@@ -1336,16 +1365,23 @@ fn group_metric_summary(
 }
 
 fn group_metric_available(process: &ProcessSample, metric: GroupMetric) -> bool {
-    let has_value = match metric {
+    group_metric_has_value(process, metric)
+        && group_metric_quality(process, metric).is_some_and(|quality| {
+            !matches!(
+                quality.quality,
+                MetricQuality::Unavailable | MetricQuality::Held
+            )
+        })
+}
+
+fn group_metric_has_value(process: &ProcessSample, metric: GroupMetric) -> bool {
+    match metric {
         GroupMetric::OtherIo => false,
         GroupMetric::Network => {
             process.network_received_bps.is_some() || process.network_transmitted_bps.is_some()
         }
         GroupMetric::Cpu | GroupMetric::Memory | GroupMetric::Io | GroupMetric::Threads => true,
-    };
-    has_value
-        && group_metric_quality(process, metric)
-            .is_none_or(|quality| quality.quality != MetricQuality::Unavailable)
+    }
 }
 
 fn group_metric_quality(
@@ -1413,17 +1449,20 @@ fn compare_process_group(
     let ordering = match query.sort_column {
         SortColumn::Name => left.label.to_lowercase().cmp(&right.label.to_lowercase()),
         SortColumn::Pid => left.key.cmp(&right.key),
-        SortColumn::MemoryBytes => left.memory_bytes.cmp(&right.memory_bytes),
-        SortColumn::IoBps => left.io_bps.cmp(&right.io_bps),
-        SortColumn::NetworkBps => left.network_bps.cmp(&right.network_bps),
-        SortColumn::Threads => left.threads.cmp(&right.threads),
+        SortColumn::MemoryBytes => {
+            group_memory_sort_value(left).cmp(&group_memory_sort_value(right))
+        }
+        SortColumn::IoBps => group_io_sort_value(left).cmp(&group_io_sort_value(right)),
+        SortColumn::NetworkBps => {
+            group_network_sort_value(left).cmp(&group_network_sort_value(right))
+        }
+        SortColumn::Threads => group_threads_sort_value(left).cmp(&group_threads_sort_value(right)),
         SortColumn::Handles | SortColumn::StartTimeMs => left.key.cmp(&right.key),
         SortColumn::Attention => group_attention_score(left)
             .partial_cmp(&group_attention_score(right))
             .unwrap_or(Ordering::Equal),
-        SortColumn::CpuPct => left
-            .cpu_percent
-            .partial_cmp(&right.cpu_percent)
+        SortColumn::CpuPct => group_cpu_sort_value(left)
+            .partial_cmp(&group_cpu_sort_value(right))
             .unwrap_or(Ordering::Equal),
     };
 
@@ -1433,6 +1472,46 @@ fn compare_process_group(
     };
 
     directed.then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+}
+
+fn group_cpu_sort_value(group: &ProcessAppGroup) -> f64 {
+    group
+        .processes
+        .first()
+        .filter(|_| group.processes.len() == 1)
+        .map_or(group.cpu_percent, |process| process.cpu_percent)
+}
+
+fn group_memory_sort_value(group: &ProcessAppGroup) -> u64 {
+    group
+        .processes
+        .first()
+        .filter(|_| group.processes.len() == 1)
+        .map_or(group.memory_bytes, |process| process.memory_bytes)
+}
+
+fn group_io_sort_value(group: &ProcessAppGroup) -> u64 {
+    group
+        .processes
+        .first()
+        .filter(|_| group.processes.len() == 1)
+        .map_or(group.io_bps, process_io_rate)
+}
+
+fn group_network_sort_value(group: &ProcessAppGroup) -> u64 {
+    group
+        .processes
+        .first()
+        .filter(|_| group.processes.len() == 1)
+        .map_or(group.network_bps, process_network_rate)
+}
+
+fn group_threads_sort_value(group: &ProcessAppGroup) -> u64 {
+    group
+        .processes
+        .first()
+        .filter(|_| group.processes.len() == 1)
+        .map_or(group.threads, |process| process.threads as u64)
 }
 
 fn matches_focus_mode(process: &ProcessSample, focus_mode: ProcessFocusMode) -> bool {
@@ -1825,6 +1904,10 @@ fn process_attention_score(process: &ProcessSample) -> f64 {
 }
 
 fn group_attention_score(group: &ProcessAppGroup) -> f64 {
+    if let [process] = group.processes.as_slice() {
+        return process_attention_score(process);
+    }
+
     let mut score = group.cpu_percent * 3.0;
     score += (group.memory_bytes as f64 / (128.0 * 1024.0 * 1024.0)).min(20.0);
     score += (group.io_bps as f64 / (512.0 * 1024.0)).min(20.0);
@@ -2334,11 +2417,13 @@ mod tests {
     #[test]
     fn process_view_groups_suffixed_app_processes() {
         let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
+        first.quality = group_test_quality(MetricQuality::Native);
         first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
         first.io_read_bps = 256;
         first.other_io_bps = Some(8 * 1024 * 1024);
         first.threads = 3;
         let mut second = sample("20", "SearchIndexer-223.exe", 8.0);
+        second.quality = group_test_quality(MetricQuality::Native);
         second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
         second.io_write_bps = 512;
         second.threads = 5;
@@ -2389,6 +2474,148 @@ mod tests {
         };
         assert!(*is_grouped);
         assert_eq!(group_key, &detail.group_key);
+    }
+
+    #[test]
+    fn process_view_aggregates_only_publishable_group_contributors() {
+        let mut native = sample("10", "SearchIndexer-211.exe", 10.0);
+        native.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        native.memory_bytes = 100;
+        native.io_read_bps = 200;
+        native.network_received_bps = Some(300);
+        native.threads = 4;
+        native.quality = group_test_quality(MetricQuality::Native);
+
+        let mut unavailable = sample("20", "SearchIndexer-223.exe", 90.0);
+        unavailable.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        unavailable.memory_bytes = 900;
+        unavailable.io_read_bps = 1_800;
+        unavailable.network_received_bps = Some(2_700);
+        unavailable.threads = 36;
+        unavailable.quality = group_test_quality(MetricQuality::Unavailable);
+
+        let rows = shape_process_view(&[native, unavailable], &RuntimeQuery::default());
+        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+            panic!("expected aggregate group row");
+        };
+
+        assert_eq!(detail.cpu_percent, 10.0);
+        assert_eq!(detail.memory_bytes, 100);
+        assert_eq!(detail.io_bps, 200);
+        assert_eq!(detail.network_bps, 300);
+        assert_eq!(detail.threads, 4);
+        for coverage in [
+            detail.coverage.cpu,
+            detail.coverage.memory,
+            detail.coverage.io,
+            detail.coverage.network,
+            detail.coverage.threads,
+        ] {
+            assert_eq!(
+                coverage,
+                MetricCoverage {
+                    available: 1,
+                    total: 2
+                }
+            );
+        }
+        for quality in [
+            &detail.quality.cpu,
+            &detail.quality.memory,
+            &detail.quality.io,
+            &detail.quality.network,
+            &detail.quality.threads,
+        ] {
+            assert_eq!(quality.quality, MetricQuality::Partial);
+        }
+    }
+
+    #[test]
+    fn process_view_marks_missing_group_quality_limited_without_publishing_values() {
+        let mut first = sample("10", "SearchIndexer-211.exe", 10.0);
+        first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        first.quality = None;
+        let mut second = sample("20", "SearchIndexer-223.exe", 90.0);
+        second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        second.quality = None;
+
+        let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
+        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+            panic!("expected aggregate group row");
+        };
+
+        assert_eq!(detail.cpu_percent, 0.0);
+        assert_eq!(detail.memory_bytes, 0);
+        assert_eq!(detail.io_bps, 0);
+        assert_eq!(detail.threads, 0);
+        assert_eq!(
+            detail.coverage.cpu,
+            MetricCoverage {
+                available: 0,
+                total: 2
+            }
+        );
+        assert_eq!(detail.quality.cpu.quality, MetricQuality::Partial);
+        assert!(detail
+            .quality
+            .cpu
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("0 of 2")));
+    }
+
+    #[test]
+    fn process_view_limit_counts_ranked_groups_not_hidden_children() {
+        let mut processes = (0..200)
+            .map(|index| {
+                let mut process = sample(
+                    &(1_000 + index).to_string(),
+                    &format!("SearchIndexer-{index:03}.exe"),
+                    1.0,
+                );
+                process.exe = format!("C:\\Windows\\System32\\SearchIndexer-{index:03}.exe");
+                process.quality = group_test_quality(MetricQuality::Native);
+                process
+            })
+            .collect::<Vec<_>>();
+        let mut later = sample("9000", "Zulu.exe", 1.0);
+        later.quality = group_test_quality(MetricQuality::Native);
+        processes.push(later);
+
+        let rows = shape_process_view(
+            &processes,
+            &RuntimeQuery {
+                sort_column: SortColumn::Name,
+                sort_direction: SortDirection::Asc,
+                limit: 2,
+                ..RuntimeQuery::default()
+            },
+        );
+
+        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+            panic!("expected aggregate group row");
+        };
+        assert_eq!(detail.process_count, 200);
+        assert_eq!(detail.coverage.cpu.total, 200);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(
+                    row,
+                    ProcessViewRow::Process {
+                        is_grouped: true,
+                        ..
+                    }
+                ))
+                .count(),
+            detail.process_count
+        );
+        assert!(rows.iter().any(|row| {
+            matches!(
+                row,
+                ProcessViewRow::Process { detail, is_grouped: false, .. }
+                    if detail.process.name == "Zulu.exe"
+            )
+        }));
     }
 
     #[test]
@@ -2461,8 +2688,10 @@ mod tests {
     fn process_view_sorts_group_rows_by_visible_aggregate() {
         let singleton = sample("10", "Code.exe", 70.0);
         let mut first = sample("20", "SearchIndexer-001.exe", 40.0);
+        first.quality = group_test_quality(MetricQuality::Native);
         first.exe = "C:\\Windows\\System32\\SearchIndexer-001.exe".to_string();
         let mut second = sample("30", "SearchIndexer-002.exe", 35.0);
+        second.quality = group_test_quality(MetricQuality::Native);
         second.exe = "C:\\Windows\\System32\\SearchIndexer-002.exe".to_string();
 
         let rows = shape_process_view(
@@ -3582,6 +3811,19 @@ mod tests {
             ProcessViewRow::Process { detail, .. } => detail.process.cpu_percent,
             ProcessViewRow::Group { detail, .. } => detail.cpu_percent,
         }
+    }
+
+    fn group_test_quality(quality: MetricQuality) -> Option<ProcessMetricQuality> {
+        let metric = || Some(MetricQualityInfo::new(quality, MetricSource::DirectApi));
+        Some(ProcessMetricQuality {
+            cpu: metric(),
+            memory: metric(),
+            io: metric(),
+            other_io: metric(),
+            network: metric(),
+            threads: metric(),
+            handles: metric(),
+        })
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {
