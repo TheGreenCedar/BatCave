@@ -2,6 +2,7 @@ import type {
   ProcessFocusMode,
   ProcessSample,
   ProcessViewRow,
+  WorkloadDetail,
   RuntimeQuery,
   SortColumn,
   SortDirection,
@@ -31,6 +32,14 @@ export interface ProcessRates {
   readRate: number;
   writeRate: number;
   otherRate?: number;
+}
+
+export interface WorkloadMetrics {
+  cpuPercent: number;
+  memoryBytes: number;
+  ioBps: number;
+  networkBps: number;
+  threads: number;
 }
 
 export type ProcessIconKind =
@@ -80,24 +89,105 @@ export const processColumns: ProcessColumn[] = [
 ];
 
 export function processViewRowKey(row: ProcessViewRow): string {
-  if (row.kind === "group") {
-    return `group:${row.group_key ?? row.group_label ?? "unknown"}`;
-  }
-
-  return row.process ? processSelectionKey(row.process) : "process:unknown";
+  return row.detail.workload_id;
 }
 
 export function processRowSecondaryLabel(row: ProcessViewRow): string | null {
   if (row.kind === "group") {
-    return String(row.group_count);
+    return String(row.detail.process_count);
   }
 
-  if (row.is_grouped && row.process) {
-    return `PID ${row.process.pid}`;
+  if (row.is_grouped) {
+    return `PID ${row.detail.process.pid}`;
   }
 
   const category = row.group_category?.trim();
   return category && category.toLocaleLowerCase() !== "processes" ? category : null;
+}
+
+export function processViewRowMetrics(row: ProcessViewRow): WorkloadMetrics {
+  if (row.kind === "group") {
+    return {
+      cpuPercent: row.detail.cpu_percent,
+      memoryBytes: row.detail.memory_bytes,
+      ioBps: row.detail.io_bps,
+      networkBps: row.detail.network_bps,
+      threads: row.detail.threads,
+    };
+  }
+
+  return {
+    cpuPercent: row.detail.process.cpu_percent,
+    memoryBytes: row.detail.process.memory_bytes,
+    ioBps: row.detail.io_bps,
+    networkBps: row.detail.network_bps,
+    threads: row.detail.process.threads,
+  };
+}
+
+export function selectedWorkloadDetail(
+  rows: ProcessViewRow[],
+  selection: string,
+): WorkloadDetail | null {
+  return rows.find((row) => processViewRowKey(row) === selection)?.detail ?? null;
+}
+
+export function isProcessViewRow(value: unknown): value is ProcessViewRow {
+  if (!isRecord(value) || !isRecord(value.detail) || typeof value.icon_kind !== "string") {
+    return false;
+  }
+  const detail = value.detail;
+
+  if (value.kind === "process") {
+    return (
+      detail.kind === "process" &&
+      typeof detail.workload_id === "string" &&
+      detail.workload_id.startsWith("process:") &&
+      isRecord(detail.process) &&
+      typeof detail.process.pid === "string" &&
+      typeof detail.process.start_time_ms === "number" &&
+      typeof detail.io_bps === "number" &&
+      typeof detail.network_bps === "number" &&
+      typeof value.group_key === "string" &&
+      typeof value.group_label === "string" &&
+      typeof value.group_category === "string" &&
+      typeof value.group_count === "number" &&
+      typeof value.is_child === "boolean" &&
+      typeof value.is_grouped === "boolean"
+    );
+  }
+
+  if (value.kind !== "group" || detail.kind !== "group") return false;
+  if (
+    ["pid", "parent_pid", "exe", "access_state", "process", "representative"].some(
+      (key) => key in detail,
+    )
+  ) {
+    return false;
+  }
+  if ("process" in value || "representative" in value) return false;
+
+  return (
+    typeof detail.workload_id === "string" &&
+    detail.workload_id.startsWith("group:") &&
+    typeof detail.group_key === "string" &&
+    typeof detail.label === "string" &&
+    typeof detail.category === "string" &&
+    typeof detail.process_count === "number" &&
+    typeof detail.cpu_percent === "number" &&
+    typeof detail.memory_bytes === "number" &&
+    typeof detail.io_bps === "number" &&
+    typeof detail.network_bps === "number" &&
+    typeof detail.threads === "number" &&
+    isRecord(detail.quality) &&
+    isRecord(detail.quality.other_io) &&
+    isRecord(detail.coverage) &&
+    isRecord(detail.coverage.other_io)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function processSelectionKey(process: Pick<ProcessSample, "pid" | "start_time_ms">): string {
@@ -219,6 +309,22 @@ export function shouldStabilizeProcessOrder(sortKey: SortKey): boolean {
   return sortKey === "attention";
 }
 
+export function shouldHoldProcessOrder(
+  sortKey: SortKey,
+  interacting: boolean,
+  expandedGroupCount: number,
+  selectedWorkloadVisible: boolean,
+): boolean {
+  return (
+    interacting ||
+    (shouldStabilizeProcessOrder(sortKey) && (expandedGroupCount > 0 || selectedWorkloadVisible))
+  );
+}
+
+export function reconcileWorkloadSelection(rows: ProcessViewRow[], selection: string): string {
+  return rows.some((row) => processViewRowKey(row) === selection) ? selection : "";
+}
+
 const sortColumnByKey: Record<SortKey, SortColumn> = {
   attention: "attention",
   name: "name",
@@ -257,43 +363,6 @@ export function processOtherIoRate(
 ): number | undefined {
   const rates = processRates[processSelectionKey(process)];
   return rates?.otherRate ?? process.other_io_bps;
-}
-
-export function groupProcessFromRow(row: ProcessViewRow): ProcessSample {
-  const representative = row.representative;
-  return {
-    pid: row.group_key ? `group:${row.group_key}` : "group",
-    parent_pid: null,
-    start_time_ms: representative?.start_time_ms ?? 0,
-    name: row.group_label ?? representative?.name ?? "Process group",
-    exe: "",
-    status: "Group",
-    cpu_percent: row.cpu_percent,
-    kernel_cpu_percent: representative?.kernel_cpu_percent,
-    memory_bytes: row.memory_bytes,
-    private_bytes: row.memory_bytes,
-    virtual_memory_bytes: representative?.virtual_memory_bytes,
-    io_read_total_bytes: representative?.io_read_total_bytes ?? 0,
-    io_write_total_bytes: representative?.io_write_total_bytes ?? 0,
-    other_io_total_bytes: undefined,
-    io_read_bps: row.io_bps,
-    io_write_bps: 0,
-    other_io_bps: undefined,
-    network_received_bps: row.network_bps,
-    network_transmitted_bps: 0,
-    threads: row.threads,
-    handles: representative?.handles ?? 0,
-    access_state: representative?.access_state ?? "full",
-    quality: {
-      ...representative?.quality,
-      other_io: {
-        quality: "unavailable",
-        source: "runtime",
-        message:
-          "Grouped Other I/O is unavailable until the process view exposes a typed aggregate.",
-      },
-    },
-  };
 }
 
 export function defaultSortDirection(key: SortKey): SortDirection {

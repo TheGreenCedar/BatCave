@@ -3,14 +3,16 @@
   import {
     sortAriaValue,
     sortButtonLabel,
-    processSelectionKey,
     processRowSecondaryLabel,
+    processViewRowKey,
+    processViewRowMetrics,
     type ProcessColumn,
     type ProcessIconKind,
     type SortKey,
   } from "../../process";
   import {
     displayProcessMetricValue,
+    formatBytes,
     formatPercent,
     formatRate,
     processMemoryTitle,
@@ -21,7 +23,7 @@
 
   export let processRows: ProcessViewRow[] = [];
   export let columns: ProcessColumn[] = [];
-  export let selectedPid = "";
+  export let selectedWorkloadId = "";
   export let sortKey: SortKey;
   export let sortDirection: SortDirection;
   export let processIcons: Record<string, string> = {};
@@ -36,10 +38,6 @@
     return `${count} ${count === 1 ? "process" : "processes"}`;
   }
 
-  function groupSelectionKey(key: string): string {
-    return `group:${key}`;
-  }
-
   function iconSrc(process: ProcessSample | undefined): string | undefined {
     return process ? processIcons[process.exe || process.name] : undefined;
   }
@@ -51,34 +49,54 @@
   function isGroupSelected(key: string | undefined): boolean {
     return (
       !!key &&
-      (selectedPid === groupSelectionKey(key) ||
+      (selectedWorkloadId === `group:${key}` ||
         processRows.some(
-          (row) => row.group_key === key && !!row.process && processSelectionKey(row.process) === selectedPid,
+          (row) =>
+            row.kind === "process" &&
+            row.group_key === key &&
+            row.detail.workload_id === selectedWorkloadId,
         ))
     );
   }
 
   function networkCellLabel(row: ProcessViewRow): string {
-    const quality = (row.process ?? row.representative)?.quality?.network;
-    return displayProcessMetricValue(row.network_bps, quality, formatRate);
+    const quality =
+      row.kind === "group" ? row.detail.quality.network : row.detail.process.quality?.network;
+    if (row.kind === "process") {
+      return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
+    }
+    if (quality?.quality === "unavailable") return "Not available";
+    if (quality?.quality === "held") return "Waiting";
+    return formatRate(processViewRowMetrics(row).networkBps);
   }
 
   function networkCellTitle(row: ProcessViewRow): string {
-    return (row.process ?? row.representative)?.quality?.network?.message ?? "";
+    return (
+      (row.kind === "group" ? row.detail.quality.network : row.detail.process.quality?.network)
+        ?.message ?? ""
+    );
   }
 
   function cpuCellLabel(row: ProcessViewRow): string {
-    const quality = (row.process ?? row.representative)?.quality?.cpu;
-    return displayProcessMetricValue(row.cpu_percent, quality, formatPercent);
+    const metrics = processViewRowMetrics(row);
+    if (row.kind === "group") return formatPercent(metrics.cpuPercent);
+    return displayProcessMetricValue(
+      metrics.cpuPercent,
+      row.detail.process.quality?.cpu,
+      formatPercent,
+    );
   }
 
   function ioCellLabel(row: ProcessViewRow): string {
-    const quality = (row.process ?? row.representative)?.quality?.io;
-    return displayProcessMetricValue(row.io_bps, quality, formatRate);
+    const metrics = processViewRowMetrics(row);
+    if (row.kind === "group") return formatRate(metrics.ioBps);
+    return displayProcessMetricValue(metrics.ioBps, row.detail.process.quality?.io, formatRate);
   }
 
   function metricCellTitle(row: ProcessViewRow, metric: "cpu" | "io"): string {
-    return (row.process ?? row.representative)?.quality?.[metric]?.message ?? "";
+    return row.kind === "group"
+      ? row.detail.quality[metric].message
+      : (row.detail.process.quality?.[metric]?.message ?? "");
   }
 
   function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
@@ -127,11 +145,11 @@
       </tr>
     </thead>
     <tbody>
-      {#each processRows as row}
+      {#each processRows as row (processViewRowKey(row))}
+        {@const metrics = processViewRowMetrics(row)}
         {#if row.kind === "group"}
-          {@const representative = row.representative}
-          {@const groupSelected = isGroupSelected(row.group_key)}
-          {@const expanded = row.group_key ? !!expandedGroups[row.group_key] : false}
+          {@const groupSelected = isGroupSelected(row.detail.group_key)}
+          {@const expanded = !!expandedGroups[row.detail.group_key]}
           {@const secondaryLabel = processRowSecondaryLabel(row)}
           <tr class:group-selected={groupSelected} class="app-group-row">
             {#each columns as column}
@@ -143,8 +161,8 @@
                       class:expanded
                       type="button"
                       aria-expanded={expanded}
-                      aria-label={`${expanded ? "Collapse" : "Expand"} ${row.group_label ?? "process"} group, ${processCountLabel(row.group_count)}`}
-                      onclick={() => row.group_key && onToggleGroup(row.group_key)}
+                      aria-label={`${expanded ? "Collapse" : "Expand"} ${row.detail.label} group, ${processCountLabel(row.detail.process_count)}`}
+                      onclick={() => onToggleGroup(row.detail.group_key)}
                     >
                       <CaretRight size={16} weight="bold" aria-hidden="true" />
                     </button>
@@ -153,12 +171,15 @@
                       class:selected={groupSelected}
                       type="button"
                       aria-pressed={groupSelected}
-                      aria-label={`Inspect ${row.group_label ?? "process"} group`}
-                      onclick={() => row.group_key && onSelect(groupSelectionKey(row.group_key))}
+                      aria-label={`Inspect ${row.detail.label} group`}
+                      onclick={() => onSelect(row.detail.workload_id)}
                     >
-                      <ProcessIcon kind={iconKind(row)} src={iconSrc(representative)} />
+                      <ProcessIcon
+                        kind={iconKind(row)}
+                        src={row.icon_source ? processIcons[row.icon_source] : undefined}
+                      />
                       <span class="process-name-stack">
-                        <span>{row.group_label}</span>
+                        <span>{row.detail.label}</span>
                         {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
                       </span>
                     </button>
@@ -169,7 +190,7 @@
               {:else if column.key === "cpu"}
                 <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
               {:else if column.key === "memory"}
-                <td>{representative ? residentMemoryValue({ ...representative, memory_bytes: row.memory_bytes }, platform) : "--"}</td>
+                <td>{formatBytes(metrics.memoryBytes)}</td>
               {:else if column.key === "io"}
                 <td title={metricCellTitle(row, "io")}>{ioCellLabel(row)}</td>
               {:else if column.key === "network"}
@@ -179,11 +200,11 @@
               {/if}
             {/each}
           </tr>
-        {:else if row.process && (!row.is_grouped || !row.group_key || expandedGroups[row.group_key])}
-          {@const process = row.process}
-          {@const selectionKey = processSelectionKey(process)}
+        {:else if !row.is_grouped || expandedGroups[row.group_key]}
+          {@const process = row.detail.process}
+          {@const selectionKey = row.detail.workload_id}
           {@const secondaryLabel = processRowSecondaryLabel(row)}
-          <tr class:selected={selectionKey === selectedPid} class:child-row={row.is_grouped}>
+          <tr class:selected={selectionKey === selectedWorkloadId} class:child-row={row.is_grouped}>
             {#each columns as column}
               {#if column.key === "name"}
                 <td>
@@ -193,9 +214,9 @@
                     </span>
                     <button
                       class="process-button"
-                      class:selected={selectionKey === selectedPid}
+                      class:selected={selectionKey === selectedWorkloadId}
                       type="button"
-                      aria-pressed={selectionKey === selectedPid}
+                      aria-pressed={selectionKey === selectedWorkloadId}
                       aria-label={`Inspect ${process.name}, PID ${process.pid}`}
                       onclick={() => onSelect(selectionKey)}
                     >

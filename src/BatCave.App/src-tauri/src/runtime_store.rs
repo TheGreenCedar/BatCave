@@ -20,11 +20,13 @@ use crate::elevation::{ElevatedHelperClient, ElevatedPoll};
 use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
-        AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
-        ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
-        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimeInstallKind,
-        RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
-        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        AccessState, GroupDetail, GroupDetailKind, GroupMetricCoverage, GroupMetricQuality,
+        MetricCoverage, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
+        ProcessDetail, ProcessDetailKind, ProcessFocusMode, ProcessSample, ProcessViewRow,
+        RuntimeAdminModeState, RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth,
+        RuntimeInstallKind, RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
+        RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot,
+        WarmCache,
     },
     telemetry::{now_ms, TelemetryCollector},
 };
@@ -1114,7 +1116,7 @@ struct ProcessAppGroup {
     label: String,
     category: String,
     icon_kind: String,
-    representative: ProcessSample,
+    presentation_process: ProcessSample,
     processes: Vec<ProcessSample>,
     cpu_percent: f64,
     memory_bytes: u64,
@@ -1140,7 +1142,7 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                 label: process_app_label(process),
                 category: identity.category.to_string(),
                 icon_kind: identity.icon_kind.to_string(),
-                representative: process.clone(),
+                presentation_process: process.clone(),
                 processes: Vec::new(),
                 cpu_percent: 0.0,
                 memory_bytes: 0,
@@ -1169,17 +1171,13 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
         let grouped = group.processes.len() > 1;
         let group_count = group.processes.len();
         if grouped {
-            rows.push(ProcessViewRow {
-                kind: ProcessViewRowKind::Group,
-                process: None,
-                representative: Some(group.representative.clone()),
-                group_key: Some(group.key.clone()),
-                group_label: Some(group.label.clone()),
-                group_category: Some(group.category.clone()),
-                group_count,
+            rows.push(ProcessViewRow::Group {
+                detail: Box::new(group_detail(&group)),
                 icon_kind: group.icon_kind.clone(),
-                is_child: false,
-                is_grouped: true,
+                icon_source: (!group.presentation_process.exe.trim().is_empty())
+                    .then(|| group.presentation_process.exe.clone()),
+                example_label: (group.presentation_process.name != group.label)
+                    .then(|| group.presentation_process.name.clone()),
                 attention_label: attention_label(
                     group.cpu_percent,
                     group.memory_bytes,
@@ -1190,23 +1188,22 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                         .iter()
                         .any(|process| process.access_state != AccessState::Full),
                 ),
-                cpu_percent: round1(group.cpu_percent),
-                memory_bytes: group.memory_bytes,
-                io_bps: group.io_bps,
-                network_bps: group.network_bps,
-                threads: group.threads,
             });
         }
 
         for process in group.processes {
             let identity = process_identity(&process);
-            rows.push(ProcessViewRow {
-                kind: ProcessViewRowKind::Process,
-                process: Some(process.clone()),
-                representative: None,
-                group_key: Some(group.key.clone()),
-                group_label: Some(group.label.clone()),
-                group_category: Some(group.category.clone()),
+            rows.push(ProcessViewRow::Process {
+                detail: Box::new(ProcessDetail {
+                    kind: ProcessDetailKind::Process,
+                    workload_id: process_workload_id(&process),
+                    io_bps: process_io_rate(&process),
+                    network_bps: process_network_rate(&process),
+                    process: process.clone(),
+                }),
+                group_key: group.key.clone(),
+                group_label: group.label.clone(),
+                group_category: group.category.clone(),
                 group_count,
                 icon_kind: identity.icon_kind.to_string(),
                 is_child: identity.is_child,
@@ -1218,16 +1215,160 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                     process_network_rate(&process),
                     process.access_state != AccessState::Full,
                 ),
-                cpu_percent: process.cpu_percent,
-                memory_bytes: process.memory_bytes,
-                io_bps: process_io_rate(&process),
-                network_bps: process_network_rate(&process),
-                threads: process.threads as u64,
             });
         }
     }
 
     rows
+}
+
+#[derive(Clone, Copy)]
+enum GroupMetric {
+    Cpu,
+    Memory,
+    Io,
+    OtherIo,
+    Network,
+    Threads,
+}
+
+fn group_detail(group: &ProcessAppGroup) -> GroupDetail {
+    let (cpu_quality, cpu_coverage) = group_metric_summary(&group.processes, GroupMetric::Cpu);
+    let (memory_quality, memory_coverage) =
+        group_metric_summary(&group.processes, GroupMetric::Memory);
+    let (io_quality, io_coverage) = group_metric_summary(&group.processes, GroupMetric::Io);
+    let (other_io_quality, other_io_coverage) =
+        group_metric_summary(&group.processes, GroupMetric::OtherIo);
+    let (network_quality, network_coverage) =
+        group_metric_summary(&group.processes, GroupMetric::Network);
+    let (threads_quality, threads_coverage) =
+        group_metric_summary(&group.processes, GroupMetric::Threads);
+
+    GroupDetail {
+        kind: GroupDetailKind::Group,
+        workload_id: group_workload_id(&group.key),
+        group_key: group.key.clone(),
+        label: group.label.clone(),
+        category: group.category.clone(),
+        process_count: group.processes.len(),
+        cpu_percent: round1(group.cpu_percent),
+        memory_bytes: group.memory_bytes,
+        io_bps: group.io_bps,
+        other_io_bps: None,
+        network_bps: group.network_bps,
+        threads: group.threads,
+        quality: GroupMetricQuality {
+            cpu: cpu_quality,
+            memory: memory_quality,
+            io: io_quality,
+            other_io: other_io_quality,
+            network: network_quality,
+            threads: threads_quality,
+        },
+        coverage: GroupMetricCoverage {
+            cpu: cpu_coverage,
+            memory: memory_coverage,
+            io: io_coverage,
+            other_io: other_io_coverage,
+            network: network_coverage,
+            threads: threads_coverage,
+        },
+    }
+}
+
+fn group_metric_summary(
+    processes: &[ProcessSample],
+    metric: GroupMetric,
+) -> (MetricQualityInfo, MetricCoverage) {
+    let total = processes.len();
+    let available = processes
+        .iter()
+        .filter(|process| group_metric_available(process, metric))
+        .count();
+    let coverage = MetricCoverage { available, total };
+    let available_quality = processes
+        .iter()
+        .filter(|process| group_metric_available(process, metric))
+        .filter_map(|process| group_metric_quality(process, metric))
+        .map(|quality| quality.quality)
+        .collect::<Vec<_>>();
+
+    let quality = if available == 0 {
+        MetricQuality::Unavailable
+    } else if available < total
+        || available_quality
+            .iter()
+            .any(|quality| matches!(quality, MetricQuality::Partial | MetricQuality::Unavailable))
+        || (available_quality.contains(&MetricQuality::Held)
+            && !available_quality
+                .iter()
+                .all(|quality| *quality == MetricQuality::Held))
+    {
+        MetricQuality::Partial
+    } else if !available_quality.is_empty()
+        && available_quality
+            .iter()
+            .all(|quality| *quality == MetricQuality::Held)
+    {
+        MetricQuality::Held
+    } else if available_quality.contains(&MetricQuality::Estimated) {
+        MetricQuality::Estimated
+    } else {
+        MetricQuality::Native
+    };
+
+    let message = (available < total).then(|| {
+        format!(
+            "{} of {} processes contribute to this aggregate.",
+            available, total
+        )
+    });
+    (
+        MetricQualityInfo {
+            quality,
+            source: Some(MetricSource::ProcessAggregate),
+            updated_at_ms: None,
+            age_ms: None,
+            message,
+        },
+        coverage,
+    )
+}
+
+fn group_metric_available(process: &ProcessSample, metric: GroupMetric) -> bool {
+    let has_value = match metric {
+        GroupMetric::OtherIo => false,
+        GroupMetric::Network => {
+            process.network_received_bps.is_some() || process.network_transmitted_bps.is_some()
+        }
+        GroupMetric::Cpu | GroupMetric::Memory | GroupMetric::Io | GroupMetric::Threads => true,
+    };
+    has_value
+        && group_metric_quality(process, metric)
+            .is_none_or(|quality| quality.quality != MetricQuality::Unavailable)
+}
+
+fn group_metric_quality(
+    process: &ProcessSample,
+    metric: GroupMetric,
+) -> Option<&MetricQualityInfo> {
+    let quality = process.quality.as_ref()?;
+    match metric {
+        GroupMetric::Cpu => quality.cpu.as_ref(),
+        GroupMetric::Memory => quality.memory.as_ref(),
+        GroupMetric::Io => quality.io.as_ref(),
+        GroupMetric::OtherIo => quality.other_io.as_ref(),
+        GroupMetric::Network => quality.network.as_ref(),
+        GroupMetric::Threads => quality.threads.as_ref(),
+    }
+}
+
+fn process_workload_id(process: &ProcessSample) -> String {
+    format!("process:{}:{}", process.pid, process.start_time_ms)
+}
+
+fn group_workload_id(group_key: &str) -> String {
+    format!("group:{group_key}")
 }
 
 fn compare_process(left: &ProcessSample, right: &ProcessSample, query: &RuntimeQuery) -> Ordering {
@@ -1271,21 +1412,12 @@ fn compare_process_group(
 ) -> Ordering {
     let ordering = match query.sort_column {
         SortColumn::Name => left.label.to_lowercase().cmp(&right.label.to_lowercase()),
-        SortColumn::Pid => {
-            numeric_pid(&left.representative.pid).cmp(&numeric_pid(&right.representative.pid))
-        }
+        SortColumn::Pid => left.key.cmp(&right.key),
         SortColumn::MemoryBytes => left.memory_bytes.cmp(&right.memory_bytes),
         SortColumn::IoBps => left.io_bps.cmp(&right.io_bps),
         SortColumn::NetworkBps => left.network_bps.cmp(&right.network_bps),
         SortColumn::Threads => left.threads.cmp(&right.threads),
-        SortColumn::Handles => left
-            .representative
-            .handles
-            .cmp(&right.representative.handles),
-        SortColumn::StartTimeMs => left
-            .representative
-            .start_time_ms
-            .cmp(&right.representative.start_time_ms),
+        SortColumn::Handles | SortColumn::StartTimeMs => left.key.cmp(&right.key),
         SortColumn::Attention => group_attention_score(left)
             .partial_cmp(&group_attention_score(right))
             .unwrap_or(Ordering::Equal),
@@ -2214,15 +2346,49 @@ mod tests {
         let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
 
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].kind, ProcessViewRowKind::Group);
-        assert_eq!(rows[0].group_label.as_deref(), Some("SearchIndexer.exe"));
-        assert_eq!(rows[0].group_category.as_deref(), Some("Windows"));
-        assert_eq!(rows[0].group_count, 2);
-        assert_eq!(rows[0].cpu_percent, 20.0);
-        assert_eq!(rows[0].io_bps, 768);
-        assert_eq!(rows[0].threads, 8);
-        assert!(rows[1].is_grouped);
-        assert_eq!(rows[1].group_key, rows[0].group_key);
+        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+            panic!("expected aggregate group row");
+        };
+        assert_eq!(detail.label, "SearchIndexer.exe");
+        assert_eq!(detail.category, "Windows");
+        assert_eq!(detail.process_count, 2);
+        assert_eq!(detail.cpu_percent, 20.0);
+        assert_eq!(detail.io_bps, 768);
+        assert_eq!(detail.other_io_bps, None);
+        assert_eq!(detail.threads, 8);
+        assert_eq!(
+            detail.coverage.cpu,
+            MetricCoverage {
+                available: 2,
+                total: 2
+            }
+        );
+        assert_eq!(
+            detail.coverage.network,
+            MetricCoverage {
+                available: 0,
+                total: 2
+            }
+        );
+        assert_eq!(detail.quality.network.quality, MetricQuality::Unavailable);
+        assert_eq!(detail.quality.other_io.quality, MetricQuality::Unavailable);
+        assert_eq!(
+            detail.coverage.other_io,
+            MetricCoverage {
+                available: 0,
+                total: 2
+            }
+        );
+        let ProcessViewRow::Process {
+            group_key,
+            is_grouped,
+            ..
+        } = &rows[1]
+        else {
+            panic!("expected process row");
+        };
+        assert!(*is_grouped);
+        assert_eq!(group_key, &detail.group_key);
     }
 
     #[test]
@@ -2235,11 +2401,22 @@ mod tests {
         let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
 
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].kind, ProcessViewRowKind::Group);
-        assert_eq!(rows[0].group_key.as_deref(), Some("memory compression"));
-        assert!(rows[1].is_grouped);
-        assert_eq!(rows[1].group_key, rows[0].group_key);
-        assert_eq!(rows[2].group_key, rows[0].group_key);
+        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+            panic!("expected aggregate group row");
+        };
+        assert_eq!(detail.group_key, "memory compression");
+        for row in &rows[1..] {
+            let ProcessViewRow::Process {
+                group_key,
+                is_grouped,
+                ..
+            } = row
+            else {
+                panic!("expected process row");
+            };
+            assert!(*is_grouped);
+            assert_eq!(group_key, &detail.group_key);
+        }
     }
 
     #[test]
@@ -2247,9 +2424,18 @@ mod tests {
         let rows = shape_process_view(&[sample("10", "Code.exe", 12.0)], &RuntimeQuery::default());
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].kind, ProcessViewRowKind::Process);
-        assert!(!rows[0].is_grouped);
-        assert_eq!(rows[0].group_label.as_deref(), Some("Code.exe"));
+        let ProcessViewRow::Process {
+            detail,
+            is_grouped,
+            group_label,
+            ..
+        } = &rows[0]
+        else {
+            panic!("expected process row");
+        };
+        assert!(!is_grouped);
+        assert_eq!(group_label, "Code.exe");
+        assert_eq!(detail.workload_id, "process:10:1700000000000");
     }
 
     #[test]
@@ -2288,9 +2474,11 @@ mod tests {
             },
         );
 
-        assert_eq!(rows[0].kind, ProcessViewRowKind::Group);
-        assert_eq!(rows[0].group_label.as_deref(), Some("SearchIndexer.exe"));
-        assert_eq!(rows[0].cpu_percent, 75.0);
+        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+            panic!("expected aggregate group row");
+        };
+        assert_eq!(detail.label, "SearchIndexer.exe");
+        assert_eq!(detail.cpu_percent, 75.0);
     }
 
     #[test]
@@ -2315,10 +2503,10 @@ mod tests {
             },
         );
 
-        assert_eq!(descending[0].cpu_percent, 124.0);
-        assert_eq!(descending[1].cpu_percent, 25.0);
-        assert_eq!(ascending[0].cpu_percent, 25.0);
-        assert_eq!(ascending[1].cpu_percent, 124.0);
+        assert_eq!(row_cpu_percent(&descending[0]), 124.0);
+        assert_eq!(row_cpu_percent(&descending[1]), 25.0);
+        assert_eq!(row_cpu_percent(&ascending[0]), 25.0);
+        assert_eq!(row_cpu_percent(&ascending[1]), 124.0);
     }
 
     #[test]
@@ -3387,6 +3575,13 @@ mod tests {
             std::env::temp_dir().join(format!("batcave-runtime-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn row_cpu_percent(row: &ProcessViewRow) -> f64 {
+        match row {
+            ProcessViewRow::Process { detail, .. } => detail.process.cpu_percent,
+            ProcessViewRow::Group { detail, .. } => detail.cpu_percent,
+        }
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {

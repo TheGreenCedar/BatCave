@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   compareProcessSamples,
-  groupProcessFromRow,
+  isProcessViewRow,
   processIoRate,
   processNeedsAttention,
   processOtherIoRate,
@@ -21,6 +21,9 @@ import type {
 
 const canonicalSnapshot = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
+);
+const workloadDetails = JSON.parse(
+  readFileSync(new URL("./fixtures/workload-details.v1.json", import.meta.url), "utf8"),
 );
 const themeCss = readFileSync(new URL("../src/styles/themes.css", import.meta.url), "utf8");
 
@@ -78,6 +81,25 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
     detail: null,
     last_success_at_ms: null,
   });
+});
+
+test("shared workload fixture keeps process and group details disjoint", () => {
+  assert.equal(workloadDetails.length, 2);
+  assert.ok(workloadDetails.every(isProcessViewRow));
+
+  const processAsGroup = structuredClone(workloadDetails[0]);
+  processAsGroup.kind = "group";
+  assert.equal(isProcessViewRow(processAsGroup), false);
+
+  const groupAsProcess = structuredClone(workloadDetails[1]);
+  groupAsProcess.kind = "process";
+  assert.equal(isProcessViewRow(groupAsProcess), false);
+
+  const representativeAggregate = structuredClone(workloadDetails[1]);
+  representativeAggregate.detail.pid = "42";
+  representativeAggregate.detail.exe = "/usr/bin/code";
+  representativeAggregate.detail.access_state = "full";
+  assert.equal(isProcessViewRow(representativeAggregate), false);
 });
 
 test("diagnostics render one limitation per stable key with the current admin action", () => {
@@ -243,36 +265,13 @@ test("contributor ambiguity is summarized from the full process set", () => {
   assert.equal(contributors.cpu_name_ambiguous, true);
 });
 
-test("synthetic groups keep Other I/O unavailable instead of borrowing or fabricating zero", () => {
-  const representative = process({
-    name: "worker",
-    other_io_total_bytes: 8_192,
-    other_io_bps: 512,
-  });
-  const row: ProcessViewRow = {
-    kind: "group",
-    representative,
-    group_key: "worker",
-    group_label: "worker",
-    group_count: 2,
-    icon_kind: "process",
-    is_child: false,
-    is_grouped: true,
-    attention_label: "steady",
-    cpu_percent: 0,
-    memory_bytes: 2,
-    io_bps: 0,
-    network_bps: 0,
-    threads: 2,
-  };
-
-  const group = groupProcessFromRow(row);
-
-  assert.equal(group.other_io_total_bytes, undefined);
-  assert.equal(group.other_io_bps, undefined);
-  assert.equal(group.quality?.other_io?.quality, "unavailable");
-  assert.equal(processOtherIoRate(group, {}), undefined);
-  assert.equal(formatOptionalRate(processOtherIoRate(group, {})), "Unavailable");
+test("typed groups keep Other I/O separate and unavailable", () => {
+  const group = (workloadDetails as ProcessViewRow[]).find((row) => row.kind === "group");
+  assert.ok(group?.kind === "group");
+  assert.equal(group.detail.other_io_bps, undefined);
+  assert.equal(group.detail.quality.other_io.quality, "unavailable");
+  assert.deepEqual(group.detail.coverage.other_io, { available: 0, total: 2 });
+  assert.equal(formatOptionalRate(group.detail.other_io_bps), "Unavailable");
   assert.equal(formatOptionalRate(processOtherIoRate(process({ other_io_bps: 0 }), {})), "0 B/s");
 });
 

@@ -37,19 +37,20 @@
   import {
     defaultSortDirection,
     focusOptions,
-    groupProcessFromRow,
     hasSameProcessOrder,
     processColumns,
     processIoRate,
     processIdentity,
     processNeedsAttention,
     processOtherIoRate,
+    reconcileWorkloadSelection,
     processSelectionKey,
     processViewRowKey,
+    selectedWorkloadDetail,
     sortColumnForKey,
     sortKeyForColumn,
     sortOptions,
-    shouldStabilizeProcessOrder,
+    shouldHoldProcessOrder,
     stabilizeProcessRows,
     type FocusMode,
     type ProcessRates,
@@ -87,6 +88,7 @@
     RuntimeSnapshot,
     SortDirection,
     TrendState,
+    WorkloadDetail,
   } from "./lib/types";
 
   interface ProcessTrendState {
@@ -106,7 +108,7 @@
 
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeEmptySnapshot();
-  let selectedPid = "";
+  let selectedWorkloadId = "";
   let hasAutoSelectedWorkload = false;
   let detailSubject: "process" | "system" = "system";
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
@@ -159,16 +161,26 @@
     snapshot.system.swap_total_bytes ?? 0,
   );
   $: processViewRows = displayProcessRows;
-  $: filteredProcesses = processViewRows.flatMap((row) => (row.process ? [row.process] : []));
-  $: selectedGroupRow = selectedGroupKey(selectedPid)
-    ? (processViewRows.find((row) => row.kind === "group" && row.group_key === selectedGroupKey(selectedPid)) ?? null)
-    : null;
-  $: selectedProcess = selectedGroupRow
-    ? groupProcessFromRow(selectedGroupRow)
-    : (filteredProcesses.find((process) => processSelectionKey(process) === selectedPid) ?? null);
+  $: filteredProcesses = processViewRows.flatMap((row) =>
+    row.kind === "process" ? [row.detail.process] : [],
+  );
+  $: selectedRow =
+    processViewRows.find((row) => processViewRowKey(row) === selectedWorkloadId) ?? null;
+  $: selectedWorkload = selectedRow?.detail ?? null;
+  $: selectedProcess =
+    selectedWorkload?.kind === "process" ? selectedWorkload.process : null;
+  $: selectedWorkloadIconKind =
+    ((selectedRow?.icon_kind ?? "process") as import("./lib/process").ProcessIconKind);
+  $: selectedWorkloadIconSrc =
+    selectedRow?.kind === "group" && selectedRow.icon_source
+      ? processIcons[selectedRow.icon_source]
+      : selectedProcess
+        ? processIcons[selectedProcess.exe || selectedProcess.name]
+        : undefined;
   $: processNetworkAvailable = processViewRows.some((row) => {
-    const process = row.process ?? row.representative;
-    return !!process && process.quality?.network?.quality !== "unavailable";
+    const quality =
+      row.kind === "group" ? row.detail.quality.network : row.detail.process.quality?.network;
+    return quality?.quality !== "unavailable";
   });
   $: sourceLabel =
     snapshot.source === "batcave_runtime" ||
@@ -669,8 +681,12 @@
 
     const previous = snapshot;
     hydrateRuntimeControls(next);
-    const previousProcess = selectedPid ? selectedProcessFromSnapshot(previous, selectedPid) : null;
-    const nextProcess = selectedPid ? selectedProcessFromSnapshot(next, selectedPid) : null;
+    const previousWorkload = selectedWorkloadId
+      ? selectedWorkloadFromSnapshot(previous, selectedWorkloadId)
+      : null;
+    const nextWorkload = selectedWorkloadId
+      ? selectedWorkloadFromSnapshot(next, selectedWorkloadId)
+      : null;
     const hasNewSample = hasNewRuntimeSample(previous, next);
     const logicalCpu = next.system.logical_cpu_percent.length
       ? next.system.logical_cpu_percent
@@ -682,12 +698,12 @@
     }
     snapshot = next;
     updateProcessRows(next.process_view_rows);
-    if (!selectedPid && !hasAutoSelectedWorkload) {
+    if (!selectedWorkloadId && !hasAutoSelectedWorkload) {
       const firstWorkload = next.process_view_rows.find(
         (row) => row.kind === "group" || !row.is_grouped,
       );
       if (firstWorkload) {
-        selectedPid = processViewRowKey(firstWorkload);
+        selectedWorkloadId = processViewRowKey(firstWorkload);
         hasAutoSelectedWorkload = true;
         detailSubject = "process";
       }
@@ -699,41 +715,56 @@
 
     processRates = buildProcessRates(next.processes);
 
-    if (nextProcess) {
-      const nextRates = processTrendRates(nextProcess);
+    if (nextWorkload) {
+      const nextRates = workloadTrendRates(nextWorkload);
+      const nextMetrics = workloadMetrics(nextWorkload);
+      const nextProcess = nextWorkload.kind === "process" ? nextWorkload.process : null;
       processHistory = {
-        cpu: nextProcessMetricHistory(
-          processHistory.cpu,
-          nextProcess.cpu_percent,
-          nextProcess.quality?.cpu,
-          historyPointLimit,
-        ),
-        memory: nextProcessMetricHistory(
-          processHistory.memory,
-          percentage(nextProcess.memory_bytes, Math.max(next.system.memory_total_bytes, 1)),
-          processMemoryQuality(nextProcess),
-          historyPointLimit,
-        ),
-        readRate: nextProcessMetricHistory(
-          processHistory.readRate,
-          nextRates.readRate,
-          nextProcess.quality?.io,
-          historyPointLimit,
-        ),
-        writeRate: nextProcessMetricHistory(
-          processHistory.writeRate,
-          nextRates.writeRate,
-          nextProcess.quality?.io,
-          historyPointLimit,
-        ),
-        networkRate: nextProcessMetricHistory(
-          processHistory.networkRate,
-          nextRates.networkRate,
-          nextProcess.quality?.network,
-          historyPointLimit,
-        ),
+        cpu: nextProcess
+          ? nextProcessMetricHistory(
+              processHistory.cpu,
+              nextMetrics.cpuPercent,
+              nextProcess.quality?.cpu,
+              historyPointLimit,
+            )
+          : pushPoint(processHistory.cpu, nextMetrics.cpuPercent),
+        memory: nextProcess
+          ? nextProcessMetricHistory(
+              processHistory.memory,
+              percentage(nextMetrics.memoryBytes, Math.max(next.system.memory_total_bytes, 1)),
+              processMemoryQuality(nextProcess),
+              historyPointLimit,
+            )
+          : pushPoint(
+              processHistory.memory,
+              percentage(nextMetrics.memoryBytes, Math.max(next.system.memory_total_bytes, 1)),
+            ),
+        readRate: nextProcess
+          ? nextProcessMetricHistory(
+              processHistory.readRate,
+              nextRates.readRate,
+              nextProcess.quality?.io,
+              historyPointLimit,
+            )
+          : pushPoint(processHistory.readRate, nextRates.readRate),
+        writeRate: nextProcess
+          ? nextProcessMetricHistory(
+              processHistory.writeRate,
+              nextRates.writeRate,
+              nextProcess.quality?.io,
+              historyPointLimit,
+            )
+          : pushPoint(processHistory.writeRate, nextRates.writeRate),
+        networkRate: nextProcess
+          ? nextProcessMetricHistory(
+              processHistory.networkRate,
+              nextRates.networkRate,
+              nextProcess.quality?.network,
+              historyPointLimit,
+            )
+          : pushPoint(processHistory.networkRate, nextRates.networkRate),
       };
-    } else if (previousProcess) {
+    } else if (previousWorkload) {
       processHistory = emptyProcessTrendState();
     }
 
@@ -819,13 +850,13 @@
   }
 
   function selectProcess(selection: string): void {
-    selectedPid = selection;
+    selectedWorkloadId = selection;
     detailSubject = "process";
     copyStatus = "";
     openCompactDetail();
-    const process = selectedProcessFromSnapshot(snapshot, selection);
-    if (process) {
-      resetProcessHistory(process);
+    const workload = selectedWorkloadFromSnapshot(snapshot, selection);
+    if (workload) {
+      resetWorkloadHistory(workload);
     }
   }
 
@@ -840,9 +871,12 @@
 
     const visibleRowProcesses = rows.flatMap((row) => {
       if (row.kind === "group") {
-        return row.representative ? [row.representative] : [];
+        const iconProcess = row.icon_source
+          ? processes.find((process) => process.exe === row.icon_source)
+          : undefined;
+        return iconProcess ? [iconProcess] : [];
       }
-      return !row.is_grouped && row.process ? [row.process] : [];
+      return !row.is_grouped ? [row.detail.process] : [];
     });
     const iconCandidates = uniqueIconCandidates(
       selected ? [selected, ...visibleRowProcesses, ...processes.slice(0, 80)] : [...visibleRowProcesses, ...processes.slice(0, 80)],
@@ -897,7 +931,7 @@
   function selectDetailMode(mode: DetailMode): void {
     detailMode = mode;
     detailSubject = "system";
-    selectedPid = "";
+    selectedWorkloadId = "";
     openCompactDetail();
     applyPendingRankingIfReleased();
   }
@@ -948,8 +982,9 @@
 
   function updateProcessRows(incoming: ProcessViewRow[]): void {
     incoming = incoming.slice(0, 180);
-    if (selectedPid && !selectionExists(incoming, selectedPid)) {
-      selectedPid = "";
+    const reconciledSelection = reconcileWorkloadSelection(incoming, selectedWorkloadId);
+    if (selectedWorkloadId && !reconciledSelection) {
+      selectedWorkloadId = "";
       detailSubject = "system";
       compactDetailOpen = false;
     }
@@ -969,17 +1004,14 @@
 
   function shouldHoldRanking(): boolean {
     const detailOpen = !isCompactDetail || compactDetailOpen;
-    const selectedWorkloadVisible = !!selectedPid && selectionIsVisible(processViewRows, selectedPid);
-    return (
-      shouldStabilizeProcessOrder(sortKey) &&
-      (queueInteracting ||
-        expandedGroupCount > 0 ||
-        (detailSubject === "process" && detailOpen && selectedWorkloadVisible))
+    const selectedWorkloadVisible =
+      !!selectedWorkloadId && selectionIsVisible(processViewRows, selectedWorkloadId);
+    return shouldHoldProcessOrder(
+      sortKey,
+      queueInteracting,
+      expandedGroupCount,
+      detailSubject === "process" && detailOpen && selectedWorkloadVisible,
     );
-  }
-
-  function selectionExists(rows: ProcessViewRow[], selection: string): boolean {
-    return rows.some((row) => processViewRowKey(row) === selection);
   }
 
   function selectionIsVisible(rows: ProcessViewRow[], selection: string): boolean {
@@ -1015,46 +1047,38 @@
     }
   }
 
-  function resetProcessHistory(process: ProcessSample): void {
-    const rates = processTrendRates(process);
+  function resetWorkloadHistory(workload: WorkloadDetail): void {
+    const rates = workloadTrendRates(workload);
+    const metrics = workloadMetrics(workload);
+    const process = workload.kind === "process" ? workload.process : null;
     processHistory = {
-      cpu: nextProcessMetricHistory(
-        [],
-        process.cpu_percent,
-        process.quality?.cpu,
-        historyPointLimit,
-      ),
-      memory: nextProcessMetricHistory(
-        [],
-        percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1)),
-        processMemoryQuality(process),
-        historyPointLimit,
-      ),
-      readRate: nextProcessMetricHistory(
-        [],
-        rates.readRate,
-        process.quality?.io,
-        historyPointLimit,
-      ),
-      writeRate: nextProcessMetricHistory(
-        [],
-        rates.writeRate,
-        process.quality?.io,
-        historyPointLimit,
-      ),
-      networkRate: nextProcessMetricHistory(
-        [],
-        rates.networkRate,
-        process.quality?.network,
-        historyPointLimit,
-      ),
+      cpu: process
+        ? nextProcessMetricHistory([], metrics.cpuPercent, process.quality?.cpu, historyPointLimit)
+        : [metrics.cpuPercent],
+      memory: process
+        ? nextProcessMetricHistory(
+            [],
+            percentage(metrics.memoryBytes, Math.max(snapshot.system.memory_total_bytes, 1)),
+            processMemoryQuality(process),
+            historyPointLimit,
+          )
+        : [percentage(metrics.memoryBytes, Math.max(snapshot.system.memory_total_bytes, 1))],
+      readRate: process
+        ? nextProcessMetricHistory([], rates.readRate, process.quality?.io, historyPointLimit)
+        : [rates.readRate],
+      writeRate: process
+        ? nextProcessMetricHistory([], rates.writeRate, process.quality?.io, historyPointLimit)
+        : [rates.writeRate],
+      networkRate: process
+        ? nextProcessMetricHistory([], rates.networkRate, process.quality?.network, historyPointLimit)
+        : [rates.networkRate],
     };
   }
 
   function resetHistory(): void {
     history = emptyTrendState();
-    if (selectedProcess) {
-      resetProcessHistory(selectedProcess);
+    if (selectedWorkload) {
+      resetWorkloadHistory(selectedWorkload);
     }
   }
 
@@ -1182,27 +1206,50 @@
     return rates;
   }
 
-  function selectedGroupKey(selection: string): string | null {
-    return selection.startsWith("group:") ? selection.slice("group:".length) : null;
+  function selectedWorkloadFromSnapshot(
+    source: RuntimeSnapshot,
+    selection: string,
+  ): WorkloadDetail | null {
+    return selectedWorkloadDetail(source.process_view_rows, selection);
   }
 
-  function selectedProcessFromSnapshot(source: RuntimeSnapshot, selection: string): ProcessSample | null {
-    const key = selectedGroupKey(selection);
-    if (key) {
-      const row = source.process_view_rows.find((candidate) => candidate.kind === "group" && candidate.group_key === key);
-      return row ? groupProcessFromRow(row) : null;
+  function workloadMetrics(workload: WorkloadDetail): import("./lib/process").WorkloadMetrics {
+    if (workload.kind === "group") {
+      return {
+        cpuPercent: workload.cpu_percent,
+        memoryBytes: workload.memory_bytes,
+        ioBps: workload.io_bps,
+        networkBps: workload.network_bps,
+        threads: workload.threads,
+      };
     }
 
-    return source.processes.find((process) => processSelectionKey(process) === selection) ?? null;
+    return {
+      cpuPercent: workload.process.cpu_percent,
+      memoryBytes: workload.process.memory_bytes,
+      ioBps: workload.io_bps,
+      networkBps: workload.network_bps,
+      threads: workload.process.threads,
+    };
   }
 
-  function processTrendRates(process: ProcessSample): ProcessRates & { networkRate: number } {
+  function workloadTrendRates(workload: WorkloadDetail): ProcessRates & { networkRate: number } {
+    if (workload.kind === "group") {
+      return {
+        readRate: workload.io_bps,
+        writeRate: 0,
+        otherRate: undefined,
+        networkRate: workload.network_bps,
+      };
+    }
+
+    const process = workload.process;
     const rates = processRates[processSelectionKey(process)];
     return {
       readRate: rates?.readRate ?? process.io_read_bps,
       writeRate: rates?.writeRate ?? process.io_write_bps,
       otherRate: rates?.otherRate ?? process.other_io_bps,
-      networkRate: (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
+      networkRate: workload.network_bps,
     };
   }
 
@@ -1285,20 +1332,48 @@
     ].join("\n");
   }
 
-  async function copySelectedProcessSummary(): Promise<void> {
-    if (!selectedProcess) {
-      copyStatus = "No selected process to copy.";
+  function groupSummary(group: Extract<WorkloadDetail, { kind: "group" }>): string {
+    return [
+      "BatCave workload group snapshot",
+      `Name: ${group.label}`,
+      `Category: ${group.category}`,
+      `Processes: ${group.process_count}`,
+      `CPU (one-core-equivalent aggregate): ${formatPercent(group.cpu_percent)}`,
+      `Memory: ${formatBytes(group.memory_bytes)}`,
+      `Read/write I/O rate: ${formatRate(group.io_bps)}`,
+      `Other I/O rate: ${formatOptionalRate(group.other_io_bps)}`,
+      `Network: ${group.quality.network.quality === "unavailable" ? "Unavailable" : formatRate(group.network_bps)}`,
+      `Threads: ${group.threads}`,
+      `CPU coverage: ${group.coverage.cpu.available}/${group.coverage.cpu.total}`,
+      `Memory coverage: ${group.coverage.memory.available}/${group.coverage.memory.total}`,
+      `Read/write I/O coverage: ${group.coverage.io.available}/${group.coverage.io.total}`,
+      `Other I/O coverage: ${group.coverage.other_io.available}/${group.coverage.other_io.total}`,
+      `Network coverage: ${group.coverage.network.available}/${group.coverage.network.total}`,
+      `Thread coverage: ${group.coverage.threads.available}/${group.coverage.threads.total}`,
+      `Publication seq: ${snapshot.publication_seq}`,
+      `Sample seq: ${snapshot.sample_seq}`,
+      `Snapshot source: ${snapshot.source}`,
+    ].join("\n");
+  }
+
+  function workloadSummary(workload: WorkloadDetail): string {
+    return workload.kind === "group" ? groupSummary(workload) : processSummary(workload.process);
+  }
+
+  async function copySelectedWorkloadSummary(): Promise<void> {
+    if (!selectedWorkload) {
+      copyStatus = "No selected workload to copy.";
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(processSummary(selectedProcess));
-      copyStatus = "Process summary copied.";
+      await navigator.clipboard.writeText(workloadSummary(selectedWorkload));
+      copyStatus = "Workload summary copied.";
       commandError = "";
     } catch (error) {
       const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const textarea = document.createElement("textarea");
-      textarea.value = processSummary(selectedProcess);
+      textarea.value = workloadSummary(selectedWorkload);
       textarea.setAttribute("readonly", "");
       textarea.style.position = "fixed";
       textarea.style.opacity = "0";
@@ -1314,8 +1389,8 @@
         active?.focus();
       }
       copyStatus = copied
-        ? "Process summary copied."
-        : commandErrorMessage(error, "Unable to copy process summary.");
+        ? "Workload summary copied."
+        : commandErrorMessage(error, "Unable to copy workload summary.");
       commandError = "";
     }
   }
@@ -1407,7 +1482,7 @@
         {focusMode}
         {searchText}
         columns={visibleProcessColumns}
-        {selectedPid}
+        {selectedWorkloadId}
         {sortKey}
         {sortDirection}
         {processIcons}
@@ -1425,7 +1500,9 @@
         compact={isCompactDetail}
         onClose={closeCompactDetail}
         onShowSystem={() => selectDetailMode(detailMode)}
-        {selectedProcess}
+        {selectedWorkload}
+        {selectedWorkloadIconKind}
+        {selectedWorkloadIconSrc}
         {processHistory}
         {processRates}
         {processReadRate}
@@ -1435,7 +1512,7 @@
         {activeTheme}
         {presentation}
         {processNetworkLabel}
-        onCopy={() => void copySelectedProcessSummary()}
+        onCopy={() => void copySelectedWorkloadSummary()}
         {detailMode}
         {detailTitle}
         {detailReadout}

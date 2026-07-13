@@ -685,16 +685,10 @@ test("process fallback icon categories are deterministic", () => {
 
 test("process row secondary labels keep only useful hierarchy", () => {
   const sample = process({ pid: "99", name: "Codex (Renderer)" });
-  const standalone = processRow({ process: sample, group_category: "Processes" });
-  const categorized = processRow({ process: sample, group_category: "Browsers" });
-  const child = processRow({ process: sample, group_category: "Processes", is_grouped: true });
-  const group = processRow({
-    kind: "group",
-    process: undefined,
-    representative: sample,
-    group_count: 4,
-    is_grouped: true,
-  });
+  const standalone = processRow(sample, "Processes");
+  const categorized = processRow(sample, "Browsers");
+  const child = processRow(sample, "Processes", true);
+  const group = groupRow(sample, 4);
 
   assert.equal(processRowSecondaryLabel(standalone), null);
   assert.equal(processRowSecondaryLabel(categorized), "Browsers");
@@ -751,20 +745,70 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
   };
 }
 
-function processRow(overrides: Partial<import("../src/lib/types.ts").ProcessViewRow> = {}) {
+function processRow(
+  sample = process(),
+  groupCategory = "Processes",
+  isGrouped = false,
+): import("../src/lib/types.ts").ProcessViewRow {
   return {
     kind: "process" as const,
-    process: process(),
+    detail: {
+      kind: "process",
+      workload_id: `process:${sample.pid}:${sample.start_time_ms}`,
+      process: sample,
+      io_bps: 0,
+      network_bps: 0,
+    },
+    group_key: sample.name.toLocaleLowerCase(),
+    group_label: sample.name,
+    group_category: groupCategory,
     group_count: 1,
     icon_kind: "process",
     is_child: false,
-    is_grouped: false,
+    is_grouped: isGrouped,
     attention_label: "Normal",
-    cpu_percent: 0,
-    memory_bytes: 0,
-    io_bps: 0,
-    network_bps: 0,
-    threads: 1,
-    ...overrides,
+  };
+}
+
+function groupRow(
+  sample: ProcessSample,
+  processCount: number,
+): import("../src/lib/types.ts").ProcessViewRow {
+  const coverage = { available: processCount, total: processCount };
+  const quality = { quality: "native" as const, source: "process_aggregate" as const };
+  const unavailable = { quality: "unavailable" as const, source: "process_aggregate" as const };
+  return {
+    kind: "group",
+    detail: {
+      kind: "group",
+      workload_id: `group:${sample.name.toLocaleLowerCase()}`,
+      group_key: sample.name.toLocaleLowerCase(),
+      label: sample.name,
+      category: "Processes",
+      process_count: processCount,
+      cpu_percent: 0,
+      memory_bytes: 0,
+      io_bps: 0,
+      network_bps: 0,
+      threads: processCount,
+      quality: {
+        cpu: quality,
+        memory: quality,
+        io: quality,
+        other_io: unavailable,
+        network: quality,
+        threads: quality,
+      },
+      coverage: {
+        cpu: coverage,
+        memory: coverage,
+        io: coverage,
+        other_io: { available: 0, total: processCount },
+        network: coverage,
+        threads: coverage,
+      },
+    },
+    icon_kind: "process",
+    attention_label: "Normal",
   };
 }

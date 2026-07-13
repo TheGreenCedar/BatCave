@@ -26,10 +26,11 @@
     type ProcessRates,
   } from "../../process";
   import type { ChartPalette } from "../../themes";
-  import type { ProcessSample } from "../../types";
+  import type { ProcessDetail, ProcessSample } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
 
-  export let selectedProcess: ProcessSample | null = null;
+  // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
+  export let detail: ProcessDetail;
   export let processHistory: {
     cpu: number[];
     memory: number[];
@@ -48,8 +49,8 @@
   export let processNetworkLabel: (process: ProcessSample) => string;
   export let onCopy: () => void;
 
-  $: selectedIsGroup = selectedProcess?.pid.startsWith("group:") ?? false;
-  $: copyFailed = copyStatus !== "" && copyStatus !== "Process summary copied.";
+  $: selectedProcess = detail.process;
+  $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
   $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...processHistory.cpu) / 100) * 100);
 
   function processReadWriteIoRate(): number {
@@ -116,7 +117,7 @@
       <span class="identity-copy">
         <span class="identity-title-row">
           <strong title={selectedProcess.name}>{selectedProcess.name}</strong>
-          <small class="identity-chip">{selectedIsGroup ? "Grouped" : `PID ${selectedProcess.pid}`}</small>
+          <small class="identity-chip">PID {selectedProcess.pid}</small>
         </span>
         <span class="identity-meta-row">
           {#if categoryLabel}<small class="identity-category">{categoryLabel}</small>{/if}
@@ -178,7 +179,7 @@
       </dl>
       <div class="technical-path">
         <span>Executable path</span>
-        <code>{selectedIsGroup ? "Expand this group to inspect individual executable paths." : selectedProcess.exe || "Path unavailable"}</code>
+        <code>{selectedProcess.exe || "Path unavailable"}</code>
       </div>
     </details>
 
