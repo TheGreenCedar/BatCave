@@ -41,6 +41,7 @@ export interface RuntimeEnvironment {
 
 export type RuntimePlatform = "windows" | "linux" | "macos" | "fixture";
 export type RuntimeInstallKind =
+  | "unknown"
   | "nsis"
   | "appimage"
   | "deb"

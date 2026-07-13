@@ -28,15 +28,18 @@ impl RuntimeProvenance {
         let platform = current_platform();
         let executable = env::current_exe()
             .ok()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .and_then(|path| path.into_os_string().into_string().ok());
+        let nsis_install_evidence = nsis_install_locations();
         let install_kind = classify_install_kind(&InstallEvidence {
             platform,
-            executable: &executable,
+            executable: executable.as_deref(),
             debug_build: cfg!(debug_assertions),
             appimage: env::var("APPIMAGE").ok().as_deref(),
-            nsis_install_locations: &nsis_install_locations(),
-            deb_package_owns_executable: deb_package_owns_executable(&executable),
+            nsis_install_locations: &nsis_install_evidence.locations,
+            nsis_probe_failed: nsis_install_evidence.probe_failed,
+            deb_package_owns_executable: executable
+                .as_deref()
+                .is_some_and(deb_package_owns_executable),
         });
         let process_elevation = detect_process_elevation();
 
@@ -86,24 +89,35 @@ impl RuntimeProvenance {
 
 struct InstallEvidence<'a> {
     platform: RuntimePlatform,
-    executable: &'a str,
+    executable: Option<&'a str>,
     debug_build: bool,
     appimage: Option<&'a str>,
     nsis_install_locations: &'a [String],
+    nsis_probe_failed: bool,
     deb_package_owns_executable: bool,
+}
+
+struct NsisInstallEvidence {
+    locations: Vec<String>,
+    probe_failed: bool,
 }
 
 fn classify_install_kind(evidence: &InstallEvidence<'_>) -> RuntimeInstallKind {
     match evidence.platform {
         RuntimePlatform::Windows => {
+            let Some(executable) = evidence.executable else {
+                return RuntimeInstallKind::Unknown;
+            };
             if evidence
                 .nsis_install_locations
                 .iter()
-                .any(|location| windows_executable_is_installed_at(evidence.executable, location))
+                .any(|location| windows_executable_is_installed_at(executable, location))
             {
                 RuntimeInstallKind::Nsis
             } else if is_development_runtime(evidence) {
                 RuntimeInstallKind::Development
+            } else if evidence.nsis_probe_failed {
+                RuntimeInstallKind::Unknown
             } else {
                 RuntimeInstallKind::Portable
             }
@@ -116,6 +130,8 @@ fn classify_install_kind(evidence: &InstallEvidence<'_>) -> RuntimeInstallKind {
                 RuntimeInstallKind::Appimage
             } else if evidence.deb_package_owns_executable {
                 RuntimeInstallKind::Deb
+            } else if evidence.executable.is_none() {
+                RuntimeInstallKind::Unknown
             } else if is_development_runtime(evidence) {
                 RuntimeInstallKind::Development
             } else {
@@ -123,9 +139,12 @@ fn classify_install_kind(evidence: &InstallEvidence<'_>) -> RuntimeInstallKind {
             }
         }
         RuntimePlatform::Macos => {
+            let Some(executable) = evidence.executable else {
+                return RuntimeInstallKind::Unknown;
+            };
             if is_development_runtime(evidence) {
                 RuntimeInstallKind::Development
-            } else if macos_app_bundle_path(evidence.executable) {
+            } else if macos_app_bundle_path(executable) {
                 RuntimeInstallKind::AppBundle
             } else {
                 RuntimeInstallKind::Portable
@@ -137,9 +156,11 @@ fn classify_install_kind(evidence: &InstallEvidence<'_>) -> RuntimeInstallKind {
 
 fn is_development_runtime(evidence: &InstallEvidence<'_>) -> bool {
     evidence.debug_build
-        && normalized_path(evidence.executable)
-            .split('/')
-            .any(|component| component.eq_ignore_ascii_case("debug"))
+        && evidence.executable.is_some_and(|executable| {
+            normalized_path(executable)
+                .split('/')
+                .any(|component| component.eq_ignore_ascii_case("debug"))
+        })
 }
 
 fn windows_executable_is_installed_at(executable: &str, install_location: &str) -> bool {
@@ -242,11 +263,11 @@ fn detect_process_elevation() -> ProcessElevation {
 }
 
 #[cfg(windows)]
-fn nsis_install_locations() -> Vec<String> {
+fn nsis_install_locations() -> NsisInstallEvidence {
     use std::{mem::size_of, ptr::null_mut};
 
     use windows_sys::Win32::{
-        Foundation::ERROR_SUCCESS,
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS},
         System::Registry::{
             RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
             HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_EXPAND_SZ, REG_SZ,
@@ -261,14 +282,23 @@ fn nsis_install_locations() -> Vec<String> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    unsafe fn read_install_location(root: HKEY, view: u32) -> Option<String> {
+    enum RegistryInstallLocation {
+        Absent,
+        Found(String),
+        Unavailable,
+    }
+
+    unsafe fn read_install_location(root: HKEY, view: u32) -> RegistryInstallLocation {
         let subkey = wide(UNINSTALL_KEY);
         let value_name = wide(INSTALL_LOCATION);
         let mut key = null_mut();
-        if unsafe { RegOpenKeyExW(root, subkey.as_ptr(), 0, KEY_READ | view, &mut key) }
-            != ERROR_SUCCESS
-        {
-            return None;
+        let open_status =
+            unsafe { RegOpenKeyExW(root, subkey.as_ptr(), 0, KEY_READ | view, &mut key) };
+        if matches!(open_status, ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) {
+            return RegistryInstallLocation::Absent;
+        }
+        if open_status != ERROR_SUCCESS {
+            return RegistryInstallLocation::Unavailable;
         }
 
         let mut value_type = 0;
@@ -288,7 +318,7 @@ fn nsis_install_locations() -> Vec<String> {
             || byte_count < 2
         {
             unsafe { RegCloseKey(key) };
-            return None;
+            return RegistryInstallLocation::Unavailable;
         }
 
         let mut buffer = vec![0_u16; byte_count as usize / size_of::<u16>()];
@@ -304,32 +334,46 @@ fn nsis_install_locations() -> Vec<String> {
         };
         unsafe { RegCloseKey(key) };
         if read_status != ERROR_SUCCESS {
-            return None;
+            return RegistryInstallLocation::Unavailable;
         }
 
         let length = buffer
             .iter()
             .position(|value| *value == 0)
             .unwrap_or(buffer.len());
-        Some(String::from_utf16_lossy(&buffer[..length]))
+        match String::from_utf16(&buffer[..length]) {
+            Ok(location) if !location.trim().is_empty() => RegistryInstallLocation::Found(location),
+            _ => RegistryInstallLocation::Unavailable,
+        }
     }
 
     let mut locations = Vec::new();
+    let mut probe_failed = false;
     for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
-            if let Some(location) = unsafe { read_install_location(root, view) } {
-                if !locations.contains(&location) {
-                    locations.push(location);
+            match unsafe { read_install_location(root, view) } {
+                RegistryInstallLocation::Found(location) => {
+                    if !locations.contains(&location) {
+                        locations.push(location);
+                    }
                 }
+                RegistryInstallLocation::Unavailable => probe_failed = true,
+                RegistryInstallLocation::Absent => {}
             }
         }
     }
-    locations
+    NsisInstallEvidence {
+        locations,
+        probe_failed,
+    }
 }
 
 #[cfg(not(windows))]
-fn nsis_install_locations() -> Vec<String> {
-    Vec::new()
+fn nsis_install_locations() -> NsisInstallEvidence {
+    NsisInstallEvidence {
+        locations: Vec::new(),
+        probe_failed: false,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -365,14 +409,15 @@ mod tests {
         let locations = vec![r"C:\Program Files\BatCave Monitor".to_string()];
         let installed = InstallEvidence {
             platform: RuntimePlatform::Windows,
-            executable: r"C:\Program Files\BatCave Monitor\batcave-monitor.exe",
+            executable: Some(r"C:\Program Files\BatCave Monitor\batcave-monitor.exe"),
             debug_build: false,
             appimage: None,
             nsis_install_locations: &locations,
+            nsis_probe_failed: false,
             deb_package_owns_executable: false,
         };
         let copied = InstallEvidence {
-            executable: r"D:\Tools\batcave-monitor.exe",
+            executable: Some(r"D:\Tools\batcave-monitor.exe"),
             ..installed
         };
 
@@ -384,10 +429,11 @@ mod tests {
     fn windows_development_and_portable_builds_remain_distinct() {
         let development = InstallEvidence {
             platform: RuntimePlatform::Windows,
-            executable: r"C:\src\BatCave\target\debug\batcave-monitor.exe",
+            executable: Some(r"C:\src\BatCave\target\debug\batcave-monitor.exe"),
             debug_build: true,
             appimage: None,
             nsis_install_locations: &[],
+            nsis_probe_failed: false,
             deb_package_owns_executable: false,
         };
         let portable = InstallEvidence {
@@ -406,6 +452,49 @@ mod tests {
     }
 
     #[test]
+    fn windows_missing_executable_or_failed_registry_probe_is_unknown() {
+        let unavailable_executable = InstallEvidence {
+            platform: RuntimePlatform::Windows,
+            executable: None,
+            debug_build: false,
+            appimage: None,
+            nsis_install_locations: &[],
+            nsis_probe_failed: false,
+            deb_package_owns_executable: false,
+        };
+        let unavailable_registry = InstallEvidence {
+            executable: Some(r"D:\Tools\batcave-monitor.exe"),
+            nsis_probe_failed: true,
+            ..unavailable_executable
+        };
+
+        assert_eq!(
+            classify_install_kind(&unavailable_executable),
+            RuntimeInstallKind::Unknown
+        );
+        assert_eq!(
+            classify_install_kind(&unavailable_registry),
+            RuntimeInstallKind::Unknown
+        );
+    }
+
+    #[test]
+    fn windows_positive_install_match_survives_an_unrelated_probe_failure() {
+        let locations = vec![r"C:\Program Files\BatCave Monitor".to_string()];
+        let installed = InstallEvidence {
+            platform: RuntimePlatform::Windows,
+            executable: Some(r"C:\Program Files\BatCave Monitor\batcave-monitor.exe"),
+            debug_build: false,
+            appimage: None,
+            nsis_install_locations: &locations,
+            nsis_probe_failed: true,
+            deb_package_owns_executable: false,
+        };
+
+        assert_eq!(classify_install_kind(&installed), RuntimeInstallKind::Nsis);
+    }
+
+    #[test]
     fn windows_registry_match_is_case_quote_and_separator_insensitive() {
         assert!(windows_executable_is_installed_at(
             r"C:\PROGRAM FILES\BatCave Monitor\batcave-monitor.exe",
@@ -417,14 +506,15 @@ mod tests {
     fn linux_package_evidence_precedes_development_fallback() {
         let appimage = InstallEvidence {
             platform: RuntimePlatform::Linux,
-            executable: "/tmp/.mount_BatCave/batcave-monitor",
+            executable: Some("/tmp/.mount_BatCave/batcave-monitor"),
             debug_build: false,
             appimage: Some("/home/test/BatCave.AppImage"),
             nsis_install_locations: &[],
+            nsis_probe_failed: false,
             deb_package_owns_executable: false,
         };
         let deb = InstallEvidence {
-            executable: "/usr/bin/batcave-monitor",
+            executable: Some("/usr/bin/batcave-monitor"),
             appimage: None,
             deb_package_owns_executable: true,
             ..appimage
@@ -441,19 +531,20 @@ mod tests {
     fn macos_distinguishes_development_app_bundle_and_standalone_binary() {
         let development = InstallEvidence {
             platform: RuntimePlatform::Macos,
-            executable: "/repo/target/debug/batcave-monitor",
+            executable: Some("/repo/target/debug/batcave-monitor"),
             debug_build: true,
             appimage: None,
             nsis_install_locations: &[],
+            nsis_probe_failed: false,
             deb_package_owns_executable: false,
         };
         let app_bundle = InstallEvidence {
-            executable: "/Applications/BatCave Monitor.app/Contents/MacOS/batcave-monitor",
+            executable: Some("/Applications/BatCave Monitor.app/Contents/MacOS/batcave-monitor"),
             debug_build: false,
             ..development
         };
         let standalone = InstallEvidence {
-            executable: "/usr/local/bin/batcave-monitor",
+            executable: Some("/usr/local/bin/batcave-monitor"),
             ..app_bundle
         };
 
@@ -520,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_windows_token_fails_closed_to_standard_access() {
+    fn unavailable_windows_token_never_claims_elevation() {
         let provenance = RuntimeProvenance {
             environment: RuntimeEnvironment {
                 platform: RuntimePlatform::Windows,

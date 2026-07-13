@@ -65,7 +65,7 @@ Windows native telemetry:
 - Process identity, PID, parent PID, start-time identity, executable path, access state, one-core-equivalent CPU, kernel CPU, memory, private bytes, process read/write I/O totals, thread count, and handle count. Windows `GetProcessIoCounters` exposes `ReadTransferCount`, `WriteTransferCount`, and `OtherTransferCount` separately. BatCave's read/write I/O value sums only read and write; other I/O remains a separate raw process field. None of these counters are called physical-disk traffic.
 - Physical memory, Windows commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
-- The running Windows process token determines whether privileged access is active. NSIS, portable, and development provenance does not imply elevation; standard-token or unreadable-token cases keep standard access and mark permission-shaped gaps explicitly.
+- The running Windows process token determines whether privileged access is active. NSIS, portable, and development provenance does not imply elevation. The app starts with the invoking user's token and requests elevation only for the out-of-process local helper. Denial keeps standard monitoring running. An unreadable token is labeled unavailable and never presented as confirmed standard or elevated access.
 
 Linux native telemetry:
 
@@ -146,11 +146,11 @@ Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
 
 The runtime publishes the resolved path through `environment.data_directory`. The typed `environment.install_kind` is derived from running-package evidence:
 
-- Windows reports `nsis` only when the current executable directory matches Tauri's `BatCave Monitor` uninstall-registry location; unmatched release executables are `portable`, and debug binaries running from a development output directory are `development`.
+- Windows reports `nsis` only when the current executable directory matches Tauri's `BatCave Monitor` uninstall-registry location; unmatched release executables are `portable`, and debug binaries running from a development output directory are `development`. If the executable path or required registry evidence cannot be read, the package state is `unknown` rather than fabricated as portable.
 - Linux reports `appimage` from the AppImage runtime environment, `deb` when the local Debian package database owns the executable, `development` for a debug binary in a development output directory, and `portable` otherwise.
 - macOS reports `development` for a debug binary in a development output directory, `app_bundle` for a running `.app`, and `portable` for a standalone binary. A copied app does not claim `dmg` because its original download container is no longer observable at runtime.
 
-On Windows, `GetTokenInformation(TokenElevation)` determines the privileged-access state. A standard token or a token-query failure never produces an active label; token-query failures fail closed to standard-access copy. Linux and macOS keep the Windows-specific privilege contract explicitly unavailable.
+On Windows, `GetTokenInformation(TokenElevation)` determines the privileged-access state. A standard token is labeled standard access. A token-query failure keeps privileged collectors inactive but is labeled as an unknown Windows token state. Linux and macOS keep the Windows-specific privilege contract explicitly unavailable.
 
 Do not add outbound tracking, hosted collection, or remote logging. BatCave is a local instrument panel, not a service backend in a trench coat.
 

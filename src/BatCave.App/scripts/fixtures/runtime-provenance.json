@@ -64,6 +64,22 @@
     "expected_package_label": "Portable"
   },
   {
+    "name": "windows_provenance_and_token_unavailable",
+    "environment": {
+      "platform": "windows",
+      "admin_mode_available": true,
+      "install_kind": "unknown",
+      "data_directory": "C:\\Users\\test\\AppData\\Local\\BatCaveMonitor"
+    },
+    "admin_mode": {
+      "state": "failed",
+      "detail": "process_token_elevation_failed error=5",
+      "last_success_at_ms": null
+    },
+    "expected_access_label": "Windows token state unavailable",
+    "expected_package_label": "Package state unavailable"
+  },
+  {
     "name": "macos_privilege_unavailable",
     "environment": {
       "platform": "macos",

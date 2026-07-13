@@ -14,7 +14,11 @@
   import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
   import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
-  import { adminAccessLabel, installKindLabel } from "./lib/environmentPresentation";
+  import {
+    adminAccessLabel,
+    adminAccessNote,
+    installKindLabel,
+  } from "./lib/environmentPresentation";
   import {
     accessLabel,
     displayProcessMetricValue,
@@ -1467,8 +1471,9 @@
     {pollIntervalMs}
     {historyPointOptions}
     {historyPointLimit}
-    adminState={snapshot.admin_mode.state}
     adminAvailable={snapshot.environment.admin_mode_available}
+    adminStatus={adminStatusLabel()}
+    adminNote={adminAccessNote(snapshot.environment, snapshot.admin_mode)}
     dataDirectory={snapshot.environment.data_directory}
     {presentation}
     onClose={() => (settingsOpen = false)}

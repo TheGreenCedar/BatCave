@@ -87,6 +87,7 @@ pub enum RuntimePlatform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeInstallKind {
+    Unknown,
     Nsis,
     Appimage,
     Deb,
@@ -530,6 +531,10 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<RuntimeInstallKind>(json!("appimage")).unwrap(),
             RuntimeInstallKind::Appimage
+        );
+        assert_eq!(
+            serde_json::to_value(RuntimeInstallKind::Unknown).unwrap(),
+            json!("unknown")
         );
     }
 

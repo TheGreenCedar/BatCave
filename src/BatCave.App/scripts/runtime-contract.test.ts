@@ -9,7 +9,11 @@ import {
   processOtherIoRate,
 } from "../src/lib/process.ts";
 import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
-import { adminAccessLabel, installKindLabel } from "../src/lib/environmentPresentation.ts";
+import {
+  adminAccessLabel,
+  adminAccessNote,
+  installKindLabel,
+} from "../src/lib/environmentPresentation.ts";
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
 import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
@@ -34,6 +38,10 @@ const provenanceFixtures = JSON.parse(
   expected_package_label: string;
 }>;
 const themeCss = readFileSync(new URL("../src/styles/themes.css", import.meta.url), "utf8");
+const releaseManifest = readFileSync(
+  new URL("../src-tauri/release.manifest.xml", import.meta.url),
+  "utf8",
+);
 
 function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
   return {
@@ -104,6 +112,20 @@ test("provenance fixtures keep package and privilege copy deterministic", () => 
       fixture.expected_package_label,
     ]),
   );
+
+  const unavailable = provenanceFixtures.find(
+    (fixture) => fixture.name === "windows_provenance_and_token_unavailable",
+  );
+  assert.ok(unavailable);
+  assert.equal(
+    adminAccessNote(unavailable.environment, unavailable.admin_mode),
+    "BatCave could not read the Windows process token. Privileged collectors remain inactive; the token state is unknown.",
+  );
+});
+
+test("shipped Windows release starts as the invoking user", () => {
+  assert.match(releaseManifest, /requestedExecutionLevel level="asInvoker"/);
+  assert.doesNotMatch(releaseManifest, /requireAdministrator/);
 });
 
 test("diagnostics render one limitation per stable key with the current admin action", () => {

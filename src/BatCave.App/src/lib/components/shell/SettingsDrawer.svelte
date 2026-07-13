@@ -2,7 +2,6 @@
   import { X } from "phosphor-svelte";
   import { formatInterval } from "../../format";
   import { platformPresentation, type PlatformPresentation } from "../../platformPresentation";
-  import type { RuntimeAdminModeState } from "../../types";
   import type { ThemeOption, ThemePreference } from "../../themes";
 
   export let open = false;
@@ -12,8 +11,9 @@
   export let pollIntervalMs: number;
   export let historyPointOptions: readonly number[];
   export let historyPointLimit: number;
-  export let adminState: RuntimeAdminModeState = "off";
   export let adminAvailable = true;
+  export let adminStatus = "Standard access";
+  export let adminNote = "Protected fields remain unavailable while this process has standard access.";
   export let dataDirectory: string | null = null;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
   export let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
@@ -29,25 +29,6 @@
   let resetConfirm = false;
   let dialog: HTMLDialogElement | null = null;
   let opener: HTMLElement | null = null;
-
-  $: adminLabel =
-    adminState === "requesting"
-      ? presentation.adminRequestLabel
-      : adminState === "active"
-        ? "Administrator token"
-        : adminState === "recovering"
-          ? "Recovering with standard access"
-          : adminState === "failed"
-            ? "Standard access; privileged access unavailable"
-            : "Standard access";
-  $: adminNote =
-    adminState === "active"
-      ? "This process is running with an administrator token."
-      : adminState === "recovering"
-        ? "Protected collection is recovering; current values use standard access."
-        : adminState === "failed"
-          ? "BatCave could not confirm privileged access and is reporting standard-access behavior."
-          : "Protected fields remain unavailable while this process has standard access.";
 
   $: if (dialog) syncDialog(dialog, open);
 
@@ -169,7 +150,7 @@
             <div class="privileged-card">
               <div>
                 <strong>Current process</strong>
-                <span>{adminLabel}</span>
+                <span>{adminStatus}</span>
               </div>
             </div>
             <p class="setting-note">{adminNote}</p>
