@@ -350,6 +350,7 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+#[cfg(not(target_os = "linux"))]
 fn collect_processes(
     sysinfo_processes: &[ProcessSample],
     sysinfo_cpu_by_pid: &HashMap<String, f64>,
@@ -432,6 +433,7 @@ fn collect_processes(
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn collect_system_snapshot(
     sysinfo_system: &System,
     sysinfo_networks: &Networks,
@@ -835,6 +837,7 @@ fn process_io_seed_quality() -> MetricQualityInfo {
     MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> {
     let values = system
         .cpus()
@@ -914,10 +917,7 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
     let cpu = if has_native_cpu {
         MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
     } else {
-        MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo).with_limitation(
-            MetricLimitationCode::PendingBaseline,
-            "First sample uses sysinfo until native CPU deltas are available.",
-        )
+        MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
     };
 
     SystemMetricQuality {

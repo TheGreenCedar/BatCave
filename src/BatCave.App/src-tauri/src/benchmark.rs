@@ -381,8 +381,7 @@ fn parse_baseline(
         })?;
     if actual_format_version != u64::from(FORMAT_VERSION) {
         return Err(format!(
-            "baseline_metadata_mismatch field=format_version expected={} actual={}",
-            FORMAT_VERSION, actual_format_version
+            "baseline_metadata_mismatch field=format_version expected={FORMAT_VERSION} actual={actual_format_version}"
         ));
     }
     let baseline = serde_json::from_value::<BenchmarkBaseline>(value)

@@ -2530,8 +2530,7 @@ fn group_metric_summary(
     };
     let message = if available < total {
         Some(format!(
-            "{} of {} processes contribute to this aggregate.",
-            available, total
+            "{available} of {total} processes contribute to this aggregate."
         ))
     } else if includes_partial_quality {
         Some("At least one process contributes partial-quality data.".to_string())
