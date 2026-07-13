@@ -213,11 +213,11 @@ fn read_process(
             memory_bytes: rss_bytes(stat.rss_pages, page_size),
             private_bytes,
             virtual_memory_bytes: Some(stat.virtual_memory_bytes),
-            disk_read_total_bytes: io.read_bytes,
-            disk_write_total_bytes: io.write_bytes,
+            io_read_total_bytes: io.read_bytes,
+            io_write_total_bytes: io.write_bytes,
             other_io_total_bytes: None,
-            disk_read_bps: 0,
-            disk_write_bps: 0,
+            io_read_bps: 0,
+            io_write_bps: 0,
             other_io_bps: None,
             network_received_bps: None,
             network_transmitted_bps: None,
@@ -376,7 +376,7 @@ fn linux_process_quality(
             procfs(MetricQuality::Estimated)
                 .with_message("RssAnon is unavailable; private memory uses RSS as an estimate.")
         }),
-        disk: Some(if has_io {
+        io: Some(if has_io {
             procfs(direct_quality)
         } else {
             procfs(MetricQuality::Unavailable)

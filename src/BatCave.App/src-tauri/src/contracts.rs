@@ -21,13 +21,30 @@ pub struct RuntimeSnapshot {
     pub warnings: Vec<RuntimeWarning>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProcessContributorSummary {
     pub cpu: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub cpu_name_ambiguous: bool,
     pub memory: Option<String>,
-    pub disk: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub memory_name_ambiguous: bool,
+    #[serde(alias = "disk")]
+    pub io: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub io_name_ambiguous: bool,
     pub network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub network_name_ambiguous: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,8 +151,6 @@ pub struct SystemMemoryAccounting {
     pub denied_process_count: usize,
     pub partial_process_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unattributed_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_used_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_limit_bytes: Option<u64>,
@@ -189,12 +204,16 @@ pub struct ProcessSample {
     pub private_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub virtual_memory_bytes: Option<u64>,
-    pub disk_read_total_bytes: u64,
-    pub disk_write_total_bytes: u64,
+    #[serde(alias = "disk_read_total_bytes")]
+    pub io_read_total_bytes: u64,
+    #[serde(alias = "disk_write_total_bytes")]
+    pub io_write_total_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_io_total_bytes: Option<u64>,
-    pub disk_read_bps: u64,
-    pub disk_write_bps: u64,
+    #[serde(alias = "disk_read_bps")]
+    pub io_read_bps: u64,
+    #[serde(alias = "disk_write_bps")]
+    pub io_write_bps: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_io_bps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,7 +318,8 @@ pub struct ProcessMetricQuality {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MetricQualityInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub disk: Option<MetricQualityInfo>,
+    #[serde(alias = "disk")]
+    pub io: Option<MetricQualityInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_io: Option<MetricQualityInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -403,7 +423,8 @@ pub enum SortColumn {
     Pid,
     CpuPct,
     MemoryBytes,
-    DiskBps,
+    #[serde(alias = "disk_bps")]
+    IoBps,
     NetworkBps,
     Threads,
     Handles,
@@ -584,7 +605,6 @@ mod tests {
                     process_private_bytes: 3_000,
                     denied_process_count: 2,
                     partial_process_count: 3,
-                    unattributed_bytes: Some(2_000),
                     commit_used_bytes: Some(11_000),
                     commit_limit_bytes: Some(32_000),
                     system_cache_bytes: Some(1_500),
@@ -623,8 +643,8 @@ mod tests {
                         MetricSource::DirectApi,
                     )),
                     disk: Some(MetricQualityInfo::new(
-                        MetricQuality::Partial,
-                        MetricSource::ProcessAggregate,
+                        MetricQuality::Native,
+                        MetricSource::Pdh,
                     )),
                     network: Some(MetricQualityInfo::new(
                         MetricQuality::Native,
@@ -634,9 +654,26 @@ mod tests {
             },
             process_contributors: ProcessContributorSummary {
                 cpu: Some("BatCave.App".to_string()),
+                cpu_quality: Some(MetricQualityInfo::new(
+                    MetricQuality::Estimated,
+                    MetricSource::Sysinfo,
+                )),
+                cpu_name_ambiguous: false,
                 memory: Some("BatCave.App".to_string()),
-                disk: Some("BatCave.App".to_string()),
+                memory_quality: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                memory_name_ambiguous: false,
+                io: Some("BatCave.App".to_string()),
+                io_quality: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                io_name_ambiguous: false,
                 network: None,
+                network_quality: None,
+                network_name_ambiguous: false,
             },
             processes: vec![sample_process()],
             process_view_rows: vec![sample_process_view_row()],
@@ -725,7 +762,6 @@ mod tests {
                         "process_private_bytes": 3000,
                         "denied_process_count": 2,
                         "partial_process_count": 3,
-                        "unattributed_bytes": 2000,
                         "commit_used_bytes": 11000,
                         "commit_limit_bytes": 32000,
                         "system_cache_bytes": 1500,
@@ -747,15 +783,22 @@ mod tests {
                         "logical_cpu": { "quality": "estimated", "source": "sysinfo" },
                         "memory": { "quality": "native", "source": "direct_api" },
                         "swap": { "quality": "native", "source": "direct_api" },
-                        "disk": { "quality": "partial", "source": "process_aggregate" },
+                        "disk": { "quality": "native", "source": "pdh" },
                         "network": { "quality": "native", "source": "interface_aggregate" }
                     }
                 },
                 "process_contributors": {
                     "cpu": "BatCave.App",
+                    "cpu_quality": { "quality": "estimated", "source": "sysinfo" },
+                    "cpu_name_ambiguous": false,
                     "memory": "BatCave.App",
-                    "disk": "BatCave.App",
-                    "network": null
+                    "memory_quality": { "quality": "native", "source": "direct_api" },
+                    "memory_name_ambiguous": false,
+                    "io": "BatCave.App",
+                    "io_quality": { "quality": "native", "source": "direct_api" },
+                    "io_name_ambiguous": false,
+                    "network": null,
+                    "network_name_ambiguous": false
                 },
                 "processes": [],
                 "process_view_rows": [],
@@ -871,6 +914,36 @@ mod tests {
     }
 
     #[test]
+    fn runtime_settings_migrates_legacy_disk_sort_to_io() {
+        let settings: RuntimeSettings = serde_json::from_value(json!({
+            "query": { "sort_column": "disk_bps" }
+        }))
+        .expect("legacy I/O sort deserializes");
+
+        assert_eq!(settings.query.sort_column, SortColumn::IoBps);
+        assert_eq!(
+            serde_json::to_value(settings.query.sort_column).expect("sort serializes"),
+            json!("io_bps")
+        );
+    }
+
+    #[test]
+    fn process_contributors_accept_legacy_disk_name_and_publish_only_io() {
+        let contributors: ProcessContributorSummary = serde_json::from_value(json!({
+            "cpu": null,
+            "memory": null,
+            "disk": "Writer",
+            "network": null
+        }))
+        .expect("legacy contributor summary deserializes");
+
+        let current = serde_json::to_value(contributors).expect("contributors serialize");
+
+        assert_eq!(current["io"], json!("Writer"));
+        assert!(current.get("disk").is_none());
+    }
+
+    #[test]
     fn runtime_settings_default_to_attention_triage() {
         let fresh_settings = RuntimeSettings::default();
         assert_eq!(fresh_settings.query.focus_mode, ProcessFocusMode::All);
@@ -915,6 +988,35 @@ mod tests {
         assert_eq!(cache.rows.len(), 1);
         assert_eq!(cache.rows[0].pid, "1234");
         assert_eq!(cache.rows[0].access_state, AccessState::Partial);
+    }
+
+    #[test]
+    fn process_contract_migrates_disk_named_io_without_republishing_old_semantics() {
+        let mut legacy = sample_process_json();
+        let object = legacy.as_object_mut().expect("sample process is an object");
+        let io_read_total_bytes = object.remove("io_read_total_bytes").unwrap();
+        let io_write_total_bytes = object.remove("io_write_total_bytes").unwrap();
+        let io_read_bps = object.remove("io_read_bps").unwrap();
+        let io_write_bps = object.remove("io_write_bps").unwrap();
+        object.insert("disk_read_total_bytes".to_string(), io_read_total_bytes);
+        object.insert("disk_write_total_bytes".to_string(), io_write_total_bytes);
+        object.insert("disk_read_bps".to_string(), io_read_bps);
+        object.insert("disk_write_bps".to_string(), io_write_bps);
+        let quality = object
+            .get_mut("quality")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("quality is an object");
+        let io_quality = quality.remove("io").unwrap();
+        quality.insert("disk".to_string(), io_quality);
+
+        let process: ProcessSample =
+            serde_json::from_value(legacy).expect("legacy process contract deserializes");
+        let current = serde_json::to_value(process).expect("current process contract serializes");
+
+        assert_eq!(current["io_read_bps"], json!(7));
+        assert!(current.get("disk_read_bps").is_none());
+        assert!(current["quality"].get("io").is_some());
+        assert!(current["quality"].get("disk").is_none());
     }
 
     #[test]
@@ -971,11 +1073,11 @@ mod tests {
             "memory_bytes": 65_536,
             "private_bytes": 32_768,
             "virtual_memory_bytes": 131_072,
-            "disk_read_total_bytes": 123,
-            "disk_write_total_bytes": 456,
+            "io_read_total_bytes": 123,
+            "io_write_total_bytes": 456,
             "other_io_total_bytes": 789,
-            "disk_read_bps": 7,
-            "disk_write_bps": 8,
+            "io_read_bps": 7,
+            "io_write_bps": 8,
             "other_io_bps": 9,
             "network_received_bps": 0,
             "network_transmitted_bps": 0,
@@ -985,7 +1087,7 @@ mod tests {
             "quality": {
                 "cpu": { "quality": "estimated", "source": "sysinfo" },
                 "memory": { "quality": "native", "source": "direct_api" },
-                "disk": { "quality": "native", "source": "direct_api" },
+                "io": { "quality": "native", "source": "direct_api" },
                 "other_io": { "quality": "native", "source": "direct_api" },
                 "network": { "quality": "unavailable", "source": "etw", "message": "Waiting for ETW network attribution." },
                 "threads": { "quality": "native", "source": "direct_api" },

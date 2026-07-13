@@ -574,10 +574,12 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
             } else {
                 MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
             }),
-            disk: Some(MetricQualityInfo::new(
-                MetricQuality::Estimated,
-                MetricSource::Sysinfo,
-            )),
+            disk: Some(
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                    .with_message(
+                        "Physical-disk throughput is unavailable because the sysinfo fallback has no device-level rate source.",
+                    ),
+            ),
             network: Some(MetricQualityInfo::new(
                 MetricQuality::Estimated,
                 MetricSource::Sysinfo,
@@ -609,11 +611,11 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                 private_bytes: process.memory(),
                 virtual_memory_bytes: (!cfg!(windows) && virtual_memory_bytes > 0)
                     .then_some(virtual_memory_bytes),
-                disk_read_total_bytes: disk_usage.total_read_bytes,
-                disk_write_total_bytes: disk_usage.total_written_bytes,
+                io_read_total_bytes: disk_usage.total_read_bytes,
+                io_write_total_bytes: disk_usage.total_written_bytes,
                 other_io_total_bytes: None,
-                disk_read_bps: 0,
-                disk_write_bps: 0,
+                io_read_bps: 0,
+                io_write_bps: 0,
                 other_io_bps: None,
                 network_received_bps: None,
                 network_transmitted_bps: None,
@@ -629,7 +631,7 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                         MetricQuality::Estimated,
                         MetricSource::Sysinfo,
                     )),
-                    disk: Some(MetricQualityInfo::new(
+                    io: Some(MetricQualityInfo::new(
                         MetricQuality::Estimated,
                         MetricSource::Sysinfo,
                     )),
@@ -713,15 +715,31 @@ fn enrich_native_process(
             enriched
         })
         .unwrap_or(false);
-    process.quality = Some(native_process_quality(process.access_state, has_cpu));
+    apply_native_process_enrichment_quality(&mut process, has_cpu, memory_from_sysinfo);
+    process
+}
+
+#[cfg(any(windows, test))]
+fn apply_native_process_enrichment_quality(
+    process: &mut ProcessSample,
+    has_cpu: bool,
+    memory_from_sysinfo: bool,
+) {
+    let quality = process_quality(process);
+    quality.cpu = Some(if has_cpu {
+        MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
+    } else {
+        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
+            .with_message("Process CPU needs a second Rust-native timing pass.")
+    });
+    quality.network = Some(process_network_quality_unavailable());
     if memory_from_sysinfo {
-        process_quality(&mut process).memory = Some(
+        quality.memory = Some(
             MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo).with_message(
                 "Native process memory counters were denied; using sysinfo fallback memory.",
             ),
         );
     }
-    process
 }
 
 #[cfg(windows)]
@@ -879,34 +897,17 @@ fn process_quality(process: &mut ProcessSample) -> &mut ProcessMetricQuality {
         .get_or_insert_with(ProcessMetricQuality::default)
 }
 
-#[cfg(any(windows, test))]
-fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMetricQuality {
-    let direct_quality = match access_state {
-        AccessState::Full => MetricQuality::Native,
-        AccessState::Partial => MetricQuality::Partial,
-        AccessState::Denied => MetricQuality::Unavailable,
-    };
-    let direct = |message: Option<&str>| {
-        let value = MetricQualityInfo::new(direct_quality, MetricSource::DirectApi);
-        match message {
-            Some(message) => value.with_message(message),
-            None => value,
-        }
-    };
-
+#[cfg(test)]
+fn fully_native_process_quality() -> ProcessMetricQuality {
+    let direct = || MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi);
     ProcessMetricQuality {
-        cpu: Some(if has_cpu {
-            MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
-        } else {
-            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                .with_message("Process CPU needs a second Rust-native timing pass.")
-        }),
-        memory: Some(direct(None)),
-        disk: Some(direct(None)),
-        other_io: Some(direct(None)),
+        cpu: Some(direct()),
+        memory: Some(direct()),
+        io: Some(direct()),
+        other_io: Some(direct()),
         network: Some(process_network_quality_unavailable()),
-        threads: Some(direct(None)),
-        handles: Some(direct(None)),
+        threads: Some(direct()),
+        handles: Some(direct()),
     }
 }
 
@@ -916,6 +917,114 @@ mod tests {
     use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
     #[cfg(windows)]
     use std::collections::HashMap;
+
+    #[test]
+    fn sysinfo_fallback_marks_physical_disk_unavailable_for_native_collector_failures() {
+        let system = System::new();
+        let networks = Networks::new();
+
+        // Windows and Linux both return this shared snapshot when their native system
+        // collector fails, so a zero payload must never be presented as measured disk I/O.
+        let snapshot = collect_sysinfo_system(&system, &networks);
+        let disk = snapshot
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.disk.as_ref())
+            .expect("fallback disk quality exists");
+
+        assert_eq!(snapshot.disk_read_total_bytes, 0);
+        assert_eq!(snapshot.disk_write_total_bytes, 0);
+        assert_eq!(snapshot.disk_read_bps, 0);
+        assert_eq!(snapshot.disk_write_bps, 0);
+        assert_eq!(disk.quality, MetricQuality::Unavailable);
+        assert_eq!(disk.source, Some(MetricSource::Sysinfo));
+        assert!(disk
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("no device-level rate source")));
+    }
+
+    #[test]
+    fn native_enrichment_preserves_unrelated_per_field_quality() {
+        let mut process = ProcessSample {
+            pid: "42".to_string(),
+            parent_pid: None,
+            start_time_ms: 1,
+            name: "Mixed".to_string(),
+            exe: String::new(),
+            status: "running".to_string(),
+            cpu_percent: 0.0,
+            kernel_cpu_percent: None,
+            memory_bytes: 123,
+            private_bytes: 45,
+            virtual_memory_bytes: None,
+            io_read_total_bytes: 0,
+            io_write_total_bytes: 0,
+            other_io_total_bytes: None,
+            io_read_bps: 0,
+            io_write_bps: 0,
+            other_io_bps: None,
+            network_received_bps: None,
+            network_transmitted_bps: None,
+            threads: 3,
+            handles: 0,
+            access_state: AccessState::Partial,
+            quality: Some(ProcessMetricQuality {
+                memory: Some(MetricQualityInfo::new(
+                    MetricQuality::Unavailable,
+                    MetricSource::DirectApi,
+                )),
+                io: Some(MetricQualityInfo::new(
+                    MetricQuality::Unavailable,
+                    MetricSource::DirectApi,
+                )),
+                other_io: Some(MetricQualityInfo::new(
+                    MetricQuality::Unavailable,
+                    MetricSource::DirectApi,
+                )),
+                threads: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                handles: Some(MetricQualityInfo::new(
+                    MetricQuality::Unavailable,
+                    MetricSource::DirectApi,
+                )),
+                ..ProcessMetricQuality::default()
+            }),
+        };
+
+        apply_native_process_enrichment_quality(&mut process, true, true);
+        let quality = process.quality.expect("process quality");
+        assert_eq!(
+            quality.memory.map(|quality| quality.quality),
+            Some(MetricQuality::Estimated)
+        );
+        assert_eq!(
+            quality.io.map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+        assert_eq!(
+            quality.other_io.map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+        assert_eq!(
+            quality.threads.map(|quality| quality.quality),
+            Some(MetricQuality::Native)
+        );
+        assert_eq!(
+            quality.handles.map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+        assert_eq!(
+            quality.cpu.map(|quality| quality.quality),
+            Some(MetricQuality::Estimated)
+        );
+        assert_eq!(
+            quality.network.map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+    }
 
     #[cfg(windows)]
     #[test]
@@ -974,18 +1083,18 @@ mod tests {
             memory_bytes: 0,
             private_bytes: 0,
             virtual_memory_bytes: None,
-            disk_read_total_bytes: 0,
-            disk_write_total_bytes: 0,
+            io_read_total_bytes: 0,
+            io_write_total_bytes: 0,
             other_io_total_bytes: None,
-            disk_read_bps: 0,
-            disk_write_bps: 0,
+            io_read_bps: 0,
+            io_write_bps: 0,
             other_io_bps: None,
             network_received_bps: None,
             network_transmitted_bps: None,
             threads: 1,
             handles: 1,
             access_state: AccessState::Full,
-            quality: Some(native_process_quality(AccessState::Full, true)),
+            quality: Some(fully_native_process_quality()),
         }];
         let sample = NetworkAttributionSample::ready([(
             42,
@@ -1055,11 +1164,10 @@ mod tests {
             Some(MetricSource::Sysinfo)
         );
         let disk = system_quality.disk.as_ref().expect("disk quality");
-        assert_eq!(disk.source, Some(MetricSource::ProcessAggregate));
-        assert!(matches!(
-            disk.quality,
-            MetricQuality::Partial | MetricQuality::Unavailable
-        ));
+        assert_eq!(disk.source, Some(MetricSource::Runtime));
+        assert_eq!(disk.quality, MetricQuality::Unavailable);
+        assert_eq!(sample.system.disk_read_total_bytes, 0);
+        assert_eq!(sample.system.disk_write_total_bytes, 0);
         assert_eq!(
             system_quality
                 .network
@@ -1103,18 +1211,18 @@ mod tests {
             memory_bytes: 0,
             private_bytes: 0,
             virtual_memory_bytes: None,
-            disk_read_total_bytes: 0,
-            disk_write_total_bytes: 0,
+            io_read_total_bytes: 0,
+            io_write_total_bytes: 0,
             other_io_total_bytes: None,
-            disk_read_bps: 0,
-            disk_write_bps: 0,
+            io_read_bps: 0,
+            io_write_bps: 0,
             other_io_bps: None,
             network_received_bps: None,
             network_transmitted_bps: None,
             threads: 1,
             handles: 1,
             access_state: AccessState::Full,
-            quality: Some(native_process_quality(AccessState::Full, true)),
+            quality: Some(fully_native_process_quality()),
         }
     }
 }

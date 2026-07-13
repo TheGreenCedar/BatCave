@@ -1,16 +1,16 @@
 <script lang="ts">
   import MiniChart from "../../MiniChart.svelte";
-  import type { PressureBrief } from "../../cockpit";
+  import type { ResourceBrief } from "../../cockpit";
   import type { ProcessIconKind } from "../../process";
-  import { formatPercent, formatRate } from "../../format";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
   import type { DetailMode, ResourceSummaryOption } from "./types";
 
-  export let brief: PressureBrief;
+  export let brief: ResourceBrief;
   export let resources: ResourceSummaryOption[] = [];
   export let activeMode: DetailMode;
   export let supportingText: string;
   export let sampledAtLabel: string;
+  export let windowLabel = "No history";
   export let activeValues: number[] = [];
   export let activeMax = 100;
   export let activeStroke = "#4a9cff";
@@ -26,30 +26,28 @@
 
 <section class="pressure-brief" aria-labelledby="pressure-brief-heading">
   <header class="pressure-brief-heading">
-    <span>Top pressure</span>
-    <p><i aria-hidden="true"></i>Data fresh <b>·</b> {sampledAtLabel} <b>·</b> Confidence: {brief.confidence}</p>
+    <span>Selected resource</span>
+    <p><i class:inactive={brief.stateLabel !== "Current"} aria-hidden="true"></i>{brief.stateLabel} <b>·</b> {sampledAtLabel} <b>·</b> Confidence: {brief.confidence}</p>
   </header>
-  <h2 id="pressure-brief-heading" aria-label={brief.headline}>
-    {brief.headlinePrefix}{#if brief.leadingWorkload}{" — "}<span class="headline-workload">{brief.leadingWorkload}</span> is the leading workload.{:else}.{/if}
-  </h2>
+  <h2 id="pressure-brief-heading">{brief.headline}</h2>
   <div class="pressure-brief-body">
     <div class="pressure-readout">
-      <strong>{brief.mode === "cpu" || brief.mode === "memory" ? formatPercent(brief.value) : formatRate(brief.value)}</strong>
-      <span>{brief.label} pressure <b class={`tone-${brief.tone}`}>{brief.tone}</b></span>
+      <strong>{brief.valueLabel}</strong>
+      <span>{brief.semanticLabel}</span>
     </div>
-    <div class="pressure-chart" aria-label={`${brief.label} trend`}>
+    <div class="pressure-chart" aria-label={`${brief.semanticLabel} trend, ${windowLabel}`}>
       <MiniChart values={activeValues} max={activeMax} stroke={activeStroke} fill={activeFill} />
-      <small>60s</small>
+      <small>{windowLabel}</small>
     </div>
     <div class="leading-workload">
       <ProcessIcon kind={leadingIconKind} src={leadingIconSrc} />
       <span>
-        <small>Leading workload</small>
-        <strong>{brief.leadingWorkload ?? "No single workload"}</strong>
-        <b>{brief.leadingValue === null ? "Current activity is distributed" : `${formatPercent(brief.leadingValue)} of ${brief.label}`}</b>
+        <small>Compatible process attribution</small>
+        <strong>{brief.leadingWorkload ?? "Not available"}</strong>
+        <b>{brief.contributorStatusLabel}</b>
       </span>
     </div>
-    <div class="pressure-resource-strip" aria-label="System pressure summary">
+    <div class="pressure-resource-strip" aria-label="System resource summary">
       {#each resources as resource (resource.mode)}
         <button
           class:active={resource.mode === activeMode}
@@ -66,5 +64,5 @@
       {/each}
     </div>
   </div>
-  <p class="pressure-supporting">{supportingText}</p>
+  <p class="pressure-supporting">{supportingText} {brief.attributionLabel}</p>
 </section>

@@ -12,18 +12,23 @@
   import HealthStatus from "./lib/components/shell/HealthStatus.svelte";
   import ProcessCommandBar from "./lib/components/shell/ProcessCommandBar.svelte";
   import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
-  import { buildPressureBrief } from "./lib/cockpit";
+  import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
     accessLabel,
+    displayProcessMetricValue,
     formatBytes,
+    formatOptionalRate,
     formatPercent,
     formatRate,
+    logicalCpuMetricQuality,
     metricQualityLabel,
     metricQualityShortLabel,
+    nextProcessMetricHistory,
     processMemoryQuality,
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
+  import { nextMetricHistory, resourceHistoryWindowLabel } from "./lib/history";
   import {
     platformPresentation,
     privateMemoryValue,
@@ -32,11 +37,13 @@
   import {
     defaultSortDirection,
     focusOptions,
+    groupProcessFromRow,
     hasSameProcessOrder,
     processColumns,
     processIoRate,
     processIdentity,
     processNeedsAttention,
+    processOtherIoRate,
     processSelectionKey,
     processViewRowKey,
     sortColumnForKey,
@@ -135,6 +142,7 @@
   let isCompactDetail = false;
   let compactDetailOpen = false;
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
+  let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
   let runtimeQueryRequestSeq = 0;
   let searchDebounceId: number | undefined;
@@ -169,8 +177,6 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
-  $: diskUnavailable = systemQuality.disk?.quality === "unavailable";
-  $: networkUnavailable = systemQuality.network?.quality === "unavailable";
   $: visibleProcessColumns = processColumns
     .filter((column) => column.key !== "network" || processNetworkAvailable)
     .map((column) =>
@@ -180,39 +186,55 @@
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
     memoryAccounting?.denied_process_count ?? snapshot.processes.filter((process) => process.access_state === "denied").length;
-  $: diskReadRate = history.diskRead.at(-1) ?? 0;
-  $: diskWriteRate = history.diskWrite.at(-1) ?? 0;
-  $: networkDownRate = history.netRx.at(-1) ?? 0;
-  $: networkUpRate = history.netTx.at(-1) ?? 0;
-  $: diskScaleMax = maxRate([...history.diskRead, ...history.diskWrite], 1_000_000);
-  $: networkScaleMax = maxRate([...history.netRx, ...history.netTx], 750_000);
+  $: diskReadRate = snapshot.system.disk_read_bps;
+  $: diskWriteRate = snapshot.system.disk_write_bps;
+  $: networkDownRate = snapshot.system.network_received_bps;
+  $: networkUpRate = snapshot.system.network_transmitted_bps;
+  $: diskTotalHistory = combineSeries(history.diskRead, history.diskWrite);
+  $: networkTotalHistory = combineSeries(history.netRx, history.netTx);
+  $: diskScaleMax = maxRate(diskTotalHistory, 1_000_000);
+  $: networkScaleMax = maxRate(networkTotalHistory, 750_000);
   $: selectedRates = selectedProcess ? processRates[processSelectionKey(selectedProcess)] : undefined;
   $: processReadRate = selectedRates?.readRate ?? processHistory.readRate.at(-1) ?? 0;
   $: processWriteRate = selectedRates?.writeRate ?? processHistory.writeRate.at(-1) ?? 0;
   $: void hydrateProcessIcons(processViewRows, filteredProcesses, selectedProcess);
-  $: coreLoads = history.cores.map((core, index) => ({ index, load: currentCoreLoad(core), trend: core }));
-  $: coreAverage = average(coreLoads.map((core) => core.load), snapshot.system.cpu_percent);
+  $: coreLoads = history.cores.flatMap((core, index) =>
+    core.length > 0 ? [{ index, load: currentCoreLoad(core), trend: core }] : [],
+  );
   $: corePeak = Math.max(...coreLoads.map((core) => core.load), 0);
   $: coreMinimum = coreLoads.length > 0 ? Math.min(...coreLoads.map((core) => core.load)) : 0;
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
-  $: pressureBrief = buildPressureBrief(
+  $: collectionState = pollState === "error" ? "stale" : isPaused ? "paused" : "live";
+  $: resourceBrief = buildResourceBrief(
     snapshot,
-    memoryPercent,
-    diskReadRate + diskWriteRate,
-    networkDownRate + networkUpRate,
+    detailMode,
+    {
+      memoryPercent,
+      diskRate: diskReadRate + diskWriteRate,
+      networkRate: networkDownRate + networkUpRate,
+    },
+    collectionState,
   );
-  $: leadingContributor =
-    pressureBrief.mode === "cpu"
+  $: leadingContributor = resourceBrief.leadingWorkload
+    ? resourceBrief.mode === "cpu"
       ? snapshot.process_contributors.cpu
-      : pressureBrief.mode === "memory"
+      : resourceBrief.mode === "memory"
         ? snapshot.process_contributors.memory
-        : pressureBrief.mode === "disk"
-          ? snapshot.process_contributors.disk
-          : snapshot.process_contributors.network;
+        : resourceBrief.mode === "network"
+          ? snapshot.process_contributors.network
+          : null
+    : null;
   $: leadingProcess = leadingContributor
-    ? (snapshot.processes.find((process) => process.name === leadingContributor) ?? null)
+    ? resourceBrief.contributorNameAmbiguous
+      ? null
+      : (() => {
+        const matches = snapshot.processes.filter(
+          (process) => process.name === leadingContributor,
+        );
+        return matches.length === 1 ? matches[0] : null;
+      })()
     : null;
   $: leadingIdentity = leadingProcess ? processIdentity(leadingProcess) : null;
   $: limitationCount = uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warnings;
@@ -254,28 +276,52 @@
         : detailMode === "disk"
           ? "Disk throughput"
           : "Network throughput";
+  $: cpuDetailValue = metricValueLabel(
+    snapshot.system.cpu_percent,
+    systemQuality.cpu,
+    formatPercent,
+  );
+  $: memoryDetailValue = metricValueLabel(
+    memoryPercent,
+    systemQuality.memory,
+    formatPercent,
+  );
+  $: diskDetailValue = metricValueLabel(
+    diskReadRate + diskWriteRate,
+    systemQuality.disk,
+    formatRate,
+  );
+  $: networkDetailValue = metricValueLabel(
+    networkDownRate + networkUpRate,
+    systemQuality.network,
+    formatRate,
+  );
   $: detailReadout =
     detailMode === "cpu"
-      ? `${formatPercent(coreAverage)} avg`
+      ? cpuDetailValue === "Unavailable" || cpuDetailValue === "Waiting"
+        ? cpuDetailValue
+        : `${cpuDetailValue} machine total`
       : detailMode === "memory"
-        ? `${formatPercent(memoryPercent)} used`
+        ? memoryDetailValue === "Unavailable" || memoryDetailValue === "Waiting"
+          ? memoryDetailValue
+          : `${memoryDetailValue} used`
         : detailMode === "disk"
-          ? diskUnavailable
-            ? "Unavailable"
-            : formatRate(diskReadRate + diskWriteRate)
-          : networkUnavailable
-            ? "Unavailable"
-            : formatRate(networkDownRate + networkUpRate);
+          ? diskDetailValue
+          : networkDetailValue;
   $: resourceSummaries = [
     {
       mode: "cpu",
       ariaLabel: "Open CPU logical core detail",
-      label: "CPU",
-      value: formatPercent(snapshot.system.cpu_percent),
-      supportingLabel: "Peak core",
-      supportingValue: formatPercent(corePeak),
-      statusLabel: resourceStatusLabel(snapshot.system.cpu_percent),
-      shortStatusLabel: resourceStatusLabel(snapshot.system.cpu_percent),
+      label: "Machine CPU",
+      value: metricValueLabel(snapshot.system.cpu_percent, systemQuality.cpu, formatPercent),
+      supportingLabel: "Peak logical core",
+      supportingValue: metricValueLabel(
+        corePeak,
+        logicalCpuMetricQuality(systemQuality),
+        formatPercent,
+      ),
+      statusLabel: resourceQualityStatus(systemQuality.cpu, "Measured"),
+      shortStatusLabel: resourceQualityShortStatus(systemQuality.cpu, "Measured"),
       values: history.cpu,
       max: 100,
       stroke: activeTheme.cpuStroke,
@@ -285,11 +331,15 @@
       mode: "memory",
       ariaLabel: "Open memory detail",
       label: "Memory",
-      value: formatPercent(memoryPercent),
+      value: metricValueLabel(memoryPercent, systemQuality.memory, formatPercent),
       supportingLabel: "Used",
-      supportingValue: formatBytes(snapshot.system.memory_used_bytes),
-      statusLabel: resourceStatusLabel(memoryPercent),
-      shortStatusLabel: resourceStatusLabel(memoryPercent),
+      supportingValue: metricValueLabel(
+        snapshot.system.memory_used_bytes,
+        systemQuality.memory,
+        formatBytes,
+      ),
+      statusLabel: resourceQualityStatus(systemQuality.memory, "Measured"),
+      shortStatusLabel: resourceQualityShortStatus(systemQuality.memory, "Measured"),
       values: history.memory,
       max: 100,
       stroke: activeTheme.memoryStroke,
@@ -299,14 +349,14 @@
       mode: "disk",
       ariaLabel: "Open disk throughput detail",
       label: "Disk",
-      value: diskUnavailable ? "Unavailable" : formatRate(diskReadRate + diskWriteRate),
+      value: metricValueLabel(diskReadRate + diskWriteRate, systemQuality.disk, formatRate),
       supportingLabel: "Read / write",
-      supportingValue: diskUnavailable
+      supportingValue: !metricCanDisplay(systemQuality.disk)
         ? "No trusted sample"
         : `${formatRate(diskReadRate)} / ${formatRate(diskWriteRate)}`,
-      statusLabel: metricQualityLabel(systemQuality.disk, "Aggregate"),
-      shortStatusLabel: metricQualityShortLabel(systemQuality.disk, "Aggregate"),
-      values: history.diskWrite,
+      statusLabel: resourceQualityStatus(systemQuality.disk, "Aggregate"),
+      shortStatusLabel: resourceQualityShortStatus(systemQuality.disk, "Aggregate"),
+      values: diskTotalHistory,
       max: diskScaleMax,
       stroke: activeTheme.diskWriteStroke,
       fill: activeTheme.diskWriteFill,
@@ -315,21 +365,27 @@
       mode: "network",
       ariaLabel: "Open network throughput detail",
       label: "Network",
-      value: networkUnavailable ? "Unavailable" : formatRate(networkDownRate + networkUpRate),
+      value: metricValueLabel(networkDownRate + networkUpRate, systemQuality.network, formatRate),
       supportingLabel: "Down / up",
-      supportingValue: networkUnavailable
+      supportingValue: !metricCanDisplay(systemQuality.network)
         ? "No trusted sample"
         : `${formatRate(networkDownRate)} / ${formatRate(networkUpRate)}`,
-      statusLabel: metricQualityLabel(systemQuality.network, "Aggregate"),
-      shortStatusLabel: metricQualityShortLabel(systemQuality.network, "Aggregate"),
-      values: history.netRx,
+      statusLabel: resourceQualityStatus(systemQuality.network, "Aggregate"),
+      shortStatusLabel: resourceQualityShortStatus(systemQuality.network, "Aggregate"),
+      values: networkTotalHistory,
       max: networkScaleMax,
       stroke: activeTheme.networkDownStroke,
       fill: activeTheme.networkDownFill,
     },
   ];
   $: activeResource =
-    resourceSummaries.find((resource) => resource.mode === pressureBrief.mode) ?? resourceSummaries[0];
+    resourceSummaries.find((resource) => resource.mode === detailMode) ?? resourceSummaries[0];
+  $: resourceWindowLabel = resourceHistoryWindowLabel(
+    activeResource?.values.length ?? 0,
+    snapshot.settings.sample_interval_ms,
+    systemQuality[detailMode],
+    snapshot.sampled_at_ms !== null,
+  );
 
   onMount(() => {
     let timeoutId: number | undefined;
@@ -646,37 +702,90 @@
     if (nextProcess) {
       const nextRates = processTrendRates(nextProcess);
       processHistory = {
-        cpu: pushPoint(processHistory.cpu, nextProcess.cpu_percent),
-        memory: pushPoint(
+        cpu: nextProcessMetricHistory(
+          processHistory.cpu,
+          nextProcess.cpu_percent,
+          nextProcess.quality?.cpu,
+          historyPointLimit,
+        ),
+        memory: nextProcessMetricHistory(
           processHistory.memory,
           percentage(nextProcess.memory_bytes, Math.max(next.system.memory_total_bytes, 1)),
+          processMemoryQuality(nextProcess),
+          historyPointLimit,
         ),
-        readRate: pushPoint(processHistory.readRate, nextRates.readRate),
-        writeRate: pushPoint(processHistory.writeRate, nextRates.writeRate),
-        networkRate: pushPoint(processHistory.networkRate, nextRates.networkRate),
+        readRate: nextProcessMetricHistory(
+          processHistory.readRate,
+          nextRates.readRate,
+          nextProcess.quality?.io,
+          historyPointLimit,
+        ),
+        writeRate: nextProcessMetricHistory(
+          processHistory.writeRate,
+          nextRates.writeRate,
+          nextProcess.quality?.io,
+          historyPointLimit,
+        ),
+        networkRate: nextProcessMetricHistory(
+          processHistory.networkRate,
+          nextRates.networkRate,
+          nextProcess.quality?.network,
+          historyPointLimit,
+        ),
       };
     } else if (previousProcess) {
-      processHistory = {
-        cpu: pushPoint(processHistory.cpu, 0),
-        memory: pushPoint(processHistory.memory, 0),
-        readRate: pushPoint(processHistory.readRate, 0),
-        writeRate: pushPoint(processHistory.writeRate, 0),
-        networkRate: pushPoint(processHistory.networkRate, 0),
-      };
+      processHistory = emptyProcessTrendState();
     }
 
     history = {
-      cpu: pushPoint(history.cpu, next.system.cpu_percent),
-      memory: pushPoint(history.memory, nextMemoryPercent),
+      cpu: nextMetricHistory(
+        history.cpu,
+        next.system.cpu_percent,
+        next.system.quality?.cpu,
+        historyPointLimit,
+      ),
+      memory: nextMetricHistory(
+        history.memory,
+        nextMemoryPercent,
+        next.system.quality?.memory,
+        historyPointLimit,
+      ),
       swap:
         next.system.swap_total_bytes && next.system.swap_used_bytes !== undefined
           ? pushPoint(history.swap, percentage(next.system.swap_used_bytes, next.system.swap_total_bytes))
           : history.swap,
-      diskRead: pushPoint(history.diskRead, next.system.disk_read_bps),
-      diskWrite: pushPoint(history.diskWrite, next.system.disk_write_bps),
-      netRx: pushPoint(history.netRx, next.system.network_received_bps),
-      netTx: pushPoint(history.netTx, next.system.network_transmitted_bps),
-      cores: logicalCpu.map((value, index) => pushPoint(history.cores[index] ?? [], value)),
+      diskRead: nextMetricHistory(
+        history.diskRead,
+        next.system.disk_read_bps,
+        next.system.quality?.disk,
+        historyPointLimit,
+      ),
+      diskWrite: nextMetricHistory(
+        history.diskWrite,
+        next.system.disk_write_bps,
+        next.system.quality?.disk,
+        historyPointLimit,
+      ),
+      netRx: nextMetricHistory(
+        history.netRx,
+        next.system.network_received_bps,
+        next.system.quality?.network,
+        historyPointLimit,
+      ),
+      netTx: nextMetricHistory(
+        history.netTx,
+        next.system.network_transmitted_bps,
+        next.system.quality?.network,
+        historyPointLimit,
+      ),
+      cores: logicalCpu.map((value, index) =>
+        nextMetricHistory(
+          history.cores[index] ?? [],
+          value,
+          logicalCpuMetricQuality(next.system.quality ?? {}),
+          historyPointLimit,
+        ),
+      ),
     };
   }
 
@@ -909,11 +1018,36 @@
   function resetProcessHistory(process: ProcessSample): void {
     const rates = processTrendRates(process);
     processHistory = {
-      cpu: [process.cpu_percent],
-      memory: [percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1))],
-      readRate: [rates.readRate],
-      writeRate: [rates.writeRate],
-      networkRate: [rates.networkRate],
+      cpu: nextProcessMetricHistory(
+        [],
+        process.cpu_percent,
+        process.quality?.cpu,
+        historyPointLimit,
+      ),
+      memory: nextProcessMetricHistory(
+        [],
+        percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1)),
+        processMemoryQuality(process),
+        historyPointLimit,
+      ),
+      readRate: nextProcessMetricHistory(
+        [],
+        rates.readRate,
+        process.quality?.io,
+        historyPointLimit,
+      ),
+      writeRate: nextProcessMetricHistory(
+        [],
+        rates.writeRate,
+        process.quality?.io,
+        historyPointLimit,
+      ),
+      networkRate: nextProcessMetricHistory(
+        [],
+        rates.networkRate,
+        process.quality?.network,
+        historyPointLimit,
+      ),
     };
   }
 
@@ -975,22 +1109,77 @@
     return trimPoints([...points, Number.isFinite(value) ? value : 0]);
   }
 
+  function combineSeries(left: number[], right: number[]): number[] {
+    const length = Math.max(left.length, right.length);
+    const leftOffset = length - left.length;
+    const rightOffset = length - right.length;
+    return Array.from({ length }, (_, index) =>
+      (left[index - leftOffset] ?? 0) + (right[index - rightOffset] ?? 0),
+    );
+  }
+
+  function metricValueLabel(
+    value: number,
+    quality: MetricQualityInfo | undefined,
+    formatter: (value: number) => string,
+  ): string {
+    if (snapshot.sampled_at_ms === null || quality?.quality === "unavailable") {
+      return "Unavailable";
+    }
+    if (quality?.quality === "held") return "Waiting";
+    return formatter(value);
+  }
+
+  function metricCanDisplay(quality: MetricQualityInfo | undefined): boolean {
+    return (
+      snapshot.sampled_at_ms !== null &&
+      quality?.quality !== "unavailable" &&
+      quality?.quality !== "held"
+    );
+  }
+
+  function resourceQualityStatus(
+    quality: MetricQualityInfo | undefined,
+    fallback: string,
+  ): string {
+    if (snapshot.sampled_at_ms === null) return "No sample";
+    if (pollState === "error") return "Stale last sample";
+    if (isPaused) return "Paused at last sample";
+    if (quality?.quality === "unavailable" || quality?.quality === "held" || quality?.quality === "partial") {
+      return metricQualityLabel(quality, fallback);
+    }
+    if (snapshot.health.degraded || snapshot.warnings.length > 0) {
+      return `Degraded / ${metricQualityLabel(quality, fallback)}`;
+    }
+    return metricQualityLabel(quality, fallback);
+  }
+
+  function resourceQualityShortStatus(
+    quality: MetricQualityInfo | undefined,
+    fallback: string,
+  ): string {
+    if (snapshot.sampled_at_ms === null) return "No sample";
+    if (pollState === "error") return "Stale";
+    if (isPaused) return "Paused";
+    if (quality?.quality === "unavailable" || quality?.quality === "held" || quality?.quality === "partial") {
+      return metricQualityShortLabel(quality, fallback);
+    }
+    if (snapshot.health.degraded || snapshot.warnings.length > 0) return "Degraded";
+    return metricQualityShortLabel(quality, fallback);
+  }
+
   function buildProcessRates(nextProcesses: ProcessSample[]): Record<string, ProcessRates> {
     const rates: Record<string, ProcessRates> = {};
 
     for (const process of nextProcesses) {
       rates[processSelectionKey(process)] = {
-        readRate: process.disk_read_bps,
-        otherRate: process.other_io_bps ?? 0,
-        writeRate: process.disk_write_bps,
+        readRate: process.io_read_bps,
+        otherRate: process.other_io_bps,
+        writeRate: process.io_write_bps,
       };
     }
 
     return rates;
-  }
-
-  function groupSelectionKey(key: string): string {
-    return `group:${key}`;
   }
 
   function selectedGroupKey(selection: string): string | null {
@@ -1007,41 +1196,12 @@
     return source.processes.find((process) => processSelectionKey(process) === selection) ?? null;
   }
 
-  function groupProcessFromRow(row: RuntimeSnapshot["process_view_rows"][number]): ProcessSample {
-    const representative = row.representative;
-    return {
-      pid: row.group_key ? groupSelectionKey(row.group_key) : "group",
-      parent_pid: null,
-      start_time_ms: representative?.start_time_ms ?? 0,
-      name: row.group_label ?? representative?.name ?? "Process group",
-      exe: "",
-      status: "Group",
-      cpu_percent: row.cpu_percent,
-      kernel_cpu_percent: representative?.kernel_cpu_percent,
-      memory_bytes: row.memory_bytes,
-      private_bytes: row.memory_bytes,
-      virtual_memory_bytes: representative?.virtual_memory_bytes,
-      disk_read_total_bytes: representative?.disk_read_total_bytes ?? 0,
-      disk_write_total_bytes: representative?.disk_write_total_bytes ?? 0,
-      other_io_total_bytes: representative?.other_io_total_bytes,
-      disk_read_bps: row.io_bps,
-      disk_write_bps: 0,
-      other_io_bps: 0,
-      network_received_bps: row.network_bps,
-      network_transmitted_bps: 0,
-      threads: row.threads,
-      handles: representative?.handles ?? 0,
-      access_state: representative?.access_state ?? "full",
-      quality: representative?.quality,
-    };
-  }
-
   function processTrendRates(process: ProcessSample): ProcessRates & { networkRate: number } {
     const rates = processRates[processSelectionKey(process)];
     return {
-      readRate: rates?.readRate ?? process.disk_read_bps,
-      writeRate: rates?.writeRate ?? process.disk_write_bps,
-      otherRate: rates?.otherRate ?? process.other_io_bps ?? 0,
+      readRate: rates?.readRate ?? process.io_read_bps,
+      writeRate: rates?.writeRate ?? process.io_write_bps,
+      otherRate: rates?.otherRate ?? process.other_io_bps,
       networkRate: (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
     };
   }
@@ -1060,14 +1220,6 @@
 
   function boundedPercent(value: number): number {
     return Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
-  }
-
-  function average(values: number[], fallback: number): number {
-    if (values.length === 0) {
-      return fallback;
-    }
-
-    return values.reduce((total, value) => total + value, 0) / values.length;
   }
 
   function coreTone(load: number): string {
@@ -1108,10 +1260,7 @@
   function processNetworkLabel(process: ProcessSample): string {
     const quality = process.quality?.network;
     const rate = (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
-
-    if (quality?.quality === "unavailable") return "Unavailable";
-    if (quality?.quality === "held") return "Waiting";
-    return formatRate(rate);
+    return displayProcessMetricValue(rate, quality, formatRate);
   }
 
   function processSummary(process: ProcessSample): string {
@@ -1121,10 +1270,11 @@
       `PID: ${process.pid}`,
       `Parent PID: ${process.parent_pid ?? "--"}`,
       `Status: ${process.status}`,
-      `CPU: ${formatPercent(process.cpu_percent)}`,
+      `CPU (one-core-equivalent): ${displayProcessMetricValue(process.cpu_percent, process.quality?.cpu, formatPercent)}`,
       `${presentation.memoryLabel}: ${residentMemoryValue(process, snapshot.environment.platform)}`,
       `${presentation.privateMemoryLabel}: ${privateMemoryValue(process, snapshot.environment.platform)}`,
-      `I/O rate: ${formatRate(processIoRate(process, processRates))}`,
+      `Read/write I/O rate: ${displayProcessMetricValue(processIoRate(process, processRates), process.quality?.io, formatRate)}`,
+      `Other I/O rate: ${displayProcessMetricValue(processOtherIoRate(process, processRates), process.quality?.other_io, formatOptionalRate)}`,
       `Network: ${processNetworkLabel(process)}`,
       `Access: ${accessLabel(process.access_state)}`,
       `Memory quality: ${metricQualityLabel(processMemoryQuality(process) as MetricQualityInfo | undefined, "Measured")}`,
@@ -1174,12 +1324,6 @@
     return Math.max(fallback, Math.max(...points, 0) * 1.2);
   }
 
-  function resourceStatusLabel(percent: number): string {
-    if (percent >= 85) return "High";
-    if (percent >= 65) return "Elevated";
-    return "Steady";
-  }
-
   function timeLabel(timestampMs: number): string {
     if (timestampMs <= 0) {
       return "--";
@@ -1221,11 +1365,12 @@
     onOpenDiagnostics={() => (diagnosticsOpen = true)}
   />
   <SystemSummary
-    brief={pressureBrief}
+    brief={resourceBrief}
     resources={resourceSummaries}
     activeMode={detailMode}
     supportingText={systemSupportingText}
     {sampledAtLabel}
+    windowLabel={resourceWindowLabel}
     activeValues={activeResource?.values ?? []}
     activeMax={activeResource?.max ?? 100}
     activeStroke={activeResource?.stroke ?? activeTheme.cpuStroke}

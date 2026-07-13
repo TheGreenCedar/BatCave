@@ -30,7 +30,7 @@ export interface ProcessColumn {
 export interface ProcessRates {
   readRate: number;
   writeRate: number;
-  otherRate: number;
+  otherRate?: number;
 }
 
 export type ProcessIconKind =
@@ -63,7 +63,7 @@ export const focusOptions: { value: FocusMode; label: string }[] = [
 
 export const sortOptions: { value: SortKey; label: string }[] = [
   { value: "attention", label: "Attention" },
-  { value: "cpu", label: "CPU" },
+  { value: "cpu", label: "CPU (one core)" },
   { value: "memory", label: "Resident memory" },
   { value: "io", label: "I/O" },
   { value: "network", label: "Network" },
@@ -73,9 +73,9 @@ export const sortOptions: { value: SortKey; label: string }[] = [
 export const processColumns: ProcessColumn[] = [
   { key: "name", label: "Workload" },
   { key: "attention", label: "Status" },
-  { key: "cpu", label: "CPU", metric: true },
+  { key: "cpu", label: "CPU / core", metric: true },
   { key: "memory", label: "Resident memory", metric: true },
-  { key: "io", label: "Disk R/W", metric: true },
+  { key: "io", label: "Read/write I/O", metric: true },
   { key: "network", label: "Network", metric: true },
 ];
 
@@ -128,7 +128,7 @@ export function compareProcessSamples(
           ? left.cpu_percent - right.cpu_percent
           : query.sort_column === "memory_bytes"
             ? left.memory_bytes - right.memory_bytes
-            : query.sort_column === "disk_bps"
+            : query.sort_column === "io_bps"
               ? rawProcessIoRate(left) - rawProcessIoRate(right)
               : query.sort_column === "network_bps"
                 ? rawProcessNetworkRate(left) - rawProcessNetworkRate(right)
@@ -145,7 +145,7 @@ export function compareProcessSamples(
 }
 
 function rawProcessIoRate(process: ProcessSample): number {
-  return process.disk_read_bps + process.disk_write_bps + (process.other_io_bps ?? 0);
+  return process.io_read_bps + process.io_write_bps;
 }
 
 function rawProcessNetworkRate(process: ProcessSample): number {
@@ -225,10 +225,10 @@ const sortColumnByKey: Record<SortKey, SortColumn> = {
   pid: "pid",
   cpu: "cpu_pct",
   memory: "memory_bytes",
-  io: "disk_bps",
+  io: "io_bps",
   network: "network_bps",
-  read: "disk_bps",
-  write: "disk_bps",
+  read: "io_bps",
+  write: "io_bps",
   status: "name",
   threads: "threads",
 };
@@ -237,7 +237,7 @@ const sortKeyByColumn: Partial<Record<SortColumn, SortKey>> = {
   attention: "attention",
   cpu_pct: "cpu",
   memory_bytes: "memory",
-  disk_bps: "io",
+  io_bps: "io",
   network_bps: "network",
   name: "name",
   pid: "pid",
@@ -248,11 +248,52 @@ export function processIoRate(
   processRates: Record<string, ProcessRates>,
 ): number {
   const rates = processRates[processSelectionKey(process)];
-  return (
-    (rates?.readRate ?? process.disk_read_bps) +
-    (rates?.writeRate ?? process.disk_write_bps) +
-    (rates?.otherRate ?? process.other_io_bps ?? 0)
-  );
+  return (rates?.readRate ?? process.io_read_bps) + (rates?.writeRate ?? process.io_write_bps);
+}
+
+export function processOtherIoRate(
+  process: ProcessSample,
+  processRates: Record<string, ProcessRates>,
+): number | undefined {
+  const rates = processRates[processSelectionKey(process)];
+  return rates?.otherRate ?? process.other_io_bps;
+}
+
+export function groupProcessFromRow(row: ProcessViewRow): ProcessSample {
+  const representative = row.representative;
+  return {
+    pid: row.group_key ? `group:${row.group_key}` : "group",
+    parent_pid: null,
+    start_time_ms: representative?.start_time_ms ?? 0,
+    name: row.group_label ?? representative?.name ?? "Process group",
+    exe: "",
+    status: "Group",
+    cpu_percent: row.cpu_percent,
+    kernel_cpu_percent: representative?.kernel_cpu_percent,
+    memory_bytes: row.memory_bytes,
+    private_bytes: row.memory_bytes,
+    virtual_memory_bytes: representative?.virtual_memory_bytes,
+    io_read_total_bytes: representative?.io_read_total_bytes ?? 0,
+    io_write_total_bytes: representative?.io_write_total_bytes ?? 0,
+    other_io_total_bytes: undefined,
+    io_read_bps: row.io_bps,
+    io_write_bps: 0,
+    other_io_bps: undefined,
+    network_received_bps: row.network_bps,
+    network_transmitted_bps: 0,
+    threads: row.threads,
+    handles: representative?.handles ?? 0,
+    access_state: representative?.access_state ?? "full",
+    quality: {
+      ...representative?.quality,
+      other_io: {
+        quality: "unavailable",
+        source: "runtime",
+        message:
+          "Grouped Other I/O is unavailable until the process view exposes a typed aggregate.",
+      },
+    },
+  };
 }
 
 export function defaultSortDirection(key: SortKey): SortDirection {
@@ -306,29 +347,6 @@ export function sortIndicator(key: SortKey, activeKey: SortKey, direction: SortD
   }
 
   return direction === "asc" ? "Asc" : "Desc";
-}
-
-export function processAccent(
-  process: ProcessSample | undefined,
-  processRates: Record<string, ProcessRates>,
-): string {
-  if (!process) {
-    return "Idle";
-  }
-
-  if (process.cpu_percent >= 30) {
-    return "Hot";
-  }
-
-  if (process.memory_bytes >= 900 * 1024 * 1024) {
-    return "Heavy";
-  }
-
-  if (processIoRate(process, processRates) >= 500 * 1024) {
-    return "I/O";
-  }
-
-  return "Normal";
 }
 
 export function processIdentity(process: ProcessSample): ProcessIdentity {

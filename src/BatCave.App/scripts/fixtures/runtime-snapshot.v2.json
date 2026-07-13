@@ -89,9 +89,13 @@
   },
   "process_contributors": {
     "cpu": "BatCave.App",
+    "cpu_name_ambiguous": false,
     "memory": "BatCave.App",
-    "disk": "BatCave.App",
-    "network": null
+    "memory_name_ambiguous": false,
+    "io": "BatCave.App",
+    "io_name_ambiguous": false,
+    "network": null,
+    "network_name_ambiguous": false
   },
   "processes": [
     {
@@ -104,10 +108,10 @@
       "cpu_percent": 8.25,
       "memory_bytes": 65536,
       "private_bytes": 32768,
-      "disk_read_total_bytes": 123,
-      "disk_write_total_bytes": 456,
-      "disk_read_bps": 7,
-      "disk_write_bps": 8,
+      "io_read_total_bytes": 123,
+      "io_write_total_bytes": 456,
+      "io_read_bps": 7,
+      "io_write_bps": 8,
       "threads": 9,
       "handles": 10,
       "access_state": "full"

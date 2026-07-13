@@ -1,73 +1,96 @@
-import type { ProcessContributorSummary, ProcessSample } from "./types";
-
-export function systemPressureHeadline(
-  cpuPercent: number,
-  memoryPercent: number,
-  diskRate: number,
-  networkRate: number,
-  contributors: ProcessContributorSummary,
-): string {
-  const pressure = [
-    {
-      label: "CPU",
-      score: cpuPercent / 100,
-      contributor: contributors.cpu,
-    },
-    {
-      label: "memory",
-      score: memoryPercent / 100,
-      contributor: contributors.memory,
-    },
-    {
-      label: "disk",
-      score: diskRate / (50 * 1024 * 1024),
-      contributor: contributors.disk,
-    },
-    {
-      label: "network",
-      score: networkRate / (25 * 1024 * 1024),
-      contributor: contributors.network,
-    },
-  ].sort((left, right) => right.score - left.score)[0];
-
-  if (pressure.score < 0.65) {
-    return "System is steady.";
-  }
-
-  const prefix =
-    pressure.score >= 0.85
-      ? `High ${pressure.label} pressure`
-      : `${pressure.label[0].toLocaleUpperCase()}${pressure.label.slice(1)} is elevated`;
-
-  return pressure.contributor
-    ? `${prefix} - ${pressure.contributor} is the top activity.`
-    : `${prefix}.`;
-}
+import type { MetricQualityInfo, ProcessContributorSummary, ProcessSample } from "./types";
 
 export function summarizeProcessContributors(
   processes: ProcessSample[],
 ): ProcessContributorSummary {
+  const cpu = topProcessContributor(
+    processes,
+    (process) => process.cpu_percent,
+    (process) => process.quality?.cpu,
+  );
+  const memory = topProcessContributor(
+    processes,
+    (process) => process.memory_bytes,
+    (process) => process.quality?.memory,
+  );
+  const io = topProcessContributor(
+    processes,
+    (process) => process.io_read_bps + process.io_write_bps,
+    (process) => process.quality?.io,
+  );
+  const network = topProcessContributor(
+    processes,
+    (process) => (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
+    (process) => process.quality?.network,
+  );
+
   return {
-    cpu: topProcessName(processes, (process) => process.cpu_percent),
-    memory: topProcessName(processes, (process) => process.memory_bytes),
-    disk: topProcessName(
-      processes,
-      (process) => process.disk_read_bps + process.disk_write_bps + (process.other_io_bps ?? 0),
-    ),
-    network: topProcessName(
-      processes,
-      (process) => (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
-    ),
+    cpu: cpu.name,
+    cpu_quality: cpu.quality,
+    cpu_name_ambiguous: cpu.ambiguous,
+    memory: memory.name,
+    memory_quality: memory.quality,
+    memory_name_ambiguous: memory.ambiguous,
+    io: io.name,
+    io_quality: io.quality,
+    io_name_ambiguous: io.ambiguous,
+    network: network.name,
+    network_quality: network.quality,
+    network_name_ambiguous: network.ambiguous,
   };
 }
 
-function topProcessName(
+function topProcessContributor(
   processes: ProcessSample[],
   metric: (process: ProcessSample) => number,
-): string | null {
-  const process = processes.reduce<ProcessSample | null>(
-    (best, candidate) => (!best || metric(candidate) > metric(best) ? candidate : best),
-    null,
-  );
-  return process && metric(process) > 0 ? process.name : null;
+  quality: (process: ProcessSample) => MetricQualityInfo | undefined,
+): { name: string | null; quality?: MetricQualityInfo; ambiguous: boolean } {
+  const hasUnknownQuality = processes.some((candidate) => quality(candidate) === undefined);
+  const qualityCandidates = processes
+    .map(quality)
+    .filter((candidate): candidate is MetricQualityInfo => candidate !== undefined);
+  const coverageQuality = hasUnknownQuality
+    ? undefined
+    : qualityCandidates.reduce<MetricQualityInfo | undefined>((selected, candidate) => {
+        if (!selected) return candidate;
+        const candidateRank = contributorQualityRank(candidate);
+        const selectedRank = contributorQualityRank(selected);
+        return candidateRank > selectedRank ? candidate : selected;
+      }, undefined);
+  const coverageIsPublishable = processes.every((candidate) => {
+    const candidateQuality = quality(candidate);
+    return candidateQuality !== undefined && contributorQualityIsPublishable(candidateQuality);
+  });
+  const process = processes
+    .filter((candidate) => contributorQualityIsPublishable(quality(candidate)))
+    .reduce<ProcessSample | null>(
+      (best, candidate) => (!best || metric(candidate) > metric(best) ? candidate : best),
+      null,
+    );
+  if (process && metric(process) > 0) {
+    if (!coverageIsPublishable) {
+      return { name: null, quality: coverageQuality, ambiguous: false };
+    }
+    return {
+      name: process.name,
+      quality: coverageQuality,
+      ambiguous: processes.filter((candidate) => candidate.name === process.name).length > 1,
+    };
+  }
+
+  return { name: null, quality: coverageQuality, ambiguous: false };
+}
+
+function contributorQualityIsPublishable(quality: MetricQualityInfo | undefined): boolean {
+  return quality?.quality !== "unavailable" && quality?.quality !== "held";
+}
+
+function contributorQualityRank(quality: MetricQualityInfo): number {
+  return {
+    native: 1,
+    estimated: 2,
+    partial: 3,
+    held: 4,
+    unavailable: 5,
+  }[quality.quality];
 }

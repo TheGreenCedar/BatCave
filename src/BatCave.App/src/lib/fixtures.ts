@@ -112,11 +112,6 @@ export function makeFixtureSnapshot(
   const processes = Array.from({ length: processCount }, (_, index) =>
     makeProcess(fixtureProcessName(index, platform), index, tick, platform),
   ).sort((left, right) => right.cpu_percent - left.cpu_percent);
-  const processDiskReadBps = processes.reduce((total, process) => total + process.disk_read_bps, 0);
-  const processDiskWriteBps = processes.reduce(
-    (total, process) => total + process.disk_write_bps,
-    0,
-  );
   const processNetworkReceivedBps = processes.reduce(
     (total, process) => total + (process.network_received_bps ?? 0),
     0,
@@ -130,8 +125,8 @@ export function makeFixtureSnapshot(
   const memoryUsed = Math.round(memoryTotal * memoryRatio);
   const kernelPaged = Math.round(1.2 * 1024 * 1024 * 1024 + Math.sin(tick / 9) * 80_000_000);
   const kernelNonpaged = Math.round(760 * 1024 * 1024 + Math.cos(tick / 11) * 50_000_000);
-  const diskReadBps = processDiskReadBps + 420_000 + Math.round(Math.sin(tick / 2) * 80_000);
-  const diskWriteBps = processDiskWriteBps + 260_000 + Math.round(Math.cos(tick / 4) * 60_000);
+  const diskReadBps = 4_200_000 + Math.round(Math.sin(tick / 2) * 800_000);
+  const diskWriteBps = 2_600_000 + Math.round(Math.cos(tick / 4) * 600_000);
   const networkReceivedBps =
     processNetworkReceivedBps + 120_000 + Math.round(Math.sin(tick / 3) * 24_000);
   const networkTransmittedBps =
@@ -206,7 +201,6 @@ export function makeFixtureSnapshot(
         process_private_bytes: processPrivate,
         denied_process_count: 0,
         partial_process_count: 0,
-        unattributed_bytes: Math.max(0, memoryUsed - processWorkingSet),
         commit_used_bytes: memoryUsed + 2 * 1024 * 1024 * 1024,
         commit_limit_bytes: memoryTotal + 8 * 1024 * 1024 * 1024,
         system_cache_bytes: Math.round(2.4 * 1024 * 1024 * 1024),
@@ -415,7 +409,7 @@ function compareGroups(
           ? left.cpuPercent - right.cpuPercent
           : query.sort_column === "memory_bytes"
             ? left.memoryBytes - right.memoryBytes
-            : query.sort_column === "disk_bps"
+            : query.sort_column === "io_bps"
               ? left.ioBps - right.ioBps
               : query.sort_column === "network_bps"
                 ? left.networkBps - right.networkBps
@@ -472,7 +466,7 @@ function normalizedProcessName(name: string): string {
 }
 
 function processIoRate(process: ProcessSample): number {
-  return process.disk_read_bps + process.disk_write_bps + (process.other_io_bps ?? 0);
+  return process.io_read_bps + process.io_write_bps;
 }
 
 function processNetworkRate(process: ProcessSample): number {
@@ -564,11 +558,11 @@ function makeProcess(
     memory_bytes: Math.max(18 * 1024 * 1024, Math.round(memory)),
     private_bytes: Math.max(12 * 1024 * 1024, Math.round(memory * 0.76)),
     virtual_memory_bytes: Math.round(memory * 1.7),
-    disk_read_total_bytes: 12_000_000_000 + index * 500_000_000 + tick * diskReadBps,
-    disk_write_total_bytes: 8_000_000_000 + index * 290_000_000 + tick * diskWriteBps,
+    io_read_total_bytes: 12_000_000_000 + index * 500_000_000 + tick * diskReadBps,
+    io_write_total_bytes: 8_000_000_000 + index * 290_000_000 + tick * diskWriteBps,
     other_io_total_bytes: 1_000_000_000 + index * 85_000_000 + tick * otherIoBps,
-    disk_read_bps: diskReadBps,
-    disk_write_bps: diskWriteBps,
+    io_read_bps: diskReadBps,
+    io_write_bps: diskWriteBps,
     other_io_bps: otherIoBps,
     network_received_bps: networkUnavailable ? undefined : networkReceived,
     network_transmitted_bps: networkUnavailable ? undefined : networkTransmitted,
@@ -578,7 +572,7 @@ function makeProcess(
     quality: {
       cpu: { quality: "estimated", source: "fixture" },
       memory: { quality: "estimated", source: "fixture" },
-      disk: { quality: "estimated", source: "fixture" },
+      io: { quality: "estimated", source: "fixture" },
       other_io: { quality: "estimated", source: "fixture" },
       network: networkUnavailable
         ? {

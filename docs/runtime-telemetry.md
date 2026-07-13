@@ -1,6 +1,6 @@
 # Runtime Telemetry
 
-**Updated**: 2026-07-10
+**Updated**: 2026-07-13
 
 BatCave Monitor is built around a Rust runtime store that collects local telemetry, shapes it into a stable snake_case JSON contract, and tells the UI exactly how trustworthy each metric is. The important part is not just "show numbers." The important part is "show what the machine actually said, and admit when it would not answer."
 
@@ -46,7 +46,9 @@ Every snapshot carries two clocks. `publication_seq` and `published_at_ms` chang
 
 This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: active` aliases are not serialized. Process selection and rate identity use `pid` plus `start_time_ms` so PID reuse cannot inherit an earlier process's state. Empty kernel-pool-tag `driver_candidates` are always serialized as `[]`.
 
-`process_contributors` is a compact, query-independent summary of the top CPU, memory, disk, and network process names from the complete sample. Its fields are `null` when no process reports activity for that resource. Search, focus, sorting, and limits still shape `processes` and `process_view_rows` for the workload table, but cannot rewrite the system headline.
+The pre-release v2 contract corrects process I/O names before the transport is declared stable. Canonical publications use `process_contributors.io`, process `io_read_total_bytes`, `io_write_total_bytes`, `io_read_bps`, and `io_write_bps`, process `quality.io`, and the `io_bps` sort column. The former process names `disk`, `disk_*`, and `disk_bps` remain Rust deserialization aliases only, so persisted legacy input can be read and republished under the current names. BatCave does not dual-write those aliases, and they are not canonical output or a compatibility promise. System `disk_*` fields keep their existing meaning: physical-device telemetry. Issue #67 owns deterministic version migration and transport hardening; this preview correction does not preempt it.
+
+`process_contributors` is a compact, query-independent summary of the top CPU, memory, read/write I/O, and network process names from the complete sample. Each resource also carries contributor quality and an explicit `*_name_ambiguous` flag computed from that full sample. Held and unavailable rows cannot become the published contributor; estimated and partial winners remain visible with limited confidence. A `null` name with valid quality means no process reported activity, while a `null` name with held or unavailable quality means attribution is not currently trustworthy. Search, focus, sorting, and limits still shape `processes` and `process_view_rows` for the workload table, but cannot rewrite or falsely disambiguate the selected-resource overview. These flags prevent a name-only lookup from borrowing a value or icon; issue #64 owns stable contributor identity and richer typed group/detail aggregates.
 
 ## Current Coverage
 
@@ -54,13 +56,13 @@ Implemented runtime surfaces:
 
 - Production snake_case JSON contracts for runtime snapshots, settings, process samples, system metrics, quality metadata, warnings, and health.
 - Runtime settings, warm cache, keyed current warnings, diagnostics transition history, health budgets, query shaping, pause/resume, refresh, and admin-mode state in the Rust store.
-- Stable process grouping for runtime process views, including aggregate CPU, memory, disk, network, and thread totals for group rows.
+- Stable process grouping for runtime process views, including aggregate one-core-equivalent CPU, memory, read/write I/O, network, and thread totals for group rows.
 - Local JSON persistence with same-directory, per-writer atomic temporary files for settings and runtime state.
 - Rust CLI mode for deterministic benchmark snapshots.
 
 Windows native telemetry:
 
-- Process identity, PID, parent PID, start-time identity, executable path, access state, CPU, kernel CPU, memory, private bytes, process I/O totals, thread count, and handle count.
+- Process identity, PID, parent PID, start-time identity, executable path, access state, one-core-equivalent CPU, kernel CPU, memory, private bytes, process read/write I/O totals, thread count, and handle count. Windows `GetProcessIoCounters` exposes `ReadTransferCount`, `WriteTransferCount`, and `OtherTransferCount` separately. BatCave's read/write I/O value sums only read and write; other I/O remains a separate raw process field. None of these counters are called physical-disk traffic.
 - Physical memory, Windows commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
 - Installed Windows releases run privileged collectors in process. Development and portable builds keep standard access and mark permission-shaped gaps explicitly.
@@ -74,13 +76,14 @@ Linux native telemetry:
 macOS native telemetry:
 
 - Sysinfo aggregate CPU, logical CPU, available/used memory, swap, and interface network counters.
-- Local libproc enrichment for resident memory, physical footprint, virtual memory, process disk totals, thread count, and file-descriptor count when process access allows.
-- System disk totals derived from accessible process totals and labeled `partial/process_aggregate`; denied processes and kernel I/O are explicitly excluded.
+- Local libproc enrichment for resident memory, physical footprint, virtual memory, process read/write totals, thread count, and file-descriptor count when process access allows.
+- Physical-disk throughput is unavailable until the macOS collector has a trusted device-level source. Process read/write I/O is never substituted for system disk telemetry.
 - Per-process network attribution and privileged helper mode are unavailable in this release. Rows remain visible with quality messages rather than fabricated zero rates.
 
 Fallback behavior:
 
 - `sysinfo` remains available when a native collector cannot read expected host files.
+- The shared `sysinfo` system fallback marks physical-disk throughput unavailable because it has no device-level rate source; its zero placeholders are never presented as measured disk activity.
 - Missing or delayed metrics use quality metadata instead of fabricated values.
 - If native Windows process memory is blocked but `sysinfo` has a value for the same PID, BatCave reports that fallback as estimated memory instead of a native zero.
 - If an executable path is unavailable, process grouping falls back to the process name before using a PID-specific key. Group rows should remain expandable and selectable even for OS/system processes with incomplete executable metadata.
@@ -93,9 +96,8 @@ On Windows, `swap_used_bytes`, `swap_total_bytes`, and process `virtual_memory_b
 
 When available, `system.memory_accounting` adds the reconciliation view:
 
-- `process_working_set_bytes` and `process_private_bytes`: totals across process rows whose memory quality is reported.
+- `process_working_set_bytes` and `process_private_bytes`: diagnostic sums across process rows whose memory quality is reported. Shared pages can appear in more than one working set, so these sums are not reconciled against physical memory use.
 - `denied_process_count` and `partial_process_count`: rows where BatCave did not get complete access.
-- `unattributed_bytes`: physical used memory not covered by reported process working sets. Treat it as an operator clue, not a perfect RAMMap replacement.
 - `commit_used_bytes` and `commit_limit_bytes`: Windows commit charge and limit from `GetPerformanceInfo`.
 - `kernel_paged_pool_bytes`, `kernel_nonpaged_pool_bytes`, `kernel_total_bytes`, and `system_cache_bytes`: Windows OS memory buckets from `GetPerformanceInfo`.
 - `kernel_pool_tags`: top Windows kernel pool tags from `NtQuerySystemInformation(SystemPoolTagInformation)`, split by paged/nonpaged pool and sorted by bytes.
@@ -123,12 +125,14 @@ Examples:
 - Linux CPU, disk, and network retain independent last-good baselines. A failed read does not replace a baseline with zero, and the first recovered rate is derived only from valid counters.
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
-- macOS aggregate disk quality is `partial/process_aggregate` when accessible process totals exist and `unavailable` when no trustworthy aggregate can be produced.
-- macOS libproc failures retain the sysinfo process row and identify physical footprint, thread, descriptor, disk, or network limitations independently.
+- macOS physical-disk quality is `unavailable/runtime`; the limitation explains that process read/write I/O remains a separate resource.
+- macOS libproc failures retain the sysinfo process row and identify physical footprint, thread, descriptor, read/write I/O, or network limitations independently.
 
 ## Process Groups And History
 
-Process groups are UI rows backed by accumulated row telemetry, not placeholders. When a group is selected, the inspector should show the group's aggregate CPU, memory, disk I/O, and network history from the same live values used in the process table.
+Process groups are UI rows backed by accumulated row telemetry, not placeholders. When a group is selected, the inspector should show the group's aggregate one-core-equivalent CPU, memory, read/write I/O, and network history from the same live values used in the process table.
+
+Group Other I/O total and rate remain unavailable because the current process-view row has no typed aggregate for them. The UI must not copy the representative process's total or manufacture a zero rate. Issue #64 owns that typed aggregate coverage.
 
 Network readouts prefer a nonzero live attributed rate when the row has one, while the quality label still reports the source or limitation. This keeps estimated, fixture, partial, or unavailable quality honest without hiding useful accumulated traffic.
 
@@ -192,7 +196,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.p
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle -BenchmarkGate -BenchmarkMaxP95Ms 10000
 ```
 
-The benchmark builds the current release CLI and measures `RuntimeState::refresh_now` plus snapshot JSON serialization in an isolated temporary data directory. The default protocol is 30 warmup ticks followed by five 120-tick measured repeats at 1000 ms, with the median repeat p95 used for gating. Normal validation overrides that protocol with zero warmup, one two-tick repeat, and no sleep.
+The benchmark builds the current release CLI and measures `RuntimeState::refresh_now` plus snapshot JSON serialization in an isolated temporary data directory. Output labels this as `evidence_scope: core_runtime_host_only`: it does not measure the Tauri shell, webview, renderer, or whole process tree. The default protocol is 30 warmup ticks followed by five 120-tick measured repeats at 1000 ms, with the median repeat p95 used for gating. Normal validation overrides that protocol with zero warmup, one two-tick repeat, and no sleep.
 
 Protocol-v3 baselines record the source commit, release-binary SHA-256, binary-derived platform and architecture, machine class, workload, protocol parameters, repeat results, and selected median. Strict mode also requires advancing samples, app CPU at or below 25%, and RSS at or below 350 MiB.
 

@@ -158,7 +158,7 @@ The attention queue groups rows by executable identity when available, then proc
 
 Live values may update in place, but ranking order is held while the pointer or keyboard focus is inside the queue, a group is expanded, or a workload is selected. A newer order is applied only through the visible `Ranking updated` control. At 1280px and wider the resource rail and inspector remain visible; from 900–1279px the resource selector becomes horizontal and the inspector becomes a drawer; below 900px the workload queue becomes a compact list of metric cards.
 
-Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
+Selecting a group shows aggregate CPU, memory, read/write I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
 
 ## Platform Telemetry Notes
 
@@ -174,7 +174,7 @@ Linux per-process network attribution is optional. It uses `bpftrace`/eBPF kretp
 
 `sysinfo` remains a fallback when native collectors cannot read the expected host files.
 
-macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, disk totals, thread count, and file-descriptor count when access allows. Aggregate disk rate is explicitly identified as a partial process aggregate. Per-process network attribution and privileged helper mode are unavailable on macOS in this release.
+macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, read/write I/O totals, thread count, and file-descriptor count when access allows. Physical-disk throughput stays explicitly unavailable because the current macOS collector has no trusted device-level source; process I/O is never substituted for it. Per-process network attribution and privileged helper mode are unavailable on macOS in this release.
 
 ## Benchmarking
 
@@ -194,7 +194,7 @@ bash scripts/capture-benchmark-baseline.sh --benchmark-host core
 bash scripts/run-benchmark-gate.sh --benchmark-host core --baseline-artifact artifacts/benchmarks/baseline-core-YYYYMMDD-HHMMSS.json
 ```
 
-Benchmarks build the current release CLI, use an isolated temporary data directory, and time the complete runtime refresh plus snapshot JSON serialization. The default protocol runs 30 warmup ticks and five 120-tick measured repeats, selecting the median repeat p95. Generated protocol-v2 artifacts under `artifacts/benchmarks` record the commit, binary hash, platform, architecture, machine class, workload, protocol, and all repeats; revision fields append `-dirty` when the measured worktree is not clean.
+Benchmarks build the current release CLI, use an isolated temporary data directory, and time the core runtime host's refresh plus snapshot JSON serialization. Output carries `evidence_scope: core_runtime_host_only`; it does not measure the Tauri shell, webview, renderer, or whole process tree. The default protocol runs 30 warmup ticks and five 120-tick measured repeats, selecting the median repeat p95. Generated artifacts under `artifacts/benchmarks` record the commit, binary hash, platform, architecture, machine class, workload, protocol, and all repeats; revision fields append `-dirty` when the measured worktree is not clean.
 
 Strict mode is a configuration error without either a baseline or explicit p95 ceiling. A speed multiplier without a baseline is also a configuration error. Matching baselines use `baseline_p95 / candidate_p95` and require at least `0.90` by default. Use `run-benchmark-gate` for release/local regression checks and its generated report artifact.
 

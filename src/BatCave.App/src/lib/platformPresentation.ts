@@ -4,7 +4,7 @@ import type {
   RuntimeEnvironment,
   RuntimePlatform,
 } from "./types";
-import { formatBytes, processBytesLabel } from "./format";
+import { processBytesLabel, processMetricIsPublishable, processPrivateMemoryValue } from "./format";
 
 export interface PlatformPresentation {
   platformName: string;
@@ -72,27 +72,21 @@ export function processMetricAvailable(
   process: ProcessSample,
   metric: keyof NonNullable<ProcessSample["quality"]>,
 ): boolean {
-  return !metricIsUnavailable(process.quality?.[metric]);
+  return processMetricIsPublishable(process.quality?.[metric]);
 }
 
 export function qualityAwareZero(
   value: number,
   quality: MetricQualityInfo | undefined,
 ): number | null {
-  return value === 0 && metricIsUnavailable(quality) ? null : value;
+  return processMetricIsPublishable(quality) ? value : null;
 }
 
 export function residentMemoryValue(process: ProcessSample, platform: RuntimePlatform): string {
-  return platform === "macos"
-    ? formatBytes(process.memory_bytes)
-    : processBytesLabel(process, process.memory_bytes);
+  void platform;
+  return processBytesLabel(process, process.memory_bytes);
 }
 
 export function privateMemoryValue(process: ProcessSample, platform: RuntimePlatform): string {
-  if (platform === "macos") {
-    return process.quality?.memory?.quality === "native"
-      ? formatBytes(process.private_bytes)
-      : "Unavailable";
-  }
-  return processBytesLabel(process, process.private_bytes);
+  return processPrivateMemoryValue(process, platform);
 }

@@ -1,7 +1,12 @@
 <script lang="ts">
   import { CaretRight } from "phosphor-svelte";
   import { processRowSecondaryLabel, processSelectionKey, type ProcessIconKind } from "../../process";
-  import { formatPercent, formatRate, processMemoryTitle } from "../../format";
+  import {
+    displayProcessMetricValue,
+    formatPercent,
+    formatRate,
+    processMemoryTitle,
+  } from "../../format";
   import { residentMemoryValue } from "../../platformPresentation";
   import type { ProcessSample, ProcessViewRow, RuntimePlatform } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
@@ -63,6 +68,16 @@
   function groupSelectionKey(key: string): string {
     return `group:${key}`;
   }
+
+  function cpuLabel(row: ProcessViewRow): string {
+    const process = processForRow(row);
+    return displayProcessMetricValue(row.cpu_percent, process?.quality?.cpu, formatPercent);
+  }
+
+  function ioLabel(row: ProcessViewRow): string {
+    const process = processForRow(row);
+    return displayProcessMetricValue(row.io_bps, process?.quality?.io, formatRate);
+  }
 </script>
 
 <div class="mobile-process-list" aria-label="Attention queue cards">
@@ -99,8 +114,8 @@
         </span>
         <span class="card-metrics">
           <span>
-            <em>CPU</em>
-            <b>{formatPercent(row.cpu_percent)}</b>
+            <em>CPU / core</em>
+            <b title={process?.quality?.cpu?.message ?? ""}>{cpuLabel(row)}</b>
           </span>
           <span>
             <em>Working set</em>
@@ -108,7 +123,7 @@
           </span>
           <span>
             <em>I/O</em>
-            <b>{formatRate(row.io_bps)}</b>
+            <b title={process?.quality?.io?.message ?? ""}>{ioLabel(row)}</b>
           </span>
         </span>
         <span class="card-foot">

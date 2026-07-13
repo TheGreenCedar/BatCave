@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { compareProcessSamples, processNeedsAttention } from "../src/lib/process.ts";
+import {
+  compareProcessSamples,
+  groupProcessFromRow,
+  processIoRate,
+  processNeedsAttention,
+  processOtherIoRate,
+} from "../src/lib/process.ts";
 import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
-import { qualityGuidance } from "../src/lib/format.ts";
+import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
 import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
-import { summarizeProcessContributors, systemPressureHeadline } from "../src/lib/systemPressure.ts";
-import type { ProcessSample, RuntimeAdminModeStatus, RuntimeWarning } from "../src/lib/types.ts";
+import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
+import type {
+  ProcessSample,
+  ProcessViewRow,
+  RuntimeAdminModeStatus,
+  RuntimeWarning,
+} from "../src/lib/types.ts";
 
 const canonicalSnapshot = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
@@ -24,16 +35,22 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
     cpu_percent: 0,
     memory_bytes: 1,
     private_bytes: 1,
-    disk_read_total_bytes: 0,
-    disk_write_total_bytes: 0,
-    disk_read_bps: 0,
-    disk_write_bps: 0,
+    io_read_total_bytes: 0,
+    io_write_total_bytes: 0,
+    io_read_bps: 0,
+    io_write_bps: 0,
     other_io_bps: 0,
     network_received_bps: 0,
     network_transmitted_bps: 0,
     threads: 1,
     handles: 1,
     access_state: "full",
+    quality: {
+      cpu: { quality: "native", source: "direct_api" },
+      memory: { quality: "native", source: "direct_api" },
+      io: { quality: "native", source: "direct_api" },
+      network: { quality: "native", source: "direct_api" },
+    },
     ...overrides,
   };
 }
@@ -106,9 +123,10 @@ test("attention includes each scored resource and limited access", () => {
   assert.equal(processNeedsAttention(quiet), false);
   assert.equal(processNeedsAttention(process({ cpu_percent: 10 })), true);
   assert.equal(processNeedsAttention(process({ memory_bytes: 900 * 1024 * 1024 })), true);
-  assert.equal(processNeedsAttention(process({ disk_read_bps: 500 * 1024 })), true);
+  assert.equal(processNeedsAttention(process({ io_read_bps: 500 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ network_received_bps: 1024 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ access_state: "partial" })), true);
+  assert.equal(processNeedsAttention(process({ other_io_bps: 8 * 1024 * 1024 })), false);
 });
 
 test("fixture comparator honors network sorting", () => {
@@ -128,24 +146,143 @@ test("fixture comparator honors network sorting", () => {
   );
 });
 
-test("pressure attribution follows the dominant resource, not display order", () => {
+test("process contributor semantics keep read/write I/O distinct from physical disk", () => {
   const processes = [
-    process({ name: "CPU first", disk_read_bps: 1 }),
-    process({ name: "Disk winner", disk_read_bps: 60 * 1024 * 1024 }),
+    process({ name: "CPU first", io_read_bps: 1 }),
+    process({ name: "I/O winner", io_read_bps: 60 * 1024 * 1024 }),
+    process({ name: "Other-only", other_io_bps: 120 * 1024 * 1024 }),
   ];
   const contributors = summarizeProcessContributors(processes);
 
-  assert.match(systemPressureHeadline(10, 20, 60 * 1024 * 1024, 0, contributors), /Disk winner/);
-  assert.equal(systemPressureHeadline(10, 20, 0, 0, contributors), "System is steady.");
+  assert.equal(contributors.io, "I/O winner");
+  assert.equal("disk" in contributors, false);
+  assert.equal(processIoRate(processes[2], {}), 0);
+  assert.equal(processes[2].other_io_bps, 120 * 1024 * 1024);
+});
+
+test("process contributor selection excludes unavailable metrics and preserves quality", () => {
+  const contributors = summarizeProcessContributors([
+    process({
+      name: "Unavailable high",
+      cpu_percent: 90,
+      quality: { cpu: { quality: "unavailable", source: "runtime" } },
+    }),
+    process({
+      name: "Estimated lower",
+      cpu_percent: 20,
+      quality: { cpu: { quality: "estimated", source: "sysinfo" } },
+    }),
+  ]);
+
+  assert.equal(contributors.cpu, null);
+  assert.equal(contributors.cpu_quality?.quality, "unavailable");
+
+  const blockedPositive = summarizeProcessContributors([
+    process({
+      name: "Native visible",
+      cpu_percent: 25,
+      quality: { cpu: { quality: "native", source: "direct_api" } },
+    }),
+    process({
+      name: "Held placeholder",
+      cpu_percent: 0,
+      quality: { cpu: { quality: "held", source: "runtime" } },
+    }),
+  ]);
+  assert.equal(blockedPositive.cpu, null);
+  assert.equal(blockedPositive.cpu_quality?.quality, "held");
+
+  const unavailable = summarizeProcessContributors([
+    process({
+      cpu_percent: 90,
+      quality: { cpu: { quality: "unavailable", source: "runtime" } },
+    }),
+  ]);
+  assert.equal(unavailable.cpu, null);
+  assert.equal(unavailable.cpu_quality?.quality, "unavailable");
+
+  const quiet = summarizeProcessContributors([
+    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
+    process({
+      cpu_percent: 80,
+      quality: { cpu: { quality: "unavailable", source: "runtime" } },
+    }),
+  ]);
+  assert.equal(quiet.cpu, null);
+  assert.equal(quiet.cpu_quality?.quality, "unavailable");
+
+  const pendingZero = summarizeProcessContributors([
+    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
+    process({ cpu_percent: 0, quality: { cpu: { quality: "held", source: "runtime" } } }),
+  ]);
+  assert.equal(pendingZero.cpu, null);
+  assert.equal(pendingZero.cpu_quality?.quality, "held");
+
+  const limitedZero = summarizeProcessContributors([
+    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
+    process({ cpu_percent: 0, quality: { cpu: { quality: "partial", source: "sysinfo" } } }),
+  ]);
+  assert.equal(limitedZero.cpu, null);
+  assert.equal(limitedZero.cpu_quality?.quality, "partial");
+
+  const unknownZero = summarizeProcessContributors([
+    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
+    process({ cpu_percent: 0, quality: undefined }),
+  ]);
+  assert.equal(unknownZero.cpu, null);
+  assert.equal(unknownZero.cpu_quality, undefined);
+});
+
+test("contributor ambiguity is summarized from the full process set", () => {
+  const contributors = summarizeProcessContributors([
+    process({ pid: "1", name: "worker", cpu_percent: 80 }),
+    process({ pid: "2", name: "worker", cpu_percent: 40 }),
+  ]);
+
+  assert.equal(contributors.cpu, "worker");
+  assert.equal(contributors.cpu_name_ambiguous, true);
+});
+
+test("synthetic groups keep Other I/O unavailable instead of borrowing or fabricating zero", () => {
+  const representative = process({
+    name: "worker",
+    other_io_total_bytes: 8_192,
+    other_io_bps: 512,
+  });
+  const row: ProcessViewRow = {
+    kind: "group",
+    representative,
+    group_key: "worker",
+    group_label: "worker",
+    group_count: 2,
+    icon_kind: "process",
+    is_child: false,
+    is_grouped: true,
+    attention_label: "steady",
+    cpu_percent: 0,
+    memory_bytes: 2,
+    io_bps: 0,
+    network_bps: 0,
+    threads: 2,
+  };
+
+  const group = groupProcessFromRow(row);
+
+  assert.equal(group.other_io_total_bytes, undefined);
+  assert.equal(group.other_io_bps, undefined);
+  assert.equal(group.quality?.other_io?.quality, "unavailable");
+  assert.equal(processOtherIoRate(group, {}), undefined);
+  assert.equal(formatOptionalRate(processOtherIoRate(group, {})), "Unavailable");
+  assert.equal(formatOptionalRate(processOtherIoRate(process({ other_io_bps: 0 }), {})), "0 B/s");
 });
 
 test("search and focus cannot change the headline contributor", () => {
   const cpuWinner = process({ name: "CPU winner", cpu_percent: 80 });
-  const visibleIo = process({ name: "Visible I/O", disk_read_bps: 1024 });
+  const visibleIo = process({ name: "Visible I/O", io_read_bps: 1024 });
   const allProcesses = [cpuWinner, visibleIo];
   const searchedRows = allProcesses.filter((candidate) => candidate.name.includes("Visible"));
   const focusedRows = allProcesses.filter(
-    (candidate) => candidate.disk_read_bps + candidate.disk_write_bps > 0,
+    (candidate) => candidate.io_read_bps + candidate.io_write_bps > 0,
   );
   const contributors = summarizeProcessContributors(allProcesses);
 
@@ -157,10 +294,7 @@ test("search and focus cannot change the headline contributor", () => {
     focusedRows.map((candidate) => candidate.name),
     ["Visible I/O"],
   );
-  assert.equal(
-    systemPressureHeadline(90, 0, 0, 0, contributors),
-    "High CPU pressure - CPU winner is the top activity.",
-  );
+  assert.equal(contributors.cpu, "CPU winner");
 });
 
 test("all theme text and focus colors meet contrast floors", () => {

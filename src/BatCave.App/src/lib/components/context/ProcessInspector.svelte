@@ -3,11 +3,16 @@
   import MiniChart from "../../MiniChart.svelte";
   import {
     accessLabel,
+    displayProcessMetricValue,
     formatBytes,
+    formatOptionalRate,
     formatPercent,
     formatRate,
     metricQualityLabel,
+    processActivityLabel,
+    processFindingLabel,
     processMemoryQuality,
+    processTrustLabel,
   } from "../../format";
   import {
     platformPresentation,
@@ -15,7 +20,11 @@
     residentMemoryValue,
     type PlatformPresentation,
   } from "../../platformPresentation";
-  import { processAccent, processIdentity, processSelectionKey, type ProcessRates } from "../../process";
+  import {
+    processIdentity,
+    processOtherIoRate,
+    type ProcessRates,
+  } from "../../process";
   import type { ChartPalette } from "../../themes";
   import type { ProcessSample } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
@@ -43,23 +52,49 @@
   $: copyFailed = copyStatus !== "" && copyStatus !== "Process summary copied.";
   $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...processHistory.cpu) / 100) * 100);
 
-  function processTotalIoRate(process: ProcessSample): number {
-    const rates = processRates[processSelectionKey(process)];
-    return processReadRate + processWriteRate + (rates?.otherRate ?? process.other_io_bps ?? 0);
+  function processReadWriteIoRate(): number {
+    return processReadRate + processWriteRate;
   }
 
-  function processTrustLabel(process: ProcessSample): string {
-    return metricQualityLabel(
-      process.quality?.cpu ?? process.quality?.memory ?? process.quality?.disk ?? process.quality?.network,
-      "Measured",
+  function processNetworkRate(process: ProcessSample): number {
+    return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
+  }
+
+  function processCpuLabel(process: ProcessSample): string {
+    return displayProcessMetricValue(process.cpu_percent, process.quality?.cpu, formatPercent);
+  }
+
+  function processIoLabel(process: ProcessSample): string {
+    return displayProcessMetricValue(processReadWriteIoRate(), process.quality?.io, formatRate);
+  }
+
+  function processIoTotalLabel(process: ProcessSample, value: number): string {
+    return displayProcessMetricValue(value, process.quality?.io, formatBytes);
+  }
+
+  function processOtherIoLabel(process: ProcessSample): string {
+    return displayProcessMetricValue(
+      processOtherIoRate(process, processRates),
+      process.quality?.other_io,
+      formatOptionalRate,
+    );
+  }
+
+  function processOtherIoTotalLabel(process: ProcessSample): string {
+    return displayProcessMetricValue(
+      process.other_io_total_bytes,
+      process.quality?.other_io,
+      (value) => (value === undefined ? "Unavailable" : formatBytes(value)),
     );
   }
 
   function findingCopy(process: ProcessSample): string {
-    if (process.cpu_percent >= 30) return "High CPU usage relative to other workloads.";
-    if (process.memory_bytes >= 900 * 1024 * 1024) return `High ${presentation.memoryLabel.toLocaleLowerCase()} relative to other workloads.`;
-    if (processTotalIoRate(process) >= 500 * 1024) return "High disk activity relative to other workloads.";
-    return "No unusual pressure is visible for this workload right now.";
+    return processFindingLabel(
+      process,
+      processReadWriteIoRate(),
+      processNetworkRate(process),
+      presentation.memoryLabel,
+    );
   }
 
   function accentTone(accent: string): "hot" | "heavy" | "io" | "normal" {
@@ -74,7 +109,7 @@
   {#if selectedProcess}
     {@const identity = processIdentity(selectedProcess)}
     {@const iconSrc = processIcons[selectedProcess.exe || selectedProcess.name]}
-    {@const accent = processAccent(selectedProcess, processRates)}
+    {@const accent = processActivityLabel(selectedProcess, processReadWriteIoRate(), processNetworkRate(selectedProcess))}
     {@const categoryLabel = identity.group === "Processes" ? null : identity.group}
     <div class="process-identity redesigned-identity">
       <span class="identity-icon"><ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} /></span>
@@ -105,23 +140,23 @@
       <span>Finding</span>
       <h3>{findingCopy(selectedProcess)}</h3>
       <p>
-        {selectedProcess.name} is using {formatPercent(selectedProcess.cpu_percent)} of one CPU core.
-        {processTrustLabel(selectedProcess)} data; missing fields stay explicitly unavailable.
+        {selectedProcess.name} CPU (one core): {processCpuLabel(selectedProcess)}.
+        Telemetry coverage: {processTrustLabel(selectedProcess)}; missing fields stay explicitly unavailable.
       </p>
     </div>
 
     <section class="key-metrics" aria-labelledby="key-metrics-title">
       <h3 id="key-metrics-title">Key metrics</h3>
       <dl>
-        <div class="metric-cpu"><dt>CPU <small>Percent</small></dt><dd>{formatPercent(selectedProcess.cpu_percent)}</dd></div>
+        <div class="metric-cpu"><dt>CPU <small>One core</small></dt><dd>{processCpuLabel(selectedProcess)}</dd></div>
         <div class="metric-memory"><dt>{presentation.memoryLabel} <small>Bytes</small></dt><dd>{residentMemoryValue(selectedProcess, platform)}</dd></div>
-        <div class="metric-disk"><dt>Disk R/W <small>Bytes/s</small></dt><dd>{formatRate(processTotalIoRate(selectedProcess))}</dd></div>
+        <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{processIoLabel(selectedProcess)}</dd></div>
         <div class="metric-network"><dt>Network <small>Bytes/s</small></dt><dd>{processNetworkLabel(selectedProcess)}</dd></div>
       </dl>
     </section>
 
     <div class="inspector-hero-chart">
-      <div><span>CPU usage over time</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
+      <div><span>One-core-equivalent CPU over time</span><strong>{processCpuLabel(selectedProcess)}</strong></div>
       <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
     </div>
 
@@ -130,14 +165,16 @@
       <dl class="key-value-grid technical-grid">
         <div><dt>Process ID</dt><dd>{selectedProcess.pid}</dd></div>
         <div><dt>Parent</dt><dd>{selectedProcess.parent_pid ?? "Unavailable"}</dd></div>
-        <div><dt>Kernel CPU</dt><dd>{selectedProcess.kernel_cpu_percent === undefined ? "Unavailable" : formatPercent(selectedProcess.kernel_cpu_percent)}</dd></div>
+        <div><dt>Kernel CPU (one core)</dt><dd>{selectedProcess.kernel_cpu_percent === undefined ? "Unavailable" : displayProcessMetricValue(selectedProcess.kernel_cpu_percent, selectedProcess.quality?.cpu, formatPercent)}</dd></div>
         <div><dt>{presentation.privateMemoryLabel}</dt><dd>{privateMemoryValue(selectedProcess, platform)}</dd></div>
-        <div><dt>Read total</dt><dd>{formatBytes(selectedProcess.disk_read_total_bytes)}</dd></div>
-        <div><dt>Write total</dt><dd>{formatBytes(selectedProcess.disk_write_total_bytes)}</dd></div>
-        <div><dt>Threads</dt><dd>{selectedProcess.threads || "Unavailable"}</dd></div>
-        <div><dt>{presentation.handlesLabel}</dt><dd>{selectedProcess.handles || "Unavailable"}</dd></div>
+        <div><dt>Read I/O total</dt><dd>{processIoTotalLabel(selectedProcess, selectedProcess.io_read_total_bytes)}</dd></div>
+        <div><dt>Write I/O total</dt><dd>{processIoTotalLabel(selectedProcess, selectedProcess.io_write_total_bytes)}</dd></div>
+        <div><dt>Other I/O rate</dt><dd>{processOtherIoLabel(selectedProcess)}</dd></div>
+        <div><dt>Other I/O total</dt><dd>{processOtherIoTotalLabel(selectedProcess)}</dd></div>
+        <div><dt>Threads</dt><dd>{displayProcessMetricValue(selectedProcess.threads, selectedProcess.quality?.threads, String)}</dd></div>
+        <div><dt>{presentation.handlesLabel}</dt><dd>{displayProcessMetricValue(selectedProcess.handles, selectedProcess.quality?.handles, String)}</dd></div>
         <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>
-        <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Measured")}</dd></div>
+        <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Quality not reported")}</dd></div>
       </dl>
       <div class="technical-path">
         <span>Executable path</span>
