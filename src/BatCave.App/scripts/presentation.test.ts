@@ -6,6 +6,7 @@ import {
   metricQualityLabel,
   metricQualityShortLabel,
 } from "../src/lib/format.ts";
+import { nextMetricHistory, resourceHistoryWindowLabel } from "../src/lib/history.ts";
 import {
   processIdentity,
   processRowSecondaryLabel,
@@ -30,6 +31,71 @@ test("selected resource brief keeps machine and process CPU scopes explicit", ()
   assert.match(brief.attributionLabel, /one-core-equivalent/);
   assert.equal(brief.stateLabel, "Current");
   assert.equal(brief.confidence, "High");
+});
+
+test("contributor quality gates publication and limits overview confidence", () => {
+  const estimated = resourceSnapshot("Estimated worker");
+  estimated.process_contributors.cpu_quality = {
+    quality: "estimated",
+    source: "sysinfo",
+  };
+  const estimatedBrief = buildResourceBrief(
+    estimated,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+  assert.equal(estimatedBrief.leadingWorkload, "Estimated worker");
+  assert.match(estimatedBrief.leadingValueLabel, /Estimated attribution/);
+  assert.equal(estimatedBrief.confidence, "Limited");
+
+  const unavailable = resourceSnapshot("Blocked worker");
+  unavailable.process_contributors.cpu_quality = {
+    quality: "unavailable",
+    source: "runtime",
+  };
+  const unavailableBrief = buildResourceBrief(
+    unavailable,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+  assert.equal(unavailableBrief.leadingWorkload, null);
+  assert.equal(unavailableBrief.confidence, "Limited");
+});
+
+test("full-sample contributor ambiguity survives a query that retains one matching row", () => {
+  const snapshot = resourceSnapshot("worker");
+  snapshot.process_contributors.cpu_name_ambiguous = true;
+  snapshot.processes = [process({ pid: "1", name: "worker" })];
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(brief.leadingWorkload, "worker");
+  assert.equal(brief.contributorNameAmbiguous, true);
+  assert.match(brief.leadingValueLabel, /ambiguous across the full process sample/);
+  assert.equal(brief.confidence, "Limited");
+});
+
+test("legacy contributor summaries without ambiguity truth do not lend a visible row value", () => {
+  const snapshot = resourceSnapshot("worker");
+  delete (snapshot.process_contributors as Partial<typeof snapshot.process_contributors>)
+    .cpu_name_ambiguous;
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(brief.contributorNameAmbiguous, true);
+  assert.match(brief.leadingValueLabel, /ambiguous across the full process sample/);
 });
 
 test("physical disk summary rejects process I/O as compatible attribution", () => {
@@ -115,6 +181,25 @@ test("overview states cannot turn missing or retained samples into a reassuring 
   );
   assert.equal(stale.stateLabel, "Stale");
   assert.equal(stale.headline, "Machine-total CPU was 90% in the last successful sample.");
+});
+
+test("unavailable resource samples clear trusted history and its current window label", () => {
+  assert.deepEqual(
+    nextMetricHistory([12, 18], 0, { quality: "unavailable", source: "runtime" }, 30),
+    [],
+  );
+  assert.deepEqual(nextMetricHistory([12, 18], 0, { quality: "held" }, 30), []);
+  assert.deepEqual(nextMetricHistory([12, 18], 0, { quality: "native" }, 30), [12, 18, 0]);
+  assert.deepEqual(nextMetricHistory([12, 18], 9, { quality: "partial" }, 30), [12, 18, 9]);
+  assert.equal(
+    resourceHistoryWindowLabel(12, 1_000, { quality: "unavailable" }, true),
+    "No trusted history",
+  );
+  assert.equal(
+    resourceHistoryWindowLabel(12, 1_000, { quality: "held" }, true),
+    "No trusted history",
+  );
+  assert.equal(resourceHistoryWindowLabel(12, 1_000, { quality: "native" }, true), "Last 11s");
 });
 
 test("compact metric quality labels keep the full source-aware label available", () => {
@@ -223,6 +308,9 @@ function resourceSnapshot(contributor: string | null): RuntimeSnapshot {
     network: { quality: "native", source: "interface_aggregate" },
   };
   snapshot.process_contributors.cpu = contributor;
+  snapshot.process_contributors.cpu_quality = contributor
+    ? { quality: "native", source: "direct_api" }
+    : undefined;
   snapshot.processes = contributor ? [process({ name: contributor })] : [];
   return snapshot;
 }

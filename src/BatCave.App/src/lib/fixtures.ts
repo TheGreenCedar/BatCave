@@ -466,7 +466,7 @@ function normalizedProcessName(name: string): string {
 }
 
 function processIoRate(process: ProcessSample): number {
-  return process.io_read_bps + process.io_write_bps + (process.other_io_bps ?? 0);
+  return process.io_read_bps + process.io_write_bps;
 }
 
 function processNetworkRate(process: ProcessSample): number {

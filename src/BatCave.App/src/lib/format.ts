@@ -26,6 +26,10 @@ export function formatRate(value: number): string {
   return `${formatBytes(value)}/s`;
 }
 
+export function formatOptionalRate(value: number | undefined): string {
+  return value === undefined ? "Unavailable" : formatRate(value);
+}
+
 export function formatPercent(value: number): string {
   return `${Math.round(value)}%`;
 }

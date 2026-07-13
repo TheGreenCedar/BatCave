@@ -89,9 +89,13 @@
   },
   "process_contributors": {
     "cpu": "BatCave.App",
+    "cpu_name_ambiguous": false,
     "memory": "BatCave.App",
+    "memory_name_ambiguous": false,
     "io": "BatCave.App",
-    "network": null
+    "io_name_ambiguous": false,
+    "network": null,
+    "network_name_ambiguous": false
   },
   "processes": [
     {

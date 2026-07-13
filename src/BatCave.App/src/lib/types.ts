@@ -19,9 +19,17 @@ export interface RuntimeSnapshot {
 
 export interface ProcessContributorSummary {
   cpu: string | null;
+  cpu_quality?: MetricQualityInfo;
+  cpu_name_ambiguous: boolean;
   memory: string | null;
+  memory_quality?: MetricQualityInfo;
+  memory_name_ambiguous: boolean;
   io: string | null;
+  io_quality?: MetricQualityInfo;
+  io_name_ambiguous: boolean;
   network: string | null;
+  network_quality?: MetricQualityInfo;
+  network_name_ambiguous: boolean;
 }
 
 export interface RuntimeEnvironment {

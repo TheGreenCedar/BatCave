@@ -4,6 +4,7 @@
   import {
     accessLabel,
     formatBytes,
+    formatOptionalRate,
     formatPercent,
     formatRate,
     metricQualityLabel,
@@ -15,7 +16,12 @@
     residentMemoryValue,
     type PlatformPresentation,
   } from "../../platformPresentation";
-  import { processAccent, processIdentity, processSelectionKey, type ProcessRates } from "../../process";
+  import {
+    processAccent,
+    processIdentity,
+    processOtherIoRate,
+    type ProcessRates,
+  } from "../../process";
   import type { ChartPalette } from "../../themes";
   import type { ProcessSample } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
@@ -43,9 +49,8 @@
   $: copyFailed = copyStatus !== "" && copyStatus !== "Process summary copied.";
   $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...processHistory.cpu) / 100) * 100);
 
-  function processTotalIoRate(process: ProcessSample): number {
-    const rates = processRates[processSelectionKey(process)];
-    return processReadRate + processWriteRate + (rates?.otherRate ?? process.other_io_bps ?? 0);
+  function processReadWriteIoRate(): number {
+    return processReadRate + processWriteRate;
   }
 
   function processTrustLabel(process: ProcessSample): string {
@@ -58,7 +63,7 @@
   function findingCopy(process: ProcessSample): string {
     if (process.cpu_percent >= 30) return "High CPU usage relative to other workloads.";
     if (process.memory_bytes >= 900 * 1024 * 1024) return `High ${presentation.memoryLabel.toLocaleLowerCase()} relative to other workloads.`;
-    if (processTotalIoRate(process) >= 500 * 1024) return "High read/write I/O relative to other workloads.";
+    if (processReadWriteIoRate() >= 500 * 1024) return "High read/write I/O relative to other workloads.";
     return "No unusual activity is visible for this workload right now.";
   }
 
@@ -115,7 +120,7 @@
       <dl>
         <div class="metric-cpu"><dt>CPU <small>One core</small></dt><dd>{formatPercent(selectedProcess.cpu_percent)}</dd></div>
         <div class="metric-memory"><dt>{presentation.memoryLabel} <small>Bytes</small></dt><dd>{residentMemoryValue(selectedProcess, platform)}</dd></div>
-        <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{formatRate(processTotalIoRate(selectedProcess))}</dd></div>
+        <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{formatRate(processReadWriteIoRate())}</dd></div>
         <div class="metric-network"><dt>Network <small>Bytes/s</small></dt><dd>{processNetworkLabel(selectedProcess)}</dd></div>
       </dl>
     </section>
@@ -134,6 +139,8 @@
         <div><dt>{presentation.privateMemoryLabel}</dt><dd>{privateMemoryValue(selectedProcess, platform)}</dd></div>
         <div><dt>Read I/O total</dt><dd>{formatBytes(selectedProcess.io_read_total_bytes)}</dd></div>
         <div><dt>Write I/O total</dt><dd>{formatBytes(selectedProcess.io_write_total_bytes)}</dd></div>
+        <div><dt>Other I/O rate</dt><dd>{formatOptionalRate(processOtherIoRate(selectedProcess, processRates))}</dd></div>
+        <div><dt>Other I/O total</dt><dd>{selectedProcess.other_io_total_bytes === undefined ? "Unavailable" : formatBytes(selectedProcess.other_io_total_bytes)}</dd></div>
         <div><dt>Threads</dt><dd>{selectedProcess.threads || "Unavailable"}</dd></div>
         <div><dt>{presentation.handlesLabel}</dt><dd>{selectedProcess.handles || "Unavailable"}</dd></div>
         <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>

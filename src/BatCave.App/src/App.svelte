@@ -17,6 +17,7 @@
   import {
     accessLabel,
     formatBytes,
+    formatOptionalRate,
     formatPercent,
     formatRate,
     metricQualityLabel,
@@ -24,6 +25,7 @@
     processMemoryQuality,
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
+  import { nextMetricHistory, resourceHistoryWindowLabel } from "./lib/history";
   import {
     platformPresentation,
     privateMemoryValue,
@@ -32,11 +34,13 @@
   import {
     defaultSortDirection,
     focusOptions,
+    groupProcessFromRow,
     hasSameProcessOrder,
     processColumns,
     processIoRate,
     processIdentity,
     processNeedsAttention,
+    processOtherIoRate,
     processSelectionKey,
     processViewRowKey,
     sortColumnForKey,
@@ -221,7 +225,14 @@
           : null
     : null;
   $: leadingProcess = leadingContributor
-    ? (snapshot.processes.find((process) => process.name === leadingContributor) ?? null)
+    ? resourceBrief.contributorNameAmbiguous
+      ? null
+      : (() => {
+        const matches = snapshot.processes.filter(
+          (process) => process.name === leadingContributor,
+        );
+        return matches.length === 1 ? matches[0] : null;
+      })()
     : null;
   $: leadingIdentity = leadingProcess ? processIdentity(leadingProcess) : null;
   $: limitationCount = uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warnings;
@@ -361,9 +372,11 @@
   ];
   $: activeResource =
     resourceSummaries.find((resource) => resource.mode === detailMode) ?? resourceSummaries[0];
-  $: resourceWindowLabel = historyWindowLabel(
+  $: resourceWindowLabel = resourceHistoryWindowLabel(
     activeResource?.values.length ?? 0,
     snapshot.settings.sample_interval_ms,
+    systemQuality[detailMode],
+    snapshot.sampled_at_ms !== null,
   );
 
   onMount(() => {
@@ -701,16 +714,46 @@
     }
 
     history = {
-      cpu: pushMetricPoint(history.cpu, next.system.cpu_percent, next.system.quality?.cpu),
-      memory: pushMetricPoint(history.memory, nextMemoryPercent, next.system.quality?.memory),
+      cpu: nextMetricHistory(
+        history.cpu,
+        next.system.cpu_percent,
+        next.system.quality?.cpu,
+        historyPointLimit,
+      ),
+      memory: nextMetricHistory(
+        history.memory,
+        nextMemoryPercent,
+        next.system.quality?.memory,
+        historyPointLimit,
+      ),
       swap:
         next.system.swap_total_bytes && next.system.swap_used_bytes !== undefined
           ? pushPoint(history.swap, percentage(next.system.swap_used_bytes, next.system.swap_total_bytes))
           : history.swap,
-      diskRead: pushMetricPoint(history.diskRead, next.system.disk_read_bps, next.system.quality?.disk),
-      diskWrite: pushMetricPoint(history.diskWrite, next.system.disk_write_bps, next.system.quality?.disk),
-      netRx: pushMetricPoint(history.netRx, next.system.network_received_bps, next.system.quality?.network),
-      netTx: pushMetricPoint(history.netTx, next.system.network_transmitted_bps, next.system.quality?.network),
+      diskRead: nextMetricHistory(
+        history.diskRead,
+        next.system.disk_read_bps,
+        next.system.quality?.disk,
+        historyPointLimit,
+      ),
+      diskWrite: nextMetricHistory(
+        history.diskWrite,
+        next.system.disk_write_bps,
+        next.system.quality?.disk,
+        historyPointLimit,
+      ),
+      netRx: nextMetricHistory(
+        history.netRx,
+        next.system.network_received_bps,
+        next.system.quality?.network,
+        historyPointLimit,
+      ),
+      netTx: nextMetricHistory(
+        history.netTx,
+        next.system.network_transmitted_bps,
+        next.system.quality?.network,
+        historyPointLimit,
+      ),
       cores: logicalCpu.map((value, index) => pushPoint(history.cores[index] ?? [], value)),
     };
   }
@@ -1010,16 +1053,6 @@
     return trimPoints([...points, Number.isFinite(value) ? value : 0]);
   }
 
-  function pushMetricPoint(
-    points: number[],
-    value: number,
-    quality: MetricQualityInfo | undefined,
-  ): number[] {
-    return quality?.quality === "unavailable" || quality?.quality === "held"
-      ? points
-      : pushPoint(points, value);
-  }
-
   function combineSeries(left: number[], right: number[]): number[] {
     const length = Math.max(left.length, right.length);
     const leftOffset = length - left.length;
@@ -1027,15 +1060,6 @@
     return Array.from({ length }, (_, index) =>
       (left[index - leftOffset] ?? 0) + (right[index - rightOffset] ?? 0),
     );
-  }
-
-  function historyWindowLabel(pointCount: number, intervalMs: number): string {
-    if (pointCount === 0) return "No history";
-    if (pointCount === 1) return "Current sample";
-    const seconds = Math.max(1, Math.round(((pointCount - 1) * intervalMs) / 1000));
-    if (seconds < 60) return `Last ${seconds}s`;
-    const minutes = seconds / 60;
-    return `Last ${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)}m`;
   }
 
   function metricValueLabel(
@@ -1094,16 +1118,12 @@
     for (const process of nextProcesses) {
       rates[processSelectionKey(process)] = {
         readRate: process.io_read_bps,
-        otherRate: process.other_io_bps ?? 0,
+        otherRate: process.other_io_bps,
         writeRate: process.io_write_bps,
       };
     }
 
     return rates;
-  }
-
-  function groupSelectionKey(key: string): string {
-    return `group:${key}`;
   }
 
   function selectedGroupKey(selection: string): string | null {
@@ -1120,41 +1140,12 @@
     return source.processes.find((process) => processSelectionKey(process) === selection) ?? null;
   }
 
-  function groupProcessFromRow(row: RuntimeSnapshot["process_view_rows"][number]): ProcessSample {
-    const representative = row.representative;
-    return {
-      pid: row.group_key ? groupSelectionKey(row.group_key) : "group",
-      parent_pid: null,
-      start_time_ms: representative?.start_time_ms ?? 0,
-      name: row.group_label ?? representative?.name ?? "Process group",
-      exe: "",
-      status: "Group",
-      cpu_percent: row.cpu_percent,
-      kernel_cpu_percent: representative?.kernel_cpu_percent,
-      memory_bytes: row.memory_bytes,
-      private_bytes: row.memory_bytes,
-      virtual_memory_bytes: representative?.virtual_memory_bytes,
-      io_read_total_bytes: representative?.io_read_total_bytes ?? 0,
-      io_write_total_bytes: representative?.io_write_total_bytes ?? 0,
-      other_io_total_bytes: representative?.other_io_total_bytes,
-      io_read_bps: row.io_bps,
-      io_write_bps: 0,
-      other_io_bps: 0,
-      network_received_bps: row.network_bps,
-      network_transmitted_bps: 0,
-      threads: row.threads,
-      handles: representative?.handles ?? 0,
-      access_state: representative?.access_state ?? "full",
-      quality: representative?.quality,
-    };
-  }
-
   function processTrendRates(process: ProcessSample): ProcessRates & { networkRate: number } {
     const rates = processRates[processSelectionKey(process)];
     return {
       readRate: rates?.readRate ?? process.io_read_bps,
       writeRate: rates?.writeRate ?? process.io_write_bps,
-      otherRate: rates?.otherRate ?? process.other_io_bps ?? 0,
+      otherRate: rates?.otherRate ?? process.other_io_bps,
       networkRate: (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
     };
   }
@@ -1237,7 +1228,8 @@
       `CPU (one-core-equivalent): ${formatPercent(process.cpu_percent)}`,
       `${presentation.memoryLabel}: ${residentMemoryValue(process, snapshot.environment.platform)}`,
       `${presentation.privateMemoryLabel}: ${privateMemoryValue(process, snapshot.environment.platform)}`,
-      `I/O rate: ${formatRate(processIoRate(process, processRates))}`,
+      `Read/write I/O rate: ${formatRate(processIoRate(process, processRates))}`,
+      `Other I/O rate: ${formatOptionalRate(processOtherIoRate(process, processRates))}`,
       `Network: ${processNetworkLabel(process)}`,
       `Access: ${accessLabel(process.access_state)}`,
       `Memory quality: ${metricQualityLabel(processMemoryQuality(process) as MetricQualityInfo | undefined, "Measured")}`,

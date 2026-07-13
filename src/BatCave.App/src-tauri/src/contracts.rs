@@ -21,14 +21,30 @@ pub struct RuntimeSnapshot {
     pub warnings: Vec<RuntimeWarning>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProcessContributorSummary {
     pub cpu: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub cpu_name_ambiguous: bool,
     pub memory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub memory_name_ambiguous: bool,
     #[serde(alias = "disk")]
     pub io: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub io_name_ambiguous: bool,
     pub network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_quality: Option<MetricQualityInfo>,
+    #[serde(default)]
+    pub network_name_ambiguous: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,9 +654,26 @@ mod tests {
             },
             process_contributors: ProcessContributorSummary {
                 cpu: Some("BatCave.App".to_string()),
+                cpu_quality: Some(MetricQualityInfo::new(
+                    MetricQuality::Estimated,
+                    MetricSource::Sysinfo,
+                )),
+                cpu_name_ambiguous: false,
                 memory: Some("BatCave.App".to_string()),
+                memory_quality: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                memory_name_ambiguous: false,
                 io: Some("BatCave.App".to_string()),
+                io_quality: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                io_name_ambiguous: false,
                 network: None,
+                network_quality: None,
+                network_name_ambiguous: false,
             },
             processes: vec![sample_process()],
             process_view_rows: vec![sample_process_view_row()],
@@ -756,9 +789,16 @@ mod tests {
                 },
                 "process_contributors": {
                     "cpu": "BatCave.App",
+                    "cpu_quality": { "quality": "estimated", "source": "sysinfo" },
+                    "cpu_name_ambiguous": false,
                     "memory": "BatCave.App",
+                    "memory_quality": { "quality": "native", "source": "direct_api" },
+                    "memory_name_ambiguous": false,
                     "io": "BatCave.App",
-                    "network": null
+                    "io_quality": { "quality": "native", "source": "direct_api" },
+                    "io_name_ambiguous": false,
+                    "network": null,
+                    "network_name_ambiguous": false
                 },
                 "processes": [],
                 "process_view_rows": [],
@@ -885,6 +925,22 @@ mod tests {
             serde_json::to_value(settings.query.sort_column).expect("sort serializes"),
             json!("io_bps")
         );
+    }
+
+    #[test]
+    fn process_contributors_accept_legacy_disk_name_and_publish_only_io() {
+        let contributors: ProcessContributorSummary = serde_json::from_value(json!({
+            "cpu": null,
+            "memory": null,
+            "disk": "Writer",
+            "network": null
+        }))
+        .expect("legacy contributor summary deserializes");
+
+        let current = serde_json::to_value(contributors).expect("contributors serialize");
+
+        assert_eq!(current["io"], json!("Writer"));
+        assert!(current.get("disk").is_none());
     }
 
     #[test]

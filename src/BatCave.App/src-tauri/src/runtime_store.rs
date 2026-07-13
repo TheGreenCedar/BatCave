@@ -20,8 +20,8 @@ use crate::elevation::{ElevatedHelperClient, ElevatedPoll};
 use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
-        AccessState, MetricQuality, MetricSource, ProcessContributorSummary, ProcessFocusMode,
-        ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
+        AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
+        ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
         RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimeInstallKind,
         RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
         SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
@@ -1172,10 +1172,7 @@ fn needs_attention(process: &ProcessSample) -> bool {
 }
 
 fn process_io_rate(process: &ProcessSample) -> u64 {
-    process
-        .io_read_bps
-        .saturating_add(process.io_write_bps)
-        .saturating_add(process.other_io_bps.unwrap_or_default())
+    process.io_read_bps.saturating_add(process.io_write_bps)
 }
 
 fn process_network_rate(process: &ProcessSample) -> u64 {
@@ -1186,27 +1183,126 @@ fn process_network_rate(process: &ProcessSample) -> u64 {
 }
 
 fn summarize_process_contributors(processes: &[ProcessSample]) -> ProcessContributorSummary {
+    let cpu = top_process_contributor(processes, |process| process.cpu_percent, cpu_quality);
+    let memory = top_process_contributor(processes, |process| process.memory_bytes, memory_quality);
+    let io = top_process_contributor(processes, process_io_rate, io_quality);
+    let network = top_process_contributor(processes, process_network_rate, network_quality);
+
     ProcessContributorSummary {
-        cpu: top_process_name(processes, |process| process.cpu_percent),
-        memory: top_process_name(processes, |process| process.memory_bytes),
-        io: top_process_name(processes, process_io_rate),
-        network: top_process_name(processes, process_network_rate),
+        cpu: cpu.name,
+        cpu_quality: cpu.quality,
+        cpu_name_ambiguous: cpu.ambiguous,
+        memory: memory.name,
+        memory_quality: memory.quality,
+        memory_name_ambiguous: memory.ambiguous,
+        io: io.name,
+        io_quality: io.quality,
+        io_name_ambiguous: io.ambiguous,
+        network: network.name,
+        network_quality: network.quality,
+        network_name_ambiguous: network.ambiguous,
     }
 }
 
-fn top_process_name<T>(
+struct ProcessContributor {
+    name: Option<String>,
+    quality: Option<MetricQualityInfo>,
+    ambiguous: bool,
+}
+
+type ProcessQualityAccessor = fn(&ProcessSample) -> Option<&MetricQualityInfo>;
+
+fn top_process_contributor<T>(
     processes: &[ProcessSample],
     metric: impl Fn(&ProcessSample) -> T,
-) -> Option<String>
+    quality: ProcessQualityAccessor,
+) -> ProcessContributor
 where
     T: Copy + Default + PartialOrd,
 {
-    let process = processes.iter().max_by(|left, right| {
-        metric(left)
-            .partial_cmp(&metric(right))
-            .unwrap_or(Ordering::Equal)
-    })?;
-    (metric(process) > T::default()).then(|| process.name.clone())
+    let winner = processes
+        .iter()
+        .filter(|process| contributor_quality_is_publishable(quality(process)))
+        .max_by(|left, right| {
+            metric(left)
+                .partial_cmp(&metric(right))
+                .unwrap_or(Ordering::Equal)
+        });
+
+    if let Some(process) = winner.filter(|process| metric(process) > T::default()) {
+        return ProcessContributor {
+            name: Some(process.name.clone()),
+            quality: quality(process).cloned(),
+            ambiguous: processes
+                .iter()
+                .filter(|candidate| candidate.name == process.name)
+                .count()
+                > 1,
+        };
+    }
+
+    let publishable = processes
+        .iter()
+        .filter(|process| contributor_quality_is_publishable(quality(process)))
+        .collect::<Vec<_>>();
+    let summary_quality = if publishable.is_empty() {
+        processes
+            .iter()
+            .filter_map(quality)
+            .max_by_key(|quality| contributor_quality_rank(quality.quality))
+            .cloned()
+    } else {
+        (!publishable.iter().any(|process| quality(process).is_none()))
+            .then(|| {
+                publishable
+                    .into_iter()
+                    .filter_map(quality)
+                    .max_by_key(|quality| contributor_quality_rank(quality.quality))
+                    .cloned()
+            })
+            .flatten()
+    };
+
+    ProcessContributor {
+        name: None,
+        quality: summary_quality,
+        ambiguous: false,
+    }
+}
+
+fn contributor_quality_is_publishable(quality: Option<&MetricQualityInfo>) -> bool {
+    !quality.is_some_and(|quality| {
+        matches!(
+            quality.quality,
+            MetricQuality::Unavailable | MetricQuality::Held
+        )
+    })
+}
+
+fn contributor_quality_rank(quality: MetricQuality) -> u8 {
+    match quality {
+        MetricQuality::Native => 1,
+        MetricQuality::Estimated => 2,
+        MetricQuality::Partial => 3,
+        MetricQuality::Held => 4,
+        MetricQuality::Unavailable => 5,
+    }
+}
+
+fn cpu_quality(process: &ProcessSample) -> Option<&MetricQualityInfo> {
+    process.quality.as_ref()?.cpu.as_ref()
+}
+
+fn memory_quality(process: &ProcessSample) -> Option<&MetricQualityInfo> {
+    process.quality.as_ref()?.memory.as_ref()
+}
+
+fn io_quality(process: &ProcessSample) -> Option<&MetricQualityInfo> {
+    process.quality.as_ref()?.io.as_ref()
+}
+
+fn network_quality(process: &ProcessSample) -> Option<&MetricQualityInfo> {
+    process.quality.as_ref()?.network.as_ref()
 }
 
 fn process_identity(process: &ProcessSample) -> ProcessIdentity {
@@ -1739,9 +1835,16 @@ mod tests {
     fn shape_rows_applies_focus_mode_in_runtime_query() {
         let mut idle_io = sample("20", "IdleIo", 0.0);
         idle_io.io_read_bps = 2048;
+        let mut other_only = sample("40", "OtherOnly", 0.0);
+        other_only.other_io_bps = Some(16 * 1024 * 1024);
         let active = sample("30", "Active", 10.0);
         let rows = shape_rows(
-            &[sample("10", "Idle", 0.0), active.clone(), idle_io.clone()],
+            &[
+                sample("10", "Idle", 0.0),
+                active.clone(),
+                idle_io.clone(),
+                other_only.clone(),
+            ],
             &RuntimeQuery {
                 focus_mode: ProcessFocusMode::Attention,
                 sort_column: SortColumn::Name,
@@ -1754,7 +1857,7 @@ mod tests {
         assert_eq!(rows[0].name, "Active");
 
         let io_rows = shape_rows(
-            &[sample("10", "Idle", 0.0), active, idle_io],
+            &[sample("10", "Idle", 0.0), active, idle_io, other_only],
             &RuntimeQuery {
                 focus_mode: ProcessFocusMode::Io,
                 ..RuntimeQuery::default()
@@ -1774,7 +1877,9 @@ mod tests {
         io.io_read_bps = 8 * 1024 * 1024;
         let mut network = sample("40", "NetworkWinner", 0.0);
         network.network_received_bps = Some(16 * 1024 * 1024);
-        let all_processes = vec![cpu, memory, io, network];
+        let mut other_only = sample("50", "OtherOnly", 0.0);
+        other_only.other_io_bps = Some(64 * 1024 * 1024);
+        let all_processes = vec![cpu, memory, io, network, other_only];
         let settings = RuntimeSettings {
             query: RuntimeQuery {
                 filter_text: "iowinner".to_string(),
@@ -1821,10 +1926,107 @@ mod tests {
     }
 
     #[test]
+    fn process_contributor_quality_excludes_unavailable_and_preserves_valid_zero() {
+        let quality = |value| {
+            Some(crate::contracts::ProcessMetricQuality {
+                cpu: Some(MetricQualityInfo::new(value, MetricSource::DirectApi)),
+                ..crate::contracts::ProcessMetricQuality::default()
+            })
+        };
+        let mut unavailable_high = sample("10", "UnavailableHigh", 90.0);
+        unavailable_high.quality = quality(MetricQuality::Unavailable);
+        let mut estimated_lower = sample("20", "EstimatedLower", 20.0);
+        estimated_lower.quality = quality(MetricQuality::Estimated);
+
+        let selected = summarize_process_contributors(&[unavailable_high.clone(), estimated_lower]);
+
+        assert_eq!(selected.cpu.as_deref(), Some("EstimatedLower"));
+        assert_eq!(
+            selected.cpu_quality.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Estimated)
+        );
+
+        let unavailable = summarize_process_contributors(&[unavailable_high.clone()]);
+        assert_eq!(unavailable.cpu, None);
+        assert_eq!(
+            unavailable
+                .cpu_quality
+                .as_ref()
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+
+        let mut native_zero = sample("30", "NativeZero", 0.0);
+        native_zero.quality = quality(MetricQuality::Native);
+        let quiet = summarize_process_contributors(&[native_zero, unavailable_high]);
+        assert_eq!(quiet.cpu, None);
+        assert_eq!(
+            quiet.cpu_quality.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Native)
+        );
+
+        let mut partial_zero = sample("40", "PartialZero", 0.0);
+        partial_zero.quality = quality(MetricQuality::Partial);
+        let mut native_zero_again = sample("41", "NativeZeroAgain", 0.0);
+        native_zero_again.quality = quality(MetricQuality::Native);
+        let limited = summarize_process_contributors(&[native_zero_again, partial_zero]);
+        assert_eq!(limited.cpu, None);
+        assert_eq!(
+            limited.cpu_quality.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Partial)
+        );
+
+        let mut known_zero = sample("42", "KnownZero", 0.0);
+        known_zero.quality = quality(MetricQuality::Native);
+        let unknown =
+            summarize_process_contributors(&[known_zero, sample("50", "UnknownZero", 0.0)]);
+        assert_eq!(unknown.cpu, None);
+        assert_eq!(unknown.cpu_quality, None);
+    }
+
+    #[test]
+    fn contributor_name_ambiguity_uses_full_sample_when_query_keeps_one_row() {
+        let first = sample("10", "worker", 80.0);
+        let second = sample("20", "worker", 40.0);
+        let all_processes = vec![first, second];
+        let settings = RuntimeSettings {
+            query: RuntimeQuery {
+                sort_column: SortColumn::CpuPct,
+                sort_direction: SortDirection::Desc,
+                limit: 1,
+                ..RuntimeQuery::default()
+            },
+            ..RuntimeSettings::default()
+        };
+        let visible_processes = shape_rows(&all_processes, &settings.query);
+
+        let snapshot = build_snapshot(
+            1,
+            1,
+            1,
+            Some(1),
+            Path::new(""),
+            &settings,
+            &initial_admin_mode_status(),
+            RuntimeHealth::default(),
+            empty_system(),
+            &all_processes,
+            visible_processes,
+            Vec::new(),
+        );
+
+        assert_eq!(snapshot.processes.len(), 1);
+        assert_eq!(snapshot.processes[0].name, "worker");
+        assert_eq!(snapshot.process_contributors.cpu.as_deref(), Some("worker"));
+        assert!(snapshot.process_contributors.cpu_name_ambiguous);
+    }
+
+    #[test]
     fn process_view_groups_suffixed_app_processes() {
         let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
         first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
         first.io_read_bps = 256;
+        first.other_io_bps = Some(8 * 1024 * 1024);
         first.threads = 3;
         let mut second = sample("20", "SearchIndexer-223.exe", 8.0);
         second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();

@@ -574,10 +574,12 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
             } else {
                 MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
             }),
-            disk: Some(MetricQualityInfo::new(
-                MetricQuality::Estimated,
-                MetricSource::Sysinfo,
-            )),
+            disk: Some(
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                    .with_message(
+                        "Physical-disk throughput is unavailable because the sysinfo fallback has no device-level rate source.",
+                    ),
+            ),
             network: Some(MetricQualityInfo::new(
                 MetricQuality::Estimated,
                 MetricSource::Sysinfo,
@@ -903,7 +905,7 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
         }),
         memory: Some(direct(None)),
         io: Some(direct(Some(
-            "Read/write I/O includes file, device, and other process transfers; it is not physical-disk attribution.",
+            "Read/write I/O reports ReadTransferCount plus WriteTransferCount. OtherTransferCount remains a separate process field and this metric is not physical-disk attribution.",
         ))),
         other_io: Some(direct(None)),
         network: Some(process_network_quality_unavailable()),
@@ -918,6 +920,32 @@ mod tests {
     use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
     #[cfg(windows)]
     use std::collections::HashMap;
+
+    #[test]
+    fn sysinfo_fallback_marks_physical_disk_unavailable_for_native_collector_failures() {
+        let system = System::new();
+        let networks = Networks::new();
+
+        // Windows and Linux both return this shared snapshot when their native system
+        // collector fails, so a zero payload must never be presented as measured disk I/O.
+        let snapshot = collect_sysinfo_system(&system, &networks);
+        let disk = snapshot
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.disk.as_ref())
+            .expect("fallback disk quality exists");
+
+        assert_eq!(snapshot.disk_read_total_bytes, 0);
+        assert_eq!(snapshot.disk_write_total_bytes, 0);
+        assert_eq!(snapshot.disk_read_bps, 0);
+        assert_eq!(snapshot.disk_write_bps, 0);
+        assert_eq!(disk.quality, MetricQuality::Unavailable);
+        assert_eq!(disk.source, Some(MetricSource::Sysinfo));
+        assert!(disk
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("no device-level rate source")));
+    }
 
     #[cfg(windows)]
     #[test]

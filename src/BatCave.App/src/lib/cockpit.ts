@@ -15,6 +15,7 @@ export interface ResourceBrief {
   confidence: ResourceConfidence;
   leadingWorkload: string | null;
   leadingValueLabel: string;
+  contributorNameAmbiguous: boolean;
   attributionLabel: string;
 }
 
@@ -43,10 +44,17 @@ export function buildResourceBrief(
     canShowValue,
     collectionState,
   );
-  const contributor = canShowValue ? definition.contributor : null;
-  const leadingProcess = contributor
-    ? snapshot.processes.find((process) => process.name === contributor)
-    : undefined;
+  const contributor =
+    canShowValue && contributorQualityIsPublishable(definition.contributorQuality)
+      ? definition.contributor
+      : null;
+  const matchingProcesses = contributor
+    ? snapshot.processes.filter((process) => process.name === contributor)
+    : [];
+  const contributorNameAmbiguous =
+    definition.contributorNameAmbiguous || matchingProcesses.length > 1;
+  const leadingProcess =
+    !contributorNameAmbiguous && matchingProcesses.length === 1 ? matchingProcesses[0] : undefined;
 
   return {
     mode,
@@ -56,9 +64,23 @@ export function buildResourceBrief(
     valueLabel,
     headline,
     stateLabel,
-    confidence: resourceConfidence(snapshot, quality, collectionState, canShowValue),
+    confidence: resourceConfidence(
+      snapshot,
+      quality,
+      definition.contributor,
+      definition.contributorQuality,
+      contributorNameAmbiguous,
+      collectionState,
+      canShowValue,
+    ),
     leadingWorkload: contributor ? displayProcessName(contributor) : null,
-    leadingValueLabel: contributorValueLabel(mode, leadingProcess),
+    leadingValueLabel: contributorValueLabel(
+      mode,
+      leadingProcess,
+      definition.contributorQuality,
+      contributorNameAmbiguous,
+    ),
+    contributorNameAmbiguous,
     attributionLabel: definition.attributionLabel,
   };
 }
@@ -73,6 +95,8 @@ function resourceDefinition(
   value: number;
   valueLabel: string;
   contributor: string | null;
+  contributorQuality?: MetricQualityInfo;
+  contributorNameAmbiguous: boolean;
   attributionLabel: string;
 } {
   switch (mode) {
@@ -83,6 +107,8 @@ function resourceDefinition(
         value: snapshot.system.cpu_percent,
         valueLabel: formatPercent(snapshot.system.cpu_percent),
         contributor: snapshot.process_contributors.cpu,
+        contributorQuality: snapshot.process_contributors.cpu_quality,
+        contributorNameAmbiguous: snapshot.process_contributors.cpu_name_ambiguous !== false,
         attributionLabel:
           "Process CPU is one-core-equivalent; machine CPU is total capacity across logical cores.",
       };
@@ -93,6 +119,8 @@ function resourceDefinition(
         value: values.memoryPercent,
         valueLabel: formatPercent(values.memoryPercent),
         contributor: snapshot.process_contributors.memory,
+        contributorQuality: snapshot.process_contributors.memory_quality,
+        contributorNameAmbiguous: snapshot.process_contributors.memory_name_ambiguous !== false,
         attributionLabel:
           "Process resident-memory values are ranked independently; they are not added up to reconcile physical memory.",
       };
@@ -103,6 +131,8 @@ function resourceDefinition(
         value: values.diskRate,
         valueLabel: formatRate(values.diskRate),
         contributor: null,
+        contributorQuality: undefined,
+        contributorNameAmbiguous: false,
         attributionLabel: "Process read/write I/O is not used as physical-disk attribution.",
       };
     case "network":
@@ -112,6 +142,8 @@ function resourceDefinition(
         value: values.networkRate,
         valueLabel: formatRate(values.networkRate),
         contributor: snapshot.process_contributors.network,
+        contributorQuality: snapshot.process_contributors.network_quality,
+        contributorNameAmbiguous: snapshot.process_contributors.network_name_ambiguous !== false,
         attributionLabel:
           "Process network traffic is attributed independently from interface totals.",
       };
@@ -145,6 +177,9 @@ function resourceStateLabel(
 function resourceConfidence(
   snapshot: RuntimeSnapshot,
   quality: MetricQualityInfo | undefined,
+  contributor: string | null,
+  contributorQuality: MetricQualityInfo | undefined,
+  contributorNameAmbiguous: boolean,
   collectionState: CollectionState,
   canShowValue: boolean,
 ): ResourceConfidence {
@@ -152,6 +187,12 @@ function resourceConfidence(
   if (
     collectionState !== "live" ||
     quality?.quality !== "native" ||
+    (contributor !== null && contributorQuality?.quality !== "native") ||
+    contributorNameAmbiguous ||
+    contributorQuality?.quality === "estimated" ||
+    contributorQuality?.quality === "partial" ||
+    contributorQuality?.quality === "held" ||
+    contributorQuality?.quality === "unavailable" ||
     snapshot.health.degraded ||
     snapshot.warnings.length > 0
   ) {
@@ -179,20 +220,46 @@ function resourceHeadline(
   return `${semanticLabel} is ${valueLabel}.`;
 }
 
-function contributorValueLabel(mode: DetailMode, process: ProcessSample | undefined): string {
-  if (!process) return "Contributor value is outside the current workload view";
+function contributorValueLabel(
+  mode: DetailMode,
+  process: ProcessSample | undefined,
+  quality: MetricQualityInfo | undefined,
+  contributorNameAmbiguous: boolean,
+): string {
+  const qualitySuffix = contributorQualitySuffix(quality);
+  if (contributorNameAmbiguous) {
+    return `Contributor name is ambiguous across the full process sample${qualitySuffix}`;
+  }
+  if (!process) return `Contributor value is outside the current workload view${qualitySuffix}`;
+  let valueLabel: string;
   switch (mode) {
     case "cpu":
-      return `${formatPercent(process.cpu_percent)} of one core`;
+      valueLabel = `${formatPercent(process.cpu_percent)} of one core`;
+      break;
     case "memory":
-      return `${formatBytes(process.memory_bytes)} resident memory`;
+      valueLabel = `${formatBytes(process.memory_bytes)} resident memory`;
+      break;
     case "network":
-      return `${formatRate(
+      valueLabel = `${formatRate(
         (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
       )} process traffic`;
+      break;
     case "disk":
-      return "No compatible process attribution";
+      valueLabel = "No compatible process attribution";
+      break;
   }
+  return `${valueLabel}${qualitySuffix}`;
+}
+
+function contributorQualityIsPublishable(quality: MetricQualityInfo | undefined): boolean {
+  return quality?.quality !== "unavailable" && quality?.quality !== "held";
+}
+
+function contributorQualitySuffix(quality: MetricQualityInfo | undefined): string {
+  if (!quality) return " · Attribution quality not reported";
+  if (quality.quality === "estimated") return " · Estimated attribution";
+  if (quality.quality === "partial") return " · Partial attribution";
+  return "";
 }
 
 export function displayProcessName(name: string): string {
