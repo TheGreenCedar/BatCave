@@ -881,14 +881,14 @@ fn add_process_rates(
         if let Some(previous) =
             previous_by_identity.get(&(process.pid.as_str(), process.start_time_ms))
         {
-            process.disk_read_bps = byte_rate(
-                process.disk_read_total_bytes,
-                previous.disk_read_total_bytes,
+            process.io_read_bps = byte_rate(
+                process.io_read_total_bytes,
+                previous.io_read_total_bytes,
                 elapsed_seconds,
             );
-            process.disk_write_bps = byte_rate(
-                process.disk_write_total_bytes,
-                previous.disk_write_total_bytes,
+            process.io_write_bps = byte_rate(
+                process.io_write_total_bytes,
+                previous.io_write_total_bytes,
                 elapsed_seconds,
             );
             process.other_io_bps =
@@ -1087,10 +1087,10 @@ fn compare_process(left: &ProcessSample, right: &ProcessSample, query: &RuntimeQ
         SortColumn::Name => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
         SortColumn::Pid => numeric_pid(&left.pid).cmp(&numeric_pid(&right.pid)),
         SortColumn::MemoryBytes => left.memory_bytes.cmp(&right.memory_bytes),
-        SortColumn::DiskBps => left
-            .disk_read_bps
-            .saturating_add(left.disk_write_bps)
-            .cmp(&right.disk_read_bps.saturating_add(right.disk_write_bps)),
+        SortColumn::IoBps => left
+            .io_read_bps
+            .saturating_add(left.io_write_bps)
+            .cmp(&right.io_read_bps.saturating_add(right.io_write_bps)),
         SortColumn::NetworkBps => process_network_rate(left).cmp(&process_network_rate(right)),
         SortColumn::Threads => left.threads.cmp(&right.threads),
         SortColumn::Handles => left.handles.cmp(&right.handles),
@@ -1127,7 +1127,7 @@ fn compare_process_group(
             numeric_pid(&left.representative.pid).cmp(&numeric_pid(&right.representative.pid))
         }
         SortColumn::MemoryBytes => left.memory_bytes.cmp(&right.memory_bytes),
-        SortColumn::DiskBps => left.io_bps.cmp(&right.io_bps),
+        SortColumn::IoBps => left.io_bps.cmp(&right.io_bps),
         SortColumn::NetworkBps => left.network_bps.cmp(&right.network_bps),
         SortColumn::Threads => left.threads.cmp(&right.threads),
         SortColumn::Handles => left
@@ -1173,8 +1173,8 @@ fn needs_attention(process: &ProcessSample) -> bool {
 
 fn process_io_rate(process: &ProcessSample) -> u64 {
     process
-        .disk_read_bps
-        .saturating_add(process.disk_write_bps)
+        .io_read_bps
+        .saturating_add(process.io_write_bps)
         .saturating_add(process.other_io_bps.unwrap_or_default())
 }
 
@@ -1189,7 +1189,7 @@ fn summarize_process_contributors(processes: &[ProcessSample]) -> ProcessContrib
     ProcessContributorSummary {
         cpu: top_process_name(processes, |process| process.cpu_percent),
         memory: top_process_name(processes, |process| process.memory_bytes),
-        disk: top_process_name(processes, process_io_rate),
+        io: top_process_name(processes, process_io_rate),
         network: top_process_name(processes, process_network_rate),
     }
 }
@@ -1555,11 +1555,6 @@ fn add_process_memory_accounting(system: &mut SystemMetricsSnapshot, processes: 
     accounting.process_private_bytes = process_private_bytes;
     accounting.denied_process_count = denied_process_count;
     accounting.partial_process_count = partial_process_count;
-    accounting.unattributed_bytes = Some(
-        system
-            .memory_used_bytes
-            .saturating_sub(process_working_set_bytes),
-    );
 }
 
 fn process_memory_is_reported(process: &ProcessSample) -> bool {
@@ -1743,7 +1738,7 @@ mod tests {
     #[test]
     fn shape_rows_applies_focus_mode_in_runtime_query() {
         let mut idle_io = sample("20", "IdleIo", 0.0);
-        idle_io.disk_read_bps = 2048;
+        idle_io.io_read_bps = 2048;
         let active = sample("30", "Active", 10.0);
         let rows = shape_rows(
             &[sample("10", "Idle", 0.0), active.clone(), idle_io.clone()],
@@ -1775,14 +1770,14 @@ mod tests {
         let cpu = sample("10", "CpuWinner", 80.0);
         let mut memory = sample("20", "MemoryWinner", 0.0);
         memory.memory_bytes = 2 * 1024 * 1024 * 1024;
-        let mut disk = sample("30", "DiskWinner", 0.0);
-        disk.disk_read_bps = 8 * 1024 * 1024;
+        let mut io = sample("30", "IoWinner", 0.0);
+        io.io_read_bps = 8 * 1024 * 1024;
         let mut network = sample("40", "NetworkWinner", 0.0);
         network.network_received_bps = Some(16 * 1024 * 1024);
-        let all_processes = vec![cpu, memory, disk, network];
+        let all_processes = vec![cpu, memory, io, network];
         let settings = RuntimeSettings {
             query: RuntimeQuery {
-                filter_text: "diskwinner".to_string(),
+                filter_text: "iowinner".to_string(),
                 focus_mode: ProcessFocusMode::Io,
                 ..RuntimeQuery::default()
             },
@@ -1806,7 +1801,7 @@ mod tests {
         );
 
         assert_eq!(snapshot.processes.len(), 1);
-        assert_eq!(snapshot.processes[0].name, "DiskWinner");
+        assert_eq!(snapshot.processes[0].name, "IoWinner");
         assert_eq!(
             snapshot.process_contributors.cpu.as_deref(),
             Some("CpuWinner")
@@ -1816,8 +1811,8 @@ mod tests {
             Some("MemoryWinner")
         );
         assert_eq!(
-            snapshot.process_contributors.disk.as_deref(),
-            Some("DiskWinner")
+            snapshot.process_contributors.io.as_deref(),
+            Some("IoWinner")
         );
         assert_eq!(
             snapshot.process_contributors.network.as_deref(),
@@ -1829,11 +1824,11 @@ mod tests {
     fn process_view_groups_suffixed_app_processes() {
         let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
         first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
-        first.disk_read_bps = 256;
+        first.io_read_bps = 256;
         first.threads = 3;
         let mut second = sample("20", "SearchIndexer-223.exe", 8.0);
         second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
-        second.disk_write_bps = 512;
+        second.io_write_bps = 512;
         second.threads = 5;
 
         let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
@@ -1950,19 +1945,19 @@ mod tests {
     fn process_rates_use_pid_and_start_time_identity() {
         let mut previous = sample("10", "Stable", 1.0);
         previous.start_time_ms = 100;
-        previous.disk_read_total_bytes = 100;
-        previous.disk_write_total_bytes = 50;
+        previous.io_read_total_bytes = 100;
+        previous.io_write_total_bytes = 50;
         previous.other_io_total_bytes = Some(10);
 
         let mut current = previous.clone();
-        current.disk_read_total_bytes = 600;
-        current.disk_write_total_bytes = 250;
+        current.io_read_total_bytes = 600;
+        current.io_write_total_bytes = 250;
         current.other_io_total_bytes = Some(110);
 
         let updated = add_process_rates(vec![current], &[previous], 1.0);
 
-        assert_eq!(updated[0].disk_read_bps, 500);
-        assert_eq!(updated[0].disk_write_bps, 200);
+        assert_eq!(updated[0].io_read_bps, 500);
+        assert_eq!(updated[0].io_write_bps, 200);
         assert_eq!(updated[0].other_io_bps, Some(100));
 
         let mut restarted_previous = sample("10", "Stable", 1.0);
@@ -1973,7 +1968,7 @@ mod tests {
             1.0,
         );
 
-        assert_eq!(restarted[0].disk_read_bps, 0);
+        assert_eq!(restarted[0].io_read_bps, 0);
         assert_eq!(restarted[0].other_io_bps, None);
     }
 
@@ -2022,7 +2017,6 @@ mod tests {
         assert_eq!(accounting.process_private_bytes, 250);
         assert_eq!(accounting.denied_process_count, 1);
         assert_eq!(accounting.partial_process_count, 1);
-        assert_eq!(accounting.unattributed_bytes, Some(500));
         assert_eq!(accounting.kernel_paged_pool_bytes, Some(128));
     }
 
@@ -2045,7 +2039,7 @@ mod tests {
         memory.memory_bytes = ATTENTION_MEMORY_BYTES;
         let mut io = quiet.clone();
         io.pid = "40".to_string();
-        io.disk_read_bps = ATTENTION_IO_BPS;
+        io.io_read_bps = ATTENTION_IO_BPS;
         let mut network = quiet.clone();
         network.pid = "50".to_string();
         network.network_received_bps = Some(ATTENTION_NETWORK_BPS);
@@ -2427,11 +2421,11 @@ mod tests {
             memory_bytes: 64 * 1024 * 1024,
             private_bytes: 32 * 1024 * 1024,
             virtual_memory_bytes: Some(128 * 1024 * 1024),
-            disk_read_total_bytes: 0,
-            disk_write_total_bytes: 0,
+            io_read_total_bytes: 0,
+            io_write_total_bytes: 0,
             other_io_total_bytes: None,
-            disk_read_bps: 0,
-            disk_write_bps: 0,
+            io_read_bps: 0,
+            io_write_bps: 0,
             other_io_bps: None,
             network_received_bps: None,
             network_transmitted_bps: None,

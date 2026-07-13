@@ -5,7 +5,7 @@ import { compareProcessSamples, processNeedsAttention } from "../src/lib/process
 import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
 import { qualityGuidance } from "../src/lib/format.ts";
 import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
-import { summarizeProcessContributors, systemPressureHeadline } from "../src/lib/systemPressure.ts";
+import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
 import type { ProcessSample, RuntimeAdminModeStatus, RuntimeWarning } from "../src/lib/types.ts";
 
 const canonicalSnapshot = JSON.parse(
@@ -24,10 +24,10 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
     cpu_percent: 0,
     memory_bytes: 1,
     private_bytes: 1,
-    disk_read_total_bytes: 0,
-    disk_write_total_bytes: 0,
-    disk_read_bps: 0,
-    disk_write_bps: 0,
+    io_read_total_bytes: 0,
+    io_write_total_bytes: 0,
+    io_read_bps: 0,
+    io_write_bps: 0,
     other_io_bps: 0,
     network_received_bps: 0,
     network_transmitted_bps: 0,
@@ -106,7 +106,7 @@ test("attention includes each scored resource and limited access", () => {
   assert.equal(processNeedsAttention(quiet), false);
   assert.equal(processNeedsAttention(process({ cpu_percent: 10 })), true);
   assert.equal(processNeedsAttention(process({ memory_bytes: 900 * 1024 * 1024 })), true);
-  assert.equal(processNeedsAttention(process({ disk_read_bps: 500 * 1024 })), true);
+  assert.equal(processNeedsAttention(process({ io_read_bps: 500 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ network_received_bps: 1024 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ access_state: "partial" })), true);
 });
@@ -128,24 +128,24 @@ test("fixture comparator honors network sorting", () => {
   );
 });
 
-test("pressure attribution follows the dominant resource, not display order", () => {
+test("process contributor semantics keep read/write I/O distinct from physical disk", () => {
   const processes = [
-    process({ name: "CPU first", disk_read_bps: 1 }),
-    process({ name: "Disk winner", disk_read_bps: 60 * 1024 * 1024 }),
+    process({ name: "CPU first", io_read_bps: 1 }),
+    process({ name: "I/O winner", io_read_bps: 60 * 1024 * 1024 }),
   ];
   const contributors = summarizeProcessContributors(processes);
 
-  assert.match(systemPressureHeadline(10, 20, 60 * 1024 * 1024, 0, contributors), /Disk winner/);
-  assert.equal(systemPressureHeadline(10, 20, 0, 0, contributors), "System is steady.");
+  assert.equal(contributors.io, "I/O winner");
+  assert.equal("disk" in contributors, false);
 });
 
 test("search and focus cannot change the headline contributor", () => {
   const cpuWinner = process({ name: "CPU winner", cpu_percent: 80 });
-  const visibleIo = process({ name: "Visible I/O", disk_read_bps: 1024 });
+  const visibleIo = process({ name: "Visible I/O", io_read_bps: 1024 });
   const allProcesses = [cpuWinner, visibleIo];
   const searchedRows = allProcesses.filter((candidate) => candidate.name.includes("Visible"));
   const focusedRows = allProcesses.filter(
-    (candidate) => candidate.disk_read_bps + candidate.disk_write_bps > 0,
+    (candidate) => candidate.io_read_bps + candidate.io_write_bps > 0,
   );
   const contributors = summarizeProcessContributors(allProcesses);
 
@@ -157,10 +157,7 @@ test("search and focus cannot change the headline contributor", () => {
     focusedRows.map((candidate) => candidate.name),
     ["Visible I/O"],
   );
-  assert.equal(
-    systemPressureHeadline(90, 0, 0, 0, contributors),
-    "High CPU pressure - CPU winner is the top activity.",
-  );
+  assert.equal(contributors.cpu, "CPU winner");
 });
 
 test("all theme text and focus colors meet contrast floors", () => {

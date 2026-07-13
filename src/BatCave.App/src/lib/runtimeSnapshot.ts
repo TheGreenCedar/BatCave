@@ -85,7 +85,7 @@ export function makeEmptySnapshot(
         network: { quality: "unavailable", source: "runtime", message: statusSummary },
       },
     },
-    process_contributors: { cpu: null, memory: null, disk: null, network: null },
+    process_contributors: { cpu: null, memory: null, io: null, network: null },
     processes: [],
     process_view_rows: [],
     total_process_count: 0,

@@ -50,7 +50,7 @@
 
   function processTrustLabel(process: ProcessSample): string {
     return metricQualityLabel(
-      process.quality?.cpu ?? process.quality?.memory ?? process.quality?.disk ?? process.quality?.network,
+      process.quality?.cpu ?? process.quality?.memory ?? process.quality?.io ?? process.quality?.network,
       "Measured",
     );
   }
@@ -58,8 +58,8 @@
   function findingCopy(process: ProcessSample): string {
     if (process.cpu_percent >= 30) return "High CPU usage relative to other workloads.";
     if (process.memory_bytes >= 900 * 1024 * 1024) return `High ${presentation.memoryLabel.toLocaleLowerCase()} relative to other workloads.`;
-    if (processTotalIoRate(process) >= 500 * 1024) return "High disk activity relative to other workloads.";
-    return "No unusual pressure is visible for this workload right now.";
+    if (processTotalIoRate(process) >= 500 * 1024) return "High read/write I/O relative to other workloads.";
+    return "No unusual activity is visible for this workload right now.";
   }
 
   function accentTone(accent: string): "hot" | "heavy" | "io" | "normal" {
@@ -113,15 +113,15 @@
     <section class="key-metrics" aria-labelledby="key-metrics-title">
       <h3 id="key-metrics-title">Key metrics</h3>
       <dl>
-        <div class="metric-cpu"><dt>CPU <small>Percent</small></dt><dd>{formatPercent(selectedProcess.cpu_percent)}</dd></div>
+        <div class="metric-cpu"><dt>CPU <small>One core</small></dt><dd>{formatPercent(selectedProcess.cpu_percent)}</dd></div>
         <div class="metric-memory"><dt>{presentation.memoryLabel} <small>Bytes</small></dt><dd>{residentMemoryValue(selectedProcess, platform)}</dd></div>
-        <div class="metric-disk"><dt>Disk R/W <small>Bytes/s</small></dt><dd>{formatRate(processTotalIoRate(selectedProcess))}</dd></div>
+        <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{formatRate(processTotalIoRate(selectedProcess))}</dd></div>
         <div class="metric-network"><dt>Network <small>Bytes/s</small></dt><dd>{processNetworkLabel(selectedProcess)}</dd></div>
       </dl>
     </section>
 
     <div class="inspector-hero-chart">
-      <div><span>CPU usage over time</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
+      <div><span>One-core-equivalent CPU over time</span><strong>{formatPercent(selectedProcess.cpu_percent)}</strong></div>
       <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
     </div>
 
@@ -130,10 +130,10 @@
       <dl class="key-value-grid technical-grid">
         <div><dt>Process ID</dt><dd>{selectedProcess.pid}</dd></div>
         <div><dt>Parent</dt><dd>{selectedProcess.parent_pid ?? "Unavailable"}</dd></div>
-        <div><dt>Kernel CPU</dt><dd>{selectedProcess.kernel_cpu_percent === undefined ? "Unavailable" : formatPercent(selectedProcess.kernel_cpu_percent)}</dd></div>
+        <div><dt>Kernel CPU (one core)</dt><dd>{selectedProcess.kernel_cpu_percent === undefined ? "Unavailable" : formatPercent(selectedProcess.kernel_cpu_percent)}</dd></div>
         <div><dt>{presentation.privateMemoryLabel}</dt><dd>{privateMemoryValue(selectedProcess, platform)}</dd></div>
-        <div><dt>Read total</dt><dd>{formatBytes(selectedProcess.disk_read_total_bytes)}</dd></div>
-        <div><dt>Write total</dt><dd>{formatBytes(selectedProcess.disk_write_total_bytes)}</dd></div>
+        <div><dt>Read I/O total</dt><dd>{formatBytes(selectedProcess.io_read_total_bytes)}</dd></div>
+        <div><dt>Write I/O total</dt><dd>{formatBytes(selectedProcess.io_write_total_bytes)}</dd></div>
         <div><dt>Threads</dt><dd>{selectedProcess.threads || "Unavailable"}</dd></div>
         <div><dt>{presentation.handlesLabel}</dt><dd>{selectedProcess.handles || "Unavailable"}</dd></div>
         <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>

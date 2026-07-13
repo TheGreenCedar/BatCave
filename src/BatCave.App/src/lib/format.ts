@@ -75,6 +75,21 @@ export function metricQualityShortLabel(
   }
 }
 
+export function displayMetricValue<T>(
+  value: T,
+  metric: MetricQualityInfo | undefined,
+  sampledAtMs: number | null,
+  formatter: (value: T) => string,
+): string {
+  if (sampledAtMs === null || metric?.quality === "unavailable") {
+    return "Unavailable";
+  }
+  if (metric?.quality === "held") {
+    return "Waiting";
+  }
+  return formatter(value);
+}
+
 export function metricQualityAction(metric: MetricQualityInfo | undefined): string {
   if (!metric) {
     return "";

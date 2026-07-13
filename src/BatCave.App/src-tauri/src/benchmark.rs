@@ -12,6 +12,7 @@ use crate::{cli_args, runtime_store::RuntimeState};
 const FORMAT_VERSION: u32 = 3;
 const HOST: &str = "core";
 const MEASUREMENT_ORIGIN: &str = "runtime_state_refresh_and_json_serialization";
+const EVIDENCE_SCOPE: &str = "core_runtime_host_only";
 const DEFAULT_MIN_SPEED_RATIO: f64 = 0.90;
 const MAX_APP_CPU_PERCENT: f64 = 25.0;
 const MAX_APP_RSS_BYTES: u64 = 350 * 1024 * 1024;
@@ -31,6 +32,7 @@ struct BenchmarkSummary {
     format_version: u32,
     host: String,
     measurement_origin: String,
+    evidence_scope: String,
     platform: String,
     architecture: String,
     machine_class: String,
@@ -201,6 +203,7 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
         format_version: FORMAT_VERSION,
         host: HOST.to_string(),
         measurement_origin: MEASUREMENT_ORIGIN.to_string(),
+        evidence_scope: EVIDENCE_SCOPE.to_string(),
         platform: config.platform,
         architecture: config.architecture,
         machine_class: config.machine_class,

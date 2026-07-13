@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPressureBrief } from "../src/lib/cockpit.ts";
-import { metricQualityLabel, metricQualityShortLabel } from "../src/lib/format.ts";
+import { buildResourceBrief } from "../src/lib/cockpit.ts";
+import {
+  displayMetricValue,
+  metricQualityLabel,
+  metricQualityShortLabel,
+} from "../src/lib/format.ts";
 import {
   processIdentity,
   processRowSecondaryLabel,
@@ -12,23 +16,105 @@ import {
 import { makeEmptySnapshot } from "../src/lib/runtimeSnapshot.ts";
 import type { MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "../src/lib/types.ts";
 
-test("pressure brief preserves full copy while exposing a semantic headline prefix", () => {
-  const brief = buildPressureBrief(pressureSnapshot("Code.exe"), 20, 0, 0);
-
-  assert.equal(brief.headlinePrefix, "High CPU pressure");
-  assert.equal(brief.headline, "High CPU pressure — Visual Studio Code is the leading workload.");
-  assert.equal(
-    brief.headline.slice(brief.headlinePrefix.length),
-    " — Visual Studio Code is the leading workload.",
+test("selected resource brief keeps machine and process CPU scopes explicit", () => {
+  const brief = buildResourceBrief(
+    resourceSnapshot("Code.exe"),
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
   );
+
+  assert.equal(brief.headline, "Machine-total CPU is 90%.");
+  assert.equal(brief.leadingWorkload, "Visual Studio Code");
+  assert.equal(brief.leadingValueLabel, "40% of one core");
+  assert.match(brief.attributionLabel, /one-core-equivalent/);
+  assert.equal(brief.stateLabel, "Current");
+  assert.equal(brief.confidence, "High");
 });
 
-test("pressure brief uses terminal punctuation when there is no contributor", () => {
-  const brief = buildPressureBrief(pressureSnapshot(null), 20, 0, 0);
+test("physical disk summary rejects process I/O as compatible attribution", () => {
+  const snapshot = resourceSnapshot(null);
+  snapshot.process_contributors.io = "I/O winner";
+  const brief = buildResourceBrief(
+    snapshot,
+    "disk",
+    { memoryPercent: 20, diskRate: 4_096, networkRate: 0 },
+    "live",
+  );
 
-  assert.equal(brief.headlinePrefix, "High CPU pressure");
-  assert.equal(brief.headline, "High CPU pressure.");
+  assert.equal(brief.headline, "Physical disk throughput is 4.0 KB/s.");
   assert.equal(brief.leadingWorkload, null);
+  assert.match(brief.attributionLabel, /not used as physical-disk attribution/);
+});
+
+test("overview states cannot turn missing or retained samples into a reassuring zero", () => {
+  const zero = resourceSnapshot(null);
+  zero.system.cpu_percent = 0;
+  const current = buildResourceBrief(
+    zero,
+    "cpu",
+    { memoryPercent: 0, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+  assert.equal(current.valueLabel, "0%");
+  assert.equal(current.stateLabel, "Current");
+  assert.equal(current.headline, "Machine-total CPU is 0%.");
+
+  const unavailable = resourceSnapshot(null);
+  unavailable.system.cpu_percent = 0;
+  unavailable.system.quality!.cpu = { quality: "unavailable", source: "runtime" };
+  const missing = buildResourceBrief(
+    unavailable,
+    "cpu",
+    { memoryPercent: 0, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+  assert.equal(missing.valueLabel, "Unavailable");
+  assert.equal(missing.stateLabel, "Unavailable");
+  assert.equal(missing.confidence, "Unavailable");
+  assert.equal(missing.headline, "Machine-total CPU has no trusted sample.");
+
+  const partial = resourceSnapshot(null);
+  partial.system.quality!.cpu = { quality: "partial", source: "sysinfo" };
+  const limited = buildResourceBrief(
+    partial,
+    "cpu",
+    { memoryPercent: 0, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+  assert.equal(limited.valueLabel, "90%");
+  assert.equal(limited.stateLabel, "Partial");
+  assert.equal(limited.confidence, "Limited");
+
+  const degraded = resourceSnapshot(null);
+  degraded.health.degraded = true;
+  const warning = buildResourceBrief(
+    degraded,
+    "cpu",
+    { memoryPercent: 0, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+  assert.equal(warning.valueLabel, "90%");
+  assert.equal(warning.stateLabel, "Degraded");
+  assert.equal(warning.confidence, "Limited");
+
+  const paused = buildResourceBrief(
+    resourceSnapshot(null),
+    "cpu",
+    { memoryPercent: 0, diskRate: 0, networkRate: 0 },
+    "paused",
+  );
+  assert.equal(paused.stateLabel, "Paused");
+  assert.equal(paused.headline, "Machine-total CPU was 90% when collection paused.");
+
+  const stale = buildResourceBrief(
+    resourceSnapshot(null),
+    "cpu",
+    { memoryPercent: 0, diskRate: 0, networkRate: 0 },
+    "stale",
+  );
+  assert.equal(stale.stateLabel, "Stale");
+  assert.equal(stale.headline, "Machine-total CPU was 90% in the last successful sample.");
 });
 
 test("compact metric quality labels keep the full source-aware label available", () => {
@@ -66,6 +152,10 @@ test("unavailable metrics remain explicit in compact and detailed labels", () =>
 
   assert.equal(metricQualityShortLabel(unavailable, "Aggregate"), "Unavailable");
   assert.equal(metricQualityLabel(unavailable, "Aggregate"), "Unavailable / runtime");
+  assert.equal(displayMetricValue(0, unavailable, 1, String), "Unavailable");
+  assert.equal(displayMetricValue(0, { quality: "held" }, 1, String), "Waiting");
+  assert.equal(displayMetricValue(0, { quality: "native" }, 1, String), "0");
+  assert.equal(displayMetricValue(0, { quality: "native" }, null, String), "Unavailable");
 });
 
 test("sort helpers expose state and the next accessible action", () => {
@@ -119,8 +209,9 @@ test("process row secondary labels keep only useful hierarchy", () => {
   assert.equal(processRowSecondaryLabel(group), "4");
 });
 
-function pressureSnapshot(contributor: string | null): RuntimeSnapshot {
+function resourceSnapshot(contributor: string | null): RuntimeSnapshot {
   const snapshot = makeEmptySnapshot("");
+  snapshot.sampled_at_ms = 1;
   snapshot.health.degraded = false;
   snapshot.system.cpu_percent = 90;
   snapshot.system.memory_total_bytes = 100;
@@ -128,7 +219,7 @@ function pressureSnapshot(contributor: string | null): RuntimeSnapshot {
   snapshot.system.quality = {
     cpu: { quality: "native", source: "direct_api" },
     memory: { quality: "native", source: "sysinfo" },
-    disk: { quality: "native", source: "process_aggregate" },
+    disk: { quality: "native", source: "pdh" },
     network: { quality: "native", source: "interface_aggregate" },
   };
   snapshot.process_contributors.cpu = contributor;
@@ -147,10 +238,10 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
     cpu_percent: 40,
     memory_bytes: 20,
     private_bytes: 20,
-    disk_read_total_bytes: 0,
-    disk_write_total_bytes: 0,
-    disk_read_bps: 0,
-    disk_write_bps: 0,
+    io_read_total_bytes: 0,
+    io_write_total_bytes: 0,
+    io_read_bps: 0,
+    io_write_bps: 0,
     threads: 1,
     handles: 1,
     access_state: "full",

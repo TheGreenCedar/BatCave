@@ -63,7 +63,7 @@ export const focusOptions: { value: FocusMode; label: string }[] = [
 
 export const sortOptions: { value: SortKey; label: string }[] = [
   { value: "attention", label: "Attention" },
-  { value: "cpu", label: "CPU" },
+  { value: "cpu", label: "CPU (one core)" },
   { value: "memory", label: "Resident memory" },
   { value: "io", label: "I/O" },
   { value: "network", label: "Network" },
@@ -73,9 +73,9 @@ export const sortOptions: { value: SortKey; label: string }[] = [
 export const processColumns: ProcessColumn[] = [
   { key: "name", label: "Workload" },
   { key: "attention", label: "Status" },
-  { key: "cpu", label: "CPU", metric: true },
+  { key: "cpu", label: "CPU / core", metric: true },
   { key: "memory", label: "Resident memory", metric: true },
-  { key: "io", label: "Disk R/W", metric: true },
+  { key: "io", label: "Read/write I/O", metric: true },
   { key: "network", label: "Network", metric: true },
 ];
 
@@ -128,7 +128,7 @@ export function compareProcessSamples(
           ? left.cpu_percent - right.cpu_percent
           : query.sort_column === "memory_bytes"
             ? left.memory_bytes - right.memory_bytes
-            : query.sort_column === "disk_bps"
+            : query.sort_column === "io_bps"
               ? rawProcessIoRate(left) - rawProcessIoRate(right)
               : query.sort_column === "network_bps"
                 ? rawProcessNetworkRate(left) - rawProcessNetworkRate(right)
@@ -145,7 +145,7 @@ export function compareProcessSamples(
 }
 
 function rawProcessIoRate(process: ProcessSample): number {
-  return process.disk_read_bps + process.disk_write_bps + (process.other_io_bps ?? 0);
+  return process.io_read_bps + process.io_write_bps + (process.other_io_bps ?? 0);
 }
 
 function rawProcessNetworkRate(process: ProcessSample): number {
@@ -225,10 +225,10 @@ const sortColumnByKey: Record<SortKey, SortColumn> = {
   pid: "pid",
   cpu: "cpu_pct",
   memory: "memory_bytes",
-  io: "disk_bps",
+  io: "io_bps",
   network: "network_bps",
-  read: "disk_bps",
-  write: "disk_bps",
+  read: "io_bps",
+  write: "io_bps",
   status: "name",
   threads: "threads",
 };
@@ -237,7 +237,7 @@ const sortKeyByColumn: Partial<Record<SortColumn, SortKey>> = {
   attention: "attention",
   cpu_pct: "cpu",
   memory_bytes: "memory",
-  disk_bps: "io",
+  io_bps: "io",
   network_bps: "network",
   name: "name",
   pid: "pid",
@@ -249,8 +249,8 @@ export function processIoRate(
 ): number {
   const rates = processRates[processSelectionKey(process)];
   return (
-    (rates?.readRate ?? process.disk_read_bps) +
-    (rates?.writeRate ?? process.disk_write_bps) +
+    (rates?.readRate ?? process.io_read_bps) +
+    (rates?.writeRate ?? process.io_write_bps) +
     (rates?.otherRate ?? process.other_io_bps ?? 0)
   );
 }

@@ -20,7 +20,7 @@ export interface RuntimeSnapshot {
 export interface ProcessContributorSummary {
   cpu: string | null;
   memory: string | null;
-  disk: string | null;
+  io: string | null;
   network: string | null;
 }
 
@@ -120,7 +120,6 @@ export interface SystemMemoryAccounting {
   process_private_bytes: number;
   denied_process_count: number;
   partial_process_count: number;
-  unattributed_bytes?: number;
   commit_used_bytes?: number;
   commit_limit_bytes?: number;
   system_cache_bytes?: number;
@@ -164,11 +163,11 @@ export interface ProcessSample {
   memory_bytes: number;
   private_bytes: number;
   virtual_memory_bytes?: number;
-  disk_read_total_bytes: number;
-  disk_write_total_bytes: number;
+  io_read_total_bytes: number;
+  io_write_total_bytes: number;
   other_io_total_bytes?: number;
-  disk_read_bps: number;
-  disk_write_bps: number;
+  io_read_bps: number;
+  io_write_bps: number;
   other_io_bps?: number;
   network_received_bps?: number;
   network_transmitted_bps?: number;
@@ -202,7 +201,7 @@ export interface ProcessViewRow {
 export interface ProcessMetricQuality {
   cpu?: MetricQualityInfo;
   memory?: MetricQualityInfo;
-  disk?: MetricQualityInfo;
+  io?: MetricQualityInfo;
   other_io?: MetricQualityInfo;
   network?: MetricQualityInfo;
   threads?: MetricQualityInfo;
@@ -217,7 +216,7 @@ export type SortColumn =
   | "pid"
   | "cpu_pct"
   | "memory_bytes"
-  | "disk_bps"
+  | "io_bps"
   | "network_bps"
   | "threads"
   | "handles"

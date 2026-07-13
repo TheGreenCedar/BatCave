@@ -124,13 +124,13 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
             if rusage.physical_footprint > 0 {
                 process.private_bytes = rusage.physical_footprint;
             }
-            process.disk_read_total_bytes = rusage.disk_bytes_read;
-            process.disk_write_total_bytes = rusage.disk_bytes_written;
+            process.io_read_total_bytes = rusage.disk_bytes_read;
+            process.io_write_total_bytes = rusage.disk_bytes_written;
             quality.memory = Some(MetricQualityInfo::new(
                 MetricQuality::Native,
                 MetricSource::DirectApi,
             ));
-            quality.disk = Some(MetricQualityInfo::new(
+            quality.io = Some(MetricQualityInfo::new(
                 MetricQuality::Native,
                 MetricSource::DirectApi,
             ));
@@ -142,11 +142,11 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
                 MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Sysinfo)
                     .with_message(PHYSICAL_FOOTPRINT_UNAVAILABLE),
             );
-            quality.disk = Some(
+            quality.io = Some(
                 MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
                     .with_message(
-                        "Native process disk totals are unavailable; using the sysinfo fallback.",
-                    ),
+                    "Native process read/write totals are unavailable; using the sysinfo fallback.",
+                ),
             );
         }
     }
@@ -281,11 +281,11 @@ mod tests {
             memory_bytes: 1,
             private_bytes: 1,
             virtual_memory_bytes: None,
-            disk_read_total_bytes: 0,
-            disk_write_total_bytes: 0,
+            io_read_total_bytes: 0,
+            io_write_total_bytes: 0,
             other_io_total_bytes: None,
-            disk_read_bps: 0,
-            disk_write_bps: 0,
+            io_read_bps: 0,
+            io_write_bps: 0,
             other_io_bps: None,
             network_received_bps: None,
             network_transmitted_bps: None,

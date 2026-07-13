@@ -609,11 +609,11 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                 private_bytes: process.memory(),
                 virtual_memory_bytes: (!cfg!(windows) && virtual_memory_bytes > 0)
                     .then_some(virtual_memory_bytes),
-                disk_read_total_bytes: disk_usage.total_read_bytes,
-                disk_write_total_bytes: disk_usage.total_written_bytes,
+                io_read_total_bytes: disk_usage.total_read_bytes,
+                io_write_total_bytes: disk_usage.total_written_bytes,
                 other_io_total_bytes: None,
-                disk_read_bps: 0,
-                disk_write_bps: 0,
+                io_read_bps: 0,
+                io_write_bps: 0,
                 other_io_bps: None,
                 network_received_bps: None,
                 network_transmitted_bps: None,
@@ -629,7 +629,7 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                         MetricQuality::Estimated,
                         MetricSource::Sysinfo,
                     )),
-                    disk: Some(MetricQualityInfo::new(
+                    io: Some(MetricQualityInfo::new(
                         MetricQuality::Estimated,
                         MetricSource::Sysinfo,
                     )),
@@ -902,7 +902,9 @@ fn native_process_quality(access_state: AccessState, has_cpu: bool) -> ProcessMe
                 .with_message("Process CPU needs a second Rust-native timing pass.")
         }),
         memory: Some(direct(None)),
-        disk: Some(direct(None)),
+        io: Some(direct(Some(
+            "Read/write I/O includes file, device, and other process transfers; it is not physical-disk attribution.",
+        ))),
         other_io: Some(direct(None)),
         network: Some(process_network_quality_unavailable()),
         threads: Some(direct(None)),
@@ -974,11 +976,11 @@ mod tests {
             memory_bytes: 0,
             private_bytes: 0,
             virtual_memory_bytes: None,
-            disk_read_total_bytes: 0,
-            disk_write_total_bytes: 0,
+            io_read_total_bytes: 0,
+            io_write_total_bytes: 0,
             other_io_total_bytes: None,
-            disk_read_bps: 0,
-            disk_write_bps: 0,
+            io_read_bps: 0,
+            io_write_bps: 0,
             other_io_bps: None,
             network_received_bps: None,
             network_transmitted_bps: None,
@@ -1055,11 +1057,10 @@ mod tests {
             Some(MetricSource::Sysinfo)
         );
         let disk = system_quality.disk.as_ref().expect("disk quality");
-        assert_eq!(disk.source, Some(MetricSource::ProcessAggregate));
-        assert!(matches!(
-            disk.quality,
-            MetricQuality::Partial | MetricQuality::Unavailable
-        ));
+        assert_eq!(disk.source, Some(MetricSource::Runtime));
+        assert_eq!(disk.quality, MetricQuality::Unavailable);
+        assert_eq!(sample.system.disk_read_total_bytes, 0);
+        assert_eq!(sample.system.disk_write_total_bytes, 0);
         assert_eq!(
             system_quality
                 .network
@@ -1103,11 +1104,11 @@ mod tests {
             memory_bytes: 0,
             private_bytes: 0,
             virtual_memory_bytes: None,
-            disk_read_total_bytes: 0,
-            disk_write_total_bytes: 0,
+            io_read_total_bytes: 0,
+            io_write_total_bytes: 0,
             other_io_total_bytes: None,
-            disk_read_bps: 0,
-            disk_write_bps: 0,
+            io_read_bps: 0,
+            io_write_bps: 0,
             other_io_bps: None,
             network_received_bps: None,
             network_transmitted_bps: None,

@@ -207,6 +207,10 @@
   background: var(--accent);
 }
 
+.pressure-brief-heading p i.inactive {
+  background: var(--warning);
+}
+
 .pressure-brief-heading p b {
   color: var(--text-subtle);
   font-weight: 600;

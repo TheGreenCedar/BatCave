@@ -84,11 +84,11 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
         memory_bytes: 0,
         private_bytes: 0,
         virtual_memory_bytes: None,
-        disk_read_total_bytes: 0,
-        disk_write_total_bytes: 0,
+        io_read_total_bytes: 0,
+        io_write_total_bytes: 0,
         other_io_total_bytes: None,
-        disk_read_bps: 0,
-        disk_write_bps: 0,
+        io_read_bps: 0,
+        io_write_bps: 0,
         other_io_bps: None,
         network_received_bps: None,
         network_transmitted_bps: None,
@@ -133,8 +133,8 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
 
     match query_process_io(process.raw()) {
         Some(io) => {
-            sample.disk_read_total_bytes = io.read_bytes;
-            sample.disk_write_total_bytes = io.write_bytes;
+            sample.io_read_total_bytes = io.read_bytes;
+            sample.io_write_total_bytes = io.write_bytes;
             sample.other_io_total_bytes = Some(io.other_bytes);
             succeeded += 1;
         }

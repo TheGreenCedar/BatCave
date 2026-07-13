@@ -1,6 +1,6 @@
 # BatCave Monitor
 
-BatCave Monitor is a local-first resource cockpit for Windows, Linux, and macOS. It shows the machine underneath the machine: CPU pressure, memory, disk and network movement, process triage, runtime health, and the little permission-shaped holes where the operating system says "not today."
+BatCave Monitor is a local-first resource cockpit for Windows, Linux, and macOS. It shows the machine underneath the machine: machine-total CPU, memory, disk and network movement, process triage, runtime health, and the little permission-shaped holes where the operating system says "not today."
 
 This is a public preview. It is useful now, honest about what it cannot see, and intentionally boring about privacy: BatCave reads local telemetry and keeps it local.
 
@@ -26,7 +26,7 @@ Screenshots show the native Tauri app with live Windows telemetry. Browser fixtu
 
 ## What It Shows
 
-- An attention-first system summary that identifies the dominant pressure and the largest contributing workload.
+- A selected-resource summary that keeps the headline, value, chart, time window, source quality, and compatible process attribution on one semantic.
 - A stable grouped workload ranking that keeps row identity and scroll position fixed while the user inspects live values.
 - A contextual detail pane with Overview, Resources, and Technical views for the selected workload or system resource.
 - Plain-language telemetry diagnostics that explain impact, next steps, and raw collector detail on demand.
@@ -182,7 +182,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -
 
 Linux and macOS equivalents are available at `scripts/run-benchmark.sh`, `scripts/capture-benchmark-baseline.sh`, and `scripts/run-benchmark-gate.sh`; the shared scripts detect the host and normalize Apple `arm64` to the public `aarch64` contract.
 
-The release benchmark measures the complete `RuntimeState::refresh_now` path plus snapshot JSON serialization in an isolated temporary data directory. Protocol v3 derives platform and architecture from the executing binary, requires samples to advance, and gates strict runs on latency, speed ratio, app CPU, and RSS. Baseline artifacts include the commit, release-binary hash, machine class, workload, and every repeat.
+The release benchmark measures the core runtime host's `RuntimeState::refresh_now` path plus snapshot JSON serialization in an isolated temporary data directory. Output carries `evidence_scope: core_runtime_host_only`; it is not whole-app or process-tree evidence. Protocol v3 derives platform and architecture from the executing binary, requires samples to advance, and gates strict runs on latency, speed ratio, app CPU, and RSS. Baseline artifacts include the commit, release-binary hash, machine class, workload, and every repeat.
 
 The complete-remediation release comparison is preserved in [docs/evidence/benchmarks/remediation-20260710.json](docs/evidence/benchmarks/remediation-20260710.json), including source hashes, commit provenance, protocol settings, all repeats, and the strict gate result.
 

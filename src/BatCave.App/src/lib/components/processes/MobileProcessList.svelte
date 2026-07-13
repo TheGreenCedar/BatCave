@@ -99,7 +99,7 @@
         </span>
         <span class="card-metrics">
           <span>
-            <em>CPU</em>
+            <em>CPU / core</em>
             <b>{formatPercent(row.cpu_percent)}</b>
           </span>
           <span>
