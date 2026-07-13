@@ -27,6 +27,9 @@ on:
 permissions:
   contents: read
 
+env:
+  BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
+
 jobs:
   prepare:
     name: Validate release identity

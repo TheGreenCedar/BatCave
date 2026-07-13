@@ -125,7 +125,7 @@
     {
       "key": "collector.example",
       "publication_seq": 41,
-      "occurred_at_ms": 1700000000400,
+      "occurred_at_ms": 1700000000100,
       "category": "collector",
       "message": "example warning"
     }

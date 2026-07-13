@@ -1,0 +1,4934 @@
+[
+  {
+    "protocol_version": 3,
+    "compatibility": {
+      "minimum_reader_version": 3,
+      "breaking": true
+    },
+    "event": {
+      "kind": "runtime_snapshot",
+      "payload": {
+        "publication_seq": 42,
+        "published_at_ms": 1700000000123,
+        "sample_seq": 40,
+        "sampled_at_ms": 1700000000000,
+        "source": "protocol_fixture",
+        "environment": {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "process_elevation": "standard",
+          "install_kind": "portable",
+          "data_directory": "C:\\Users\\test\\BatCaveMonitor",
+          "release_identity": {
+            "app_version": "development",
+            "source_commit_sha": null
+          }
+        },
+        "privileged_collection": {
+          "state": "standard_only",
+          "source": "none",
+          "preference": "standard_only",
+          "detail": null,
+          "last_success_at_ms": null,
+          "collector_service": null
+        },
+        "settings": {
+          "query": {
+            "filter_text": "",
+            "focus_mode": "attention",
+            "sort_column": "attention",
+            "sort_direction": "desc",
+            "limit": 5000
+          },
+          "metric_window_seconds": 60,
+          "effective_sample_interval_ms": 1000,
+          "collection_paused": false,
+          "ui_preferences": null
+        },
+        "health": {
+          "engine_state": null,
+          "collector_state": null,
+          "degraded": false,
+          "status_summary": "Collecting local telemetry.",
+          "evaluated_at_ms": 1700000000123,
+          "last_heartbeat_at_ms": null,
+          "heartbeat_age_ms": null,
+          "publication_age_ms": 0,
+          "sample_age_ms": 123,
+          "deadline_misses": null,
+          "deadline_lateness_p95_ms": null,
+          "collection_latency_ms": null,
+          "collection_p95_ms": null,
+          "publication_latency_ms": null,
+          "publication_p95_ms": null,
+          "collector_warning_count": 0,
+          "app_cpu_percent": 0.5,
+          "app_rss_bytes": 67108864,
+          "last_warning": null,
+          "fatal_error": null
+        },
+        "persistence": null,
+        "descriptors": [
+          {
+            "id": 0,
+            "semantic": "cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 1,
+            "semantic": "kernel_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 2,
+            "semantic": "memory_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 3,
+            "semantic": "memory_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 4,
+            "semantic": "memory_available",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 5,
+            "semantic": "swap_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 6,
+            "semantic": "swap_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 7,
+            "semantic": "process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "runtime"
+          },
+          {
+            "id": 8,
+            "semantic": "physical_disk_read_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 9,
+            "semantic": "physical_disk_write_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 10,
+            "semantic": "physical_disk_read_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 11,
+            "semantic": "physical_disk_write_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 12,
+            "semantic": "network_receive_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 13,
+            "semantic": "network_transmit_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 14,
+            "semantic": "network_receive_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 15,
+            "semantic": "network_transmit_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 16,
+            "semantic": "process_working_set_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 17,
+            "semantic": "process_private_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 18,
+            "semantic": "denied_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 19,
+            "semantic": "partial_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 20,
+            "semantic": "commit_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 21,
+            "semantic": "commit_limit",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 22,
+            "semantic": "system_cache",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 23,
+            "semantic": "kernel_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 24,
+            "semantic": "kernel_paged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 25,
+            "semantic": "kernel_nonpaged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 26,
+            "semantic": "logical_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 27,
+            "semantic": "kernel_pool_bytes",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 28,
+            "semantic": "kernel_pool_allocations",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 29,
+            "semantic": "kernel_pool_frees",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 30,
+            "semantic": "cpu_usage",
+            "scope": "group",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 31,
+            "semantic": "resident_memory",
+            "scope": "group",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 32,
+            "semantic": "read_write_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 33,
+            "semantic": "other_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 34,
+            "semantic": "network_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "process_aggregate"
+          },
+          {
+            "id": 35,
+            "semantic": "thread_count",
+            "scope": "group",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 36,
+            "semantic": "cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 37,
+            "semantic": "kernel_cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 38,
+            "semantic": "resident_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 39,
+            "semantic": "private_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 40,
+            "semantic": "virtual_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 41,
+            "semantic": "read_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 42,
+            "semantic": "write_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 43,
+            "semantic": "other_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 44,
+            "semantic": "read_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 45,
+            "semantic": "write_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 46,
+            "semantic": "other_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 47,
+            "semantic": "network_receive_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 48,
+            "semantic": "network_transmit_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 49,
+            "semantic": "thread_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 50,
+            "semantic": "handle_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          }
+        ],
+        "quality_codes": [
+          "native",
+          "estimated",
+          "held",
+          "partial",
+          "unavailable"
+        ],
+        "limitations": [
+          {
+            "code": "unsupported_metric",
+            "message": "Windows reports commit accounting instead of swap."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Metric value was not reported by the collector."
+          },
+          {
+            "code": "group_partial_coverage",
+            "message": "0 of 2 processes contribute to this aggregate."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Other I/O is not reported by this fixture."
+          },
+          {
+            "code": "pending_baseline",
+            "message": "Waiting for a compatible I/O baseline."
+          },
+          {
+            "code": "pending_baseline",
+            "message": "Waiting for process network attribution."
+          }
+        ],
+        "system": {
+          "stable_id": "system:local",
+          "metrics": [
+            [
+              0,
+              12.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              1,
+              2.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              2,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              3,
+              17179869184.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              4,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              5,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              6,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              7,
+              1.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              8,
+              1000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              9,
+              2000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              10,
+              100.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              11,
+              200.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              12,
+              3000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              13,
+              4000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              14,
+              300.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              15,
+              400.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              16,
+              65536.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              17,
+              32768.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              18,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              19,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              20,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              21,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              22,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              23,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              24,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              25,
+              null,
+              4,
+              null,
+              1
+            ]
+          ],
+          "logical_cpus": [
+            {
+              "stable_id": "system:local:cpu:0",
+              "index": 0,
+              "metrics": [
+                [
+                  26,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            },
+            {
+              "stable_id": "system:local:cpu:1",
+              "index": 1,
+              "metrics": [
+                [
+                  26,
+                  15.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ],
+          "kernel_pool_tags": [
+            {
+              "stable_id": "system:local:pool:none:paged",
+              "tag": "None",
+              "kind": "paged",
+              "driver_candidates": [],
+              "driver_candidates_pending": false,
+              "metrics": [
+                [
+                  27,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  28,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  29,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ]
+        },
+        "workloads": [
+          {
+            "kind": "group",
+            "detail": {
+              "stable_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "label": "BatCave.App.exe",
+              "category": "BatCave",
+              "member_ids": [
+                "process:1234:1699999999000",
+                "process:1235:1699999999001"
+              ],
+              "icon_kind": "batcave",
+              "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "example_label": "BatCave.App",
+              "metrics": [
+                [
+                  30,
+                  12.5,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  31,
+                  113536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  32,
+                  22.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  33,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  34,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  35,
+                  18.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ],
+              "coverage": [
+                {
+                  "descriptor_index": 30,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 31,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 32,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 33,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 34,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 35,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                }
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1234:1699999999000",
+              "identity_stability": "stable",
+              "pid": "1234",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999000,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": false,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  8.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  65536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  32768.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  123.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  42,
+                  456.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  44,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  45,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1235:1699999999001",
+              "identity_stability": "stable",
+              "pid": "1235",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999001,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": true,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  4.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  48000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  24000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  100.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  42,
+                  200.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  44,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  45,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          }
+        ],
+        "contributors": [
+          {
+            "metric": "cpu",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 1,
+            "source": "sysinfo",
+            "limitation_index": null
+          },
+          {
+            "metric": "memory",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "io",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "network",
+            "process_id": null,
+            "display_name": null,
+            "name_ambiguous": false,
+            "available_contributors": 0,
+            "total_contributors": 2,
+            "quality_code": 2,
+            "source": "etw",
+            "limitation_index": 5
+          }
+        ],
+        "total_process_count": 2,
+        "visible_process_count": 2,
+        "warnings": [
+          {
+            "key": "collector.example",
+            "publication_seq": 41,
+            "occurred_at_ms": 1700000000100,
+            "category": "collector",
+            "message": "example warning"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "protocol_version": 3,
+    "compatibility": {
+      "minimum_reader_version": 3,
+      "breaking": true
+    },
+    "event": {
+      "kind": "runtime_snapshot",
+      "payload": {
+        "publication_seq": 42,
+        "published_at_ms": 1700000000123,
+        "sample_seq": 40,
+        "sampled_at_ms": 1700000000000,
+        "source": "protocol_fixture",
+        "environment": {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "process_elevation": "standard",
+          "install_kind": "portable",
+          "data_directory": "C:\\Users\\test\\BatCaveMonitor",
+          "release_identity": {
+            "app_version": "development",
+            "source_commit_sha": null
+          }
+        },
+        "privileged_collection": {
+          "state": "standard_only",
+          "source": "none",
+          "preference": "standard_only",
+          "detail": null,
+          "last_success_at_ms": null,
+          "collector_service": null
+        },
+        "settings": {
+          "query": {
+            "filter_text": "",
+            "focus_mode": "attention",
+            "sort_column": "attention",
+            "sort_direction": "desc",
+            "limit": 5000
+          },
+          "metric_window_seconds": 60,
+          "effective_sample_interval_ms": 1000,
+          "collection_paused": false,
+          "ui_preferences": null
+        },
+        "health": {
+          "engine_state": null,
+          "collector_state": null,
+          "degraded": false,
+          "status_summary": "Collecting local telemetry.",
+          "evaluated_at_ms": 1700000000123,
+          "last_heartbeat_at_ms": null,
+          "heartbeat_age_ms": null,
+          "publication_age_ms": 0,
+          "sample_age_ms": 123,
+          "deadline_misses": null,
+          "deadline_lateness_p95_ms": null,
+          "collection_latency_ms": null,
+          "collection_p95_ms": null,
+          "publication_latency_ms": null,
+          "publication_p95_ms": null,
+          "collector_warning_count": 0,
+          "app_cpu_percent": 0.5,
+          "app_rss_bytes": 67108864,
+          "last_warning": null,
+          "fatal_error": null
+        },
+        "persistence": null,
+        "descriptors": [
+          {
+            "id": 0,
+            "semantic": "cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 1,
+            "semantic": "kernel_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 2,
+            "semantic": "memory_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 3,
+            "semantic": "memory_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 4,
+            "semantic": "memory_available",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 5,
+            "semantic": "swap_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 6,
+            "semantic": "swap_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 7,
+            "semantic": "process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "runtime"
+          },
+          {
+            "id": 8,
+            "semantic": "physical_disk_read_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 9,
+            "semantic": "physical_disk_write_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 10,
+            "semantic": "physical_disk_read_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 11,
+            "semantic": "physical_disk_write_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 12,
+            "semantic": "network_receive_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 13,
+            "semantic": "network_transmit_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 14,
+            "semantic": "network_receive_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 15,
+            "semantic": "network_transmit_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 16,
+            "semantic": "process_working_set_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 17,
+            "semantic": "process_private_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 18,
+            "semantic": "denied_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 19,
+            "semantic": "partial_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 20,
+            "semantic": "commit_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 21,
+            "semantic": "commit_limit",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 22,
+            "semantic": "system_cache",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 23,
+            "semantic": "kernel_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 24,
+            "semantic": "kernel_paged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 25,
+            "semantic": "kernel_nonpaged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 26,
+            "semantic": "logical_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 27,
+            "semantic": "kernel_pool_bytes",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 28,
+            "semantic": "kernel_pool_allocations",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 29,
+            "semantic": "kernel_pool_frees",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 30,
+            "semantic": "cpu_usage",
+            "scope": "group",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 31,
+            "semantic": "resident_memory",
+            "scope": "group",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 32,
+            "semantic": "read_write_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 33,
+            "semantic": "other_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 34,
+            "semantic": "network_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "process_aggregate"
+          },
+          {
+            "id": 35,
+            "semantic": "thread_count",
+            "scope": "group",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 36,
+            "semantic": "cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 37,
+            "semantic": "kernel_cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 38,
+            "semantic": "resident_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 39,
+            "semantic": "private_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 40,
+            "semantic": "virtual_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 41,
+            "semantic": "read_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 42,
+            "semantic": "write_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 43,
+            "semantic": "other_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 44,
+            "semantic": "read_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 45,
+            "semantic": "write_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 46,
+            "semantic": "other_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 47,
+            "semantic": "network_receive_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 48,
+            "semantic": "network_transmit_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 49,
+            "semantic": "thread_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 50,
+            "semantic": "handle_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          }
+        ],
+        "quality_codes": [
+          "native",
+          "estimated",
+          "held",
+          "partial",
+          "unavailable"
+        ],
+        "limitations": [
+          {
+            "code": "unsupported_metric",
+            "message": "Windows reports commit accounting instead of swap."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Metric value was not reported by the collector."
+          },
+          {
+            "code": "group_partial_coverage",
+            "message": "0 of 2 processes contribute to this aggregate."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Other I/O is not reported by this fixture."
+          },
+          {
+            "code": "pending_baseline",
+            "message": "Waiting for process network attribution."
+          }
+        ],
+        "system": {
+          "stable_id": "system:local",
+          "metrics": [
+            [
+              0,
+              12.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              1,
+              2.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              2,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              3,
+              17179869184.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              4,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              5,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              6,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              7,
+              1.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              8,
+              1000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              9,
+              2000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              10,
+              100.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              11,
+              200.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              12,
+              3000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              13,
+              4000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              14,
+              300.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              15,
+              400.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              16,
+              65536.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              17,
+              32768.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              18,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              19,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              20,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              21,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              22,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              23,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              24,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              25,
+              null,
+              4,
+              null,
+              1
+            ]
+          ],
+          "logical_cpus": [
+            {
+              "stable_id": "system:local:cpu:0",
+              "index": 0,
+              "metrics": [
+                [
+                  26,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            },
+            {
+              "stable_id": "system:local:cpu:1",
+              "index": 1,
+              "metrics": [
+                [
+                  26,
+                  15.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ],
+          "kernel_pool_tags": [
+            {
+              "stable_id": "system:local:pool:none:paged",
+              "tag": "None",
+              "kind": "paged",
+              "driver_candidates": [],
+              "driver_candidates_pending": false,
+              "metrics": [
+                [
+                  27,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  28,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  29,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ]
+        },
+        "workloads": [
+          {
+            "kind": "group",
+            "detail": {
+              "stable_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "label": "BatCave.App.exe",
+              "category": "BatCave",
+              "member_ids": [
+                "process:1234:1699999999000",
+                "process:1235:1699999999001"
+              ],
+              "icon_kind": "batcave",
+              "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "example_label": "BatCave.App",
+              "metrics": [
+                [
+                  30,
+                  12.5,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  31,
+                  113536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  32,
+                  22.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  33,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  34,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  35,
+                  18.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ],
+              "coverage": [
+                {
+                  "descriptor_index": 30,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 31,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 32,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 33,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 34,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 35,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                }
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1234:1699999999000",
+              "identity_stability": "stable",
+              "pid": "1234",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999000,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": false,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  8.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  65536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  32768.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  123.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  42,
+                  456.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  44,
+                  7.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  45,
+                  8.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1235:1699999999001",
+              "identity_stability": "stable",
+              "pid": "1235",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999001,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": true,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  4.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  48000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  24000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  100.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  42,
+                  200.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  44,
+                  3.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  45,
+                  4.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  4
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          }
+        ],
+        "contributors": [
+          {
+            "metric": "cpu",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 1,
+            "source": "sysinfo",
+            "limitation_index": null
+          },
+          {
+            "metric": "memory",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "io",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "network",
+            "process_id": null,
+            "display_name": null,
+            "name_ambiguous": false,
+            "available_contributors": 0,
+            "total_contributors": 2,
+            "quality_code": 2,
+            "source": "etw",
+            "limitation_index": 4
+          }
+        ],
+        "total_process_count": 2,
+        "visible_process_count": 2,
+        "warnings": [
+          {
+            "key": "collector.example",
+            "publication_seq": 41,
+            "occurred_at_ms": 1700000000100,
+            "category": "collector",
+            "message": "example warning"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "protocol_version": 3,
+    "compatibility": {
+      "minimum_reader_version": 3,
+      "breaking": true
+    },
+    "event": {
+      "kind": "runtime_snapshot",
+      "payload": {
+        "publication_seq": 42,
+        "published_at_ms": 1700000000123,
+        "sample_seq": 40,
+        "sampled_at_ms": 1700000000000,
+        "source": "protocol_fixture",
+        "environment": {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "process_elevation": "standard",
+          "install_kind": "portable",
+          "data_directory": "C:\\Users\\test\\BatCaveMonitor",
+          "release_identity": {
+            "app_version": "development",
+            "source_commit_sha": null
+          }
+        },
+        "privileged_collection": {
+          "state": "standard_only",
+          "source": "none",
+          "preference": "standard_only",
+          "detail": null,
+          "last_success_at_ms": null,
+          "collector_service": null
+        },
+        "settings": {
+          "query": {
+            "filter_text": "",
+            "focus_mode": "attention",
+            "sort_column": "attention",
+            "sort_direction": "desc",
+            "limit": 5000
+          },
+          "metric_window_seconds": 60,
+          "effective_sample_interval_ms": 1000,
+          "collection_paused": false,
+          "ui_preferences": null
+        },
+        "health": {
+          "engine_state": null,
+          "collector_state": null,
+          "degraded": false,
+          "status_summary": "Collecting local telemetry.",
+          "evaluated_at_ms": 1700000000123,
+          "last_heartbeat_at_ms": null,
+          "heartbeat_age_ms": null,
+          "publication_age_ms": 0,
+          "sample_age_ms": 123,
+          "deadline_misses": null,
+          "deadline_lateness_p95_ms": null,
+          "collection_latency_ms": null,
+          "collection_p95_ms": null,
+          "publication_latency_ms": null,
+          "publication_p95_ms": null,
+          "collector_warning_count": 0,
+          "app_cpu_percent": 0.5,
+          "app_rss_bytes": 67108864,
+          "last_warning": null,
+          "fatal_error": null
+        },
+        "persistence": null,
+        "descriptors": [
+          {
+            "id": 0,
+            "semantic": "cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 1,
+            "semantic": "kernel_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 2,
+            "semantic": "memory_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 3,
+            "semantic": "memory_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 4,
+            "semantic": "memory_available",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 5,
+            "semantic": "swap_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 6,
+            "semantic": "swap_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 7,
+            "semantic": "process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "runtime"
+          },
+          {
+            "id": 8,
+            "semantic": "physical_disk_read_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 9,
+            "semantic": "physical_disk_write_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 10,
+            "semantic": "physical_disk_read_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 11,
+            "semantic": "physical_disk_write_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 12,
+            "semantic": "network_receive_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 13,
+            "semantic": "network_transmit_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 14,
+            "semantic": "network_receive_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 15,
+            "semantic": "network_transmit_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 16,
+            "semantic": "process_working_set_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 17,
+            "semantic": "process_private_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 18,
+            "semantic": "denied_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 19,
+            "semantic": "partial_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 20,
+            "semantic": "commit_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 21,
+            "semantic": "commit_limit",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 22,
+            "semantic": "system_cache",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 23,
+            "semantic": "kernel_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 24,
+            "semantic": "kernel_paged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 25,
+            "semantic": "kernel_nonpaged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 26,
+            "semantic": "logical_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 27,
+            "semantic": "kernel_pool_bytes",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 28,
+            "semantic": "kernel_pool_allocations",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 29,
+            "semantic": "kernel_pool_frees",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 30,
+            "semantic": "cpu_usage",
+            "scope": "group",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 31,
+            "semantic": "resident_memory",
+            "scope": "group",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 32,
+            "semantic": "read_write_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 33,
+            "semantic": "other_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 34,
+            "semantic": "network_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "process_aggregate"
+          },
+          {
+            "id": 35,
+            "semantic": "thread_count",
+            "scope": "group",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 36,
+            "semantic": "cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 37,
+            "semantic": "kernel_cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 38,
+            "semantic": "resident_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 39,
+            "semantic": "private_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 40,
+            "semantic": "virtual_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 41,
+            "semantic": "read_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 42,
+            "semantic": "write_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 43,
+            "semantic": "other_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 44,
+            "semantic": "read_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 45,
+            "semantic": "write_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 46,
+            "semantic": "other_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 47,
+            "semantic": "network_receive_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 48,
+            "semantic": "network_transmit_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 49,
+            "semantic": "thread_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 50,
+            "semantic": "handle_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          }
+        ],
+        "quality_codes": [
+          "native",
+          "estimated",
+          "held",
+          "partial",
+          "unavailable"
+        ],
+        "limitations": [
+          {
+            "code": "unsupported_metric",
+            "message": "Windows reports commit accounting instead of swap."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Metric value was not reported by the collector."
+          },
+          {
+            "code": "group_partial_coverage",
+            "message": "0 of 2 processes contribute to this aggregate."
+          },
+          {
+            "code": "held_value",
+            "message": "Publishing the previous I/O rate."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Other I/O is not reported by this fixture."
+          },
+          {
+            "code": "pending_baseline",
+            "message": "Waiting for process network attribution."
+          }
+        ],
+        "system": {
+          "stable_id": "system:local",
+          "metrics": [
+            [
+              0,
+              12.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              1,
+              2.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              2,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              3,
+              17179869184.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              4,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              5,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              6,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              7,
+              1.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              8,
+              1000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              9,
+              2000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              10,
+              100.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              11,
+              200.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              12,
+              3000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              13,
+              4000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              14,
+              300.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              15,
+              400.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              16,
+              65536.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              17,
+              32768.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              18,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              19,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              20,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              21,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              22,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              23,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              24,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              25,
+              null,
+              4,
+              null,
+              1
+            ]
+          ],
+          "logical_cpus": [
+            {
+              "stable_id": "system:local:cpu:0",
+              "index": 0,
+              "metrics": [
+                [
+                  26,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            },
+            {
+              "stable_id": "system:local:cpu:1",
+              "index": 1,
+              "metrics": [
+                [
+                  26,
+                  15.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ],
+          "kernel_pool_tags": [
+            {
+              "stable_id": "system:local:pool:none:paged",
+              "tag": "None",
+              "kind": "paged",
+              "driver_candidates": [],
+              "driver_candidates_pending": false,
+              "metrics": [
+                [
+                  27,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  28,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  29,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ]
+        },
+        "workloads": [
+          {
+            "kind": "group",
+            "detail": {
+              "stable_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "label": "BatCave.App.exe",
+              "category": "BatCave",
+              "member_ids": [
+                "process:1234:1699999999000",
+                "process:1235:1699999999001"
+              ],
+              "icon_kind": "batcave",
+              "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "example_label": "BatCave.App",
+              "metrics": [
+                [
+                  30,
+                  12.5,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  31,
+                  113536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  32,
+                  22.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  33,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  34,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  35,
+                  18.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ],
+              "coverage": [
+                {
+                  "descriptor_index": 30,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 31,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 32,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 33,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 34,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 35,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                }
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1234:1699999999000",
+              "identity_stability": "stable",
+              "pid": "1234",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999000,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": false,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  8.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  65536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  32768.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  123.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  42,
+                  456.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  44,
+                  7.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  45,
+                  8.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1235:1699999999001",
+              "identity_stability": "stable",
+              "pid": "1235",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999001,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": true,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  4.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  48000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  24000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  100.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  42,
+                  200.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  44,
+                  3.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  45,
+                  4.0,
+                  2,
+                  1699999999000,
+                  3
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          }
+        ],
+        "contributors": [
+          {
+            "metric": "cpu",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 1,
+            "source": "sysinfo",
+            "limitation_index": null
+          },
+          {
+            "metric": "memory",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "io",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "network",
+            "process_id": null,
+            "display_name": null,
+            "name_ambiguous": false,
+            "available_contributors": 0,
+            "total_contributors": 2,
+            "quality_code": 2,
+            "source": "etw",
+            "limitation_index": 5
+          }
+        ],
+        "total_process_count": 2,
+        "visible_process_count": 2,
+        "warnings": [
+          {
+            "key": "collector.example",
+            "publication_seq": 41,
+            "occurred_at_ms": 1700000000100,
+            "category": "collector",
+            "message": "example warning"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "protocol_version": 3,
+    "compatibility": {
+      "minimum_reader_version": 3,
+      "breaking": true
+    },
+    "event": {
+      "kind": "runtime_snapshot",
+      "payload": {
+        "publication_seq": 42,
+        "published_at_ms": 1700000000123,
+        "sample_seq": 40,
+        "sampled_at_ms": 1700000000000,
+        "source": "protocol_fixture",
+        "environment": {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "process_elevation": "standard",
+          "install_kind": "portable",
+          "data_directory": "C:\\Users\\test\\BatCaveMonitor",
+          "release_identity": {
+            "app_version": "development",
+            "source_commit_sha": null
+          }
+        },
+        "privileged_collection": {
+          "state": "standard_only",
+          "source": "none",
+          "preference": "standard_only",
+          "detail": null,
+          "last_success_at_ms": null,
+          "collector_service": null
+        },
+        "settings": {
+          "query": {
+            "filter_text": "",
+            "focus_mode": "attention",
+            "sort_column": "attention",
+            "sort_direction": "desc",
+            "limit": 5000
+          },
+          "metric_window_seconds": 60,
+          "effective_sample_interval_ms": 1000,
+          "collection_paused": false,
+          "ui_preferences": null
+        },
+        "health": {
+          "engine_state": null,
+          "collector_state": null,
+          "degraded": false,
+          "status_summary": "Collecting local telemetry.",
+          "evaluated_at_ms": 1700000000123,
+          "last_heartbeat_at_ms": null,
+          "heartbeat_age_ms": null,
+          "publication_age_ms": 0,
+          "sample_age_ms": 123,
+          "deadline_misses": null,
+          "deadline_lateness_p95_ms": null,
+          "collection_latency_ms": null,
+          "collection_p95_ms": null,
+          "publication_latency_ms": null,
+          "publication_p95_ms": null,
+          "collector_warning_count": 0,
+          "app_cpu_percent": 0.5,
+          "app_rss_bytes": 67108864,
+          "last_warning": null,
+          "fatal_error": null
+        },
+        "persistence": null,
+        "descriptors": [
+          {
+            "id": 0,
+            "semantic": "cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 1,
+            "semantic": "kernel_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 2,
+            "semantic": "memory_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 3,
+            "semantic": "memory_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 4,
+            "semantic": "memory_available",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 5,
+            "semantic": "swap_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 6,
+            "semantic": "swap_capacity",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 7,
+            "semantic": "process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "runtime"
+          },
+          {
+            "id": 8,
+            "semantic": "physical_disk_read_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 9,
+            "semantic": "physical_disk_write_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 10,
+            "semantic": "physical_disk_read_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 11,
+            "semantic": "physical_disk_write_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "pdh"
+          },
+          {
+            "id": 12,
+            "semantic": "network_receive_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 13,
+            "semantic": "network_transmit_total",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 14,
+            "semantic": "network_receive_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 15,
+            "semantic": "network_transmit_rate",
+            "scope": "system",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "non_loopback_interface_aggregate",
+            "source": "interface_aggregate"
+          },
+          {
+            "id": 16,
+            "semantic": "process_working_set_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 17,
+            "semantic": "process_private_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 18,
+            "semantic": "denied_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 19,
+            "semantic": "partial_process_count",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 20,
+            "semantic": "commit_used",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 21,
+            "semantic": "commit_limit",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 22,
+            "semantic": "system_cache",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 23,
+            "semantic": "kernel_memory",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 24,
+            "semantic": "kernel_paged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 25,
+            "semantic": "kernel_nonpaged_pool",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 26,
+            "semantic": "logical_cpu_usage",
+            "scope": "system",
+            "unit": "percent_system",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 27,
+            "semantic": "kernel_pool_bytes",
+            "scope": "system",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 28,
+            "semantic": "kernel_pool_allocations",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 29,
+            "semantic": "kernel_pool_frees",
+            "scope": "system",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 30,
+            "semantic": "cpu_usage",
+            "scope": "group",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 31,
+            "semantic": "resident_memory",
+            "scope": "group",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 32,
+            "semantic": "read_write_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 33,
+            "semantic": "other_io_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 34,
+            "semantic": "network_rate",
+            "scope": "group",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "process_aggregate"
+          },
+          {
+            "id": 35,
+            "semantic": "thread_count",
+            "scope": "group",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "process_aggregate"
+          },
+          {
+            "id": 36,
+            "semantic": "cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 37,
+            "semantic": "kernel_cpu_usage",
+            "scope": "process",
+            "unit": "percent_one_core",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "sysinfo"
+          },
+          {
+            "id": 38,
+            "semantic": "resident_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 39,
+            "semantic": "private_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 40,
+            "semantic": "virtual_memory",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 41,
+            "semantic": "read_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 42,
+            "semantic": "write_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 43,
+            "semantic": "other_io_total",
+            "scope": "process",
+            "unit": "bytes",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 44,
+            "semantic": "read_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 45,
+            "semantic": "write_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 46,
+            "semantic": "other_io_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 47,
+            "semantic": "network_receive_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 48,
+            "semantic": "network_transmit_rate",
+            "scope": "process",
+            "unit": "bytes_per_second",
+            "interval_ms": 1000,
+            "network_scope": "ip_socket_payload",
+            "source": "etw"
+          },
+          {
+            "id": 49,
+            "semantic": "thread_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          },
+          {
+            "id": 50,
+            "semantic": "handle_count",
+            "scope": "process",
+            "unit": "count",
+            "interval_ms": null,
+            "network_scope": null,
+            "source": "direct_api"
+          }
+        ],
+        "quality_codes": [
+          "native",
+          "estimated",
+          "held",
+          "partial",
+          "unavailable"
+        ],
+        "limitations": [
+          {
+            "code": "unsupported_metric",
+            "message": "Windows reports commit accounting instead of swap."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Metric value was not reported by the collector."
+          },
+          {
+            "code": "group_partial_coverage",
+            "message": "0 of 2 processes contribute to this aggregate."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "I/O attribution is unavailable."
+          },
+          {
+            "code": "unsupported_metric",
+            "message": "Other I/O is not reported by this fixture."
+          },
+          {
+            "code": "pending_baseline",
+            "message": "Waiting for process network attribution."
+          }
+        ],
+        "system": {
+          "stable_id": "system:local",
+          "metrics": [
+            [
+              0,
+              12.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              1,
+              2.5,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              2,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              3,
+              17179869184.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              4,
+              8589934592.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              5,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              6,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              7,
+              1.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              8,
+              1000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              9,
+              2000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              10,
+              100.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              11,
+              200.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              12,
+              3000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              13,
+              4000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              14,
+              300.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              15,
+              400.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              16,
+              65536.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              17,
+              32768.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              18,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              19,
+              0.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              20,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              21,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              22,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              23,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              24,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              25,
+              null,
+              4,
+              null,
+              1
+            ]
+          ],
+          "logical_cpus": [
+            {
+              "stable_id": "system:local:cpu:0",
+              "index": 0,
+              "metrics": [
+                [
+                  26,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            },
+            {
+              "stable_id": "system:local:cpu:1",
+              "index": 1,
+              "metrics": [
+                [
+                  26,
+                  15.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ],
+          "kernel_pool_tags": [
+            {
+              "stable_id": "system:local:pool:none:paged",
+              "tag": "None",
+              "kind": "paged",
+              "driver_candidates": [],
+              "driver_candidates_pending": false,
+              "metrics": [
+                [
+                  27,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  28,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  29,
+                  0.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          ]
+        },
+        "workloads": [
+          {
+            "kind": "group",
+            "detail": {
+              "stable_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "label": "BatCave.App.exe",
+              "category": "BatCave",
+              "member_ids": [
+                "process:1234:1699999999000",
+                "process:1235:1699999999001"
+              ],
+              "icon_kind": "batcave",
+              "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "example_label": "BatCave.App",
+              "metrics": [
+                [
+                  30,
+                  12.5,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  31,
+                  113536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  32,
+                  22.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  33,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  34,
+                  null,
+                  4,
+                  null,
+                  2
+                ],
+                [
+                  35,
+                  18.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ],
+              "coverage": [
+                {
+                  "descriptor_index": 30,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 31,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 32,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                },
+                {
+                  "descriptor_index": 33,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 34,
+                  "available_contributors": 0,
+                  "total_contributors": 2,
+                  "limitation_index": 2
+                },
+                {
+                  "descriptor_index": 35,
+                  "available_contributors": 2,
+                  "total_contributors": 2,
+                  "limitation_index": null
+                }
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1234:1699999999000",
+              "identity_stability": "stable",
+              "pid": "1234",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999000,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": false,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  8.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  65536.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  32768.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  42,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  44,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  45,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          },
+          {
+            "kind": "process",
+            "detail": {
+              "stable_id": "process:1235:1699999999001",
+              "identity_stability": "stable",
+              "pid": "1235",
+              "parent_pid": null,
+              "parent_process_id": null,
+              "start_time_ms": 1699999999001,
+              "display_name": "BatCave.App",
+              "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+              "status": "run",
+              "access_state": "full",
+              "presentation": {
+                "group_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "group_label": "BatCave.App.exe",
+                "group_category": "BatCave",
+                "group_count": 2,
+                "icon_kind": "batcave",
+                "is_child": true,
+                "is_grouped": true
+              },
+              "metrics": [
+                [
+                  36,
+                  4.25,
+                  1,
+                  1700000000000,
+                  null
+                ],
+                [
+                  37,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  38,
+                  48000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  39,
+                  24000.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  40,
+                  null,
+                  4,
+                  null,
+                  1
+                ],
+                [
+                  41,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  42,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  43,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  44,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  45,
+                  null,
+                  4,
+                  null,
+                  3
+                ],
+                [
+                  46,
+                  null,
+                  4,
+                  null,
+                  4
+                ],
+                [
+                  47,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  48,
+                  null,
+                  2,
+                  null,
+                  5
+                ],
+                [
+                  49,
+                  9.0,
+                  0,
+                  1700000000000,
+                  null
+                ],
+                [
+                  50,
+                  10.0,
+                  0,
+                  1700000000000,
+                  null
+                ]
+              ]
+            }
+          }
+        ],
+        "contributors": [
+          {
+            "metric": "cpu",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 1,
+            "source": "sysinfo",
+            "limitation_index": null
+          },
+          {
+            "metric": "memory",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "io",
+            "process_id": "process:1234:1699999999000",
+            "display_name": "BatCave.App",
+            "name_ambiguous": true,
+            "available_contributors": 2,
+            "total_contributors": 2,
+            "quality_code": 0,
+            "source": "direct_api",
+            "limitation_index": null
+          },
+          {
+            "metric": "network",
+            "process_id": null,
+            "display_name": null,
+            "name_ambiguous": false,
+            "available_contributors": 0,
+            "total_contributors": 2,
+            "quality_code": 2,
+            "source": "etw",
+            "limitation_index": 5
+          }
+        ],
+        "total_process_count": 2,
+        "visible_process_count": 2,
+        "warnings": [
+          {
+            "key": "collector.example",
+            "publication_seq": 41,
+            "occurred_at_ms": 1700000000100,
+            "category": "collector",
+            "message": "example warning"
+          }
+        ]
+      }
+    }
+  }
+]

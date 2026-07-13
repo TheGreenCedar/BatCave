@@ -1,6 +1,6 @@
 use crate::contracts::{
-    MetricQuality, MetricQualityInfo, MetricSource, ProcessSample, SystemMetricQuality,
-    SystemMetricsSnapshot,
+    MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource, ProcessSample,
+    SystemMetricQuality, SystemMetricsSnapshot,
 };
 
 #[derive(Debug, Default)]
@@ -17,7 +17,8 @@ impl MacosSystemCollector {
         snapshot.disk_read_bps = 0;
         snapshot.disk_write_bps = 0;
         let disk_quality = MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Runtime)
-            .with_message(
+            .with_limitation(
+                MetricLimitationCode::UnsupportedMetric,
                 "Physical-disk throughput is unavailable because the macOS collector has no trusted device-level source. Process read/write I/O is kept separate.",
             );
 
@@ -28,7 +29,10 @@ impl MacosSystemCollector {
             )),
             kernel_cpu: Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                    .with_message("Kernel CPU is unavailable from the macOS system collector."),
+                    .with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Kernel CPU is unavailable from the macOS system collector.",
+                    ),
             ),
             logical_cpu: Some(MetricQualityInfo::new(
                 MetricQuality::Estimated,
@@ -45,7 +49,7 @@ impl MacosSystemCollector {
             disk: Some(disk_quality),
             network: Some(MetricQualityInfo::new(
                 MetricQuality::Native,
-                MetricSource::InterfaceAggregate,
+                MetricSource::Sysinfo,
             )),
         });
     }

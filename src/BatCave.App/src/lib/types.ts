@@ -19,26 +19,43 @@ export interface RuntimeSnapshot {
 
 export interface ProcessContributorSummary {
   cpu: string | null;
+  cpu_process_id: string | null;
+  cpu_coverage: MetricCoverage;
   cpu_quality?: MetricQualityInfo;
   cpu_name_ambiguous: boolean;
   memory: string | null;
+  memory_process_id: string | null;
+  memory_coverage: MetricCoverage;
   memory_quality?: MetricQualityInfo;
   memory_name_ambiguous: boolean;
   io: string | null;
+  io_process_id: string | null;
+  io_coverage: MetricCoverage;
   io_quality?: MetricQualityInfo;
   io_name_ambiguous: boolean;
   network: string | null;
+  network_process_id: string | null;
+  network_coverage: MetricCoverage;
   network_quality?: MetricQualityInfo;
   network_name_ambiguous: boolean;
 }
 
 export interface RuntimeEnvironment {
   platform: RuntimePlatform;
+  architecture: RuntimeArchitecture;
   admin_mode_available: boolean;
   process_elevation: RuntimeProcessElevation;
   install_kind: RuntimeInstallKind;
   data_directory: string | null;
+  release_identity: RuntimeReleaseIdentity;
 }
+
+export interface RuntimeReleaseIdentity {
+  app_version: string;
+  source_commit_sha: string | null;
+}
+
+export type RuntimeArchitecture = "x86_64" | "aarch64" | "x86" | "unknown";
 
 export type RuntimePlatform = "windows" | "linux" | "macos" | "fixture";
 export type RuntimeProcessElevation = "unknown" | "standard" | "elevated" | "not_applicable";
@@ -67,7 +84,11 @@ export interface RuntimeAdminModeStatus {
   last_success_at_ms: number | null;
 }
 
-export type RuntimePrivilegedSource = "none" | "current_process" | "elevated_helper";
+export type RuntimePrivilegedSource =
+  | "none"
+  | "current_process"
+  | "elevated_helper"
+  | "collector_service";
 
 export type RuntimeTelemetrySource =
   | "tauri_runtime"
@@ -76,8 +97,23 @@ export type RuntimeTelemetrySource =
   | "fixture";
 
 export type MetricQuality = "native" | "estimated" | "held" | "partial" | "unavailable";
+export type MetricLimitationCode =
+  | "unsupported_metric"
+  | "access_denied"
+  | "authorization_scope"
+  | "partial_coverage"
+  | "pending_baseline"
+  | "held_value"
+  | "collector_failure"
+  | "data_loss"
+  | "missing_metadata"
+  | "group_partial_coverage"
+  | "numeric_range";
 export type MetricSource =
+  | "unknown"
   | "direct_api"
+  | "libproc"
+  | "iokit"
   | "pdh"
   | "interface_aggregate"
   | "process_aggregate"
@@ -93,25 +129,31 @@ export interface MetricQualityInfo {
   source?: MetricSource;
   updated_at_ms?: number;
   age_ms?: number;
+  limitation_code?: MetricLimitationCode;
   message?: string;
 }
 
 export interface RuntimeHealth {
-  tick_count: number;
-  snapshot_latency_ms: number;
+  engine_state: "starting" | "running" | "paused" | "fatal" | null;
+  collector_state: "healthy" | "limited" | "unavailable" | null;
   degraded: boolean;
-  collector_warnings: number;
-  runtime_loop_enabled: boolean;
-  runtime_loop_running: boolean;
   status_summary: string;
-  updated_at_ms: number;
-  tick_p95_ms: number;
-  sort_p95_ms: number;
-  jitter_p95_ms: number;
-  dropped_ticks: number;
+  evaluated_at_ms: number;
+  last_heartbeat_at_ms: number | null;
+  heartbeat_age_ms: number | null;
+  publication_age_ms: number;
+  sample_age_ms: number | null;
+  deadline_misses: number | null;
+  deadline_lateness_p95_ms: number | null;
+  collection_latency_ms: number | null;
+  collection_p95_ms: number | null;
+  publication_latency_ms: number | null;
+  publication_p95_ms: number | null;
+  collector_warning_count: number;
   app_cpu_percent: number;
   app_rss_bytes: number;
   last_warning: string | null;
+  fatal_error: { code: string; message: string; occurred_at_ms: number } | null;
 }
 
 export interface SystemMetricsSnapshot {

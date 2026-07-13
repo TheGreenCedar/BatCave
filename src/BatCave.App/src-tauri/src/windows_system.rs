@@ -1,8 +1,8 @@
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
 use crate::contracts::{
-    KernelPoolKind, KernelPoolTag, MetricQuality, MetricQualityInfo, MetricSource,
-    SystemMemoryAccounting, SystemMetricQuality, SystemMetricsSnapshot,
+    KernelPoolKind, KernelPoolTag, MetricLimitationCode, MetricQuality, MetricQualityInfo,
+    MetricSource, SystemMemoryAccounting, SystemMetricQuality, SystemMetricsSnapshot,
 };
 
 #[cfg(windows)]
@@ -79,14 +79,18 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
         memory_accounting: performance.map(|metrics| metrics.memory_accounting),
         quality: Some(SystemMetricQuality {
             cpu: Some(
-                MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi).with_message(
-                    "CPU requires a second sample before native deltas are available.",
-                ),
+                MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi)
+                    .with_limitation(
+                        MetricLimitationCode::PendingBaseline,
+                        "CPU requires a second sample before native deltas are available.",
+                    ),
             ),
             kernel_cpu: Some(
-                MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi).with_message(
-                    "Kernel CPU requires a second sample before native deltas are available.",
-                ),
+                MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi)
+                    .with_limitation(
+                        MetricLimitationCode::PendingBaseline,
+                        "Kernel CPU requires a second sample before native deltas are available.",
+                    ),
             ),
             logical_cpu: None,
             memory: Some(MetricQualityInfo::new(
@@ -95,11 +99,17 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
             )),
             swap: Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-                    .with_message("Windows reports commit accounting, not swap usage."),
+                    .with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Windows reports commit accounting, not swap usage.",
+                    ),
             ),
             disk: Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Pdh)
-                    .with_message("Disk counters need the PDH collector layer."),
+                    .with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Disk counters need the PDH collector layer.",
+                    ),
             ),
             network: Some(MetricQualityInfo::new(
                 MetricQuality::Native,

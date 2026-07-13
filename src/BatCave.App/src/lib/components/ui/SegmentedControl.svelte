@@ -3,6 +3,7 @@
   export let options: { value: T; label: string }[];
   export let value: T;
   export let onChange: (value: T) => void;
+  export let disabled = false;
 </script>
 
 <div class="segmented" role="group" aria-label={label}>
@@ -11,6 +12,7 @@
       class:active={value === option.value}
       type="button"
       aria-pressed={value === option.value}
+      {disabled}
       onclick={() => onChange(option.value)}
     >
       {option.label}

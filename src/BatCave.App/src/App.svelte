@@ -16,7 +16,11 @@
     resolveAccessibilityFixtureState,
     type AccessibilityFixtureState,
   } from "./lib/accessibilityFixtures";
-  import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
+  import {
+    buildResourceBrief,
+    resolveContributorProcess,
+    type CollectionState,
+  } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
     installKindLabel,
@@ -77,6 +81,7 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
+  import { runtimeSurfaceMode } from "./lib/runtimeMode";
   import {
     chartPalettes,
     parseThemePreference,
@@ -89,8 +94,10 @@
   import {
     commandErrorMessage,
     getRuntimeProcessIcons,
+    ProtocolMismatchError,
     readNativeSnapshot,
     refreshRuntime,
+    runtimeMutationAllowed,
     setRuntimePaused,
     setRuntimeAdminMode,
     setRuntimeProcessQuery,
@@ -107,6 +114,7 @@
     TrendState,
     WorkloadDetail,
   } from "./lib/types";
+  import type { ProtocolMismatchView } from "./lib/protocol/runtimeProtocol";
 
   interface ProcessTrendState {
     cpu: number[];
@@ -136,6 +144,7 @@
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
   let commandError = "";
+  let protocolMismatch: ProtocolMismatchView | null = null;
   let copyStatus = "";
   let isPaused = false;
   let hasNativeSnapshot = false;
@@ -253,27 +262,10 @@
     },
     collectionState,
   );
-  $: leadingContributor = resourceBrief.leadingWorkload
-    ? resourceBrief.mode === "cpu"
-      ? snapshot.process_contributors.cpu
-      : resourceBrief.mode === "memory"
-        ? snapshot.process_contributors.memory
-        : resourceBrief.mode === "network"
-          ? snapshot.process_contributors.network
-          : null
-    : null;
-  $: leadingProcess = leadingContributor
-    ? resourceBrief.contributorNameAmbiguous
-      ? null
-      : (() => {
-        const matches = snapshot.processes.filter(
-          (process) => process.name === leadingContributor,
-        );
-        return matches.length === 1 ? matches[0] : null;
-      })()
-    : null;
+  $: leadingProcess = resolveContributorProcess(snapshot, resourceBrief.leadingProcessId);
   $: leadingIdentity = leadingProcess ? processIdentity(leadingProcess) : null;
-  $: limitationCount = uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warnings;
+  $: limitationCount =
+    uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warning_count;
   $: sampledAtLabel = snapshot.sampled_at_ms ? ageLabel(snapshot.sampled_at_ms) : "no sample yet";
   $: systemSupportingText = pollState === "error"
     ? `Telemetry is unavailable; the last successful sample from ${sampledAtLabel} is retained.`
@@ -446,7 +438,7 @@
       historyPointLimit = savedHistoryPointLimit;
     }
 
-    if (!hasTauriRuntime()) {
+    if (runtimeMode() === "fixture") {
       if (accessibilityFixtureState) {
         fixtureTick = 8;
         const next = makeFixtureSnapshot(
@@ -460,6 +452,10 @@
       } else {
         ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
       }
+    } else if (runtimeMode() === "unavailable") {
+      lastError = "BatCave telemetry requires the native desktop runtime.";
+      pollState = "error";
+      ingest(makeEmptySnapshot(lastError));
     }
 
     const loop = async () => {
@@ -525,11 +521,19 @@
   });
 
   async function readSnapshot(): Promise<RuntimeSnapshot> {
-    if (!hasTauriRuntime()) {
+    const mode = runtimeMode();
+    if (mode === "fixture") {
       fixtureTick += 1;
       pollState = "fixture";
       lastError = "";
+      protocolMismatch = null;
       return makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform);
+    }
+    if (mode === "unavailable") {
+      const message = "BatCave telemetry requires the native desktop runtime.";
+      pollState = "error";
+      lastError = message;
+      return makeEmptySnapshot(message);
     }
 
     const next = await readNativeSnapshot(invoke, {
@@ -539,6 +543,11 @@
     });
     pollState = next.ok ? "native" : "error";
     lastError = next.error;
+    if (next.mismatch) {
+      enterProtocolMismatch(next.mismatch, next.snapshot);
+    } else if (next.ok) {
+      protocolMismatch = null;
+    }
     hasNativeSnapshot = next.ok || hasNativeSnapshot;
     return next.snapshot;
   }
@@ -594,6 +603,10 @@
     detailSubject = "system";
   }
 
+  function runtimeMode() {
+    return runtimeSurfaceMode(hasTauriRuntime(), import.meta.env.DEV);
+  }
+
   function isHistoryPointLimit(value: number): value is HistoryPointLimit {
     return historyPointOptions.some((option) => option === value);
   }
@@ -614,9 +627,14 @@
   }
 
   async function setPaused(nextPaused: boolean): Promise<void> {
+    if (!runtimeMutationAllowed(protocolMismatch)) return;
+    if (runtimeMode() === "unavailable") {
+      commandError = "BatCave telemetry requires the native desktop runtime.";
+      return;
+    }
     const previousPaused = isPaused;
     isPaused = nextPaused;
-    if (!hasTauriRuntime()) {
+    if (runtimeMode() === "fixture") {
       return;
     }
 
@@ -625,14 +643,19 @@
       applyNativeSnapshot(next);
     } catch (error) {
       isPaused = previousPaused;
-      commandError = commandErrorMessage(error, "Unable to change runtime pause state.");
+      commandError = runtimeCommandError(error, "Unable to change runtime pause state.");
     }
   }
 
   async function refreshNow(): Promise<void> {
-    if (!hasTauriRuntime()) {
+    const mode = runtimeMode();
+    if (mode === "fixture") {
       fixtureTick += 1;
       ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+      return;
+    }
+    if (mode === "unavailable") {
+      commandError = "BatCave telemetry requires the native desktop runtime.";
       return;
     }
 
@@ -640,28 +663,30 @@
       const next = await refreshRuntime(invoke);
       applyNativeSnapshot(next);
     } catch (error) {
-      commandError = commandErrorMessage(error, "Unable to refresh runtime.");
+      commandError = runtimeCommandError(error, "Unable to refresh runtime.");
     }
   }
 
   async function setPollInterval(interval: number): Promise<void> {
+    if (!runtimeMutationAllowed(protocolMismatch)) return;
     pollIntervalMs = interval as (typeof pollIntervals)[number];
-    if (!hasTauriRuntime()) return;
+    if (runtimeMode() !== "native") return;
 
     try {
       applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
     } catch (error) {
-      commandError = commandErrorMessage(error, "Unable to change sampling cadence.");
+      commandError = runtimeCommandError(error, "Unable to change sampling cadence.");
     }
   }
 
   async function setAdminMode(enabled: boolean): Promise<void> {
-    if (!hasTauriRuntime()) return;
+    if (!runtimeMutationAllowed(protocolMismatch)) return;
+    if (runtimeMode() !== "native") return;
 
     try {
       applyNativeSnapshot(await setRuntimeAdminMode(invoke, enabled));
     } catch (error) {
-      commandError = commandErrorMessage(error, "Unable to change privileged collection.");
+      commandError = runtimeCommandError(error, "Unable to change privileged collection.");
     }
   }
 
@@ -766,13 +791,16 @@
   }
 
   async function syncRuntimeQuery(): Promise<void> {
+    if (!runtimeMutationAllowed(protocolMismatch)) return;
     const query = currentRuntimeQuery();
 
-    if (!hasTauriRuntime()) {
+    const mode = runtimeMode();
+    if (mode === "fixture") {
       runtimeQueryRequestSeq += 1;
       ingest(makeFixtureSnapshot(fixtureTick, query, browserFixturePlatform));
       return;
     }
+    if (mode === "unavailable") return;
 
     const requestSeq = (runtimeQueryRequestSeq += 1);
     try {
@@ -785,7 +813,35 @@
       if (requestSeq !== runtimeQueryRequestSeq) {
         return;
       }
-      commandError = commandErrorMessage(error, "Unable to update runtime query.");
+      commandError = runtimeCommandError(error, "Unable to update runtime query.");
+    }
+  }
+
+  function runtimeCommandError(error: unknown, fallback: string): string {
+    if (error instanceof ProtocolMismatchError) {
+      enterProtocolMismatch(error.mismatch, makeEmptySnapshot(error.mismatch.message));
+    }
+    return commandErrorMessage(error, fallback);
+  }
+
+  function enterProtocolMismatch(
+    mismatch: ProtocolMismatchView,
+    emptySnapshot: RuntimeSnapshot,
+  ): void {
+    protocolMismatch = mismatch;
+    snapshot = emptySnapshot;
+    selectedWorkloadId = "";
+    hasAutoSelectedWorkload = false;
+    history = emptyTrendState();
+    processHistory = emptyProcessTrendState();
+    processRates = {};
+    resourceSummaries = [];
+    displayProcessRows = [];
+    pendingProcessRows = [];
+    runtimeQueryRequestSeq += 1;
+    if (searchDebounceId !== undefined) {
+      window.clearTimeout(searchDebounceId);
+      searchDebounceId = undefined;
     }
   }
 
@@ -793,6 +849,7 @@
     pollState = "native";
     lastError = "";
     commandError = "";
+    protocolMismatch = null;
     copyStatus = "";
     hasNativeSnapshot = true;
     ingest(next);
@@ -1558,12 +1615,23 @@
 
 <AppShell {themeName} {accessibilityFixtureState}>
   <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{liveStatus}</p>
+  {#if protocolMismatch}
+    <section class="protocol-mismatch" role="alert" aria-live="assertive">
+      <strong>Telemetry protocol mismatch</strong>
+      <span>{protocolMismatch.message}</span>
+      <small>
+        Reader v3 · writer {protocolMismatch.writerVersion ?? "unknown"} · minimum reader
+        {protocolMismatch.minimumReaderVersion ?? "unknown"}
+      </small>
+    </section>
+  {/if}
   <AppHeader
     {searchText}
     {isPaused}
     {pollState}
     {healthLabel}
     {healthTone}
+    mutationsDisabled={protocolMismatch !== null}
     onSearch={setSearchText}
     onPaused={() => void setPaused(!isPaused)}
     onRefresh={() => void refreshNow()}
@@ -1604,6 +1672,7 @@
         {rankingUpdateAvailable}
         {focusOptions}
         {sortOptions}
+        mutationsDisabled={protocolMismatch !== null}
         onFocus={setFocusMode}
         onSort={setSortKey}
         onToggleDirection={toggleSortDirection}
@@ -1692,6 +1761,7 @@
     {historyPointOptions}
     {historyPointLimit}
     adminAvailable={snapshot.environment.admin_mode_available}
+    runtimeMutationsDisabled={protocolMismatch !== null}
     processStatus={processElevationLabel(snapshot.environment)}
     adminStatus={adminStatusLabel()}
     adminNote={privilegedCollectionNote(snapshot.admin_mode)}

@@ -190,7 +190,7 @@
               <div><dt>Last elevated sample</dt><dd>{snapshot.admin_mode.last_success_at_ms ? new Date(snapshot.admin_mode.last_success_at_ms).toLocaleString() : "None this session"}</dd></div>
               <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
               <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>
-              <div><dt>Collector p95</dt><dd>{snapshot.health.tick_p95_ms.toFixed(1)} ms</dd></div>
+              <div><dt>Collector p95</dt><dd>{snapshot.health.collection_p95_ms === null ? "Unavailable" : `${snapshot.health.collection_p95_ms.toFixed(1)} ms`}</dd></div>
             </dl>
             <div class="local-data-detail">
               <span><strong>Local data</strong>{snapshot.environment.data_directory ?? "No native runtime directory"}</span>

@@ -3,8 +3,8 @@
 use std::{collections::HashMap, fs, path::Path, process::Command};
 
 use crate::contracts::{
-    AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
-    ProcessSample,
+    AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
+    ProcessMetricQuality, ProcessSample,
 };
 
 #[derive(Debug)]
@@ -367,29 +367,39 @@ fn linux_process_quality(
 
     ProcessMetricQuality {
         cpu: Some(
-            MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
-                .with_message("Linux process CPU needs a second /proc sample."),
+            MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs).with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "Linux process CPU needs a second /proc sample.",
+            ),
         ),
         memory: Some(if has_private_memory {
             procfs(direct_quality)
         } else {
-            procfs(MetricQuality::Estimated)
-                .with_message("RssAnon is unavailable; private memory uses RSS as an estimate.")
+            procfs(MetricQuality::Estimated).with_limitation(
+                MetricLimitationCode::UnsupportedMetric,
+                "RssAnon is unavailable; private memory uses RSS as an estimate.",
+            )
         }),
         io: Some(if has_io {
             procfs(direct_quality)
         } else {
-            procfs(MetricQuality::Unavailable)
-                .with_message("Linux process I/O requires /proc/<pid>/io access.")
+            procfs(MetricQuality::Unavailable).with_limitation(
+                if access_state == AccessState::Denied {
+                    MetricLimitationCode::AccessDenied
+                } else {
+                    MetricLimitationCode::UnsupportedMetric
+                },
+                "Linux process I/O requires /proc/<pid>/io access.",
+            )
         }),
-        other_io: Some(
-            procfs(MetricQuality::Unavailable)
-                .with_message("Linux /proc does not expose Windows-style other I/O totals."),
-        ),
-        network: Some(
-            procfs(MetricQuality::Unavailable)
-                .with_message("Linux per-process network attribution is not exposed by /proc."),
-        ),
+        other_io: Some(procfs(MetricQuality::Unavailable).with_limitation(
+            MetricLimitationCode::UnsupportedMetric,
+            "Linux /proc does not expose Windows-style other I/O totals.",
+        )),
+        network: Some(procfs(MetricQuality::Unavailable).with_limitation(
+            MetricLimitationCode::UnsupportedMetric,
+            "Linux per-process network attribution is not exposed by /proc.",
+        )),
         threads: Some(procfs(direct_quality)),
         handles: Some(procfs(direct_quality)),
     }

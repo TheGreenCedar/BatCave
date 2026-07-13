@@ -11,8 +11,8 @@ use sysinfo::{
 };
 
 use crate::contracts::{
-    AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
-    ProcessSample, SystemMetricQuality, SystemMetricsSnapshot,
+    AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
+    ProcessMetricQuality, ProcessSample, SystemMetricQuality, SystemMetricsSnapshot,
 };
 #[cfg(any(windows, target_os = "linux", test))]
 use crate::network_attribution::NetworkAttributionSample;
@@ -556,7 +556,10 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
             )),
             kernel_cpu: Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                    .with_message("Kernel CPU is unavailable from the sysinfo fallback."),
+                    .with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Kernel CPU is unavailable from the sysinfo fallback.",
+                    ),
             ),
             logical_cpu: Some(MetricQualityInfo::new(
                 MetricQuality::Estimated,
@@ -568,13 +571,17 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
             )),
             swap: Some(if cfg!(windows) {
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                    .with_message("Windows reports commit accounting, not swap usage.")
+                    .with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Windows reports commit accounting, not swap usage.",
+                    )
             } else {
                 MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
             }),
             disk: Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                    .with_message(
+                    .with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
                         "Physical-disk throughput is unavailable because the sysinfo fallback has no device-level rate source.",
                     ),
             ),
@@ -629,22 +636,28 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                         MetricQuality::Estimated,
                         MetricSource::Sysinfo,
                     )),
-                    io: Some(MetricQualityInfo::new(
-                        MetricQuality::Estimated,
-                        MetricSource::Sysinfo,
-                    )),
+                    io: Some(process_io_seed_quality()),
                     other_io: Some(
                         MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                            .with_message("Other I/O is unavailable from the sysinfo fallback."),
+                            .with_limitation(
+                                MetricLimitationCode::UnsupportedMetric,
+                                "Other I/O is unavailable from the sysinfo fallback.",
+                            ),
                     ),
                     network: Some(process_network_quality_unavailable()),
                     threads: Some(
                         MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                            .with_message("Thread counts require the native process collector."),
+                            .with_limitation(
+                                MetricLimitationCode::UnsupportedMetric,
+                                "Thread counts require the native process collector.",
+                            ),
                     ),
                     handles: Some(
                         MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-                            .with_message("Handle counts require the native process collector."),
+                            .with_limitation(
+                                MetricLimitationCode::UnsupportedMetric,
+                                "Handle counts require the native process collector.",
+                            ),
                     ),
                 }),
             }
@@ -654,20 +667,39 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
 
 #[cfg(windows)]
 fn process_network_quality_unavailable() -> MetricQualityInfo {
-    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw)
-        .with_message("Waiting for ETW network attribution.")
+    MetricQualityInfo::new(MetricQuality::Held, MetricSource::Etw).with_limitation(
+        MetricLimitationCode::PendingBaseline,
+        "Waiting for ETW network attribution.",
+    )
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
 fn process_network_quality_unavailable() -> MetricQualityInfo {
-    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-        .with_message("Per-process network attribution is unavailable from the sysinfo fallback.")
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo).with_limitation(
+        MetricLimitationCode::UnsupportedMetric,
+        "Per-process network attribution is unavailable from the sysinfo fallback.",
+    )
 }
 
 #[cfg(target_os = "macos")]
 fn process_network_quality_unavailable() -> MetricQualityInfo {
-    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-        .with_message("Per-process network attribution is unavailable on macOS.")
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+        MetricLimitationCode::UnsupportedMetric,
+        "Per-process network attribution is unavailable on macOS.",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn process_io_seed_quality() -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+        MetricLimitationCode::CollectorFailure,
+        "Native process read/write totals have not been collected.",
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_io_seed_quality() -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
 }
 
 fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> {
@@ -727,15 +759,19 @@ fn apply_native_process_enrichment_quality(
     quality.cpu = Some(if has_cpu {
         MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
     } else {
-        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
-            .with_message("Process CPU needs a second Rust-native timing pass.")
+        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo).with_limitation(
+            MetricLimitationCode::PendingBaseline,
+            "Process CPU needs a second Rust-native timing pass.",
+        )
     });
     quality.network = Some(process_network_quality_unavailable());
     if memory_from_sysinfo {
         quality.memory = Some(
-            MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo).with_message(
-                "Native process memory counters were denied; using sysinfo fallback memory.",
-            ),
+            MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
+                .with_limitation(
+                    MetricLimitationCode::AccessDenied,
+                    "Native process memory counters were denied; using sysinfo fallback memory.",
+                ),
         );
     }
 }
@@ -745,8 +781,10 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
     let cpu = if has_native_cpu {
         MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
     } else {
-        MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
-            .with_message("First sample uses sysinfo until native CPU deltas are available.")
+        MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo).with_limitation(
+            MetricLimitationCode::PendingBaseline,
+            "First sample uses sysinfo until native CPU deltas are available.",
+        )
     };
 
     SystemMetricQuality {
@@ -762,7 +800,10 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
         )),
         swap: Some(
             MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-                .with_message("Windows reports commit accounting, not swap usage."),
+                .with_limitation(
+                    MetricLimitationCode::UnsupportedMetric,
+                    "Windows reports commit accounting, not swap usage.",
+                ),
         ),
         disk: Some(match disk_quality {
             DiskQualityState::Native => {
@@ -770,12 +811,14 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
             }
             DiskQualityState::Held(message) => {
                 MetricQualityInfo::new(MetricQuality::Held, MetricSource::Pdh)
-                    .with_message(&message)
+                    .with_limitation(MetricLimitationCode::HeldValue, &message)
             }
             DiskQualityState::Unavailable(message) => {
-                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Pdh).with_message(
-                    &format!("PDH physical disk telemetry is unavailable. {message}"),
-                )
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Pdh)
+                    .with_limitation(
+                        MetricLimitationCode::CollectorFailure,
+                        &format!("PDH physical disk telemetry is unavailable. {message}"),
+                    )
             }
         }),
         network: Some(MetricQualityInfo::new(
@@ -871,7 +914,8 @@ fn apply_network_attribution(
         NetworkAttributionSample::Held(message) => {
             for process in processes {
                 process_quality(process).network = Some(
-                    MetricQualityInfo::new(MetricQuality::Held, source).with_message(&message),
+                    MetricQualityInfo::new(MetricQuality::Held, source)
+                        .with_limitation(MetricLimitationCode::HeldValue, &message),
                 );
             }
         }
@@ -881,7 +925,7 @@ fn apply_network_attribution(
                 process.network_transmitted_bps = None;
                 process_quality(process).network = Some(
                     MetricQualityInfo::new(MetricQuality::Unavailable, source)
-                        .with_message(&message),
+                        .with_limitation(MetricLimitationCode::CollectorFailure, &message),
                 );
             }
         }
@@ -1020,7 +1064,11 @@ mod tests {
         );
         assert_eq!(
             quality.network.map(|quality| quality.quality),
-            Some(MetricQuality::Unavailable)
+            Some(if cfg!(windows) {
+                MetricQuality::Held
+            } else {
+                MetricQuality::Unavailable
+            })
         );
     }
 
@@ -1148,6 +1196,18 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn macos_sysinfo_seed_never_claims_process_io_provenance() {
+        let quality = process_io_seed_quality();
+        assert_eq!(quality.quality, MetricQuality::Unavailable);
+        assert_eq!(quality.source, Some(MetricSource::Libproc));
+        assert_eq!(
+            quality.limitation_code,
+            Some(MetricLimitationCode::CollectorFailure)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn macos_collector_reports_native_process_and_honest_system_sources() {
         let collector = TelemetryCollector::new();
         let sample = collector.collect().expect("macOS telemetry sample");
@@ -1171,7 +1231,7 @@ mod tests {
                 .network
                 .as_ref()
                 .and_then(|quality| quality.source),
-            Some(MetricSource::InterfaceAggregate)
+            Some(MetricSource::Sysinfo)
         );
 
         let current_pid = std::process::id().to_string();
@@ -1185,7 +1245,7 @@ mod tests {
         let quality = current.quality.as_ref().expect("process quality");
         assert_eq!(
             quality.memory.as_ref().and_then(|quality| quality.source),
-            Some(MetricSource::DirectApi)
+            Some(MetricSource::Libproc)
         );
         assert_eq!(
             quality.network.as_ref().map(|quality| quality.quality),

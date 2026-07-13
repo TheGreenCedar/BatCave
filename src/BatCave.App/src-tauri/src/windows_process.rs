@@ -1,8 +1,8 @@
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
 use crate::contracts::{
-    AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
-    ProcessSample,
+    AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
+    ProcessMetricQuality, ProcessSample,
 };
 
 const FILETIME_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
@@ -181,7 +181,7 @@ fn process_metric_quality_from_probes(probes: ProcessProbeResults) -> ProcessMet
             MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
         } else {
             MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-                .with_message(unavailable_message)
+                .with_limitation(MetricLimitationCode::AccessDenied, unavailable_message)
         }
     };
 
@@ -192,9 +192,7 @@ fn process_metric_quality_from_probes(probes: ProcessProbeResults) -> ProcessMet
             "Native process memory counters are unavailable.",
         )),
         io: Some(if probes.io {
-            MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi).with_message(
-                "Read/write I/O reports ReadTransferCount plus WriteTransferCount. OtherTransferCount remains a separate process field and this metric is not physical-disk attribution.",
-            )
+            MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
         } else {
             direct(
                 false,

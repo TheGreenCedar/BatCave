@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildResourceBrief } from "../src/lib/cockpit.ts";
+import { buildResourceBrief, resolveContributorProcess } from "../src/lib/cockpit.ts";
 import {
   displayMetricValue,
   displayGroupMetricValue,
@@ -81,10 +81,15 @@ test("contributor quality gates publication and limits overview confidence", () 
   assert.equal(unavailableBrief.confidence, "Limited");
 });
 
-test("full-sample contributor ambiguity survives a query that retains one matching row", () => {
+test("backend contributor identity disambiguates duplicate display names", () => {
   const snapshot = resourceSnapshot("worker");
   snapshot.process_contributors.cpu_name_ambiguous = true;
-  snapshot.processes = [process({ pid: "1", name: "worker" })];
+  const winner = process({ pid: "42", name: "worker", cpu_percent: 40 });
+  const duplicate = process({ pid: "43", name: "worker", cpu_percent: 5 });
+  snapshot.processes = [winner, duplicate];
+  snapshot.process_view_rows = [processRow(winner), processRow(duplicate)];
+  snapshot.total_process_count = 2;
+  snapshot.process_contributors.cpu_coverage = { available: 2, total: 2 };
 
   const brief = buildResourceBrief(
     snapshot,
@@ -94,13 +99,15 @@ test("full-sample contributor ambiguity survives a query that retains one matchi
   );
 
   assert.equal(brief.leadingWorkload, "worker");
-  assert.equal(brief.contributorNameAmbiguous, true);
-  assert.match(brief.contributorStatusLabel, /ambiguous across the full process sample/);
-  assert.equal(brief.confidence, "Limited");
+  assert.equal(brief.contributorNameAmbiguous, false);
+  assert.equal(brief.contributorStatusLabel, "40% of one core");
+  assert.equal(brief.confidence, "High");
+  assert.equal(resolveContributorProcess(snapshot, brief.leadingProcessId)?.pid, "42");
 });
 
 test("legacy contributor summaries without ambiguity truth do not lend a visible row value", () => {
   const snapshot = resourceSnapshot("worker");
+  snapshot.process_contributors.cpu_process_id = null;
   delete (snapshot.process_contributors as Partial<typeof snapshot.process_contributors>)
     .cpu_name_ambiguous;
 
@@ -113,6 +120,27 @@ test("legacy contributor summaries without ambiguity truth do not lend a visible
 
   assert.equal(brief.contributorNameAmbiguous, true);
   assert.match(brief.contributorStatusLabel, /ambiguous across the full process sample/);
+});
+
+test("off-list contributor identity is never resolved by display name", () => {
+  const snapshot = resourceSnapshot("worker");
+  snapshot.processes = [process({ pid: "99", name: "worker", cpu_percent: 99 })];
+  snapshot.process_view_rows = [processRow(snapshot.processes[0])];
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(brief.leadingWorkload, "worker");
+  assert.equal(brief.contributorNameAmbiguous, false);
+  assert.equal(
+    brief.contributorStatusLabel,
+    "Contributor value is outside the current workload view",
+  );
+  assert.equal(resolveContributorProcess(snapshot, brief.leadingProcessId), null);
 });
 
 test("physical disk summary rejects process I/O as compatible attribution", () => {
@@ -827,7 +855,18 @@ function resourceSnapshot(contributor: string | null): RuntimeSnapshot {
   snapshot.process_contributors.cpu_quality = contributor
     ? { quality: "native", source: "direct_api" }
     : undefined;
-  snapshot.processes = contributor ? [process({ name: contributor })] : [];
+  const contributorProcess = contributor ? process({ name: contributor }) : null;
+  snapshot.processes = contributorProcess ? [contributorProcess] : [];
+  snapshot.process_view_rows = contributorProcess ? [processRow(contributorProcess)] : [];
+  snapshot.total_process_count = contributorProcess ? 1 : 0;
+  snapshot.system.process_count = snapshot.total_process_count;
+  snapshot.process_contributors.cpu_process_id = contributorProcess
+    ? `process:${contributorProcess.pid}:${contributorProcess.start_time_ms}`
+    : null;
+  snapshot.process_contributors.cpu_coverage = {
+    available: snapshot.total_process_count,
+    total: snapshot.total_process_count,
+  };
   return snapshot;
 }
 

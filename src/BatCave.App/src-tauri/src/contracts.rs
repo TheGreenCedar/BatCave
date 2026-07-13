@@ -26,10 +26,18 @@ pub struct RuntimeSnapshot {
 pub struct ProcessContributorSummary {
     pub cpu: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_identity: Option<ProcessContributorIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_coverage: Option<MetricCoverage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_quality: Option<MetricQualityInfo>,
     #[serde(default)]
     pub cpu_name_ambiguous: bool,
     pub memory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_identity: Option<ProcessContributorIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_coverage: Option<MetricCoverage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_quality: Option<MetricQualityInfo>,
     #[serde(default)]
@@ -37,14 +45,29 @@ pub struct ProcessContributorSummary {
     #[serde(alias = "disk")]
     pub io: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_identity: Option<ProcessContributorIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_coverage: Option<MetricCoverage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_quality: Option<MetricQualityInfo>,
     #[serde(default)]
     pub io_name_ambiguous: bool,
     pub network: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_identity: Option<ProcessContributorIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_coverage: Option<MetricCoverage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_quality: Option<MetricQualityInfo>,
     #[serde(default)]
     pub network_name_ambiguous: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProcessContributorIdentity {
+    pub pid: String,
+    pub start_time_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,6 +378,8 @@ pub struct MetricQualityInfo {
     pub updated_at_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limitation_code: Option<MetricLimitationCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
@@ -366,14 +391,32 @@ impl MetricQualityInfo {
             source: Some(source),
             updated_at_ms: None,
             age_ms: None,
+            limitation_code: None,
             message: None,
         }
     }
 
-    pub fn with_message(mut self, message: &str) -> Self {
+    pub fn with_limitation(mut self, code: MetricLimitationCode, message: &str) -> Self {
+        self.limitation_code = Some(code);
         self.message = Some(message.to_string());
         self
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricLimitationCode {
+    UnsupportedMetric,
+    AccessDenied,
+    AuthorizationScope,
+    PartialCoverage,
+    PendingBaseline,
+    HeldValue,
+    CollectorFailure,
+    DataLoss,
+    MissingMetadata,
+    GroupPartialCoverage,
+    NumericRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -429,6 +472,8 @@ pub enum MetricQuality {
 #[serde(rename_all = "snake_case")]
 pub enum MetricSource {
     DirectApi,
+    Libproc,
+    Iokit,
     Pdh,
     InterfaceAggregate,
     ProcessAggregate,
@@ -773,6 +818,7 @@ mod tests {
                 network: None,
                 network_quality: None,
                 network_name_ambiguous: false,
+                ..ProcessContributorSummary::default()
             },
             processes: vec![sample_process()],
             process_view_rows: vec![sample_process_view_row()],
@@ -780,7 +826,7 @@ mod tests {
             warnings: vec![RuntimeWarning {
                 key: "collector.network_attribution".to_string(),
                 publication_seq: 41,
-                occurred_at_ms: 1_700_000_000_400,
+                occurred_at_ms: 1_700_000_000_100,
                 category: "collector".to_string(),
                 message: "partial process access".to_string(),
             }],
@@ -907,7 +953,7 @@ mod tests {
                 "warnings": [{
                     "key": "collector.network_attribution",
                     "publication_seq": 41,
-                    "occurred_at_ms": 1700000000400,
+                    "occurred_at_ms": 1700000000100,
                     "category": "collector",
                     "message": "partial process access"
                 }]

@@ -2,8 +2,6 @@ mod atomic_json;
 mod benchmark;
 mod cli_args;
 mod contracts;
-#[cfg(test)]
-mod dto_spike;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod elevation;
 #[cfg(any(target_os = "linux", test))]
@@ -20,6 +18,7 @@ mod macos_system;
 mod network_attribution;
 mod persistence;
 mod process_icons;
+mod protocol;
 mod runtime_provenance;
 mod runtime_store;
 mod telemetry;
@@ -32,7 +31,10 @@ mod windows_process;
 #[cfg(any(windows, test))]
 mod windows_system;
 
-use contracts::{RuntimeQuery, RuntimeSnapshot};
+use contracts::{ProcessFocusMode, RuntimeQuery, SortColumn, SortDirection};
+use protocol::{
+    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, SortColumnV3, SortDirectionV3,
+};
 use runtime_store::RuntimeState;
 use std::collections::HashMap;
 use tauri::Manager;
@@ -47,47 +49,75 @@ fn run_cli(args: &[String]) -> Option<i32> {
 }
 
 #[tauri::command]
-fn get_snapshot(state: tauri::State<'_, RuntimeState>) -> Result<RuntimeSnapshot, String> {
-    state.snapshot()
+fn get_snapshot(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
+    protocol::encode_snapshot(state.snapshot()?)
 }
 
 #[tauri::command]
-fn refresh_now(state: tauri::State<'_, RuntimeState>) -> Result<RuntimeSnapshot, String> {
-    state.refresh_now()
+fn refresh_now(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
+    protocol::encode_snapshot(state.refresh_now()?)
 }
 
 #[tauri::command]
-fn pause_runtime(state: tauri::State<'_, RuntimeState>) -> Result<RuntimeSnapshot, String> {
-    state.pause()
+fn pause_runtime(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
+    protocol::encode_snapshot(state.pause()?)
 }
 
 #[tauri::command]
-fn resume_runtime(state: tauri::State<'_, RuntimeState>) -> Result<RuntimeSnapshot, String> {
-    state.resume()
+fn resume_runtime(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
+    protocol::encode_snapshot(state.resume()?)
 }
 
 #[tauri::command]
 fn set_process_query(
     state: tauri::State<'_, RuntimeState>,
-    query: RuntimeQuery,
-) -> Result<RuntimeSnapshot, String> {
-    state.set_query(query)
+    query: RuntimeQueryInputV3,
+) -> Result<ProtocolEnvelope, String> {
+    protocol::encode_snapshot(state.set_query(runtime_query(query)?)?)
+}
+
+fn runtime_query(query: RuntimeQueryInputV3) -> Result<RuntimeQuery, String> {
+    Ok(RuntimeQuery {
+        filter_text: query.filter_text,
+        focus_mode: match query.focus_mode {
+            ProcessFocusModeV3::All => ProcessFocusMode::All,
+            ProcessFocusModeV3::Attention => ProcessFocusMode::Attention,
+            ProcessFocusModeV3::Io => ProcessFocusMode::Io,
+        },
+        sort_column: match query.sort_column {
+            SortColumnV3::Attention => SortColumn::Attention,
+            SortColumnV3::Name => SortColumn::Name,
+            SortColumnV3::Pid => SortColumn::Pid,
+            SortColumnV3::CpuPct => SortColumn::CpuPct,
+            SortColumnV3::MemoryBytes => SortColumn::MemoryBytes,
+            SortColumnV3::IoBps => SortColumn::IoBps,
+            SortColumnV3::NetworkBps => SortColumn::NetworkBps,
+            SortColumnV3::Threads => SortColumn::Threads,
+            SortColumnV3::Handles => SortColumn::Handles,
+            SortColumnV3::StartTimeMs => SortColumn::StartTimeMs,
+        },
+        sort_direction: match query.sort_direction {
+            SortDirectionV3::Asc => SortDirection::Asc,
+            SortDirectionV3::Desc => SortDirection::Desc,
+        },
+        limit: usize::try_from(query.limit).map_err(|_| "protocol_query_limit_out_of_range")?,
+    })
 }
 
 #[tauri::command]
 fn set_sample_interval(
     state: tauri::State<'_, RuntimeState>,
     sample_interval_ms: u32,
-) -> Result<RuntimeSnapshot, String> {
-    state.set_sample_interval(sample_interval_ms)
+) -> Result<ProtocolEnvelope, String> {
+    protocol::encode_snapshot(state.set_sample_interval(sample_interval_ms)?)
 }
 
 #[tauri::command]
 fn set_admin_mode(
     state: tauri::State<'_, RuntimeState>,
     enabled: bool,
-) -> Result<RuntimeSnapshot, String> {
-    state.set_admin_mode(enabled)
+) -> Result<ProtocolEnvelope, String> {
+    protocol::encode_snapshot(state.set_admin_mode(enabled)?)
 }
 
 #[tauri::command]
@@ -193,5 +223,24 @@ mod tests {
             "a malformed helper invocation must be handled as helper CLI"
         );
         assert_eq!(run_cli(&[]), None);
+    }
+
+    #[test]
+    fn generated_query_input_converts_at_the_command_boundary() {
+        let wire: RuntimeQueryInputV3 = serde_json::from_value(serde_json::json!({
+            "filter_text": "browser",
+            "focus_mode": "io",
+            "sort_column": "network_bps",
+            "sort_direction": "asc",
+            "limit": 25
+        }))
+        .expect("generated query input accepts the v3 wire shape");
+        let query = runtime_query(wire).expect("v3 query converts to the runtime query");
+
+        assert_eq!(query.filter_text, "browser");
+        assert!(matches!(query.focus_mode, ProcessFocusMode::Io));
+        assert!(matches!(query.sort_column, SortColumn::NetworkBps));
+        assert!(matches!(query.sort_direction, SortDirection::Asc));
+        assert_eq!(query.limit, 25);
     }
 }

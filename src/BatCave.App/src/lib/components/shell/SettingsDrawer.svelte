@@ -14,6 +14,7 @@
   export let historyPointOptions: readonly number[];
   export let historyPointLimit: number;
   export let adminAvailable = true;
+  export let runtimeMutationsDisabled = false;
   export let processStatus = "Standard token";
   export let adminStatus = "Off";
   export let adminNote = "Protected fields remain unavailable until the local helper is enabled.";
@@ -139,7 +140,7 @@
           </div>
           <label class="setting-row">
             <span>Refresh cadence</span>
-            <select value={pollIntervalMs} onchange={(event) => onPollInterval(Number(event.currentTarget.value))}>
+            <select disabled={runtimeMutationsDisabled} value={pollIntervalMs} onchange={(event) => onPollInterval(Number(event.currentTarget.value))}>
               {#each pollIntervals as interval}
                 <option value={interval}>{formatInterval(interval)}</option>
               {/each}
@@ -173,7 +174,7 @@
                 <span>{adminStatus}</span>
               </div>
               {#if adminAction}
-                <button type="button" onclick={() => onAdminMode(adminAction.enabled)}>
+                <button type="button" disabled={runtimeMutationsDisabled} onclick={() => onAdminMode(adminAction.enabled)}>
                   {adminAction.label}
                 </button>
               {/if}

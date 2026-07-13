@@ -1,2 +1,4 @@
 # Preserve exact ts-rs output for the Rust golden test.
-src/lib/generated/dto-spike.ts
+src/lib/generated/runtime-protocol-v3.ts
+# Preserve exact Rust encoder output for the shared golden test.
+scripts/fixtures/runtime-snapshot.v3.json
