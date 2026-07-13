@@ -10,7 +10,13 @@ import type {
   RuntimeQuery,
   RuntimeSnapshot,
 } from "./types";
-import { compareProcessSamples, processIdentity, processNeedsAttention } from "./process";
+import {
+  compareProcessGroups,
+  compareProcessSamples,
+  groupAttentionLabel,
+  processIdentity,
+  processNeedsAttention,
+} from "./process";
 import { makeDefaultRuntimeQuery } from "./runtimeSnapshot";
 import { summarizeProcessContributors } from "./systemPressure";
 
@@ -336,10 +342,11 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
   }
 
   return [...groups.values()]
-    .sort((left, right) => compareGroups(left, right, query))
+    .sort((left, right) => compareProcessGroups(left, right, query))
     .slice(0, Math.max(1, query.limit))
     .flatMap((group) => {
       const grouped = group.processes.length > 1;
+      const detail = groupDetail(group);
       const processRows = group.processes.map((process) => {
         const identity = processIdentity(process);
         const ioBps = processIoRate(process);
@@ -376,18 +383,15 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
       return [
         {
           kind: "group" as const,
-          detail: groupDetail(group),
+          detail,
           icon_kind: group.iconKind,
           icon_source: group.presentationProcess.exe || undefined,
           example_label:
             group.presentationProcess.name === group.label
               ? undefined
               : group.presentationProcess.name,
-          attention_label: attentionLabel(
-            group.cpuPercent,
-            group.memoryBytes,
-            group.ioBps,
-            group.networkBps,
+          attention_label: groupAttentionLabel(
+            detail,
             group.processes.some((process) => process.access_state !== "full"),
           ),
         },
@@ -517,47 +521,6 @@ function processWorkloadId(process: ProcessSample): string {
 
 function groupWorkloadId(groupKey: string): string {
   return `group:${groupKey}`;
-}
-
-function compareGroups(
-  left: FixtureProcessGroup,
-  right: FixtureProcessGroup,
-  query: RuntimeQuery,
-): number {
-  const comparison =
-    query.sort_column === "name"
-      ? left.label.localeCompare(right.label)
-      : query.sort_column === "pid"
-        ? left.key.localeCompare(right.key)
-        : query.sort_column === "cpu_pct"
-          ? left.cpuPercent - right.cpuPercent
-          : query.sort_column === "memory_bytes"
-            ? left.memoryBytes - right.memoryBytes
-            : query.sort_column === "io_bps"
-              ? left.ioBps - right.ioBps
-              : query.sort_column === "network_bps"
-                ? left.networkBps - right.networkBps
-                : query.sort_column === "threads"
-                  ? left.threads - right.threads
-                  : query.sort_column === "handles" || query.sort_column === "start_time_ms"
-                    ? left.key.localeCompare(right.key)
-                    : groupAttentionScore(left) - groupAttentionScore(right);
-
-  return directed(comparison, query.sort_direction) || left.label.localeCompare(right.label);
-}
-
-function directed(comparison: number, direction: RuntimeQuery["sort_direction"]): number {
-  return direction === "asc" ? comparison : -comparison;
-}
-
-function groupAttentionScore(group: FixtureProcessGroup): number {
-  return (
-    group.cpuPercent * 3 +
-    Math.min(group.memoryBytes / (128 * 1024 * 1024), 20) +
-    Math.min(group.ioBps / (512 * 1024), 20) +
-    Math.min(group.networkBps / (1024 * 1024), 20) +
-    (group.processes.some((process) => process.access_state !== "full") ? 12 : 0)
-  );
 }
 
 function matchesFocusMode(process: ProcessSample, focusMode: RuntimeQuery["focus_mode"]): boolean {

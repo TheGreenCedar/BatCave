@@ -6,6 +6,7 @@
     formatBytes,
     formatPercent,
     formatRate,
+    groupFindingLabel,
     groupMetricCanDisplay,
     metricQualityLabel,
   } from "../../format";
@@ -46,36 +47,6 @@
     );
   }
 
-  function findingCopy(): string {
-    if (cpuCanDisplay && detail.cpu_percent >= 30) return "Aggregate CPU use is high right now.";
-    if (
-      groupMetricCanDisplay(detail.quality.memory, detail.coverage.memory) &&
-      detail.memory_bytes >= 900 * 1024 * 1024
-    )
-      return "Aggregate memory use is high right now.";
-    if (
-      groupMetricCanDisplay(detail.quality.io, detail.coverage.io) &&
-      detail.io_bps >= 500 * 1024
-    )
-      return "Aggregate read/write I/O is high right now.";
-    if (
-      !cpuCanDisplay ||
-      !groupMetricCanDisplay(detail.quality.memory, detail.coverage.memory) ||
-      !groupMetricCanDisplay(detail.quality.io, detail.coverage.io) ||
-      !groupMetricCanDisplay(detail.quality.threads, detail.coverage.threads)
-    ) {
-      return "Some aggregate activity is limited by process telemetry coverage.";
-    }
-    if (
-      detail.coverage.cpu.available < detail.coverage.cpu.total ||
-      detail.coverage.memory.available < detail.coverage.memory.total ||
-      detail.coverage.io.available < detail.coverage.io.total ||
-      detail.coverage.threads.available < detail.coverage.threads.total
-    ) {
-      return "Coverage is partial; no unusual activity is visible in the reported aggregates.";
-    }
-    return "No unusual aggregate activity is visible for this group right now.";
-  }
 </script>
 
 <section class="process-inspector" aria-label="Workload group inspector">
@@ -106,7 +77,7 @@
 
   <div class="finding-card">
     <span>Group finding</span>
-    <h3>{findingCopy()}</h3>
+    <h3>{groupFindingLabel(detail)}</h3>
     <p>
       Values below aggregate {processCountLabel(detail.process_count)}. Coverage stays explicit when
       one or more processes cannot contribute a metric.

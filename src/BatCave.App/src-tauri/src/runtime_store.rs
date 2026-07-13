@@ -1187,23 +1187,21 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
         let grouped = group.processes.len() > 1;
         let group_count = group.processes.len();
         if grouped {
+            let detail = group_detail(&group);
             rows.push(ProcessViewRow::Group {
-                detail: Box::new(group_detail(&group)),
-                icon_kind: group.icon_kind.clone(),
-                icon_source: (!group.presentation_process.exe.trim().is_empty())
-                    .then(|| group.presentation_process.exe.clone()),
-                example_label: (group.presentation_process.name != group.label)
-                    .then(|| group.presentation_process.name.clone()),
-                attention_label: attention_label(
-                    group.cpu_percent,
-                    group.memory_bytes,
-                    group.io_bps,
-                    group.network_bps,
+                attention_label: group_attention_label(
+                    &detail,
                     group
                         .processes
                         .iter()
                         .any(|process| process.access_state != AccessState::Full),
                 ),
+                detail: Box::new(detail),
+                icon_kind: group.icon_kind.clone(),
+                icon_source: (!group.presentation_process.exe.trim().is_empty())
+                    .then(|| group.presentation_process.exe.clone()),
+                example_label: (group.presentation_process.name != group.label)
+                    .then(|| group.presentation_process.name.clone()),
             });
         }
 
@@ -1878,6 +1876,119 @@ fn attention_label(
     "steady".to_string()
 }
 
+fn group_metric_can_display(quality: &MetricQualityInfo, coverage: MetricCoverage) -> bool {
+    coverage.available > 0
+        && !matches!(
+            quality.quality,
+            MetricQuality::Held | MetricQuality::Unavailable
+        )
+}
+
+fn group_metric_is_complete(quality: &MetricQualityInfo, coverage: MetricCoverage) -> bool {
+    group_metric_can_display(quality, coverage)
+        && quality.quality != MetricQuality::Partial
+        && coverage.available == coverage.total
+}
+
+fn group_activity_label(
+    label: &str,
+    quality: &MetricQualityInfo,
+    coverage: MetricCoverage,
+    all_metrics_complete: bool,
+) -> String {
+    if quality.quality == MetricQuality::Partial || coverage.available < coverage.total {
+        return format!(
+            "{label} · {}/{} · limited",
+            coverage.available, coverage.total
+        );
+    }
+    if !all_metrics_complete {
+        return format!("{label} · telemetry limited");
+    }
+    if quality.quality == MetricQuality::Estimated {
+        return format!("{label} · estimated");
+    }
+    label.to_string()
+}
+
+fn group_attention_label(detail: &GroupDetail, access_limited: bool) -> String {
+    let metrics = [
+        (&detail.quality.cpu, detail.coverage.cpu),
+        (&detail.quality.memory, detail.coverage.memory),
+        (&detail.quality.io, detail.coverage.io),
+        (&detail.quality.network, detail.coverage.network),
+    ];
+    let all_metrics_complete = metrics
+        .iter()
+        .all(|(quality, coverage)| group_metric_is_complete(quality, *coverage));
+    let activities = [
+        (
+            detail.cpu_percent >= ATTENTION_CPU_PERCENT,
+            "CPU activity",
+            &detail.quality.cpu,
+            detail.coverage.cpu,
+        ),
+        (
+            detail.memory_bytes >= ATTENTION_MEMORY_BYTES,
+            "memory activity",
+            &detail.quality.memory,
+            detail.coverage.memory,
+        ),
+        (
+            detail.io_bps >= ATTENTION_IO_BPS,
+            "I/O activity",
+            &detail.quality.io,
+            detail.coverage.io,
+        ),
+        (
+            detail.network_bps >= ATTENTION_NETWORK_BPS,
+            "network activity",
+            &detail.quality.network,
+            detail.coverage.network,
+        ),
+    ];
+
+    for (threshold_reached, label, quality, coverage) in activities {
+        if threshold_reached && group_metric_can_display(quality, coverage) {
+            return group_activity_label(label, quality, coverage, all_metrics_complete);
+        }
+    }
+
+    if all_metrics_complete {
+        return if access_limited {
+            "access limited".to_string()
+        } else {
+            "steady".to_string()
+        };
+    }
+
+    let state = if metrics
+        .iter()
+        .all(|(quality, _)| quality.quality == MetricQuality::Held)
+    {
+        "Pending"
+    } else if metrics
+        .iter()
+        .all(|(quality, _)| quality.quality == MetricQuality::Unavailable)
+    {
+        "Unavailable"
+    } else {
+        "Limited"
+    };
+    let coverage = metrics
+        .iter()
+        .find(|(quality, coverage)| !group_metric_is_complete(quality, *coverage))
+        .map(|(_, coverage)| *coverage)
+        .unwrap_or(MetricCoverage {
+            available: 0,
+            total: detail.process_count,
+        });
+    format!(
+        "{state} · {}/{} coverage",
+        coverage.available, coverage.total
+    )
+}
+
 fn normalize_settings(settings: RuntimeSettings) -> RuntimeSettings {
     RuntimeSettings {
         query: normalize_query(settings.query),
@@ -2495,7 +2606,12 @@ mod tests {
         unavailable.quality = group_test_quality(MetricQuality::Unavailable);
 
         let rows = shape_process_view(&[native, unavailable], &RuntimeQuery::default());
-        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+        let ProcessViewRow::Group {
+            attention_label,
+            detail,
+            ..
+        } = &rows[0]
+        else {
             panic!("expected aggregate group row");
         };
 
@@ -2528,6 +2644,7 @@ mod tests {
         ] {
             assert_eq!(quality.quality, MetricQuality::Partial);
         }
+        assert_eq!(attention_label, "CPU activity · 1/2 · limited");
     }
 
     #[test]
@@ -2540,7 +2657,12 @@ mod tests {
         second.quality = None;
 
         let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
-        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
+        let ProcessViewRow::Group {
+            attention_label,
+            detail,
+            ..
+        } = &rows[0]
+        else {
             panic!("expected aggregate group row");
         };
 
@@ -2562,6 +2684,78 @@ mod tests {
             .message
             .as_deref()
             .is_some_and(|message| message.contains("0 of 2")));
+        assert_eq!(attention_label, "Limited · 0/2 coverage");
+    }
+
+    #[test]
+    fn process_view_group_attention_never_calls_nonpublishable_zeroes_steady() {
+        for (quality, expected) in [
+            (MetricQuality::Held, "Pending · 0/2 coverage"),
+            (MetricQuality::Unavailable, "Unavailable · 0/2 coverage"),
+        ] {
+            let mut first = sample("10", "SearchIndexer-211.exe", 90.0);
+            first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+            first.network_received_bps = Some(0);
+            first.quality = group_test_quality(quality);
+            let mut second = sample("20", "SearchIndexer-223.exe", 80.0);
+            second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+            second.network_received_bps = Some(0);
+            second.quality = group_test_quality(quality);
+
+            let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
+            let ProcessViewRow::Group {
+                attention_label,
+                detail,
+                ..
+            } = &rows[0]
+            else {
+                panic!("expected aggregate group row");
+            };
+
+            assert_eq!(detail.cpu_percent, 0.0);
+            assert_eq!(detail.coverage.cpu.available, 0);
+            assert_eq!(attention_label, expected);
+            assert_ne!(attention_label, "steady");
+        }
+    }
+
+    #[test]
+    fn process_view_singleton_sort_uses_raw_values_for_unpublishable_quality() {
+        let mut unavailable_high = sample("10", "UnavailableHigh.exe", 90.0);
+        unavailable_high.quality = group_test_quality(MetricQuality::Unavailable);
+        let native_low = sample("20", "NativeLow.exe", 10.0);
+
+        for sort_column in [SortColumn::CpuPct, SortColumn::Attention] {
+            let rows = shape_process_view(
+                &[native_low.clone(), unavailable_high.clone()],
+                &RuntimeQuery {
+                    sort_column,
+                    sort_direction: SortDirection::Desc,
+                    ..RuntimeQuery::default()
+                },
+            );
+            let ProcessViewRow::Process { detail, .. } = &rows[0] else {
+                panic!("expected singleton process row");
+            };
+            assert_eq!(detail.process.name, "UnavailableHigh.exe");
+        }
+
+        let mut missing_high = sample("30", "MissingHigh.exe", 80.0);
+        missing_high.quality = None;
+        for sort_column in [SortColumn::CpuPct, SortColumn::Attention] {
+            let rows = shape_process_view(
+                &[native_low.clone(), missing_high.clone()],
+                &RuntimeQuery {
+                    sort_column,
+                    sort_direction: SortDirection::Desc,
+                    ..RuntimeQuery::default()
+                },
+            );
+            let ProcessViewRow::Process { detail, .. } = &rows[0] else {
+                panic!("expected singleton process row");
+            };
+            assert_eq!(detail.process.name, "MissingHigh.exe");
+        }
     }
 
     #[test]

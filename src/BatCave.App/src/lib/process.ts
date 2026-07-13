@@ -1,4 +1,7 @@
 import type {
+  GroupDetail,
+  MetricCoverage,
+  MetricQualityInfo,
   ProcessFocusMode,
   ProcessSample,
   ProcessViewRow,
@@ -242,7 +245,7 @@ function rawProcessNetworkRate(process: ProcessSample): number {
   return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
 }
 
-function processAttentionScore(process: ProcessSample): number {
+export function processAttentionScore(process: ProcessSample): number {
   return (
     process.cpu_percent * 3 +
     Math.min(process.memory_bytes / (128 * 1024 * 1024), 20) +
@@ -250,6 +253,160 @@ function processAttentionScore(process: ProcessSample): number {
     Math.min(rawProcessNetworkRate(process) / (1024 * 1024), 20) +
     (process.access_state === "full" ? 0 : 12)
   );
+}
+
+export interface ProcessGroupSortView {
+  key: string;
+  label: string;
+  processes: ProcessSample[];
+  cpuPercent: number;
+  memoryBytes: number;
+  ioBps: number;
+  networkBps: number;
+  threads: number;
+}
+
+export function compareProcessGroups(
+  left: ProcessGroupSortView,
+  right: ProcessGroupSortView,
+  query: RuntimeQuery,
+): number {
+  const comparison =
+    query.sort_column === "name"
+      ? left.label.localeCompare(right.label)
+      : query.sort_column === "pid"
+        ? left.key.localeCompare(right.key)
+        : query.sort_column === "cpu_pct"
+          ? groupCpuSortValue(left) - groupCpuSortValue(right)
+          : query.sort_column === "memory_bytes"
+            ? groupMemorySortValue(left) - groupMemorySortValue(right)
+            : query.sort_column === "io_bps"
+              ? groupIoSortValue(left) - groupIoSortValue(right)
+              : query.sort_column === "network_bps"
+                ? groupNetworkSortValue(left) - groupNetworkSortValue(right)
+                : query.sort_column === "threads"
+                  ? groupThreadsSortValue(left) - groupThreadsSortValue(right)
+                  : query.sort_column === "handles" || query.sort_column === "start_time_ms"
+                    ? left.key.localeCompare(right.key)
+                    : groupAttentionScore(left) - groupAttentionScore(right);
+
+  const directed = query.sort_direction === "asc" ? comparison : -comparison;
+  return directed || left.label.localeCompare(right.label);
+}
+
+function singletonProcess(group: ProcessGroupSortView): ProcessSample | undefined {
+  return group.processes.length === 1 ? group.processes[0] : undefined;
+}
+
+function groupCpuSortValue(group: ProcessGroupSortView): number {
+  return singletonProcess(group)?.cpu_percent ?? group.cpuPercent;
+}
+
+function groupMemorySortValue(group: ProcessGroupSortView): number {
+  return singletonProcess(group)?.memory_bytes ?? group.memoryBytes;
+}
+
+function groupIoSortValue(group: ProcessGroupSortView): number {
+  const process = singletonProcess(group);
+  return process ? rawProcessIoRate(process) : group.ioBps;
+}
+
+function groupNetworkSortValue(group: ProcessGroupSortView): number {
+  const process = singletonProcess(group);
+  return process ? rawProcessNetworkRate(process) : group.networkBps;
+}
+
+function groupThreadsSortValue(group: ProcessGroupSortView): number {
+  return singletonProcess(group)?.threads ?? group.threads;
+}
+
+function groupAttentionScore(group: ProcessGroupSortView): number {
+  if (group.processes.length === 1) return processAttentionScore(group.processes[0]);
+  return (
+    group.cpuPercent * 3 +
+    Math.min(group.memoryBytes / (128 * 1024 * 1024), 20) +
+    Math.min(group.ioBps / (512 * 1024), 20) +
+    Math.min(group.networkBps / (1024 * 1024), 20) +
+    (group.processes.some((process) => process.access_state !== "full") ? 12 : 0)
+  );
+}
+
+function groupMetricCanDisplayForAttention(
+  quality: MetricQualityInfo,
+  coverage: MetricCoverage,
+): boolean {
+  return coverage.available > 0 && quality.quality !== "held" && quality.quality !== "unavailable";
+}
+
+function groupMetricIsCompleteForAttention(
+  quality: MetricQualityInfo,
+  coverage: MetricCoverage,
+): boolean {
+  return (
+    groupMetricCanDisplayForAttention(quality, coverage) &&
+    quality.quality !== "partial" &&
+    coverage.available === coverage.total
+  );
+}
+
+function groupActivityLabel(
+  label: string,
+  quality: MetricQualityInfo,
+  coverage: MetricCoverage,
+  allMetricsComplete: boolean,
+): string {
+  if (quality.quality === "partial" || coverage.available < coverage.total) {
+    return `${label} · ${coverage.available}/${coverage.total} · limited`;
+  }
+  if (!allMetricsComplete) return `${label} · telemetry limited`;
+  if (quality.quality === "estimated") return `${label} · estimated`;
+  return label;
+}
+
+export function groupAttentionLabel(detail: GroupDetail, limitedAccess: boolean): string {
+  const metrics = [
+    [detail.quality.cpu, detail.coverage.cpu],
+    [detail.quality.memory, detail.coverage.memory],
+    [detail.quality.io, detail.coverage.io],
+    [detail.quality.network, detail.coverage.network],
+  ] as const;
+  const allMetricsComplete = metrics.every(([quality, coverage]) =>
+    groupMetricIsCompleteForAttention(quality, coverage),
+  );
+  const activities = [
+    [detail.cpu_percent >= 10, "CPU activity", detail.quality.cpu, detail.coverage.cpu],
+    [
+      detail.memory_bytes >= 900 * 1024 * 1024,
+      "memory activity",
+      detail.quality.memory,
+      detail.coverage.memory,
+    ],
+    [detail.io_bps >= 500 * 1024, "I/O activity", detail.quality.io, detail.coverage.io],
+    [
+      detail.network_bps >= 1024 * 1024,
+      "network activity",
+      detail.quality.network,
+      detail.coverage.network,
+    ],
+  ] as const;
+
+  for (const [thresholdReached, label, quality, coverage] of activities) {
+    if (thresholdReached && groupMetricCanDisplayForAttention(quality, coverage)) {
+      return groupActivityLabel(label, quality, coverage, allMetricsComplete);
+    }
+  }
+
+  if (allMetricsComplete) return limitedAccess ? "access limited" : "steady";
+
+  const state = metrics.every(([quality]) => quality.quality === "held")
+    ? "Pending"
+    : metrics.every(([quality]) => quality.quality === "unavailable")
+      ? "Unavailable"
+      : "Limited";
+  const coverage = metrics.find(
+    ([quality, metricCoverage]) => !groupMetricIsCompleteForAttention(quality, metricCoverage),
+  )?.[1] ?? { available: 0, total: detail.process_count };
+  return `${state} · ${coverage.available}/${coverage.total} coverage`;
 }
 
 export function hasSameProcessOrder(

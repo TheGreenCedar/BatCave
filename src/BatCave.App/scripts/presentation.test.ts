@@ -9,6 +9,7 @@ import {
   formatOptionalRate,
   formatPercent,
   formatRate,
+  groupFindingLabel,
   groupMetricCanDisplay,
   logicalCpuMetricQuality,
   metricQualityLabel,
@@ -681,6 +682,51 @@ test("group metric values require publishable coverage", () => {
   assert.equal(displayGroupMetricValue(0, unknown, { available: 0, total: 2 }, String), "Limited");
   assert.equal(groupMetricCanDisplay(native, { available: 1, total: 2 }), true);
   assert.equal(groupMetricCanDisplay(unknown, { available: 0, total: 2 }), false);
+});
+
+test("group findings include native network activity and explicit network limitations", () => {
+  const row = groupRow(process(), 2);
+  assert.equal(row.kind, "group");
+  if (row.kind !== "group") throw new Error("expected group row");
+
+  const nativeHigh = structuredClone(row.detail);
+  nativeHigh.network_bps = 2 * 1024 * 1024;
+  assert.equal(groupFindingLabel(nativeHigh), "Aggregate network use is high right now.");
+
+  const held = structuredClone(nativeHigh);
+  held.network_bps = 0;
+  held.quality.network = { quality: "held", source: "process_aggregate" };
+  held.coverage.network = { available: 0, total: 2 };
+  assert.equal(groupFindingLabel(held), "Network aggregate activity is pending for this group.");
+
+  const unavailable = structuredClone(held);
+  unavailable.quality.network = { quality: "unavailable", source: "process_aggregate" };
+  assert.equal(
+    groupFindingLabel(unavailable),
+    "Network aggregate activity is unavailable for this group.",
+  );
+
+  const partial = structuredClone(nativeHigh);
+  partial.quality.network = { quality: "partial", source: "process_aggregate" };
+  partial.coverage.network = { available: 1, total: 2 };
+  assert.equal(
+    groupFindingLabel(partial),
+    "Aggregate network use is high right now. Coverage is limited to 1 of 2 processes.",
+  );
+
+  const partialLow = structuredClone(partial);
+  partialLow.network_bps = 0;
+  assert.equal(
+    groupFindingLabel(partialLow),
+    "Network aggregate activity is limited by process telemetry coverage.",
+  );
+
+  const estimated = structuredClone(nativeHigh);
+  estimated.quality.network = { quality: "estimated", source: "process_aggregate" };
+  assert.equal(
+    groupFindingLabel(estimated),
+    "Aggregate network use is high right now. This aggregate is estimated.",
+  );
 });
 
 test("group inspection actions expose exact selection state on desktop and mobile", () => {
