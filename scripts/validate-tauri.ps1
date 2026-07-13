@@ -1,6 +1,7 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [switch]$SkipBundle,
+    [switch]$BundleOnly,
     [switch]$BenchmarkGate,
     [ValidateSet("x86", "x64", "ARM64")]
     [string]$BenchmarkPlatform = "x64",
@@ -17,6 +18,13 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $appRoot = Join-Path $repoRoot "src/BatCave.App"
 $cargoManifest = Join-Path $appRoot "src-tauri/Cargo.toml"
 $tauriBuildScript = "tauri:build:windows"
+
+if ($SkipBundle.IsPresent -and $BundleOnly.IsPresent) {
+    throw "-SkipBundle and -BundleOnly cannot be used together."
+}
+if ($BundleOnly.IsPresent -and $BenchmarkGate.IsPresent) {
+    throw "-BenchmarkGate cannot be used with -BundleOnly."
+}
 
 function Run-Step {
     param(
@@ -68,67 +76,64 @@ function Get-PeSubsystem {
 
 Push-Location $appRoot
 try {
-    npm run verify
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
+    if (-not $BundleOnly.IsPresent) {
+        npm run verify
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
 
-    cargo fmt --manifest-path "$cargoManifest" --check
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
+        cargo fmt --manifest-path "$cargoManifest" --check
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
 
-    cargo check --manifest-path "$cargoManifest"
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
+        cargo test --manifest-path "$cargoManifest"
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
 
-    cargo test --manifest-path "$cargoManifest"
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
+        if ($BenchmarkGate.IsPresent) {
+            Run-Step "Rust benchmark regression gate" {
+                Push-Location $repoRoot
+                try {
+                    $gateScript = Join-Path $repoRoot "scripts/run-benchmark-gate.ps1"
+                    $gateArgs = @{
+                        BenchmarkHost = "core"
+                        Platform = $BenchmarkPlatform
+                        Ticks = $BenchmarkTicks
+                        SleepMs = $BenchmarkSleepMs
+                    }
 
-    if ($BenchmarkGate.IsPresent) {
-        Run-Step "Rust benchmark regression gate" {
-            Push-Location $repoRoot
-            try {
-                $gateScript = Join-Path $repoRoot "scripts/run-benchmark-gate.ps1"
-                $gateArgs = @{
-                    BenchmarkHost = "core"
-                    Platform = $BenchmarkPlatform
-                    Ticks = $BenchmarkTicks
-                    SleepMs = $BenchmarkSleepMs
+                    if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaselineJsonPath)) {
+                        $gateArgs["BaselineJsonPath"] = $BenchmarkBaselineJsonPath
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaselineArtifactPath)) {
+                        $gateArgs["BaselineArtifactPath"] = $BenchmarkBaselineArtifactPath
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($BenchmarkMinSpeedupMultiplier)) {
+                        $gateArgs["MinSpeedupMultiplier"] = $BenchmarkMinSpeedupMultiplier
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($BenchmarkMaxP95Ms)) {
+                        $gateArgs["MaxP95Ms"] = $BenchmarkMaxP95Ms
+                    }
+
+                    & $gateScript @gateArgs
                 }
-
-                if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaselineJsonPath)) {
-                    $gateArgs["BaselineJsonPath"] = $BenchmarkBaselineJsonPath
+                finally {
+                    Pop-Location
                 }
-                if (-not [string]::IsNullOrWhiteSpace($BenchmarkBaselineArtifactPath)) {
-                    $gateArgs["BaselineArtifactPath"] = $BenchmarkBaselineArtifactPath
-                }
-                if (-not [string]::IsNullOrWhiteSpace($BenchmarkMinSpeedupMultiplier)) {
-                    $gateArgs["MinSpeedupMultiplier"] = $BenchmarkMinSpeedupMultiplier
-                }
-                if (-not [string]::IsNullOrWhiteSpace($BenchmarkMaxP95Ms)) {
-                    $gateArgs["MaxP95Ms"] = $BenchmarkMaxP95Ms
-                }
-
-                & $gateScript @gateArgs
-            }
-            finally {
-                Pop-Location
             }
         }
-    }
-    else {
-        Run-Step "Rust benchmark smoke" {
-            Push-Location $repoRoot
-            try {
-                $benchmarkScript = Join-Path $repoRoot "scripts/run-benchmark.ps1"
-                & $benchmarkScript -BenchmarkHost core -Platform $BenchmarkPlatform -WarmupTicks 0 -Ticks 2 -SleepMs 1000 -Repeats 1 -Strict -MaxP95Ms 10000
-            }
-            finally {
-                Pop-Location
+        else {
+            Run-Step "Rust benchmark smoke" {
+                Push-Location $repoRoot
+                try {
+                    $benchmarkScript = Join-Path $repoRoot "scripts/run-benchmark.ps1"
+                    & $benchmarkScript -BenchmarkHost core -Platform $BenchmarkPlatform -WarmupTicks 0 -Ticks 2 -SleepMs 1000 -Repeats 1 -Strict -MaxP95Ms 10000 -DevBuild
+                }
+                finally {
+                    Pop-Location
+                }
             }
         }
     }

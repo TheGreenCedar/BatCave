@@ -16,13 +16,15 @@ param(
     [string]$BaselineArtifactPath = "",
     [string]$MinSpeedupMultiplier = "",
     [string]$MaxP95Ms = "",
-    [switch]$Strict
+    [switch]$Strict,
+    [switch]$DevBuild
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $cargoManifest = Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml"
-$releaseDir = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release"
+$buildProfile = if ($DevBuild.IsPresent) { "debug" } else { "release" }
+$buildDir = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/$buildProfile"
 $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 $runtimePlatform = if ($runningOnWindows) { "windows" } else { "linux" }
 $architecture = switch ($Platform.ToLowerInvariant()) {
@@ -31,7 +33,7 @@ $architecture = switch ($Platform.ToLowerInvariant()) {
     default { $Platform.ToLowerInvariant() }
 }
 $benchmarkExeName = if ($runningOnWindows) { "batcave-monitor-cli.exe" } else { "batcave-monitor-cli" }
-$benchmarkExe = Join-Path $releaseDir $benchmarkExeName
+$benchmarkExe = Join-Path $buildDir $benchmarkExeName
 $tempBaselinePath = ""
 
 if ([string]::IsNullOrWhiteSpace($MachineClass)) {
@@ -106,12 +108,16 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     $BaselineJsonPath = $tempBaselinePath
 }
 
-cargo build --manifest-path "$cargoManifest" --release --bin batcave-monitor-cli
+$cargoArgs = @("build", "--manifest-path", $cargoManifest, "--bin", "batcave-monitor-cli")
+if (-not $DevBuild.IsPresent) {
+    $cargoArgs += "--release"
+}
+& cargo @cargoArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 if (-not (Test-Path -LiteralPath $benchmarkExe)) {
-    throw "Benchmark executable not found after release build: $benchmarkExe"
+    throw "Benchmark executable not found after $buildProfile build: $benchmarkExe"
 }
 
 $benchmarkArgs = @(

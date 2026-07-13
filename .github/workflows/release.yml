@@ -104,6 +104,13 @@ jobs:
         with:
           components: rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
+
       - run: npm ci
         working-directory: src/BatCave.App
 
@@ -153,6 +160,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - run: bash scripts/install-linux-deps.sh
 
@@ -205,6 +219,13 @@ jobs:
         with:
           components: rustfmt
           targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - run: npm ci
         working-directory: src/BatCave.App
@@ -260,6 +281,15 @@ jobs:
           security default-keychain -d user -s "${keychain_path}"
           security find-identity -v -p codesigning "${keychain_path}" | grep -F "${APPLE_SIGNING_IDENTITY}"
 
+      - name: Build universal macOS binaries without packaging
+        working-directory: src/BatCave.App
+        env:
+          CI: "true"
+        run: npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.updater.ci.conf.json --no-bundle --ci
+
+      - name: Assemble universal macOS CLI
+        run: bash scripts/build-macos-universal-cli.sh --lipo-only
+
       - name: Bundle signed and notarized universal macOS updater
         working-directory: src/BatCave.App
         env:
@@ -269,7 +299,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CI: "true"
-        run: npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.updater.conf.json --ci
+        run: npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.updater.ci.conf.json --ci
 
       - name: Sign, notarize, and staple the DMG
         shell: bash

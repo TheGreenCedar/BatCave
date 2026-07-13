@@ -14,6 +14,7 @@ baseline_artifact_path=""
 min_speedup_multiplier=""
 max_p95_ms=""
 strict=0
+dev_build=0
 temp_baseline_path=""
 
 while [[ $# -gt 0 ]]; do
@@ -70,6 +71,10 @@ while [[ $# -gt 0 ]]; do
       strict=1
       shift
       ;;
+    --dev-build)
+      dev_build=1
+      shift
+      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
@@ -89,7 +94,11 @@ fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 cargo_manifest="$repo_root/src/BatCave.App/src-tauri/Cargo.toml"
-benchmark_exe="$repo_root/src/BatCave.App/src-tauri/target/release/batcave-monitor-cli"
+build_profile="release"
+if [[ "$dev_build" -eq 1 ]]; then
+  build_profile="debug"
+fi
+benchmark_exe="$repo_root/src/BatCave.App/src-tauri/target/$build_profile/batcave-monitor-cli"
 runtime_platform="linux"
 
 case "$(uname -s)" in
@@ -174,9 +183,13 @@ PY
   baseline_json_path="$temp_baseline_path"
 fi
 
-cargo build --manifest-path "$cargo_manifest" --release --bin batcave-monitor-cli
+build_args=(build --manifest-path "$cargo_manifest" --bin batcave-monitor-cli)
+if [[ "$dev_build" -eq 0 ]]; then
+  build_args+=(--release)
+fi
+cargo "${build_args[@]}"
 if [[ ! -x "$benchmark_exe" ]]; then
-  echo "Benchmark executable not found after release build: $benchmark_exe" >&2
+  echo "Benchmark executable not found after $build_profile build: $benchmark_exe" >&2
   exit 2
 fi
 
