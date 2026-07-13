@@ -175,7 +175,7 @@ Windows per-process network attribution uses one ETW kernel logger. The main run
 
 Linux native collectors read aggregate CPU/kernel/logical CPU deltas, memory and swap, block-device I/O totals/rates, interface network totals/rates, process identity, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread counts, and file descriptor counts.
 
-Linux per-process network attribution is optional. It uses `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg` when the app has sufficient host permissions or capabilities. Install it with `bash scripts/install-linux-deps.sh --with-bpftrace`. Without those permissions or the opt-in package, BatCave keeps running and marks per-process network rates unavailable.
+Linux per-process network attribution is optional. It uses owned `bpftrace`/eBPF entry/return probes on `sock_sendmsg` and `sock_recvmsg` when the app has sufficient host permissions or capabilities. Only IPv4 and IPv6 sockets are counted, so Unix-domain traffic is never labelled as network traffic. Completed one-second windows accumulate across every supported app cadence. Reader, child, retry, and shutdown failures mark the rates unavailable instead of publishing a healthy zero. Install it with `bash scripts/install-linux-deps.sh --with-bpftrace`. Without those permissions or the opt-in package, BatCave keeps running and marks per-process network rates unavailable.
 
 `sysinfo` remains a fallback when native collectors cannot read the expected host files.
 

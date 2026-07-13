@@ -72,7 +72,7 @@ Linux native telemetry:
 
 - Aggregate CPU, kernel CPU, logical CPU deltas, memory, swap, block-device I/O totals/rates, and interface network totals/rates.
 - Process identity, PID, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread count, and file descriptor count.
-- Optional per-process network attribution through `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg`. Install this optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; base build dependencies do not include it.
+- Optional per-process network attribution through owned `bpftrace`/eBPF entry/return probes on `sock_sendmsg` and `sock_recvmsg`. Only IPv4 and IPv6 socket families are counted; Unix-domain and other local socket traffic is excluded. One-second attribution windows accumulate losslessly until the 500/1000/2000/5000 ms app cadence consumes them. The child plus both pipe readers are reaped and joined at shutdown. A killed child, pipe EOF/error, malformed output, stderr failure, or missing interval fails closed to explicit unavailability. Starts retry at most three times per failure episode, 30 seconds apart. Install the optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; base build dependencies do not include it.
 
 macOS native telemetry:
 
@@ -126,6 +126,7 @@ Examples:
 - Linux CPU, disk, and network retain independent last-good baselines. A failed read does not replace a baseline with zero, and the first recovered rate is derived only from valid counters.
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
+- Linux process `/proc` parsers remain manual after the bounded [`procfs` parity decision](decisions/0002-linux-procfs-parser-parity.md). Required malformed counters fail instead of becoming measured zero; a crate replacement requires native dual-reader parity first.
 - macOS physical-disk quality is `unavailable/runtime`; the limitation explains that process read/write I/O remains a separate resource.
 - macOS libproc failures retain the sysinfo process row and identify physical footprint, thread, descriptor, read/write I/O, or network limitations independently.
 
