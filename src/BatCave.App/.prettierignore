@@ -1,0 +1,2 @@
+# Preserve exact ts-rs output for the Rust golden test.
+src/lib/generated/dto-spike.ts
