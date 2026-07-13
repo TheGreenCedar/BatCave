@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - "codex/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
