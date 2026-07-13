@@ -1,6 +1,6 @@
 <script lang="ts">
   import { CaretRight } from "phosphor-svelte";
-  import { processSelectionKey, type ProcessIconKind } from "../../process";
+  import { processRowSecondaryLabel, processSelectionKey, type ProcessIconKind } from "../../process";
   import { formatPercent, formatRate, processMemoryTitle } from "../../format";
   import { residentMemoryValue } from "../../platformPresentation";
   import type { ProcessSample, ProcessViewRow, RuntimePlatform } from "../../types";
@@ -70,10 +70,11 @@
     {@const process = processForRow(row)}
     {@const selected = selectedInRow(row)}
     {@const expanded = row.group_key ? !!expandedGroups[row.group_key] : false}
+    {@const secondaryLabel = processRowSecondaryLabel(row)}
     <article
       class="mobile-process-card"
       class:selected={selected}
-      class:child-card={row.kind === "process" && (row.is_grouped || row.is_child)}
+      class:child-card={row.kind === "process" && row.is_grouped}
     >
       <button
         class="mobile-card-select"
@@ -86,12 +87,12 @@
           <span class="mobile-process-title">
             <ProcessIcon
               kind={iconKind(row)}
-              child={row.kind === "process" && (row.is_grouped || row.is_child)}
+              child={row.kind === "process" && row.is_grouped}
               src={iconSrc(process)}
             />
             <span>
               <strong>{row.group_label ?? process?.name}</strong>
-              <small>{row.kind === "group" ? `${processCountLabel(row.group_count)} / ${row.group_category}` : (row.group_category ?? `PID ${process?.pid}`)}</small>
+              {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
             </span>
           </span>
           <small>{row.attention_label}</small>

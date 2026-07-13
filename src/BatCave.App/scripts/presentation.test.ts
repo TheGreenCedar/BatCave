@@ -4,6 +4,7 @@ import { buildPressureBrief } from "../src/lib/cockpit.ts";
 import { metricQualityLabel, metricQualityShortLabel } from "../src/lib/format.ts";
 import {
   processIdentity,
+  processRowSecondaryLabel,
   sortAriaValue,
   sortButtonLabel,
   type ProcessColumn,
@@ -99,6 +100,25 @@ test("process fallback icon categories are deterministic", () => {
   });
 });
 
+test("process row secondary labels keep only useful hierarchy", () => {
+  const sample = process({ pid: "99", name: "Codex (Renderer)" });
+  const standalone = processRow({ process: sample, group_category: "Processes" });
+  const categorized = processRow({ process: sample, group_category: "Browsers" });
+  const child = processRow({ process: sample, group_category: "Processes", is_grouped: true });
+  const group = processRow({
+    kind: "group",
+    process: undefined,
+    representative: sample,
+    group_count: 4,
+    is_grouped: true,
+  });
+
+  assert.equal(processRowSecondaryLabel(standalone), null);
+  assert.equal(processRowSecondaryLabel(categorized), "Browsers");
+  assert.equal(processRowSecondaryLabel(child), "PID 99");
+  assert.equal(processRowSecondaryLabel(group), "4");
+});
+
 function pressureSnapshot(contributor: string | null): RuntimeSnapshot {
   const snapshot = makeEmptySnapshot("");
   snapshot.health.degraded = false;
@@ -134,6 +154,24 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
     threads: 1,
     handles: 1,
     access_state: "full",
+    ...overrides,
+  };
+}
+
+function processRow(overrides: Partial<import("../src/lib/types.ts").ProcessViewRow> = {}) {
+  return {
+    kind: "process" as const,
+    process: process(),
+    group_count: 1,
+    icon_kind: "process",
+    is_child: false,
+    is_grouped: false,
+    attention_label: "Normal",
+    cpu_percent: 0,
+    memory_bytes: 0,
+    io_bps: 0,
+    network_bps: 0,
+    threads: 1,
     ...overrides,
   };
 }

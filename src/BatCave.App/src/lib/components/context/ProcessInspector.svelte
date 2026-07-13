@@ -75,6 +75,7 @@
     {@const identity = processIdentity(selectedProcess)}
     {@const iconSrc = processIcons[selectedProcess.exe || selectedProcess.name]}
     {@const accent = processAccent(selectedProcess, processRates)}
+    {@const categoryLabel = identity.group === "Processes" ? null : identity.group}
     <div class="process-identity redesigned-identity">
       <span class="identity-icon"><ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} /></span>
       <span class="identity-copy">
@@ -83,7 +84,7 @@
           <small class="identity-chip">{selectedIsGroup ? "Grouped" : `PID ${selectedProcess.pid}`}</small>
         </span>
         <span class="identity-meta-row">
-          <small class="identity-category">{selectedIsGroup ? `${identity.group} · aggregated workload` : identity.group}</small>
+          {#if categoryLabel}<small class="identity-category">{categoryLabel}</small>{/if}
           <em class={`identity-status tone-${accentTone(accent)}`}>{accent}</em>
         </span>
       </span>

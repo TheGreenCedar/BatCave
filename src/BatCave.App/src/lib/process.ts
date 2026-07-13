@@ -87,6 +87,19 @@ export function processViewRowKey(row: ProcessViewRow): string {
   return row.process ? processSelectionKey(row.process) : "process:unknown";
 }
 
+export function processRowSecondaryLabel(row: ProcessViewRow): string | null {
+  if (row.kind === "group") {
+    return String(row.group_count);
+  }
+
+  if (row.is_grouped && row.process) {
+    return `PID ${row.process.pid}`;
+  }
+
+  const category = row.group_category?.trim();
+  return category && category.toLocaleLowerCase() !== "processes" ? category : null;
+}
+
 export function processSelectionKey(process: Pick<ProcessSample, "pid" | "start_time_ms">): string {
   return `process:${process.pid}:${process.start_time_ms}`;
 }

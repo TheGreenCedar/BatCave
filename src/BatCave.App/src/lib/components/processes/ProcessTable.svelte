@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { ArrowDown, ArrowUp, CaretRight } from "phosphor-svelte";
+  import { ArrowDown, ArrowElbowDownRight, ArrowUp, CaretRight } from "phosphor-svelte";
   import {
     sortAriaValue,
     sortButtonLabel,
     processSelectionKey,
+    processRowSecondaryLabel,
     type ProcessColumn,
     type ProcessIconKind,
     type SortKey,
@@ -114,11 +115,12 @@
           {@const representative = row.representative}
           {@const groupSelected = isGroupSelected(row.group_key)}
           {@const expanded = row.group_key ? !!expandedGroups[row.group_key] : false}
+          {@const secondaryLabel = processRowSecondaryLabel(row)}
           <tr class:group-selected={groupSelected} class="app-group-row">
             {#each columns as column}
               {#if column.key === "name"}
                 <td>
-                  <div class="group-name-cell">
+                  <div class="process-row-cell">
                     <button
                       class="group-expand"
                       class:expanded
@@ -127,7 +129,7 @@
                       aria-label={`${expanded ? "Collapse" : "Expand"} ${row.group_label ?? "process"} group, ${processCountLabel(row.group_count)}`}
                       onclick={() => row.group_key && onToggleGroup(row.group_key)}
                     >
-                      <CaretRight size={15} weight="bold" aria-hidden="true" />
+                      <CaretRight size={16} weight="bold" aria-hidden="true" />
                     </button>
                     <button
                       class="process-button app-group-button"
@@ -140,7 +142,7 @@
                       <ProcessIcon kind={iconKind(row)} src={iconSrc(representative)} />
                       <span class="process-name-stack">
                         <span>{row.group_label}</span>
-                        <small>{processCountLabel(row.group_count)} / {row.group_category}</small>
+                        {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
                       </span>
                     </button>
                   </div>
@@ -163,26 +165,30 @@
         {:else if row.process && (!row.is_grouped || !row.group_key || expandedGroups[row.group_key])}
           {@const process = row.process}
           {@const selectionKey = processSelectionKey(process)}
-          <tr class:selected={selectionKey === selectedPid} class:child-row={row.is_grouped || row.is_child}>
+          {@const secondaryLabel = processRowSecondaryLabel(row)}
+          <tr class:selected={selectionKey === selectedPid} class:child-row={row.is_grouped}>
             {#each columns as column}
               {#if column.key === "name"}
                 <td>
-                  <button
-                    class="process-button"
-                    class:selected={selectionKey === selectedPid}
-                    class:child={row.is_grouped || row.is_child}
-                    type="button"
-                    aria-pressed={selectionKey === selectedPid}
-                    aria-label={`Inspect ${process.name}, PID ${process.pid}`}
-                    onclick={() => onSelect(selectionKey)}
-                  >
-                    {#if row.is_grouped || row.is_child}<span class="process-tree-branch" aria-hidden="true"></span>{/if}
-                    <ProcessIcon kind={iconKind(row)} child={row.is_grouped || row.is_child} src={iconSrc(process)} />
-                    <span class="process-name-stack">
-                      <span>{process.name}</span>
-                      <small>{row.is_grouped ? `PID ${process.pid}` : row.group_category}</small>
+                  <div class="process-row-cell">
+                    <span class:child={row.is_grouped} class="hierarchy-gutter" aria-hidden="true">
+                      {#if row.is_grouped}<ArrowElbowDownRight size={14} weight="bold" />{/if}
                     </span>
-                  </button>
+                    <button
+                      class="process-button"
+                      class:selected={selectionKey === selectedPid}
+                      type="button"
+                      aria-pressed={selectionKey === selectedPid}
+                      aria-label={`Inspect ${process.name}, PID ${process.pid}`}
+                      onclick={() => onSelect(selectionKey)}
+                    >
+                      <ProcessIcon kind={iconKind(row)} src={iconSrc(process)} />
+                      <span class="process-name-stack">
+                        <span>{process.name}</span>
+                        {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
+                      </span>
+                    </button>
+                  </div>
                 </td>
               {:else if column.key === "attention"}
                 <td><span class="impact-label">{row.attention_label || "Normal"}</span></td>
