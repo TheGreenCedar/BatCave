@@ -7,7 +7,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{cli_args, runtime_store::RuntimeState};
+use crate::{
+    cli_args,
+    protocol::{release_identity, RuntimeReleaseIdentityV3},
+    runtime_store::RuntimeState,
+};
 
 const FORMAT_VERSION: u32 = 3;
 const HOST: &str = "core";
@@ -30,6 +34,7 @@ struct BenchmarkRepeat {
 #[serde(rename_all = "snake_case")]
 struct BenchmarkSummary {
     format_version: u32,
+    release_identity: RuntimeReleaseIdentityV3,
     host: String,
     measurement_origin: String,
     evidence_scope: String,
@@ -201,6 +206,7 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
 
     Ok(BenchmarkSummary {
         format_version: FORMAT_VERSION,
+        release_identity: release_identity(),
         host: HOST.to_string(),
         measurement_origin: MEASUREMENT_ORIGIN.to_string(),
         evidence_scope: EVIDENCE_SCOPE.to_string(),

@@ -1,5 +1,5 @@
 import type { DetailMode } from "./components/metrics/types";
-import type { MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "./types";
+import type { MetricCoverage, MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "./types";
 
 export type CollectionState = "live" | "paused" | "stale";
 export type ResourceConfidence = "High" | "Limited" | "Unavailable";
@@ -48,13 +48,16 @@ export function buildResourceBrief(
     canShowValue && contributorQualityIsPublishable(definition.contributorQuality)
       ? definition.contributor
       : null;
-  const matchingProcesses = contributor
-    ? snapshot.processes.filter((process) => process.name === contributor)
-    : [];
-  const contributorNameAmbiguous =
-    definition.contributorNameAmbiguous || matchingProcesses.length > 1;
-  const leadingProcess =
-    !contributorNameAmbiguous && matchingProcesses.length === 1 ? matchingProcesses[0] : undefined;
+  const contributorNameAmbiguous = definition.contributorProcessId
+    ? false
+    : contributor !== null && definition.contributorNameAmbiguous;
+  const leadingRow = definition.contributorProcessId
+    ? snapshot.process_view_rows.find(
+        (row) =>
+          row.kind === "process" && row.detail.workload_id === definition.contributorProcessId,
+      )
+    : undefined;
+  const leadingProcess = leadingRow?.kind === "process" ? leadingRow.detail.process : undefined;
 
   return {
     mode,
@@ -70,6 +73,7 @@ export function buildResourceBrief(
       quality,
       definition.contributor,
       definition.contributorQuality,
+      definition.contributorCoverage,
       contributorNameAmbiguous,
       collectionState,
       canShowValue,
@@ -80,6 +84,7 @@ export function buildResourceBrief(
       contributor,
       leadingProcess,
       definition.contributorQuality,
+      definition.contributorCoverage,
       contributorNameAmbiguous,
       snapshot.total_process_count,
       quality,
@@ -100,6 +105,8 @@ function resourceDefinition(
   value: number;
   valueLabel: string;
   contributor: string | null;
+  contributorProcessId: string | null;
+  contributorCoverage: MetricCoverage;
   contributorQuality?: MetricQualityInfo;
   contributorNameAmbiguous: boolean;
   attributionLabel: string;
@@ -112,6 +119,8 @@ function resourceDefinition(
         value: snapshot.system.cpu_percent,
         valueLabel: formatPercent(snapshot.system.cpu_percent),
         contributor: snapshot.process_contributors.cpu,
+        contributorProcessId: snapshot.process_contributors.cpu_process_id,
+        contributorCoverage: snapshot.process_contributors.cpu_coverage,
         contributorQuality: snapshot.process_contributors.cpu_quality,
         contributorNameAmbiguous: snapshot.process_contributors.cpu_name_ambiguous !== false,
         attributionLabel:
@@ -124,6 +133,8 @@ function resourceDefinition(
         value: values.memoryPercent,
         valueLabel: formatPercent(values.memoryPercent),
         contributor: snapshot.process_contributors.memory,
+        contributorProcessId: snapshot.process_contributors.memory_process_id,
+        contributorCoverage: snapshot.process_contributors.memory_coverage,
         contributorQuality: snapshot.process_contributors.memory_quality,
         contributorNameAmbiguous: snapshot.process_contributors.memory_name_ambiguous !== false,
         attributionLabel:
@@ -136,6 +147,8 @@ function resourceDefinition(
         value: values.diskRate,
         valueLabel: formatRate(values.diskRate),
         contributor: null,
+        contributorProcessId: null,
+        contributorCoverage: { available: 0, total: 0 },
         contributorQuality: undefined,
         contributorNameAmbiguous: false,
         attributionLabel: "Process read/write I/O is not used as physical-disk attribution.",
@@ -147,6 +160,8 @@ function resourceDefinition(
         value: values.networkRate,
         valueLabel: formatRate(values.networkRate),
         contributor: snapshot.process_contributors.network,
+        contributorProcessId: snapshot.process_contributors.network_process_id,
+        contributorCoverage: snapshot.process_contributors.network_coverage,
         contributorQuality: snapshot.process_contributors.network_quality,
         contributorNameAmbiguous: snapshot.process_contributors.network_name_ambiguous !== false,
         attributionLabel:
@@ -185,6 +200,7 @@ function resourceConfidence(
   quality: MetricQualityInfo | undefined,
   contributor: string | null,
   contributorQuality: MetricQualityInfo | undefined,
+  contributorCoverage: MetricCoverage,
   contributorNameAmbiguous: boolean,
   collectionState: CollectionState,
   canShowValue: boolean,
@@ -195,6 +211,7 @@ function resourceConfidence(
     quality?.quality !== "native" ||
     (mode !== "disk" && snapshot.total_process_count > 0 && contributorQuality === undefined) ||
     (contributor !== null && contributorQuality?.quality !== "native") ||
+    contributorCoverage.available < contributorCoverage.total ||
     contributorNameAmbiguous ||
     contributorQuality?.quality === "estimated" ||
     contributorQuality?.quality === "partial" ||
@@ -213,6 +230,7 @@ function contributorStatusLabel(
   contributor: string | null,
   process: ProcessSample | undefined,
   quality: MetricQualityInfo | undefined,
+  coverage: MetricCoverage,
   contributorNameAmbiguous: boolean,
   totalProcessCount: number,
   systemQuality: MetricQualityInfo | undefined,
@@ -223,7 +241,7 @@ function contributorStatusLabel(
   if (systemQuality?.quality === "unavailable") return "Process attribution unavailable";
   if (systemQuality?.quality === "held") return "Process attribution pending";
   if (contributor) {
-    return contributorValueLabel(mode, process, quality, contributorNameAmbiguous);
+    return contributorValueLabel(mode, process, quality, coverage, contributorNameAmbiguous);
   }
   if (totalProcessCount === 0) return "No processes in this sample";
   if (!quality) return "Attribution quality not reported";
@@ -255,9 +273,10 @@ function contributorValueLabel(
   mode: DetailMode,
   process: ProcessSample | undefined,
   quality: MetricQualityInfo | undefined,
+  coverage: MetricCoverage,
   contributorNameAmbiguous: boolean,
 ): string {
-  const qualitySuffix = contributorQualitySuffix(quality);
+  const qualitySuffix = `${contributorQualitySuffix(quality)}${contributorCoverageSuffix(coverage)}`;
   if (contributorNameAmbiguous) {
     return `Contributor name is ambiguous across the full process sample${qualitySuffix}`;
   }
@@ -291,6 +310,11 @@ function contributorQualitySuffix(quality: MetricQualityInfo | undefined): strin
   if (quality.quality === "estimated") return " · Estimated attribution";
   if (quality.quality === "partial") return " · Partial attribution";
   return "";
+}
+
+function contributorCoverageSuffix(coverage: MetricCoverage): string {
+  if (coverage.available >= coverage.total) return "";
+  return ` · ${coverage.available}/${coverage.total} processes sampled`;
 }
 
 export function displayProcessName(name: string): string {

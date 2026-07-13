@@ -21,11 +21,12 @@ use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
         AccessState, GroupDetail, GroupDetailKind, GroupMetricCoverage, GroupMetricQuality,
-        MetricCoverage, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
-        ProcessDetail, ProcessDetailKind, ProcessFocusMode, ProcessSample, ProcessViewRow,
-        RuntimeAdminModeState, RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth,
-        RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
-        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        MetricCoverage, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
+        ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
+        ProcessFocusMode, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
+        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimePrivilegedSource,
+        RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection,
+        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetryCollector},
@@ -1052,11 +1053,8 @@ fn add_process_rates(
             .and_then(|quality| quality.other_io.as_ref());
 
         let io_baseline_is_valid = previous.is_some_and(|previous| {
-            cumulative_baseline_is_compatible(
-                current_io_quality.as_ref(),
-                previous_io_quality,
-                PROCESS_IO_BASELINE_PENDING,
-            ) && process.io_read_total_bytes >= previous.io_read_total_bytes
+            cumulative_baseline_is_compatible(current_io_quality.as_ref(), previous_io_quality)
+                && process.io_read_total_bytes >= previous.io_read_total_bytes
                 && process.io_write_total_bytes >= previous.io_write_total_bytes
         });
         if let Some(previous) = previous.filter(|_| io_baseline_is_valid) {
@@ -1087,7 +1085,6 @@ fn add_process_rates(
                     && cumulative_baseline_is_compatible(
                         current_other_io_quality.as_ref(),
                         previous_other_io_quality,
-                        PROCESS_OTHER_IO_BASELINE_PENDING,
                     )
             }
             _ => false,
@@ -1138,6 +1135,7 @@ fn hold_process_io_rate_quality(process: &mut ProcessSample) {
         }
         let mut pending = current.clone();
         pending.quality = MetricQuality::Held;
+        pending.limitation_code = Some(MetricLimitationCode::PendingBaseline);
         pending.message = Some(PROCESS_IO_BASELINE_PENDING.to_string());
         quality.io = Some(pending);
     }
@@ -1153,6 +1151,7 @@ fn hold_process_other_io_rate_quality(process: &mut ProcessSample) {
         }
         let mut pending = current.clone();
         pending.quality = MetricQuality::Held;
+        pending.limitation_code = Some(MetricLimitationCode::PendingBaseline);
         pending.message = Some(PROCESS_OTHER_IO_BASELINE_PENDING.to_string());
         quality.other_io = Some(pending);
     }
@@ -1167,16 +1166,16 @@ fn cumulative_sample_is_valid(quality: Option<&MetricQualityInfo>) -> bool {
     })
 }
 
-fn metric_is_pending_baseline(quality: &MetricQualityInfo, pending_message: &str) -> bool {
+fn metric_is_pending_baseline(quality: &MetricQualityInfo) -> bool {
     // These Held markers are written only after a valid cumulative sample, so that sample may
     // become the baseline without treating collector-held or unavailable rows as counters.
-    quality.quality == MetricQuality::Held && quality.message.as_deref() == Some(pending_message)
+    quality.quality == MetricQuality::Held
+        && quality.limitation_code == Some(MetricLimitationCode::PendingBaseline)
 }
 
 fn cumulative_baseline_is_compatible(
     current: Option<&MetricQualityInfo>,
     previous: Option<&MetricQualityInfo>,
-    pending_message: &str,
 ) -> bool {
     let (Some(current), Some(previous)) = (current, previous) else {
         return false;
@@ -1186,8 +1185,7 @@ fn cumulative_baseline_is_compatible(
         _ => false,
     };
     cumulative_sample_is_valid(Some(current))
-        && (cumulative_sample_is_valid(Some(previous))
-            || metric_is_pending_baseline(previous, pending_message))
+        && (cumulative_sample_is_valid(Some(previous)) || metric_is_pending_baseline(previous))
         && sources_are_compatible
 }
 
@@ -1482,6 +1480,8 @@ fn group_metric_summary(
             source: Some(MetricSource::ProcessAggregate),
             updated_at_ms: None,
             age_ms: None,
+            limitation_code: (available < total)
+                .then_some(MetricLimitationCode::GroupPartialCoverage),
             message,
         },
         coverage,
@@ -1673,15 +1673,23 @@ fn summarize_process_contributors(processes: &[ProcessSample]) -> ProcessContrib
 
     ProcessContributorSummary {
         cpu: cpu.name,
+        cpu_identity: cpu.identity,
+        cpu_coverage: Some(cpu.coverage),
         cpu_quality: cpu.quality,
         cpu_name_ambiguous: cpu.ambiguous,
         memory: memory.name,
+        memory_identity: memory.identity,
+        memory_coverage: Some(memory.coverage),
         memory_quality: memory.quality,
         memory_name_ambiguous: memory.ambiguous,
         io: io.name,
+        io_identity: io.identity,
+        io_coverage: Some(io.coverage),
         io_quality: io.quality,
         io_name_ambiguous: io.ambiguous,
         network: network.name,
+        network_identity: network.identity,
+        network_coverage: Some(network.coverage),
         network_quality: network.quality,
         network_name_ambiguous: network.ambiguous,
     }
@@ -1689,6 +1697,8 @@ fn summarize_process_contributors(processes: &[ProcessSample]) -> ProcessContrib
 
 struct ProcessContributor {
     name: Option<String>,
+    identity: Option<ProcessContributorIdentity>,
+    coverage: MetricCoverage,
     quality: Option<MetricQualityInfo>,
     ambiguous: bool,
 }
@@ -1704,12 +1714,24 @@ where
     T: Copy + Default + PartialOrd,
 {
     let coverage_quality = process_contributor_coverage_quality(processes, quality);
-    let coverage_is_publishable = processes.iter().all(|process| {
-        quality(process).is_some_and(|quality| contributor_quality_is_publishable(Some(quality)))
-    });
+    let available = processes
+        .iter()
+        .filter(|process| {
+            quality(process)
+                .is_some_and(|quality| contributor_quality_is_publishable(Some(quality)))
+        })
+        .count();
+    let coverage = MetricCoverage {
+        available,
+        total: processes.len(),
+    };
+    let coverage_is_publishable = coverage.available == coverage.total;
     let winner = processes
         .iter()
-        .filter(|process| contributor_quality_is_publishable(quality(process)))
+        .filter(|process| {
+            quality(process)
+                .is_some_and(|quality| contributor_quality_is_publishable(Some(quality)))
+        })
         .max_by(|left, right| {
             metric(left)
                 .partial_cmp(&metric(right))
@@ -1720,12 +1742,19 @@ where
         if !coverage_is_publishable {
             return ProcessContributor {
                 name: None,
+                identity: None,
+                coverage,
                 quality: coverage_quality,
                 ambiguous: false,
             };
         }
         return ProcessContributor {
             name: Some(process.name.clone()),
+            identity: Some(ProcessContributorIdentity {
+                pid: process.pid.clone(),
+                start_time_ms: process.start_time_ms,
+            }),
+            coverage,
             quality: coverage_quality,
             ambiguous: processes
                 .iter()
@@ -1737,6 +1766,8 @@ where
 
     ProcessContributor {
         name: None,
+        identity: None,
+        coverage,
         quality: coverage_quality,
         ambiguous: false,
     }
@@ -2559,6 +2590,21 @@ mod tests {
             snapshot.process_contributors.network.as_deref(),
             Some("NetworkWinner")
         );
+        assert_eq!(
+            snapshot
+                .process_contributors
+                .cpu_identity
+                .as_ref()
+                .map(|identity| identity.pid.as_str()),
+            Some("10")
+        );
+        assert_eq!(
+            snapshot.process_contributors.cpu_coverage,
+            Some(MetricCoverage {
+                available: 5,
+                total: 5
+            })
+        );
     }
 
     #[test]
@@ -2577,6 +2623,14 @@ mod tests {
         let selected = summarize_process_contributors(&[unavailable_high.clone(), estimated_lower]);
 
         assert_eq!(selected.cpu, None);
+        assert_eq!(selected.cpu_identity, None);
+        assert_eq!(
+            selected.cpu_coverage,
+            Some(MetricCoverage {
+                available: 1,
+                total: 2
+            })
+        );
         assert_eq!(
             selected.cpu_quality.as_ref().map(|quality| quality.quality),
             Some(MetricQuality::Unavailable)
@@ -2643,6 +2697,14 @@ mod tests {
         unknown_zero.quality = None;
         let unknown = summarize_process_contributors(&[known_zero, unknown_zero]);
         assert_eq!(unknown.cpu, None);
+        assert_eq!(unknown.cpu_identity, None);
+        assert_eq!(
+            unknown.cpu_coverage,
+            Some(MetricCoverage {
+                available: 1,
+                total: 2
+            })
+        );
         assert_eq!(unknown.cpu_quality, None);
     }
 
@@ -2682,6 +2744,44 @@ mod tests {
         assert_eq!(snapshot.processes[0].name, "worker");
         assert_eq!(snapshot.process_contributors.cpu.as_deref(), Some("worker"));
         assert!(snapshot.process_contributors.cpu_name_ambiguous);
+        assert_eq!(
+            snapshot
+                .process_contributors
+                .cpu_identity
+                .as_ref()
+                .map(|identity| identity.pid.as_str()),
+            Some("10")
+        );
+        assert_eq!(
+            snapshot.process_contributors.cpu_coverage,
+            Some(MetricCoverage {
+                available: 2,
+                total: 2
+            })
+        );
+    }
+
+    #[test]
+    fn contributor_identity_retains_unknown_start_for_publication_scoping() {
+        let mut process = sample("77", "unknown-start", 25.0);
+        process.start_time_ms = 0;
+
+        let summary = summarize_process_contributors(&[process]);
+
+        assert_eq!(
+            summary.cpu_identity,
+            Some(ProcessContributorIdentity {
+                pid: "77".to_string(),
+                start_time_ms: 0,
+            })
+        );
+        assert_eq!(
+            summary.cpu_coverage,
+            Some(MetricCoverage {
+                available: 1,
+                total: 1
+            })
+        );
     }
 
     #[test]

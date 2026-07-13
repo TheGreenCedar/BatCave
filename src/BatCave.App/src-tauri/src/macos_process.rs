@@ -5,8 +5,8 @@ use std::{
 };
 
 use crate::contracts::{
-    AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
-    ProcessSample,
+    AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
+    ProcessMetricQuality, ProcessSample,
 };
 
 const PROC_PIDLISTFDS: c_int = 1;
@@ -125,19 +125,26 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
             quality.memory = Some(rusage_memory_quality(&rusage));
             quality.io = Some(MetricQualityInfo::new(
                 MetricQuality::Native,
-                MetricSource::DirectApi,
+                MetricSource::Libproc,
             ));
         }
         Err(error) => {
-            denied_probes += usize::from(is_access_denied(&error)) as u8;
+            let access_denied = is_access_denied(&error);
+            denied_probes += usize::from(access_denied) as u8;
+            let limitation = if access_denied {
+                MetricLimitationCode::AccessDenied
+            } else {
+                MetricLimitationCode::CollectorFailure
+            };
             process.private_bytes = 0;
             quality.memory = Some(
                 MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Sysinfo)
-                    .with_message(PHYSICAL_FOOTPRINT_UNAVAILABLE),
+                    .with_limitation(limitation, PHYSICAL_FOOTPRINT_UNAVAILABLE),
             );
             quality.io = Some(
                 MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
-                    .with_message(
+                    .with_limitation(
+                    limitation,
                     "Native process read/write totals are unavailable; using the sysinfo fallback.",
                 ),
             );
@@ -151,15 +158,23 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
             process.threads = task.thread_count.max(0) as u32;
             quality.threads = Some(MetricQualityInfo::new(
                 MetricQuality::Native,
-                MetricSource::DirectApi,
+                MetricSource::Libproc,
             ));
         }
         Err(error) => {
-            denied_probes += usize::from(is_access_denied(&error)) as u8;
+            let access_denied = is_access_denied(&error);
+            denied_probes += usize::from(access_denied) as u8;
             process.threads = 0;
             quality.threads = Some(
-                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-                    .with_message("Thread count is unavailable for this process."),
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc)
+                    .with_limitation(
+                        if access_denied {
+                            MetricLimitationCode::AccessDenied
+                        } else {
+                            MetricLimitationCode::CollectorFailure
+                        },
+                        "Thread count is unavailable for this process.",
+                    ),
             );
         }
     }
@@ -170,15 +185,23 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
             process.handles = count;
             quality.handles = Some(MetricQualityInfo::new(
                 MetricQuality::Native,
-                MetricSource::DirectApi,
+                MetricSource::Libproc,
             ));
         }
         Err(error) => {
-            denied_probes += usize::from(is_access_denied(&error)) as u8;
+            let access_denied = is_access_denied(&error);
+            denied_probes += usize::from(access_denied) as u8;
             process.handles = 0;
             quality.handles = Some(
-                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-                    .with_message("File-descriptor count is unavailable for this process."),
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc)
+                    .with_limitation(
+                        if access_denied {
+                            MetricLimitationCode::AccessDenied
+                        } else {
+                            MetricLimitationCode::CollectorFailure
+                        },
+                        "File-descriptor count is unavailable for this process.",
+                    ),
             );
         }
     }
@@ -186,12 +209,16 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
     process.network_received_bps = None;
     process.network_transmitted_bps = None;
     quality.network = Some(
-        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-            .with_message("Per-process network attribution is unavailable on macOS."),
+        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+            MetricLimitationCode::UnsupportedMetric,
+            "Per-process network attribution is unavailable on macOS.",
+        ),
     );
     quality.other_io = Some(
-        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
-            .with_message("Other per-process I/O is unavailable on macOS."),
+        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+            MetricLimitationCode::UnsupportedMetric,
+            "Other per-process I/O is unavailable on macOS.",
+        ),
     );
 
     let access = if successful_probes == 3 {
@@ -218,10 +245,12 @@ fn rusage_memory_values(fallback_resident: u64, rusage: &RusageInfoV2) -> (u64, 
 
 fn rusage_memory_quality(rusage: &RusageInfoV2) -> MetricQualityInfo {
     if rusage.resident_size > 0 {
-        MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
+        MetricQualityInfo::new(MetricQuality::Native, MetricSource::Libproc)
     } else {
-        MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Sysinfo)
-            .with_message(PHYSICAL_FOOTPRINT_UNAVAILABLE)
+        MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Sysinfo).with_limitation(
+            MetricLimitationCode::UnsupportedMetric,
+            PHYSICAL_FOOTPRINT_UNAVAILABLE,
+        )
     }
 }
 

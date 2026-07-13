@@ -12,6 +12,7 @@
   export let rankingUpdateAvailable: boolean;
   export let focusOptions: { value: FocusMode; label: string }[];
   export let sortOptions: { value: SortKey; label: string }[];
+  export let mutationsDisabled = false;
   export let onFocus: (mode: FocusMode) => void;
   export let onSort: (key: SortKey) => void;
   export let onToggleDirection: () => void;
@@ -19,18 +20,19 @@
 </script>
 
 <section class="process-command-bar" aria-label="Workload controls">
-  <SegmentedControl label="Workload view" options={focusOptions} value={focusMode} onChange={onFocus} />
+  <SegmentedControl label="Workload view" options={focusOptions} value={focusMode} disabled={mutationsDisabled} onChange={onFocus} />
 
   <div class="sort-control" role="group" aria-label="Workload sort">
     <label>
       <span>Sort by</span>
-      <SortSelect options={sortOptions} value={sortKey} onChange={onSort} />
+      <SortSelect options={sortOptions} value={sortKey} disabled={mutationsDisabled} onChange={onSort} />
     </label>
     <button
       class="sort-direction-toggle"
       type="button"
       aria-label={sortDirectionButtonLabel(sortDirection)}
       title={sortDirectionButtonLabel(sortDirection)}
+      disabled={mutationsDisabled}
       onclick={onToggleDirection}
     >
       {#if sortDirection === "asc"}
@@ -49,6 +51,7 @@
       type="button"
       aria-label="Update workload order"
       title="Update workload order"
+      disabled={mutationsDisabled}
       onclick={onApplyRanking}
     >
       <ArrowClockwise size={16} weight="bold" aria-hidden="true" />

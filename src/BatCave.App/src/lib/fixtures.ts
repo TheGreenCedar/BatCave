@@ -20,6 +20,7 @@ import {
   processIdentity,
   processNeedsAttention,
 } from "./process";
+import { roundTripFixtureSnapshot } from "./protocol/fixtureProtocol";
 import { makeDefaultRuntimeQuery } from "./runtimeSnapshot";
 import { summarizeProcessContributors } from "./systemPressure";
 
@@ -115,6 +116,14 @@ export function makeFixtureSnapshot(
   query: RuntimeQuery = makeDefaultRuntimeQuery(),
   platform: RuntimePlatform = "fixture",
 ): RuntimeSnapshot {
+  return roundTripFixtureSnapshot(buildFixtureSnapshot(tick, query, platform));
+}
+
+function buildFixtureSnapshot(
+  tick: number,
+  query: RuntimeQuery,
+  platform: RuntimePlatform,
+): RuntimeSnapshot {
   const cpu = platform === "macos" ? wave(tick, 71, 7, 0.18) : wave(tick, 31, 14, 0.34);
   const memoryTotal = 32 * 1024 * 1024 * 1024;
   const memoryRatio = 0.55 + Math.sin(tick / 14) * 0.06;
@@ -154,10 +163,12 @@ export function makeFixtureSnapshot(
     source: "fixture",
     environment: {
       platform,
+      architecture: "x86_64",
       admin_mode_available: false,
       process_elevation: "not_applicable",
       install_kind: fixtureInstallKind(platform),
       data_directory: fixtureDataDirectory(platform),
+      release_identity: { app_version: "development", source_commit_sha: null },
     },
     admin_mode: {
       state: "unavailable",
@@ -174,21 +185,26 @@ export function makeFixtureSnapshot(
       paused: false,
     },
     health: {
-      tick_count: tick,
-      snapshot_latency_ms: 3 + Math.round(Math.abs(Math.sin(tick / 3)) * 9),
+      engine_state: null,
+      collector_state: null,
       degraded: false,
-      collector_warnings: 0,
-      runtime_loop_enabled: true,
-      runtime_loop_running: true,
       status_summary: "Fixture telemetry is running.",
-      updated_at_ms: baseTs + tick * 1000,
-      tick_p95_ms: 4,
-      sort_p95_ms: 1,
-      jitter_p95_ms: 2,
-      dropped_ticks: 0,
+      evaluated_at_ms: baseTs + tick * 1000,
+      last_heartbeat_at_ms: null,
+      heartbeat_age_ms: null,
+      publication_age_ms: 0,
+      sample_age_ms: 0,
+      deadline_misses: null,
+      deadline_lateness_p95_ms: null,
+      collection_latency_ms: null,
+      collection_p95_ms: null,
+      publication_latency_ms: null,
+      publication_p95_ms: null,
+      collector_warning_count: 0,
       app_cpu_percent: 0.4,
       app_rss_bytes: 96 * 1024 * 1024,
       last_warning: null,
+      fatal_error: null,
     },
     system: {
       cpu_percent: clamp(cpu, 0, 100),

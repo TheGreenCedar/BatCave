@@ -1,0 +1,16 @@
+{
+  "compatibility": {
+    "breaking": true,
+    "minimum_reader_version": 4
+  },
+  "event": {
+    "kind": "protocol_mismatch",
+    "payload": {
+      "message": "This fixture requires a newer BatCave reader.",
+      "minimum_reader_version": 4,
+      "reason": "reader_too_old",
+      "writer_version": 4
+    }
+  },
+  "protocol_version": 4
+}

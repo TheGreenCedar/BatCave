@@ -3,7 +3,8 @@
 use std::{fs, path::Path, time::Instant};
 
 use crate::contracts::{
-    MetricQuality, MetricQualityInfo, MetricSource, SystemMetricQuality, SystemMetricsSnapshot,
+    MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource, SystemMetricQuality,
+    SystemMetricsSnapshot,
 };
 
 const SECTOR_SIZE_BYTES: u64 = 512;
@@ -48,7 +49,10 @@ impl LinuxSystemCollector {
                     0.0,
                     0.0,
                     MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
-                        .with_message("Linux CPU counters need a second /proc/stat sample."),
+                        .with_limitation(
+                            MetricLimitationCode::PendingBaseline,
+                            "Linux CPU counters need a second /proc/stat sample.",
+                        ),
                 ),
                 |previous_cpu| {
                     let (cpu, kernel) = cpu_load(previous_cpu, aggregate_cpu);
@@ -183,7 +187,10 @@ fn resolve_io_sample(
                         0,
                         0,
                         MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
-                            .with_message(initial_message),
+                            .with_limitation(
+                                MetricLimitationCode::PendingBaseline,
+                                initial_message,
+                            ),
                     )
                 },
                 |previous| {
@@ -213,7 +220,7 @@ fn resolve_io_sample(
                     0,
                     0,
                     MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Procfs)
-                        .with_message(&error),
+                        .with_limitation(MetricLimitationCode::CollectorFailure, &error),
                 )
             },
             |previous| {
@@ -222,7 +229,7 @@ fn resolve_io_sample(
                     0,
                     0,
                     MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
-                        .with_message(&error),
+                        .with_limitation(MetricLimitationCode::CollectorFailure, &error),
                 )
             },
         ),

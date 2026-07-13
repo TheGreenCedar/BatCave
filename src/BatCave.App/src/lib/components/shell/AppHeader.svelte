@@ -14,6 +14,7 @@
   export let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   export let healthLabel: string;
   export let healthTone: "healthy" | "warning" | "danger";
+  export let mutationsDisabled = false;
   export let onSearch: (value: string) => void;
   export let onPaused: () => void;
   export let onRefresh: () => void;
@@ -41,12 +42,13 @@
       aria-label="Search apps and processes"
       placeholder="Search apps and processes"
       autocomplete="off"
+      disabled={mutationsDisabled}
     />
     <kbd>/</kbd>
   </label>
 
   <nav class="header-actions" aria-label="Telemetry controls">
-    <button class="header-action" class:resume={isPaused} type="button" onclick={onPaused}>
+    <button class="header-action" class:resume={isPaused} type="button" disabled={mutationsDisabled} onclick={onPaused}>
       {#if isPaused}<Play size={18} weight="fill" aria-hidden="true" />{:else}<Pause size={18} weight="fill" aria-hidden="true" />{/if}
       <span>{isPaused ? "Resume" : "Pause"}</span>
     </button>

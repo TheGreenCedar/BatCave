@@ -1,10 +1,14 @@
-import type { RuntimeQuery, RuntimeSnapshot } from "./types";
+import type { RuntimeQueryInputV3 } from "./generated/runtime-protocol-v3";
+import type { RuntimeSnapshot } from "./types";
+import { adaptRuntimePayload } from "./protocol/runtimeAdapter.ts";
+import { decodeProtocolEnvelope, type ProtocolMismatchView } from "./protocol/runtimeProtocol.ts";
 
 export type RuntimeInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 export interface NativeSnapshotRead {
   snapshot: RuntimeSnapshot;
   error: string;
+  mismatch: ProtocolMismatchView | null;
   ok: boolean;
 }
 
@@ -20,11 +24,20 @@ export async function readNativeSnapshot(
 ): Promise<NativeSnapshotRead> {
   try {
     return {
-      snapshot: await invoke<RuntimeSnapshot>("get_snapshot"),
+      snapshot: decodeRuntimeSnapshot(await invoke<unknown>("get_snapshot")),
       error: "",
+      mismatch: null,
       ok: true,
     };
   } catch (error) {
+    if (error instanceof ProtocolMismatchError) {
+      return {
+        snapshot: fallback.emptySnapshot(error.mismatch.message),
+        error: error.mismatch.message,
+        mismatch: error.mismatch,
+        ok: false,
+      };
+    }
     const message = commandErrorMessage(error, "Native telemetry is unavailable.");
 
     return {
@@ -32,38 +45,67 @@ export async function readNativeSnapshot(
         ? fallback.currentSnapshot
         : fallback.emptySnapshot(message),
       error: message,
+      mismatch: null,
       ok: false,
     };
   }
 }
 
 export function setRuntimePaused(invoke: RuntimeInvoke, paused: boolean): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>(paused ? "pause_runtime" : "resume_runtime");
+  return invokeRuntimeSnapshot(invoke, paused ? "pause_runtime" : "resume_runtime");
 }
 
 export function refreshRuntime(invoke: RuntimeInvoke): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>("refresh_now");
+  return invokeRuntimeSnapshot(invoke, "refresh_now");
 }
 
 export function setRuntimeProcessQuery(
   invoke: RuntimeInvoke,
-  query: RuntimeQuery,
+  query: RuntimeQueryInputV3,
 ): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>("set_process_query", { query });
+  return invokeRuntimeSnapshot(invoke, "set_process_query", { query });
 }
 
 export function setRuntimeSampleInterval(
   invoke: RuntimeInvoke,
   sampleIntervalMs: number,
 ): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>("set_sample_interval", { sampleIntervalMs });
+  return invokeRuntimeSnapshot(invoke, "set_sample_interval", { sampleIntervalMs });
 }
 
 export function setRuntimeAdminMode(
   invoke: RuntimeInvoke,
   enabled: boolean,
 ): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>("set_admin_mode", { enabled });
+  return invokeRuntimeSnapshot(invoke, "set_admin_mode", { enabled });
+}
+
+export class ProtocolMismatchError extends Error {
+  readonly mismatch: ProtocolMismatchView;
+
+  constructor(mismatch: ProtocolMismatchView) {
+    super(mismatch.message);
+    this.name = "ProtocolMismatchError";
+    this.mismatch = mismatch;
+  }
+}
+
+export function runtimeMutationAllowed(mismatch: ProtocolMismatchView | null): mismatch is null {
+  return mismatch === null;
+}
+
+export function decodeRuntimeSnapshot(value: unknown): RuntimeSnapshot {
+  const decoded = decodeProtocolEnvelope(value);
+  if (decoded.kind === "protocol_mismatch") throw new ProtocolMismatchError(decoded.mismatch);
+  return adaptRuntimePayload(decoded.payload);
+}
+
+async function invokeRuntimeSnapshot(
+  invoke: RuntimeInvoke,
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<RuntimeSnapshot> {
+  return decodeRuntimeSnapshot(await invoke<unknown>(command, args));
 }
 
 export async function getRuntimeProcessIcons(

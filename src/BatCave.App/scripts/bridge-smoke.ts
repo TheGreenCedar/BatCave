@@ -4,12 +4,14 @@ import {
   getRuntimeProcessIcons,
   readNativeSnapshot,
   refreshRuntime,
+  runtimeMutationAllowed,
   setRuntimePaused,
   setRuntimeAdminMode,
   setRuntimeProcessQuery,
   setRuntimeSampleInterval,
   type RuntimeInvoke,
 } from "../src/lib/tauriBridge.ts";
+import { encodeFixtureSnapshot } from "../src/lib/protocol/fixtureProtocol.ts";
 
 const canonicalSnapshot = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
@@ -31,10 +33,12 @@ function snapshot(seq: number) {
     source: "batcave_runtime",
     environment: {
       platform: "windows",
+      architecture: "unknown",
       admin_mode_available: true,
       process_elevation: "standard",
       install_kind: "nsis",
       data_directory: "C:\\Users\\test\\BatCaveMonitor",
+      release_identity: { app_version: "development", source_commit_sha: null },
     },
     admin_mode: {
       state: "off",
@@ -57,21 +61,26 @@ function snapshot(seq: number) {
       paused: false,
     },
     health: {
-      tick_count: 0,
-      snapshot_latency_ms: 0,
+      engine_state: null,
+      collector_state: null,
       degraded: false,
-      collector_warnings: 0,
-      runtime_loop_enabled: true,
-      runtime_loop_running: true,
       status_summary: "ok",
-      updated_at_ms: seq,
-      tick_p95_ms: 0,
-      sort_p95_ms: 0,
-      jitter_p95_ms: 0,
-      dropped_ticks: 0,
+      evaluated_at_ms: seq,
+      last_heartbeat_at_ms: null,
+      heartbeat_age_ms: null,
+      publication_age_ms: 0,
+      sample_age_ms: 0,
+      deadline_misses: null,
+      deadline_lateness_p95_ms: null,
+      collection_latency_ms: null,
+      collection_p95_ms: null,
+      publication_latency_ms: null,
+      publication_p95_ms: null,
+      collector_warning_count: 0,
       app_cpu_percent: 0,
       app_rss_bytes: 0,
       last_warning: null,
+      fatal_error: null,
     },
     system: {
       cpu_percent: 0,
@@ -92,12 +101,20 @@ function snapshot(seq: number) {
     },
     process_contributors: {
       cpu: null,
+      cpu_process_id: null,
+      cpu_coverage: { available: 0, total: 0 },
       cpu_name_ambiguous: false,
       memory: null,
+      memory_process_id: null,
+      memory_coverage: { available: 0, total: 0 },
       memory_name_ambiguous: false,
       io: null,
+      io_process_id: null,
+      io_coverage: { available: 0, total: 0 },
       io_name_ambiguous: false,
       network: null,
+      network_process_id: null,
+      network_coverage: { available: 0, total: 0 },
       network_name_ambiguous: false,
     },
     processes: [],
@@ -114,13 +131,13 @@ const invoke: RuntimeInvoke = async (command, args) => {
     throw new Error("access denied");
   }
 
-  return snapshot(calls.length);
+  return encodeFixtureSnapshot(snapshot(calls.length));
 };
 
 const successfulRead = await readNativeSnapshot(
   async (command) => {
     assert.equal(command, "get_snapshot");
-    return snapshot(7);
+    return encodeFixtureSnapshot(snapshot(7));
   },
   {
     currentSnapshot: snapshot(99),
@@ -203,5 +220,30 @@ const heldRead = await readNativeSnapshot(
 );
 assert.equal(heldRead.snapshot, previous);
 assert.equal(heldRead.error, "still down");
+
+const incompatible = JSON.parse(
+  readFileSync(
+    new URL("../src-tauri/src/fixtures/runtime-protocol-v3/incompatible.json", import.meta.url),
+    "utf8",
+  ),
+);
+const mismatchRead = await readNativeSnapshot(async () => incompatible, {
+  currentSnapshot: previous,
+  emptySnapshot: (message) => ({
+    ...emptySnapshot,
+    health: { ...emptySnapshot.health, status_summary: message },
+  }),
+  hasNativeSnapshot: true,
+});
+assert.equal(mismatchRead.ok, false);
+assert.notEqual(mismatchRead.snapshot, previous);
+assert.equal(mismatchRead.snapshot.publication_seq, 0);
+assert.equal(mismatchRead.mismatch?.reason, "reader_too_old");
+
+let blockedMutationCalls = 0;
+if (runtimeMutationAllowed(mismatchRead.mismatch)) {
+  blockedMutationCalls += 1;
+}
+assert.equal(blockedMutationCalls, 0);
 
 console.log("bridge smoke passed");

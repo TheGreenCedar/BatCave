@@ -1,0 +1,338 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import type {
+  MetricSemantic,
+  ProtocolEnvelope,
+  RuntimeSnapshotPayloadV3,
+  WorkloadDetailV3,
+} from "../src/lib/generated/runtime-protocol-v3.ts";
+import { adaptRuntimePayload } from "../src/lib/protocol/runtimeAdapter.ts";
+import { decodeProtocolEnvelope } from "../src/lib/protocol/runtimeProtocol.ts";
+
+const windows = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/windows-standard.json");
+const elevated = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/windows-elevated.json");
+const linux = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/linux-partial.json");
+const macos = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/macos-limited.json");
+const incompatible = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/incompatible.json");
+const transitions = fixtureArray(
+  "../src-tauri/src/fixtures/runtime-protocol-v3/quality-transitions.json",
+);
+
+test("production fixture validates and preserves workload identity and order", () => {
+  const decoded = decodeProtocolEnvelope(windows);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+
+  const group = decoded.payload.workloads.find((workload) => workload.kind === "group");
+  assert.ok(group && group.kind === "group");
+  assert.equal(group.detail.member_ids.length, 2);
+  assert.equal(new Set(group.detail.member_ids).size, 2);
+  assert.equal(group.detail.coverage.length, group.detail.metrics.length);
+
+  const adapted = adaptRuntimePayload(decoded.payload);
+  const wireProcess = firstProcess(decoded.payload);
+  assert.equal("attention_label" in wireProcess.detail.presentation, false);
+  assert.equal("attention_label" in group.detail, false);
+  assert.deepEqual(
+    adapted.process_view_rows.map((row) => row.kind),
+    decoded.payload.workloads.map((workload) => workload.kind),
+  );
+  assert.deepEqual(
+    adapted.process_view_rows
+      .filter((row) => row.kind === "process")
+      .map((row) => row.detail.workload_id),
+    group.detail.member_ids,
+  );
+  assert.equal(adapted.process_view_rows[0].attention_label, "CPU activity · telemetry limited");
+  assert.equal(adapted.process_view_rows[1].attention_label, "Unavailable");
+  assert.equal(adapted.process_contributors.cpu_process_id, "process:1234:1699999999000");
+  assert.deepEqual(adapted.process_contributors.cpu_coverage, { available: 2, total: 2 });
+  assert.equal(decoded.payload.health.engine_state, null);
+  assert.equal(decoded.payload.health.collection_p95_ms, null);
+  assert.equal(decoded.payload.persistence, null);
+  assert.equal(decoded.payload.settings.ui_preferences, null);
+  assert.deepEqual(decoded.payload.environment.release_identity, {
+    app_version: "development",
+    source_commit_sha: null,
+  });
+  assert.deepEqual(
+    adapted.environment.release_identity,
+    decoded.payload.environment.release_identity,
+  );
+  for (const descriptor of decoded.payload.descriptors) {
+    const intervalMetric = ["percent_one_core", "percent_system", "bytes_per_second"].includes(
+      descriptor.unit,
+    );
+    assert.equal(
+      descriptor.interval_ms,
+      intervalMetric ? decoded.payload.settings.effective_sample_interval_ms : null,
+    );
+  }
+});
+
+test("unsupported process values remain unavailable instead of becoming zero", () => {
+  const decoded = decodeProtocolEnvelope(macos);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+
+  const process = firstProcess(decoded.payload);
+  const privateMemory = observation(decoded.payload, process, "private_memory");
+  assert.equal(privateMemory[1], null);
+  assert.equal(decoded.payload.quality_codes[privateMemory[2]], "unavailable");
+
+  const adapted = adaptRuntimePayload(decoded.payload);
+  assert.ok(Number.isNaN(adapted.processes[0].private_bytes));
+  assert.equal(adapted.processes[0].quality?.memory?.quality, "estimated");
+});
+
+test("platform fixtures carry their privilege and collection limits", () => {
+  const elevatedDecoded = decodeProtocolEnvelope(elevated);
+  assert.equal(elevatedDecoded.kind, "snapshot");
+  if (elevatedDecoded.kind !== "snapshot") return;
+  assert.equal(elevatedDecoded.payload.environment.process_elevation, "elevated");
+  assert.equal(elevatedDecoded.payload.privileged_collection.state, "active");
+  assert.equal(elevatedDecoded.payload.privileged_collection.source, "none");
+  assert.equal(elevatedDecoded.payload.privileged_collection.preference, "best_available");
+
+  const linuxDecoded = decodeProtocolEnvelope(linux);
+  assert.equal(linuxDecoded.kind, "snapshot");
+  if (linuxDecoded.kind !== "snapshot") return;
+  const process = firstProcess(linuxDecoded.payload);
+  const memory = observation(linuxDecoded.payload, process, "resident_memory");
+  assert.equal(linuxDecoded.payload.environment.platform, "linux");
+  assert.equal(linuxDecoded.payload.environment.architecture, "aarch64");
+  assert.equal(linuxDecoded.payload.quality_codes[memory[2]], "partial");
+  assert.equal(linuxDecoded.payload.descriptors[memory[0]].source, "procfs");
+
+  const macosDecoded = decodeProtocolEnvelope(macos);
+  assert.equal(macosDecoded.kind, "snapshot");
+  if (macosDecoded.kind !== "snapshot") return;
+  const macNetwork = macosDecoded.payload.descriptors.find(
+    (descriptor) =>
+      descriptor.scope === "system" && descriptor.semantic === "network_receive_total",
+  );
+  assert.equal(macNetwork?.source, "sysinfo");
+  assert.equal(macNetwork?.network_scope, "all_interface_aggregate");
+});
+
+test("I/O baseline transitions retain totals while holding only rates", () => {
+  const states = transitions.map((envelope) => {
+    const decoded = decodeProtocolEnvelope(envelope);
+    assert.equal(decoded.kind, "snapshot");
+    if (decoded.kind !== "snapshot") throw new Error("transition fixture did not decode");
+    const process = firstProcess(decoded.payload);
+    return {
+      payload: decoded.payload,
+      total: observation(decoded.payload, process, "read_io_total"),
+      rate: observation(decoded.payload, process, "read_io_rate"),
+    };
+  });
+
+  assert.notEqual(states[0].total[1], null);
+  assert.equal(states[0].payload.quality_codes[states[0].total[2]], "native");
+  assert.equal(states[0].rate[1], null);
+  assert.equal(states[0].payload.quality_codes[states[0].rate[2]], "held");
+  assert.notEqual(states[1].rate[1], null);
+  assert.equal(states[1].payload.quality_codes[states[1].rate[2]], "native");
+  assert.notEqual(states[2].rate[1], null);
+  assert.equal(states[2].payload.quality_codes[states[2].rate[2]], "held");
+  assert.equal(states[3].rate[1], null);
+  assert.equal(states[3].payload.quality_codes[states[3].rate[2]], "unavailable");
+});
+
+test("incompatible writers enter the explicit mismatch state", () => {
+  const decoded = decodeProtocolEnvelope(incompatible);
+  assert.equal(decoded.kind, "protocol_mismatch");
+  if (decoded.kind !== "protocol_mismatch") return;
+  assert.equal(decoded.mismatch.writerVersion, 4);
+  assert.equal(decoded.mismatch.minimumReaderVersion, 4);
+  assert.equal(decoded.mismatch.reason, "reader_too_old");
+});
+
+test("compatibility metadata has deterministic legacy and additive behavior", () => {
+  const legacy = structuredClone(windows);
+  legacy.protocol_version = 2;
+  legacy.compatibility.minimum_reader_version = 2;
+  assert.equal(decodeProtocolEnvelope(legacy).kind, "protocol_mismatch");
+  const legacyResult = decodeProtocolEnvelope(legacy);
+  assert.equal(
+    legacyResult.kind === "protocol_mismatch" ? legacyResult.mismatch.reason : "",
+    "legacy_writer",
+  );
+
+  const additive = structuredClone(windows);
+  additive.protocol_version = 4;
+  additive.compatibility.breaking = false;
+  assert.equal(decodeProtocolEnvelope(additive).kind, "snapshot");
+
+  const breaking = structuredClone(additive);
+  breaking.compatibility.breaking = true;
+  const breakingResult = decodeProtocolEnvelope(breaking);
+  assert.equal(
+    breakingResult.kind === "protocol_mismatch" ? breakingResult.mismatch.reason : "",
+    "breaking_writer",
+  );
+});
+
+test("reader rejects descriptor, value, and membership corruption", () => {
+  const wrongScope = structuredClone(windows);
+  const wrongScopePayload = payload(wrongScope);
+  wrongScopePayload.descriptors[wrongScopePayload.system.metrics[0][0]].scope = "process";
+  assertMismatch(wrongScope, "descriptor");
+
+  const wrongUnit = structuredClone(windows);
+  const wrongUnitPayload = payload(wrongUnit);
+  wrongUnitPayload.descriptors[wrongUnitPayload.system.metrics[0][0]].unit = "bytes";
+  assertMismatch(wrongUnit, "descriptor");
+
+  const wrongNetworkScope = structuredClone(windows);
+  const wrongNetworkPayload = payload(wrongNetworkScope);
+  const networkDescriptor = wrongNetworkPayload.descriptors.find(
+    (descriptor) => descriptor.semantic === "network_receive_total",
+  );
+  assert.ok(networkDescriptor);
+  networkDescriptor.network_scope = "ip_socket_payload";
+  assertMismatch(wrongNetworkScope, "descriptor");
+
+  const zeroInterval = structuredClone(windows);
+  const zeroIntervalPayload = payload(zeroInterval);
+  const intervalDescriptor = zeroIntervalPayload.descriptors.find(
+    (descriptor) => descriptor.interval_ms !== null,
+  );
+  assert.ok(intervalDescriptor);
+  intervalDescriptor.interval_ms = 0;
+  assertMismatch(zeroInterval, "descriptor");
+
+  const unavailableValue = structuredClone(windows);
+  const unavailablePayload = payload(unavailableValue);
+  unavailablePayload.system.metrics[0][1] = 1;
+  unavailablePayload.system.metrics[0][2] = 4;
+  assertMismatch(unavailableValue, "unavailable");
+
+  const publishableNull = structuredClone(windows);
+  payload(publishableNull).system.metrics[0][1] = null;
+  assertMismatch(publishableNull, "null observation");
+
+  const futureObservation = structuredClone(windows);
+  const futurePayload = payload(futureObservation);
+  futurePayload.system.metrics[0][3] = futurePayload.published_at_ms + 1;
+  assertMismatch(futureObservation, "after publication");
+
+  const dangling = structuredClone(windows);
+  const danglingGroup = payload(dangling).workloads.find((workload) => workload.kind === "group");
+  assert.ok(danglingGroup && danglingGroup.kind === "group");
+  danglingGroup.detail.member_ids[0] = "process:missing";
+  assertMismatch(dangling, "dangling");
+
+  const forgedIdentity = structuredClone(windows);
+  firstProcess(payload(forgedIdentity)).detail.stable_id = "process:1234:1";
+  assertMismatch(forgedIdentity, "stable identity");
+
+  const impossibleCount = structuredClone(windows);
+  payload(impossibleCount).total_process_count = 1;
+  assertMismatch(impossibleCount, "process counts");
+
+  const impossibleFatal = structuredClone(windows);
+  payload(impossibleFatal).health.engine_state = "fatal";
+  assertMismatch(impossibleFatal, "fatal");
+
+  const forgedRelease = structuredClone(windows);
+  payload(forgedRelease).environment.release_identity.source_commit_sha = "not-a-sha";
+  assertMismatch(forgedRelease, "release identity");
+
+  const healthyNothing = structuredClone(windows);
+  payload(healthyNothing).persistence = {
+    state: "healthy",
+    roots: [],
+    components: [],
+    suppressed_diagnostic_events: 0,
+  };
+  assertMismatch(healthyNothing, "persistence overall");
+
+  const matchingActiveService = structuredClone(windows);
+  const matchingPayload = payload(matchingActiveService);
+  matchingPayload.privileged_collection = {
+    state: "active",
+    source: "collector_service",
+    preference: "best_available",
+    detail: null,
+    last_success_at_ms: null,
+    collector_service: {
+      state: "active",
+      release_identity: structuredClone(matchingPayload.environment.release_identity),
+      service_version: "1.0.0",
+      negotiated_protocol_version: 3,
+      minimum_desktop_version: null,
+      instance_id: "collector-instance",
+      last_connected_at_ms: matchingPayload.health.evaluated_at_ms,
+      detail: null,
+    },
+  };
+  assert.equal(decodeProtocolEnvelope(matchingActiveService).kind, "snapshot");
+
+  const mismatchedActiveService = structuredClone(matchingActiveService);
+  const collectorIdentity =
+    payload(mismatchedActiveService).privileged_collection.collector_service?.release_identity;
+  assert.ok(collectorIdentity);
+  collectorIdentity.app_version = "different";
+  assertMismatch(mismatchedActiveService, "release identity does not match");
+
+  const identityFreeActiveService = structuredClone(windows);
+  payload(identityFreeActiveService).privileged_collection = {
+    state: "active",
+    source: "collector_service",
+    preference: "best_available",
+    detail: null,
+    last_success_at_ms: null,
+    collector_service: {
+      state: "active",
+      release_identity: null,
+      service_version: null,
+      negotiated_protocol_version: null,
+      minimum_desktop_version: null,
+      instance_id: null,
+      last_connected_at_ms: null,
+      detail: null,
+    },
+  };
+  assertMismatch(identityFreeActiveService, "lacks identity");
+});
+
+function fixture(relativePath: string): ProtocolEnvelope {
+  return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), "utf8"));
+}
+
+function fixtureArray(relativePath: string): ProtocolEnvelope[] {
+  return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), "utf8"));
+}
+
+function payload(envelope: ProtocolEnvelope): RuntimeSnapshotPayloadV3 {
+  if (envelope.event.kind !== "runtime_snapshot") throw new Error("expected runtime snapshot");
+  return envelope.event.payload;
+}
+
+function firstProcess(payload: RuntimeSnapshotPayloadV3) {
+  const process = payload.workloads.find((workload) => workload.kind === "process");
+  if (!process || process.kind !== "process") throw new Error("expected process workload");
+  return process;
+}
+
+function observation(
+  payload: RuntimeSnapshotPayloadV3,
+  workload: Extract<WorkloadDetailV3, { kind: "process" }>,
+  semantic: MetricSemantic,
+) {
+  const metric = workload.detail.metrics.find(
+    (candidate) => payload.descriptors[candidate[0]].semantic === semantic,
+  );
+  if (!metric) throw new Error(`missing ${semantic} observation`);
+  return metric;
+}
+
+function assertMismatch(envelope: ProtocolEnvelope, messageFragment: string) {
+  const decoded = decodeProtocolEnvelope(envelope);
+  assert.equal(decoded.kind, "protocol_mismatch");
+  if (decoded.kind !== "protocol_mismatch") return;
+  assert.match(decoded.mismatch.message.toLocaleLowerCase(), new RegExp(messageFragment));
+}
