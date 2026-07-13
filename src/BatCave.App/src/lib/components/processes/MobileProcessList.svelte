@@ -1,8 +1,17 @@
 <script lang="ts">
   import { CaretRight } from "phosphor-svelte";
-  import { processRowSecondaryLabel, processSelectionKey, type ProcessIconKind } from "../../process";
   import {
+    processRowSecondaryLabel,
+    processViewRowKey,
+    processViewRowMetrics,
+    workloadSelectionHighlightsRow,
+    workloadSelectionMatchesRow,
+    type ProcessIconKind,
+  } from "../../process";
+  import {
+    displayGroupMetricValue,
     displayProcessMetricValue,
+    formatBytes,
     formatPercent,
     formatRate,
     processMemoryTitle,
@@ -12,15 +21,17 @@
   import ProcessIcon from "./ProcessIcon.svelte";
 
   export let processRows: ProcessViewRow[] = [];
-  export let selectedPid = "";
+  export let selectedWorkloadId = "";
   export let processIcons: Record<string, string> = {};
   export let expandedGroups: Record<string, boolean> = {};
   export let onSelect: (pid: string) => void = () => {};
   export let onToggleGroup: (key: string) => void = () => {};
+  export let onInteractionChange: (active: boolean) => void = () => {};
   export let platform: RuntimePlatform = "fixture";
 
   $: cardRows = processRows.filter(
-    (row) => row.kind === "group" || !row.is_grouped || (!!row.group_key && !!expandedGroups[row.group_key]),
+    (row) =>
+      row.kind === "group" || !row.is_grouped || !!expandedGroups[row.group_key],
   );
 
   function processCountLabel(count: number): string {
@@ -28,7 +39,7 @@
   }
 
   function processForRow(row: ProcessViewRow): ProcessSample | undefined {
-    return row.process ?? row.representative;
+    return row.kind === "process" ? row.detail.process : undefined;
   }
 
   function iconSrc(process: ProcessSample | undefined): string | undefined {
@@ -39,63 +50,87 @@
     return (row.icon_kind as ProcessIconKind) || "process";
   }
 
-  function selectedInRow(row: ProcessViewRow): boolean {
-    return (
-      (!!row.process && processSelectionKey(row.process) === selectedPid) ||
-      (!!row.group_key && selectedPid === groupSelectionKey(row.group_key)) ||
-      (!!row.group_key &&
-        processRows.some(
-          (candidate) =>
-            candidate.group_key === row.group_key &&
-            !!candidate.process &&
-            processSelectionKey(candidate.process) === selectedPid,
-        ))
-    );
-  }
-
   function selectRow(row: ProcessViewRow): void {
-    if (row.kind === "group" && row.group_key) {
-      onSelect(groupSelectionKey(row.group_key));
-      return;
-    }
-
-    const process = processForRow(row);
-    if (process) {
-      onSelect(processSelectionKey(process));
-    }
+    onSelect(row.detail.workload_id);
   }
 
-  function groupSelectionKey(key: string): string {
-    return `group:${key}`;
+  function networkLabel(row: ProcessViewRow): string {
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        row.detail.network_bps,
+        row.detail.quality.network,
+        row.detail.coverage.network,
+        formatRate,
+      );
+    }
+    const quality = row.detail.process.quality?.network;
+    return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
+  }
+
+  function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
+    const next = event.relatedTarget;
+    if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
+      onInteractionChange(false);
+    }
   }
 
   function cpuLabel(row: ProcessViewRow): string {
-    const process = processForRow(row);
-    return displayProcessMetricValue(row.cpu_percent, process?.quality?.cpu, formatPercent);
+    const metrics = processViewRowMetrics(row);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        metrics.cpuPercent,
+        row.detail.quality.cpu,
+        row.detail.coverage.cpu,
+        formatPercent,
+      );
+    }
+    return displayProcessMetricValue(
+      metrics.cpuPercent,
+      row.detail.process.quality?.cpu,
+      formatPercent,
+    );
   }
 
   function ioLabel(row: ProcessViewRow): string {
-    const process = processForRow(row);
-    return displayProcessMetricValue(row.io_bps, process?.quality?.io, formatRate);
+    const metrics = processViewRowMetrics(row);
+    if (row.kind === "group") {
+      return displayGroupMetricValue(
+        metrics.ioBps,
+        row.detail.quality.io,
+        row.detail.coverage.io,
+        formatRate,
+      );
+    }
+    return displayProcessMetricValue(metrics.ioBps, row.detail.process.quality?.io, formatRate);
   }
 </script>
 
-<div class="mobile-process-list" aria-label="Attention queue cards">
-  {#each cardRows as row}
+<div
+  class="mobile-process-list"
+  role="region"
+  aria-label="Attention queue cards"
+  onpointerenter={() => onInteractionChange(true)}
+  onpointerleave={() => onInteractionChange(false)}
+  onfocusin={() => onInteractionChange(true)}
+  onfocusout={handleFocusOut}
+>
+  {#each cardRows as row (processViewRowKey(row))}
     {@const process = processForRow(row)}
-    {@const selected = selectedInRow(row)}
-    {@const expanded = row.group_key ? !!expandedGroups[row.group_key] : false}
+    {@const metrics = processViewRowMetrics(row)}
+    {@const highlighted = workloadSelectionHighlightsRow(processRows, row, selectedWorkloadId)}
+    {@const actionSelected = workloadSelectionMatchesRow(row, selectedWorkloadId)}
+    {@const expanded = row.kind === "group" ? !!expandedGroups[row.detail.group_key] : false}
     {@const secondaryLabel = processRowSecondaryLabel(row)}
     <article
       class="mobile-process-card"
-      class:selected={selected}
+      class:selected={highlighted}
       class:child-card={row.kind === "process" && row.is_grouped}
     >
       <button
         class="mobile-card-select"
         type="button"
-        aria-pressed={selected}
-        aria-label={row.kind === "group" ? `Inspect ${row.group_label ?? "process"} group` : `Inspect ${process?.name}, PID ${process?.pid}`}
+        aria-pressed={actionSelected}
+        aria-label={row.kind === "group" ? `Inspect ${row.detail.label} group` : `Inspect ${process?.name}, PID ${process?.pid}`}
         onclick={() => selectRow(row)}
       >
         <span class="card-title-row">
@@ -103,10 +138,10 @@
             <ProcessIcon
               kind={iconKind(row)}
               child={row.kind === "process" && row.is_grouped}
-              src={iconSrc(process)}
+              src={row.kind === "group" && row.icon_source ? processIcons[row.icon_source] : iconSrc(process)}
             />
             <span>
-              <strong>{row.group_label ?? process?.name}</strong>
+              <strong>{row.kind === "group" ? row.detail.label : process?.name}</strong>
               {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
             </span>
           </span>
@@ -119,27 +154,31 @@
           </span>
           <span>
             <em>Working set</em>
-            <b title={process ? processMemoryTitle(process) : ""}>{process ? residentMemoryValue({ ...process, memory_bytes: row.memory_bytes }, platform) : ""}</b>
+            <b title={process ? processMemoryTitle(process) : ""}>{row.kind === "process" ? residentMemoryValue(row.detail.process, platform) : displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</b>
           </span>
           <span>
             <em>I/O</em>
             <b title={process?.quality?.io?.message ?? ""}>{ioLabel(row)}</b>
           </span>
+          <span>
+            <em>Network</em>
+            <b>{networkLabel(row)}</b>
+          </span>
         </span>
         <span class="card-foot">
-          <span>{row.kind === "group" ? `${row.group_count} rows` : `PID ${process?.pid}`}</span>
-          <span>{row.kind === "group" ? "grouped" : process?.status}</span>
+          <span>{row.kind === "group" ? processCountLabel(row.detail.process_count) : `PID ${process?.pid}`}</span>
+          <span>{row.kind === "group" ? "Aggregate" : process?.status}</span>
         </span>
       </button>
-      {#if row.kind === "group" && row.group_key}
+      {#if row.kind === "group"}
         <button
           class="mobile-group-expand"
           type="button"
           aria-expanded={expanded}
-          onclick={() => onToggleGroup(row.group_key ?? "")}
+          onclick={() => onToggleGroup(row.detail.group_key)}
         >
           <CaretRight class={expanded ? "expanded" : ""} size={15} weight="bold" aria-hidden="true" />
-          {expanded ? "Collapse" : "Expand"} {processCountLabel(row.group_count)}
+          {expanded ? "Collapse" : "Expand"} {processCountLabel(row.detail.process_count)}
         </button>
       {/if}
     </article>

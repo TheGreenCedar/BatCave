@@ -9,7 +9,7 @@
   export let focusMode: ProcessFocusMode = "all";
   export let searchText = "";
   export let columns: ProcessColumn[] = [];
-  export let selectedPid = "";
+  export let selectedWorkloadId = "";
   export let sortKey: SortKey = "attention";
   export let sortDirection: SortDirection;
   export let processIcons: Record<string, string> = {};
@@ -25,7 +25,7 @@
 
   $: visibleRows = windowProcessViewRows(processRows, resultWindow);
   $: visibleGroupKeys = new Set(
-    visibleRows.flatMap((row) => (row.kind === "group" && row.group_key ? [row.group_key] : [])),
+    visibleRows.flatMap((row) => (row.kind === "group" ? [row.detail.group_key] : [])),
   );
   $: pruneExpandedGroups(visibleGroupKeys);
   $: rankedCount = processRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
@@ -78,7 +78,7 @@
   <ProcessTable
     processRows={visibleRows}
     {columns}
-    {selectedPid}
+    {selectedWorkloadId}
     {sortKey}
     {sortDirection}
     {processIcons}
@@ -91,11 +91,12 @@
   />
   <MobileProcessList
     processRows={visibleRows}
-    {selectedPid}
+    {selectedWorkloadId}
     {processIcons}
     {expandedGroups}
     {onSelect}
     onToggleGroup={toggleGroup}
+    {onInteractionChange}
     {platform}
   />
 

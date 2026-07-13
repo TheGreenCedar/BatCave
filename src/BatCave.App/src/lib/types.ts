@@ -198,25 +198,78 @@ export interface ProcessSample {
   quality?: ProcessMetricQuality;
 }
 
-export type ProcessViewRowKind = "group" | "process";
+export type ProcessViewRow = ProcessViewProcessRow | ProcessViewGroupRow;
 
-export interface ProcessViewRow {
-  kind: ProcessViewRowKind;
-  process?: ProcessSample;
-  representative?: ProcessSample;
-  group_key?: string;
-  group_label?: string;
-  group_category?: string;
+export interface ProcessViewProcessRow {
+  kind: "process";
+  detail: ProcessDetail;
+  group_key: string;
+  group_label: string;
+  group_category: string;
   group_count: number;
   icon_kind: string;
   is_child: boolean;
   is_grouped: boolean;
   attention_label: string;
+}
+
+export interface ProcessViewGroupRow {
+  kind: "group";
+  detail: GroupDetail;
+  icon_kind: string;
+  icon_source?: string;
+  example_label?: string;
+  attention_label: string;
+}
+
+export interface ProcessDetail {
+  kind: "process";
+  workload_id: string;
+  process: ProcessSample;
+  io_bps: number;
+  network_bps: number;
+}
+
+export interface GroupDetail {
+  kind: "group";
+  workload_id: string;
+  group_key: string;
+  label: string;
+  category: string;
+  process_count: number;
   cpu_percent: number;
   memory_bytes: number;
   io_bps: number;
+  other_io_bps?: number;
   network_bps: number;
   threads: number;
+  quality: GroupMetricQuality;
+  coverage: GroupMetricCoverage;
+}
+
+export type WorkloadDetail = ProcessDetail | GroupDetail;
+
+export interface GroupMetricQuality {
+  cpu: MetricQualityInfo;
+  memory: MetricQualityInfo;
+  io: MetricQualityInfo;
+  other_io: MetricQualityInfo;
+  network: MetricQualityInfo;
+  threads: MetricQualityInfo;
+}
+
+export interface GroupMetricCoverage {
+  cpu: MetricCoverage;
+  memory: MetricCoverage;
+  io: MetricCoverage;
+  other_io: MetricCoverage;
+  network: MetricCoverage;
+  threads: MetricCoverage;
+}
+
+export interface MetricCoverage {
+  available: number;
+  total: number;
 }
 
 export interface ProcessMetricQuality {

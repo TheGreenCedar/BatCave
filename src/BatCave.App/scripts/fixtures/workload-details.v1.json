@@ -1,0 +1,93 @@
+[
+  {
+    "kind": "process",
+    "detail": {
+      "kind": "process",
+      "workload_id": "process:42:1700000000000",
+      "process": {
+        "pid": "42",
+        "parent_pid": "1",
+        "start_time_ms": 1700000000000,
+        "name": "code",
+        "exe": "/usr/bin/code",
+        "status": "running",
+        "cpu_percent": 8.5,
+        "memory_bytes": 67108864,
+        "private_bytes": 50331648,
+        "io_read_total_bytes": 1024,
+        "io_write_total_bytes": 2048,
+        "other_io_total_bytes": 512,
+        "io_read_bps": 128,
+        "io_write_bps": 256,
+        "other_io_bps": 32,
+        "network_received_bps": 64,
+        "network_transmitted_bps": 32,
+        "threads": 12,
+        "handles": 24,
+        "access_state": "full",
+        "quality": {
+          "cpu": { "quality": "native", "source": "direct_api" },
+          "memory": { "quality": "native", "source": "direct_api" },
+          "io": { "quality": "native", "source": "direct_api" },
+          "other_io": { "quality": "native", "source": "direct_api" },
+          "network": { "quality": "estimated", "source": "process_aggregate" },
+          "threads": { "quality": "native", "source": "direct_api" }
+        }
+      },
+      "io_bps": 384,
+      "network_bps": 96
+    },
+    "group_key": "code",
+    "group_label": "code",
+    "group_category": "Developer tools",
+    "group_count": 1,
+    "icon_kind": "code",
+    "is_child": false,
+    "is_grouped": false,
+    "attention_label": "steady"
+  },
+  {
+    "kind": "group",
+    "detail": {
+      "kind": "group",
+      "workload_id": "group:code",
+      "group_key": "code",
+      "label": "code",
+      "category": "Developer tools",
+      "process_count": 2,
+      "cpu_percent": 15.5,
+      "memory_bytes": 134217728,
+      "io_bps": 768,
+      "network_bps": 96,
+      "threads": 24,
+      "quality": {
+        "cpu": { "quality": "native", "source": "process_aggregate" },
+        "memory": { "quality": "native", "source": "process_aggregate" },
+        "io": { "quality": "native", "source": "process_aggregate" },
+        "other_io": {
+          "quality": "unavailable",
+          "source": "process_aggregate",
+          "message": "0 of 2 processes contribute to this aggregate."
+        },
+        "network": {
+          "quality": "partial",
+          "source": "process_aggregate",
+          "message": "1 of 2 processes contribute to this aggregate."
+        },
+        "threads": { "quality": "native", "source": "process_aggregate" }
+      },
+      "coverage": {
+        "cpu": { "available": 2, "total": 2 },
+        "memory": { "available": 2, "total": 2 },
+        "io": { "available": 2, "total": 2 },
+        "other_io": { "available": 0, "total": 2 },
+        "network": { "available": 1, "total": 2 },
+        "threads": { "available": 2, "total": 2 }
+      }
+    },
+    "icon_kind": "code",
+    "icon_source": "/usr/bin/code",
+    "example_label": "code --type=renderer",
+    "attention_label": "CPU activity"
+  }
+]

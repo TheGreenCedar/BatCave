@@ -2,6 +2,8 @@ import type {
   AccessState,
   KernelPoolKind,
   KernelPoolTag,
+  GroupDetail,
+  MetricCoverage,
   MetricQuality,
   MetricQualityInfo,
   MetricSource,
@@ -215,6 +217,142 @@ export function processTrustLabel(process: ProcessSample): string {
   if (reported.every((quality) => quality.quality === "unavailable")) return "Unavailable";
   if (reported.every((quality) => quality.quality === "native")) return "Native";
   return "Partial coverage";
+}
+
+export function groupMetricCanDisplay(
+  metric: MetricQualityInfo | undefined,
+  coverage: MetricCoverage | undefined,
+): boolean {
+  return (
+    !!metric &&
+    !!coverage &&
+    coverage.available > 0 &&
+    metric.quality !== "held" &&
+    metric.quality !== "unavailable"
+  );
+}
+
+export function displayGroupMetricValue<T>(
+  value: T,
+  metric: MetricQualityInfo | undefined,
+  coverage: MetricCoverage | undefined,
+  formatter: (value: T) => string,
+): string {
+  if (!metric || !coverage || (metric.quality === "partial" && coverage.available === 0)) {
+    return "Limited";
+  }
+  if (metric.quality === "held") {
+    return "Pending";
+  }
+  if (metric.quality === "unavailable") {
+    return "Unavailable";
+  }
+  if (coverage.available === 0) {
+    return "Limited";
+  }
+  const formatted = formatter(value);
+  if (metric.quality === "partial" || coverage.available < coverage.total) {
+    return `${formatted} · ${coverage.available}/${coverage.total} · limited`;
+  }
+  return metric.quality === "estimated" ? `${formatted} · estimated` : formatted;
+}
+
+function groupMetricIsComplete(
+  metric: MetricQualityInfo | undefined,
+  coverage: MetricCoverage | undefined,
+): boolean {
+  return (
+    groupMetricCanDisplay(metric, coverage) &&
+    metric?.quality !== "partial" &&
+    coverage?.available === coverage?.total
+  );
+}
+
+function groupMetricLimitation(
+  metric: MetricQualityInfo,
+  coverage: MetricCoverage,
+): "complete" | "pending" | "unavailable" | "limited" {
+  if (groupMetricIsComplete(metric, coverage)) return "complete";
+  if (metric.quality === "held") return "pending";
+  if (metric.quality === "unavailable") return "unavailable";
+  return "limited";
+}
+
+function groupHighFinding(
+  message: string,
+  metric: MetricQualityInfo,
+  coverage: MetricCoverage,
+): string {
+  if (metric.quality === "partial" || coverage.available < coverage.total) {
+    return `${message} Coverage is limited to ${coverage.available} of ${coverage.total} processes.`;
+  }
+  return metric.quality === "estimated" ? `${message} This aggregate is estimated.` : message;
+}
+
+export function groupFindingLabel(detail: GroupDetail): string {
+  if (groupMetricCanDisplay(detail.quality.cpu, detail.coverage.cpu) && detail.cpu_percent >= 30) {
+    return groupHighFinding(
+      "Aggregate CPU use is high right now.",
+      detail.quality.cpu,
+      detail.coverage.cpu,
+    );
+  }
+  if (
+    groupMetricCanDisplay(detail.quality.memory, detail.coverage.memory) &&
+    detail.memory_bytes >= 900 * 1024 * 1024
+  ) {
+    return groupHighFinding(
+      "Aggregate memory use is high right now.",
+      detail.quality.memory,
+      detail.coverage.memory,
+    );
+  }
+  if (groupMetricCanDisplay(detail.quality.io, detail.coverage.io) && detail.io_bps >= 500 * 1024) {
+    return groupHighFinding(
+      "Aggregate read/write I/O is high right now.",
+      detail.quality.io,
+      detail.coverage.io,
+    );
+  }
+  if (
+    groupMetricCanDisplay(detail.quality.network, detail.coverage.network) &&
+    detail.network_bps >= 1024 * 1024
+  ) {
+    return groupHighFinding(
+      "Aggregate network use is high right now.",
+      detail.quality.network,
+      detail.coverage.network,
+    );
+  }
+
+  const networkLimitation = groupMetricLimitation(detail.quality.network, detail.coverage.network);
+  if (networkLimitation === "pending") {
+    return "Network aggregate activity is pending for this group.";
+  }
+  if (networkLimitation === "unavailable") {
+    return "Network aggregate activity is unavailable for this group.";
+  }
+  if (networkLimitation === "limited") {
+    return "Network aggregate activity is limited by process telemetry coverage.";
+  }
+
+  const otherLimitations = [
+    groupMetricLimitation(detail.quality.cpu, detail.coverage.cpu),
+    groupMetricLimitation(detail.quality.memory, detail.coverage.memory),
+    groupMetricLimitation(detail.quality.io, detail.coverage.io),
+    groupMetricLimitation(detail.quality.threads, detail.coverage.threads),
+  ].filter((limitation) => limitation !== "complete");
+  if (otherLimitations.length > 0) {
+    if (otherLimitations.every((limitation) => limitation === "pending")) {
+      return "Some aggregate activity is pending for this workload group.";
+    }
+    if (otherLimitations.every((limitation) => limitation === "unavailable")) {
+      return "Some aggregate activity is unavailable for this workload group.";
+    }
+    return "Some aggregate activity is limited by process telemetry coverage.";
+  }
+
+  return "No unusual aggregate activity is visible for this group right now.";
 }
 
 export function metricQualityAction(metric: MetricQualityInfo | undefined): string {
