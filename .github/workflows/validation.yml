@@ -7,6 +7,10 @@ on:
       - main
       - "codex/**"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dependency-review:
     name: Dependency review
@@ -39,6 +43,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Install frontend dependencies
         run: npm ci
@@ -85,6 +96,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
+
       - name: Install Linux native dependencies
         run: bash scripts/install-linux-deps.sh
 
@@ -124,6 +142,13 @@ jobs:
           components: rustfmt, clippy
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
+
       - name: Install frontend dependencies
         run: npm ci
         working-directory: src/BatCave.App
@@ -141,10 +166,3 @@ jobs:
         run: |
           cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets --target aarch64-apple-darwin -- -D warnings
           cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets --target x86_64-apple-darwin -- -D warnings
-
-      - name: Build universal macOS binaries without packaging
-        working-directory: src/BatCave.App
-        run: npm run tauri:build:macos:universal -- --no-bundle --ci
-
-      - name: Build universal macOS benchmark CLI
-        run: bash scripts/build-macos-universal-cli.sh

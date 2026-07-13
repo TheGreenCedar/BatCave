@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows:
     name: Windows NSIS bundle
@@ -29,15 +33,22 @@ jobs:
         with:
           components: rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
+
       - name: Install frontend dependencies
         run: npm ci
         working-directory: src/BatCave.App
 
-      - name: Validate and bundle Windows app
+      - name: Bundle Windows app
         shell: pwsh
         env:
           BATCAVE_INSTALLED_RELEASE: "1"
-        run: ./scripts/validate-tauri.ps1
+        run: ./scripts/validate-tauri.ps1 -BundleOnly
 
       - uses: actions/upload-artifact@v6
         with:
@@ -65,6 +76,13 @@ jobs:
         with:
           components: rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
+
       - name: Install Linux native dependencies
         run: bash scripts/install-linux-deps.sh
 
@@ -72,8 +90,8 @@ jobs:
         run: npm ci
         working-directory: src/BatCave.App
 
-      - name: Validate and bundle Linux app
-        run: bash scripts/validate-tauri.sh
+      - name: Bundle Linux app
+        run: bash scripts/validate-tauri.sh --bundle-only
 
       - uses: actions/upload-artifact@v6
         with:
@@ -104,19 +122,22 @@ jobs:
           components: rustfmt
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
+
       - name: Install frontend dependencies
         run: npm ci
         working-directory: src/BatCave.App
 
-      - name: Validate macOS app
-        run: bash scripts/validate-tauri.sh --skip-bundle
-
       - name: Build ad-hoc signed universal DMG
-        working-directory: src/BatCave.App
         env:
           APPLE_SIGNING_IDENTITY: "-"
           CI: "true"
-        run: npm run tauri:build:macos:universal -- --ci
+        run: bash scripts/validate-tauri.sh --bundle-only
 
       - name: Verify universal app and DMG
         run: bash scripts/verify-macos-bundle.sh --mode adhoc

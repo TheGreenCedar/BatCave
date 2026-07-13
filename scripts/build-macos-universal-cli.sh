@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+build_bins=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --lipo-only)
+      build_bins=0
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "build-macos-universal-cli.sh must run on macOS." >&2
   exit 2
@@ -23,13 +37,28 @@ if [[ "${#missing_targets[@]}" -gt 0 ]]; then
   exit 2
 fi
 
-for target in aarch64-apple-darwin x86_64-apple-darwin; do
-  cargo build --manifest-path "$manifest" --release --bin "$binary_name" --target "$target"
-done
+if [[ "$build_bins" -eq 1 ]]; then
+  export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+  for target in aarch64-apple-darwin x86_64-apple-darwin; do
+    cargo build \
+      --manifest-path "$manifest" \
+      --release \
+      --bins \
+      --features tauri/custom-protocol \
+      --target "$target"
+  done
+fi
 
 output_directory="$target_root/universal-apple-darwin/release"
 output="$output_directory/$binary_name"
 mkdir -p "$output_directory"
+for target in aarch64-apple-darwin x86_64-apple-darwin; do
+  candidate="$target_root/$target/release/$binary_name"
+  [[ -f "$candidate" ]] || {
+    echo "Missing macOS CLI binary for $target: $candidate" >&2
+    exit 1
+  }
+done
 lipo -create \
   "$target_root/aarch64-apple-darwin/release/$binary_name" \
   "$target_root/x86_64-apple-darwin/release/$binary_name" \
