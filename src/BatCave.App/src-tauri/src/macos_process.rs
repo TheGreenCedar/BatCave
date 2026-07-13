@@ -118,18 +118,11 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
     match process_rusage(pid) {
         Ok(rusage) => {
             successful_probes += 1;
-            if rusage.resident_size > 0 {
-                process.memory_bytes = rusage.resident_size;
-            }
-            if rusage.physical_footprint > 0 {
-                process.private_bytes = rusage.physical_footprint;
-            }
+            (process.memory_bytes, process.private_bytes) =
+                rusage_memory_values(process.memory_bytes, &rusage);
             process.io_read_total_bytes = rusage.disk_bytes_read;
             process.io_write_total_bytes = rusage.disk_bytes_written;
-            quality.memory = Some(MetricQualityInfo::new(
-                MetricQuality::Native,
-                MetricSource::DirectApi,
-            ));
+            quality.memory = Some(rusage_memory_quality(&rusage));
             quality.io = Some(MetricQualityInfo::new(
                 MetricQuality::Native,
                 MetricSource::DirectApi,
@@ -210,6 +203,26 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
     };
     process.access_state = access;
     access
+}
+
+fn rusage_memory_values(fallback_resident: u64, rusage: &RusageInfoV2) -> (u64, u64) {
+    (
+        if rusage.resident_size > 0 {
+            rusage.resident_size
+        } else {
+            fallback_resident
+        },
+        rusage.physical_footprint,
+    )
+}
+
+fn rusage_memory_quality(rusage: &RusageInfoV2) -> MetricQualityInfo {
+    if rusage.resident_size > 0 {
+        MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
+    } else {
+        MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Sysinfo)
+            .with_message(PHYSICAL_FOOTPRINT_UNAVAILABLE)
+    }
 }
 
 fn process_rusage(pid: c_int) -> io::Result<RusageInfoV2> {
@@ -330,5 +343,41 @@ mod tests {
                 .map(|quality| quality.quality),
             Some(MetricQuality::Partial)
         );
+        assert!(rows[0]
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.memory.as_ref())
+            .and_then(|quality| quality.message.as_deref())
+            .is_some_and(|message| message.contains("physical footprint is unavailable")));
+    }
+
+    #[test]
+    fn zero_physical_footprint_clears_the_sysinfo_fallback_value() {
+        let mut process = sample(std::process::id());
+        let rusage = RusageInfoV2 {
+            resident_size: 4_096,
+            physical_footprint: 0,
+            ..RusageInfoV2::default()
+        };
+
+        (process.memory_bytes, process.private_bytes) =
+            rusage_memory_values(process.memory_bytes, &rusage);
+
+        assert_eq!(process.memory_bytes, 4_096);
+        assert_eq!(process.private_bytes, 0);
+    }
+
+    #[test]
+    fn partial_rusage_keeps_resident_fallback_publishable_but_not_native() {
+        let rusage = RusageInfoV2 {
+            resident_size: 0,
+            physical_footprint: 8_192,
+            ..RusageInfoV2::default()
+        };
+
+        let quality = rusage_memory_quality(&rusage);
+
+        assert_eq!(quality.quality, MetricQuality::Partial);
+        assert_eq!(quality.source, Some(MetricSource::Sysinfo));
     }
 }

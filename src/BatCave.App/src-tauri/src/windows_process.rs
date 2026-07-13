@@ -1,10 +1,21 @@
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
-use crate::contracts::{AccessState, ProcessSample};
+use crate::contracts::{
+    AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
+    ProcessSample,
+};
 
 const FILETIME_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
 const FILETIME_100NS_PER_MS: u64 = 10_000;
 const PROCESS_PROBE_COUNT: usize = 5;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ProcessProbeResults {
+    memory: bool,
+    io: bool,
+    threads: bool,
+    handles: bool,
+}
 
 #[cfg(windows)]
 use std::mem::size_of;
@@ -95,7 +106,10 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
         threads: entry.cntThreads,
         handles: 0,
         access_state: AccessState::Denied,
-        quality: None,
+        quality: Some(process_metric_quality_from_probes(ProcessProbeResults {
+            threads: true,
+            ..ProcessProbeResults::default()
+        })),
     };
 
     let Some(process) = ProcessHandle::open(pid) else {
@@ -105,6 +119,10 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
 
     let mut succeeded = 0;
     let mut failed = 0;
+    let mut probes = ProcessProbeResults {
+        threads: true,
+        ..ProcessProbeResults::default()
+    };
 
     match query_process_image(process.raw()) {
         Some(exe) => {
@@ -127,6 +145,7 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
             sample.memory_bytes = memory.working_set_bytes;
             sample.private_bytes = memory.private_bytes;
             succeeded += 1;
+            probes.memory = true;
         }
         None => failed += 1,
     }
@@ -137,6 +156,7 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
             sample.io_write_total_bytes = io.write_bytes;
             sample.other_io_total_bytes = Some(io.other_bytes);
             succeeded += 1;
+            probes.io = true;
         }
         None => failed += 1,
     }
@@ -145,12 +165,56 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
         Some(handles) => {
             sample.handles = handles;
             succeeded += 1;
+            probes.handles = true;
         }
         None => failed += 1,
     }
 
     sample.access_state = resolve_access_state(succeeded, failed);
+    sample.quality = Some(process_metric_quality_from_probes(probes));
     sample
+}
+
+fn process_metric_quality_from_probes(probes: ProcessProbeResults) -> ProcessMetricQuality {
+    let direct = |available: bool, unavailable_message: &str| {
+        if available {
+            MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
+        } else {
+            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::DirectApi)
+                .with_message(unavailable_message)
+        }
+    };
+
+    ProcessMetricQuality {
+        cpu: None,
+        memory: Some(direct(
+            probes.memory,
+            "Native process memory counters are unavailable.",
+        )),
+        io: Some(if probes.io {
+            MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi).with_message(
+                "Read/write I/O reports ReadTransferCount plus WriteTransferCount. OtherTransferCount remains a separate process field and this metric is not physical-disk attribution.",
+            )
+        } else {
+            direct(
+                false,
+                "Native process read/write I/O counters are unavailable.",
+            )
+        }),
+        other_io: Some(direct(
+            probes.io,
+            "Native process Other I/O counters are unavailable.",
+        )),
+        network: None,
+        threads: Some(direct(
+            probes.threads,
+            "Toolhelp process thread count is unavailable.",
+        )),
+        handles: Some(direct(
+            probes.handles,
+            "Native process handle count is unavailable.",
+        )),
+    }
 }
 
 #[cfg(windows)]
@@ -374,6 +438,37 @@ mod tests {
         assert_eq!(
             resolve_access_state(0, PROCESS_PROBE_COUNT),
             AccessState::Denied
+        );
+    }
+
+    #[test]
+    fn per_field_quality_preserves_successful_windows_probes() {
+        let quality = process_metric_quality_from_probes(ProcessProbeResults {
+            memory: false,
+            io: false,
+            threads: true,
+            handles: false,
+        });
+
+        assert_eq!(
+            quality.memory.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+        assert_eq!(
+            quality.io.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+        assert_eq!(
+            quality.other_io.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
+        );
+        assert_eq!(
+            quality.threads.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Native)
+        );
+        assert_eq!(
+            quality.handles.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Unavailable)
         );
     }
 

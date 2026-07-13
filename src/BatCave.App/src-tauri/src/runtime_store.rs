@@ -21,10 +21,11 @@ use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
         AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
-        ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
-        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimeInstallKind,
-        RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
-        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        ProcessFocusMode, ProcessMetricQuality, ProcessSample, ProcessViewRow, ProcessViewRowKind,
+        RuntimeAdminModeState, RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth,
+        RuntimeInstallKind, RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
+        RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot,
+        WarmCache,
     },
     telemetry::{now_ms, TelemetryCollector},
 };
@@ -182,6 +183,8 @@ impl RuntimeStore {
         if settings_requested_admin {
             warm_cache.rows.clear();
             let _ = fs::remove_file(base_dir.join(WARM_CACHE_FILE));
+        } else {
+            warm_cache.rows = hold_process_rates(warm_cache.rows);
         }
         let admin_mode = initial_admin_mode_status();
         let snapshot = build_snapshot(
@@ -313,6 +316,7 @@ impl RuntimeStore {
     }
 
     fn tick(&mut self) -> RuntimeSnapshot {
+        let previous_process_baseline_live = self.live_process_snapshot;
         self.live_process_snapshot = false;
         let tick_started = Instant::now();
         let previous_tick_at = self.last_tick_at.replace(tick_started);
@@ -486,9 +490,14 @@ impl RuntimeStore {
         }
 
         let processes = if process_rows_fresh {
-            add_process_rates(sample_processes, &self.previous_processes, elapsed_seconds)
+            add_process_rates(
+                sample_processes,
+                &self.previous_processes,
+                elapsed_seconds,
+                previous_process_baseline_live,
+            )
         } else {
-            sample_processes
+            hold_process_rates(sample_processes)
         };
         add_process_memory_accounting(&mut system, &processes);
         self.previous_processes = processes;
@@ -872,14 +881,16 @@ fn add_process_rates(
     mut processes: Vec<ProcessSample>,
     previous_processes: &[ProcessSample],
     elapsed_seconds: f64,
+    baseline_is_live: bool,
 ) -> Vec<ProcessSample> {
     let previous_by_identity = previous_processes
         .iter()
         .map(|process| ((process.pid.as_str(), process.start_time_ms), process))
         .collect::<HashMap<_, _>>();
     for process in &mut processes {
-        if let Some(previous) =
-            previous_by_identity.get(&(process.pid.as_str(), process.start_time_ms))
+        if let Some(previous) = baseline_is_live
+            .then(|| previous_by_identity.get(&(process.pid.as_str(), process.start_time_ms)))
+            .flatten()
         {
             process.io_read_bps = byte_rate(
                 process.io_read_total_bytes,
@@ -891,17 +902,85 @@ fn add_process_rates(
                 previous.io_write_total_bytes,
                 elapsed_seconds,
             );
-            process.other_io_bps =
-                match (process.other_io_total_bytes, previous.other_io_total_bytes) {
-                    (Some(current), Some(previous)) => {
-                        Some(byte_rate(current, previous, elapsed_seconds))
-                    }
-                    _ => process.other_io_bps,
-                };
+            match (process.other_io_total_bytes, previous.other_io_total_bytes) {
+                (Some(current), Some(previous)) => {
+                    process.other_io_bps = Some(byte_rate(current, previous, elapsed_seconds));
+                }
+                _ => {
+                    process.other_io_bps = None;
+                    hold_process_other_io_rate_quality(process);
+                }
+            }
+        } else {
+            process.io_read_bps = 0;
+            process.io_write_bps = 0;
+            process.other_io_bps = None;
+            hold_process_rate_quality(process);
         }
     }
 
     processes
+}
+
+fn hold_process_rates(mut processes: Vec<ProcessSample>) -> Vec<ProcessSample> {
+    for process in &mut processes {
+        process.io_read_bps = 0;
+        process.io_write_bps = 0;
+        process.other_io_bps = None;
+        hold_process_rate_quality(process);
+    }
+    processes
+}
+
+fn hold_process_rate_quality(process: &mut ProcessSample) {
+    hold_process_io_rate_quality(process);
+    hold_process_other_io_rate_quality(process);
+}
+
+fn hold_process_io_rate_quality(process: &mut ProcessSample) {
+    let quality = process
+        .quality
+        .get_or_insert_with(ProcessMetricQuality::default);
+    if !quality.io.as_ref().is_some_and(|quality| {
+        matches!(
+            quality.quality,
+            MetricQuality::Unavailable | MetricQuality::Held
+        )
+    }) {
+        let source = quality
+            .io
+            .as_ref()
+            .and_then(|quality| quality.source)
+            .unwrap_or(MetricSource::Runtime);
+        quality.io = Some(
+            MetricQualityInfo::new(MetricQuality::Held, source)
+                .with_message("Process read/write I/O rates need a fresh prior sample."),
+        );
+    }
+}
+
+fn hold_process_other_io_rate_quality(process: &mut ProcessSample) {
+    let quality = process
+        .quality
+        .get_or_insert_with(ProcessMetricQuality::default);
+    if process.other_io_total_bytes.is_some()
+        && !quality.other_io.as_ref().is_some_and(|quality| {
+            matches!(
+                quality.quality,
+                MetricQuality::Unavailable | MetricQuality::Held
+            )
+        })
+    {
+        let source = quality
+            .other_io
+            .as_ref()
+            .and_then(|quality| quality.source)
+            .unwrap_or(MetricSource::Runtime);
+        quality.other_io = Some(
+            MetricQualityInfo::new(MetricQuality::Held, source)
+                .with_message("Process Other I/O rates need a fresh prior sample."),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2186,11 +2265,19 @@ mod tests {
         current.io_write_total_bytes = 250;
         current.other_io_total_bytes = Some(110);
 
-        let updated = add_process_rates(vec![current], &[previous], 1.0);
+        let updated = add_process_rates(vec![current], &[previous], 1.0, true);
 
         assert_eq!(updated[0].io_read_bps, 500);
         assert_eq!(updated[0].io_write_bps, 200);
         assert_eq!(updated[0].other_io_bps, Some(100));
+        assert_eq!(
+            updated[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Native)
+        );
 
         let mut restarted_previous = sample("10", "Stable", 1.0);
         restarted_previous.start_time_ms = 1;
@@ -2198,10 +2285,127 @@ mod tests {
             vec![sample("10", "Stable", 1.0)],
             &[restarted_previous],
             1.0,
+            true,
         );
 
         assert_eq!(restarted[0].io_read_bps, 0);
         assert_eq!(restarted[0].other_io_bps, None);
+        assert_eq!(
+            restarted[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
+    }
+
+    #[test]
+    fn process_rate_quality_requires_a_fresh_live_baseline_across_collectors() {
+        let collector_cases = [
+            ("windows", MetricSource::DirectApi, MetricQuality::Native),
+            ("macos", MetricSource::DirectApi, MetricQuality::Native),
+            ("linux", MetricSource::Procfs, MetricQuality::Native),
+            ("sysinfo", MetricSource::Sysinfo, MetricQuality::Estimated),
+        ];
+
+        for (label, source, collector_quality) in collector_cases {
+            let mut first = sample("10", label, 1.0);
+            first.io_read_total_bytes = 100;
+            first.io_write_total_bytes = 50;
+            first.other_io_total_bytes = Some(25);
+            let quality = first.quality.as_mut().expect("process quality");
+            quality.io = Some(MetricQualityInfo::new(collector_quality, source));
+            quality.other_io = Some(MetricQualityInfo::new(collector_quality, source));
+
+            let held = add_process_rates(vec![first.clone()], &[], 1.0, false);
+            assert_eq!(held[0].io_read_bps, 0, "{label} first read rate");
+            assert_eq!(held[0].other_io_bps, None, "{label} first Other I/O rate");
+            assert_eq!(
+                held[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| (quality.quality, quality.source)),
+                Some((MetricQuality::Held, Some(source))),
+                "{label} first rate quality"
+            );
+            assert_eq!(
+                summarize_process_contributors(&held)
+                    .io_quality
+                    .as_ref()
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Held),
+                "{label} contributor coverage"
+            );
+
+            let mut second = first.clone();
+            second.io_read_total_bytes = 300;
+            second.io_write_total_bytes = 150;
+            second.other_io_total_bytes = Some(125);
+            let current = add_process_rates(vec![second], &[first.clone()], 1.0, true);
+            assert_eq!(current[0].io_read_bps, 200, "{label} second read rate");
+            assert_eq!(current[0].io_write_bps, 100, "{label} second write rate");
+            assert_eq!(
+                current[0].other_io_bps,
+                Some(100),
+                "{label} second Other rate"
+            );
+            assert_eq!(
+                current[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(collector_quality),
+                "{label} restored collector quality"
+            );
+
+            let mut previous_without_other = first.clone();
+            previous_without_other.other_io_total_bytes = None;
+            let mut current_without_other_baseline = first.clone();
+            current_without_other_baseline.other_io_total_bytes = Some(225);
+            current_without_other_baseline.other_io_bps = Some(999);
+            let current_without_other_baseline = add_process_rates(
+                vec![current_without_other_baseline],
+                &[previous_without_other],
+                1.0,
+                true,
+            );
+            assert_eq!(
+                current_without_other_baseline[0].other_io_bps, None,
+                "{label} missing Other I/O baseline"
+            );
+            assert_eq!(
+                current_without_other_baseline[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.other_io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Held),
+                "{label} missing Other I/O baseline quality"
+            );
+            assert_eq!(
+                current_without_other_baseline[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(collector_quality),
+                "{label} read/write I/O remains publishable"
+            );
+
+            let after_gap = add_process_rates(vec![first.clone()], &[first], 1.0, false);
+            assert_eq!(
+                after_gap[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Held),
+                "{label} post-gap rate quality"
+            );
+        }
     }
 
     #[test]
@@ -2504,6 +2708,64 @@ mod tests {
         assert!(!helper_dir.join("snapshot.json").exists());
         assert!(!helper_dir.join("snapshot.json.tmp").exists());
         assert!(!helper_dir.join("stop.signal").exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn warm_cache_rates_are_held_until_a_fresh_live_baseline_exists() {
+        let base_dir = runtime_test_dir("warm-cache-rate-baseline");
+        fs::create_dir_all(&base_dir).expect("test dir exists");
+        let mut cached = sample("10", "Cached", 1.0);
+        cached.io_read_total_bytes = 2_000;
+        cached.io_write_total_bytes = 1_000;
+        cached.other_io_total_bytes = Some(500);
+        cached.io_read_bps = 900;
+        cached.io_write_bps = 450;
+        cached.other_io_bps = Some(225);
+        cached.quality.as_mut().expect("process quality").other_io = Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        ));
+        fs::write(
+            base_dir.join(WARM_CACHE_FILE),
+            serde_json::to_string(&WarmCache {
+                seq: 7,
+                rows: vec![cached],
+            })
+            .expect("cache serializes"),
+        )
+        .expect("cache fixture writes");
+
+        let store = RuntimeStore::from_base_dir(base_dir.clone());
+        let row = store.snapshot.processes.first().expect("cached row");
+
+        assert_eq!(row.io_read_bps, 0);
+        assert_eq!(row.io_write_bps, 0);
+        assert_eq!(row.other_io_bps, None);
+        assert_eq!(
+            row.quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| (quality.quality, quality.source)),
+            Some((MetricQuality::Held, Some(MetricSource::DirectApi)))
+        );
+        assert_eq!(
+            row.quality
+                .as_ref()
+                .and_then(|quality| quality.other_io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
+        assert_eq!(
+            store
+                .snapshot
+                .process_contributors
+                .io_quality
+                .as_ref()
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
+        assert!(!store.live_process_snapshot);
         let _ = fs::remove_dir_all(base_dir);
     }
 

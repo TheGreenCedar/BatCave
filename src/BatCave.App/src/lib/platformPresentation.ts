@@ -4,7 +4,7 @@ import type {
   RuntimeEnvironment,
   RuntimePlatform,
 } from "./types";
-import { processBytesLabel, processMetricIsPublishable } from "./format";
+import { processBytesLabel, processMetricIsPublishable, processPrivateMemoryValue } from "./format";
 
 export interface PlatformPresentation {
   platformName: string;
@@ -88,6 +88,5 @@ export function residentMemoryValue(process: ProcessSample, platform: RuntimePla
 }
 
 export function privateMemoryValue(process: ProcessSample, platform: RuntimePlatform): string {
-  void platform;
-  return processBytesLabel(process, process.private_bytes);
+  return processPrivateMemoryValue(process, platform);
 }

@@ -6,6 +6,7 @@ import type {
   MetricQualityInfo,
   MetricSource,
   ProcessSample,
+  RuntimePlatform,
   SystemMetricQuality,
 } from "./types";
 
@@ -94,6 +95,15 @@ export function displayMetricValue<T>(
   return formatter(value);
 }
 
+export function logicalCpuMetricQuality(
+  quality: SystemMetricQuality,
+): MetricQualityInfo | undefined {
+  if (quality.cpu?.quality === "held" || quality.cpu?.quality === "unavailable") {
+    return quality.cpu;
+  }
+  return quality.logical_cpu ?? quality.cpu;
+}
+
 export function displayProcessMetricValue<T>(
   value: T,
   metric: MetricQualityInfo | undefined,
@@ -123,6 +133,7 @@ export function nextProcessMetricHistory(
 export function processFindingLabel(
   process: ProcessSample,
   readWriteIoRate: number,
+  networkRate: number,
   memoryLabel: string,
 ): string {
   if (processMetricIsPublishable(process.quality?.cpu) && process.cpu_percent >= 30) {
@@ -137,12 +148,20 @@ export function processFindingLabel(
   if (processMetricIsPublishable(process.quality?.io) && readWriteIoRate >= 500 * 1024) {
     return "High read/write I/O relative to other workloads.";
   }
-  const activityQuality = [process.quality?.cpu, process.quality?.memory, process.quality?.io];
-  if (activityQuality.some((quality) => quality?.quality === "unavailable")) {
-    return "Some activity metrics are unavailable for this workload.";
+  if (processMetricIsPublishable(process.quality?.network) && networkRate >= 1024 * 1024) {
+    return "High network activity relative to other workloads.";
   }
+  const activityQuality = [
+    process.quality?.cpu,
+    process.quality?.memory,
+    process.quality?.io,
+    process.quality?.network,
+  ];
   if (activityQuality.some((quality) => quality?.quality === "held")) {
     return "Activity metrics are pending for this workload.";
+  }
+  if (activityQuality.some((quality) => quality?.quality === "unavailable")) {
+    return "Some activity metrics are unavailable for this workload.";
   }
   if (activityQuality.some((quality) => quality === undefined)) {
     return "Some activity metric quality was not reported for this workload.";
@@ -150,7 +169,11 @@ export function processFindingLabel(
   return "No unusual activity is visible for this workload right now.";
 }
 
-export function processActivityLabel(process: ProcessSample, readWriteIoRate: number): string {
+export function processActivityLabel(
+  process: ProcessSample,
+  readWriteIoRate: number,
+  networkRate: number,
+): string {
   if (processMetricIsPublishable(process.quality?.cpu) && process.cpu_percent >= 30) return "Hot";
   if (
     processMetricIsPublishable(process.quality?.memory) &&
@@ -161,9 +184,17 @@ export function processActivityLabel(process: ProcessSample, readWriteIoRate: nu
   if (processMetricIsPublishable(process.quality?.io) && readWriteIoRate >= 500 * 1024) {
     return "I/O";
   }
-  const activityQuality = [process.quality?.cpu, process.quality?.memory, process.quality?.io];
-  if (activityQuality.some((quality) => quality?.quality === "unavailable")) return "Unavailable";
+  if (processMetricIsPublishable(process.quality?.network) && networkRate >= 1024 * 1024) {
+    return "Network";
+  }
+  const activityQuality = [
+    process.quality?.cpu,
+    process.quality?.memory,
+    process.quality?.io,
+    process.quality?.network,
+  ];
   if (activityQuality.some((quality) => quality?.quality === "held")) return "Pending";
+  if (activityQuality.some((quality) => quality?.quality === "unavailable")) return "Unavailable";
   if (activityQuality.some((quality) => quality === undefined)) return "Quality not reported";
   return "Normal";
 }
@@ -173,20 +204,17 @@ export function processTrustLabel(process: ProcessSample): string {
     process.quality?.cpu,
     process.quality?.memory,
     process.quality?.io,
+    process.quality?.other_io,
     process.quality?.network,
+    process.quality?.threads,
+    process.quality?.handles,
   ];
   if (qualities.some((quality) => quality === undefined)) return "Quality not reported";
-  const rank: Record<MetricQuality, number> = {
-    native: 1,
-    estimated: 2,
-    partial: 3,
-    held: 4,
-    unavailable: 5,
-  };
-  const worst = (qualities as MetricQualityInfo[]).reduce((selected, candidate) =>
-    rank[candidate.quality] > rank[selected.quality] ? candidate : selected,
-  );
-  return metricQualityLabel(worst, "Quality not reported");
+  const reported = qualities as MetricQualityInfo[];
+  if (reported.some((quality) => quality.quality === "held")) return "Pending coverage";
+  if (reported.every((quality) => quality.quality === "unavailable")) return "Unavailable";
+  if (reported.every((quality) => quality.quality === "native")) return "Native";
+  return "Partial coverage";
 }
 
 export function metricQualityAction(metric: MetricQualityInfo | undefined): string {
@@ -269,6 +297,22 @@ export function processMemoryIsReported(process: ProcessSample): boolean {
 
 export function processBytesLabel(process: ProcessSample, value: number): string {
   return displayProcessMetricValue(value, processMemoryQuality(process), formatBytes);
+}
+
+export function processPrivateMemoryValue(
+  process: ProcessSample,
+  platform: RuntimePlatform,
+): string {
+  if (platform === "macos") {
+    const quality = processMemoryQuality(process);
+    if (!processMetricIsPublishable(quality)) {
+      return displayProcessMetricValue(process.private_bytes, quality, formatBytes);
+    }
+    return quality?.quality === "native" && process.private_bytes > 0
+      ? formatBytes(process.private_bytes)
+      : "Unavailable";
+  }
+  return processBytesLabel(process, process.private_bytes);
 }
 
 export function processMemoryTitle(process: ProcessSample): string {

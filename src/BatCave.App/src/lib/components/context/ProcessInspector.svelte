@@ -56,6 +56,10 @@
     return processReadRate + processWriteRate;
   }
 
+  function processNetworkRate(process: ProcessSample): number {
+    return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
+  }
+
   function processCpuLabel(process: ProcessSample): string {
     return displayProcessMetricValue(process.cpu_percent, process.quality?.cpu, formatPercent);
   }
@@ -85,7 +89,12 @@
   }
 
   function findingCopy(process: ProcessSample): string {
-    return processFindingLabel(process, processReadWriteIoRate(), presentation.memoryLabel);
+    return processFindingLabel(
+      process,
+      processReadWriteIoRate(),
+      processNetworkRate(process),
+      presentation.memoryLabel,
+    );
   }
 
   function accentTone(accent: string): "hot" | "heavy" | "io" | "normal" {
@@ -100,7 +109,7 @@
   {#if selectedProcess}
     {@const identity = processIdentity(selectedProcess)}
     {@const iconSrc = processIcons[selectedProcess.exe || selectedProcess.name]}
-    {@const accent = processActivityLabel(selectedProcess, processReadWriteIoRate())}
+    {@const accent = processActivityLabel(selectedProcess, processReadWriteIoRate(), processNetworkRate(selectedProcess))}
     {@const categoryLabel = identity.group === "Processes" ? null : identity.group}
     <div class="process-identity redesigned-identity">
       <span class="identity-icon"><ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} /></span>
@@ -165,7 +174,7 @@
         <div><dt>Threads</dt><dd>{displayProcessMetricValue(selectedProcess.threads, selectedProcess.quality?.threads, String)}</dd></div>
         <div><dt>{presentation.handlesLabel}</dt><dd>{displayProcessMetricValue(selectedProcess.handles, selectedProcess.quality?.handles, String)}</dd></div>
         <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>
-        <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Measured")}</dd></div>
+        <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Quality not reported")}</dd></div>
       </dl>
       <div class="technical-path">
         <span>Executable path</span>

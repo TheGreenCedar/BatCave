@@ -21,6 +21,7 @@
     formatOptionalRate,
     formatPercent,
     formatRate,
+    logicalCpuMetricQuality,
     metricQualityLabel,
     metricQualityShortLabel,
     nextProcessMetricHistory,
@@ -176,8 +177,6 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
-  $: diskUnavailable = systemQuality.disk?.quality === "unavailable";
-  $: networkUnavailable = systemQuality.network?.quality === "unavailable";
   $: visibleProcessColumns = processColumns
     .filter((column) => column.key !== "network" || processNetworkAvailable)
     .map((column) =>
@@ -199,8 +198,9 @@
   $: processReadRate = selectedRates?.readRate ?? processHistory.readRate.at(-1) ?? 0;
   $: processWriteRate = selectedRates?.writeRate ?? processHistory.writeRate.at(-1) ?? 0;
   $: void hydrateProcessIcons(processViewRows, filteredProcesses, selectedProcess);
-  $: coreLoads = history.cores.map((core, index) => ({ index, load: currentCoreLoad(core), trend: core }));
-  $: coreAverage = average(coreLoads.map((core) => core.load), snapshot.system.cpu_percent);
+  $: coreLoads = history.cores.flatMap((core, index) =>
+    core.length > 0 ? [{ index, load: currentCoreLoad(core), trend: core }] : [],
+  );
   $: corePeak = Math.max(...coreLoads.map((core) => core.load), 0);
   $: coreMinimum = coreLoads.length > 0 ? Math.min(...coreLoads.map((core) => core.load)) : 0;
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
@@ -286,6 +286,16 @@
     systemQuality.memory,
     formatPercent,
   );
+  $: diskDetailValue = metricValueLabel(
+    diskReadRate + diskWriteRate,
+    systemQuality.disk,
+    formatRate,
+  );
+  $: networkDetailValue = metricValueLabel(
+    networkDownRate + networkUpRate,
+    systemQuality.network,
+    formatRate,
+  );
   $: detailReadout =
     detailMode === "cpu"
       ? cpuDetailValue === "Unavailable" || cpuDetailValue === "Waiting"
@@ -296,12 +306,8 @@
           ? memoryDetailValue
           : `${memoryDetailValue} used`
         : detailMode === "disk"
-          ? diskUnavailable
-            ? "Unavailable"
-            : formatRate(diskReadRate + diskWriteRate)
-          : networkUnavailable
-            ? "Unavailable"
-            : formatRate(networkDownRate + networkUpRate);
+          ? diskDetailValue
+          : networkDetailValue;
   $: resourceSummaries = [
     {
       mode: "cpu",
@@ -772,7 +778,14 @@
         next.system.quality?.network,
         historyPointLimit,
       ),
-      cores: logicalCpu.map((value, index) => pushPoint(history.cores[index] ?? [], value)),
+      cores: logicalCpu.map((value, index) =>
+        nextMetricHistory(
+          history.cores[index] ?? [],
+          value,
+          logicalCpuMetricQuality(next.system.quality ?? {}),
+          historyPointLimit,
+        ),
+      ),
     };
   }
 
@@ -1207,14 +1220,6 @@
 
   function boundedPercent(value: number): number {
     return Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
-  }
-
-  function average(values: number[], fallback: number): number {
-    if (values.length === 0) {
-      return fallback;
-    }
-
-    return values.reduce((total, value) => total + value, 0) / values.length;
   }
 
   function coreTone(load: number): string {

@@ -7,12 +7,14 @@ import {
   formatOptionalRate,
   formatPercent,
   formatRate,
+  logicalCpuMetricQuality,
   metricQualityLabel,
   metricQualityShortLabel,
   nextProcessMetricHistory,
   processActivityLabel,
   processBytesLabel,
   processFindingLabel,
+  processPrivateMemoryValue,
   processTrustLabel,
 } from "../src/lib/format.ts";
 import { nextMetricHistory, resourceHistoryWindowLabel } from "../src/lib/history.ts";
@@ -208,6 +210,40 @@ test("held system CPU suppresses its contributor without claiming no activity", 
   assert.doesNotMatch(brief.contributorStatusLabel, /no process activity/i);
 });
 
+test("Linux first system sample keeps CPU disk network and core history pending", () => {
+  const snapshot = resourceSnapshot(null);
+  snapshot.system.cpu_percent = 73;
+  snapshot.system.disk_read_bps = 8 * 1024 * 1024;
+  snapshot.system.network_received_bps = 4 * 1024 * 1024;
+  snapshot.system.logical_cpu_percent = [90, 40];
+  snapshot.system.quality!.cpu = { quality: "held", source: "procfs" };
+  snapshot.system.quality!.logical_cpu = { quality: "held", source: "procfs" };
+  snapshot.system.quality!.disk = { quality: "held", source: "procfs" };
+  snapshot.system.quality!.network = { quality: "held", source: "procfs" };
+
+  for (const mode of ["cpu", "disk", "network"] as const) {
+    const brief = buildResourceBrief(
+      snapshot,
+      mode,
+      { memoryPercent: 20, diskRate: 8 * 1024 * 1024, networkRate: 4 * 1024 * 1024 },
+      "live",
+    );
+    assert.equal(brief.valueLabel, "Waiting", `${mode} readout`);
+    assert.equal(brief.confidence, "Unavailable", `${mode} confidence`);
+    assert.match(brief.headline, /no trusted sample/, `${mode} headline`);
+  }
+
+  for (const value of snapshot.system.logical_cpu_percent) {
+    assert.deepEqual(nextMetricHistory([12], value, snapshot.system.quality?.logical_cpu, 30), []);
+  }
+  snapshot.system.quality!.logical_cpu = { quality: "native", source: "procfs" };
+  const aggregateHeldCoreQuality = logicalCpuMetricQuality(snapshot.system.quality!);
+  assert.equal(aggregateHeldCoreQuality?.quality, "held");
+  assert.deepEqual(nextMetricHistory([12], 90, aggregateHeldCoreQuality, 30), []);
+  assert.deepEqual(nextMetricHistory([1], 8, snapshot.system.quality?.disk, 30), []);
+  assert.deepEqual(nextMetricHistory([1], 4, snapshot.system.quality?.network, 30), []);
+});
+
 test("overview states cannot turn missing or retained samples into a reassuring zero", () => {
   const zero = resourceSnapshot(null);
   zero.system.cpu_percent = 0;
@@ -383,7 +419,7 @@ test("Linux first-sample and denied Windows rows never publish placeholder CPU o
     ),
     "Unavailable",
   );
-  assert.equal(processActivityLabel(linuxFirstSample, 0), "Pending");
+  assert.equal(processActivityLabel(linuxFirstSample, 0, 0), "Pending");
 
   const deniedWindows = process({
     cpu_percent: 0,
@@ -429,10 +465,10 @@ test("Linux first-sample and denied Windows rows never publish placeholder CPU o
     "Unavailable",
   );
   assert.equal(
-    processFindingLabel(deniedWindows, 0, "Working set"),
+    processFindingLabel(deniedWindows, 0, 0, "Working set"),
     "Some activity metrics are unavailable for this workload.",
   );
-  assert.equal(processActivityLabel(deniedWindows, 0), "Unavailable");
+  assert.equal(processActivityLabel(deniedWindows, 0, 0), "Unavailable");
 });
 
 test("process history records only explicitly publishable metric samples", () => {
@@ -467,10 +503,10 @@ test("missing per-process metric quality never turns a placeholder zero into a m
   assert.deepEqual(nextProcessMetricHistory([50], 0, unknown.quality?.memory, 30), []);
   assert.deepEqual(nextProcessMetricHistory([8], 0, unknown.quality?.network, 30), []);
   assert.equal(
-    processFindingLabel(unknown, 0, "Working set"),
+    processFindingLabel(unknown, 0, 0, "Working set"),
     "Some activity metric quality was not reported for this workload.",
   );
-  assert.equal(processActivityLabel(unknown, 0), "Quality not reported");
+  assert.equal(processActivityLabel(unknown, 0, 0), "Quality not reported");
 });
 
 test("publishable process metrics retain real zero values", () => {
@@ -502,13 +538,107 @@ test("process trust summary reports the worst activity quality", () => {
       cpu: { quality: "native", source: "direct_api" },
       memory: { quality: "unavailable", source: "direct_api" },
       io: { quality: "estimated", source: "sysinfo" },
+      other_io: { quality: "native", source: "direct_api" },
       network: { quality: "partial", source: "interface_aggregate" },
+      threads: { quality: "native", source: "direct_api" },
+      handles: { quality: "native", source: "direct_api" },
     },
   });
-  assert.equal(processTrustLabel(mixed), "Unavailable / direct API");
+  assert.equal(processTrustLabel(mixed), "Partial coverage");
 
   delete mixed.quality?.network;
   assert.equal(processTrustLabel(mixed), "Quality not reported");
+});
+
+test("unsupported optional process fields produce partial rather than unavailable coverage", () => {
+  const mixed = process({
+    quality: {
+      cpu: { quality: "native" },
+      memory: { quality: "native" },
+      io: { quality: "native" },
+      other_io: { quality: "unavailable" },
+      network: { quality: "unavailable" },
+      threads: { quality: "native" },
+      handles: { quality: "native" },
+    },
+  });
+  assert.equal(processTrustLabel(mixed), "Partial coverage");
+
+  const allUnavailable = process({
+    quality: {
+      cpu: { quality: "unavailable" },
+      memory: { quality: "unavailable" },
+      io: { quality: "unavailable" },
+      other_io: { quality: "unavailable" },
+      network: { quality: "unavailable" },
+      threads: { quality: "unavailable" },
+      handles: { quality: "unavailable" },
+    },
+  });
+  assert.equal(processTrustLabel(allUnavailable), "Unavailable");
+
+  const held = process({
+    quality: {
+      cpu: { quality: "native" },
+      memory: { quality: "native" },
+      io: { quality: "held" },
+      other_io: { quality: "native" },
+      network: { quality: "native" },
+      threads: { quality: "native" },
+      handles: { quality: "native" },
+    },
+  });
+  assert.equal(processTrustLabel(held), "Pending coverage");
+});
+
+test("macOS physical footprint stays unavailable when rusage is partial or zero", () => {
+  const partial = process({
+    memory_bytes: 8 * 1024,
+    private_bytes: 16 * 1024,
+    quality: {
+      cpu: { quality: "native" },
+      memory: { quality: "partial", source: "sysinfo" },
+      io: { quality: "estimated" },
+      other_io: { quality: "unavailable" },
+      network: { quality: "unavailable" },
+      threads: { quality: "native" },
+      handles: { quality: "native" },
+    },
+  });
+  assert.equal(processBytesLabel(partial, partial.memory_bytes), "8.0 KB");
+  assert.equal(processPrivateMemoryValue(partial, "macos"), "Unavailable");
+
+  const nativeZero = process({
+    private_bytes: 0,
+    quality: { ...partial.quality, memory: { quality: "native", source: "direct_api" } },
+  });
+  assert.equal(processPrivateMemoryValue(nativeZero, "macos"), "Unavailable");
+});
+
+test("native high network activity is never described as normal", () => {
+  const networked = process({
+    cpu_percent: 0,
+    network_received_bps: 70 * 1024 * 1024,
+    network_transmitted_bps: 30 * 1024 * 1024,
+    quality: {
+      cpu: { quality: "native" },
+      memory: { quality: "native" },
+      io: { quality: "native" },
+      other_io: { quality: "native" },
+      network: { quality: "native" },
+      threads: { quality: "native" },
+      handles: { quality: "native" },
+    },
+  });
+  const networkRate =
+    (networked.network_received_bps ?? 0) + (networked.network_transmitted_bps ?? 0);
+
+  assert.equal(processActivityLabel(networked, 0, networkRate), "Network");
+  assert.equal(processTrustLabel(networked), "Native");
+  assert.equal(
+    processFindingLabel(networked, 0, networkRate, "Working set"),
+    "High network activity relative to other workloads.",
+  );
 });
 
 test("sort helpers expose state and the next accessible action", () => {
