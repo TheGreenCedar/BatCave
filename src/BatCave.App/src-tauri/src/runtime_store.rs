@@ -22,10 +22,9 @@ use crate::{
     contracts::{
         AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
         ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
-        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimeInstallKind,
-        RuntimePlatform, RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
-        RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot,
-        WarmCache,
+        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimePrivilegedSource,
+        RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection,
+        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetryCollector},
@@ -2036,9 +2035,10 @@ fn round1(value: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::contracts::{
-        AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality, RuntimeInstallKind,
-        RuntimePlatform, RuntimeProcessElevation,
+        AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality, RuntimeProcessElevation,
     };
+    #[cfg(target_os = "macos")]
+    use crate::contracts::{RuntimeInstallKind, RuntimePlatform};
 
     #[test]
     fn shape_rows_filters_sorts_and_limits_processes() {
