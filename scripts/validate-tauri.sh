@@ -97,7 +97,7 @@ if [[ "$benchmark_gate" -eq 1 ]]; then
 
   bash "$repo_root/scripts/run-benchmark-gate.sh" "${gate_args[@]}"
 else
-  bash "$repo_root/scripts/run-benchmark.sh" --benchmark-host core --platform "$benchmark_platform" --warmup-ticks 0 --ticks 2 --sleep-ms 0 --repeats 1 --strict --max-p95-ms 10000
+  bash "$repo_root/scripts/run-benchmark.sh" --benchmark-host core --platform "$benchmark_platform" --warmup-ticks 0 --ticks 2 --sleep-ms 1000 --repeats 1 --strict --max-p95-ms 10000
 fi
 
 if [[ "$skip_bundle" -eq 0 ]]; then

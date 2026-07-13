@@ -125,7 +125,7 @@ try {
             Push-Location $repoRoot
             try {
                 $benchmarkScript = Join-Path $repoRoot "scripts/run-benchmark.ps1"
-                & $benchmarkScript -BenchmarkHost core -Platform $BenchmarkPlatform -WarmupTicks 0 -Ticks 2 -SleepMs 0 -Repeats 1 -Strict -MaxP95Ms 10000
+                & $benchmarkScript -BenchmarkHost core -Platform $BenchmarkPlatform -WarmupTicks 0 -Ticks 2 -SleepMs 1000 -Repeats 1 -Strict -MaxP95Ms 10000
             }
             finally {
                 Pop-Location

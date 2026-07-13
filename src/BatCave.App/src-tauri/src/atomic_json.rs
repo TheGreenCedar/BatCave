@@ -39,6 +39,7 @@ fn write_json_atomic_with_replacer<T: Serialize>(
             path.display()
         ));
     };
+    #[cfg(unix)]
     let parent_was_created = !parent.exists();
     fs::create_dir_all(parent).map_err(|error| {
         format!(

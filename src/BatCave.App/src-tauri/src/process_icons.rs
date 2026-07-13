@@ -327,6 +327,7 @@ fn write_i32(bytes: &mut Vec<u8>, value: i32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -356,6 +357,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn base64_encode_handles_padding() {
         assert_eq!(base64_encode(b""), "");
