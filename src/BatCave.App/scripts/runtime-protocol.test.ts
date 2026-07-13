@@ -124,7 +124,7 @@ test("unsupported process values remain unavailable instead of becoming zero", (
 
   const adapted = adaptRuntimePayload(decoded.payload);
   assert.ok(Number.isNaN(adapted.processes[0].private_bytes));
-  assert.equal(adapted.processes[0].quality?.memory?.quality, "estimated");
+  assert.equal(adapted.processes[0].quality?.memory?.quality, "partial");
 });
 
 test("platform fixtures carry their privilege and collection limits", () => {
@@ -155,6 +155,17 @@ test("platform fixtures carry their privilege and collection limits", () => {
   );
   assert.equal(macNetwork?.source, "sysinfo");
   assert.equal(macNetwork?.network_scope, "all_interface_aggregate");
+  const macDisk = macosDecoded.payload.descriptors.find(
+    (descriptor) =>
+      descriptor.scope === "system" && descriptor.semantic === "physical_disk_read_total",
+  );
+  assert.equal(macDisk?.source, "iokit");
+  const macDiskObservation = observation(
+    macosDecoded.payload,
+    macosDecoded.payload.system,
+    "physical_disk_read_total",
+  );
+  assert.equal(macosDecoded.payload.quality_codes[macDiskObservation[2]], "held");
 });
 
 test("I/O baseline transitions retain totals while holding only rates", () => {

@@ -414,30 +414,75 @@ mod tests {
                 snapshot.environment.data_directory =
                     Some("/Users/test/Library/Application Support/BatCaveMonitor".to_string());
                 snapshot.admin_mode.state = RuntimeAdminModeState::Unavailable;
-                snapshot
-                    .system
-                    .quality
-                    .as_mut()
-                    .expect("fixture system quality")
-                    .network = Some(quality(MetricQuality::Native, MetricSource::Sysinfo));
-                let estimated_memory = quality(MetricQuality::Estimated, MetricSource::Sysinfo);
+                snapshot.system.quality = Some(SystemMetricQuality {
+                    cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    kernel_cpu: Some(
+                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                            .with_limitation(
+                                MetricLimitationCode::UnsupportedMetric,
+                                "Kernel CPU is unavailable from the macOS system collector.",
+                            ),
+                    ),
+                    logical_cpu: Some(quality(
+                        MetricQuality::Estimated,
+                        MetricSource::Sysinfo,
+                    )),
+                    memory: Some(quality(MetricQuality::Native, MetricSource::Sysinfo)),
+                    swap: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    disk: Some(
+                        quality(MetricQuality::Held, MetricSource::Iokit).with_limitation(
+                            MetricLimitationCode::PendingBaseline,
+                            "Waiting for a stable IOKit physical-device baseline after storage topology changed.",
+                        ),
+                    ),
+                    network: Some(quality(MetricQuality::Native, MetricSource::Sysinfo)),
+                });
+                let estimated_memory = quality(MetricQuality::Partial, MetricSource::Sysinfo)
+                    .with_limitation(
+                    MetricLimitationCode::AccessDenied,
+                    "Resident memory uses the sysinfo fallback; physical footprint is unavailable.",
+                );
+                let process_io = quality(MetricQuality::Native, MetricSource::Libproc);
+                let unsupported_other_io =
+                    quality(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Other per-process I/O is unavailable on macOS.",
+                    );
+                let unsupported_network =
+                    quality(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Per-process network attribution is unavailable on macOS.",
+                    );
+                let native_libproc = quality(MetricQuality::Native, MetricSource::Libproc);
                 for process in &mut snapshot.processes {
                     process.private_bytes = 0;
-                    process.quality.as_mut().expect("fixture quality").memory =
-                        Some(estimated_memory.clone());
+                    process.network_received_bps = None;
+                    process.network_transmitted_bps = None;
+                    let quality = process.quality.as_mut().expect("fixture quality");
+                    quality.memory = Some(estimated_memory.clone());
+                    quality.io = Some(process_io.clone());
+                    quality.other_io = Some(unsupported_other_io.clone());
+                    quality.network = Some(unsupported_network.clone());
+                    quality.threads = Some(native_libproc.clone());
+                    quality.handles = Some(native_libproc.clone());
                 }
                 for row in &mut snapshot.process_view_rows {
                     if let ProcessViewRow::Process { detail, .. } = row {
                         detail.process.private_bytes = 0;
-                        detail
-                            .process
-                            .quality
-                            .as_mut()
-                            .expect("fixture quality")
-                            .memory = Some(estimated_memory.clone());
+                        detail.process.network_received_bps = None;
+                        detail.process.network_transmitted_bps = None;
+                        let quality = detail.process.quality.as_mut().expect("fixture quality");
+                        quality.memory = Some(estimated_memory.clone());
+                        quality.io = Some(process_io.clone());
+                        quality.other_io = Some(unsupported_other_io.clone());
+                        quality.network = Some(unsupported_network.clone());
+                        quality.threads = Some(native_libproc.clone());
+                        quality.handles = Some(native_libproc.clone());
                     }
                 }
                 snapshot.process_contributors.memory_quality = Some(estimated_memory);
+                snapshot.process_contributors.io_quality = Some(process_io);
+                snapshot.process_contributors.network_quality = Some(unsupported_network);
             }
             RuntimePlatform::Fixture => unreachable!("goldens model real platforms"),
         }
