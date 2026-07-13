@@ -115,9 +115,22 @@
   const historyPointOptions = [30, 72, 180, 360] as const;
   type HistoryPointLimit = (typeof historyPointOptions)[number];
 
+  const accessibilityFixtureStates = [
+    "overview",
+    "process",
+    "group",
+    "settings",
+    "diagnostics",
+    "stale",
+    "degraded",
+    "compact",
+  ] as const;
+  type AccessibilityFixtureState = (typeof accessibilityFixtureStates)[number];
+
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
   const browserFixturePlatform = "macos" as const;
+  const accessibilityFixtureState = readAccessibilityFixtureState();
 
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeEmptySnapshot();
@@ -437,7 +450,19 @@
     }
 
     if (!hasTauriRuntime()) {
-      ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+      if (accessibilityFixtureState) {
+        fixtureTick = 8;
+        const next = makeFixtureSnapshot(
+          fixtureTick,
+          { ...currentRuntimeQuery(), limit: accessibilityFixtureState === "group" ? 48 : 24 },
+          accessibilityFixtureState === "group" ? "windows" : browserFixturePlatform,
+        );
+        prepareAccessibilityFixture(next, accessibilityFixtureState);
+        ingest(next);
+        applyAccessibilityFixtureSelection(next, accessibilityFixtureState);
+      } else {
+        ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+      }
     }
 
     const loop = async () => {
@@ -451,7 +476,9 @@
       }
     };
 
-    timeoutId = window.setTimeout(loop, 120);
+    if (!accessibilityFixtureState) {
+      timeoutId = window.setTimeout(loop, 120);
+    }
 
     const handleSystemThemeChange = (event: MediaQueryListEvent) => {
       systemThemeName = event.matches ? "daylight" : "cave";
@@ -499,6 +526,59 @@
 
   function hasTauriRuntime(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  }
+
+  function readAccessibilityFixtureState(): AccessibilityFixtureState | null {
+    if (!import.meta.env.DEV || typeof window === "undefined") return null;
+    const requested = new URLSearchParams(window.location.search).get("a11y");
+    return accessibilityFixtureStates.find((state) => state === requested) ?? null;
+  }
+
+  function prepareAccessibilityFixture(
+    next: RuntimeSnapshot,
+    state: AccessibilityFixtureState,
+  ): void {
+    pollState = state === "stale" ? "error" : "fixture";
+    lastError = state === "stale" ? "Fixture collector stopped after the last trusted sample." : "";
+
+    if (state === "degraded") {
+      next.health.degraded = true;
+      next.health.app_cpu_percent = 3.2;
+      next.health.status_summary = "Fixture app resource budget is exceeded.";
+    }
+  }
+
+  function applyAccessibilityFixtureSelection(
+    next: RuntimeSnapshot,
+    state: AccessibilityFixtureState,
+  ): void {
+    settingsOpen = state === "settings";
+    diagnosticsOpen = state === "diagnostics";
+    compactDetailOpen = false;
+
+    if (state === "process" || state === "compact") {
+      const processRow = next.process_view_rows.find(
+        (row) => row.kind === "process" && !row.is_grouped,
+      );
+      if (processRow) {
+        selectedWorkloadId = processViewRowKey(processRow);
+        detailSubject = "process";
+        compactDetailOpen = state === "compact";
+      }
+      return;
+    }
+
+    if (state === "group") {
+      const groupRow = next.process_view_rows.find((row) => row.kind === "group");
+      if (groupRow) {
+        selectedWorkloadId = processViewRowKey(groupRow);
+        detailSubject = "process";
+      }
+      return;
+    }
+
+    selectedWorkloadId = "";
+    detailSubject = "system";
   }
 
   function isHistoryPointLimit(value: number): value is HistoryPointLimit {
@@ -1448,7 +1528,7 @@
 
 <svelte:window onkeydown={handleAppKeydown} />
 
-<AppShell {themeName}>
+<AppShell {themeName} {accessibilityFixtureState}>
   <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{liveStatus}</p>
   <AppHeader
     {searchText}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
   import type { PrivilegedCollectionAction } from "../../environmentPresentation";
+  import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
   import { formatInterval } from "../../format";
   import { platformPresentation, type PlatformPresentation } from "../../platformPresentation";
   import type { ThemeOption, ThemePreference } from "../../themes";
@@ -40,6 +41,7 @@
     if (shouldOpen && !element.open) {
       opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       element.showModal();
+      focusDialogStart(element);
     } else if (!shouldOpen && element.open) {
       resetConfirm = false;
       element.close();
@@ -83,11 +85,13 @@
   bind:this={dialog}
   class="drawer-layer"
   aria-labelledby="settings-title"
+  tabindex="-1"
   oncancel={(event) => {
     event.preventDefault();
     requestClose();
   }}
   onclose={handleClose}
+  onkeydown={(event) => trapDialogFocus(event, dialog)}
   onclick={handleBackdropClick}
 >
     <div class="settings-drawer">
@@ -96,7 +100,13 @@
           <span>Preferences</span>
           <h2 id="settings-title">Settings</h2>
         </div>
-        <button class="icon-action" type="button" aria-label="Close settings" onclick={requestClose}>
+        <button
+          class="icon-action"
+          type="button"
+          aria-label="Close settings"
+          data-dialog-initial-focus
+          onclick={requestClose}
+        >
           <X size={20} weight="bold" aria-hidden="true" />
         </button>
       </header>

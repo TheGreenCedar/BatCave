@@ -125,6 +125,14 @@ jobs:
         run: npm ci
         working-directory: src/BatCave.App
 
+      - name: Install accessibility test browser
+        run: npx playwright install --with-deps chromium
+        working-directory: src/BatCave.App
+
+      - name: Validate bounded fixture accessibility
+        run: npm run test:accessibility
+        working-directory: src/BatCave.App
+
       - name: Check shell script syntax
         run: bash -n scripts/*.sh
 

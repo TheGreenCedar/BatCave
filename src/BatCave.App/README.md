@@ -161,6 +161,8 @@ Live values may update in place, but ranking order is held while the pointer or 
 
 Selecting a group shows aggregate CPU, memory, read/write I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
 
+Development-only accessibility fixtures cover bounded overview, process detail, group detail, settings, diagnostics, stale, degraded, and compact states. Install the local Chromium test runtime once with `npx playwright install chromium`, then run `npm run test:accessibility`. These browser checks are automated semantic and layout evidence only; they do not replace packaged Windows keyboard or NVDA verification.
+
 ## Platform Telemetry Notes
 
 Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, commit totals, kernel paged/nonpaged pool, top kernel pool tags with best-effort local driver candidates, system cache, interface network totals, and PDH physical-disk rates. Windows exposes commit through `memory_accounting` and omits cross-platform swap and process virtual-memory fields instead of relabeling commit charge.

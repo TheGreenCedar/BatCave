@@ -2,8 +2,13 @@
   import type { ThemeName } from "../../themes";
 
   export let themeName: ThemeName;
+  export let accessibilityFixtureState: string | null = null;
 </script>
 
-<main class="app-shell" data-theme={themeName}>
+<div
+  class="app-shell"
+  data-theme={themeName}
+  data-accessibility-fixture={accessibilityFixtureState || undefined}
+>
   <slot />
-</main>
+</div>

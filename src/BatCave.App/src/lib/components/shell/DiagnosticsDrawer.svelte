@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
+  import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
   import { currentDiagnosticIssues } from "../../diagnostics";
   import {
     installKindLabel,
@@ -48,6 +49,7 @@
     if (shouldOpen && !element.open) {
       opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       element.showModal();
+      focusDialogStart(element);
     } else if (!shouldOpen && element.open) {
       element.close();
       restoreOpener();
@@ -86,11 +88,13 @@
   bind:this={dialog}
   class="drawer-layer diagnostics-layer"
   aria-labelledby="diagnostics-title"
+  tabindex="-1"
   oncancel={(event) => {
     event.preventDefault();
     requestClose();
   }}
   onclose={restoreOpener}
+  onkeydown={(event) => trapDialogFocus(event, dialog)}
   onclick={handleBackdropClick}
 >
     <div class="diagnostics-drawer">
@@ -99,7 +103,13 @@
           <span>Local telemetry</span>
           <h2 id="diagnostics-title">Diagnostics</h2>
         </div>
-        <button class="icon-action" type="button" aria-label="Close diagnostics" onclick={requestClose}>
+        <button
+          class="icon-action"
+          type="button"
+          aria-label="Close diagnostics"
+          data-dialog-initial-focus
+          onclick={requestClose}
+        >
           <X size={20} weight="bold" aria-hidden="true" />
         </button>
       </header>

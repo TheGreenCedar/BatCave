@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
+  import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
   import type { DetailMode } from "../metrics/types";
   import type { ProcessRates } from "../../process";
   import type { ProcessIconKind } from "../../process";
@@ -70,7 +71,7 @@
   $: if (compact && pane instanceof HTMLDialogElement && !pane.open) {
     opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     pane.showModal();
-    pane.focus({ preventScroll: true });
+    focusDialogStart(pane);
   }
 
   $: if (!compact && opener) restoreOpener();
@@ -103,6 +104,10 @@
     if (compact && event.key === "Escape") {
       event.preventDefault();
       requestClose();
+      return;
+    }
+    if (compact && pane instanceof HTMLDialogElement) {
+      trapDialogFocus(event, pane);
     }
   }
 </script>
@@ -138,6 +143,7 @@
           class="detail-pane-close"
           type="button"
           aria-label="Close resource detail"
+          data-dialog-initial-focus
           onclick={requestClose}
         >
           <X size={19} weight="bold" aria-hidden="true" />
