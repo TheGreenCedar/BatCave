@@ -134,6 +134,50 @@ mod tests {
         MetricQualityInfo::new(quality, source)
     }
 
+    fn rewrite_first_process_pid(payload: &mut RuntimeSnapshotPayloadV3, pid: &str) {
+        let (old_id, new_id) = {
+            let process = payload
+                .workloads
+                .iter_mut()
+                .find_map(|workload| match workload {
+                    WorkloadDetailV3::Process(process) => Some(process),
+                    WorkloadDetailV3::Group(_) => None,
+                })
+                .expect("process fixture");
+            let old_id = process.stable_id.clone();
+            let new_id = match process.start_time_ms {
+                Some(start_time) => format!("process:{pid}:{start_time}"),
+                None => format!("process:{pid}:publication:{}", payload.sample_seq),
+            };
+            process.pid = pid.to_string();
+            process.stable_id.clone_from(&new_id);
+            (old_id, new_id)
+        };
+        for workload in &mut payload.workloads {
+            match workload {
+                WorkloadDetailV3::Process(process)
+                    if process.parent_process_id.as_deref() == Some(old_id.as_str()) =>
+                {
+                    process.parent_pid = Some(pid.to_string());
+                    process.parent_process_id = Some(new_id.clone());
+                }
+                WorkloadDetailV3::Group(group) => {
+                    for member_id in &mut group.member_ids {
+                        if *member_id == old_id {
+                            member_id.clone_from(&new_id);
+                        }
+                    }
+                }
+                WorkloadDetailV3::Process(_) => {}
+            }
+        }
+        for contributor in &mut payload.contributors {
+            if contributor.process_id.as_deref() == Some(old_id.as_str()) {
+                contributor.process_id = Some(new_id.clone());
+            }
+        }
+    }
+
     fn fixture_snapshot() -> RuntimeSnapshot {
         let mut snapshot: RuntimeSnapshot = serde_json::from_str(include_str!(
             "../../../scripts/fixtures/runtime-snapshot.v2.json"
@@ -779,6 +823,35 @@ mod tests {
             Err("protocol_release_version_invalid".to_string())
         );
 
+        for pid in ["0", "9007199254740991"] {
+            let mut valid_pid = envelope.clone();
+            let ProtocolEvent::RuntimeSnapshot(payload) = &mut valid_pid.event else {
+                unreachable!()
+            };
+            rewrite_first_process_pid(payload, pid);
+            assert_eq!(validate_envelope(&valid_pid), Ok(()));
+        }
+
+        for pid in [
+            "01234",
+            "9007199254740992",
+            "999999999999999999999999999999999999",
+            "-1",
+            " 1234",
+            "1234 ",
+            "not-decimal",
+        ] {
+            let mut invalid_pid = envelope.clone();
+            let ProtocolEvent::RuntimeSnapshot(payload) = &mut invalid_pid.event else {
+                unreachable!()
+            };
+            rewrite_first_process_pid(payload, pid);
+            assert_eq!(
+                validate_envelope(&invalid_pid),
+                Err("protocol_process_identity_invalid".to_string())
+            );
+        }
+
         let mut forged_identity = envelope;
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut forged_identity.event else {
             unreachable!()
@@ -1058,6 +1131,10 @@ mod tests {
     #[test]
     fn validator_rejects_contributor_quality_and_coverage_corruption() {
         let envelope = encode_snapshot(fixture_snapshot()).expect("fixture encodes");
+        let ProtocolEvent::RuntimeSnapshot(source_payload) = &envelope.event else {
+            unreachable!()
+        };
+        let sample_seq = source_payload.sample_seq;
 
         let mut missing = envelope.clone();
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut missing.event else {
@@ -1105,6 +1182,45 @@ mod tests {
         };
         payload.contributors[0].process_id = Some("process:1234:9007199254740991".to_string());
         assert_eq!(validate_envelope(&max_safe_identity), Ok(()));
+
+        for pid in ["0", "9007199254740991"] {
+            for suffix in [
+                "1699999999000".to_string(),
+                format!("publication:{sample_seq}"),
+            ] {
+                let mut valid_pid = envelope.clone();
+                let ProtocolEvent::RuntimeSnapshot(payload) = &mut valid_pid.event else {
+                    unreachable!()
+                };
+                payload.contributors[0].process_id = Some(format!("process:{pid}:{suffix}"));
+                assert_eq!(validate_envelope(&valid_pid), Ok(()));
+            }
+        }
+
+        for pid in [
+            "01234",
+            "9007199254740992",
+            "999999999999999999999999999999999999",
+            "-1",
+            " 1234",
+            "1234 ",
+            "not-decimal",
+        ] {
+            for suffix in [
+                "1699999999000".to_string(),
+                format!("publication:{sample_seq}"),
+            ] {
+                let mut invalid_pid = envelope.clone();
+                let ProtocolEvent::RuntimeSnapshot(payload) = &mut invalid_pid.event else {
+                    unreachable!()
+                };
+                payload.contributors[0].process_id = Some(format!("process:{pid}:{suffix}"));
+                assert_eq!(
+                    validate_envelope(&invalid_pid),
+                    Err("protocol_contributor_identity_malformed".to_string())
+                );
+            }
+        }
 
         for process_id in [
             "process:1234:9007199254740992",

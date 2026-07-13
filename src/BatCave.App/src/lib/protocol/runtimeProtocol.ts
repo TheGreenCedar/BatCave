@@ -843,8 +843,7 @@ function validateWorkloads(input: unknown, payload: Record<string, any>): string
       if (
         !nonEmptyString(detail.stable_id) ||
         processIds.has(detail.stable_id) ||
-        !nonEmptyString(detail.pid) ||
-        detail.pid.includes(":") ||
+        parseJsSafeDecimal(detail.pid, true) === null ||
         !processIdentityStabilities.has(detail.identity_stability) ||
         (detail.parent_pid !== null && typeof detail.parent_pid !== "string") ||
         (detail.parent_process_id !== null && typeof detail.parent_process_id !== "string") ||
@@ -1184,12 +1183,23 @@ function networkScopeDefinition(
 }
 
 function validProcessId(value: string, sampleSeq: number): boolean {
-  const match = /^process:[^:]+:(?:([1-9]\d*)|publication:(0|[1-9]\d*))$/.exec(value);
-  if (match === null) return false;
-  const numericComponent = Number(match[1] ?? match[2]);
-  return (
-    safeInteger(numericComponent) && (match[1] !== undefined || numericComponent === sampleSeq)
-  );
+  const parts = value.split(":");
+  if (parts[0] !== "process" || parseJsSafeDecimal(parts[1], true) === null) return false;
+  if (parts.length === 3) return parseJsSafeDecimal(parts[2], false) !== null;
+  if (parts.length !== 4 || parts[2] !== "publication") return false;
+  return parseJsSafeDecimal(parts[3], true) === sampleSeq;
+}
+
+function parseJsSafeDecimal(value: unknown, allowZero: boolean): number | null {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    (value.length > 1 && value.startsWith("0")) ||
+    /[^0-9]/.test(value)
+  )
+    return null;
+  const parsed = Number(value);
+  return safeInteger(parsed) && (allowZero || parsed > 0) ? parsed : null;
 }
 
 function validIndex(index: unknown, length: number): index is number | null {

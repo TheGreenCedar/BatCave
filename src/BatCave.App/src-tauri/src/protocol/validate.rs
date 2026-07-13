@@ -114,7 +114,7 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
             }
             format!("process:{}:publication:{}", process.pid, payload.sample_seq)
         };
-        if process.pid.is_empty() || process.pid.contains(':') || *id != expected_id {
+        if valid_js_safe_decimal(&process.pid, true).is_none() || *id != expected_id {
             return Err("protocol_process_identity_invalid".to_string());
         }
     }
@@ -774,7 +774,12 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
 
 fn valid_process_id(id: &str, sample_seq: u64) -> bool {
     let mut parts = id.split(':');
-    if parts.next() != Some("process") || parts.next().is_none_or(str::is_empty) {
+    if parts.next() != Some("process")
+        || parts
+            .next()
+            .and_then(|pid| valid_js_safe_decimal(pid, true))
+            .is_none()
+    {
         return false;
     }
     match (parts.next(), parts.next(), parts.next()) {

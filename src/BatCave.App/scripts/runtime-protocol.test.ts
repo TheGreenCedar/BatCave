@@ -73,6 +73,40 @@ test("production fixture validates and preserves workload identity and order", (
   }
 });
 
+test("process identifiers require canonical JavaScript-safe decimal PID segments", () => {
+  for (const pid of ["0", "9007199254740991"]) {
+    const validWorkloadPid = structuredClone(windows);
+    rewriteFirstProcessPid(payload(validWorkloadPid), pid);
+    assert.equal(decodeProtocolEnvelope(validWorkloadPid).kind, "snapshot");
+
+    for (const suffix of ["1699999999000", `publication:${payload(windows).sample_seq}`]) {
+      const validContributorPid = structuredClone(windows);
+      payload(validContributorPid).contributors[0].process_id = `process:${pid}:${suffix}`;
+      assert.equal(decodeProtocolEnvelope(validContributorPid).kind, "snapshot");
+    }
+  }
+
+  for (const pid of [
+    "01234",
+    "9007199254740992",
+    "999999999999999999999999999999999999",
+    "-1",
+    " 1234",
+    "1234 ",
+    "not-decimal",
+  ]) {
+    const invalidWorkloadPid = structuredClone(windows);
+    rewriteFirstProcessPid(payload(invalidWorkloadPid), pid);
+    assertMismatch(invalidWorkloadPid, "process identity");
+
+    for (const suffix of ["1699999999000", `publication:${payload(windows).sample_seq}`]) {
+      const invalidContributorPid = structuredClone(windows);
+      payload(invalidContributorPid).contributors[0].process_id = `process:${pid}:${suffix}`;
+      assertMismatch(invalidContributorPid, "metadata is malformed");
+    }
+  }
+});
+
 test("unsupported process values remain unavailable instead of becoming zero", () => {
   const decoded = decodeProtocolEnvelope(macos);
   assert.equal(decoded.kind, "snapshot");
@@ -478,6 +512,30 @@ function firstProcess(payload: RuntimeSnapshotPayloadV3) {
   const process = payload.workloads.find((workload) => workload.kind === "process");
   if (!process || process.kind !== "process") throw new Error("expected process workload");
   return process;
+}
+
+function rewriteFirstProcessPid(payload: RuntimeSnapshotPayloadV3, pid: string) {
+  const process = firstProcess(payload);
+  const oldId = process.detail.stable_id;
+  const newId =
+    process.detail.start_time_ms === null
+      ? `process:${pid}:publication:${payload.sample_seq}`
+      : `process:${pid}:${process.detail.start_time_ms}`;
+  process.detail.pid = pid;
+  process.detail.stable_id = newId;
+  for (const workload of payload.workloads) {
+    if (workload.kind === "group") {
+      workload.detail.member_ids = workload.detail.member_ids.map((id) =>
+        id === oldId ? newId : id,
+      );
+    } else if (workload.detail.parent_process_id === oldId) {
+      workload.detail.parent_pid = pid;
+      workload.detail.parent_process_id = newId;
+    }
+  }
+  for (const contributor of payload.contributors) {
+    if (contributor.process_id === oldId) contributor.process_id = newId;
+  }
 }
 
 function firstGroup(payload: RuntimeSnapshotPayloadV3) {
