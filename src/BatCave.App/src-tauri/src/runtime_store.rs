@@ -1338,12 +1338,8 @@ fn group_metric_summary(
         MetricQuality::Native
     };
 
-    let message = (available < total).then(|| {
-        format!(
-            "{} of {} processes contribute to this aggregate.",
-            available, total
-        )
-    });
+    let message = (available < total)
+        .then(|| format!("{available} of {total} processes contribute to this aggregate."));
     (
         MetricQualityInfo {
             quality,
