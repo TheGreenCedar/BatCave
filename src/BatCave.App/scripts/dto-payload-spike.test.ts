@@ -18,5 +18,9 @@ test("shared descriptors avoid repeated metadata overhead", () => {
     assert.ok(measured.per_value_metadata_v3.bytes > measured.per_family_metadata_v3.bytes);
     assert.ok(measured.per_family_metadata_v3.bytes > measured.shared_descriptor_catalog_v3.bytes);
     assert.ok(measured.shared_descriptor_catalog_v3.bytes > measured.current_v2.bytes);
+    assert.ok(
+      measured.shared_descriptor_catalog_v3.relative_to_current_percent <= 15,
+      `shared descriptor payload exceeded the 15% budget at ${result.row_count} rows`,
+    );
   }
 });
