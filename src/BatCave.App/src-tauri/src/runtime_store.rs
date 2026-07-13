@@ -430,6 +430,7 @@ struct MonotonicScheduler {
     interval: Duration,
     next_deadline: Instant,
     deadline_misses: u64,
+    recent_deadline_misses: CountWindow,
     lateness_p95: P95Window,
 }
 
@@ -439,6 +440,7 @@ impl MonotonicScheduler {
             interval,
             next_deadline: if paused { now + interval } else { now },
             deadline_misses: 0,
+            recent_deadline_misses: CountWindow::new(metric_window),
             lateness_p95: P95Window::new(metric_window),
         }
     }
@@ -462,9 +464,14 @@ impl MonotonicScheduler {
 
     fn complete_scheduled_work(&mut self, completed_at: Instant) {
         let mut next = self.next_deadline + self.interval;
+        let mut missed = 0_u64;
         while next <= completed_at {
             self.deadline_misses = self.deadline_misses.saturating_add(1);
+            missed = missed.saturating_add(1);
             next += self.interval;
+        }
+        if missed > 0 {
+            self.recent_deadline_misses.add_at(completed_at, missed);
         }
         self.next_deadline = next;
     }
@@ -484,6 +491,10 @@ impl MonotonicScheduler {
 
     fn lateness_p95_ms(&self, now: Instant) -> f64 {
         self.lateness_p95.value_at(now)
+    }
+
+    fn recent_deadline_misses(&self, now: Instant) -> u64 {
+        self.recent_deadline_misses.value_at(now)
     }
 }
 
@@ -969,6 +980,7 @@ struct RuntimeStore {
     collector_state: Option<RuntimeCollectorState>,
     last_heartbeat_at_ms: Option<u64>,
     deadline_misses: u64,
+    recent_deadline_misses: u64,
     deadline_lateness_p95_ms: f64,
     collection_latency_ms: Option<f64>,
     publication_latency_ms: Option<f64>,
@@ -1093,6 +1105,7 @@ impl RuntimeStore {
             collector_state: None,
             last_heartbeat_at_ms: None,
             deadline_misses: 0,
+            recent_deadline_misses: 0,
             deadline_lateness_p95_ms: 0.0,
             collection_latency_ms: None,
             publication_latency_ms: None,
@@ -1599,8 +1612,13 @@ impl RuntimeStore {
     }
 
     fn update_schedule_health(&mut self, scheduler: &MonotonicScheduler) {
+        self.update_schedule_health_at(scheduler, Instant::now());
+    }
+
+    fn update_schedule_health_at(&mut self, scheduler: &MonotonicScheduler, now: Instant) {
         self.deadline_misses = scheduler.deadline_misses;
-        self.deadline_lateness_p95_ms = scheduler.lateness_p95_ms(Instant::now());
+        self.recent_deadline_misses = scheduler.recent_deadline_misses(now);
+        self.deadline_lateness_p95_ms = scheduler.lateness_p95_ms(now);
         self.refresh_snapshot_health();
     }
 
@@ -1675,7 +1693,7 @@ impl RuntimeStore {
             Some(RuntimeCollectorState::Limited | RuntimeCollectorState::Unavailable)
         );
         let fatal = self.engine_state == RuntimeEngineState::Fatal;
-        let cadence_degraded = self.deadline_misses > 0;
+        let cadence_degraded = self.recent_deadline_misses > 0;
         let last_warning = self.warnings.back().map(|warning| warning.message.clone());
         let status_summary = if fatal {
             "Sampling engine stopped after a fatal error.".to_string()
@@ -1690,7 +1708,10 @@ impl RuntimeStore {
         } else if self.collector_state == Some(RuntimeCollectorState::Limited) {
             "Collecting with limited telemetry quality.".to_string()
         } else if cadence_degraded {
-            format!("Sampling missed {} deadline(s).", self.deadline_misses)
+            format!(
+                "Sampling missed {} deadline(s) in the current health window.",
+                self.recent_deadline_misses
+            )
         } else if warning_degraded {
             format!(
                 "{warning_degraded_count} telemetry limitation{}.",
@@ -1930,10 +1951,42 @@ struct P95Window {
     window: Duration,
 }
 
+struct CountWindow {
+    values: VecDeque<(Instant, u64)>,
+    window: Duration,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct CurrentAppMetrics {
     cpu_percent: f64,
     rss_bytes: u64,
+}
+
+impl CountWindow {
+    fn new(window: Duration) -> Self {
+        Self {
+            values: VecDeque::new(),
+            window,
+        }
+    }
+
+    fn add_at(&mut self, now: Instant, value: u64) {
+        if value > 0 {
+            self.values.push_back((now, value));
+        }
+        while self.values.front().is_some_and(|(recorded_at, _)| {
+            now.saturating_duration_since(*recorded_at) > self.window
+        }) {
+            self.values.pop_front();
+        }
+    }
+
+    fn value_at(&self, now: Instant) -> u64 {
+        self.values
+            .iter()
+            .filter(|(recorded_at, _)| now.saturating_duration_since(*recorded_at) <= self.window)
+            .fold(0_u64, |total, (_, value)| total.saturating_add(*value))
+    }
 }
 
 impl P95Window {
@@ -3593,6 +3646,53 @@ mod tests {
         slow.complete_scheduled_work(base + Duration::from_millis(1_250));
         assert_eq!(slow.next_deadline, base + Duration::from_millis(1_500));
         assert_eq!(slow.deadline_misses, 2);
+    }
+
+    #[test]
+    fn cadence_health_recovers_after_a_healthy_metric_window() {
+        let base = Instant::now();
+        let interval = Duration::from_millis(500);
+        let health_window = Duration::from_secs(15);
+        let mut scheduler = MonotonicScheduler::new(base, interval, false, health_window);
+        scheduler.record_start(base);
+        let missed_at = base + Duration::from_millis(1_250);
+        scheduler.complete_scheduled_work(missed_at);
+
+        let base_dir = runtime_test_dir("cadence-recovery");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.settings.paused = false;
+        store.engine_state = RuntimeEngineState::Running;
+        store.collector_state = Some(RuntimeCollectorState::Healthy);
+        store.warnings.clear();
+        store.update_schedule_health_at(&scheduler, missed_at);
+
+        let degraded = store.build_health(0, 0.0, 0);
+        assert!(degraded.degraded);
+        assert_eq!(degraded.deadline_misses, Some(2));
+        assert_eq!(degraded.dropped_ticks, 2);
+        assert_eq!(
+            degraded.status_summary,
+            "Sampling missed 2 deadline(s) in the current health window."
+        );
+
+        let mut deadline = base + Duration::from_millis(1_500);
+        let recover_after = missed_at + health_window + Duration::from_millis(250);
+        while deadline <= recover_after {
+            scheduler.record_start(deadline);
+            scheduler.complete_scheduled_work(deadline + Duration::from_millis(10));
+            deadline += interval;
+        }
+        let recovered_at = deadline - interval + Duration::from_millis(10);
+        store.update_schedule_health_at(&scheduler, recovered_at);
+
+        let recovered = store.build_health(0, 0.0, 0);
+        assert!(!recovered.degraded);
+        assert_eq!(recovered.status_summary, "Healthy.");
+        assert_eq!(recovered.deadline_misses, Some(2));
+        assert_eq!(recovered.dropped_ticks, 2);
+
+        drop(store);
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
