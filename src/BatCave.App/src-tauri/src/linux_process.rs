@@ -358,12 +358,18 @@ fn linux_process_quality(
     has_io: bool,
     has_private_memory: bool,
 ) -> ProcessMetricQuality {
-    let direct_quality = match access_state {
-        AccessState::Full => MetricQuality::Native,
-        AccessState::Partial => MetricQuality::Partial,
-        AccessState::Denied => MetricQuality::Unavailable,
-    };
     let procfs = |quality| MetricQualityInfo::new(quality, MetricSource::Procfs);
+    let direct = || match access_state {
+        AccessState::Full => procfs(MetricQuality::Native),
+        AccessState::Partial => procfs(MetricQuality::Partial).with_limitation(
+            MetricLimitationCode::PartialCoverage,
+            "Some /proc files were unavailable for this process.",
+        ),
+        AccessState::Denied => procfs(MetricQuality::Unavailable).with_limitation(
+            MetricLimitationCode::AccessDenied,
+            "Process telemetry was denied by /proc permissions.",
+        ),
+    };
 
     ProcessMetricQuality {
         cpu: Some(
@@ -373,7 +379,7 @@ fn linux_process_quality(
             ),
         ),
         memory: Some(if has_private_memory {
-            procfs(direct_quality)
+            direct()
         } else {
             procfs(MetricQuality::Estimated).with_limitation(
                 MetricLimitationCode::UnsupportedMetric,
@@ -381,7 +387,7 @@ fn linux_process_quality(
             )
         }),
         io: Some(if has_io {
-            procfs(direct_quality)
+            direct()
         } else {
             procfs(MetricQuality::Unavailable).with_limitation(
                 if access_state == AccessState::Denied {
@@ -400,8 +406,8 @@ fn linux_process_quality(
             MetricLimitationCode::UnsupportedMetric,
             "Linux per-process network attribution is not exposed by /proc.",
         )),
-        threads: Some(procfs(direct_quality)),
-        handles: Some(procfs(direct_quality)),
+        threads: Some(direct()),
+        handles: Some(direct()),
     }
 }
 
@@ -514,5 +520,29 @@ mod tests {
             .message
             .expect("fallback message exists")
             .contains("RssAnon"));
+    }
+
+    #[test]
+    fn partial_and_denied_procfs_quality_have_typed_explanations() {
+        for (access, expected_quality, expected_limitation) in [
+            (
+                AccessState::Partial,
+                MetricQuality::Partial,
+                MetricLimitationCode::PartialCoverage,
+            ),
+            (
+                AccessState::Denied,
+                MetricQuality::Unavailable,
+                MetricLimitationCode::AccessDenied,
+            ),
+        ] {
+            let quality = linux_process_quality(access, true, true)
+                .threads
+                .expect("thread quality exists");
+
+            assert_eq!(quality.quality, expected_quality);
+            assert_eq!(quality.limitation_code, Some(expected_limitation));
+            assert!(quality.message.is_some());
+        }
     }
 }
