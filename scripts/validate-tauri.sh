@@ -95,6 +95,7 @@ if [[ "$bundle_only" -eq 0 ]]; then
   cargo test --manifest-path "$cargo_manifest"
 
   if [[ "$benchmark_gate" -eq 1 ]]; then
+    echo "Running owned-engine in-process live-command p95 regression gate..."
     gate_args=(--benchmark-host core --platform "$benchmark_platform" --ticks "$benchmark_ticks" --sleep-ms "$benchmark_sleep_ms")
     if [[ -n "$benchmark_baseline_json_path" ]]; then
       gate_args+=(--baseline-json "$benchmark_baseline_json_path")
@@ -111,6 +112,7 @@ if [[ "$bundle_only" -eq 0 ]]; then
 
     bash "$repo_root/scripts/run-benchmark-gate.sh" "${gate_args[@]}"
   else
+    echo "Running owned-engine in-process live-command p95 smoke..."
     bash "$repo_root/scripts/run-benchmark.sh" --benchmark-host core --platform "$benchmark_platform" --warmup-ticks 0 --ticks 2 --sleep-ms 1000 --repeats 1 --strict --max-p95-ms 10000 --dev-build
   fi
 fi

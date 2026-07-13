@@ -2,12 +2,14 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
     env, fs,
+    panic::AssertUnwindSafe,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
-        mpsc::{self, Receiver, TryRecvError},
-        Arc, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
+        Arc, Condvar, Mutex, RwLock,
     },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -24,9 +26,10 @@ use crate::{
         MetricCoverage, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
         ProcessFocusMode, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
-        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimePrivilegedSource,
-        RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection,
-        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        RuntimeAdminModeStatus, RuntimeCollectorState, RuntimeEngineState, RuntimeEnvironment,
+        RuntimeFatalError, RuntimeHealth, RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings,
+        RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
+        SystemMetricsSnapshot, WarmCache,
     },
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetryCollector},
@@ -43,6 +46,9 @@ const ATTENTION_CPU_PERCENT: f64 = 10.0;
 const ATTENTION_MEMORY_BYTES: u64 = 900 * 1024 * 1024;
 const ATTENTION_IO_BPS: u64 = 500 * 1024;
 const ATTENTION_NETWORK_BPS: u64 = 1024 * 1024;
+const CONTROL_QUEUE_CAPACITY: usize = 32;
+const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const ENGINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_IO_BASELINE_PENDING: &str = "Process read/write I/O rates need a fresh prior sample.";
 const PROCESS_OTHER_IO_BASELINE_PENDING: &str =
     "Process Other I/O rates need a fresh prior sample.";
@@ -54,94 +60,903 @@ const PERSISTENCE_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
     serialize_error_includes_path: true,
 };
 
+type SnapshotReply = mpsc::Sender<Result<Arc<RuntimeSnapshot>, String>>;
+
+struct PublishedRuntime {
+    snapshot: Arc<RuntimeSnapshot>,
+    process_exe_authoritative: bool,
+}
+
+struct MonotonicWireClock {
+    origin: Instant,
+    wire_origin_ms: u64,
+}
+
+impl MonotonicWireClock {
+    fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+            wire_origin_ms: now_ms(),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.wire_origin_ms.saturating_add(
+            self.origin
+                .elapsed()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        )
+    }
+}
+
+#[derive(Clone)]
+struct EngineRefreshMeasurement {
+    snapshot: Arc<RuntimeSnapshot>,
+    collection_latency_ms: f64,
+    publication_latency_ms: f64,
+}
+
+pub(crate) struct RefreshMeasurement {
+    pub snapshot: RuntimeSnapshot,
+    pub collection_latency_ms: f64,
+    pub publication_latency_ms: f64,
+}
+
+#[derive(Default)]
+struct RefreshGateState {
+    requested_generation: u64,
+    started_generation: u64,
+    completed_generation: u64,
+    waiting_callers: usize,
+    wake_queued: bool,
+    completed_measurement: Option<(u64, EngineRefreshMeasurement)>,
+    failed_generation: Option<(u64, String)>,
+    terminal_error: Option<String>,
+}
+
+#[derive(Default)]
+struct RefreshGate {
+    state: Mutex<RefreshGateState>,
+    changed: Condvar,
+}
+
+enum EngineControl {
+    Refresh,
+    Pause(SnapshotReply),
+    Resume(SnapshotReply),
+    SetQuery(RuntimeQuery, SnapshotReply),
+    SetSampleInterval(u32, SnapshotReply),
+    SetAdminMode(bool, SnapshotReply),
+    Shutdown,
+}
+
 pub struct RuntimeState {
-    store: Arc<Mutex<RuntimeStore>>,
-    worker_started: AtomicBool,
+    control: SyncSender<EngineControl>,
+    published: Arc<RwLock<PublishedRuntime>>,
+    refresh_gate: Arc<RefreshGate>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    shutdown_started: AtomicBool,
+    shutdown_requested: Arc<AtomicBool>,
+    clock: Arc<MonotonicWireClock>,
+    shutdown_lock: Mutex<()>,
+    completion: Mutex<Receiver<Result<(), String>>>,
+    shutdown_result: Mutex<Option<Result<(), String>>>,
 }
 
 impl RuntimeState {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, String> {
         Self::from_base_dir(default_base_dir())
     }
 
-    pub(crate) fn from_base_dir(base_dir: PathBuf) -> Self {
-        Self {
-            store: Arc::new(Mutex::new(RuntimeStore::from_base_dir(base_dir))),
-            worker_started: AtomicBool::new(false),
-        }
+    pub(crate) fn from_base_dir(base_dir: PathBuf) -> Result<Self, String> {
+        Self::from_store(RuntimeStore::from_base_dir(base_dir), true)
+    }
+
+    pub(crate) fn from_base_dir_manual(base_dir: PathBuf) -> Result<Self, String> {
+        Self::from_store(RuntimeStore::from_base_dir(base_dir), false)
+    }
+
+    fn from_store(store: RuntimeStore, automatic_sampling: bool) -> Result<Self, String> {
+        let clock = Arc::clone(&store.clock);
+        let published = Arc::new(RwLock::new(PublishedRuntime {
+            snapshot: Arc::new(store.snapshot.clone()),
+            process_exe_authoritative: store.live_process_snapshot,
+        }));
+        let refresh_gate = Arc::new(RefreshGate::default());
+        let (control, receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let worker_published = Arc::clone(&published);
+        let worker_refresh_gate = Arc::clone(&refresh_gate);
+        let worker_shutdown = Arc::clone(&shutdown_requested);
+        let (completion_sender, completion) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("batcave-sampling-engine".to_string())
+            .spawn(move || {
+                let result = run_sampling_engine(
+                    store,
+                    receiver,
+                    worker_published,
+                    worker_refresh_gate,
+                    worker_shutdown,
+                    automatic_sampling,
+                );
+                let _ = completion_sender.send(result);
+            })
+            .map_err(|error| format!("runtime_engine_spawn_failed:{error}"))?;
+
+        Ok(Self {
+            control,
+            published,
+            refresh_gate,
+            worker: Mutex::new(Some(worker)),
+            shutdown_started: AtomicBool::new(false),
+            shutdown_requested,
+            clock,
+            shutdown_lock: Mutex::new(()),
+            completion: Mutex::new(completion),
+            shutdown_result: Mutex::new(None),
+        })
     }
 
     pub fn start(&self) {
-        if self.worker_started.swap(true, AtomicOrdering::AcqRel) {
-            return;
-        }
-        let store = Arc::downgrade(&self.store);
-        std::thread::spawn(move || {
-            while let Some(store) = store.upgrade() {
-                let delay = if let Ok(mut store) = store.lock() {
-                    if !store.settings.paused {
-                        store.tick();
-                    } else {
-                        store.progress_paused_elevated_helper();
-                    }
-                    Duration::from_millis(store.settings.sample_interval_ms.into())
-                } else {
-                    Duration::from_secs(1)
-                };
-                std::thread::sleep(delay);
-            }
-        });
+        // Construction starts the owned engine so no caller can reach a mutable
+        // collector before the worker owns it. Kept for the existing app setup API.
     }
 
     pub fn snapshot(&self) -> Result<RuntimeSnapshot, String> {
-        self.with_store(|store| store.snapshot())
+        self.published_snapshot()
     }
 
     pub fn refresh_now(&self) -> Result<RuntimeSnapshot, String> {
-        self.with_store(|store| store.refresh_now())
+        self.refresh_now_measured()
+            .map(|measurement| measurement.snapshot)
+    }
+
+    pub(crate) fn refresh_now_measured(&self) -> Result<RefreshMeasurement, String> {
+        if self.shutdown_started.load(AtomicOrdering::Acquire) {
+            return Err("runtime_engine_shutting_down".to_string());
+        }
+        let (target_generation, schedule) = {
+            let mut gate = self
+                .refresh_gate
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(error) = &gate.terminal_error {
+                return Err(error.clone());
+            }
+            if gate.requested_generation == gate.started_generation {
+                gate.requested_generation = gate.requested_generation.saturating_add(1);
+            }
+            let target_generation = gate.requested_generation;
+            let schedule = !gate.wake_queued;
+            gate.wake_queued = true;
+            if schedule {
+                gate.failed_generation = None;
+            }
+            gate.waiting_callers = gate.waiting_callers.saturating_add(1);
+            (target_generation, schedule)
+        };
+
+        if schedule {
+            if let Err(error) = self.control.try_send(EngineControl::Refresh) {
+                let message = control_send_error(error);
+                fail_refresh_generation(&self.refresh_gate, target_generation, message.clone());
+                finish_refresh_wait(&self.refresh_gate);
+                return Err(message);
+            }
+        }
+        let result = wait_for_refresh_generation(&self.refresh_gate, target_generation);
+        finish_refresh_wait(&self.refresh_gate);
+        let measurement = result?;
+        let mut snapshot = (*measurement.snapshot).clone();
+        evaluate_snapshot_health(&mut snapshot, self.clock.now_ms());
+        Ok(RefreshMeasurement {
+            snapshot,
+            collection_latency_ms: measurement.collection_latency_ms,
+            publication_latency_ms: measurement.publication_latency_ms,
+        })
     }
 
     pub fn pause(&self) -> Result<RuntimeSnapshot, String> {
-        self.with_store(|store| store.set_paused(true))
+        self.request_snapshot(EngineControl::Pause)
     }
 
     pub fn resume(&self) -> Result<RuntimeSnapshot, String> {
-        self.with_store(|store| store.set_paused(false))
+        self.request_snapshot(EngineControl::Resume)
     }
 
     pub fn set_query(&self, query: RuntimeQuery) -> Result<RuntimeSnapshot, String> {
-        self.with_store(|store| store.set_query(query))
+        self.request_snapshot(|reply| EngineControl::SetQuery(query, reply))
     }
 
     pub fn set_sample_interval(&self, sample_interval_ms: u32) -> Result<RuntimeSnapshot, String> {
-        self.with_store(|store| store.set_sample_interval(sample_interval_ms))
+        self.request_snapshot(|reply| EngineControl::SetSampleInterval(sample_interval_ms, reply))
     }
 
     pub fn set_admin_mode(&self, enabled: bool) -> Result<RuntimeSnapshot, String> {
-        self.with_store(|store| store.set_admin_mode(enabled))
+        self.request_snapshot(|reply| EngineControl::SetAdminMode(enabled, reply))
     }
 
     pub fn has_process_exe(&self, exe: &str) -> Result<bool, String> {
-        self.with_store(|store| store.has_process_exe(exe))
+        let published = self
+            .published
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = Arc::clone(&published.snapshot);
+        let authoritative = published.process_exe_authoritative;
+        drop(published);
+        let exe = exe.trim();
+        Ok(authoritative
+            && !exe.is_empty()
+            && snapshot
+                .processes
+                .iter()
+                .any(|process| process.exe.eq_ignore_ascii_case(exe)))
     }
 
-    fn with_store<T>(&self, action: impl FnOnce(&mut RuntimeStore) -> T) -> Result<T, String> {
-        let mut store = self
-            .store
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let _shutdown = self
+            .shutdown_lock
             .lock()
-            .map_err(|_| "runtime store lock is poisoned".to_string())?;
-        Ok(action(&mut store))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(result) = self
+            .shutdown_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return result;
+        }
+        if !self.shutdown_started.swap(true, AtomicOrdering::AcqRel) {
+            self.shutdown_requested.store(true, AtomicOrdering::Release);
+            terminate_refresh_gate(
+                &self.refresh_gate,
+                "runtime_engine_shutting_down".to_string(),
+            );
+            let _ = self.control.try_send(EngineControl::Shutdown);
+        }
+        let cleanup_result = self
+            .completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv_timeout(ENGINE_SHUTDOWN_TIMEOUT)
+            .map_err(|_| "runtime_engine_shutdown_timeout".to_string())?;
+        let join_result = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map_or(Ok(()), |worker| {
+                worker
+                    .join()
+                    .map_err(|_| "runtime_engine_join_failed".to_string())
+            });
+        let result = cleanup_result.and(join_result);
+        *self
+            .shutdown_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result.clone());
+        result
+    }
+
+    fn request_snapshot(
+        &self,
+        control: impl FnOnce(SnapshotReply) -> EngineControl,
+    ) -> Result<RuntimeSnapshot, String> {
+        if self.shutdown_started.load(AtomicOrdering::Acquire) {
+            return Err("runtime_engine_shutting_down".to_string());
+        }
+        let (reply, receiver) = mpsc::channel();
+        self.control
+            .try_send(control(reply))
+            .map_err(control_send_error)?;
+        receive_snapshot(receiver, self.clock.now_ms())
+    }
+
+    fn published_snapshot(&self) -> Result<RuntimeSnapshot, String> {
+        let published = self
+            .published
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = Arc::clone(&published.snapshot);
+        drop(published);
+        let mut snapshot = (*snapshot).clone();
+        evaluate_snapshot_health(&mut snapshot, self.clock.now_ms());
+        Ok(snapshot)
+    }
+}
+
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+fn receive_snapshot(
+    receiver: Receiver<Result<Arc<RuntimeSnapshot>, String>>,
+    evaluated_at_ms: u64,
+) -> Result<RuntimeSnapshot, String> {
+    let snapshot = receiver
+        .recv_timeout(CONTROL_RESPONSE_TIMEOUT)
+        .map_err(|_| "runtime_control_timeout".to_string())??;
+    let mut snapshot = (*snapshot).clone();
+    evaluate_snapshot_health(&mut snapshot, evaluated_at_ms);
+    Ok(snapshot)
+}
+
+fn control_send_error(error: TrySendError<EngineControl>) -> String {
+    match error {
+        TrySendError::Full(_) => "runtime_control_busy".to_string(),
+        TrySendError::Disconnected(_) => "runtime_engine_unavailable".to_string(),
+    }
+}
+
+#[derive(Debug)]
+enum CollectionFailure {
+    Unavailable(String),
+    Fatal(String),
+}
+
+trait RuntimeCollector: Send {
+    fn collect(&mut self) -> Result<crate::telemetry::TelemetrySample, CollectionFailure>;
+    fn process_network_ready(&self) -> Result<bool, String>;
+    fn retry_process_network(&mut self) -> Result<(), String>;
+}
+
+impl RuntimeCollector for TelemetryCollector {
+    fn collect(&mut self) -> Result<crate::telemetry::TelemetrySample, CollectionFailure> {
+        TelemetryCollector::collect(self).map_err(|error| {
+            if error.contains("lock is poisoned") {
+                CollectionFailure::Fatal(error)
+            } else {
+                CollectionFailure::Unavailable(error)
+            }
+        })
+    }
+
+    fn process_network_ready(&self) -> Result<bool, String> {
+        TelemetryCollector::process_network_ready(self)
+    }
+
+    fn retry_process_network(&mut self) -> Result<(), String> {
+        TelemetryCollector::retry_process_network(self)
+    }
+}
+
+struct MonotonicScheduler {
+    interval: Duration,
+    next_deadline: Instant,
+    deadline_misses: u64,
+    lateness_p95: P95Window,
+}
+
+impl MonotonicScheduler {
+    fn new(now: Instant, interval: Duration, paused: bool, metric_window: Duration) -> Self {
+        Self {
+            interval,
+            next_deadline: if paused { now + interval } else { now },
+            deadline_misses: 0,
+            lateness_p95: P95Window::new(metric_window),
+        }
+    }
+
+    fn wait_from(&self, now: Instant) -> Duration {
+        self.next_deadline.saturating_duration_since(now)
+    }
+
+    fn deadline_is_due(&self, now: Instant) -> bool {
+        now >= self.next_deadline
+    }
+
+    fn record_start(&mut self, now: Instant) {
+        self.lateness_p95.add_at(
+            now,
+            now.saturating_duration_since(self.next_deadline)
+                .as_secs_f64()
+                * 1000.0,
+        );
+    }
+
+    fn complete_scheduled_work(&mut self, completed_at: Instant) {
+        let mut next = self.next_deadline + self.interval;
+        while next <= completed_at {
+            self.deadline_misses = self.deadline_misses.saturating_add(1);
+            next += self.interval;
+        }
+        self.next_deadline = next;
+    }
+
+    fn complete_paused_work(&mut self, completed_at: Instant) {
+        let mut next = self.next_deadline + self.interval;
+        while next <= completed_at {
+            next += self.interval;
+        }
+        self.next_deadline = next;
+    }
+
+    fn reanchor(&mut self, now: Instant, interval: Duration, due_now: bool) {
+        self.interval = interval;
+        self.next_deadline = if due_now { now } else { now + interval };
+    }
+
+    fn lateness_p95_ms(&self, now: Instant) -> f64 {
+        self.lateness_p95.value_at(now)
+    }
+}
+
+fn run_sampling_engine(
+    mut store: RuntimeStore,
+    receiver: Receiver<EngineControl>,
+    published: Arc<RwLock<PublishedRuntime>>,
+    refresh_gate: Arc<RefreshGate>,
+    shutdown_requested: Arc<AtomicBool>,
+    automatic_sampling: bool,
+) -> Result<(), String> {
+    let clock = Arc::clone(&store.clock);
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        sampling_engine_loop(
+            &mut store,
+            &receiver,
+            &published,
+            &refresh_gate,
+            &shutdown_requested,
+            automatic_sampling,
+        )
+    }));
+    let fatal = match result {
+        Ok(false) => false,
+        Ok(true) => true,
+        Err(_) => {
+            let error = "runtime sampling engine panicked".to_string();
+            publish_fatal_from_latest(
+                &published,
+                "sampling_engine_panicked",
+                &error,
+                clock.now_ms(),
+            );
+            terminate_refresh_gate(&refresh_gate, "runtime_engine_fatal".to_string());
+            true
+        }
+    };
+    let cleanup_result = store.shutdown_owned_resources();
+    if fatal {
+        fatal_control_loop(&receiver, &shutdown_requested);
+    }
+    cleanup_result
+}
+
+fn sampling_engine_loop(
+    store: &mut RuntimeStore,
+    receiver: &Receiver<EngineControl>,
+    published: &Arc<RwLock<PublishedRuntime>>,
+    refresh_gate: &Arc<RefreshGate>,
+    shutdown_requested: &AtomicBool,
+    automatic_sampling: bool,
+) -> bool {
+    let now = Instant::now();
+    let mut scheduler = MonotonicScheduler::new(
+        now,
+        sample_interval(store.settings.sample_interval_ms),
+        store.settings.paused,
+        metric_window(store.settings.metric_window_seconds),
+    );
+    store.set_engine_state(if store.settings.paused {
+        crate::contracts::RuntimeEngineState::Paused
+    } else {
+        crate::contracts::RuntimeEngineState::Starting
+    });
+    publish_store(store, published);
+
+    loop {
+        if shutdown_requested.load(AtomicOrdering::Acquire) {
+            return false;
+        }
+        if automatic_sampling && scheduler.deadline_is_due(Instant::now()) {
+            store.note_heartbeat();
+            if store.settings.paused {
+                if !store.progress_paused_elevated_helper() {
+                    store.publish_snapshot_only(None);
+                }
+                publish_store(store, published);
+                scheduler.complete_paused_work(Instant::now());
+            } else if let Err(error) = collect_and_publish(store, &mut scheduler, published, true) {
+                terminate_refresh_gate(refresh_gate, error);
+                return true;
+            }
+            continue;
+        }
+
+        let received = if automatic_sampling {
+            receiver.recv_timeout(scheduler.wait_from(Instant::now()))
+        } else {
+            receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        };
+        match received {
+            Ok(EngineControl::Shutdown) => return false,
+            Ok(EngineControl::Refresh) => {
+                let Some(generation) = begin_refresh_generation(refresh_gate) else {
+                    continue;
+                };
+                let result = collect_and_publish(store, &mut scheduler, published, false);
+                match result {
+                    Ok(measurement) => {
+                        complete_refresh_generation(refresh_gate, generation, measurement)
+                    }
+                    Err(error) => {
+                        terminate_refresh_gate(refresh_gate, error);
+                        return true;
+                    }
+                }
+            }
+            Ok(EngineControl::Pause(reply)) => {
+                store.note_heartbeat();
+                store.set_engine_state(crate::contracts::RuntimeEngineState::Paused);
+                store.set_paused(true);
+                scheduler.reanchor(
+                    Instant::now(),
+                    sample_interval(store.settings.sample_interval_ms),
+                    false,
+                );
+                reply_with_publication(reply, store, published);
+            }
+            Ok(EngineControl::Resume(reply)) => {
+                store.note_heartbeat();
+                store.set_engine_state(crate::contracts::RuntimeEngineState::Running);
+                store.set_paused(false);
+                scheduler.reanchor(
+                    Instant::now(),
+                    sample_interval(store.settings.sample_interval_ms),
+                    true,
+                );
+                match collect_and_publish(store, &mut scheduler, published, true) {
+                    Ok(measurement) => {
+                        let _ = reply.send(Ok(measurement.snapshot));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error.clone()));
+                        terminate_refresh_gate(refresh_gate, error);
+                        return true;
+                    }
+                }
+            }
+            Ok(EngineControl::SetQuery(query, reply)) => {
+                store.note_heartbeat();
+                store.set_query(query);
+                reply_with_publication(reply, store, published);
+            }
+            Ok(EngineControl::SetSampleInterval(sample_interval_ms, reply)) => {
+                store.note_heartbeat();
+                let previous_interval_ms = store.settings.sample_interval_ms;
+                store.set_sample_interval(sample_interval_ms);
+                if store.settings.sample_interval_ms != previous_interval_ms {
+                    scheduler.reanchor(
+                        Instant::now(),
+                        sample_interval(store.settings.sample_interval_ms),
+                        false,
+                    );
+                }
+                reply_with_publication(reply, store, published);
+            }
+            Ok(EngineControl::SetAdminMode(enabled, reply)) => {
+                store.note_heartbeat();
+                store.set_admin_mode(enabled);
+                reply_with_publication(reply, store, published);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
+    }
+}
+
+fn collect_and_publish(
+    store: &mut RuntimeStore,
+    scheduler: &mut MonotonicScheduler,
+    published: &Arc<RwLock<PublishedRuntime>>,
+    account_deadline: bool,
+) -> Result<EngineRefreshMeasurement, String> {
+    let started_at = Instant::now();
+    if account_deadline {
+        scheduler.record_start(started_at);
+    }
+    store.note_heartbeat();
+    if !store.settings.paused {
+        store.set_engine_state(crate::contracts::RuntimeEngineState::Running);
+    }
+
+    let publication_started = match store.tick() {
+        Ok(publication_started) => publication_started,
+        Err(CollectionFailure::Unavailable(error)) => {
+            let publication_started = Instant::now();
+            store.publish_collector_unavailable(error);
+            publication_started
+        }
+        Err(CollectionFailure::Fatal(error)) => {
+            let publication_started = Instant::now();
+            store.mark_engine_fatal("collector_fatal", error.clone());
+            if account_deadline {
+                scheduler.complete_scheduled_work(Instant::now());
+            }
+            store.update_schedule_health(scheduler);
+            publish_store_measured(store, published, publication_started);
+            return Err(format!("runtime_engine_fatal:{error}"));
+        }
+    };
+
+    if account_deadline {
+        scheduler.complete_scheduled_work(Instant::now());
+    }
+    store.update_schedule_health(scheduler);
+    let (snapshot, publication_latency_ms) =
+        publish_store_measured(store, published, publication_started);
+    Ok(EngineRefreshMeasurement {
+        snapshot,
+        collection_latency_ms: store.collection_latency_ms.unwrap_or_default(),
+        publication_latency_ms,
+    })
+}
+
+fn reply_with_publication(
+    reply: SnapshotReply,
+    store: &mut RuntimeStore,
+    published: &Arc<RwLock<PublishedRuntime>>,
+) {
+    let _ = reply.send(Ok(publish_store(store, published)));
+}
+
+fn publish_store(
+    store: &mut RuntimeStore,
+    published: &Arc<RwLock<PublishedRuntime>>,
+) -> Arc<RuntimeSnapshot> {
+    store.refresh_snapshot_health();
+    let snapshot = Arc::new(store.snapshot.clone());
+    let mut target = published
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *target = PublishedRuntime {
+        snapshot: Arc::clone(&snapshot),
+        process_exe_authoritative: store.live_process_snapshot,
+    };
+    drop(target);
+    snapshot
+}
+
+fn publish_store_measured(
+    store: &mut RuntimeStore,
+    published: &Arc<RwLock<PublishedRuntime>>,
+    publication_started: Instant,
+) -> (Arc<RuntimeSnapshot>, f64) {
+    store.refresh_snapshot_health();
+    let mut snapshot = store.snapshot.clone();
+    store.record_publication_latency(publication_started.elapsed());
+    snapshot.health = store.snapshot.health.clone();
+    let snapshot = Arc::new(snapshot);
+    let mut target = published
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *target = PublishedRuntime {
+        snapshot: Arc::clone(&snapshot),
+        process_exe_authoritative: store.live_process_snapshot,
+    };
+    drop(target);
+    let publication_latency_ms = publication_started.elapsed().as_secs_f64() * 1000.0;
+    (snapshot, publication_latency_ms)
+}
+
+fn publish_fatal_from_latest(
+    published: &Arc<RwLock<PublishedRuntime>>,
+    code: &str,
+    message: &str,
+    occurred_at_ms: u64,
+) {
+    let current = {
+        let current = published
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(&current.snapshot)
+    };
+    let mut snapshot = (*current).clone();
+    snapshot.publication_seq = snapshot.publication_seq.saturating_add(1);
+    snapshot.published_at_ms = occurred_at_ms.max(snapshot.sampled_at_ms.unwrap_or_default());
+    snapshot.health.engine_state = Some(crate::contracts::RuntimeEngineState::Fatal);
+    snapshot.health.collector_state = Some(crate::contracts::RuntimeCollectorState::Unavailable);
+    snapshot.health.degraded = true;
+    snapshot.health.status_summary = "Sampling engine stopped after a fatal error.".to_string();
+    snapshot.health.updated_at_ms = snapshot.published_at_ms;
+    snapshot.health.fatal_error = Some(crate::contracts::RuntimeFatalError {
+        code: code.to_string(),
+        message: message.to_string(),
+        occurred_at_ms: snapshot.published_at_ms,
+    });
+    let mut target = published
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *target = PublishedRuntime {
+        snapshot: Arc::new(snapshot),
+        process_exe_authoritative: false,
+    };
+}
+
+fn fatal_control_loop(receiver: &Receiver<EngineControl>, shutdown_requested: &AtomicBool) {
+    while !shutdown_requested.load(AtomicOrdering::Acquire) {
+        let Ok(control) = receiver.recv_timeout(Duration::from_millis(100)) else {
+            continue;
+        };
+        match control {
+            EngineControl::Shutdown => return,
+            EngineControl::Refresh => {}
+            EngineControl::Pause(reply) | EngineControl::Resume(reply) => {
+                let _ = reply.send(Err("runtime_engine_fatal".to_string()));
+            }
+            EngineControl::SetQuery(_, reply)
+            | EngineControl::SetSampleInterval(_, reply)
+            | EngineControl::SetAdminMode(_, reply) => {
+                let _ = reply.send(Err("runtime_engine_fatal".to_string()));
+            }
+        }
+    }
+}
+
+fn begin_refresh_generation(refresh_gate: &RefreshGate) -> Option<u64> {
+    let mut gate = refresh_gate
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    gate.wake_queued = false;
+    if gate.requested_generation <= gate.started_generation {
+        return None;
+    }
+    gate.started_generation = gate.requested_generation;
+    Some(gate.started_generation)
+}
+
+fn complete_refresh_generation(
+    refresh_gate: &RefreshGate,
+    generation: u64,
+    measurement: EngineRefreshMeasurement,
+) {
+    let mut gate = refresh_gate
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    gate.completed_generation = gate.completed_generation.max(generation);
+    gate.completed_measurement = Some((generation, measurement));
+    refresh_gate.changed.notify_all();
+}
+
+fn fail_refresh_generation(refresh_gate: &RefreshGate, generation: u64, error: String) {
+    let mut gate = refresh_gate
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    gate.wake_queued = false;
+    gate.started_generation = gate.started_generation.max(generation);
+    gate.failed_generation = Some((generation, error));
+    refresh_gate.changed.notify_all();
+}
+
+fn finish_refresh_wait(refresh_gate: &RefreshGate) {
+    let mut gate = refresh_gate
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    gate.waiting_callers = gate.waiting_callers.saturating_sub(1);
+}
+
+fn terminate_refresh_gate(refresh_gate: &RefreshGate, error: String) {
+    let mut gate = refresh_gate
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    gate.terminal_error = Some(error);
+    refresh_gate.changed.notify_all();
+}
+
+fn wait_for_refresh_generation(
+    refresh_gate: &RefreshGate,
+    target_generation: u64,
+) -> Result<EngineRefreshMeasurement, String> {
+    let deadline = Instant::now() + CONTROL_RESPONSE_TIMEOUT;
+    let mut gate = refresh_gate
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        if gate.completed_generation >= target_generation {
+            return gate
+                .completed_measurement
+                .as_ref()
+                .map(|(_, measurement)| measurement.clone())
+                .ok_or_else(|| "runtime_refresh_result_unavailable".to_string());
+        }
+        if let Some(error) = &gate.terminal_error {
+            return Err(error.clone());
+        }
+        if let Some((generation, error)) = &gate.failed_generation {
+            if *generation >= target_generation {
+                return Err(error.clone());
+            }
+        }
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        if timeout.is_zero() {
+            return Err("runtime_control_timeout".to_string());
+        }
+        let (next, result) = refresh_gate
+            .changed
+            .wait_timeout(gate, timeout)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate = next;
+        if result.timed_out() {
+            return Err("runtime_control_timeout".to_string());
+        }
+    }
+}
+
+fn sample_interval(sample_interval_ms: u32) -> Duration {
+    Duration::from_millis(u64::from(sample_interval_ms.clamp(500, 5_000)))
+}
+
+fn metric_window(metric_window_seconds: u32) -> Duration {
+    Duration::from_secs(u64::from(metric_window_seconds.clamp(15, 600)))
+}
+
+fn evaluate_snapshot_health(snapshot: &mut RuntimeSnapshot, evaluated_at_ms: u64) {
+    let evaluated_at_ms = evaluated_at_ms
+        .max(snapshot.published_at_ms)
+        .max(snapshot.health.last_heartbeat_at_ms.unwrap_or_default());
+    snapshot.health.updated_at_ms = evaluated_at_ms;
+    match snapshot.health.engine_state {
+        Some(RuntimeEngineState::Fatal) => {
+            snapshot.health.degraded = true;
+            snapshot.health.status_summary =
+                "Sampling engine stopped after a fatal error.".to_string();
+        }
+        Some(RuntimeEngineState::Running) => {
+            let interval_ms = u64::from(snapshot.settings.sample_interval_ms.clamp(500, 5_000));
+            let heartbeat_stale = snapshot
+                .health
+                .last_heartbeat_at_ms
+                .is_none_or(|heartbeat| {
+                    evaluated_at_ms.saturating_sub(heartbeat) > interval_ms * 2
+                });
+            let publication_stale =
+                evaluated_at_ms.saturating_sub(snapshot.published_at_ms) > interval_ms * 2;
+            let collection_budget_ms = snapshot
+                .health
+                .collection_latency_ms
+                .unwrap_or_default()
+                .ceil()
+                .max(interval_ms as f64) as u64;
+            let sample_stale = snapshot.sampled_at_ms.is_none_or(|sampled_at_ms| {
+                evaluated_at_ms.saturating_sub(sampled_at_ms)
+                    > interval_ms.saturating_add(collection_budget_ms)
+            });
+            if heartbeat_stale || publication_stale || sample_stale {
+                snapshot.health.degraded = true;
+                snapshot.health.status_summary = if heartbeat_stale {
+                    "Sampling engine heartbeat is stale.".to_string()
+                } else if publication_stale {
+                    "Snapshot publication is stale.".to_string()
+                } else {
+                    "Telemetry sample is stale.".to_string()
+                };
+            }
+        }
+        Some(RuntimeEngineState::Paused | RuntimeEngineState::Starting) | None => {}
     }
 }
 
 struct RuntimeStore {
-    collector: TelemetryCollector,
+    collector: Box<dyn RuntimeCollector>,
+    clock: Arc<MonotonicWireClock>,
     base_dir: PathBuf,
     provenance: RuntimeProvenance,
     settings: RuntimeSettings,
     admin_mode: RuntimeAdminModeStatus,
     elevated: Option<ElevatedHelperClient>,
-    elevated_request: Option<Receiver<Result<ElevatedHelperClient, String>>>,
+    elevated_request: Option<ElevatedLaunch>,
     snapshot: RuntimeSnapshot,
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
@@ -149,9 +964,15 @@ struct RuntimeStore {
     live_process_snapshot: bool,
     tick_p95: P95Window,
     sort_p95: P95Window,
-    jitter_p95: P95Window,
-    last_tick_at: Option<Instant>,
-    dropped_ticks: u64,
+    publication_p95: P95Window,
+    engine_state: RuntimeEngineState,
+    collector_state: Option<RuntimeCollectorState>,
+    last_heartbeat_at_ms: Option<u64>,
+    deadline_misses: u64,
+    deadline_lateness_p95_ms: f64,
+    collection_latency_ms: Option<f64>,
+    publication_latency_ms: Option<f64>,
+    fatal_error: Option<RuntimeFatalError>,
     publication_seq: u64,
     sample_seq: u64,
     sampled_at_ms: Option<u64>,
@@ -164,6 +985,11 @@ struct VerifiedElevatedFrame {
     rows: Vec<ProcessSample>,
     warnings: Vec<String>,
     collects_process_network: bool,
+}
+
+struct ElevatedLaunch {
+    receiver: Receiver<Result<ElevatedHelperClient, String>>,
+    worker: Option<JoinHandle<()>>,
 }
 
 struct ElevatedTransition {
@@ -180,16 +1006,23 @@ impl RuntimeStore {
     }
 
     fn from_base_dir(base_dir: PathBuf) -> Self {
+        let clock = Arc::new(MonotonicWireClock::new());
         ElevatedHelperClient::remove_stale_artifacts(&base_dir);
         let provenance = RuntimeProvenance::detect(&base_dir);
         let mut warnings = VecDeque::new();
         if let Some(warning) = provenance.privilege_warning() {
-            push_warning(&mut warnings, 0, "admin_mode", warning.to_string());
+            push_warning(
+                &mut warnings,
+                0,
+                clock.now_ms(),
+                "admin_mode",
+                warning.to_string(),
+            );
         }
         let settings =
             read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE)).unwrap_or_else(|error| {
                 if let Some(message) = error {
-                    push_warning(&mut warnings, 0, "persistence", message);
+                    push_warning(&mut warnings, 0, clock.now_ms(), "persistence", message);
                 }
                 RuntimeSettings::default()
             });
@@ -197,7 +1030,7 @@ impl RuntimeStore {
         let mut warm_cache = read_json::<WarmCache>(&base_dir.join(WARM_CACHE_FILE))
             .unwrap_or_else(|error| {
                 if let Some(message) = error {
-                    push_warning(&mut warnings, 0, "persistence", message);
+                    push_warning(&mut warnings, 0, clock.now_ms(), "persistence", message);
                 }
                 WarmCache {
                     seq: 0,
@@ -214,15 +1047,25 @@ impl RuntimeStore {
             warm_cache.rows = hold_process_rates(warm_cache.rows);
         }
         let admin_mode = provenance.admin_mode_status();
+        let engine_state = if settings.paused {
+            RuntimeEngineState::Paused
+        } else {
+            RuntimeEngineState::Starting
+        };
+        let initial_health = RuntimeHealth {
+            engine_state: Some(engine_state),
+            ..RuntimeHealth::default()
+        };
+        let health_window = metric_window(settings.metric_window_seconds);
         let snapshot = build_snapshot(
             publication_seq,
-            now_ms(),
+            clock.now_ms(),
             0,
             None,
             provenance.environment(),
             &settings,
             &admin_mode,
-            RuntimeHealth::default(),
+            initial_health,
             empty_system(),
             &warm_cache.rows,
             shape_rows(&warm_cache.rows, &settings.query),
@@ -230,7 +1073,8 @@ impl RuntimeStore {
         );
 
         Self {
-            collector: TelemetryCollector::new(),
+            collector: Box::new(TelemetryCollector::new()),
+            clock,
             base_dir,
             provenance,
             settings,
@@ -242,11 +1086,17 @@ impl RuntimeStore {
             previous_totals: None,
             previous_processes: warm_cache.rows,
             live_process_snapshot: false,
-            tick_p95: P95Window::new(120),
-            sort_p95: P95Window::new(120),
-            jitter_p95: P95Window::new(120),
-            last_tick_at: None,
-            dropped_ticks: 0,
+            tick_p95: P95Window::new(health_window),
+            sort_p95: P95Window::new(health_window),
+            publication_p95: P95Window::new(health_window),
+            engine_state,
+            collector_state: None,
+            last_heartbeat_at_ms: None,
+            deadline_misses: 0,
+            deadline_lateness_p95_ms: 0.0,
+            collection_latency_ms: None,
+            publication_latency_ms: None,
+            fatal_error: None,
             publication_seq,
             sample_seq: 0,
             sampled_at_ms: None,
@@ -256,12 +1106,16 @@ impl RuntimeStore {
         }
     }
 
-    fn snapshot(&mut self) -> RuntimeSnapshot {
-        self.snapshot.clone()
-    }
-
-    fn refresh_now(&mut self) -> RuntimeSnapshot {
-        self.tick()
+    #[cfg(test)]
+    fn has_process_exe(&self, exe: &str) -> bool {
+        let exe = exe.trim();
+        self.live_process_snapshot
+            && !exe.is_empty()
+            && self
+                .snapshot
+                .processes
+                .iter()
+                .any(|process| process.exe.eq_ignore_ascii_case(exe))
     }
 
     fn set_paused(&mut self, paused: bool) -> RuntimeSnapshot {
@@ -300,13 +1154,25 @@ impl RuntimeStore {
                     !self.collector.process_network_ready().unwrap_or(false);
                 let base_dir = self.base_dir.clone();
                 let (sender, receiver) = mpsc::channel();
-                std::thread::spawn(move || {
-                    let _ = sender.send(ElevatedHelperClient::start(
-                        &base_dir,
-                        collect_process_network,
-                    ));
-                });
-                self.elevated_request = Some(receiver);
+                let worker = std::thread::Builder::new()
+                    .name("batcave-elevated-helper-launch".to_string())
+                    .spawn(move || {
+                        let _ = sender.send(ElevatedHelperClient::start(
+                            &base_dir,
+                            collect_process_network,
+                        ));
+                    });
+                match worker {
+                    Ok(worker) => {
+                        self.elevated_request = Some(ElevatedLaunch {
+                            receiver,
+                            worker: Some(worker),
+                        });
+                    }
+                    Err(error) => {
+                        self.fail_admin_mode(format!("admin_mode_launch_thread_failed:{error}"))
+                    }
+                }
             }
         } else {
             self.settings.admin_mode_requested = false;
@@ -349,22 +1215,12 @@ impl RuntimeStore {
         self.snapshot.clone()
     }
 
-    fn has_process_exe(&mut self, exe: &str) -> bool {
-        let exe = exe.trim();
-        self.live_process_snapshot
-            && !exe.is_empty()
-            && self
-                .snapshot
-                .processes
-                .iter()
-                .any(|process| process.exe.eq_ignore_ascii_case(exe))
-    }
-
-    fn progress_paused_elevated_helper(&mut self) {
-        let transition = self.advance_elevated_helper(now_ms());
+    fn progress_paused_elevated_helper(&mut self) -> bool {
+        let transition = self.advance_elevated_helper(self.clock.now_ms());
         if transition.publish {
             self.publish_snapshot_only(None);
         }
+        transition.publish
     }
 
     fn advance_elevated_helper(&mut self, success_at_ms: u64) -> ElevatedTransition {
@@ -518,37 +1374,20 @@ impl RuntimeStore {
         }
     }
 
-    fn tick(&mut self) -> RuntimeSnapshot {
+    fn tick(&mut self) -> Result<Instant, CollectionFailure> {
         let previous_process_baseline_live = self.live_process_snapshot;
         self.live_process_snapshot = false;
-        let tick_started = Instant::now();
-        let previous_tick_at = self.last_tick_at.replace(tick_started);
+        let collection_started = Instant::now();
         let sample = match self.collector.collect() {
             Ok(sample) => sample,
             Err(error) => {
-                let transition = self.advance_elevated_helper(now_ms());
-                if transition.access_changed || self.process_access_baseline_dirty {
-                    self.previous_processes.clear();
-                    self.elevated_helper_rows_published = false;
-                    self.process_access_baseline_dirty = false;
-                }
-                self.publish_snapshot_only(Some(("collector", error)));
-                return self.snapshot.clone();
+                self.record_collection_latency(collection_started.elapsed());
+                return Err(error);
             }
         };
-        let tick_ms = tick_started.elapsed().as_secs_f64() * 1000.0;
-        self.tick_p95.add(tick_ms);
+        self.collector_state = Some(sample.collector_state);
 
-        if let Some(previous) = previous_tick_at {
-            let elapsed_ms = tick_started.duration_since(previous).as_secs_f64() * 1000.0;
-            let jitter = (elapsed_ms - 1000.0).abs();
-            self.jitter_p95.add(jitter);
-            if jitter > 1500.0 {
-                self.dropped_ticks = self.dropped_ticks.saturating_add((jitter / 1000.0) as u64);
-            }
-        }
-
-        let sample_ts_ms = now_ms();
+        let sample_ts_ms = self.clock.now_ms();
         let mut active_collector_warnings = sample.warnings;
 
         let elapsed_seconds = self
@@ -642,6 +1481,14 @@ impl RuntimeStore {
         self.sort_p95.add(sort_ms);
 
         let app_metrics = current_app_metrics(&self.previous_processes);
+        if self
+            .sample_seq
+            .is_multiple_of(WARM_CACHE_WRITE_INTERVAL_TICKS)
+        {
+            self.persist_warm_cache();
+        }
+        self.record_collection_latency(collection_started.elapsed());
+        let publication_started = Instant::now();
         let health = self.build_health(
             sample.latency_ms,
             app_metrics.cpu_percent,
@@ -649,7 +1496,7 @@ impl RuntimeStore {
         );
         self.snapshot = build_snapshot(
             self.publication_seq,
-            now_ms(),
+            self.clock.now_ms(),
             self.sample_seq,
             self.sampled_at_ms,
             self.provenance.environment(),
@@ -662,14 +1509,7 @@ impl RuntimeStore {
             self.warnings.iter().cloned().collect(),
         );
 
-        if self
-            .sample_seq
-            .is_multiple_of(WARM_CACHE_WRITE_INTERVAL_TICKS)
-        {
-            self.persist_warm_cache();
-        }
-
-        self.snapshot.clone()
+        Ok(publication_started)
     }
 
     fn fail_admin_mode(&mut self, error: String) {
@@ -689,7 +1529,11 @@ impl RuntimeStore {
     }
 
     fn resolve_elevated_request(&mut self) -> bool {
-        let result = match self.elevated_request.as_ref().map(Receiver::try_recv) {
+        let result = match self
+            .elevated_request
+            .as_ref()
+            .map(|launch| launch.receiver.try_recv())
+        {
             Some(Ok(result)) => Some(result),
             Some(Err(TryRecvError::Disconnected)) => {
                 Some(Err("admin_mode_launch_channel_closed".to_string()))
@@ -699,7 +1543,11 @@ impl RuntimeStore {
         let Some(result) = result else {
             return false;
         };
-        self.elevated_request = None;
+        if let Some(mut launch) = self.elevated_request.take() {
+            if let Some(worker) = launch.worker.take() {
+                let _ = worker.join();
+            }
+        }
 
         match (self.settings.admin_mode_requested, result) {
             (true, Ok(client)) => self.elevated = Some(client),
@@ -725,7 +1573,7 @@ impl RuntimeStore {
         let rows = shape_rows(&self.previous_processes, &self.settings.query);
         self.snapshot = build_snapshot(
             self.publication_seq,
-            now_ms(),
+            self.clock.now_ms(),
             self.sample_seq,
             self.sampled_at_ms,
             self.provenance.environment(),
@@ -736,6 +1584,70 @@ impl RuntimeStore {
             &self.previous_processes,
             rows,
             self.warnings.iter().cloned().collect(),
+        );
+    }
+
+    fn set_engine_state(&mut self, state: RuntimeEngineState) {
+        self.engine_state = state;
+        if state != RuntimeEngineState::Fatal {
+            self.fatal_error = None;
+        }
+    }
+
+    fn note_heartbeat(&mut self) {
+        self.last_heartbeat_at_ms = Some(self.clock.now_ms());
+    }
+
+    fn update_schedule_health(&mut self, scheduler: &MonotonicScheduler) {
+        self.deadline_misses = scheduler.deadline_misses;
+        self.deadline_lateness_p95_ms = scheduler.lateness_p95_ms(Instant::now());
+        self.refresh_snapshot_health();
+    }
+
+    fn record_collection_latency(&mut self, elapsed: Duration) {
+        let latency_ms = elapsed.as_secs_f64() * 1000.0;
+        self.collection_latency_ms = Some(latency_ms);
+        self.tick_p95.add_at(Instant::now(), latency_ms);
+    }
+
+    fn record_publication_latency(&mut self, elapsed: Duration) {
+        let latency_ms = elapsed.as_secs_f64() * 1000.0;
+        self.publication_latency_ms = Some(latency_ms);
+        self.publication_p95.add_at(Instant::now(), latency_ms);
+        self.refresh_snapshot_health();
+    }
+
+    fn publish_collector_unavailable(&mut self, error: String) {
+        self.collector_state = Some(RuntimeCollectorState::Unavailable);
+        self.live_process_snapshot = false;
+        let transition = self.advance_elevated_helper(self.clock.now_ms());
+        if transition.access_changed || self.process_access_baseline_dirty {
+            self.previous_processes.clear();
+            self.elevated_helper_rows_published = false;
+            self.process_access_baseline_dirty = false;
+        }
+        self.publish_snapshot_only(Some(("collector", error)));
+    }
+
+    fn mark_engine_fatal(&mut self, code: &str, message: String) {
+        let occurred_at_ms = self.clock.now_ms();
+        self.engine_state = RuntimeEngineState::Fatal;
+        self.collector_state = Some(RuntimeCollectorState::Unavailable);
+        self.live_process_snapshot = false;
+        self.fatal_error = Some(RuntimeFatalError {
+            code: code.to_string(),
+            message: message.clone(),
+            occurred_at_ms,
+        });
+        self.publish_snapshot_only(Some(("collector", message)));
+    }
+
+    fn refresh_snapshot_health(&mut self) {
+        let app_metrics = current_app_metrics(&self.previous_processes);
+        self.snapshot.health = self.build_health(
+            self.collection_latency_ms.unwrap_or_default().round() as u64,
+            app_metrics.cpu_percent,
+            app_metrics.rss_bytes,
         );
     }
 
@@ -753,13 +1665,32 @@ impl RuntimeStore {
             .filter(|warning| warning_degrades_health(&warning.category))
             .count();
         let warning_degraded = warning_degraded_count > 0;
+        let collector_warning_count = self
+            .warnings
+            .iter()
+            .filter(|warning| warning.category == "collector")
+            .count();
+        let collector_degraded = matches!(
+            self.collector_state,
+            Some(RuntimeCollectorState::Limited | RuntimeCollectorState::Unavailable)
+        );
+        let fatal = self.engine_state == RuntimeEngineState::Fatal;
+        let cadence_degraded = self.deadline_misses > 0;
         let last_warning = self.warnings.back().map(|warning| warning.message.clone());
-        let status_summary = if self.settings.paused {
+        let status_summary = if fatal {
+            "Sampling engine stopped after a fatal error.".to_string()
+        } else if self.settings.paused {
             "Paused.".to_string()
         } else if self.admin_mode.state == RuntimeAdminModeState::Requesting {
             "Waiting for Windows approval.".to_string()
         } else if self.admin_mode.state == RuntimeAdminModeState::Recovering {
             "Privileged collection is recovering; standard monitoring remains current.".to_string()
+        } else if self.collector_state == Some(RuntimeCollectorState::Unavailable) {
+            "Collector unavailable; retaining the last published sample.".to_string()
+        } else if self.collector_state == Some(RuntimeCollectorState::Limited) {
+            "Collecting with limited telemetry quality.".to_string()
+        } else if cadence_degraded {
+            format!("Sampling missed {} deadline(s).", self.deadline_misses)
         } else if warning_degraded {
             format!(
                 "{warning_degraded_count} telemetry limitation{}.",
@@ -778,19 +1709,34 @@ impl RuntimeStore {
         RuntimeHealth {
             tick_count: self.sample_seq,
             snapshot_latency_ms: latency_ms,
-            degraded: cpu_degraded || rss_degraded || warning_degraded,
-            collector_warnings: warning_degraded_count,
+            degraded: fatal
+                || collector_degraded
+                || cadence_degraded
+                || cpu_degraded
+                || rss_degraded
+                || warning_degraded,
+            collector_warnings: collector_warning_count,
             runtime_loop_enabled: true,
-            runtime_loop_running: !self.settings.paused,
+            runtime_loop_running: self.engine_state == RuntimeEngineState::Running,
             status_summary,
-            updated_at_ms: now_ms(),
+            updated_at_ms: self.clock.now_ms(),
             tick_p95_ms: round1(self.tick_p95.value()),
             sort_p95_ms: round1(self.sort_p95.value()),
-            jitter_p95_ms: round1(self.jitter_p95.value()),
-            dropped_ticks: self.dropped_ticks,
+            jitter_p95_ms: round1(self.deadline_lateness_p95_ms),
+            dropped_ticks: self.deadline_misses,
             app_cpu_percent: round1(app_cpu_percent),
             app_rss_bytes,
             last_warning,
+            engine_state: Some(self.engine_state),
+            collector_state: self.collector_state,
+            last_heartbeat_at_ms: self.last_heartbeat_at_ms,
+            deadline_misses: Some(self.deadline_misses),
+            deadline_lateness_p95_ms: Some(round1(self.deadline_lateness_p95_ms)),
+            collection_latency_ms: self.collection_latency_ms.map(round1),
+            collection_p95_ms: Some(round1(self.tick_p95.value())),
+            publication_latency_ms: self.publication_latency_ms.map(round1),
+            publication_p95_ms: Some(round1(self.publication_p95.value())),
+            fatal_error: self.fatal_error.clone(),
         }
     }
 
@@ -809,6 +1755,7 @@ impl RuntimeStore {
         push_warning(
             &mut self.warnings,
             self.publication_seq,
+            self.clock.now_ms(),
             category,
             message.clone(),
         );
@@ -890,7 +1837,7 @@ impl RuntimeStore {
     fn append_diagnostic(&self, category: &str, message: &str) {
         let path = self.base_dir.join(DIAGNOSTICS_FILE);
         let payload = serde_json::json!({
-            "ts_ms": now_ms(),
+            "ts_ms": self.clock.now_ms(),
             "category": category,
             "payload": { "message": message },
         });
@@ -909,14 +1856,47 @@ impl RuntimeStore {
                 writeln!(file, "{payload}")
             });
     }
+
+    fn shutdown_owned_resources(&mut self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        if let Some(mut launch) = self.elevated_request.take() {
+            if let Some(worker) = launch.worker.take() {
+                if worker.join().is_err() {
+                    errors.push("admin_mode_launcher_join_failed".to_string());
+                }
+            }
+            match launch.receiver.try_recv() {
+                Ok(Ok(mut client)) => {
+                    if let Err(error) = client.stop() {
+                        errors.push(error);
+                    }
+                }
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => {}
+                Err(TryRecvError::Empty) => {
+                    errors.push("admin_mode_launcher_result_missing".to_string());
+                }
+            }
+        }
+        if let Some(mut client) = self.elevated.take() {
+            if let Err(error) = client.stop() {
+                errors.push(error);
+            }
+        }
+        ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "runtime_resource_cleanup_failed:{}",
+                errors.join(";")
+            ))
+        }
+    }
 }
 
 impl Drop for RuntimeStore {
     fn drop(&mut self) {
-        if let Some(mut client) = self.elevated.take() {
-            let _ = client.stop();
-        }
-        ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
+        let _ = self.shutdown_owned_resources();
     }
 }
 
@@ -946,8 +1926,8 @@ impl TelemetryTotals {
 }
 
 struct P95Window {
-    values: VecDeque<f64>,
-    capacity: usize,
+    values: VecDeque<(Instant, f64)>,
+    window: Duration,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -957,26 +1937,41 @@ struct CurrentAppMetrics {
 }
 
 impl P95Window {
-    fn new(capacity: usize) -> Self {
+    fn new(window: Duration) -> Self {
         Self {
-            values: VecDeque::with_capacity(capacity),
-            capacity,
+            values: VecDeque::new(),
+            window,
         }
     }
 
     fn add(&mut self, value: f64) {
-        if self.values.len() == self.capacity {
+        self.add_at(Instant::now(), value);
+    }
+
+    fn add_at(&mut self, now: Instant, value: f64) {
+        self.values.push_back((now, value.max(0.0)));
+        while self.values.front().is_some_and(|(recorded_at, _)| {
+            now.saturating_duration_since(*recorded_at) > self.window
+        }) {
             self.values.pop_front();
         }
-        self.values.push_back(value.max(0.0));
     }
 
     fn value(&self) -> f64 {
-        if self.values.is_empty() {
+        self.value_at(Instant::now())
+    }
+
+    fn value_at(&self, now: Instant) -> f64 {
+        let mut values = self
+            .values
+            .iter()
+            .filter(|(recorded_at, _)| now.saturating_duration_since(*recorded_at) <= self.window)
+            .map(|(_, value)| *value)
+            .collect::<Vec<_>>();
+        if values.is_empty() {
             return 0.0;
         }
 
-        let mut values = self.values.iter().copied().collect::<Vec<_>>();
         values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal));
         let index = ((values.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
         values[index.min(values.len() - 1)]
@@ -1354,7 +2349,7 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                 group_category: group.category.clone(),
                 group_count,
                 icon_kind: identity.icon_kind.to_string(),
-                is_child: identity.is_child,
+                is_child: grouped && identity.is_child,
                 is_grouped: grouped,
                 attention_label: process_attention_label(&process),
             });
@@ -1446,6 +2441,7 @@ fn group_metric_summary(
         .filter(|process| group_metric_has_value(process, metric))
         .count();
 
+    let includes_partial_quality = available_quality.contains(&MetricQuality::Partial);
     let quality = if metric == GroupMetric::OtherIo || value_count == 0 {
         MetricQuality::Unavailable
     } else if available == 0 {
@@ -1464,7 +2460,7 @@ fn group_metric_summary(
         } else {
             MetricQuality::Partial
         }
-    } else if available < total || available_quality.contains(&MetricQuality::Partial) {
+    } else if available < total || includes_partial_quality {
         MetricQuality::Partial
     } else if available_quality.contains(&MetricQuality::Estimated) {
         MetricQuality::Estimated
@@ -1472,16 +2468,30 @@ fn group_metric_summary(
         MetricQuality::Native
     };
 
-    let message = (available < total)
-        .then(|| format!("{available} of {total} processes contribute to this aggregate."));
+    let limitation_code = if available < total {
+        Some(MetricLimitationCode::GroupPartialCoverage)
+    } else if includes_partial_quality {
+        Some(MetricLimitationCode::PartialCoverage)
+    } else {
+        None
+    };
+    let message = if available < total {
+        Some(format!(
+            "{} of {} processes contribute to this aggregate.",
+            available, total
+        ))
+    } else if includes_partial_quality {
+        Some("At least one process contributes partial-quality data.".to_string())
+    } else {
+        None
+    };
     (
         MetricQualityInfo {
             quality,
             source: Some(MetricSource::ProcessAggregate),
             updated_at_ms: None,
             age_ms: None,
-            limitation_code: (available < total)
-                .then_some(MetricLimitationCode::GroupPartialCoverage),
+            limitation_code,
             message,
         },
         coverage,
@@ -2273,13 +3283,14 @@ fn normalize_query(query: RuntimeQuery) -> RuntimeQuery {
 fn push_warning(
     warnings: &mut VecDeque<RuntimeWarning>,
     publication_seq: u64,
+    occurred_at_ms: u64,
     category: &str,
     message: String,
 ) {
     warnings.push_back(RuntimeWarning {
         key: warning_key(category, &message),
         publication_seq,
-        occurred_at_ms: now_ms(),
+        occurred_at_ms,
         category: category.to_string(),
         message,
     });
@@ -2454,6 +3465,408 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use crate::contracts::{RuntimeInstallKind, RuntimePlatform};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering as TestOrdering},
+        Barrier,
+    };
+
+    enum FakeOutcome {
+        Sample,
+        Unavailable(&'static str),
+        Fatal(&'static str),
+        Panic,
+    }
+
+    struct FakeCollector {
+        outcomes: VecDeque<FakeOutcome>,
+        collect_count: Arc<AtomicUsize>,
+        first_started: Option<mpsc::Sender<()>>,
+        first_release: Option<Arc<(Mutex<bool>, Condvar)>>,
+        dropped: Option<mpsc::Sender<()>>,
+    }
+
+    impl FakeCollector {
+        fn new(outcomes: impl IntoIterator<Item = FakeOutcome>) -> (Self, Arc<AtomicUsize>) {
+            let collect_count = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    outcomes: outcomes.into_iter().collect(),
+                    collect_count: Arc::clone(&collect_count),
+                    first_started: None,
+                    first_release: None,
+                    dropped: None,
+                },
+                collect_count,
+            )
+        }
+    }
+
+    impl RuntimeCollector for FakeCollector {
+        fn collect(&mut self) -> Result<crate::telemetry::TelemetrySample, CollectionFailure> {
+            let count = self.collect_count.fetch_add(1, TestOrdering::SeqCst) + 1;
+            if count == 1 {
+                if let Some(started) = self.first_started.take() {
+                    let _ = started.send(());
+                }
+                if let Some(release) = &self.first_release {
+                    let (ready, changed) = &**release;
+                    let mut ready = ready
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    while !*ready {
+                        ready = changed
+                            .wait(ready)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                }
+            }
+            match self.outcomes.pop_front().unwrap_or(FakeOutcome::Sample) {
+                FakeOutcome::Sample => Ok(crate::telemetry::TelemetrySample {
+                    latency_ms: 0,
+                    collector_state: RuntimeCollectorState::Healthy,
+                    system: empty_system(),
+                    processes: vec![sample("10", "Fake", count as f64)],
+                    warnings: Vec::new(),
+                }),
+                FakeOutcome::Unavailable(error) => {
+                    Err(CollectionFailure::Unavailable(error.to_string()))
+                }
+                FakeOutcome::Fatal(error) => Err(CollectionFailure::Fatal(error.to_string())),
+                FakeOutcome::Panic => panic!("scripted collector panic"),
+            }
+        }
+
+        fn process_network_ready(&self) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn retry_process_network(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl Drop for FakeCollector {
+        fn drop(&mut self) {
+            if let Some(dropped) = self.dropped.take() {
+                let _ = dropped.send(());
+            }
+        }
+    }
+
+    fn state_with_collector(
+        name: &str,
+        collector: FakeCollector,
+        automatic_sampling: bool,
+    ) -> (RuntimeState, PathBuf) {
+        let base_dir = runtime_test_dir(name);
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.collector = Box::new(collector);
+        (
+            RuntimeState::from_store(store, automatic_sampling).expect("engine starts"),
+            base_dir,
+        )
+    }
+
+    #[test]
+    fn monotonic_scheduler_uses_absolute_deadlines_without_work_sleep_drift() {
+        let base = Instant::now();
+        for interval_ms in [500_u64, 1_000, 2_000, 5_000] {
+            let interval = Duration::from_millis(interval_ms);
+            let mut scheduler =
+                MonotonicScheduler::new(base, interval, false, Duration::from_secs(600));
+            scheduler.record_start(base);
+            scheduler.complete_scheduled_work(base + Duration::from_millis(123));
+            assert_eq!(scheduler.next_deadline, base + interval);
+            scheduler.record_start(base + interval);
+            scheduler.complete_scheduled_work(base + interval + Duration::from_millis(77));
+            assert_eq!(scheduler.next_deadline, base + interval + interval);
+            assert_eq!(scheduler.deadline_misses, 0);
+        }
+
+        let mut slow = MonotonicScheduler::new(
+            base,
+            Duration::from_millis(500),
+            false,
+            Duration::from_secs(600),
+        );
+        slow.record_start(base);
+        slow.complete_scheduled_work(base + Duration::from_millis(1_250));
+        assert_eq!(slow.next_deadline, base + Duration::from_millis(1_500));
+        assert_eq!(slow.deadline_misses, 2);
+    }
+
+    #[test]
+    fn p95_window_retains_the_configured_six_hundred_seconds() {
+        let base = Instant::now();
+        let mut window = P95Window::new(Duration::from_secs(600));
+        window.add_at(base, 1.0);
+        window.add_at(base + Duration::from_secs(599), 9.0);
+        assert_eq!(window.value_at(base + Duration::from_secs(600)), 9.0);
+        assert_eq!(window.value_at(base + Duration::from_secs(1_199)), 9.0);
+        assert_eq!(window.value_at(base + Duration::from_secs(1_200)), 0.0);
+    }
+
+    #[test]
+    fn immutable_snapshot_reads_do_not_wait_for_a_slow_collector() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (mut collector, _) = FakeCollector::new([FakeOutcome::Sample]);
+        collector.first_started = Some(started_tx);
+        collector.first_release = Some(Arc::clone(&release));
+        let (state, base_dir) = state_with_collector("slow-read", collector, false);
+        let state = Arc::new(state);
+        let refresh_state = Arc::clone(&state);
+        let refresh = std::thread::spawn(move || refresh_state.refresh_now());
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("collector starts");
+
+        let read_started = Instant::now();
+        let snapshot = state
+            .snapshot()
+            .expect("immutable snapshot remains readable");
+        assert_eq!(snapshot.sample_seq, 0);
+        assert!(read_started.elapsed() < Duration::from_millis(100));
+
+        let (ready, changed) = &*release;
+        *ready.lock().expect("release lock") = true;
+        changed.notify_all();
+        refresh
+            .join()
+            .expect("refresh joins")
+            .expect("refresh succeeds");
+        state.shutdown().expect("engine joins");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn refreshes_arriving_during_collection_coalesce_to_one_next_generation() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (mut collector, collect_count) =
+            FakeCollector::new([FakeOutcome::Sample, FakeOutcome::Sample]);
+        collector.first_started = Some(started_tx);
+        collector.first_release = Some(Arc::clone(&release));
+        let (state, base_dir) = state_with_collector("refresh-coalesce", collector, false);
+        let state = Arc::new(state);
+        let first_state = Arc::clone(&state);
+        let first = std::thread::spawn(move || first_state.refresh_now());
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first collection starts");
+
+        let barrier = Arc::new(Barrier::new(9));
+        let callers = (0..8)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    state.refresh_now()
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let registration_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let waiting = state
+                .refresh_gate
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .waiting_callers;
+            if waiting == 9 {
+                break;
+            }
+            assert!(
+                Instant::now() < registration_deadline,
+                "refresh callers register"
+            );
+            std::thread::yield_now();
+        }
+        let (ready, changed) = &*release;
+        *ready.lock().expect("release lock") = true;
+        changed.notify_all();
+
+        first
+            .join()
+            .expect("first caller joins")
+            .expect("first succeeds");
+        for caller in callers {
+            caller
+                .join()
+                .expect("caller joins")
+                .expect("refresh succeeds");
+        }
+        assert_eq!(collect_count.load(TestOrdering::SeqCst), 2);
+        state.shutdown().expect("engine joins");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn unavailable_collection_recovers_and_fatal_state_is_durable() {
+        let (collector, _) = FakeCollector::new([
+            FakeOutcome::Unavailable("collector offline"),
+            FakeOutcome::Sample,
+            FakeOutcome::Fatal("collector poisoned"),
+        ]);
+        let (state, base_dir) = state_with_collector("collector-failures", collector, false);
+        let unavailable = state
+            .refresh_now()
+            .expect("unavailable publishes held snapshot");
+        assert_eq!(unavailable.sample_seq, 0);
+        assert_eq!(
+            unavailable.health.collector_state,
+            Some(RuntimeCollectorState::Unavailable)
+        );
+        let recovered = state.refresh_now().expect("collector recovers");
+        assert_eq!(recovered.sample_seq, 1);
+        assert_eq!(
+            state
+                .refresh_now()
+                .expect_err("fatal collection stops engine"),
+            "runtime_engine_fatal:collector poisoned"
+        );
+        let fatal = state.snapshot().expect("fatal snapshot remains readable");
+        assert_eq!(fatal.health.engine_state, Some(RuntimeEngineState::Fatal));
+        assert!(fatal.health.fatal_error.is_some());
+        let envelope = crate::protocol::encode_snapshot(fatal).expect("fatal v3 payload is valid");
+        let value = serde_json::to_value(envelope).expect("fatal envelope serializes");
+        assert_eq!(
+            value.pointer("/event/payload/health/engine_state"),
+            Some(&serde_json::json!("fatal"))
+        );
+        assert_eq!(
+            value.pointer("/event/payload/health/collector_state"),
+            Some(&serde_json::json!("unavailable"))
+        );
+        assert_eq!(
+            value.pointer("/event/payload/health/fatal_error/code"),
+            Some(&serde_json::json!("collector_fatal"))
+        );
+        state.shutdown().expect("fatal engine joins");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn panic_is_published_as_fatal_and_shutdown_joins_collector_drop() {
+        let (mut collector, _) = FakeCollector::new([FakeOutcome::Panic]);
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        collector.dropped = Some(dropped_tx);
+        let (state, base_dir) = state_with_collector("collector-panic", collector, false);
+        assert_eq!(
+            state.refresh_now().expect_err("panic fails refresh"),
+            "runtime_engine_fatal"
+        );
+        let fatal = state
+            .snapshot()
+            .expect("panic publication remains readable");
+        assert_eq!(fatal.health.engine_state, Some(RuntimeEngineState::Fatal));
+        assert_eq!(
+            fatal
+                .health
+                .fatal_error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("sampling_engine_panicked")
+        );
+        state.shutdown().expect("panic engine joins");
+        dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("collector drops before shutdown returns");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn pause_resume_query_and_interval_controls_publish_consistent_state() {
+        let (collector, collect_count) = FakeCollector::new([FakeOutcome::Sample]);
+        let (state, base_dir) = state_with_collector("engine-controls", collector, false);
+        let paused = state.pause().expect("pause succeeds");
+        assert!(paused.settings.paused);
+        assert_eq!(paused.health.engine_state, Some(RuntimeEngineState::Paused));
+        assert_eq!(paused.health.deadline_misses, Some(0));
+
+        let interval = state
+            .set_sample_interval(2_000)
+            .expect("interval update succeeds");
+        assert_eq!(interval.settings.sample_interval_ms, 2_000);
+        let same_interval = state
+            .set_sample_interval(2_000)
+            .expect("same interval remains bounded");
+        assert_eq!(same_interval.settings.sample_interval_ms, 2_000);
+        let query = state
+            .set_query(RuntimeQuery {
+                filter_text: "fake".to_string(),
+                ..RuntimeQuery::default()
+            })
+            .expect("query update succeeds");
+        assert_eq!(query.settings.query.filter_text, "fake");
+
+        let resumed = state.resume().expect("resume publishes a fresh sample");
+        assert!(!resumed.settings.paused);
+        assert_eq!(
+            resumed.health.engine_state,
+            Some(RuntimeEngineState::Running)
+        );
+        assert_eq!(resumed.sample_seq, 1);
+        assert_eq!(collect_count.load(TestOrdering::SeqCst), 1);
+        state.shutdown().expect("engine joins");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn paused_engine_publishes_heartbeat_without_deadline_misses() {
+        let (collector, collect_count) = FakeCollector::new([]);
+        let base_dir = runtime_test_dir("paused-heartbeat");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.settings.paused = true;
+        store.settings.sample_interval_ms = 500;
+        store.collector = Box::new(collector);
+        let state = RuntimeState::from_store(store, true).expect("engine starts");
+        std::thread::sleep(Duration::from_millis(650));
+        let snapshot = state.snapshot().expect("paused heartbeat snapshot");
+        assert_eq!(
+            snapshot.health.engine_state,
+            Some(RuntimeEngineState::Paused)
+        );
+        assert!(snapshot.health.last_heartbeat_at_ms.is_some());
+        assert_eq!(snapshot.health.deadline_misses, Some(0));
+        assert_eq!(snapshot.sample_seq, 0);
+        assert_eq!(collect_count.load(TestOrdering::SeqCst), 0);
+        state.shutdown().expect("paused engine joins");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn concurrent_shutdown_callers_share_post_cleanup_completion() {
+        let (mut collector, _) = FakeCollector::new([]);
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        collector.dropped = Some(dropped_tx);
+        let (state, base_dir) = state_with_collector("concurrent-shutdown", collector, false);
+        let state = Arc::new(state);
+        let barrier = Arc::new(Barrier::new(5));
+        let callers = (0..4)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    state.shutdown()
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        for caller in callers {
+            caller
+                .join()
+                .expect("shutdown caller joins")
+                .expect("shared shutdown succeeds");
+        }
+        dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("collector cleanup precedes completion");
+        let _ = fs::remove_dir_all(base_dir);
+    }
 
     #[test]
     fn shape_rows_filters_sorts_and_limits_processes() {
@@ -3844,7 +5257,7 @@ mod tests {
 
     #[test]
     fn snapshot_reads_are_passive() {
-        let state = RuntimeState::new();
+        let state = RuntimeState::new().expect("engine starts");
 
         let first = state.snapshot().expect("snapshot read succeeds");
         let second = state.snapshot().expect("snapshot read succeeds");
@@ -4548,7 +5961,10 @@ mod tests {
         store.admin_mode.state = RuntimeAdminModeState::Requesting;
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
         store.settings.paused = true;
-        store.elevated_request = Some(receiver);
+        store.elevated_request = Some(ElevatedLaunch {
+            receiver,
+            worker: None,
+        });
         sender
             .send(Err("admin_mode_launch_failed_or_cancelled".to_string()))
             .expect("test result sends");
@@ -4838,7 +6254,10 @@ mod tests {
         store.settings.admin_mode_enabled = false;
         store.admin_mode.state = RuntimeAdminModeState::Requesting;
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.elevated_request = Some(receiver);
+        store.elevated_request = Some(ElevatedLaunch {
+            receiver,
+            worker: None,
+        });
         store.publish_snapshot_only(None);
     }
 

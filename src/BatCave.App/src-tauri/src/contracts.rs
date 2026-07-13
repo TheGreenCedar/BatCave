@@ -157,6 +157,51 @@ pub struct RuntimeHealth {
     pub app_cpu_percent: f64,
     pub app_rss_bytes: u64,
     pub last_warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_state: Option<RuntimeEngineState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collector_state: Option<RuntimeCollectorState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_misses: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_lateness_p95_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_latency_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_p95_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_latency_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_p95_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fatal_error: Option<RuntimeFatalError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEngineState {
+    Starting,
+    Running,
+    Paused,
+    Fatal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCollectorState {
+    Healthy,
+    Limited,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimeFatalError {
+    pub code: String,
+    pub message: String,
+    pub occurred_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -636,6 +681,16 @@ impl Default for RuntimeHealth {
             app_cpu_percent: 0.0,
             app_rss_bytes: 0,
             last_warning: None,
+            engine_state: None,
+            collector_state: None,
+            last_heartbeat_at_ms: None,
+            deadline_misses: None,
+            deadline_lateness_p95_ms: None,
+            collection_latency_ms: None,
+            collection_p95_ms: None,
+            publication_latency_ms: None,
+            publication_p95_ms: None,
+            fatal_error: None,
         }
     }
 }
@@ -725,6 +780,16 @@ mod tests {
                 app_cpu_percent: 4.5,
                 app_rss_bytes: 123_456,
                 last_warning: Some("partial process access".to_string()),
+                engine_state: None,
+                collector_state: None,
+                last_heartbeat_at_ms: None,
+                deadline_misses: None,
+                deadline_lateness_p95_ms: None,
+                collection_latency_ms: None,
+                collection_p95_ms: None,
+                publication_latency_ms: None,
+                publication_p95_ms: None,
+                fatal_error: None,
             },
             system: SystemMetricsSnapshot {
                 cpu_percent: 13.5,

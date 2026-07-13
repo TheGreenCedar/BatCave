@@ -12,7 +12,8 @@ use sysinfo::{
 
 use crate::contracts::{
     AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
-    ProcessMetricQuality, ProcessSample, SystemMetricQuality, SystemMetricsSnapshot,
+    ProcessMetricQuality, ProcessSample, RuntimeCollectorState, SystemMetricQuality,
+    SystemMetricsSnapshot,
 };
 #[cfg(any(windows, target_os = "linux", test))]
 use crate::network_attribution::NetworkAttributionSample;
@@ -36,6 +37,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct TelemetrySample {
     pub latency_ms: u64,
+    pub collector_state: RuntimeCollectorState,
     pub system: SystemMetricsSnapshot,
     pub processes: Vec<ProcessSample>,
     pub warnings: Vec<String>,
@@ -130,6 +132,18 @@ impl TelemetryCollector {
     }
 
     pub fn collect(&self) -> Result<TelemetrySample, String> {
+        #[cfg(target_os = "linux")]
+        {
+            self.collect_linux()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.collect_sysinfo_seeded()
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn collect_sysinfo_seeded(&self) -> Result<TelemetrySample, String> {
         let started = Instant::now();
         let mut warnings = Vec::new();
 
@@ -182,13 +196,132 @@ impl TelemetryCollector {
         });
 
         system_snapshot.process_count = processes.len();
+        let collector_state = collector_state(&system_snapshot, &processes, &warnings);
 
         Ok(TelemetrySample {
             latency_ms: started.elapsed().as_millis() as u64,
+            collector_state,
             system: system_snapshot,
             processes,
             warnings,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn collect_linux(&self) -> Result<TelemetrySample, String> {
+        let started = Instant::now();
+        let process_result = self
+            .linux_processes
+            .lock()
+            .map_err(|_| "linux process telemetry lock is poisoned".to_string())?
+            .collect();
+        let system_result = self
+            .linux_system
+            .lock()
+            .map_err(|_| "linux system telemetry lock is poisoned".to_string())?
+            .sample();
+
+        let needs_fallback = process_result.is_err() || system_result.is_err();
+        let (fallback_processes, fallback_system) = if needs_fallback {
+            let mut system = self
+                .system
+                .lock()
+                .map_err(|_| "system telemetry lock is poisoned".to_string())?;
+            system.refresh_specifics(sysinfo_refresh_kind());
+            let mut networks = self
+                .networks
+                .lock()
+                .map_err(|_| "network telemetry lock is poisoned".to_string())?;
+            networks.refresh(true);
+            (
+                Some(collect_sysinfo_processes(&system)),
+                Some(collect_sysinfo_system(&system, &networks)),
+            )
+        } else {
+            (None, None)
+        };
+
+        let mut warnings = Vec::new();
+        let mut processes = match process_result {
+            Ok(processes) => processes,
+            Err(error) => {
+                warnings.push(format!(
+                    "linux_process_collector_failed:{error}; using sysinfo fallback"
+                ));
+                fallback_processes.unwrap_or_default()
+            }
+        };
+        let mut system = match system_result {
+            Ok(system) => system,
+            Err(error) => {
+                warnings.push(format!(
+                    "linux_system_collector_failed:{error}; using sysinfo fallback"
+                ));
+                fallback_system.expect("sysinfo fallback is collected after native failure")
+            }
+        };
+        let network_attribution = self.linux_network_attribution_sample(&mut warnings)?;
+        apply_network_attribution(&mut processes, network_attribution, MetricSource::Ebpf);
+        processes.sort_by(|left, right| {
+            right
+                .cpu_percent
+                .partial_cmp(&left.cpu_percent)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| right.memory_bytes.cmp(&left.memory_bytes))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        system.process_count = processes.len();
+        let collector_state = collector_state(&system, &processes, &warnings);
+        Ok(TelemetrySample {
+            latency_ms: started.elapsed().as_millis() as u64,
+            collector_state,
+            system,
+            processes,
+            warnings,
+        })
+    }
+}
+
+fn collector_state(
+    system: &SystemMetricsSnapshot,
+    processes: &[ProcessSample],
+    warnings: &[String],
+) -> RuntimeCollectorState {
+    let system_limited = system.quality.as_ref().is_none_or(|quality| {
+        [
+            quality.cpu.as_ref(),
+            quality.kernel_cpu.as_ref(),
+            quality.logical_cpu.as_ref(),
+            quality.memory.as_ref(),
+            quality.swap.as_ref(),
+            quality.disk.as_ref(),
+            quality.network.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|quality| quality.quality != MetricQuality::Native)
+    });
+    let process_limited = processes.iter().any(|process| {
+        process.quality.as_ref().is_none_or(|quality| {
+            [
+                quality.cpu.as_ref(),
+                quality.memory.as_ref(),
+                quality.io.as_ref(),
+                quality.other_io.as_ref(),
+                quality.network.as_ref(),
+                quality.threads.as_ref(),
+                quality.handles.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|quality| quality.quality != MetricQuality::Native)
+        })
+    });
+
+    if warnings.is_empty() && !system_limited && !process_limited {
+        RuntimeCollectorState::Healthy
+    } else {
+        RuntimeCollectorState::Limited
     }
 }
 

@@ -48,27 +48,27 @@ fn run_cli(args: &[String]) -> Option<i32> {
     elevation::run_cli(args).or_else(|| benchmark::run_cli(args))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_snapshot(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.snapshot()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn refresh_now(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.refresh_now()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pause_runtime(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.pause()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn resume_runtime(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.resume()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_process_query(
     state: tauri::State<'_, RuntimeState>,
     query: RuntimeQueryInputV3,
@@ -104,7 +104,7 @@ fn runtime_query(query: RuntimeQueryInputV3) -> Result<RuntimeQuery, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_sample_interval(
     state: tauri::State<'_, RuntimeState>,
     sample_interval_ms: u32,
@@ -112,7 +112,7 @@ fn set_sample_interval(
     protocol::encode_snapshot(state.set_sample_interval(sample_interval_ms)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_admin_mode(
     state: tauri::State<'_, RuntimeState>,
     enabled: bool,
@@ -120,7 +120,7 @@ fn set_admin_mode(
     protocol::encode_snapshot(state.set_admin_mode(enabled)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_process_icons(
     state: tauri::State<'_, RuntimeState>,
     exes: Vec<String>,
@@ -153,8 +153,8 @@ fn validate_process_icon_request(
     Ok(())
 }
 
-pub fn run() {
-    tauri::Builder::default()
+pub fn run() -> Result<(), String> {
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -163,9 +163,11 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let state = RuntimeState::new();
+            let state = RuntimeState::new().map_err(std::io::Error::other)?;
             state.start();
-            app.manage(state);
+            if !app.manage(state) {
+                return Err(std::io::Error::other("runtime_state_already_managed").into());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -178,8 +180,16 @@ pub fn run() {
             set_admin_mode,
             get_process_icons
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running BatCave Monitor");
+        .build(tauri::generate_context!())
+        .map_err(|error| format!("desktop_runtime_build_failed:{error}"))?;
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Err(error) = app_handle.state::<RuntimeState>().shutdown() {
+                eprintln!("runtime_shutdown_failed:{error}");
+            }
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]

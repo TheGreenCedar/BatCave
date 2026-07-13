@@ -13,17 +13,22 @@ use super::{
 use crate::contracts::{
     AccessState, GroupDetail, KernelPoolKind, MetricLimitationCode, MetricQuality,
     MetricQualityInfo, MetricSource, ProcessContributorIdentity, ProcessDetail, ProcessFocusMode,
-    ProcessSample, ProcessViewRow, RuntimeAdminModeState, RuntimeInstallKind, RuntimePlatform,
-    RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, SortColumn, SortDirection,
+    ProcessSample, ProcessViewRow, RuntimeAdminModeState, RuntimeCollectorState,
+    RuntimeEngineState, RuntimeInstallKind, RuntimePlatform, RuntimePrivilegedSource,
+    RuntimeProcessElevation, RuntimeSnapshot, SortColumn, SortDirection,
 };
 
 pub fn encode_snapshot(snapshot: RuntimeSnapshot) -> Result<ProtocolEnvelope, String> {
-    let evaluated_at_ms = SystemTime::now()
+    let wall_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "protocol_system_time_before_epoch".to_string())?
         .as_millis();
-    let evaluated_at_ms = u64::try_from(evaluated_at_ms)
-        .map_err(|_| "protocol_timestamp_out_of_range".to_string())?;
+    let wall_at_ms =
+        u64::try_from(wall_at_ms).map_err(|_| "protocol_timestamp_out_of_range".to_string())?;
+    let evaluated_at_ms = wall_at_ms
+        .max(snapshot.published_at_ms)
+        .max(snapshot.health.updated_at_ms)
+        .max(snapshot.health.last_heartbeat_at_ms.unwrap_or_default());
     encode_snapshot_with_identity(
         snapshot,
         evaluated_at_ms,
@@ -120,23 +125,26 @@ fn encode_snapshot_with_identity(
             ui_preferences: None,
         },
         health: RuntimeHealthV3 {
-            engine_state: None,
-            collector_state: None,
+            engine_state: snapshot.health.engine_state.map(engine_state),
+            collector_state: snapshot.health.collector_state.map(collector_state),
             degraded: snapshot.health.degraded,
             status_summary: snapshot.health.status_summary,
             evaluated_at_ms,
-            last_heartbeat_at_ms: None,
-            heartbeat_age_ms: None,
+            last_heartbeat_at_ms: snapshot.health.last_heartbeat_at_ms,
+            heartbeat_age_ms: snapshot
+                .health
+                .last_heartbeat_at_ms
+                .map(|heartbeat| evaluated_at_ms.saturating_sub(heartbeat)),
             publication_age_ms: evaluated_at_ms - snapshot.published_at_ms,
             sample_age_ms: snapshot
                 .sampled_at_ms
                 .map(|sampled_at_ms| evaluated_at_ms.saturating_sub(sampled_at_ms)),
-            deadline_misses: None,
-            deadline_lateness_p95_ms: None,
-            collection_latency_ms: None,
-            collection_p95_ms: None,
-            publication_latency_ms: None,
-            publication_p95_ms: None,
+            deadline_misses: snapshot.health.deadline_misses,
+            deadline_lateness_p95_ms: snapshot.health.deadline_lateness_p95_ms,
+            collection_latency_ms: snapshot.health.collection_latency_ms,
+            collection_p95_ms: snapshot.health.collection_p95_ms,
+            publication_latency_ms: snapshot.health.publication_latency_ms,
+            publication_p95_ms: snapshot.health.publication_p95_ms,
             collector_warning_count: to_u32(
                 snapshot.health.collector_warnings,
                 "protocol_warning_count_out_of_range",
@@ -144,7 +152,14 @@ fn encode_snapshot_with_identity(
             app_cpu_percent: snapshot.health.app_cpu_percent,
             app_rss_bytes: snapshot.health.app_rss_bytes,
             last_warning: snapshot.health.last_warning,
-            fatal_error: None,
+            fatal_error: snapshot
+                .health
+                .fatal_error
+                .map(|error| RuntimeFatalErrorV3 {
+                    code: error.code,
+                    message: error.message,
+                    occurred_at_ms: error.occurred_at_ms,
+                }),
         },
         persistence: None,
         descriptors: catalog.descriptors,
@@ -1060,6 +1075,21 @@ fn platform(value: RuntimePlatform) -> RuntimePlatformV3 {
         RuntimePlatform::Linux => RuntimePlatformV3::Linux,
         RuntimePlatform::Macos => RuntimePlatformV3::Macos,
         RuntimePlatform::Fixture => RuntimePlatformV3::Fixture,
+    }
+}
+fn engine_state(value: RuntimeEngineState) -> RuntimeEngineStateV3 {
+    match value {
+        RuntimeEngineState::Starting => RuntimeEngineStateV3::Starting,
+        RuntimeEngineState::Running => RuntimeEngineStateV3::Running,
+        RuntimeEngineState::Paused => RuntimeEngineStateV3::Paused,
+        RuntimeEngineState::Fatal => RuntimeEngineStateV3::Fatal,
+    }
+}
+fn collector_state(value: RuntimeCollectorState) -> RuntimeCollectorStateV3 {
+    match value {
+        RuntimeCollectorState::Healthy => RuntimeCollectorStateV3::Healthy,
+        RuntimeCollectorState::Limited => RuntimeCollectorStateV3::Limited,
+        RuntimeCollectorState::Unavailable => RuntimeCollectorStateV3::Unavailable,
     }
 }
 
