@@ -20,6 +20,10 @@ export const representativeRuntimeEnvelope = {
       interval_ms: 1_000,
     },
   ],
+  system: {
+    stable_id: "system:fixture",
+    metrics: [],
+  },
   workloads: [
     {
       kind: "process",

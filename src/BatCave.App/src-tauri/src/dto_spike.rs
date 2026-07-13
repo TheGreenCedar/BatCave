@@ -92,6 +92,13 @@ struct GroupDetail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+struct SystemDetail {
+    stable_id: String,
+    metrics: Vec<MetricValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 enum WorkloadDetail {
     Process(ProcessDetail),
@@ -114,6 +121,7 @@ struct RuntimeEnvelope {
     event_kind: EventKind,
     compatibility: Compatibility,
     descriptors: Vec<MeasurementDescriptor>,
+    system: SystemDetail,
     workloads: Vec<WorkloadDetail>,
 }
 
@@ -147,6 +155,7 @@ fn generated_typescript() -> String {
         ProcessDetail::decl(&config),
         GroupCoverage::decl(&config),
         GroupDetail::decl(&config),
+        SystemDetail::decl(&config),
         WorkloadDetail::decl(&config),
         Compatibility::decl(&config),
         RuntimeEnvelope::decl(&config),

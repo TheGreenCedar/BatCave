@@ -20,11 +20,13 @@ export type GroupCoverage = { included_processes: number, total_processes: numbe
 
 export type GroupDetail = { stable_id: string, display_name: string, coverage: GroupCoverage, metrics: Array<MetricValue>, };
 
+export type SystemDetail = { stable_id: string, metrics: Array<MetricValue>, };
+
 export type WorkloadDetail = { "kind": "process", "detail": ProcessDetail } | { "kind": "group", "detail": GroupDetail };
 
 export type Compatibility = { minimum_reader_version: number, breaking: boolean, message?: string | null, };
 
-export type RuntimeEnvelope = { protocol_version: number, event_kind: EventKind, compatibility: Compatibility, descriptors: Array<MeasurementDescriptor>, workloads: Array<WorkloadDetail>, };
+export type RuntimeEnvelope = { protocol_version: number, event_kind: EventKind, compatibility: Compatibility, descriptors: Array<MeasurementDescriptor>, system: SystemDetail, workloads: Array<WorkloadDetail>, };
 
 export type ExistingOptionalWithoutDefault = { required_name: string, optional_message: string | null, };
 
