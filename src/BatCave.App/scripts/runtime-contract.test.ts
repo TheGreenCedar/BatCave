@@ -9,6 +9,7 @@ import {
   processOtherIoRate,
 } from "../src/lib/process.ts";
 import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
+import { adminAccessLabel, installKindLabel } from "../src/lib/environmentPresentation.ts";
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
 import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
@@ -16,12 +17,22 @@ import type {
   ProcessSample,
   ProcessViewRow,
   RuntimeAdminModeStatus,
+  RuntimeEnvironment,
   RuntimeWarning,
 } from "../src/lib/types.ts";
 
 const canonicalSnapshot = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
 );
+const provenanceFixtures = JSON.parse(
+  readFileSync(new URL("./fixtures/runtime-provenance.json", import.meta.url), "utf8"),
+) as Array<{
+  name: string;
+  environment: RuntimeEnvironment;
+  admin_mode: RuntimeAdminModeStatus;
+  expected_access_label: string;
+  expected_package_label: string;
+}>;
 const themeCss = readFileSync(new URL("../src/styles/themes.css", import.meta.url), "utf8");
 
 function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
@@ -78,6 +89,21 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
     detail: null,
     last_success_at_ms: null,
   });
+});
+
+test("provenance fixtures keep package and privilege copy deterministic", () => {
+  assert.deepEqual(
+    provenanceFixtures.map((fixture) => [
+      fixture.name,
+      adminAccessLabel(fixture.environment, fixture.admin_mode),
+      installKindLabel(fixture.environment.install_kind),
+    ]),
+    provenanceFixtures.map((fixture) => [
+      fixture.name,
+      fixture.expected_access_label,
+      fixture.expected_package_label,
+    ]),
+  );
 });
 
 test("diagnostics render one limitation per stable key with the current admin action", () => {

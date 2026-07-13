@@ -607,7 +607,7 @@ function fixtureProcessName(index: number, platform: RuntimePlatform): string {
 }
 
 function fixtureInstallKind(platform: RuntimePlatform): RuntimeInstallKind {
-  if (platform === "macos") return "dmg";
+  if (platform === "macos") return "app_bundle";
   if (platform === "linux") return "appimage";
   if (platform === "windows") return "nsis";
   return "portable";

@@ -2,13 +2,16 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
     env, fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
 };
+
+#[cfg(test)]
+use std::path::Path;
 
 #[cfg(test)]
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -26,6 +29,7 @@ use crate::{
         RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
         SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
+    runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetryCollector},
 };
 
@@ -131,6 +135,7 @@ impl RuntimeState {
 struct RuntimeStore {
     collector: TelemetryCollector,
     base_dir: PathBuf,
+    provenance: RuntimeProvenance,
     settings: RuntimeSettings,
     admin_mode: RuntimeAdminModeStatus,
     #[cfg(test)]
@@ -161,7 +166,11 @@ impl RuntimeStore {
     fn from_base_dir(base_dir: PathBuf) -> Self {
         #[cfg(test)]
         ElevatedHelperClient::remove_stale_artifacts(&base_dir);
+        let provenance = RuntimeProvenance::detect(&base_dir);
         let mut warnings = VecDeque::new();
+        if let Some(warning) = provenance.privilege_warning() {
+            push_warning(&mut warnings, 0, "admin_mode", warning.to_string());
+        }
         let settings =
             read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE)).unwrap_or_else(|error| {
                 if let Some(message) = error {
@@ -181,20 +190,21 @@ impl RuntimeStore {
                 }
             });
         let publication_seq = warm_cache.seq;
-        let settings = normalize_settings(settings);
+        let mut settings = normalize_settings(settings);
+        settings.admin_mode_enabled = provenance.process_is_elevated();
         if settings_requested_admin {
             warm_cache.rows.clear();
             let _ = fs::remove_file(base_dir.join(WARM_CACHE_FILE));
         } else {
             warm_cache.rows = hold_process_rates(warm_cache.rows);
         }
-        let admin_mode = initial_admin_mode_status();
+        let admin_mode = provenance.admin_mode_status();
         let snapshot = build_snapshot(
             publication_seq,
             now_ms(),
             0,
             None,
-            &base_dir,
+            provenance.environment(),
             &settings,
             &admin_mode,
             RuntimeHealth::default(),
@@ -207,6 +217,7 @@ impl RuntimeStore {
         Self {
             collector: TelemetryCollector::new(),
             base_dir,
+            provenance,
             settings,
             admin_mode,
             #[cfg(test)]
@@ -271,7 +282,7 @@ impl RuntimeStore {
                 self.elevated_request = Some(receiver);
             }
         } else {
-            self.admin_mode = initial_admin_mode_status();
+            self.admin_mode = self.provenance.admin_mode_status();
             self.clear_warning("admin_mode");
             if let Some(mut client) = self.elevated.take() {
                 if let Err(error) = client.stop() {
@@ -446,7 +457,7 @@ impl RuntimeStore {
         #[cfg(not(test))]
         {
             self.settings.admin_mode_requested = false;
-            self.settings.admin_mode_enabled = cfg!(all(windows, not(debug_assertions)));
+            self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
             if self.admin_mode.state == RuntimeAdminModeState::Active {
                 self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
             }
@@ -525,7 +536,7 @@ impl RuntimeStore {
             now_ms(),
             self.sample_seq,
             self.sampled_at_ms,
-            &self.base_dir,
+            self.provenance.environment(),
             &self.settings,
             &self.admin_mode,
             health,
@@ -596,7 +607,7 @@ impl RuntimeStore {
             now_ms(),
             self.sample_seq,
             self.sampled_at_ms,
-            &self.base_dir,
+            self.provenance.environment(),
             &self.settings,
             &self.admin_mode,
             health,
@@ -849,7 +860,7 @@ fn build_snapshot(
     published_at_ms: u64,
     sample_seq: u64,
     sampled_at_ms: Option<u64>,
-    base_dir: &Path,
+    environment: &RuntimeEnvironment,
     settings: &RuntimeSettings,
     admin_mode: &RuntimeAdminModeStatus,
     health: RuntimeHealth,
@@ -866,7 +877,7 @@ fn build_snapshot(
         sample_seq,
         sampled_at_ms,
         source: "tauri_runtime".to_string(),
-        environment: runtime_environment(base_dir),
+        environment: environment.clone(),
         admin_mode: admin_mode.clone(),
         settings: settings.clone(),
         health,
@@ -1862,48 +1873,6 @@ pub(crate) fn default_base_dir() -> PathBuf {
         .join("BatCaveMonitor")
 }
 
-fn runtime_environment(base_dir: &Path) -> RuntimeEnvironment {
-    let platform = if cfg!(windows) {
-        RuntimePlatform::Windows
-    } else if cfg!(target_os = "linux") {
-        RuntimePlatform::Linux
-    } else if cfg!(target_os = "macos") {
-        RuntimePlatform::Macos
-    } else {
-        RuntimePlatform::Fixture
-    };
-    RuntimeEnvironment {
-        platform,
-        admin_mode_available: cfg!(windows),
-        install_kind: if cfg!(windows) {
-            RuntimeInstallKind::Nsis
-        } else if env::var_os("APPIMAGE").is_some() {
-            RuntimeInstallKind::Appimage
-        } else if cfg!(target_os = "linux") {
-            RuntimeInstallKind::Deb
-        } else if cfg!(target_os = "macos") {
-            RuntimeInstallKind::Dmg
-        } else {
-            RuntimeInstallKind::Portable
-        },
-        data_directory: Some(base_dir.display().to_string()),
-    }
-}
-
-fn initial_admin_mode_status() -> RuntimeAdminModeStatus {
-    RuntimeAdminModeStatus {
-        state: if cfg!(all(windows, not(debug_assertions))) {
-            RuntimeAdminModeState::Active
-        } else if cfg!(windows) {
-            RuntimeAdminModeState::Off
-        } else {
-            RuntimeAdminModeState::Unavailable
-        },
-        detail: None,
-        last_success_at_ms: None,
-    }
-}
-
 fn platform_data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -1939,7 +1908,10 @@ fn round1(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality};
+    use crate::contracts::{
+        AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality, RuntimeInstallKind,
+        RuntimePlatform,
+    };
 
     #[test]
     fn shape_rows_filters_sorts_and_limits_processes() {
@@ -2041,15 +2013,16 @@ mod tests {
             ..RuntimeSettings::default()
         };
         let visible_processes = shape_rows(&all_processes, &settings.query);
+        let provenance = RuntimeProvenance::detect(Path::new(""));
 
         let snapshot = build_snapshot(
             1,
             1,
             1,
             Some(1),
-            Path::new(""),
+            provenance.environment(),
             &settings,
-            &initial_admin_mode_status(),
+            &provenance.admin_mode_status(),
             RuntimeHealth::default(),
             empty_system(),
             &all_processes,
@@ -3038,7 +3011,7 @@ mod tests {
             now_ms(),
             1,
             Some(now_ms()),
-            &store.base_dir,
+            store.provenance.environment(),
             &store.settings,
             &store.admin_mode,
             RuntimeHealth::default(),
@@ -3083,19 +3056,20 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_environment_uses_dmg_and_disables_admin_mode() {
+    fn macos_development_environment_disables_admin_mode() {
         let base_dir = PathBuf::from("/Users/test/Library/Application Support/BatCaveMonitor");
-        let environment = runtime_environment(&base_dir);
+        let provenance = RuntimeProvenance::detect(&base_dir);
+        let environment = provenance.environment();
 
         assert_eq!(environment.platform, RuntimePlatform::Macos);
-        assert_eq!(environment.install_kind, RuntimeInstallKind::Dmg);
+        assert_eq!(environment.install_kind, RuntimeInstallKind::Development);
         assert!(!environment.admin_mode_available);
         assert_eq!(
             environment.data_directory.as_deref(),
             Some("/Users/test/Library/Application Support/BatCaveMonitor")
         );
         assert_eq!(
-            initial_admin_mode_status().state,
+            provenance.admin_mode_status().state,
             RuntimeAdminModeState::Unavailable
         );
     }

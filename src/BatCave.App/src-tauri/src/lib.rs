@@ -20,6 +20,7 @@ mod macos_system;
 #[cfg(any(windows, target_os = "linux", test))]
 mod network_attribution;
 mod process_icons;
+mod runtime_provenance;
 mod runtime_store;
 mod telemetry;
 #[cfg(any(windows, test))]

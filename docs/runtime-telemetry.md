@@ -42,7 +42,7 @@ The UI talks to the runtime through Tauri commands:
 
 The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, session-scoped admin state, warm cache, health, diagnostics, and persistence belong in Rust.
 
-Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, cadence, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. A Rust worker owns sampling; frontend reads are passive. The required `environment` object reports `platform`, `install_kind`, and the resolved `data_directory`.
+Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, cadence, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. A Rust worker owns sampling; frontend reads are passive. The required `environment` object reports `platform`, runtime-derived `install_kind`, and the resolved `data_directory`.
 
 This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: active` aliases are not serialized. Process selection and rate identity use `pid` plus `start_time_ms` so PID reuse cannot inherit an earlier process's state. Empty kernel-pool-tag `driver_candidates` are always serialized as `[]`.
 
@@ -65,7 +65,7 @@ Windows native telemetry:
 - Process identity, PID, parent PID, start-time identity, executable path, access state, one-core-equivalent CPU, kernel CPU, memory, private bytes, process read/write I/O totals, thread count, and handle count. Windows `GetProcessIoCounters` exposes `ReadTransferCount`, `WriteTransferCount`, and `OtherTransferCount` separately. BatCave's read/write I/O value sums only read and write; other I/O remains a separate raw process field. None of these counters are called physical-disk traffic.
 - Physical memory, Windows commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
-- Installed Windows releases run privileged collectors in process. Development and portable builds keep standard access and mark permission-shaped gaps explicitly.
+- The running Windows process token determines whether privileged access is active. NSIS, portable, and development provenance does not imply elevation; standard-token or unreadable-token cases keep standard access and mark permission-shaped gaps explicitly.
 
 Linux native telemetry:
 
@@ -144,7 +144,13 @@ Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
 - macOS: `~/Library/Application Support/BatCaveMonitor`
 
-The runtime publishes the resolved path through `environment.data_directory` and identifies NSIS, AppImage, deb, DMG, or portable installation through the typed `environment.install_kind`. Installed Windows release binaries request administrator access in their embedded manifest; debug builds do not. Debian packages never invoke the AppImage updater, and macOS always reports admin mode unavailable.
+The runtime publishes the resolved path through `environment.data_directory`. The typed `environment.install_kind` is derived from running-package evidence:
+
+- Windows reports `nsis` only when the current executable directory matches Tauri's `BatCave Monitor` uninstall-registry location; unmatched release executables are `portable`, and debug binaries running from a development output directory are `development`.
+- Linux reports `appimage` from the AppImage runtime environment, `deb` when the local Debian package database owns the executable, `development` for a debug binary in a development output directory, and `portable` otherwise.
+- macOS reports `development` for a debug binary in a development output directory, `app_bundle` for a running `.app`, and `portable` for a standalone binary. A copied app does not claim `dmg` because its original download container is no longer observable at runtime.
+
+On Windows, `GetTokenInformation(TokenElevation)` determines the privileged-access state. A standard token or a token-query failure never produces an active label; token-query failures fail closed to standard-access copy. Linux and macOS keep the Windows-specific privilege contract explicitly unavailable.
 
 Do not add outbound tracking, hosted collection, or remote logging. BatCave is a local instrument panel, not a service backend in a trench coat.
 

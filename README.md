@@ -153,7 +153,7 @@ Theme preference is stored in browser `localStorage` under `batcave.monitor.them
 ## Platform Notes
 
 - Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
-- Installed Windows releases request administrator access at startup so protected telemetry is always available. Development builds remain unelevated. The release is single-instance and the per-machine installer is the only supported installed configuration.
+- The Windows NSIS build requests administrator access at startup, but the UI reports privileged access only after reading the running process token. A copied release executable is reported as portable, development builds as development, and an NSIS install only when the executable directory matches Tauri's uninstall-registry location. Standard-access telemetry stays available when the process is not elevated or token state cannot be confirmed.
 - Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses `bpftrace`/eBPF when the host has the needed permissions or capabilities. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
 - macOS telemetry uses sysinfo plus local libproc data for process details. Per-process network attribution and privileged helper mode are intentionally unavailable in this release; the cockpit labels those gaps instead of reporting zero traffic.
 - Browser fixture mode is for UI work. It is deterministic on purpose and is not proof of native collector behavior.

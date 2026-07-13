@@ -34,12 +34,20 @@
     adminState === "requesting"
       ? presentation.adminRequestLabel
       : adminState === "active"
-        ? "Active"
+        ? "Administrator token"
         : adminState === "recovering"
           ? "Recovering with standard access"
           : adminState === "failed"
-            ? "Stopped"
-            : "Off";
+            ? "Standard access; privileged access unavailable"
+            : "Standard access";
+  $: adminNote =
+    adminState === "active"
+      ? "This process is running with an administrator token."
+      : adminState === "recovering"
+        ? "Protected collection is recovering; current values use standard access."
+        : adminState === "failed"
+          ? "BatCave could not confirm privileged access and is reporting standard-access behavior."
+          : "Protected fields remain unavailable while this process has standard access.";
 
   $: if (dialog) syncDialog(dialog, open);
 
@@ -160,11 +168,11 @@
             </div>
             <div class="privileged-card">
               <div>
-                <strong>Admin mode</strong>
+                <strong>Current process</strong>
                 <span>{adminLabel}</span>
               </div>
             </div>
-            <p class="setting-note">BatCave falls back to standard access when elevated collection is denied or unavailable.</p>
+            <p class="setting-note">{adminNote}</p>
           </section>
         {/if}
 

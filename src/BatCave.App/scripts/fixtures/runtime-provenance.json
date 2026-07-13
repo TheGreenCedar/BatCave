@@ -1,0 +1,82 @@
+[
+  {
+    "name": "windows_installed_elevated",
+    "environment": {
+      "platform": "windows",
+      "admin_mode_available": true,
+      "install_kind": "nsis",
+      "data_directory": "C:\\Users\\test\\AppData\\Local\\BatCaveMonitor"
+    },
+    "admin_mode": {
+      "state": "active",
+      "detail": null,
+      "last_success_at_ms": 1783944000000
+    },
+    "expected_access_label": "Administrator token",
+    "expected_package_label": "NSIS install"
+  },
+  {
+    "name": "windows_portable_standard",
+    "environment": {
+      "platform": "windows",
+      "admin_mode_available": true,
+      "install_kind": "portable",
+      "data_directory": "C:\\Users\\test\\AppData\\Local\\BatCaveMonitor"
+    },
+    "admin_mode": {
+      "state": "off",
+      "detail": null,
+      "last_success_at_ms": null
+    },
+    "expected_access_label": "Standard access",
+    "expected_package_label": "Portable"
+  },
+  {
+    "name": "windows_development_standard",
+    "environment": {
+      "platform": "windows",
+      "admin_mode_available": true,
+      "install_kind": "development",
+      "data_directory": "C:\\Users\\test\\AppData\\Local\\BatCaveMonitor"
+    },
+    "admin_mode": {
+      "state": "off",
+      "detail": null,
+      "last_success_at_ms": null
+    },
+    "expected_access_label": "Standard access",
+    "expected_package_label": "Development"
+  },
+  {
+    "name": "windows_elevation_denied",
+    "environment": {
+      "platform": "windows",
+      "admin_mode_available": true,
+      "install_kind": "portable",
+      "data_directory": "C:\\Users\\test\\AppData\\Local\\BatCaveMonitor"
+    },
+    "admin_mode": {
+      "state": "failed",
+      "detail": "admin_mode_launch_failed_or_cancelled",
+      "last_success_at_ms": null
+    },
+    "expected_access_label": "Standard access; privileged access unavailable",
+    "expected_package_label": "Portable"
+  },
+  {
+    "name": "macos_privilege_unavailable",
+    "environment": {
+      "platform": "macos",
+      "admin_mode_available": false,
+      "install_kind": "app_bundle",
+      "data_directory": "~/Library/Application Support/BatCaveMonitor"
+    },
+    "admin_mode": {
+      "state": "unavailable",
+      "detail": null,
+      "last_success_at_ms": null
+    },
+    "expected_access_label": "Not available on macOS",
+    "expected_package_label": "App bundle"
+  }
+]

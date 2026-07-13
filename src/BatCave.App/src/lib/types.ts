@@ -40,7 +40,14 @@ export interface RuntimeEnvironment {
 }
 
 export type RuntimePlatform = "windows" | "linux" | "macos" | "fixture";
-export type RuntimeInstallKind = "nsis" | "appimage" | "deb" | "dmg" | "portable";
+export type RuntimeInstallKind =
+  | "nsis"
+  | "appimage"
+  | "deb"
+  | "dmg"
+  | "app_bundle"
+  | "portable"
+  | "development";
 
 export type RuntimeAdminModeState =
   | "unavailable"

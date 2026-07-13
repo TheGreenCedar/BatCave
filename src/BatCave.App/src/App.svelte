@@ -14,6 +14,7 @@
   import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
   import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
+  import { adminAccessLabel, installKindLabel } from "./lib/environmentPresentation";
   import {
     accessLabel,
     displayProcessMetricValue,
@@ -1239,22 +1240,7 @@
   }
 
   function adminStatusLabel(): string {
-    if (!snapshot.environment.admin_mode_available) {
-      return `Not available on ${presentation.platformName}`;
-    }
-
-    switch (snapshot.admin_mode.state) {
-      case "requesting":
-        return presentation.adminRequestLabel;
-      case "active":
-        return blockedProcessCount > 0 ? `Active, ${blockedProcessCount} blocked` : "Active";
-      case "recovering":
-        return "Recovering with standard access";
-      case "failed":
-        return "Stopped; retry available";
-      default:
-        return "Off";
-    }
+    return adminAccessLabel(snapshot.environment, snapshot.admin_mode, blockedProcessCount);
   }
 
   function processNetworkLabel(process: ProcessSample): string {
@@ -1383,7 +1369,7 @@
     <ResourceRail
       resources={resourceSummaries}
       activeMode={detailMode}
-      environmentLabel={`${presentation.platformName} · ${snapshot.environment.install_kind.toLocaleUpperCase()}`}
+      environmentLabel={`${presentation.platformName} · ${installKindLabel(snapshot.environment.install_kind)}`}
       sourceLabel={pollState === "fixture" ? "Layout fixture" : sourceLabel}
       diagnosticsLabel={railDiagnosticsLabel}
       onSelect={selectDetailMode}

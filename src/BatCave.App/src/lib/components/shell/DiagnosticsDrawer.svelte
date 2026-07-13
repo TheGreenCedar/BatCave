@@ -1,6 +1,7 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
   import { currentDiagnosticIssues } from "../../diagnostics";
+  import { installKindLabel } from "../../environmentPresentation";
   import { formatBytes, metricQualityLabel, qualityGuidance } from "../../format";
   import { platformPresentation } from "../../platformPresentation";
   import type { RuntimeSnapshot, SystemMetricQuality } from "../../types";
@@ -165,6 +166,7 @@
             <dl class="diagnostic-grid">
               <div><dt>Source</dt><dd>{sourceLabel}</dd></div>
               <div><dt>Platform</dt><dd>{presentation.platformName}</dd></div>
+              <div><dt>Package</dt><dd>{installKindLabel(snapshot.environment.install_kind)}</dd></div>
               <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
               <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
               <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>

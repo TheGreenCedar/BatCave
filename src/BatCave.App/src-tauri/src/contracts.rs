@@ -91,7 +91,9 @@ pub enum RuntimeInstallKind {
     Appimage,
     Deb,
     Dmg,
+    AppBundle,
     Portable,
+    Development,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
