@@ -1,6 +1,11 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
   import { currentDiagnosticIssues } from "../../diagnostics";
+  import {
+    installKindLabel,
+    privilegedSourceLabel,
+    processElevationLabel,
+  } from "../../environmentPresentation";
   import { formatBytes, metricQualityLabel, qualityGuidance } from "../../format";
   import { platformPresentation } from "../../platformPresentation";
   import type { RuntimeSnapshot, SystemMetricQuality } from "../../types";
@@ -165,10 +170,13 @@
             <dl class="diagnostic-grid">
               <div><dt>Source</dt><dd>{sourceLabel}</dd></div>
               <div><dt>Platform</dt><dd>{presentation.platformName}</dd></div>
+              <div><dt>Package</dt><dd>{installKindLabel(snapshot.environment.install_kind)}</dd></div>
               <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
               <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
               <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>
-              <div><dt>Privileged access</dt><dd>{adminStatus}</dd></div>
+              <div><dt>Current process</dt><dd>{processElevationLabel(snapshot.environment)}</dd></div>
+              <div><dt>Privileged collection</dt><dd>{adminStatus}</dd></div>
+              <div><dt>Privileged source</dt><dd>{privilegedSourceLabel(snapshot.admin_mode.source)}</dd></div>
               <div><dt>Last elevated sample</dt><dd>{snapshot.admin_mode.last_success_at_ms ? new Date(snapshot.admin_mode.last_success_at_ms).toLocaleString() : "None this session"}</dd></div>
               <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
               <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>

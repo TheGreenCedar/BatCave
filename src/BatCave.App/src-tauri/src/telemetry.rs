@@ -67,12 +67,11 @@ impl TelemetryCollector {
         Self::new_with_process_network(true)
     }
 
-    #[cfg(all(windows, test))]
+    #[cfg(windows)]
     pub(crate) fn for_elevated_helper(process_network: bool) -> Self {
         Self::new_with_process_network(process_network)
     }
 
-    #[cfg(test)]
     pub(crate) fn process_network_ready(&self) -> Result<bool, String> {
         #[cfg(windows)]
         {
@@ -88,7 +87,6 @@ impl TelemetryCollector {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn retry_process_network(&self) -> Result<(), String> {
         #[cfg(windows)]
         {

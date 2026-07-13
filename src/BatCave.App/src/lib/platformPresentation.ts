@@ -24,7 +24,7 @@ const presentations: Record<RuntimePlatform, PlatformPresentation> = {
     handlesLabel: "Handles",
     privilegedAccessLabel: "Administrator access",
     privilegedAccessDescription:
-      "Installed Windows releases use administrator access to read protected process fields.",
+      "Protected fields can come from the local elevated helper while the parent app keeps its current token.",
     adminRequestLabel: "Waiting for Windows",
   },
   linux: {

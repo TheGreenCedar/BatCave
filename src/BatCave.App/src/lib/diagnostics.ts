@@ -1,6 +1,6 @@
 import type { RuntimeAdminModeStatus, RuntimeWarning } from "./types";
 
-export type DiagnosticAction = "enable" | "retry" | "cancel";
+export type DiagnosticAction = "enable" | "retry";
 
 export interface DiagnosticIssue {
   key: string;
@@ -97,7 +97,7 @@ function adminAction(
   }
 
   if (adminMode.state === "requesting") {
-    return { action: "cancel", actionLabel: "Cancel request" };
+    return { action: null, actionLabel: null };
   }
 
   if (adminMode.state === "failed") {
