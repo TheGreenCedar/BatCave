@@ -5,24 +5,31 @@ import type {
 } from "./generated/dto-spike";
 
 export const representativeRuntimeEnvelope = {
-  protocol_version: 2,
+  protocol_version: 3,
   event_kind: "runtime_snapshot",
   compatibility: {
-    minimum_reader_version: 2,
-    breaking: false,
+    minimum_reader_version: 3,
+    breaking: true,
   },
   descriptors: [
     {
-      id: "process.cpu.usage",
+      id: 0,
       semantic: "cpu_usage",
       scope: "process",
       unit: "percent_one_core",
       interval_ms: 1_000,
+      source: "direct_api",
     },
+  ],
+  quality_codes: ["native", "estimated", "held", "partial", "unavailable"],
+  limitations: [
+    "Some protected fields could not be read.",
+    "Windows reports commit instead of swap.",
   ],
   system: {
     stable_id: "system:fixture",
-    metrics: [],
+    limitation_indexes: [1],
+    metrics: [[0, 12.5, 0, 1_720_000_000_000, null]],
   },
   workloads: [
     {
@@ -30,15 +37,13 @@ export const representativeRuntimeEnvelope = {
       detail: {
         stable_id: "process:42:1700000000000",
         pid: "42",
+        parent_id: null,
+        start_time_ms: 1_700_000_000_000,
         display_name: "fixture.exe",
-        metrics: [
-          {
-            descriptor_id: "process.cpu.usage",
-            value: 12.5,
-            quality: "native",
-            observed_at_ms: 1_720_000_000_000n,
-          },
-        ],
+        executable: "C:\\fixture.exe",
+        status: "running",
+        access_state: "full",
+        metrics: [[0, 12.5, 0, 1_720_000_000_000, null]],
       },
     },
     {
@@ -46,11 +51,13 @@ export const representativeRuntimeEnvelope = {
       detail: {
         stable_id: "group:fixture",
         display_name: "Fixture group",
+        member_ids: ["process:42:1700000000000"],
         coverage: {
           included_processes: 1,
           total_processes: 1,
+          limitation_indexes: [0],
         },
-        metrics: [],
+        metrics: [[0, 12.5, 3, 1_720_000_000_000, 0]],
       },
     },
   ],

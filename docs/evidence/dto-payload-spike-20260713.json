@@ -4,117 +4,123 @@
     "baseline": 2,
     "candidate": 3
   },
+  "baseline_fixture": "scripts/fixtures/runtime-snapshot.v2.json",
   "reproduction": "npm run benchmark:dto-spike -- --write ../../docs/evidence/dto-payload-spike-20260713.json",
   "environment": {
     "node": "v24.18.0",
     "platform": "darwin",
     "arch": "arm64"
   },
-  "timing_note": "Nine in-process JSON.stringify and JSON.parse samples; use sizes for architecture decisions and timings only as directional local evidence.",
+  "workload_note": "The v2 baseline preserves the checked RuntimeSnapshot envelope, full ProcessSample fields and quality, and duplicated ProcessViewRow payloads. Twenty percent of processes form ten-member groups; the remainder are singleton view rows. V3 carries each process once plus explicit group and system detail.",
+  "timing_note": "Seven in-process JSON.stringify and JSON.parse samples; use sizes for architecture decisions and timings only as directional local evidence.",
   "results": [
     {
-      "row_count": 1000,
+      "process_row_count": 1000,
+      "grouped_process_count": 200,
+      "group_row_count": 20,
       "strategies": {
         "current_v2": {
-          "bytes": 422793,
+          "bytes": 2517833,
           "encode_ms": {
-            "median": 0.375,
-            "p95": 0.452
+            "median": 3.28,
+            "p95": 10.128
           },
           "parse_ms": {
-            "median": 0.439,
-            "p95": 0.575
+            "median": 5.25,
+            "p95": 10.718
           },
           "relative_to_current_percent": 0
         },
         "per_value_metadata_v3": {
-          "bytes": 1761299,
+          "bytes": 3221737,
           "encode_ms": {
-            "median": 1.941,
-            "p95": 2.098
+            "median": 3.591,
+            "p95": 7.221
           },
           "parse_ms": {
-            "median": 2.302,
-            "p95": 2.567
+            "median": 4.853,
+            "p95": 7.298
           },
-          "relative_to_current_percent": 316.6
+          "relative_to_current_percent": 28
         },
         "per_family_metadata_v3": {
-          "bytes": 1196087,
+          "bytes": 1981944,
           "encode_ms": {
-            "median": 1.333,
-            "p95": 1.434
+            "median": 2.228,
+            "p95": 2.567
           },
           "parse_ms": {
-            "median": 2,
-            "p95": 2.331
+            "median": 3.743,
+            "p95": 4.603
           },
-          "relative_to_current_percent": 182.9
+          "relative_to_current_percent": -21.3
         },
         "shared_descriptor_catalog_v3": {
-          "bytes": 454027,
+          "bytes": 807481,
           "encode_ms": {
-            "median": 0.803,
-            "p95": 0.827
+            "median": 1.658,
+            "p95": 1.972
           },
           "parse_ms": {
-            "median": 0.748,
-            "p95": 1.067
+            "median": 1.8,
+            "p95": 2.544
           },
-          "relative_to_current_percent": 7.4
+          "relative_to_current_percent": -67.9
         }
       }
     },
     {
-      "row_count": 5000,
+      "process_row_count": 5000,
+      "grouped_process_count": 1000,
+      "group_row_count": 100,
       "strategies": {
         "current_v2": {
-          "bytes": 2114524,
+          "bytes": 12598718,
           "encode_ms": {
-            "median": 1.653,
-            "p95": 1.717
+            "median": 14.507,
+            "p95": 15.187
           },
           "parse_ms": {
-            "median": 2.262,
-            "p95": 2.822
+            "median": 19.815,
+            "p95": 20.505
           },
           "relative_to_current_percent": 0
         },
         "per_value_metadata_v3": {
-          "bytes": 8806718,
+          "bytes": 16093433,
           "encode_ms": {
-            "median": 9.687,
-            "p95": 10.1
+            "median": 18.235,
+            "p95": 21.535
           },
           "parse_ms": {
-            "median": 11.497,
-            "p95": 12.187
+            "median": 24.673,
+            "p95": 33.717
           },
-          "relative_to_current_percent": 316.5
+          "relative_to_current_percent": 27.7
         },
         "per_family_metadata_v3": {
-          "bytes": 5980662,
+          "bytes": 9903237,
           "encode_ms": {
-            "median": 6.678,
-            "p95": 6.764
+            "median": 12.479,
+            "p95": 13.854
           },
           "parse_ms": {
-            "median": 10.133,
-            "p95": 16.135
+            "median": 17.922,
+            "p95": 20.515
           },
-          "relative_to_current_percent": 182.8
+          "relative_to_current_percent": -21.4
         },
         "shared_descriptor_catalog_v3": {
-          "bytes": 2265758,
+          "bytes": 4018609,
           "encode_ms": {
-            "median": 3.96,
-            "p95": 4.049
+            "median": 9.276,
+            "p95": 9.853
           },
           "parse_ms": {
-            "median": 3.819,
-            "p95": 6.225
+            "median": 8.36,
+            "p95": 10.16
           },
-          "relative_to_current_percent": 7.2
+          "relative_to_current_percent": -68.1
         }
       }
     }

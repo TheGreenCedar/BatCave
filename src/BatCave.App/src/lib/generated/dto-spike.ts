@@ -2,31 +2,35 @@
 
 export type EventKind = "runtime_snapshot" | "protocol_mismatch";
 
-export type MetricSemantic = "cpu_usage" | "resident_memory" | "read_io_rate" | "network_rate";
+export type MetricSemantic = "cpu_usage" | "kernel_cpu_usage" | "resident_memory" | "private_memory" | "virtual_memory" | "memory_used" | "memory_capacity" | "memory_available" | "process_working_set_memory" | "process_private_memory" | "denied_process_count" | "partial_process_count" | "unattributed_memory" | "commit_used" | "commit_limit" | "system_cache" | "kernel_memory" | "kernel_paged_pool" | "kernel_nonpaged_pool" | "read_io_total" | "write_io_total" | "other_io_total" | "read_io_rate" | "write_io_rate" | "other_io_rate" | "io_rate" | "network_receive_total" | "network_transmit_total" | "network_receive_rate" | "network_transmit_rate" | "network_rate" | "process_count" | "thread_count" | "handle_count";
 
 export type MetricScope = "process" | "group" | "system";
 
-export type MetricUnit = "percent_one_core" | "bytes" | "bytes_per_second";
+export type MetricUnit = "percent_one_core" | "percent_system" | "bytes" | "bytes_per_second" | "count";
 
-export type MeasurementDescriptor = { id: string, semantic: MetricSemantic, scope: MetricScope, unit: MetricUnit, interval_ms: number | null, };
+export type MetricSource = "direct_api" | "pdh" | "etw" | "runtime";
+
+export type MeasurementDescriptor = { id: number, semantic: MetricSemantic, scope: MetricScope, unit: MetricUnit, interval_ms: number | null, source: MetricSource, };
 
 export type MetricQuality = "native" | "estimated" | "held" | "partial" | "unavailable";
 
-export type MetricValue = { descriptor_id: string, value: number | null, quality: MetricQuality, observed_at_ms: bigint | null, limitation?: string | null, };
+export type AccessState = "full" | "partial" | "denied";
 
-export type ProcessDetail = { stable_id: string, pid: string, display_name: string, metrics: Array<MetricValue>, };
+export type MetricObservation = [number, number | null, number, number, number | null];
 
-export type GroupCoverage = { included_processes: number, total_processes: number, limitations?: Array<string>, };
+export type ProcessDetail = { stable_id: string, pid: string, parent_id: string | null, start_time_ms: number, display_name: string, executable: string, status: string, access_state: AccessState, metrics: Array<MetricObservation>, };
 
-export type GroupDetail = { stable_id: string, display_name: string, coverage: GroupCoverage, metrics: Array<MetricValue>, };
+export type GroupCoverage = { included_processes: number, total_processes: number, limitation_indexes?: Array<number>, };
 
-export type SystemDetail = { stable_id: string, metrics: Array<MetricValue>, };
+export type GroupDetail = { stable_id: string, display_name: string, member_ids: Array<string>, coverage: GroupCoverage, metrics: Array<MetricObservation>, };
+
+export type SystemDetail = { stable_id: string, limitation_indexes?: Array<number>, metrics: Array<MetricObservation>, };
 
 export type WorkloadDetail = { "kind": "process", "detail": ProcessDetail } | { "kind": "group", "detail": GroupDetail };
 
 export type Compatibility = { minimum_reader_version: number, breaking: boolean, message?: string | null, };
 
-export type RuntimeEnvelope = { protocol_version: number, event_kind: EventKind, compatibility: Compatibility, descriptors: Array<MeasurementDescriptor>, system: SystemDetail, workloads: Array<WorkloadDetail>, };
+export type RuntimeEnvelope = { protocol_version: number, event_kind: EventKind, compatibility: Compatibility, descriptors: Array<MeasurementDescriptor>, quality_codes: Array<MetricQuality>, limitations: Array<string>, system: SystemDetail, workloads: Array<WorkloadDetail>, };
 
 export type ExistingOptionalWithoutDefault = { required_name: string, optional_message: string | null, };
 
