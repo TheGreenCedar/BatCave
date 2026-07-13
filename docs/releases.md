@@ -4,10 +4,7 @@ BatCave publishes immutable GitHub Releases from commits already on protected `m
 
 Stable tags use `vMAJOR.MINOR.PATCH`. Prerelease tags add a SemVer suffix such as `v0.2.0-rc.1` and are always marked as GitHub prereleases. Stable and prerelease artifacts never share a tag or installed version.
 
-The `Versioned release` workflow supports two paths:
-
-- Pushing an aligned `v*` tag publishes automatically after all builds and provenance steps pass.
-- A manual run from `main` accepts an aligned tag and channel. `publish: false` is the default dry run; it retains the complete release artifact without creating a tag or GitHub Release. Set `publish: true` only for an approved release.
+The `Versioned release` workflow runs only through a manual dispatch from `main`. Supply the aligned tag, its stable or prerelease channel, and the exact 40-character source commit SHA approved for release. The workflow requires that SHA to be both the checked-out commit and the current tip of protected `main`; it does not publish from a pushed tag. `publish: false` is the default dry run and retains the complete workflow artifact without creating a tag or GitHub Release. Set `publish: true` only for an approved release.
 
 All build and publication jobs enter the protected `release` environment. Configure its `RELEASE_ADMIN_READ_TOKEN` secret with a fine-grained personal access token or GitHub App token that can read repository Administration settings. Each sensitive job uses that credential only for its first control check, before reading signing secrets or changing release state. The workflow's ordinary `GITHUB_TOKEN` remains limited to the repository permissions needed by later artifact and release operations.
 

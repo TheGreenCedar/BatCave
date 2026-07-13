@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import {
+  GITHUB_ACTIONS_APP_ID,
+  GITHUB_API_VERSION,
   REQUIRED_STATUS_CHECK_CONTEXTS,
+  githubApiArguments,
   verifyLiveReleaseControls,
   verifyReleaseControls,
 } from "./verify-release-controls.mjs";
@@ -38,7 +41,10 @@ function validControls() {
       },
       required_status_checks: {
         strict: true,
-        checks: REQUIRED_STATUS_CHECK_CONTEXTS.map((context) => ({ context })),
+        checks: REQUIRED_STATUS_CHECK_CONTEXTS.map((context) => ({
+          context,
+          app_id: GITHUB_ACTIONS_APP_ID,
+        })),
       },
       enforce_admins: { enabled: true },
       allow_force_pushes: { enabled: false },
@@ -68,6 +74,14 @@ function validControls() {
 }
 
 test("accepts immutable releases, reviewed main, and a protected release environment", () => {
+  assert.equal(GITHUB_ACTIONS_APP_ID, 15_368);
+  assert.equal(GITHUB_API_VERSION, "2022-11-28");
+  assert.deepEqual(githubApiArguments("repos/owner/repository"), [
+    "api",
+    "-H",
+    "X-GitHub-Api-Version: 2022-11-28",
+    "repos/owner/repository",
+  ]);
   assert.deepEqual(REQUIRED_STATUS_CHECK_CONTEXTS, [
     "Repository policy",
     "Dependency review",
@@ -147,23 +161,28 @@ test("rejects every pull request review bypass allowance", () => {
   );
 });
 
-test("requires the exact validation status check set", () => {
+test("requires the exact GitHub Actions validation status check bindings", () => {
   const missing = validControls();
   missing.branchProtection.required_status_checks.checks.pop();
-  assert.throws(() => verifyReleaseControls(missing), /require exactly these status checks/);
+  assert.throws(() => verifyReleaseControls(missing), /bind exactly these status checks/);
 
   const extra = validControls();
-  extra.branchProtection.required_status_checks.checks.push({ context: "Unapproved check" });
-  assert.throws(() => verifyReleaseControls(extra), /require exactly these status checks/);
+  extra.branchProtection.required_status_checks.checks.push({
+    context: "Unapproved check",
+    app_id: GITHUB_ACTIONS_APP_ID,
+  });
+  assert.throws(() => verifyReleaseControls(extra), /bind exactly these status checks/);
 
   const arbitrary = validControls();
-  arbitrary.branchProtection.required_status_checks.checks = [{ context: "Validation" }];
-  assert.throws(() => verifyReleaseControls(arbitrary), /require exactly these status checks/);
+  arbitrary.branchProtection.required_status_checks.checks = [
+    { context: "Validation", app_id: GITHUB_ACTIONS_APP_ID },
+  ];
+  assert.throws(() => verifyReleaseControls(arbitrary), /bind exactly these status checks/);
 
   const duplicate = validControls();
   duplicate.branchProtection.required_status_checks.checks[1].context =
     REQUIRED_STATUS_CHECK_CONTEXTS[0];
-  assert.throws(() => verifyReleaseControls(duplicate), /require exactly these status checks/);
+  assert.throws(() => verifyReleaseControls(duplicate), /bind exactly these status checks/);
 
   const ambiguousLegacyShape = validControls();
   ambiguousLegacyShape.branchProtection.required_status_checks = {
@@ -172,7 +191,33 @@ test("requires the exact validation status check set", () => {
   };
   assert.throws(
     () => verifyReleaseControls(ambiguousLegacyShape),
-    /require exactly these status checks/,
+    /bind exactly these status checks/,
+  );
+
+  const missingApp = validControls();
+  delete missingApp.branchProtection.required_status_checks.checks[0].app_id;
+  assert.throws(
+    () => verifyReleaseControls(missingApp),
+    /bind exactly these status checks to GitHub Actions app 15368/,
+  );
+
+  for (const appId of [null, -1, 99_999, "15368"]) {
+    const wrongApp = validControls();
+    wrongApp.branchProtection.required_status_checks.checks[0].app_id = appId;
+    assert.throws(
+      () => verifyReleaseControls(wrongApp),
+      /bind exactly these status checks to GitHub Actions app 15368/,
+      `app_id ${String(appId)} must fail closed`,
+    );
+  }
+
+  const duplicateBinding = validControls();
+  duplicateBinding.branchProtection.required_status_checks.checks.push({
+    ...duplicateBinding.branchProtection.required_status_checks.checks[0],
+  });
+  assert.throws(
+    () => verifyReleaseControls(duplicateBinding),
+    /bind exactly these status checks to GitHub Actions app 15368/,
   );
 });
 
@@ -205,6 +250,18 @@ test("rejects an environment that can bypass review or deploy unprotected refs",
     ],
   };
   assert.throws(() => verifyReleaseControls(broadPolicy), /allow only the main branch/);
+
+  const missingType = validControls();
+  delete missingType.deploymentBranchPolicies.branch_policies[0].type;
+  assert.throws(() => verifyReleaseControls(missingType), /allow only the main branch/);
+
+  const tagPolicy = validControls();
+  tagPolicy.deploymentBranchPolicies.branch_policies[0].type = "tag";
+  assert.throws(() => verifyReleaseControls(tagPolicy), /allow only the main branch/);
+
+  const wrongBranch = validControls();
+  wrongBranch.deploymentBranchPolicies.branch_policies[0].name = "release";
+  assert.throws(() => verifyReleaseControls(wrongBranch), /allow only the main branch/);
 });
 
 test("fails before invoking GitHub when the admin-read credential is missing", () => {

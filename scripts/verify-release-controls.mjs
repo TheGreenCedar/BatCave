@@ -8,6 +8,8 @@ export const REQUIRED_STATUS_CHECK_CONTEXTS = Object.freeze([
   "Linux validation",
   "macOS universal validation",
 ]);
+export const GITHUB_ACTIONS_APP_ID = 15_368;
+export const GITHUB_API_VERSION = "2022-11-28";
 const SORTED_REQUIRED_STATUS_CHECK_CONTEXTS = [...REQUIRED_STATUS_CHECK_CONTEXTS].sort();
 
 function requireControl(condition, message) {
@@ -53,12 +55,16 @@ export function verifyReleaseControls({
     statusChecks?.strict === true,
     "main branch protection must require strict status checks",
   );
-  const actualStatusCheckContexts = statusChecks?.checks?.map((check) => check?.context);
-  const sortedActualStatusCheckContexts = Array.isArray(actualStatusCheckContexts)
+  const statusCheckBindings = statusChecks?.checks;
+  const actualStatusCheckContexts = Array.isArray(statusCheckBindings)
+    ? statusCheckBindings.map((check) => check?.context)
+    : [];
+  const sortedActualStatusCheckContexts = Array.isArray(statusCheckBindings)
     ? [...actualStatusCheckContexts].sort()
     : [];
   requireControl(
-    Array.isArray(statusChecks?.checks) &&
+    Array.isArray(statusCheckBindings) &&
+      statusCheckBindings.every((check) => check?.app_id === GITHUB_ACTIONS_APP_ID) &&
       actualStatusCheckContexts.every(
         (context) => typeof context === "string" && context.trim() === context && context.length > 0,
       ) &&
@@ -67,7 +73,7 @@ export function verifyReleaseControls({
       sortedActualStatusCheckContexts.every(
         (context, index) => context === SORTED_REQUIRED_STATUS_CHECK_CONTEXTS[index],
       ),
-    `main branch protection must require exactly these status checks: ${REQUIRED_STATUS_CHECK_CONTEXTS.join(
+    `main branch protection must bind exactly these status checks to GitHub Actions app ${GITHUB_ACTIONS_APP_ID}: ${REQUIRED_STATUS_CHECK_CONTEXTS.join(
       ", ",
     )}`,
   );
@@ -115,14 +121,18 @@ export function verifyReleaseControls({
       Array.isArray(branchPolicies) &&
       branchPolicies.length === 1 &&
       branchPolicies[0].name === "main" &&
-      (branchPolicies[0].type === undefined || branchPolicies[0].type === "branch"),
+      branchPolicies[0].type === "branch",
     "release environment must allow only the main branch",
   );
   return true;
 }
 
+export function githubApiArguments(endpoint) {
+  return ["api", "-H", `X-GitHub-Api-Version: ${GITHUB_API_VERSION}`, endpoint];
+}
+
 function githubApi(endpoint) {
-  const result = spawnSync("gh", ["api", endpoint], { encoding: "utf8" });
+  const result = spawnSync("gh", githubApiArguments(endpoint), { encoding: "utf8" });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(
