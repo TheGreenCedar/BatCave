@@ -4,8 +4,7 @@ mod cli_args;
 mod contracts;
 #[cfg(test)]
 mod dto_spike;
-#[cfg(test)]
-#[allow(dead_code)]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod elevation;
 #[cfg(any(target_os = "linux", test))]
 mod linux_network;
@@ -20,6 +19,7 @@ mod macos_system;
 #[cfg(any(windows, target_os = "linux", test))]
 mod network_attribution;
 mod process_icons;
+mod runtime_provenance;
 mod runtime_store;
 mod telemetry;
 #[cfg(any(windows, test))]
@@ -38,7 +38,11 @@ use tauri::Manager;
 
 pub fn run_cli_from_env() -> Option<i32> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    benchmark::run_cli(&args)
+    run_cli(&args)
+}
+
+fn run_cli(args: &[String]) -> Option<i32> {
+    elevation::run_cli(args).or_else(|| benchmark::run_cli(args))
 }
 
 #[tauri::command]
@@ -75,6 +79,14 @@ fn set_sample_interval(
     sample_interval_ms: u32,
 ) -> Result<RuntimeSnapshot, String> {
     state.set_sample_interval(sample_interval_ms)
+}
+
+#[tauri::command]
+fn set_admin_mode(
+    state: tauri::State<'_, RuntimeState>,
+    enabled: bool,
+) -> Result<RuntimeSnapshot, String> {
+    state.set_admin_mode(enabled)
 }
 
 #[tauri::command]
@@ -132,6 +144,7 @@ pub fn run() {
             resume_runtime,
             set_process_query,
             set_sample_interval,
+            set_admin_mode,
             get_process_icons
         ])
         .run(tauri::generate_context!())
@@ -169,5 +182,15 @@ mod tests {
             Ok(())
         );
         assert_eq!(validate_process_icon_request("", |_| Ok(false)), Ok(()));
+    }
+
+    #[test]
+    fn helper_cli_is_dispatched_before_the_desktop_runtime() {
+        assert_eq!(
+            run_cli(&["--elevated-helper".to_string()]),
+            Some(2),
+            "a malformed helper invocation must be handled as helper CLI"
+        );
+        assert_eq!(run_cli(&[]), None);
     }
 }

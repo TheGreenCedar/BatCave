@@ -15,6 +15,13 @@
   import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
+    installKindLabel,
+    privilegedCollectionAction,
+    privilegedCollectionLabel,
+    privilegedCollectionNote,
+    processElevationLabel,
+  } from "./lib/environmentPresentation";
+  import {
     accessLabel,
     displayGroupMetricValue,
     displayProcessMetricValue,
@@ -63,6 +70,8 @@
     hasNewRuntimeSample,
     makeDefaultRuntimeQuery,
     makeEmptySnapshot,
+    shouldApplyRuntimePublication,
+    shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
   import {
     chartPalettes,
@@ -79,6 +88,7 @@
     readNativeSnapshot,
     refreshRuntime,
     setRuntimePaused,
+    setRuntimeAdminMode,
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
   } from "./lib/tauriBridge";
@@ -431,7 +441,7 @@
     }
 
     const loop = async () => {
-      if (!isPaused) {
+      if (shouldPollRuntime(isPaused, hasTauriRuntime())) {
         const next = await readSnapshot();
         ingest(next);
       }
@@ -549,6 +559,16 @@
       applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
     } catch (error) {
       commandError = commandErrorMessage(error, "Unable to change sampling cadence.");
+    }
+  }
+
+  async function setAdminMode(enabled: boolean): Promise<void> {
+    if (!hasTauriRuntime()) return;
+
+    try {
+      applyNativeSnapshot(await setRuntimeAdminMode(invoke, enabled));
+    } catch (error) {
+      commandError = commandErrorMessage(error, "Unable to change privileged collection.");
     }
   }
 
@@ -686,7 +706,7 @@
   }
 
   function ingest(next: RuntimeSnapshot): void {
-    if (next.publication_seq < snapshot.publication_seq) {
+    if (!shouldApplyRuntimePublication(snapshot, next)) {
       return;
     }
 
@@ -1304,22 +1324,7 @@
   }
 
   function adminStatusLabel(): string {
-    if (!snapshot.environment.admin_mode_available) {
-      return `Not available on ${presentation.platformName}`;
-    }
-
-    switch (snapshot.admin_mode.state) {
-      case "requesting":
-        return presentation.adminRequestLabel;
-      case "active":
-        return blockedProcessCount > 0 ? `Active, ${blockedProcessCount} blocked` : "Active";
-      case "recovering":
-        return "Recovering with standard access";
-      case "failed":
-        return "Stopped; retry available";
-      default:
-        return "Off";
-    }
+    return privilegedCollectionLabel(snapshot.admin_mode, blockedProcessCount);
   }
 
   function processNetworkLabel(process: ProcessSample): string {
@@ -1476,7 +1481,7 @@
     <ResourceRail
       resources={resourceSummaries}
       activeMode={detailMode}
-      environmentLabel={`${presentation.platformName} · ${snapshot.environment.install_kind.toLocaleUpperCase()}`}
+      environmentLabel={`${presentation.platformName} · ${installKindLabel(snapshot.environment.install_kind)}`}
       sourceLabel={pollState === "fixture" ? "Layout fixture" : sourceLabel}
       diagnosticsLabel={railDiagnosticsLabel}
       onSelect={selectDetailMode}
@@ -1578,14 +1583,21 @@
     {pollIntervalMs}
     {historyPointOptions}
     {historyPointLimit}
-    adminState={snapshot.admin_mode.state}
     adminAvailable={snapshot.environment.admin_mode_available}
+    processStatus={processElevationLabel(snapshot.environment)}
+    adminStatus={adminStatusLabel()}
+    adminNote={privilegedCollectionNote(snapshot.admin_mode)}
+    adminAction={privilegedCollectionAction(
+      snapshot.environment.admin_mode_available,
+      snapshot.admin_mode,
+    )}
     dataDirectory={snapshot.environment.data_directory}
     {presentation}
     onClose={() => (settingsOpen = false)}
     onTheme={setTheme}
     onPollInterval={(interval) => void setPollInterval(interval)}
     onHistoryLimit={setHistoryPointLimit}
+    onAdminMode={(enabled) => void setAdminMode(enabled)}
     {updateStatus}
     {updateMessage}
     onCheckForUpdates={() => void checkForStableUpdate()}

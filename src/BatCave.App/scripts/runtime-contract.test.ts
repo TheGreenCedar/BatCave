@@ -12,24 +12,51 @@ import {
   processOtherIoRate,
 } from "../src/lib/process.ts";
 import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
+import {
+  installKindLabel,
+  privilegedCollectionAction,
+  privilegedCollectionLabel,
+  privilegedCollectionNote,
+  processElevationLabel,
+} from "../src/lib/environmentPresentation.ts";
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
-import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
+import {
+  hasNewRuntimeSample,
+  makeDefaultRuntimeQuery,
+  shouldApplyRuntimePublication,
+  shouldPollRuntime,
+} from "../src/lib/runtimeSnapshot.ts";
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
 import type {
   ProcessSample,
   GroupDetail,
   ProcessViewRow,
   RuntimeAdminModeStatus,
+  RuntimeEnvironment,
   RuntimeWarning,
 } from "../src/lib/types.ts";
 
 const canonicalSnapshot = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
 );
+const provenanceFixtures = JSON.parse(
+  readFileSync(new URL("./fixtures/runtime-provenance.json", import.meta.url), "utf8"),
+) as Array<{
+  name: string;
+  environment: RuntimeEnvironment;
+  admin_mode: RuntimeAdminModeStatus;
+  expected_process_label: string;
+  expected_collection_label: string;
+  expected_package_label: string;
+}>;
 const workloadDetails = JSON.parse(
   readFileSync(new URL("./fixtures/workload-details.v1.json", import.meta.url), "utf8"),
 );
 const themeCss = readFileSync(new URL("../src/styles/themes.css", import.meta.url), "utf8");
+const releaseManifest = readFileSync(
+  new URL("../src-tauri/release.manifest.xml", import.meta.url),
+  "utf8",
+);
 
 function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
   return {
@@ -67,10 +94,46 @@ test("control publications do not look like new telemetry samples", () => {
   assert.equal(hasNewRuntimeSample({ sample_seq: 7 }, { sample_seq: 8 }), true);
 });
 
+test("paused native lifecycle publications stay visible without advancing history", () => {
+  const requesting = {
+    ...canonicalSnapshot,
+    publication_seq: 10,
+    sample_seq: 7,
+    sampled_at_ms: 1_783_944_000_000,
+    settings: { ...canonicalSnapshot.settings, paused: true },
+    admin_mode: {
+      state: "requesting",
+      source: "elevated_helper",
+      detail: null,
+      last_success_at_ms: null,
+    },
+    processes: [process({ pid: "10", name: "standard.exe" })],
+  };
+  const active = {
+    ...requesting,
+    publication_seq: 11,
+    admin_mode: {
+      state: "active",
+      source: "elevated_helper",
+      detail: null,
+      last_success_at_ms: 1_783_944_001_000,
+    },
+  };
+
+  assert.equal(shouldPollRuntime(true, true), true);
+  assert.equal(shouldPollRuntime(true, false), false);
+  assert.equal(shouldApplyRuntimePublication(requesting, active), true);
+  assert.equal(hasNewRuntimeSample(requesting, active), false);
+  assert.equal(active.admin_mode.state, "active");
+  assert.equal(active.sampled_at_ms, requesting.sampled_at_ms);
+  assert.deepEqual(active.processes, requesting.processes);
+});
+
 test("shared fixture exposes the preview environment and stable empty arrays", () => {
   assert.deepEqual(canonicalSnapshot.environment, {
     platform: "windows",
     admin_mode_available: true,
+    process_elevation: "standard",
     install_kind: "portable",
     data_directory: "C:\\Users\\test\\BatCaveMonitor",
   });
@@ -82,9 +145,78 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
   assert.equal(canonicalSnapshot.ts_ms, undefined);
   assert.deepEqual(canonicalSnapshot.admin_mode, {
     state: "off",
+    source: "none",
     detail: null,
     last_success_at_ms: null,
   });
+});
+
+test("provenance fixtures keep package and privilege copy deterministic", () => {
+  assert.deepEqual(
+    provenanceFixtures.map((fixture) => [
+      fixture.name,
+      processElevationLabel(fixture.environment),
+      privilegedCollectionLabel(fixture.admin_mode),
+      installKindLabel(fixture.environment.install_kind),
+    ]),
+    provenanceFixtures.map((fixture) => [
+      fixture.name,
+      fixture.expected_process_label,
+      fixture.expected_collection_label,
+      fixture.expected_package_label,
+    ]),
+  );
+
+  const unavailable = provenanceFixtures.find(
+    (fixture) => fixture.name === "windows_provenance_and_token_unavailable",
+  );
+  assert.ok(unavailable);
+  assert.equal(
+    privilegedCollectionNote(unavailable.admin_mode),
+    "Privileged collection is inactive because the current process token could not be read.",
+  );
+});
+
+test("shipped Windows release starts as the invoking user", () => {
+  assert.match(releaseManifest, /requestedExecutionLevel level="asInvoker"/);
+  assert.doesNotMatch(releaseManifest, /requireAdministrator/);
+});
+
+test("requesting elevation waits for the Windows decision", () => {
+  const requesting = provenanceFixtures.find(
+    (fixture) => fixture.name === "windows_helper_requesting",
+  );
+  assert.ok(requesting);
+  assert.equal(privilegedCollectionLabel(requesting.admin_mode), "Waiting for Windows");
+  assert.equal(
+    privilegedCollectionNote(requesting.admin_mode),
+    "Windows owns the in-flight elevation decision. Standard monitoring remains available.",
+  );
+  assert.equal(privilegedCollectionAction(true, requesting.admin_mode), null);
+});
+
+test("helper actions cover enable, disable, and retry without touching an elevated parent", () => {
+  const fixture = (name: string) => {
+    const match = provenanceFixtures.find((candidate) => candidate.name === name);
+    assert.ok(match);
+    return match;
+  };
+  assert.deepEqual(
+    privilegedCollectionAction(true, fixture("windows_portable_standard").admin_mode),
+    { label: "Enable helper", enabled: true },
+  );
+  assert.deepEqual(
+    privilegedCollectionAction(true, fixture("windows_standard_with_helper_active").admin_mode),
+    { label: "Disable helper", enabled: false },
+  );
+  assert.deepEqual(
+    privilegedCollectionAction(true, fixture("windows_elevation_denied").admin_mode),
+    { label: "Retry helper", enabled: true },
+  );
+  assert.equal(
+    privilegedCollectionAction(true, fixture("windows_installed_elevated").admin_mode),
+    null,
+  );
 });
 
 test("shared workload fixture keeps process and group details disjoint", () => {
@@ -119,10 +251,9 @@ test("diagnostics render one limitation per stable key with the current admin ac
     ]),
     [["collector.network_attribution", "enable"]],
   );
-  assert.equal(
-    currentDiagnosticIssues(warnings, adminMode("requesting"), true)[0].action,
-    "cancel",
-  );
+  const requesting = currentDiagnosticIssues(warnings, adminMode("requesting"), true)[0];
+  assert.equal(requesting.action, null);
+  assert.equal(requesting.actionLabel, null);
   assert.equal(currentDiagnosticIssues(warnings, adminMode("failed"), true)[0].action, "retry");
   assert.equal(currentDiagnosticIssues(warnings, adminMode("active"), true)[0].action, null);
   assert.equal(uniqueWarningCount(warnings), 1);
