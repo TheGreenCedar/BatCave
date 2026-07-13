@@ -342,7 +342,7 @@ impl StorageBackend for RealStorageBackend {
         #[cfg(windows)]
         {
             let _ = path;
-            return Ok(PermissionVerification::Unverified);
+            Ok(PermissionVerification::Unverified)
         }
 
         #[cfg(unix)]
