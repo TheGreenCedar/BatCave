@@ -14,7 +14,7 @@ export interface ResourceBrief {
   stateLabel: string;
   confidence: ResourceConfidence;
   leadingWorkload: string | null;
-  leadingValueLabel: string;
+  contributorStatusLabel: string;
   contributorNameAmbiguous: boolean;
   attributionLabel: string;
 }
@@ -66,6 +66,7 @@ export function buildResourceBrief(
     stateLabel,
     confidence: resourceConfidence(
       snapshot,
+      mode,
       quality,
       definition.contributor,
       definition.contributorQuality,
@@ -74,11 +75,13 @@ export function buildResourceBrief(
       canShowValue,
     ),
     leadingWorkload: contributor ? displayProcessName(contributor) : null,
-    leadingValueLabel: contributorValueLabel(
+    contributorStatusLabel: contributorStatusLabel(
       mode,
+      contributor,
       leadingProcess,
       definition.contributorQuality,
       contributorNameAmbiguous,
+      snapshot.total_process_count,
     ),
     contributorNameAmbiguous,
     attributionLabel: definition.attributionLabel,
@@ -176,6 +179,7 @@ function resourceStateLabel(
 
 function resourceConfidence(
   snapshot: RuntimeSnapshot,
+  mode: DetailMode,
   quality: MetricQualityInfo | undefined,
   contributor: string | null,
   contributorQuality: MetricQualityInfo | undefined,
@@ -187,6 +191,7 @@ function resourceConfidence(
   if (
     collectionState !== "live" ||
     quality?.quality !== "native" ||
+    (mode !== "disk" && snapshot.total_process_count > 0 && contributorQuality === undefined) ||
     (contributor !== null && contributorQuality?.quality !== "native") ||
     contributorNameAmbiguous ||
     contributorQuality?.quality === "estimated" ||
@@ -199,6 +204,25 @@ function resourceConfidence(
     return "Limited";
   }
   return "High";
+}
+
+function contributorStatusLabel(
+  mode: DetailMode,
+  contributor: string | null,
+  process: ProcessSample | undefined,
+  quality: MetricQualityInfo | undefined,
+  contributorNameAmbiguous: boolean,
+  totalProcessCount: number,
+): string {
+  if (mode === "disk") return "No compatible process attribution";
+  if (contributor) {
+    return contributorValueLabel(mode, process, quality, contributorNameAmbiguous);
+  }
+  if (totalProcessCount === 0) return "No processes in this sample";
+  if (!quality) return "Attribution quality not reported";
+  if (quality.quality === "unavailable") return "Process attribution unavailable";
+  if (quality.quality === "held") return "Process attribution pending";
+  return `No process activity attributed${contributorQualitySuffix(quality)}`;
 }
 
 function unavailableValueLabel(quality: MetricQualityInfo | undefined): string {

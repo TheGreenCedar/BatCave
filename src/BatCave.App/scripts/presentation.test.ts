@@ -27,7 +27,7 @@ test("selected resource brief keeps machine and process CPU scopes explicit", ()
 
   assert.equal(brief.headline, "Machine-total CPU is 90%.");
   assert.equal(brief.leadingWorkload, "Visual Studio Code");
-  assert.equal(brief.leadingValueLabel, "40% of one core");
+  assert.equal(brief.contributorStatusLabel, "40% of one core");
   assert.match(brief.attributionLabel, /one-core-equivalent/);
   assert.equal(brief.stateLabel, "Current");
   assert.equal(brief.confidence, "High");
@@ -46,7 +46,7 @@ test("contributor quality gates publication and limits overview confidence", () 
     "live",
   );
   assert.equal(estimatedBrief.leadingWorkload, "Estimated worker");
-  assert.match(estimatedBrief.leadingValueLabel, /Estimated attribution/);
+  assert.match(estimatedBrief.contributorStatusLabel, /Estimated attribution/);
   assert.equal(estimatedBrief.confidence, "Limited");
 
   const unavailable = resourceSnapshot("Blocked worker");
@@ -78,7 +78,7 @@ test("full-sample contributor ambiguity survives a query that retains one matchi
 
   assert.equal(brief.leadingWorkload, "worker");
   assert.equal(brief.contributorNameAmbiguous, true);
-  assert.match(brief.leadingValueLabel, /ambiguous across the full process sample/);
+  assert.match(brief.contributorStatusLabel, /ambiguous across the full process sample/);
   assert.equal(brief.confidence, "Limited");
 });
 
@@ -95,7 +95,7 @@ test("legacy contributor summaries without ambiguity truth do not lend a visible
   );
 
   assert.equal(brief.contributorNameAmbiguous, true);
-  assert.match(brief.leadingValueLabel, /ambiguous across the full process sample/);
+  assert.match(brief.contributorStatusLabel, /ambiguous across the full process sample/);
 });
 
 test("physical disk summary rejects process I/O as compatible attribution", () => {
@@ -110,7 +110,30 @@ test("physical disk summary rejects process I/O as compatible attribution", () =
 
   assert.equal(brief.headline, "Physical disk throughput is 4.0 KB/s.");
   assert.equal(brief.leadingWorkload, null);
+  assert.equal(brief.contributorStatusLabel, "No compatible process attribution");
+  assert.equal(brief.confidence, "High");
   assert.match(brief.attributionLabel, /not used as physical-disk attribution/);
+});
+
+test("missing contributor quality limits zero-activity attribution without hiding its status", () => {
+  const snapshot = resourceSnapshot(null);
+  snapshot.system.cpu_percent = 0;
+  snapshot.system.process_count = 1;
+  snapshot.total_process_count = 1;
+  snapshot.processes = [process({ cpu_percent: 0 })];
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(snapshot.system.quality?.cpu?.quality, "native");
+  assert.equal(snapshot.process_contributors.cpu_quality, undefined);
+  assert.equal(brief.leadingWorkload, null);
+  assert.equal(brief.confidence, "Limited");
+  assert.equal(brief.contributorStatusLabel, "Attribution quality not reported");
 });
 
 test("overview states cannot turn missing or retained samples into a reassuring zero", () => {
@@ -125,6 +148,8 @@ test("overview states cannot turn missing or retained samples into a reassuring 
   assert.equal(current.valueLabel, "0%");
   assert.equal(current.stateLabel, "Current");
   assert.equal(current.headline, "Machine-total CPU is 0%.");
+  assert.equal(current.confidence, "High");
+  assert.equal(current.contributorStatusLabel, "No processes in this sample");
 
   const unavailable = resourceSnapshot(null);
   unavailable.system.cpu_percent = 0;

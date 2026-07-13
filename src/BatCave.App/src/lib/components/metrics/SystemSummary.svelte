@@ -44,7 +44,7 @@
       <span>
         <small>Compatible process attribution</small>
         <strong>{brief.leadingWorkload ?? "Not available"}</strong>
-        <b>{brief.leadingWorkload ? brief.leadingValueLabel : brief.attributionLabel}</b>
+        <b>{brief.contributorStatusLabel}</b>
       </span>
     </div>
     <div class="pressure-resource-strip" aria-label="System resource summary">
