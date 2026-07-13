@@ -160,11 +160,12 @@ test("platform fixtures carry their privilege and collection limits", () => {
       descriptor.scope === "system" && descriptor.semantic === "physical_disk_read_total",
   );
   assert.equal(macDisk?.source, "iokit");
-  const macDiskObservation = observation(
-    macosDecoded.payload,
-    macosDecoded.payload.system,
-    "physical_disk_read_total",
+  const macDiskObservation = macosDecoded.payload.system.metrics.find(
+    (candidate) =>
+      macosDecoded.payload.descriptors[candidate[0]].semantic === "physical_disk_read_total",
   );
+  assert.ok(macDiskObservation);
+  if (!macDiskObservation) return;
   assert.equal(macosDecoded.payload.quality_codes[macDiskObservation[2]], "held");
 });
 
