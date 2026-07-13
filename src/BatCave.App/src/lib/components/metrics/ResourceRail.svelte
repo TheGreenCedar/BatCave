@@ -27,6 +27,7 @@
         aria-label={`${resource.ariaLabel}. ${resource.statusLabel}`}
         aria-pressed={resource.mode === activeMode}
         aria-controls="detail-pane"
+        data-resource-mode={resource.mode}
         onclick={() => onSelect(resource.mode)}
       >
         <span class="resource-heading">

@@ -12,6 +12,10 @@
   import HealthStatus from "./lib/components/shell/HealthStatus.svelte";
   import ProcessCommandBar from "./lib/components/shell/ProcessCommandBar.svelte";
   import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
+  import {
+    resolveAccessibilityFixtureState,
+    type AccessibilityFixtureState,
+  } from "./lib/accessibilityFixtures";
   import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
@@ -118,6 +122,11 @@
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
   const browserFixturePlatform = "macos" as const;
+  const accessibilityFixtureState = resolveAccessibilityFixtureState(
+    typeof window === "undefined" ? "" : window.location.search,
+    import.meta.env.DEV,
+    hasTauriRuntime(),
+  );
 
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeEmptySnapshot();
@@ -416,6 +425,7 @@
 
   onMount(() => {
     let timeoutId: number | undefined;
+    let detailFocusFrame: number | undefined;
     let disposed = false;
     const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
     const compactDetailQuery = window.matchMedia("(max-width: 1279px)");
@@ -437,7 +447,19 @@
     }
 
     if (!hasTauriRuntime()) {
-      ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+      if (accessibilityFixtureState) {
+        fixtureTick = 8;
+        const next = makeFixtureSnapshot(
+          fixtureTick,
+          { ...currentRuntimeQuery(), limit: accessibilityFixtureState === "group" ? 48 : 24 },
+          accessibilityFixtureState === "group" ? "windows" : browserFixturePlatform,
+        );
+        prepareAccessibilityFixture(next, accessibilityFixtureState);
+        ingest(next);
+        applyAccessibilityFixtureSelection(next, accessibilityFixtureState);
+      } else {
+        ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+      }
     }
 
     const loop = async () => {
@@ -451,15 +473,36 @@
       }
     };
 
-    timeoutId = window.setTimeout(loop, 120);
+    if (!accessibilityFixtureState) {
+      timeoutId = window.setTimeout(loop, 120);
+    }
 
     const handleSystemThemeChange = (event: MediaQueryListEvent) => {
       systemThemeName = event.matches ? "daylight" : "cave";
     };
 
     const handleCompactDetailChange = (event: MediaQueryListEvent) => {
+      if (isCompactDetail === event.matches) return;
+      if (detailFocusFrame !== undefined) {
+        window.cancelAnimationFrame(detailFocusFrame);
+        detailFocusFrame = undefined;
+      }
+      const active = document.activeElement;
+      const focusWasInDetail =
+        active instanceof HTMLElement && active.closest("#detail-pane") !== null;
+      const shouldRestoreLogicalFocus = isCompactDetail
+        ? compactDetailOpen
+        : focusWasInDetail;
       isCompactDetail = event.matches;
       compactDetailOpen = false;
+      if (shouldRestoreLogicalFocus) {
+        detailFocusFrame = window.requestAnimationFrame(() => {
+          detailFocusFrame = window.requestAnimationFrame(() => {
+            detailFocusFrame = undefined;
+            focusCurrentDetailControl();
+          });
+        });
+      }
     };
 
     systemThemeQuery.addEventListener("change", handleSystemThemeChange);
@@ -474,6 +517,9 @@
       }
       if (searchDebounceId !== undefined) {
         window.clearTimeout(searchDebounceId);
+      }
+      if (detailFocusFrame !== undefined) {
+        window.cancelAnimationFrame(detailFocusFrame);
       }
     };
   });
@@ -499,6 +545,53 @@
 
   function hasTauriRuntime(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  }
+
+  function prepareAccessibilityFixture(
+    next: RuntimeSnapshot,
+    state: AccessibilityFixtureState,
+  ): void {
+    pollState = state === "stale" ? "error" : "fixture";
+    lastError = state === "stale" ? "Fixture collector stopped after the last trusted sample." : "";
+
+    if (state === "degraded") {
+      next.health.degraded = true;
+      next.health.app_cpu_percent = 3.2;
+      next.health.status_summary = "Fixture app resource budget is exceeded.";
+    }
+  }
+
+  function applyAccessibilityFixtureSelection(
+    next: RuntimeSnapshot,
+    state: AccessibilityFixtureState,
+  ): void {
+    settingsOpen = state === "settings";
+    diagnosticsOpen = state === "diagnostics";
+    compactDetailOpen = false;
+
+    if (state === "process" || state === "compact") {
+      const processRow = next.process_view_rows.find(
+        (row) => row.kind === "process" && !row.is_grouped,
+      );
+      if (processRow) {
+        selectedWorkloadId = processViewRowKey(processRow);
+        detailSubject = "process";
+        compactDetailOpen = state === "compact";
+      }
+      return;
+    }
+
+    if (state === "group") {
+      const groupRow = next.process_view_rows.find((row) => row.kind === "group");
+      if (groupRow) {
+        selectedWorkloadId = processViewRowKey(groupRow);
+        detailSubject = "process";
+      }
+      return;
+    }
+
+    selectedWorkloadId = "";
+    detailSubject = "system";
   }
 
   function isHistoryPointLimit(value: number): value is HistoryPointLimit {
@@ -951,6 +1044,21 @@
     selectedWorkloadId = "";
     openCompactDetail();
     applyPendingRankingIfReleased();
+  }
+
+  function focusCurrentDetailControl(): void {
+    const candidates =
+      detailSubject === "process" && selectedWorkloadId
+        ? document.querySelectorAll<HTMLElement>("[data-workload-id]")
+        : document.querySelectorAll<HTMLElement>(".resource-rail [data-resource-mode]");
+    const target = [...candidates].find((candidate) => {
+      const matchesIdentity =
+        detailSubject === "process" && selectedWorkloadId
+          ? candidate.dataset.workloadId === selectedWorkloadId
+          : candidate.dataset.resourceMode === detailMode;
+      return matchesIdentity && candidate.getClientRects().length > 0;
+    });
+    target?.focus({ preventScroll: true });
   }
 
   function openCompactDetail(): void {
@@ -1448,7 +1556,7 @@
 
 <svelte:window onkeydown={handleAppKeydown} />
 
-<AppShell {themeName}>
+<AppShell {themeName} {accessibilityFixtureState}>
   <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{liveStatus}</p>
   <AppHeader
     {searchText}

@@ -131,6 +131,7 @@
         type="button"
         aria-pressed={actionSelected}
         aria-label={row.kind === "group" ? `Inspect ${row.detail.label} group` : `Inspect ${process?.name}, PID ${process?.pid}`}
+        data-workload-id={row.detail.workload_id}
         onclick={() => selectRow(row)}
       >
         <span class="card-title-row">
