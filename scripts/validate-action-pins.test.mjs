@@ -25,10 +25,66 @@ test("accepts immutable external pins and local actions", () => {
       "valid.yml": `steps:
   - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
   - uses: owner/action/subdirectory@0123456789abcdef0123456789abcdef01234567 # v1.2.3
+  - { "uses" : owner/flow-action@abcdef0123456789abcdef0123456789abcdef01 } # v3.0.0
   - uses: ./github/actions/local
+  - { uses: ./github/actions/flow-local }
+  - uses: docker://ghcr.io/owner/image@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef # v2.4.0
 `,
     },
     (root) => assert.deepEqual(collectActionPinViolations(root), []),
+  );
+});
+
+test("finds uses nodes across whitespace, quoted keys, and flow mappings", () => {
+  withWorkflows(
+    {
+      "syntax-bypasses.yml": `name: Adversarial action syntax
+on: push
+env:
+  ACTION_KEY: &action-key uses
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses : actions/checkout@v6 # v6
+      - "uses": actions/setup-node@v6 # v6
+      - { uses: actions/upload-artifact@v6 } # v6
+      - *action-key: actions/download-artifact@v8 # v8
+`,
+    },
+    (root) => {
+      assert.deepEqual(
+        collectActionPinViolations(root).map(({ line, message }) => [line, message]),
+        [
+          [9, "external action ref must be an exact lowercase 40-character commit SHA; received v6"],
+          [10, "external action ref must be an exact lowercase 40-character commit SHA; received v6"],
+          [11, "external action ref must be an exact lowercase 40-character commit SHA; received v6"],
+          [12, "external action ref must be an exact lowercase 40-character commit SHA; received v8"],
+        ],
+      );
+    },
+  );
+});
+
+test("rejects mutable Docker tags and accepts exact image digests", () => {
+  withWorkflows(
+    {
+      "docker.yml": `steps:
+  - uses: docker://alpine:3.20
+  - uses: docker://ghcr.io/owner/image@sha256:abcdef # v2
+  - uses: docker://ghcr.io/owner/image@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef # v2
+`,
+    },
+    (root) => {
+      const violations = collectActionPinViolations(root);
+      assert.deepEqual(
+        violations.map(({ line }) => line),
+        [2, 3],
+      );
+      assert.ok(
+        violations.every(({ message }) => message.includes("exact lowercase sha256 image digest")),
+      );
+    },
   );
 });
 

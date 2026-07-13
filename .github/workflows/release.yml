@@ -66,6 +66,7 @@ jobs:
           channel="${INPUT_CHANNEL}"
           publish="${INPUT_PUBLISH}"
 
+          node scripts/verify-release-controls.mjs "${GITHUB_REPOSITORY}"
           node scripts/verify-release-version.mjs "${tag}"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           source_sha="${GITHUB_SHA}"
@@ -98,12 +99,13 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs
 
   windows:
     name: Build Windows release
     needs: prepare
     runs-on: windows-latest
+    environment: release
     steps:
       - name: Preserve repository line endings
         run: git config --global core.autocrlf false
@@ -138,6 +140,11 @@ jobs:
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle
 
+      - name: Revalidate protected release controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
+
       - name: Bundle signed Windows updater
         working-directory: src/BatCave.App
         env:
@@ -166,6 +173,7 @@ jobs:
     name: Build Linux release
     needs: prepare
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -198,6 +206,11 @@ jobs:
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle
 
+      - name: Revalidate protected release controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
+
       - name: Bundle signed Linux updater
         working-directory: src/BatCave.App
         env:
@@ -223,6 +236,7 @@ jobs:
     name: Build notarized universal macOS release
     needs: prepare
     runs-on: macos-15
+    environment: release
     steps:
       - name: Preserve repository line endings
         run: git config --global core.autocrlf false
@@ -256,6 +270,11 @@ jobs:
 
       - name: Validate macOS app
         run: bash scripts/validate-tauri.sh --skip-bundle
+
+      - name: Revalidate protected release controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Prepare Apple signing credentials
         shell: bash
@@ -372,6 +391,7 @@ jobs:
     name: Checksums, provenance, and release
     needs: [prepare, windows, linux, macos]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
       id-token: write
@@ -406,6 +426,11 @@ jobs:
           find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "${checksums}"
           mv "${checksums}" SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
+
+      - name: Revalidate protected release controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Generate build provenance
         id: attest
@@ -443,6 +468,7 @@ jobs:
             printf '%s' "${tag_sha}"
           }
 
+          node scripts/verify-release-controls.mjs "${GITHUB_REPOSITORY}"
           node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
           tag_sha="$(remote_tag_source)"
           [[ -z "${tag_sha}" ]] || { echo "Release tag ${RELEASE_TAG} appeared during the build." >&2; exit 1; }
@@ -466,9 +492,25 @@ jobs:
         run: |
           set -euo pipefail
           candidate="${RUNNER_TEMP}/release-candidate.json"
+          draft_readback="${RUNNER_TEMP}/release-prepublish-readback.json"
           readback="${RUNNER_TEMP}/release-published-readback.json"
+          latest_readback="${RUNNER_TEMP}/release-latest-readback.json"
+          latest_error="${RUNNER_TEMP}/release-latest-error.txt"
+          node scripts/verify-release-controls.mjs "${GITHUB_REPOSITORY}"
           node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
-          gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+
+          remote_tag_sha="$(git ls-remote origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')"
+          if [[ -z "${remote_tag_sha}" ]]; then
+            remote_tag_sha="$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')"
+          fi
+          [[ "${remote_tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag does not target ${RELEASE_SOURCE_SHA}." >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "${draft_readback}"
+          node scripts/verify-release-candidate.mjs verify-readback "${candidate}" "${draft_readback}" true
+
+          publish_args=(release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false)
+          [[ "${PRERELEASE}" == "true" ]] && publish_args+=(--latest=false) || publish_args+=(--latest)
+          gh "${publish_args[@]}"
+
           remote_tag_sha="$(git ls-remote origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')"
           if [[ -z "${remote_tag_sha}" ]]; then
             remote_tag_sha="$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')"
@@ -476,3 +518,12 @@ jobs:
           [[ "${remote_tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Published release tag does not target ${RELEASE_SOURCE_SHA}." >&2; exit 1; }
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "${readback}"
           node scripts/verify-release-candidate.mjs verify-readback "${candidate}" "${readback}" false
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "${latest_readback}" 2>"${latest_error}"; then
+            :
+          elif grep -q "HTTP 404" "${latest_error}"; then
+            printf 'null\n' > "${latest_readback}"
+          else
+            cat "${latest_error}" >&2
+            exit 1
+          fi
+          node scripts/verify-release-candidate.mjs verify-latest "${candidate}" "${latest_readback}"

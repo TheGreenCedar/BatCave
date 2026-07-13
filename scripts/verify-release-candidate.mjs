@@ -124,6 +124,12 @@ export function verifyReleaseReadback(expected, actual, expectedDraft) {
       `release channel readback mismatch: expected prerelease=${expected.prerelease}, received ${actual.prerelease}`,
     );
   }
+  const expectedImmutable = !expectedDraft;
+  if (actual.immutable !== expectedImmutable) {
+    throw new Error(
+      `release immutable-state readback mismatch: expected ${expectedImmutable}, received ${actual.immutable}`,
+    );
+  }
 
   const actualAssets = (actual.assets ?? [])
     .map(({ name, size, digest }) => ({ name, size, digest }))
@@ -142,6 +148,31 @@ export function verifyReleaseReadback(expected, actual, expectedDraft) {
   return true;
 }
 
+export function verifyLatestRelease(expected, latest) {
+  if (expected.prerelease) {
+    if (latest?.tag_name === expected.tag) {
+      throw new Error(`prerelease ${expected.tag} must not become /releases/latest`);
+    }
+    return true;
+  }
+
+  if (!latest) throw new Error(`stable release ${expected.tag} is missing from /releases/latest`);
+  if (latest.tag_name !== expected.tag) {
+    throw new Error(
+      `latest release mismatch: expected ${expected.tag}, received ${latest.tag_name}`,
+    );
+  }
+  if (latest.target_commitish !== expected.source_sha) {
+    throw new Error(
+      `latest release source mismatch: expected ${expected.source_sha}, received ${latest.target_commitish}`,
+    );
+  }
+  if (latest.draft !== false || latest.prerelease !== false || latest.immutable !== true) {
+    throw new Error("latest stable release must be published, stable, and immutable");
+  }
+  return true;
+}
+
 function booleanArgument(value, name) {
   if (value === "true") return true;
   if (value === "false") return false;
@@ -155,6 +186,7 @@ function usage() {
     "  node scripts/verify-release-candidate.mjs stage <input-directory> <output-directory>",
     "  node scripts/verify-release-candidate.mjs inventory <tag> <source-sha> <prerelease> <directory> <output-json>",
     "  node scripts/verify-release-candidate.mjs verify-readback <expected-json> <actual-json> <draft>",
+    "  node scripts/verify-release-candidate.mjs verify-latest <expected-json> <latest-json>",
   ].join("\n");
 }
 
@@ -192,6 +224,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         booleanArgument(draft, "draft"),
       );
       console.log("GitHub Release readback matches the local candidate");
+    } else if (command === "verify-latest" && args.length === 2) {
+      const [expectedFile, latestFile] = args;
+      verifyLatestRelease(
+        JSON.parse(fs.readFileSync(expectedFile, "utf8")),
+        JSON.parse(fs.readFileSync(latestFile, "utf8")),
+      );
+      console.log("GitHub latest-release semantics match the release channel");
     } else {
       console.error(usage());
       process.exit(2);

@@ -8,6 +8,7 @@ import {
   buildReleaseInventory,
   stageReleaseAssets,
   verifyReleaseCandidateIdentity,
+  verifyLatestRelease,
   verifyReleaseReadback,
 } from "./verify-release-candidate.mjs";
 
@@ -126,13 +127,17 @@ test("verifies draft and published release readback against the same candidate",
     target_commitish: sourceSha,
     draft: true,
     prerelease: false,
+    immutable: false,
     assets: [{ name: "asset.bin", size: 3, digest: "sha256:abc", id: 12 }],
   };
   assert.equal(verifyReleaseReadback(expected, actual, true), true);
-  assert.equal(verifyReleaseReadback(expected, { ...actual, draft: false }, false), true);
+  assert.equal(
+    verifyReleaseReadback(expected, { ...actual, draft: false, immutable: true }, false),
+    true,
+  );
 });
 
-test("rejects source, state, and asset drift in release readback", () => {
+test("rejects source, state, and asset drift in the prepublication readback", () => {
   const expected = {
     tag: "v0.3.0",
     source_sha: sourceSha,
@@ -144,13 +149,22 @@ test("rejects source, state, and asset drift in release readback", () => {
     target_commitish: sourceSha,
     draft: true,
     prerelease: false,
+    immutable: false,
     assets: [{ name: "asset.bin", size: 3, digest: "sha256:abc" }],
   };
   assert.throws(
     () => verifyReleaseReadback(expected, { ...actual, target_commitish: "main" }, true),
     /source readback mismatch/,
   );
+  assert.throws(
+    () => verifyReleaseReadback(expected, { ...actual, draft: false, immutable: true }, true),
+    /draft readback mismatch/,
+  );
   assert.throws(() => verifyReleaseReadback(expected, actual, false), /draft readback mismatch/);
+  assert.throws(
+    () => verifyReleaseReadback(expected, { ...actual, draft: false }, false),
+    /immutable-state readback mismatch/,
+  );
   assert.throws(
     () =>
       verifyReleaseReadback(
@@ -159,5 +173,30 @@ test("rejects source, state, and asset drift in release readback", () => {
         true,
       ),
     /asset readback mismatch/,
+  );
+});
+
+test("requires stable releases to become latest and prereleases to remain non-latest", () => {
+  const stable = { tag: "v0.3.0", source_sha: sourceSha, prerelease: false };
+  const latest = {
+    tag_name: stable.tag,
+    target_commitish: sourceSha,
+    draft: false,
+    prerelease: false,
+    immutable: true,
+  };
+  assert.equal(verifyLatestRelease(stable, latest), true);
+  assert.throws(() => verifyLatestRelease(stable, null), /missing from \/releases\/latest/);
+  assert.throws(
+    () => verifyLatestRelease(stable, { ...latest, tag_name: "v0.2.0" }),
+    /latest release mismatch/,
+  );
+
+  const prerelease = { ...stable, tag: "v0.4.0-rc.1", prerelease: true };
+  assert.equal(verifyLatestRelease(prerelease, latest), true);
+  assert.equal(verifyLatestRelease(prerelease, null), true);
+  assert.throws(
+    () => verifyLatestRelease(prerelease, { ...latest, tag_name: prerelease.tag }),
+    /must not become \/releases\/latest/,
   );
 });

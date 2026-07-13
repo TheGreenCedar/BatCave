@@ -129,7 +129,7 @@ jobs:
         run: bash -n scripts/*.sh
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs
 
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle
@@ -172,7 +172,7 @@ jobs:
         run: bash -n scripts/*.sh
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs
 
       - name: Validate native macOS app
         run: bash scripts/validate-tauri.sh --skip-bundle
