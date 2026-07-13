@@ -118,3 +118,14 @@ export function hasNewRuntimeSample(
 ): boolean {
   return incoming.sample_seq > current.sample_seq;
 }
+
+export function shouldApplyRuntimePublication(
+  current: Pick<RuntimeSnapshot, "publication_seq">,
+  incoming: Pick<RuntimeSnapshot, "publication_seq">,
+): boolean {
+  return incoming.publication_seq >= current.publication_seq;
+}
+
+export function shouldPollRuntime(paused: boolean, nativeRuntime: boolean): boolean {
+  return !paused || nativeRuntime;
+}

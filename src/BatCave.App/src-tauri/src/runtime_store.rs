@@ -155,7 +155,14 @@ struct RuntimeStore {
     sample_seq: u64,
     sampled_at_ms: Option<u64>,
     elevated_helper_rows_published: bool,
+    last_verified_elevated_frame: Option<VerifiedElevatedFrame>,
     process_access_baseline_dirty: bool,
+}
+
+struct VerifiedElevatedFrame {
+    rows: Vec<ProcessSample>,
+    warnings: Vec<String>,
+    collects_process_network: bool,
 }
 
 struct ElevatedTransition {
@@ -243,6 +250,7 @@ impl RuntimeStore {
             sample_seq: 0,
             sampled_at_ms: None,
             elevated_helper_rows_published: false,
+            last_verified_elevated_frame: None,
             process_access_baseline_dirty: false,
         }
     }
@@ -272,6 +280,7 @@ impl RuntimeStore {
             || self.elevated.is_some()
             || self.elevated_request.is_some()
             || self.elevated_helper_rows_published
+            || self.last_verified_elevated_frame.is_some()
             || self.process_access_baseline_dirty;
         if enabled && self.provenance.process_is_elevated() {
             self.settings.admin_mode_requested = false;
@@ -302,6 +311,7 @@ impl RuntimeStore {
             self.settings.admin_mode_requested = false;
             self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
             self.elevated_helper_rows_published = false;
+            self.last_verified_elevated_frame = None;
             self.admin_mode = self.provenance.admin_mode_status();
             self.clear_warning("admin_mode");
             if let Some(mut client) = self.elevated.take() {
@@ -378,12 +388,17 @@ impl RuntimeStore {
         }
 
         match &poll {
-            Some(ElevatedPoll::Fresh { .. }) => {
+            Some(ElevatedPoll::Fresh { rows, warnings }) => {
                 self.settings.admin_mode_enabled = true;
                 self.admin_mode.state = RuntimeAdminModeState::Active;
                 self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
                 self.admin_mode.detail = None;
                 self.admin_mode.last_success_at_ms = Some(success_at_ms);
+                self.last_verified_elevated_frame = Some(VerifiedElevatedFrame {
+                    rows: rows.clone(),
+                    warnings: warnings.clone(),
+                    collects_process_network,
+                });
                 self.clear_warning("admin_mode");
             }
             Some(ElevatedPoll::Held { .. }) => {
@@ -394,12 +409,14 @@ impl RuntimeStore {
             }
             Some(ElevatedPoll::Recovering(detail)) => {
                 self.settings.admin_mode_enabled = false;
+                self.last_verified_elevated_frame = None;
                 self.admin_mode.state = RuntimeAdminModeState::Recovering;
                 self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
                 self.admin_mode.detail = Some(detail.clone());
             }
             Some(ElevatedPoll::Pending) => {
                 self.settings.admin_mode_enabled = false;
+                self.last_verified_elevated_frame = None;
                 self.admin_mode.state = RuntimeAdminModeState::Requesting;
                 self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
                 self.admin_mode.detail = None;
@@ -458,6 +475,7 @@ impl RuntimeStore {
                 merge_main_network_attribution(sample_processes, &mut rows);
                 *sample_processes = rows;
                 self.elevated_helper_rows_published = true;
+                self.last_verified_elevated_frame = None;
                 if transition.collects_process_network {
                     active_collector_warnings.retain(|warning| {
                         warning_key("collector", warning) != "collector.network_attribution"
@@ -466,7 +484,17 @@ impl RuntimeStore {
                 active_collector_warnings.extend(warnings);
             }
             Some(ElevatedPoll::Held { warnings }) => {
-                if self.elevated_helper_rows_published {
+                if let Some(mut frame) = self.last_verified_elevated_frame.take() {
+                    merge_main_network_attribution(sample_processes, &mut frame.rows);
+                    *sample_processes = frame.rows;
+                    self.elevated_helper_rows_published = true;
+                    if frame.collects_process_network {
+                        active_collector_warnings.retain(|warning| {
+                            warning_key("collector", warning) != "collector.network_attribution"
+                        });
+                    }
+                    active_collector_warnings.extend(frame.warnings);
+                } else if self.elevated_helper_rows_published {
                     *sample_processes = self.previous_processes.clone();
                     *process_rows_fresh = false;
                     if transition.collects_process_network {
@@ -474,6 +502,12 @@ impl RuntimeStore {
                             warning_key("collector", warning) != "collector.network_attribution"
                         });
                     }
+                } else {
+                    self.settings.admin_mode_enabled = false;
+                    self.admin_mode.state = RuntimeAdminModeState::Recovering;
+                    self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+                    self.admin_mode.detail =
+                        Some("admin_mode_waiting_for_fresh_snapshot".to_string());
                 }
                 active_collector_warnings.extend(warnings);
             }
@@ -644,6 +678,7 @@ impl RuntimeStore {
         self.settings.admin_mode_requested = false;
         self.settings.admin_mode_enabled = false;
         self.elevated_helper_rows_published = false;
+        self.last_verified_elevated_frame = None;
         self.admin_mode.state = RuntimeAdminModeState::Failed;
         self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
         self.admin_mode.detail = Some(error.clone());
@@ -3357,21 +3392,23 @@ mod tests {
     }
 
     #[test]
-    fn resumed_held_frame_never_reuses_standard_rows_as_helper_rows() {
+    fn paused_fresh_frame_is_published_on_resumed_held_then_replaced_by_fresh() {
         let base_dir = runtime_test_dir("paused-admin-resume-held");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
         seed_paused_snapshot(&mut store);
+        let mut paused_elevated = sample("90", "Protected", 0.0);
+        paused_elevated.memory_bytes = 900;
         queue_scripted_helper(
             &mut store,
             vec![
                 Ok(ElevatedPoll::Pending),
                 Ok(ElevatedPoll::Fresh {
-                    rows: vec![sample("90", "PausedElevated", 0.0)],
-                    warnings: Vec::new(),
+                    rows: vec![paused_elevated],
+                    warnings: vec!["helper_access_limited".to_string()],
                 }),
                 Ok(ElevatedPoll::Held {
-                    warnings: Vec::new(),
+                    warnings: vec!["current_held_warning".to_string()],
                 }),
                 Ok(ElevatedPoll::Fresh {
                     rows: vec![sample("91", "ResumedElevated", 0.0)],
@@ -3381,34 +3418,128 @@ mod tests {
         );
         store.progress_paused_elevated_helper();
         store.progress_paused_elevated_helper();
-        assert!(!store.elevated_helper_rows_published);
-
-        let held = store.advance_elevated_helper(1_783_944_001_000);
-        let mut resumed_rows = vec![sample("20", "ResumedStandard", 0.0)];
-        let mut rows_fresh = true;
-        let mut warnings = Vec::new();
-        store.apply_elevated_process_transition(
-            held,
-            &mut resumed_rows,
-            &mut rows_fresh,
-            &mut warnings,
+        let paused_sample_seq = store.snapshot.sample_seq;
+        assert_eq!(
+            store.snapshot.admin_mode.state,
+            RuntimeAdminModeState::Active
         );
-
-        assert_eq!(resumed_rows[0].name, "ResumedStandard");
-        assert!(rows_fresh);
+        assert_eq!(store.snapshot.processes[0].name, "Standard");
         assert!(!store.elevated_helper_rows_published);
-        assert!(store.previous_processes.is_empty());
+        assert!(store.last_verified_elevated_frame.is_some());
 
-        let fresh = store.advance_elevated_helper(1_783_944_002_000);
-        store.apply_elevated_process_transition(
-            fresh,
-            &mut resumed_rows,
-            &mut rows_fresh,
-            &mut warnings,
+        let mut resumed_standard = sample("90", "Protected", 0.0);
+        resumed_standard.memory_bytes = 100;
+        resumed_standard.network_received_bps = Some(2_048);
+        let held_snapshot =
+            publish_scripted_sample(&mut store, vec![resumed_standard], 1_783_944_001_000);
+
+        assert_eq!(
+            held_snapshot.admin_mode.state,
+            RuntimeAdminModeState::Active
         );
-
-        assert_eq!(resumed_rows[0].name, "ResumedElevated");
+        assert_eq!(
+            held_snapshot.admin_mode.source,
+            RuntimePrivilegedSource::ElevatedHelper
+        );
+        assert_eq!(held_snapshot.processes[0].name, "Protected");
+        assert_eq!(held_snapshot.processes[0].memory_bytes, 900);
+        assert_eq!(held_snapshot.processes[0].network_received_bps, Some(2_048));
+        assert!(held_snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.message == "helper_access_limited"));
+        assert!(held_snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.message == "current_held_warning"));
+        assert_eq!(held_snapshot.sample_seq, paused_sample_seq + 1);
         assert!(store.elevated_helper_rows_published);
+        assert!(store.last_verified_elevated_frame.is_none());
+
+        let fresh_snapshot = publish_scripted_sample(
+            &mut store,
+            vec![sample("20", "ResumedStandard", 0.0)],
+            1_783_944_002_000,
+        );
+
+        assert_eq!(
+            fresh_snapshot.admin_mode.state,
+            RuntimeAdminModeState::Active
+        );
+        assert_eq!(fresh_snapshot.processes[0].name, "ResumedElevated");
+        assert_eq!(fresh_snapshot.sample_seq, paused_sample_seq + 2);
+        assert!(store.elevated_helper_rows_published);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn held_without_verified_helper_rows_cannot_claim_active_standard_rows() {
+        let base_dir = runtime_test_dir("admin-held-without-frame");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
+            &base_dir.join("scripted-helper"),
+            vec![Ok(ElevatedPoll::Held {
+                warnings: Vec::new(),
+            })],
+        ));
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = false;
+        store.admin_mode.state = RuntimeAdminModeState::Requesting;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+
+        let snapshot = publish_scripted_sample(
+            &mut store,
+            vec![sample("20", "ResumedStandard", 0.0)],
+            1_783_944_004_000,
+        );
+
+        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Recovering);
+        assert_eq!(
+            snapshot.admin_mode.detail.as_deref(),
+            Some("admin_mode_waiting_for_fresh_snapshot")
+        );
+        assert!(!snapshot.settings.admin_mode_enabled);
+        assert_eq!(snapshot.processes[0].name, "ResumedStandard");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn paused_fresh_frame_supersedes_previously_published_helper_rows() {
+        let base_dir = runtime_test_dir("admin-paused-newer-frame");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.settings.paused = true;
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = true;
+        store.admin_mode.state = RuntimeAdminModeState::Active;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+        store.previous_processes = vec![sample("80", "OlderElevated", 0.0)];
+        store.elevated_helper_rows_published = true;
+        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
+            &base_dir.join("scripted-helper"),
+            vec![
+                Ok(ElevatedPoll::Fresh {
+                    rows: vec![sample("90", "NewerElevated", 0.0)],
+                    warnings: Vec::new(),
+                }),
+                Ok(ElevatedPoll::Held {
+                    warnings: Vec::new(),
+                }),
+            ],
+        ));
+        store.publish_snapshot_only(None);
+
+        store.progress_paused_elevated_helper();
+        assert_eq!(store.snapshot.processes[0].name, "OlderElevated");
+        let snapshot = publish_scripted_sample(
+            &mut store,
+            vec![sample("20", "ResumedStandard", 0.0)],
+            1_783_944_005_000,
+        );
+
+        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Active);
+        assert_eq!(snapshot.processes[0].name, "NewerElevated");
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -3842,6 +3973,30 @@ mod tests {
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
         store.elevated_request = Some(receiver);
         store.publish_snapshot_only(None);
+    }
+
+    fn publish_scripted_sample(
+        store: &mut RuntimeStore,
+        mut rows: Vec<ProcessSample>,
+        sampled_at_ms: u64,
+    ) -> RuntimeSnapshot {
+        store.settings.paused = false;
+        let transition = store.advance_elevated_helper(sampled_at_ms);
+        let mut rows_fresh = true;
+        let mut warnings = Vec::new();
+        store.apply_elevated_process_transition(
+            transition,
+            &mut rows,
+            &mut rows_fresh,
+            &mut warnings,
+        );
+        store.sync_collector_warnings(warnings);
+        store.previous_processes = rows;
+        store.live_process_snapshot = rows_fresh;
+        store.sample_seq = store.sample_seq.saturating_add(1);
+        store.sampled_at_ms = Some(sampled_at_ms);
+        store.publish_snapshot_only(None);
+        store.snapshot.clone()
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {

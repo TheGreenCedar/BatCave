@@ -17,7 +17,12 @@ import {
   processElevationLabel,
 } from "../src/lib/environmentPresentation.ts";
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
-import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
+import {
+  hasNewRuntimeSample,
+  makeDefaultRuntimeQuery,
+  shouldApplyRuntimePublication,
+  shouldPollRuntime,
+} from "../src/lib/runtimeSnapshot.ts";
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
 import type {
   ProcessSample,
@@ -80,6 +85,41 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
 test("control publications do not look like new telemetry samples", () => {
   assert.equal(hasNewRuntimeSample({ sample_seq: 7 }, { sample_seq: 7 }), false);
   assert.equal(hasNewRuntimeSample({ sample_seq: 7 }, { sample_seq: 8 }), true);
+});
+
+test("paused native lifecycle publications stay visible without advancing history", () => {
+  const requesting = {
+    ...canonicalSnapshot,
+    publication_seq: 10,
+    sample_seq: 7,
+    sampled_at_ms: 1_783_944_000_000,
+    settings: { ...canonicalSnapshot.settings, paused: true },
+    admin_mode: {
+      state: "requesting",
+      source: "elevated_helper",
+      detail: null,
+      last_success_at_ms: null,
+    },
+    processes: [process({ pid: "10", name: "standard.exe" })],
+  };
+  const active = {
+    ...requesting,
+    publication_seq: 11,
+    admin_mode: {
+      state: "active",
+      source: "elevated_helper",
+      detail: null,
+      last_success_at_ms: 1_783_944_001_000,
+    },
+  };
+
+  assert.equal(shouldPollRuntime(true, true), true);
+  assert.equal(shouldPollRuntime(true, false), false);
+  assert.equal(shouldApplyRuntimePublication(requesting, active), true);
+  assert.equal(hasNewRuntimeSample(requesting, active), false);
+  assert.equal(active.admin_mode.state, "active");
+  assert.equal(active.sampled_at_ms, requesting.sampled_at_ms);
+  assert.deepEqual(active.processes, requesting.processes);
 });
 
 test("shared fixture exposes the preview environment and stable empty arrays", () => {

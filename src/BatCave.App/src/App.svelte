@@ -66,6 +66,8 @@
     hasNewRuntimeSample,
     makeDefaultRuntimeQuery,
     makeEmptySnapshot,
+    shouldApplyRuntimePublication,
+    shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
   import {
     chartPalettes,
@@ -422,7 +424,7 @@
     }
 
     const loop = async () => {
-      if (!isPaused) {
+      if (shouldPollRuntime(isPaused, hasTauriRuntime())) {
         const next = await readSnapshot();
         ingest(next);
       }
@@ -681,7 +683,7 @@
   }
 
   function ingest(next: RuntimeSnapshot): void {
-    if (next.publication_seq < snapshot.publication_seq) {
+    if (!shouldApplyRuntimePublication(snapshot, next)) {
       return;
     }
 
