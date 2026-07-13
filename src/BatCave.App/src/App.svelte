@@ -15,9 +15,11 @@
   import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
-    adminAccessLabel,
-    adminAccessNote,
     installKindLabel,
+    privilegedCollectionAction,
+    privilegedCollectionLabel,
+    privilegedCollectionNote,
+    processElevationLabel,
   } from "./lib/environmentPresentation";
   import {
     accessLabel,
@@ -80,6 +82,7 @@
     readNativeSnapshot,
     refreshRuntime,
     setRuntimePaused,
+    setRuntimeAdminMode,
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
   } from "./lib/tauriBridge";
@@ -537,6 +540,16 @@
       applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
     } catch (error) {
       commandError = commandErrorMessage(error, "Unable to change sampling cadence.");
+    }
+  }
+
+  async function setAdminMode(enabled: boolean): Promise<void> {
+    if (!hasTauriRuntime()) return;
+
+    try {
+      applyNativeSnapshot(await setRuntimeAdminMode(invoke, enabled));
+    } catch (error) {
+      commandError = commandErrorMessage(error, "Unable to change privileged collection.");
     }
   }
 
@@ -1244,7 +1257,7 @@
   }
 
   function adminStatusLabel(): string {
-    return adminAccessLabel(snapshot.environment, snapshot.admin_mode, blockedProcessCount);
+    return privilegedCollectionLabel(snapshot.admin_mode, blockedProcessCount);
   }
 
   function processNetworkLabel(process: ProcessSample): string {
@@ -1472,14 +1485,20 @@
     {historyPointOptions}
     {historyPointLimit}
     adminAvailable={snapshot.environment.admin_mode_available}
+    processStatus={processElevationLabel(snapshot.environment)}
     adminStatus={adminStatusLabel()}
-    adminNote={adminAccessNote(snapshot.environment, snapshot.admin_mode)}
+    adminNote={privilegedCollectionNote(snapshot.admin_mode)}
+    adminAction={privilegedCollectionAction(
+      snapshot.environment.admin_mode_available,
+      snapshot.admin_mode,
+    )}
     dataDirectory={snapshot.environment.data_directory}
     {presentation}
     onClose={() => (settingsOpen = false)}
     onTheme={setTheme}
     onPollInterval={(interval) => void setPollInterval(interval)}
     onHistoryLimit={setHistoryPointLimit}
+    onAdminMode={(enabled) => void setAdminMode(enabled)}
     {updateStatus}
     {updateMessage}
     onCheckForUpdates={() => void checkForStableUpdate()}

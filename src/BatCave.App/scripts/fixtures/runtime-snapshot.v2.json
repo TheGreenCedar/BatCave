@@ -8,11 +8,13 @@
   "environment": {
     "platform": "windows",
     "admin_mode_available": true,
+    "process_elevation": "standard",
     "install_kind": "portable",
     "data_directory": "C:\\Users\\test\\BatCaveMonitor"
   },
   "admin_mode": {
     "state": "off",
+    "source": "none",
     "detail": null,
     "last_success_at_ms": null
   },

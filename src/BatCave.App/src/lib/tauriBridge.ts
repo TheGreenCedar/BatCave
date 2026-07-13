@@ -59,6 +59,13 @@ export function setRuntimeSampleInterval(
   return invoke<RuntimeSnapshot>("set_sample_interval", { sampleIntervalMs });
 }
 
+export function setRuntimeAdminMode(
+  invoke: RuntimeInvoke,
+  enabled: boolean,
+): Promise<RuntimeSnapshot> {
+  return invoke<RuntimeSnapshot>("set_admin_mode", { enabled });
+}
+
 export async function getRuntimeProcessIcons(
   invoke: RuntimeInvoke,
   exes: string[],

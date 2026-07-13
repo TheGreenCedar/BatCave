@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
+  import type { PrivilegedCollectionAction } from "../../environmentPresentation";
   import { formatInterval } from "../../format";
   import { platformPresentation, type PlatformPresentation } from "../../platformPresentation";
   import type { ThemeOption, ThemePreference } from "../../themes";
@@ -12,8 +13,10 @@
   export let historyPointOptions: readonly number[];
   export let historyPointLimit: number;
   export let adminAvailable = true;
-  export let adminStatus = "Standard access";
-  export let adminNote = "Protected fields remain unavailable while this process has standard access.";
+  export let processStatus = "Standard token";
+  export let adminStatus = "Off";
+  export let adminNote = "Protected fields remain unavailable until the local helper is enabled.";
+  export let adminAction: PrivilegedCollectionAction | null = null;
   export let dataDirectory: string | null = null;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
   export let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
@@ -22,6 +25,7 @@
   export let onTheme: (theme: ThemePreference) => void;
   export let onPollInterval: (interval: number) => void;
   export let onHistoryLimit: (limit: number) => void;
+  export let onAdminMode: (enabled: boolean) => void = () => {};
   export let onCheckForUpdates: () => void = () => {};
   export let onInstallUpdate: () => void = () => {};
   export let onResetHistory: () => void = () => {};
@@ -150,8 +154,19 @@
             <div class="privileged-card">
               <div>
                 <strong>Current process</strong>
+                <span>{processStatus}</span>
+              </div>
+            </div>
+            <div class="privileged-card">
+              <div>
+                <strong>Privileged collection</strong>
                 <span>{adminStatus}</span>
               </div>
+              {#if adminAction}
+                <button type="button" onclick={() => onAdminMode(adminAction.enabled)}>
+                  {adminAction.label}
+                </button>
+              {/if}
             </div>
             <p class="setting-note">{adminNote}</p>
           </section>

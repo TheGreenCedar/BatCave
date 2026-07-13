@@ -52,6 +52,7 @@ pub struct ProcessContributorSummary {
 pub struct RuntimeEnvironment {
     pub platform: RuntimePlatform,
     pub admin_mode_available: bool,
+    pub process_elevation: RuntimeProcessElevation,
     pub install_kind: RuntimeInstallKind,
     pub data_directory: Option<String>,
 }
@@ -60,8 +61,26 @@ pub struct RuntimeEnvironment {
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeAdminModeStatus {
     pub state: RuntimeAdminModeState,
+    pub source: RuntimePrivilegedSource,
     pub detail: Option<String>,
     pub last_success_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProcessElevation {
+    Unknown,
+    Standard,
+    Elevated,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePrivilegedSource {
+    None,
+    CurrentProcess,
+    ElevatedHelper,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,6 +555,14 @@ mod tests {
             serde_json::to_value(RuntimeInstallKind::Unknown).unwrap(),
             json!("unknown")
         );
+        assert_eq!(
+            serde_json::to_value(RuntimeProcessElevation::Standard).unwrap(),
+            json!("standard")
+        );
+        assert_eq!(
+            serde_json::to_value(RuntimePrivilegedSource::ElevatedHelper).unwrap(),
+            json!("elevated_helper")
+        );
     }
 
     #[test]
@@ -550,11 +577,13 @@ mod tests {
             environment: RuntimeEnvironment {
                 platform: RuntimePlatform::Windows,
                 admin_mode_available: true,
+                process_elevation: RuntimeProcessElevation::Standard,
                 install_kind: RuntimeInstallKind::Nsis,
                 data_directory: Some("C:\\Users\\test\\BatCaveMonitor".to_string()),
             },
             admin_mode: RuntimeAdminModeStatus {
                 state: RuntimeAdminModeState::Requesting,
+                source: RuntimePrivilegedSource::ElevatedHelper,
                 detail: None,
                 last_success_at_ms: None,
             },
@@ -707,11 +736,13 @@ mod tests {
                 "environment": {
                     "platform": "windows",
                     "admin_mode_available": true,
+                    "process_elevation": "standard",
                     "install_kind": "nsis",
                     "data_directory": "C:\\Users\\test\\BatCaveMonitor"
                 },
                 "admin_mode": {
                     "state": "requesting",
+                    "source": "elevated_helper",
                     "detail": null,
                     "last_success_at_ms": null
                 },

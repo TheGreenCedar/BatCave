@@ -142,11 +142,13 @@ export function makeFixtureSnapshot(
     environment: {
       platform,
       admin_mode_available: false,
+      process_elevation: "not_applicable",
       install_kind: fixtureInstallKind(platform),
       data_directory: fixtureDataDirectory(platform),
     },
     admin_mode: {
       state: "unavailable",
+      source: "none",
       detail: null,
       last_success_at_ms: null,
     },

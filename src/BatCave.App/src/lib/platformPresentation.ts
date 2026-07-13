@@ -24,7 +24,7 @@ const presentations: Record<RuntimePlatform, PlatformPresentation> = {
     handlesLabel: "Handles",
     privilegedAccessLabel: "Administrator access",
     privilegedAccessDescription:
-      "Protected Windows fields require an administrator token. Standard-access telemetry stays available without one.",
+      "Protected fields can come from the local elevated helper while the parent app keeps its current token.",
     adminRequestLabel: "Waiting for Windows",
   },
   linux: {

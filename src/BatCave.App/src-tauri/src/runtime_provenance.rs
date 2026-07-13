@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::contracts::{
     RuntimeAdminModeState, RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeInstallKind,
-    RuntimePlatform,
+    RuntimePlatform, RuntimePrivilegedSource, RuntimeProcessElevation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +47,7 @@ impl RuntimeProvenance {
             environment: RuntimeEnvironment {
                 platform,
                 admin_mode_available: platform == RuntimePlatform::Windows,
+                process_elevation: process_elevation.contract_value(),
                 install_kind,
                 data_directory: Some(base_dir.display().to_string()),
             },
@@ -70,19 +71,67 @@ impl RuntimeProvenance {
     }
 
     pub(crate) fn admin_mode_status(&self) -> RuntimeAdminModeStatus {
-        let (state, detail) = match &self.process_elevation {
-            ProcessElevation::Elevated => (RuntimeAdminModeState::Active, None),
-            ProcessElevation::Standard => (RuntimeAdminModeState::Off, None),
-            ProcessElevation::Unavailable(detail) => {
-                (RuntimeAdminModeState::Failed, Some(detail.clone()))
-            }
-            ProcessElevation::NotApplicable => (RuntimeAdminModeState::Unavailable, None),
+        let (state, source, detail) = match &self.process_elevation {
+            ProcessElevation::Elevated => (
+                RuntimeAdminModeState::Active,
+                RuntimePrivilegedSource::CurrentProcess,
+                None,
+            ),
+            ProcessElevation::Standard => (
+                RuntimeAdminModeState::Off,
+                RuntimePrivilegedSource::None,
+                None,
+            ),
+            ProcessElevation::Unavailable(detail) => (
+                RuntimeAdminModeState::Failed,
+                RuntimePrivilegedSource::None,
+                Some(detail.clone()),
+            ),
+            ProcessElevation::NotApplicable => (
+                RuntimeAdminModeState::Unavailable,
+                RuntimePrivilegedSource::None,
+                None,
+            ),
         };
 
         RuntimeAdminModeStatus {
             state,
+            source,
             detail,
             last_success_at_ms: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn windows_for_test(process_elevation: RuntimeProcessElevation) -> Self {
+        let process_elevation = match process_elevation {
+            RuntimeProcessElevation::Elevated => ProcessElevation::Elevated,
+            RuntimeProcessElevation::Standard => ProcessElevation::Standard,
+            RuntimeProcessElevation::Unknown => {
+                ProcessElevation::Unavailable("process_token_elevation_failed error=5".to_string())
+            }
+            RuntimeProcessElevation::NotApplicable => ProcessElevation::NotApplicable,
+        };
+        Self {
+            environment: RuntimeEnvironment {
+                platform: RuntimePlatform::Windows,
+                admin_mode_available: true,
+                process_elevation: process_elevation.contract_value(),
+                install_kind: RuntimeInstallKind::Nsis,
+                data_directory: None,
+            },
+            process_elevation,
+        }
+    }
+}
+
+impl ProcessElevation {
+    fn contract_value(&self) -> RuntimeProcessElevation {
+        match self {
+            Self::Elevated => RuntimeProcessElevation::Elevated,
+            Self::Standard => RuntimeProcessElevation::Standard,
+            Self::Unavailable(_) => RuntimeProcessElevation::Unknown,
+            Self::NotApplicable => RuntimeProcessElevation::NotApplicable,
         }
     }
 }
@@ -568,6 +617,7 @@ mod tests {
             environment: RuntimeEnvironment {
                 platform: RuntimePlatform::Macos,
                 admin_mode_available: false,
+                process_elevation: RuntimeProcessElevation::NotApplicable,
                 install_kind: RuntimeInstallKind::AppBundle,
                 data_directory: None,
             },
@@ -586,11 +636,15 @@ mod tests {
         let environment = RuntimeEnvironment {
             platform: RuntimePlatform::Windows,
             admin_mode_available: true,
+            process_elevation: RuntimeProcessElevation::Standard,
             install_kind: RuntimeInstallKind::Nsis,
             data_directory: None,
         };
         let elevated = RuntimeProvenance {
-            environment: environment.clone(),
+            environment: RuntimeEnvironment {
+                process_elevation: RuntimeProcessElevation::Elevated,
+                ..environment.clone()
+            },
             process_elevation: ProcessElevation::Elevated,
         };
         let standard = RuntimeProvenance {
@@ -603,10 +657,22 @@ mod tests {
             elevated.admin_mode_status().state,
             RuntimeAdminModeState::Active
         );
+        assert_eq!(
+            elevated.admin_mode_status().source,
+            RuntimePrivilegedSource::CurrentProcess
+        );
+        assert_eq!(
+            elevated.environment().process_elevation,
+            RuntimeProcessElevation::Elevated
+        );
         assert!(!standard.process_is_elevated());
         assert_eq!(
             standard.admin_mode_status().state,
             RuntimeAdminModeState::Off
+        );
+        assert_eq!(
+            standard.admin_mode_status().source,
+            RuntimePrivilegedSource::None
         );
     }
 
@@ -616,6 +682,7 @@ mod tests {
             environment: RuntimeEnvironment {
                 platform: RuntimePlatform::Windows,
                 admin_mode_available: true,
+                process_elevation: RuntimeProcessElevation::Unknown,
                 install_kind: RuntimeInstallKind::Portable,
                 data_directory: None,
             },
@@ -632,6 +699,10 @@ mod tests {
         assert_eq!(
             provenance.admin_mode_status().state,
             RuntimeAdminModeState::Failed
+        );
+        assert_eq!(
+            provenance.environment().process_elevation,
+            RuntimeProcessElevation::Unknown
         );
     }
 }

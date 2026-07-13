@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
+        mpsc::{self, Receiver, TryRecvError},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -13,12 +14,8 @@ use std::{
 #[cfg(test)]
 use std::path::Path;
 
-#[cfg(test)]
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-
 use serde::de::DeserializeOwned;
 
-#[cfg(test)]
 use crate::elevation::{ElevatedHelperClient, ElevatedPoll};
 use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
@@ -26,8 +23,9 @@ use crate::{
         AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
         ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
         RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimeInstallKind,
-        RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
-        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        RuntimePlatform, RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
+        RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot,
+        WarmCache,
     },
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetryCollector},
@@ -83,8 +81,9 @@ impl RuntimeState {
                     if !store.settings.paused {
                         store.tick();
                     } else {
-                        #[cfg(test)]
-                        store.resolve_elevated_request();
+                        if store.resolve_elevated_request() {
+                            store.publish_snapshot_only(None);
+                        }
                     }
                     Duration::from_millis(store.settings.sample_interval_ms.into())
                 } else {
@@ -119,6 +118,10 @@ impl RuntimeState {
         self.with_store(|store| store.set_sample_interval(sample_interval_ms))
     }
 
+    pub fn set_admin_mode(&self, enabled: bool) -> Result<RuntimeSnapshot, String> {
+        self.with_store(|store| store.set_admin_mode(enabled))
+    }
+
     pub fn has_process_exe(&self, exe: &str) -> Result<bool, String> {
         self.with_store(|store| store.has_process_exe(exe))
     }
@@ -138,9 +141,7 @@ struct RuntimeStore {
     provenance: RuntimeProvenance,
     settings: RuntimeSettings,
     admin_mode: RuntimeAdminModeStatus,
-    #[cfg(test)]
     elevated: Option<ElevatedHelperClient>,
-    #[cfg(test)]
     elevated_request: Option<Receiver<Result<ElevatedHelperClient, String>>>,
     snapshot: RuntimeSnapshot,
     warnings: VecDeque<RuntimeWarning>,
@@ -164,7 +165,6 @@ impl RuntimeStore {
     }
 
     fn from_base_dir(base_dir: PathBuf) -> Self {
-        #[cfg(test)]
         ElevatedHelperClient::remove_stale_artifacts(&base_dir);
         let provenance = RuntimeProvenance::detect(&base_dir);
         let mut warnings = VecDeque::new();
@@ -220,9 +220,7 @@ impl RuntimeStore {
             provenance,
             settings,
             admin_mode,
-            #[cfg(test)]
             elevated: None,
-            #[cfg(test)]
             elevated_request: None,
             snapshot,
             warnings,
@@ -258,14 +256,19 @@ impl RuntimeStore {
         self.snapshot.clone()
     }
 
-    #[cfg(test)]
     fn set_admin_mode(&mut self, enabled: bool) -> RuntimeSnapshot {
-        let enabled = enabled && cfg!(windows);
+        let enabled = enabled && self.provenance.environment().admin_mode_available;
         let was_admin_enabled = self.settings.admin_mode_enabled;
-        self.settings.admin_mode_requested = enabled;
-        self.settings.admin_mode_enabled = false;
-        if enabled {
+        if enabled && self.provenance.process_is_elevated() {
+            self.settings.admin_mode_requested = false;
+            self.settings.admin_mode_enabled = true;
+            self.admin_mode = self.provenance.admin_mode_status();
+            self.clear_warning("admin_mode");
+        } else if enabled {
+            self.settings.admin_mode_requested = true;
+            self.settings.admin_mode_enabled = false;
             self.admin_mode.state = RuntimeAdminModeState::Requesting;
+            self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
             self.admin_mode.detail = None;
             self.clear_warning("admin_mode");
             if self.elevated.is_none() && self.elevated_request.is_none() {
@@ -282,6 +285,8 @@ impl RuntimeStore {
                 self.elevated_request = Some(receiver);
             }
         } else {
+            self.settings.admin_mode_requested = false;
+            self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
             self.admin_mode = self.provenance.admin_mode_status();
             self.clear_warning("admin_mode");
             if let Some(mut client) = self.elevated.take() {
@@ -331,6 +336,7 @@ impl RuntimeStore {
     fn tick(&mut self) -> RuntimeSnapshot {
         let previous_process_baseline_live = self.live_process_snapshot;
         self.live_process_snapshot = false;
+        self.resolve_elevated_request();
         let tick_started = Instant::now();
         let previous_tick_at = self.last_tick_at.replace(tick_started);
         let sample = match self.collector.collect() {
@@ -353,10 +359,7 @@ impl RuntimeStore {
         }
 
         let sample_ts_ms = now_ms();
-        #[cfg(test)]
         let mut active_collector_warnings = sample.warnings;
-        #[cfg(not(test))]
-        let active_collector_warnings = sample.warnings;
 
         let elapsed_seconds = self
             .previous_totals
@@ -368,17 +371,8 @@ impl RuntimeStore {
             .unwrap_or(1.0)
             .max(0.5);
         let mut system = sample.system;
-        #[cfg(test)]
         let mut sample_processes = sample.processes;
-        #[cfg(not(test))]
-        let sample_processes = sample.processes;
-        #[cfg(test)]
         let mut process_rows_fresh = true;
-        #[cfg(not(test))]
-        let process_rows_fresh = true;
-        #[cfg(test)]
-        self.resolve_elevated_request();
-        #[cfg(test)]
         if self.settings.admin_mode_requested {
             let was_admin_enabled = self.settings.admin_mode_enabled;
             let mut admin_warning = None;
@@ -392,6 +386,7 @@ impl RuntimeStore {
                         sample_processes = rows;
                         self.settings.admin_mode_enabled = true;
                         self.admin_mode.state = RuntimeAdminModeState::Active;
+                        self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
                         self.admin_mode.detail = None;
                         self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
                         admin_recovered = true;
@@ -407,6 +402,7 @@ impl RuntimeStore {
                         process_rows_fresh = false;
                         self.settings.admin_mode_enabled = true;
                         self.admin_mode.state = RuntimeAdminModeState::Active;
+                        self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
                         self.admin_mode.detail = None;
                         if collects_process_network {
                             active_collector_warnings.retain(|warning| {
@@ -418,11 +414,13 @@ impl RuntimeStore {
                     Ok(ElevatedPoll::Recovering(detail)) => {
                         self.settings.admin_mode_enabled = false;
                         self.admin_mode.state = RuntimeAdminModeState::Recovering;
+                        self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
                         self.admin_mode.detail = Some(detail);
                     }
                     Ok(ElevatedPoll::Pending) => {
                         self.settings.admin_mode_enabled = false;
                         self.admin_mode.state = RuntimeAdminModeState::Requesting;
+                        self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
                         self.admin_mode.detail = None;
                     }
                     Err(error) => {
@@ -452,13 +450,10 @@ impl RuntimeStore {
                 self.fail_admin_mode(error);
             }
         } else {
-            self.settings.admin_mode_enabled = false;
-        }
-        #[cfg(not(test))]
-        {
-            self.settings.admin_mode_requested = false;
             self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
-            if self.admin_mode.state == RuntimeAdminModeState::Active {
+            if self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
+                && self.admin_mode.state == RuntimeAdminModeState::Active
+            {
                 self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
             }
         }
@@ -556,19 +551,18 @@ impl RuntimeStore {
         self.snapshot.clone()
     }
 
-    #[cfg(test)]
     fn fail_admin_mode(&mut self, error: String) {
         self.settings.admin_mode_requested = false;
         self.settings.admin_mode_enabled = false;
         self.admin_mode.state = RuntimeAdminModeState::Failed;
+        self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
         self.admin_mode.detail = Some(error.clone());
         self.add_warning("admin_mode", error);
         let _ = self.collector.retry_process_network();
         self.persist_settings();
     }
 
-    #[cfg(test)]
-    fn resolve_elevated_request(&mut self) {
+    fn resolve_elevated_request(&mut self) -> bool {
         let result = match self.elevated_request.as_ref().map(Receiver::try_recv) {
             Some(Ok(result)) => Some(result),
             Some(Err(TryRecvError::Disconnected)) => {
@@ -577,7 +571,7 @@ impl RuntimeStore {
             Some(Err(TryRecvError::Empty)) | None => None,
         };
         let Some(result) = result else {
-            return;
+            return false;
         };
         self.elevated_request = None;
 
@@ -591,6 +585,7 @@ impl RuntimeStore {
             }
             (false, Err(_)) => {}
         }
+        true
     }
 
     fn publish_snapshot_only(&mut self, warning: Option<(&str, String)>) {
@@ -750,7 +745,6 @@ impl RuntimeStore {
         }
     }
 
-    #[cfg(test)]
     fn purge_warm_cache(&mut self) {
         let path = self.base_dir.join(WARM_CACHE_FILE);
         match fs::remove_file(&path) {
@@ -788,6 +782,15 @@ impl RuntimeStore {
                 use std::io::Write;
                 writeln!(file, "{payload}")
             });
+    }
+}
+
+impl Drop for RuntimeStore {
+    fn drop(&mut self) {
+        if let Some(mut client) = self.elevated.take() {
+            let _ = client.stop();
+        }
+        ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
     }
 }
 
@@ -1063,7 +1066,6 @@ fn cumulative_baseline_is_compatible(
         && sources_are_compatible
 }
 
-#[cfg(test)]
 fn merge_main_network_attribution(main: &[ProcessSample], elevated: &mut [ProcessSample]) {
     let by_identity = main
         .iter()
@@ -1910,7 +1912,7 @@ mod tests {
     use super::*;
     use crate::contracts::{
         AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality, RuntimeInstallKind,
-        RuntimePlatform,
+        RuntimePlatform, RuntimeProcessElevation,
     };
 
     #[test]
@@ -3054,6 +3056,60 @@ mod tests {
         let _ = fs::remove_dir_all(base_dir);
     }
 
+    #[test]
+    fn standard_parent_and_active_helper_remain_distinct() {
+        let base_dir = runtime_test_dir("admin-helper-source");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = true;
+        store.admin_mode = RuntimeAdminModeStatus {
+            state: RuntimeAdminModeState::Active,
+            source: RuntimePrivilegedSource::ElevatedHelper,
+            detail: None,
+            last_success_at_ms: Some(7),
+        };
+
+        store.publish_snapshot_only(None);
+
+        assert_eq!(
+            store.snapshot.environment.process_elevation,
+            RuntimeProcessElevation::Standard
+        );
+        assert_eq!(
+            store.snapshot.admin_mode.source,
+            RuntimePrivilegedSource::ElevatedHelper
+        );
+        assert_eq!(
+            store.snapshot.admin_mode.state,
+            RuntimeAdminModeState::Active
+        );
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn elevated_parent_uses_current_process_without_starting_helper() {
+        let base_dir = runtime_test_dir("admin-current-process-source");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Elevated);
+
+        let snapshot = store.set_admin_mode(true);
+
+        assert_eq!(
+            snapshot.environment.process_elevation,
+            RuntimeProcessElevation::Elevated
+        );
+        assert_eq!(
+            snapshot.admin_mode.source,
+            RuntimePrivilegedSource::CurrentProcess
+        );
+        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Active);
+        assert!(snapshot.settings.admin_mode_enabled);
+        assert!(!snapshot.settings.admin_mode_requested);
+        assert!(store.elevated_request.is_none());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_development_environment_disables_admin_mode() {
@@ -3098,6 +3154,10 @@ mod tests {
         assert!(!store.settings.admin_mode_enabled);
         assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
         assert_eq!(
+            store.admin_mode.source,
+            RuntimePrivilegedSource::ElevatedHelper
+        );
+        assert_eq!(
             store.admin_mode.detail.as_deref(),
             Some("admin_mode_launch_failed_or_cancelled")
         );
@@ -3119,14 +3179,25 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         store.settings.admin_mode_requested = true;
         store.admin_mode.state = RuntimeAdminModeState::Requesting;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+        store.settings.paused = true;
         store.elevated_request = Some(receiver);
         sender
             .send(Err("admin_mode_launch_failed_or_cancelled".to_string()))
             .expect("test result sends");
 
-        store.resolve_elevated_request();
+        assert!(store.resolve_elevated_request());
+        store.publish_snapshot_only(None);
 
         assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
+        assert_eq!(
+            store.admin_mode.source,
+            RuntimePrivilegedSource::ElevatedHelper
+        );
+        assert_eq!(
+            store.snapshot.admin_mode.state,
+            RuntimeAdminModeState::Failed
+        );
         assert!(store.elevated_request.is_none());
         assert!(!store.settings.admin_mode_requested);
         let _ = fs::remove_dir_all(base_dir);
@@ -3267,6 +3338,7 @@ mod tests {
         store.settings.admin_mode_requested = true;
         store.settings.admin_mode_enabled = false;
         store.admin_mode.state = RuntimeAdminModeState::Requesting;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
         store.warnings.clear();
 
         let health = store.build_health(0, 0.0, 0);

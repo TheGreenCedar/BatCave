@@ -10,9 +10,11 @@ import {
 } from "../src/lib/process.ts";
 import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
 import {
-  adminAccessLabel,
-  adminAccessNote,
   installKindLabel,
+  privilegedCollectionAction,
+  privilegedCollectionLabel,
+  privilegedCollectionNote,
+  processElevationLabel,
 } from "../src/lib/environmentPresentation.ts";
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
 import { hasNewRuntimeSample, makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
@@ -34,7 +36,8 @@ const provenanceFixtures = JSON.parse(
   name: string;
   environment: RuntimeEnvironment;
   admin_mode: RuntimeAdminModeStatus;
-  expected_access_label: string;
+  expected_process_label: string;
+  expected_collection_label: string;
   expected_package_label: string;
 }>;
 const themeCss = readFileSync(new URL("../src/styles/themes.css", import.meta.url), "utf8");
@@ -83,6 +86,7 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
   assert.deepEqual(canonicalSnapshot.environment, {
     platform: "windows",
     admin_mode_available: true,
+    process_elevation: "standard",
     install_kind: "portable",
     data_directory: "C:\\Users\\test\\BatCaveMonitor",
   });
@@ -94,6 +98,7 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
   assert.equal(canonicalSnapshot.ts_ms, undefined);
   assert.deepEqual(canonicalSnapshot.admin_mode, {
     state: "off",
+    source: "none",
     detail: null,
     last_success_at_ms: null,
   });
@@ -103,12 +108,14 @@ test("provenance fixtures keep package and privilege copy deterministic", () => 
   assert.deepEqual(
     provenanceFixtures.map((fixture) => [
       fixture.name,
-      adminAccessLabel(fixture.environment, fixture.admin_mode),
+      processElevationLabel(fixture.environment),
+      privilegedCollectionLabel(fixture.admin_mode),
       installKindLabel(fixture.environment.install_kind),
     ]),
     provenanceFixtures.map((fixture) => [
       fixture.name,
-      fixture.expected_access_label,
+      fixture.expected_process_label,
+      fixture.expected_collection_label,
       fixture.expected_package_label,
     ]),
   );
@@ -118,14 +125,47 @@ test("provenance fixtures keep package and privilege copy deterministic", () => 
   );
   assert.ok(unavailable);
   assert.equal(
-    adminAccessNote(unavailable.environment, unavailable.admin_mode),
-    "BatCave could not read the Windows process token. Privileged collectors remain inactive; the token state is unknown.",
+    privilegedCollectionNote(unavailable.admin_mode),
+    "Privileged collection is inactive because the current process token could not be read.",
   );
 });
 
 test("shipped Windows release starts as the invoking user", () => {
   assert.match(releaseManifest, /requestedExecutionLevel level="asInvoker"/);
   assert.doesNotMatch(releaseManifest, /requireAdministrator/);
+});
+
+test("requesting elevation waits for the Windows decision", () => {
+  const requesting = provenanceFixtures.find(
+    (fixture) => fixture.name === "windows_helper_requesting",
+  );
+  assert.ok(requesting);
+  assert.equal(privilegedCollectionLabel(requesting.admin_mode), "Waiting for Windows");
+  assert.equal(privilegedCollectionAction(true, requesting.admin_mode), null);
+});
+
+test("helper actions cover enable, disable, and retry without touching an elevated parent", () => {
+  const fixture = (name: string) => {
+    const match = provenanceFixtures.find((candidate) => candidate.name === name);
+    assert.ok(match);
+    return match;
+  };
+  assert.deepEqual(
+    privilegedCollectionAction(true, fixture("windows_portable_standard").admin_mode),
+    { label: "Enable helper", enabled: true },
+  );
+  assert.deepEqual(
+    privilegedCollectionAction(true, fixture("windows_standard_with_helper_active").admin_mode),
+    { label: "Disable helper", enabled: false },
+  );
+  assert.deepEqual(
+    privilegedCollectionAction(true, fixture("windows_elevation_denied").admin_mode),
+    { label: "Retry helper", enabled: true },
+  );
+  assert.equal(
+    privilegedCollectionAction(true, fixture("windows_installed_elevated").admin_mode),
+    null,
+  );
 });
 
 test("diagnostics render one limitation per stable key with the current admin action", () => {
