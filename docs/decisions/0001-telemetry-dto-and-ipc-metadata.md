@@ -1,0 +1,75 @@
+# Telemetry DTO generation and IPC metadata
+
+- Status: accepted for the version 3 transport design
+- Date: 2026-07-13
+- Scope: issue #66 spike only; no production contract migration
+
+## Decision
+
+Use `ts-rs` at a new, versioned Rust transport boundary, subject to the constraints below. Keep frontend view models separate and adapt the generated transport DTOs into them. Do not point `ts-rs` at the existing runtime structs or introduce a general schema framework.
+
+Version 3 should carry metric meaning in one descriptor catalog per envelope. Each observation should carry only a descriptor index, value, quality code, and observation time. Repeated limitation text should live in a sparse catalog or side table and be referenced by index. The transport should retain an explicit protocol version and minimum-reader compatibility block.
+
+The proposed value tuple is:
+
+```text
+[descriptor_index, value, quality_code, observed_at_ms, limitation_index?]
+```
+
+Generated declarations remain checked in as golden files. Rust tests must compare generated declarations with those files, and normal TypeScript checking must compile representative values against them.
+
+## Evidence
+
+The representative `ts-rs` fixture covers nested DTOs, optional fields, `snake_case` enum values and fields, skipped fields, and an adjacently tagged process/group union. The generated file compiles in the normal Svelte TypeScript check.
+
+The fixture also found two reasons not to generate the current runtime structs directly:
+
+1. `#[serde(skip_serializing_if = "Option::is_none")]` without `#[serde(default)]` serializes as an omitted field but generates a required nullable TypeScript field. Existing structs use this pattern.
+2. Rust `u64` generates as TypeScript `bigint`, while JSON transports carry an ordinary JSON number. Version 3 needs a transport timestamp type with a checked JavaScript-safe range or an explicit string representation.
+
+Payload measurements are checked in at [`docs/evidence/dto-payload-spike-20260713.json`](../evidence/dto-payload-spike-20260713.json). At 5,000 rows:
+
+| Strategy | Bytes | Change from v2 | Local parse p95 |
+| --- | ---: | ---: | ---: |
+| Current version 2 | 2,114,524 | baseline | 2.822 ms |
+| Metadata on every value | 8,806,718 | +316.5% | 12.187 ms |
+| Metadata repeated per family | 5,980,662 | +182.8% | 16.135 ms |
+| Shared descriptor catalog | 2,265,758 | +7.2% | 6.225 ms |
+
+Timings are directional local measurements. Serialized byte counts are deterministic for the fixture and are the primary architecture evidence.
+
+Reproduce from `src/BatCave.App`:
+
+```bash
+npm run test:dto-spike
+npm run benchmark:dto-spike -- --write ../../docs/evidence/dto-payload-spike-20260713.json
+cargo test --manifest-path src-tauri/Cargo.toml dto_spike
+npm run typecheck
+```
+
+## Metadata budget and guardrail
+
+Use the 5,000-row fixture as the contract gate:
+
+- serialized version 3 payload: no more than 15% above the version 2 baseline;
+- JSON encode and parse p95: no more than 3x the same-run version 2 baseline;
+- descriptor meaning: semantic, scope, unit, interval, and source appear once per descriptor, never once per observation;
+- quality and observation time remain per value because they can change independently;
+- limitation text is sparse and referenced, never repeated for every value.
+
+The checked shared-catalog result passes those size and local timing budgets. Future DTO changes should rerun the fixture and fail CI if the size gate is exceeded. Timing should remain a reported benchmark until it can run on a stable host.
+
+## Rejected options
+
+- Continue handwritten Rust/TypeScript transport mirrors: low immediate cost, but it preserves the drift this spike is meant to remove.
+- Generate the existing runtime structs in place: optional-field and `u64` behavior makes the declarations misleading without a contract cleanup.
+- Repeat metadata per value or per family: both fail the payload budget by a wide margin.
+- Add JSON Schema, OpenAPI, Specta, or another general schema layer: no second schema consumer justifies the extra framework.
+- Generate frontend view models: presentation needs differ from transport stability and would couple UI refactors to IPC versioning.
+
+## Residual risks
+
+- Compact tuples are less self-explanatory in raw payloads. The TypeScript adapter should expose named fields and reject unknown descriptor or quality indexes.
+- A descriptor index is envelope-local. Cached values must not outlive their descriptor catalog.
+- Protocol migration still needs dual-reader or coordinated cutover planning; this spike does not select the rollout sequence.
+- `ts-rs` remains a build dependency whose generated output must be reviewed during upgrades.

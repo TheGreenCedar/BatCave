@@ -3,6 +3,8 @@ mod benchmark;
 mod cli_args;
 mod contracts;
 #[cfg(test)]
+mod dto_spike;
+#[cfg(test)]
 #[allow(dead_code)]
 mod elevation;
 #[cfg(any(target_os = "linux", test))]

@@ -1,0 +1,122 @@
+{
+  "spike": "BatCave issue #66",
+  "contract_versions": {
+    "baseline": 2,
+    "candidate": 3
+  },
+  "reproduction": "npm run benchmark:dto-spike -- --write ../../docs/evidence/dto-payload-spike-20260713.json",
+  "environment": {
+    "node": "v24.18.0",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "timing_note": "Nine in-process JSON.stringify and JSON.parse samples; use sizes for architecture decisions and timings only as directional local evidence.",
+  "results": [
+    {
+      "row_count": 1000,
+      "strategies": {
+        "current_v2": {
+          "bytes": 422793,
+          "encode_ms": {
+            "median": 0.375,
+            "p95": 0.452
+          },
+          "parse_ms": {
+            "median": 0.439,
+            "p95": 0.575
+          },
+          "relative_to_current_percent": 0
+        },
+        "per_value_metadata_v3": {
+          "bytes": 1761299,
+          "encode_ms": {
+            "median": 1.941,
+            "p95": 2.098
+          },
+          "parse_ms": {
+            "median": 2.302,
+            "p95": 2.567
+          },
+          "relative_to_current_percent": 316.6
+        },
+        "per_family_metadata_v3": {
+          "bytes": 1196087,
+          "encode_ms": {
+            "median": 1.333,
+            "p95": 1.434
+          },
+          "parse_ms": {
+            "median": 2,
+            "p95": 2.331
+          },
+          "relative_to_current_percent": 182.9
+        },
+        "shared_descriptor_catalog_v3": {
+          "bytes": 454027,
+          "encode_ms": {
+            "median": 0.803,
+            "p95": 0.827
+          },
+          "parse_ms": {
+            "median": 0.748,
+            "p95": 1.067
+          },
+          "relative_to_current_percent": 7.4
+        }
+      }
+    },
+    {
+      "row_count": 5000,
+      "strategies": {
+        "current_v2": {
+          "bytes": 2114524,
+          "encode_ms": {
+            "median": 1.653,
+            "p95": 1.717
+          },
+          "parse_ms": {
+            "median": 2.262,
+            "p95": 2.822
+          },
+          "relative_to_current_percent": 0
+        },
+        "per_value_metadata_v3": {
+          "bytes": 8806718,
+          "encode_ms": {
+            "median": 9.687,
+            "p95": 10.1
+          },
+          "parse_ms": {
+            "median": 11.497,
+            "p95": 12.187
+          },
+          "relative_to_current_percent": 316.5
+        },
+        "per_family_metadata_v3": {
+          "bytes": 5980662,
+          "encode_ms": {
+            "median": 6.678,
+            "p95": 6.764
+          },
+          "parse_ms": {
+            "median": 10.133,
+            "p95": 16.135
+          },
+          "relative_to_current_percent": 182.8
+        },
+        "shared_descriptor_catalog_v3": {
+          "bytes": 2265758,
+          "encode_ms": {
+            "median": 3.96,
+            "p95": 4.049
+          },
+          "parse_ms": {
+            "median": 3.819,
+            "p95": 6.225
+          },
+          "relative_to_current_percent": 7.2
+        }
+      }
+    }
+  ]
+}
