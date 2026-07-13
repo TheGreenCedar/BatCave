@@ -1,16 +1,49 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
-import { verifyReleaseControls } from "./verify-release-controls.mjs";
+import {
+  REQUIRED_STATUS_CHECK_CONTEXTS,
+  verifyLiveReleaseControls,
+  verifyReleaseControls,
+} from "./verify-release-controls.mjs";
+
+const releaseWorkflow = fs.readFileSync(
+  new URL("../.github/workflows/release.yml", import.meta.url),
+  "utf8",
+);
+
+function workflowJob(name) {
+  const match = releaseWorkflow.match(
+    new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][a-z0-9_-]*:\\n|(?![\\s\\S]))`, "m"),
+  );
+  assert.ok(match, `release workflow job ${name} must exist`);
+  return match[0];
+}
+
+function workflowSteps(job) {
+  const steps = job.split("\n    steps:\n")[1];
+  assert.ok(steps, "workflow job must define steps");
+  return steps.split(/^      - /m).slice(1);
+}
 
 function validControls() {
   return {
     immutableReleases: { enabled: true, enforced_by_owner: false },
     branchProtection: {
-      required_pull_request_reviews: { required_approving_review_count: 1 },
-      required_status_checks: { strict: true, checks: [{ context: "Validation" }] },
+      required_pull_request_reviews: {
+        required_approving_review_count: 1,
+        dismiss_stale_reviews: true,
+        require_last_push_approval: true,
+        bypass_pull_request_allowances: { users: [], teams: [], apps: [] },
+      },
+      required_status_checks: {
+        strict: true,
+        checks: REQUIRED_STATUS_CHECK_CONTEXTS.map((context) => ({ context })),
+      },
       enforce_admins: { enabled: true },
       allow_force_pushes: { enabled: false },
       allow_deletions: { enabled: false },
+      required_conversation_resolution: { enabled: true },
     },
     environment: {
       name: "release",
@@ -35,6 +68,13 @@ function validControls() {
 }
 
 test("accepts immutable releases, reviewed main, and a protected release environment", () => {
+  assert.deepEqual(REQUIRED_STATUS_CHECK_CONTEXTS, [
+    "Repository policy",
+    "Dependency review",
+    "Windows validation",
+    "Linux validation",
+    "macOS universal validation",
+  ]);
   assert.equal(verifyReleaseControls(validControls()), true);
 });
 
@@ -61,9 +101,79 @@ test("rejects incomplete main branch protection", () => {
   noStatusChecks.branchProtection.required_status_checks = null;
   assert.throws(() => verifyReleaseControls(noStatusChecks), /strict status checks/);
 
+  const nonStrictStatusChecks = validControls();
+  nonStrictStatusChecks.branchProtection.required_status_checks.strict = false;
+  assert.throws(() => verifyReleaseControls(nonStrictStatusChecks), /strict status checks/);
+
   const adminBypass = validControls();
   adminBypass.branchProtection.enforce_admins.enabled = false;
   assert.throws(() => verifyReleaseControls(adminBypass), /include administrators/);
+});
+
+test("rejects review settings that allow stale or unreviewed changes", () => {
+  const staleReviews = validControls();
+  staleReviews.branchProtection.required_pull_request_reviews.dismiss_stale_reviews = false;
+  assert.throws(() => verifyReleaseControls(staleReviews), /dismiss stale approving reviews/);
+
+  const unreviewedLastPush = validControls();
+  unreviewedLastPush.branchProtection.required_pull_request_reviews.require_last_push_approval =
+    false;
+  assert.throws(() => verifyReleaseControls(unreviewedLastPush), /approval of the last push/);
+
+  const unresolvedConversations = validControls();
+  unresolvedConversations.branchProtection.required_conversation_resolution.enabled = false;
+  assert.throws(() => verifyReleaseControls(unresolvedConversations), /conversation resolution/);
+});
+
+test("rejects every pull request review bypass allowance", () => {
+  for (const kind of ["users", "teams", "apps"]) {
+    const controls = validControls();
+    controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances[
+      kind
+    ].push({ id: 1 });
+    assert.throws(
+      () => verifyReleaseControls(controls),
+      /prohibit all user, team, and app review bypass allowances/,
+      `${kind} bypasses must fail closed`,
+    );
+  }
+
+  const missingAllowances = validControls();
+  delete missingAllowances.branchProtection.required_pull_request_reviews
+    .bypass_pull_request_allowances;
+  assert.throws(
+    () => verifyReleaseControls(missingAllowances),
+    /prohibit all user, team, and app review bypass allowances/,
+  );
+});
+
+test("requires the exact validation status check set", () => {
+  const missing = validControls();
+  missing.branchProtection.required_status_checks.checks.pop();
+  assert.throws(() => verifyReleaseControls(missing), /require exactly these status checks/);
+
+  const extra = validControls();
+  extra.branchProtection.required_status_checks.checks.push({ context: "Unapproved check" });
+  assert.throws(() => verifyReleaseControls(extra), /require exactly these status checks/);
+
+  const arbitrary = validControls();
+  arbitrary.branchProtection.required_status_checks.checks = [{ context: "Validation" }];
+  assert.throws(() => verifyReleaseControls(arbitrary), /require exactly these status checks/);
+
+  const duplicate = validControls();
+  duplicate.branchProtection.required_status_checks.checks[1].context =
+    REQUIRED_STATUS_CHECK_CONTEXTS[0];
+  assert.throws(() => verifyReleaseControls(duplicate), /require exactly these status checks/);
+
+  const ambiguousLegacyShape = validControls();
+  ambiguousLegacyShape.branchProtection.required_status_checks = {
+    strict: true,
+    contexts: [...REQUIRED_STATUS_CHECK_CONTEXTS],
+  };
+  assert.throws(
+    () => verifyReleaseControls(ambiguousLegacyShape),
+    /require exactly these status checks/,
+  );
 });
 
 test("rejects an environment that can bypass review or deploy unprotected refs", () => {
@@ -95,4 +205,62 @@ test("rejects an environment that can bypass review or deploy unprotected refs",
     ],
   };
   assert.throws(() => verifyReleaseControls(broadPolicy), /allow only the main branch/);
+});
+
+test("fails before invoking GitHub when the admin-read credential is missing", () => {
+  const originalToken = process.env.GH_TOKEN;
+  delete process.env.GH_TOKEN;
+  try {
+    assert.throws(
+      () => verifyLiveReleaseControls("TheGreenCedar/BatCave"),
+      /admin-read credential is missing/,
+    );
+  } finally {
+    if (originalToken === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = originalToken;
+  }
+});
+
+test("runs release controls first with only the protected environment credential", () => {
+  const prepare = workflowJob("prepare");
+  assert.doesNotMatch(prepare, /verify-release-controls\.mjs/);
+
+  const sensitiveJobs = ["windows", "linux", "macos", "finalize"];
+  for (const name of sensitiveJobs) {
+    const job = workflowJob(name);
+    assert.match(job, /^    environment: release$/m, `${name} must use the release environment`);
+
+    const steps = workflowSteps(job);
+    const controlSteps = steps.filter((step) => step.includes("verify-release-controls.mjs"));
+    assert.equal(controlSteps.length, 1, `${name} must run one release control check`);
+    assert.match(
+      controlSteps[0],
+      /GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/,
+      `${name} must use the protected environment credential`,
+    );
+    assert.equal(
+      controlSteps[0].match(/\$\{\{ secrets\./g)?.length,
+      1,
+      `${name} control check must receive no other secret`,
+    );
+    assert.doesNotMatch(controlSteps[0], /github\.token/);
+
+    const controlIndex = steps.indexOf(controlSteps[0]);
+    assert.ok(
+      steps.slice(0, controlIndex).every((step) => !step.includes("${{ secrets.")),
+      `${name} must not read a signing secret before control verification`,
+    );
+    const firstRunStep = steps.find((step) => /(?:^|\n)        run:/.test(step));
+    assert.equal(
+      firstRunStep,
+      controlSteps[0],
+      `${name} must verify controls before any other command`,
+    );
+  }
+
+  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 4);
+  assert.equal(
+    releaseWorkflow.match(/GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/g)?.length,
+    4,
+  );
 });

@@ -66,6 +66,35 @@ jobs:
   );
 });
 
+test("rejects duplicate anchors without losing the first uses-key binding", () => {
+  withWorkflows(
+    {
+      "duplicate-anchor.yml": `name: Duplicate anchor shadow
+on: push
+env:
+  ACTION_KEY: &key uses
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - *key: actions/checkout@v6 # v6
+    env:
+      HARMLESS_KEY: &key harmless
+      HARMLESS_VALUE: *key
+`,
+    },
+    (root) => {
+      assert.deepEqual(
+        collectActionPinViolations(root).map(({ line, message }) => [line, message]),
+        [
+          [9, "external action ref must be an exact lowercase 40-character commit SHA; received v6"],
+          [11, 'duplicate YAML anchor name "key" is not allowed'],
+        ],
+      );
+    },
+  );
+});
+
 test("rejects mutable Docker tags and accepts exact image digests", () => {
   withWorkflows(
     {

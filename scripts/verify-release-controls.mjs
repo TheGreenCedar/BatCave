@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
+export const REQUIRED_STATUS_CHECK_CONTEXTS = Object.freeze([
+  "Repository policy",
+  "Dependency review",
+  "Windows validation",
+  "Linux validation",
+  "macOS universal validation",
+]);
+const SORTED_REQUIRED_STATUS_CHECK_CONTEXTS = [...REQUIRED_STATUS_CHECK_CONTEXTS].sort();
+
 function requireControl(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -22,12 +31,45 @@ export function verifyReleaseControls({
       reviews.required_approving_review_count >= 1,
     "main branch protection must require at least one approving review",
   );
+  requireControl(
+    reviews?.dismiss_stale_reviews === true,
+    "main branch protection must dismiss stale approving reviews",
+  );
+  requireControl(
+    reviews?.require_last_push_approval === true,
+    "main branch protection must require approval of the last push",
+  );
+  const reviewBypasses = reviews?.bypass_pull_request_allowances;
+  requireControl(
+    reviewBypasses &&
+      ["users", "teams", "apps"].every(
+        (kind) => Array.isArray(reviewBypasses[kind]) && reviewBypasses[kind].length === 0,
+      ),
+    "main branch protection must prohibit all user, team, and app review bypass allowances",
+  );
+
   const statusChecks = branchProtection?.required_status_checks;
   requireControl(
-    statusChecks?.strict === true &&
-      ((Array.isArray(statusChecks.checks) && statusChecks.checks.length > 0) ||
-        (Array.isArray(statusChecks.contexts) && statusChecks.contexts.length > 0)),
+    statusChecks?.strict === true,
     "main branch protection must require strict status checks",
+  );
+  const actualStatusCheckContexts = statusChecks?.checks?.map((check) => check?.context);
+  const sortedActualStatusCheckContexts = Array.isArray(actualStatusCheckContexts)
+    ? [...actualStatusCheckContexts].sort()
+    : [];
+  requireControl(
+    Array.isArray(statusChecks?.checks) &&
+      actualStatusCheckContexts.every(
+        (context) => typeof context === "string" && context.trim() === context && context.length > 0,
+      ) &&
+      new Set(actualStatusCheckContexts).size === actualStatusCheckContexts.length &&
+      actualStatusCheckContexts.length === REQUIRED_STATUS_CHECK_CONTEXTS.length &&
+      sortedActualStatusCheckContexts.every(
+        (context, index) => context === SORTED_REQUIRED_STATUS_CHECK_CONTEXTS[index],
+      ),
+    `main branch protection must require exactly these status checks: ${REQUIRED_STATUS_CHECK_CONTEXTS.join(
+      ", ",
+    )}`,
   );
   requireControl(
     branchProtection?.enforce_admins?.enabled === true,
@@ -40,6 +82,10 @@ export function verifyReleaseControls({
   requireControl(
     branchProtection?.allow_deletions?.enabled === false,
     "main branch protection must reject deletion",
+  );
+  requireControl(
+    branchProtection?.required_conversation_resolution?.enabled === true,
+    "main branch protection must require conversation resolution",
   );
 
   requireControl(environment?.name === "release", "protected release environment is missing");
@@ -90,6 +136,10 @@ export function verifyLiveReleaseControls(repository) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) {
     throw new Error(`invalid GitHub repository: ${repository}`);
   }
+  requireControl(
+    typeof process.env.GH_TOKEN === "string" && process.env.GH_TOKEN.trim().length > 0,
+    "release admin-read credential is missing",
+  );
   return verifyReleaseControls({
     immutableReleases: githubApi(`repos/${repository}/immutable-releases`),
     branchProtection: githubApi(`repos/${repository}/branches/main/protection`),

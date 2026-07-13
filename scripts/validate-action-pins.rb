@@ -70,13 +70,21 @@ def pin_violation(value, comment)
   nil
 end
 
-def collect_anchors(node, anchors)
+def collect_anchors(node, anchors, file, violations)
   if node.respond_to?(:anchor) && node.anchor && !node.is_a?(Psych::Nodes::Alias)
-    anchors[node.anchor] = node
+    if anchors.key?(node.anchor)
+      violations << {
+        file: file,
+        line: node.start_line + 1,
+        message: "duplicate YAML anchor name #{node.anchor.inspect} is not allowed"
+      }
+    else
+      anchors[node.anchor] = node
+    end
   end
   return unless node.respond_to?(:children) && node.children
 
-  node.children.each { |child| collect_anchors(child, anchors) }
+  node.children.each { |child| collect_anchors(child, anchors, file, violations) }
 end
 
 def scalar_node(node, anchors)
@@ -119,7 +127,7 @@ def collect_violations(repo_root)
     begin
       tree = Psych.parse_stream(source, filename: absolute_file)
       anchors = {}
-      collect_anchors(tree, anchors)
+      collect_anchors(tree, anchors, file, violations)
       collect_uses_nodes(tree, lines, file, violations, anchors)
     rescue Psych::SyntaxError => error
       violations << {

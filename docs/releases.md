@@ -9,6 +9,8 @@ The `Versioned release` workflow supports two paths:
 - Pushing an aligned `v*` tag publishes automatically after all builds and provenance steps pass.
 - A manual run from `main` accepts an aligned tag and channel. `publish: false` is the default dry run; it retains the complete release artifact without creating a tag or GitHub Release. Set `publish: true` only for an approved release.
 
+All build and publication jobs enter the protected `release` environment. Configure its `RELEASE_ADMIN_READ_TOKEN` secret with a fine-grained personal access token or GitHub App token that can read repository Administration settings. Each sensitive job uses that credential only for its first control check, before reading signing secrets or changing release state. The workflow's ordinary `GITHUB_TOKEN` remains limited to the repository permissions needed by later artifact and release operations.
+
 Every release artifact contains the offline-capable Windows NSIS installer, Windows GUI and benchmark CLI executables, Linux deb and AppImage packages, the universal macOS DMG and updater archive, `SHA256SUMS.txt`, and a Sigstore/GitHub build-provenance bundle. Workflow artifacts are retained for 30 days; published GitHub Release assets are durable.
 
 Verify a downloaded file with `Get-FileHash -Algorithm SHA256` on Windows, `sha256sum --check SHA256SUMS.txt` on Linux, or `shasum -a 256 -c SHA256SUMS.txt` on macOS. Verify provenance with `gh attestation verify <file> --repo TheGreenCedar/BatCave`. On Windows, confirm the installed version in Apps settings and the executable file properties matches the release tag without the leading `v`.

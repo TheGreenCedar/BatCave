@@ -66,7 +66,6 @@ jobs:
           channel="${INPUT_CHANNEL}"
           publish="${INPUT_PUBLISH}"
 
-          node scripts/verify-release-controls.mjs "${GITHUB_REPOSITORY}"
           node scripts/verify-release-version.mjs "${tag}"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           source_sha="${GITHUB_SHA}"
@@ -107,12 +106,17 @@ jobs:
     runs-on: windows-latest
     environment: release
     steps:
-      - name: Preserve repository line endings
-        run: git config --global core.autocrlf false
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Verify protected release controls before sensitive work
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
+
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -139,11 +143,6 @@ jobs:
       - name: Validate Windows app
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle
-
-      - name: Revalidate protected release controls
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Bundle signed Windows updater
         working-directory: src/BatCave.App
@@ -179,6 +178,11 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
 
+      - name: Verify protected release controls before sensitive work
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -205,11 +209,6 @@ jobs:
 
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle
-
-      - name: Revalidate protected release controls
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Bundle signed Linux updater
         working-directory: src/BatCave.App
@@ -238,12 +237,17 @@ jobs:
     runs-on: macos-15
     environment: release
     steps:
-      - name: Preserve repository line endings
-        run: git config --global core.autocrlf false
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Verify protected release controls before sensitive work
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
+
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -270,11 +274,6 @@ jobs:
 
       - name: Validate macOS app
         run: bash scripts/validate-tauri.sh --skip-bundle
-
-      - name: Revalidate protected release controls
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Prepare Apple signing credentials
         shell: bash
@@ -402,6 +401,11 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
 
+      - name: Verify protected release controls before sensitive work
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -426,11 +430,6 @@ jobs:
           find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "${checksums}"
           mv "${checksums}" SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
-
-      - name: Revalidate protected release controls
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Generate build provenance
         id: attest
@@ -468,7 +467,6 @@ jobs:
             printf '%s' "${tag_sha}"
           }
 
-          node scripts/verify-release-controls.mjs "${GITHUB_REPOSITORY}"
           node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
           tag_sha="$(remote_tag_source)"
           [[ -z "${tag_sha}" ]] || { echo "Release tag ${RELEASE_TAG} appeared during the build." >&2; exit 1; }
@@ -496,7 +494,6 @@ jobs:
           readback="${RUNNER_TEMP}/release-published-readback.json"
           latest_readback="${RUNNER_TEMP}/release-latest-readback.json"
           latest_error="${RUNNER_TEMP}/release-latest-error.txt"
-          node scripts/verify-release-controls.mjs "${GITHUB_REPOSITORY}"
           node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
 
           remote_tag_sha="$(git ls-remote origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')"
