@@ -179,6 +179,7 @@
                       type="button"
                       aria-pressed={groupActionSelected}
                       aria-label={`Inspect ${row.detail.label} group`}
+                      data-workload-id={row.detail.workload_id}
                       onclick={() => onSelect(row.detail.workload_id)}
                     >
                       <ProcessIcon
@@ -225,6 +226,7 @@
                       type="button"
                       aria-pressed={selectionKey === selectedWorkloadId}
                       aria-label={`Inspect ${process.name}, PID ${process.pid}`}
+                      data-workload-id={selectionKey}
                       onclick={() => onSelect(selectionKey)}
                     >
                       <ProcessIcon kind={iconKind(row)} src={iconSrc(process)} />
