@@ -614,6 +614,12 @@
   font-size: var(--text-xs);
 }
 
+.sort-control > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sort-select,
 .setting-row select {
   min-height: 38px;
@@ -622,6 +628,29 @@
   padding: 0 32px 0 10px;
   color: var(--text-soft);
   background: var(--surface-3);
+}
+
+.sort-direction-toggle {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0 9px;
+  color: var(--text-soft);
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sort-direction-toggle:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-muted);
 }
 
 .ranking-update {
@@ -2020,6 +2049,10 @@ button:disabled {
     min-height: 34px;
   }
 
+  .sort-direction-toggle {
+    min-height: 34px;
+  }
+
   .ranking-update {
     min-height: 36px;
   }
@@ -2443,7 +2476,7 @@ button:disabled {
 
   .card-metrics {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 7px;
   }
 
@@ -2468,7 +2501,7 @@ button:disabled {
   }
 
   .mobile-group-expand {
-    min-height: 42px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     gap: 7px;
@@ -2492,6 +2525,10 @@ button:disabled {
 @media (max-width: 560px) {
   .app-shell {
     padding: 8px;
+  }
+
+  .card-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .brand-mark {

@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { buildResourceBrief } from "../src/lib/cockpit.ts";
 import {
   displayMetricValue,
+  displayGroupMetricValue,
   displayProcessMetricValue,
   formatOptionalRate,
   formatPercent,
   formatRate,
+  groupFindingLabel,
+  groupMetricCanDisplay,
   logicalCpuMetricQuality,
   metricQualityLabel,
   metricQualityShortLabel,
@@ -19,10 +23,12 @@ import {
 } from "../src/lib/format.ts";
 import { nextMetricHistory, resourceHistoryWindowLabel } from "../src/lib/history.ts";
 import {
+  nextSortDirection,
   processIdentity,
   processRowSecondaryLabel,
   sortAriaValue,
   sortButtonLabel,
+  sortDirectionButtonLabel,
   type ProcessColumn,
 } from "../src/lib/process.ts";
 import { makeEmptySnapshot } from "../src/lib/runtimeSnapshot.ts";
@@ -651,6 +657,94 @@ test("native high network activity is never described as normal", () => {
   );
 });
 
+test("group metric values require publishable coverage", () => {
+  const native = { quality: "native" as const, source: "process_aggregate" as const };
+  const held = { quality: "held" as const, source: "process_aggregate" as const };
+  const unavailable = {
+    quality: "unavailable" as const,
+    source: "process_aggregate" as const,
+  };
+  const unknown = { quality: "partial" as const, source: "process_aggregate" as const };
+  const estimated = { quality: "estimated" as const, source: "process_aggregate" as const };
+
+  assert.equal(displayGroupMetricValue(10, native, { available: 2, total: 2 }, String), "10");
+  assert.equal(
+    displayGroupMetricValue(10, unknown, { available: 1, total: 2 }, String),
+    "10 · 1/2 · limited",
+  );
+  assert.equal(
+    displayGroupMetricValue(10, estimated, { available: 2, total: 2 }, String),
+    "10 · estimated",
+  );
+  assert.equal(displayGroupMetricValue(0, held, { available: 0, total: 2 }, String), "Pending");
+  assert.equal(
+    displayGroupMetricValue(0, unavailable, { available: 0, total: 2 }, String),
+    "Unavailable",
+  );
+  assert.equal(displayGroupMetricValue(0, unknown, { available: 0, total: 2 }, String), "Limited");
+  assert.equal(groupMetricCanDisplay(native, { available: 1, total: 2 }), true);
+  assert.equal(groupMetricCanDisplay(unknown, { available: 0, total: 2 }), false);
+});
+
+test("group findings include native network activity and explicit network limitations", () => {
+  const row = groupRow(process(), 2);
+  assert.equal(row.kind, "group");
+  if (row.kind !== "group") throw new Error("expected group row");
+
+  const nativeHigh = structuredClone(row.detail);
+  nativeHigh.network_bps = 2 * 1024 * 1024;
+  assert.equal(groupFindingLabel(nativeHigh), "Aggregate network use is high right now.");
+
+  const held = structuredClone(nativeHigh);
+  held.network_bps = 0;
+  held.quality.network = { quality: "held", source: "process_aggregate" };
+  held.coverage.network = { available: 0, total: 2 };
+  assert.equal(groupFindingLabel(held), "Network aggregate activity is pending for this group.");
+
+  const unavailable = structuredClone(held);
+  unavailable.quality.network = { quality: "unavailable", source: "process_aggregate" };
+  assert.equal(
+    groupFindingLabel(unavailable),
+    "Network aggregate activity is unavailable for this group.",
+  );
+
+  const partial = structuredClone(nativeHigh);
+  partial.quality.network = { quality: "partial", source: "process_aggregate" };
+  partial.coverage.network = { available: 1, total: 2 };
+  assert.equal(
+    groupFindingLabel(partial),
+    "Aggregate network use is high right now. Coverage is limited to 1 of 2 processes.",
+  );
+
+  const partialLow = structuredClone(partial);
+  partialLow.network_bps = 0;
+  assert.equal(
+    groupFindingLabel(partialLow),
+    "Network aggregate activity is limited by process telemetry coverage.",
+  );
+
+  const estimated = structuredClone(nativeHigh);
+  estimated.quality.network = { quality: "estimated", source: "process_aggregate" };
+  assert.equal(
+    groupFindingLabel(estimated),
+    "Aggregate network use is high right now. This aggregate is estimated.",
+  );
+});
+
+test("group inspection actions expose exact selection state on desktop and mobile", () => {
+  const desktop = readFileSync(
+    new URL("../src/lib/components/processes/ProcessTable.svelte", import.meta.url),
+    "utf8",
+  );
+  const mobile = readFileSync(
+    new URL("../src/lib/components/processes/MobileProcessList.svelte", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(desktop, /aria-pressed=\{groupActionSelected\}/);
+  assert.match(mobile, /aria-pressed=\{actionSelected\}/);
+});
+
 test("sort helpers expose state and the next accessible action", () => {
   const cpuColumn: ProcessColumn = { key: "cpu", label: "CPU", metric: true };
 
@@ -664,6 +758,26 @@ test("sort helpers expose state and the next accessible action", () => {
     sortButtonLabel({ key: "name", label: "Workload" }, "cpu", "desc"),
     "Sort by Workload ascending.",
   );
+  assert.equal(nextSortDirection("desc"), "asc");
+  assert.equal(nextSortDirection("asc"), "desc");
+  assert.equal(
+    sortDirectionButtonLabel("desc"),
+    "Sort direction: descending. Change to ascending.",
+  );
+});
+
+test("compact workload controls expose the active sort direction", () => {
+  const commandBar = readFileSync(
+    new URL("../src/lib/components/shell/ProcessCommandBar.svelte", import.meta.url),
+    "utf8",
+  );
+  const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+
+  assert.match(commandBar, /export let sortDirection: SortDirection/);
+  assert.match(commandBar, /aria-label=\{sortDirectionButtonLabel\(sortDirection\)\}/);
+  assert.match(commandBar, /onclick=\{onToggleDirection\}/);
+  assert.match(app, /function toggleSortDirection\(\): void/);
+  assert.match(app, /onToggleDirection=\{toggleSortDirection\}/);
 });
 
 test("process fallback icon categories are deterministic", () => {
@@ -685,16 +799,10 @@ test("process fallback icon categories are deterministic", () => {
 
 test("process row secondary labels keep only useful hierarchy", () => {
   const sample = process({ pid: "99", name: "Codex (Renderer)" });
-  const standalone = processRow({ process: sample, group_category: "Processes" });
-  const categorized = processRow({ process: sample, group_category: "Browsers" });
-  const child = processRow({ process: sample, group_category: "Processes", is_grouped: true });
-  const group = processRow({
-    kind: "group",
-    process: undefined,
-    representative: sample,
-    group_count: 4,
-    is_grouped: true,
-  });
+  const standalone = processRow(sample, "Processes");
+  const categorized = processRow(sample, "Browsers");
+  const child = processRow(sample, "Processes", true);
+  const group = groupRow(sample, 4);
 
   assert.equal(processRowSecondaryLabel(standalone), null);
   assert.equal(processRowSecondaryLabel(categorized), "Browsers");
@@ -751,20 +859,70 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
   };
 }
 
-function processRow(overrides: Partial<import("../src/lib/types.ts").ProcessViewRow> = {}) {
+function processRow(
+  sample = process(),
+  groupCategory = "Processes",
+  isGrouped = false,
+): import("../src/lib/types.ts").ProcessViewRow {
   return {
     kind: "process" as const,
-    process: process(),
+    detail: {
+      kind: "process",
+      workload_id: `process:${sample.pid}:${sample.start_time_ms}`,
+      process: sample,
+      io_bps: 0,
+      network_bps: 0,
+    },
+    group_key: sample.name.toLocaleLowerCase(),
+    group_label: sample.name,
+    group_category: groupCategory,
     group_count: 1,
     icon_kind: "process",
     is_child: false,
-    is_grouped: false,
+    is_grouped: isGrouped,
     attention_label: "Normal",
-    cpu_percent: 0,
-    memory_bytes: 0,
-    io_bps: 0,
-    network_bps: 0,
-    threads: 1,
-    ...overrides,
+  };
+}
+
+function groupRow(
+  sample: ProcessSample,
+  processCount: number,
+): import("../src/lib/types.ts").ProcessViewRow {
+  const coverage = { available: processCount, total: processCount };
+  const quality = { quality: "native" as const, source: "process_aggregate" as const };
+  const unavailable = { quality: "unavailable" as const, source: "process_aggregate" as const };
+  return {
+    kind: "group",
+    detail: {
+      kind: "group",
+      workload_id: `group:${sample.name.toLocaleLowerCase()}`,
+      group_key: sample.name.toLocaleLowerCase(),
+      label: sample.name,
+      category: "Processes",
+      process_count: processCount,
+      cpu_percent: 0,
+      memory_bytes: 0,
+      io_bps: 0,
+      network_bps: 0,
+      threads: processCount,
+      quality: {
+        cpu: quality,
+        memory: quality,
+        io: quality,
+        other_io: unavailable,
+        network: quality,
+        threads: quality,
+      },
+      coverage: {
+        cpu: coverage,
+        memory: coverage,
+        io: coverage,
+        other_io: { available: 0, total: processCount },
+        network: coverage,
+        threads: coverage,
+      },
+    },
+    icon_kind: "process",
+    attention_label: "Normal",
   };
 }

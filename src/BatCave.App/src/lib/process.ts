@@ -1,7 +1,11 @@
 import type {
+  GroupDetail,
+  MetricCoverage,
+  MetricQualityInfo,
   ProcessFocusMode,
   ProcessSample,
   ProcessViewRow,
+  WorkloadDetail,
   RuntimeQuery,
   SortColumn,
   SortDirection,
@@ -31,6 +35,14 @@ export interface ProcessRates {
   readRate: number;
   writeRate: number;
   otherRate?: number;
+}
+
+export interface WorkloadMetrics {
+  cpuPercent: number;
+  memoryBytes: number;
+  ioBps: number;
+  networkBps: number;
+  threads: number;
 }
 
 export type ProcessIconKind =
@@ -80,36 +92,131 @@ export const processColumns: ProcessColumn[] = [
 ];
 
 export function processViewRowKey(row: ProcessViewRow): string {
-  if (row.kind === "group") {
-    return `group:${row.group_key ?? row.group_label ?? "unknown"}`;
-  }
-
-  return row.process ? processSelectionKey(row.process) : "process:unknown";
+  return row.detail.workload_id;
 }
 
 export function processRowSecondaryLabel(row: ProcessViewRow): string | null {
   if (row.kind === "group") {
-    return String(row.group_count);
+    return String(row.detail.process_count);
   }
 
-  if (row.is_grouped && row.process) {
-    return `PID ${row.process.pid}`;
+  if (row.is_grouped) {
+    return `PID ${row.detail.process.pid}`;
   }
 
   const category = row.group_category?.trim();
   return category && category.toLocaleLowerCase() !== "processes" ? category : null;
 }
 
+export function processViewRowMetrics(row: ProcessViewRow): WorkloadMetrics {
+  if (row.kind === "group") {
+    return {
+      cpuPercent: row.detail.cpu_percent,
+      memoryBytes: row.detail.memory_bytes,
+      ioBps: row.detail.io_bps,
+      networkBps: row.detail.network_bps,
+      threads: row.detail.threads,
+    };
+  }
+
+  return {
+    cpuPercent: row.detail.process.cpu_percent,
+    memoryBytes: row.detail.process.memory_bytes,
+    ioBps: row.detail.io_bps,
+    networkBps: row.detail.network_bps,
+    threads: row.detail.process.threads,
+  };
+}
+
+export function selectedWorkloadDetail(
+  rows: ProcessViewRow[],
+  selection: string,
+): WorkloadDetail | null {
+  return rows.find((row) => processViewRowKey(row) === selection)?.detail ?? null;
+}
+
+export function isProcessViewRow(value: unknown): value is ProcessViewRow {
+  if (!isRecord(value) || !isRecord(value.detail) || typeof value.icon_kind !== "string") {
+    return false;
+  }
+  const detail = value.detail;
+
+  if (value.kind === "process") {
+    return (
+      detail.kind === "process" &&
+      typeof detail.workload_id === "string" &&
+      detail.workload_id.startsWith("process:") &&
+      isRecord(detail.process) &&
+      typeof detail.process.pid === "string" &&
+      typeof detail.process.start_time_ms === "number" &&
+      typeof detail.io_bps === "number" &&
+      typeof detail.network_bps === "number" &&
+      typeof value.group_key === "string" &&
+      typeof value.group_label === "string" &&
+      typeof value.group_category === "string" &&
+      typeof value.group_count === "number" &&
+      typeof value.is_child === "boolean" &&
+      typeof value.is_grouped === "boolean"
+    );
+  }
+
+  if (value.kind !== "group" || detail.kind !== "group") return false;
+  if (
+    ["pid", "parent_pid", "exe", "access_state", "process", "representative"].some(
+      (key) => key in detail,
+    )
+  ) {
+    return false;
+  }
+  if ("process" in value || "representative" in value) return false;
+
+  return (
+    typeof detail.workload_id === "string" &&
+    detail.workload_id.startsWith("group:") &&
+    typeof detail.group_key === "string" &&
+    typeof detail.label === "string" &&
+    typeof detail.category === "string" &&
+    typeof detail.process_count === "number" &&
+    typeof detail.cpu_percent === "number" &&
+    typeof detail.memory_bytes === "number" &&
+    typeof detail.io_bps === "number" &&
+    typeof detail.network_bps === "number" &&
+    typeof detail.threads === "number" &&
+    isRecord(detail.quality) &&
+    isRecord(detail.quality.other_io) &&
+    isRecord(detail.coverage) &&
+    isRecord(detail.coverage.other_io)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function processSelectionKey(process: Pick<ProcessSample, "pid" | "start_time_ms">): string {
   return `process:${process.pid}:${process.start_time_ms}`;
 }
 
+export function normalizedProcessName(name: string): string {
+  return name.replace(/-\d+(?=\.exe$)/i, "");
+}
+
+export function processGroupKey(process: Pick<ProcessSample, "pid" | "name">): string {
+  const processName = normalizedProcessName(process.name).trim();
+  return (processName || `pid:${process.pid}`).toLocaleLowerCase();
+}
+
+const attentionCpuPercent = 10;
+const attentionMemoryBytes = 900 * 1024 * 1024;
+const attentionIoBps = 500 * 1024;
+const attentionNetworkBps = 1024 * 1024;
+
 export function processNeedsAttention(process: ProcessSample): boolean {
   return (
-    process.cpu_percent >= 10 ||
-    process.memory_bytes >= 900 * 1024 * 1024 ||
-    rawProcessIoRate(process) >= 500 * 1024 ||
-    rawProcessNetworkRate(process) >= 1024 * 1024 ||
+    process.cpu_percent >= attentionCpuPercent ||
+    process.memory_bytes >= attentionMemoryBytes ||
+    rawProcessIoRate(process) >= attentionIoBps ||
+    rawProcessNetworkRate(process) >= attentionNetworkBps ||
     process.access_state !== "full"
   );
 }
@@ -152,7 +259,7 @@ function rawProcessNetworkRate(process: ProcessSample): number {
   return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
 }
 
-function processAttentionScore(process: ProcessSample): number {
+export function processAttentionScore(process: ProcessSample): number {
   return (
     process.cpu_percent * 3 +
     Math.min(process.memory_bytes / (128 * 1024 * 1024), 20) +
@@ -160,6 +267,244 @@ function processAttentionScore(process: ProcessSample): number {
     Math.min(rawProcessNetworkRate(process) / (1024 * 1024), 20) +
     (process.access_state === "full" ? 0 : 12)
   );
+}
+
+type ProcessAttentionMetricState =
+  | "native"
+  | "estimated"
+  | "partial"
+  | "held"
+  | "unavailable"
+  | "missing";
+
+interface ProcessAttentionMetric {
+  thresholdReached: boolean;
+  label: string;
+  quality?: MetricQualityInfo;
+  hasValue: boolean;
+}
+
+function processAttentionMetricState(metric: ProcessAttentionMetric): ProcessAttentionMetricState {
+  if (!metric.quality) return "missing";
+  if (metric.quality.quality === "held") return "held";
+  if (metric.quality.quality === "unavailable" || !metric.hasValue) return "unavailable";
+  return metric.quality.quality;
+}
+
+function processActivityAttentionLabel(
+  metric: ProcessAttentionMetric,
+  state: "native" | "estimated" | "partial",
+  allMetricsComplete: boolean,
+): string {
+  const qualifiers: string[] = [];
+  if (state === "partial") qualifiers.push("limited");
+  if (state === "estimated") qualifiers.push("estimated");
+  if (!allMetricsComplete && state !== "partial") qualifiers.push("telemetry limited");
+  return qualifiers.length > 0 ? `${metric.label} · ${qualifiers.join(" · ")}` : metric.label;
+}
+
+export function processAttentionLabel(process: ProcessSample): string {
+  const metrics: ProcessAttentionMetric[] = [
+    {
+      thresholdReached: process.cpu_percent >= attentionCpuPercent,
+      label: "CPU activity",
+      quality: process.quality?.cpu,
+      hasValue: true,
+    },
+    {
+      thresholdReached: process.memory_bytes >= attentionMemoryBytes,
+      label: "memory activity",
+      quality: process.quality?.memory,
+      hasValue: true,
+    },
+    {
+      thresholdReached: rawProcessIoRate(process) >= attentionIoBps,
+      label: "I/O activity",
+      quality: process.quality?.io,
+      hasValue: true,
+    },
+    {
+      thresholdReached: rawProcessNetworkRate(process) >= attentionNetworkBps,
+      label: "network activity",
+      quality: process.quality?.network,
+      hasValue:
+        process.network_received_bps !== undefined || process.network_transmitted_bps !== undefined,
+    },
+  ];
+  const states = metrics.map(processAttentionMetricState);
+  const allMetricsComplete = states.every((state) => state === "native" || state === "estimated");
+
+  for (let index = 0; index < metrics.length; index += 1) {
+    const metric = metrics[index];
+    const state = states[index];
+    if (
+      metric.thresholdReached &&
+      (state === "native" || state === "estimated" || state === "partial")
+    ) {
+      return processActivityAttentionLabel(metric, state, allMetricsComplete);
+    }
+  }
+
+  if (states.includes("unavailable")) return "Unavailable";
+  if (states.includes("held")) return "Pending";
+  if (states.includes("missing") || states.includes("partial")) return "Limited";
+  if (process.access_state !== "full") return "access limited";
+  if (states.includes("estimated")) return "steady · estimated";
+  return "steady";
+}
+
+export interface ProcessGroupSortView {
+  key: string;
+  label: string;
+  processes: ProcessSample[];
+  cpuPercent: number;
+  memoryBytes: number;
+  ioBps: number;
+  networkBps: number;
+  threads: number;
+}
+
+export function compareProcessGroups(
+  left: ProcessGroupSortView,
+  right: ProcessGroupSortView,
+  query: RuntimeQuery,
+): number {
+  const comparison =
+    query.sort_column === "name"
+      ? left.label.localeCompare(right.label)
+      : query.sort_column === "pid"
+        ? left.key.localeCompare(right.key)
+        : query.sort_column === "cpu_pct"
+          ? groupCpuSortValue(left) - groupCpuSortValue(right)
+          : query.sort_column === "memory_bytes"
+            ? groupMemorySortValue(left) - groupMemorySortValue(right)
+            : query.sort_column === "io_bps"
+              ? groupIoSortValue(left) - groupIoSortValue(right)
+              : query.sort_column === "network_bps"
+                ? groupNetworkSortValue(left) - groupNetworkSortValue(right)
+                : query.sort_column === "threads"
+                  ? groupThreadsSortValue(left) - groupThreadsSortValue(right)
+                  : query.sort_column === "handles" || query.sort_column === "start_time_ms"
+                    ? left.key.localeCompare(right.key)
+                    : groupAttentionScore(left) - groupAttentionScore(right);
+
+  const directed = query.sort_direction === "asc" ? comparison : -comparison;
+  return directed || left.label.localeCompare(right.label);
+}
+
+function singletonProcess(group: ProcessGroupSortView): ProcessSample | undefined {
+  return group.processes.length === 1 ? group.processes[0] : undefined;
+}
+
+function groupCpuSortValue(group: ProcessGroupSortView): number {
+  return singletonProcess(group)?.cpu_percent ?? group.cpuPercent;
+}
+
+function groupMemorySortValue(group: ProcessGroupSortView): number {
+  return singletonProcess(group)?.memory_bytes ?? group.memoryBytes;
+}
+
+function groupIoSortValue(group: ProcessGroupSortView): number {
+  const process = singletonProcess(group);
+  return process ? rawProcessIoRate(process) : group.ioBps;
+}
+
+function groupNetworkSortValue(group: ProcessGroupSortView): number {
+  const process = singletonProcess(group);
+  return process ? rawProcessNetworkRate(process) : group.networkBps;
+}
+
+function groupThreadsSortValue(group: ProcessGroupSortView): number {
+  return singletonProcess(group)?.threads ?? group.threads;
+}
+
+function groupAttentionScore(group: ProcessGroupSortView): number {
+  if (group.processes.length === 1) return processAttentionScore(group.processes[0]);
+  return (
+    group.cpuPercent * 3 +
+    Math.min(group.memoryBytes / (128 * 1024 * 1024), 20) +
+    Math.min(group.ioBps / (512 * 1024), 20) +
+    Math.min(group.networkBps / (1024 * 1024), 20) +
+    (group.processes.some((process) => process.access_state !== "full") ? 12 : 0)
+  );
+}
+
+function groupMetricCanDisplayForAttention(
+  quality: MetricQualityInfo,
+  coverage: MetricCoverage,
+): boolean {
+  return coverage.available > 0 && quality.quality !== "held" && quality.quality !== "unavailable";
+}
+
+function groupMetricIsCompleteForAttention(
+  quality: MetricQualityInfo,
+  coverage: MetricCoverage,
+): boolean {
+  return (
+    groupMetricCanDisplayForAttention(quality, coverage) &&
+    quality.quality !== "partial" &&
+    coverage.available === coverage.total
+  );
+}
+
+function groupActivityLabel(
+  label: string,
+  quality: MetricQualityInfo,
+  coverage: MetricCoverage,
+  allMetricsComplete: boolean,
+): string {
+  if (quality.quality === "partial" || coverage.available < coverage.total) {
+    return `${label} · ${coverage.available}/${coverage.total} · limited`;
+  }
+  if (!allMetricsComplete) return `${label} · telemetry limited`;
+  if (quality.quality === "estimated") return `${label} · estimated`;
+  return label;
+}
+
+export function groupAttentionLabel(detail: GroupDetail, limitedAccess: boolean): string {
+  const metrics = [
+    [detail.quality.cpu, detail.coverage.cpu],
+    [detail.quality.memory, detail.coverage.memory],
+    [detail.quality.io, detail.coverage.io],
+    [detail.quality.network, detail.coverage.network],
+  ] as const;
+  const allMetricsComplete = metrics.every(([quality, coverage]) =>
+    groupMetricIsCompleteForAttention(quality, coverage),
+  );
+  const activities = [
+    [detail.cpu_percent >= 10, "CPU activity", detail.quality.cpu, detail.coverage.cpu],
+    [
+      detail.memory_bytes >= 900 * 1024 * 1024,
+      "memory activity",
+      detail.quality.memory,
+      detail.coverage.memory,
+    ],
+    [detail.io_bps >= 500 * 1024, "I/O activity", detail.quality.io, detail.coverage.io],
+    [
+      detail.network_bps >= 1024 * 1024,
+      "network activity",
+      detail.quality.network,
+      detail.coverage.network,
+    ],
+  ] as const;
+
+  for (const [thresholdReached, label, quality, coverage] of activities) {
+    if (thresholdReached && groupMetricCanDisplayForAttention(quality, coverage)) {
+      return groupActivityLabel(label, quality, coverage, allMetricsComplete);
+    }
+  }
+
+  if (allMetricsComplete) return limitedAccess ? "access limited" : "steady";
+
+  const state = metrics.every(([quality]) => quality.quality === "held")
+    ? "Pending"
+    : metrics.every(([quality]) => quality.quality === "unavailable")
+      ? "Unavailable"
+      : "Limited";
+  const coverage = metrics.find(
+    ([quality, metricCoverage]) => !groupMetricIsCompleteForAttention(quality, metricCoverage),
+  )?.[1] ?? { available: 0, total: detail.process_count };
+  return `${state} · ${coverage.available}/${coverage.total} coverage`;
 }
 
 export function hasSameProcessOrder(
@@ -215,8 +560,56 @@ export function windowProcessViewRows(
   return windowed;
 }
 
+export function prepareProcessViewRows(
+  rows: ProcessViewRow[],
+  selection: string,
+  visibleRowLimit: number,
+): { rows: ProcessViewRow[]; selection: string } {
+  return {
+    rows: windowProcessViewRows(rows, visibleRowLimit),
+    selection: reconcileWorkloadSelection(rows, selection),
+  };
+}
+
+export function workloadSelectionMatchesRow(row: ProcessViewRow, selection: string): boolean {
+  return row.detail.workload_id === selection;
+}
+
+export function workloadSelectionHighlightsRow(
+  rows: ProcessViewRow[],
+  row: ProcessViewRow,
+  selection: string,
+): boolean {
+  if (workloadSelectionMatchesRow(row, selection) || row.kind === "process") {
+    return workloadSelectionMatchesRow(row, selection);
+  }
+
+  return rows.some(
+    (candidate) =>
+      candidate.kind === "process" &&
+      candidate.group_key === row.detail.group_key &&
+      workloadSelectionMatchesRow(candidate, selection),
+  );
+}
+
 export function shouldStabilizeProcessOrder(sortKey: SortKey): boolean {
   return sortKey === "attention";
+}
+
+export function shouldHoldProcessOrder(
+  sortKey: SortKey,
+  interacting: boolean,
+  expandedGroupCount: number,
+  selectedWorkloadVisible: boolean,
+): boolean {
+  return (
+    interacting ||
+    (shouldStabilizeProcessOrder(sortKey) && (expandedGroupCount > 0 || selectedWorkloadVisible))
+  );
+}
+
+export function reconcileWorkloadSelection(rows: ProcessViewRow[], selection: string): string {
+  return rows.some((row) => processViewRowKey(row) === selection) ? selection : "";
 }
 
 const sortColumnByKey: Record<SortKey, SortColumn> = {
@@ -259,43 +652,6 @@ export function processOtherIoRate(
   return rates?.otherRate ?? process.other_io_bps;
 }
 
-export function groupProcessFromRow(row: ProcessViewRow): ProcessSample {
-  const representative = row.representative;
-  return {
-    pid: row.group_key ? `group:${row.group_key}` : "group",
-    parent_pid: null,
-    start_time_ms: representative?.start_time_ms ?? 0,
-    name: row.group_label ?? representative?.name ?? "Process group",
-    exe: "",
-    status: "Group",
-    cpu_percent: row.cpu_percent,
-    kernel_cpu_percent: representative?.kernel_cpu_percent,
-    memory_bytes: row.memory_bytes,
-    private_bytes: row.memory_bytes,
-    virtual_memory_bytes: representative?.virtual_memory_bytes,
-    io_read_total_bytes: representative?.io_read_total_bytes ?? 0,
-    io_write_total_bytes: representative?.io_write_total_bytes ?? 0,
-    other_io_total_bytes: undefined,
-    io_read_bps: row.io_bps,
-    io_write_bps: 0,
-    other_io_bps: undefined,
-    network_received_bps: row.network_bps,
-    network_transmitted_bps: 0,
-    threads: row.threads,
-    handles: representative?.handles ?? 0,
-    access_state: representative?.access_state ?? "full",
-    quality: {
-      ...representative?.quality,
-      other_io: {
-        quality: "unavailable",
-        source: "runtime",
-        message:
-          "Grouped Other I/O is unavailable until the process view exposes a typed aggregate.",
-      },
-    },
-  };
-}
-
 export function defaultSortDirection(key: SortKey): SortDirection {
   return key === "attention" ||
     key === "cpu" ||
@@ -305,6 +661,16 @@ export function defaultSortDirection(key: SortKey): SortDirection {
     key === "threads"
     ? "desc"
     : "asc";
+}
+
+export function nextSortDirection(direction: SortDirection): SortDirection {
+  return direction === "asc" ? "desc" : "asc";
+}
+
+export function sortDirectionButtonLabel(direction: SortDirection): string {
+  const current = direction === "asc" ? "ascending" : "descending";
+  const next = direction === "asc" ? "descending" : "ascending";
+  return `Sort direction: ${current}. Change to ${next}.`;
 }
 
 export function sortColumnForKey(key: SortKey): SortColumn {

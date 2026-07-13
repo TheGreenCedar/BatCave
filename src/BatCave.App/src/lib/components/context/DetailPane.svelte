@@ -2,6 +2,7 @@
   import { X } from "phosphor-svelte";
   import type { DetailMode } from "../metrics/types";
   import type { ProcessRates } from "../../process";
+  import type { ProcessIconKind } from "../../process";
   import type { PlatformPresentation } from "../../platformPresentation";
   import type { ChartPalette } from "../../themes";
   import type {
@@ -11,7 +12,9 @@
     SystemMemoryAccounting,
     SystemMetricQuality,
     TrendState,
+    WorkloadDetail,
   } from "../../types";
+  import GroupInspector from "./GroupInspector.svelte";
   import ProcessInspector from "./ProcessInspector.svelte";
   import SystemDetail from "./SystemDetail.svelte";
 
@@ -19,7 +22,9 @@
   export let compact = false;
   export let onClose: () => void = () => {};
   export let onShowSystem: () => void;
-  export let selectedProcess: ProcessSample | null;
+  export let selectedWorkload: WorkloadDetail | null;
+  export let selectedWorkloadIconKind: ProcessIconKind = "process";
+  export let selectedWorkloadIconSrc: string | undefined = undefined;
   export let processHistory: {
     cpu: number[];
     memory: number[];
@@ -120,7 +125,7 @@
   <header class="detail-pane-heading">
     <div>
       <span>{subject === "process" ? "Selected workload" : "System resource"}</span>
-      <h2>{subject === "process" ? selectedProcess?.name ?? "Process unavailable" : detailTitle}</h2>
+      <h2>{subject === "process" ? selectedWorkload?.kind === "group" ? selectedWorkload.label : selectedWorkload?.process.name ?? "Workload unavailable" : detailTitle}</h2>
     </div>
     <div class="detail-pane-actions">
       {#if subject === "process"}
@@ -143,20 +148,37 @@
 
   <div class="detail-pane-scroll">
     {#if subject === "process"}
-      <ProcessInspector
-        {selectedProcess}
-        {processHistory}
-        {processRates}
-        {processReadRate}
-        {processWriteRate}
-        {processIcons}
-        {copyStatus}
-        {activeTheme}
-        {presentation}
-        platform={snapshot.environment.platform}
-        {processNetworkLabel}
-        {onCopy}
-      />
+      {#if selectedWorkload?.kind === "process"}
+        <ProcessInspector
+          detail={selectedWorkload}
+          {processHistory}
+          {processRates}
+          {processReadRate}
+          {processWriteRate}
+          {processIcons}
+          {copyStatus}
+          {activeTheme}
+          {presentation}
+          platform={snapshot.environment.platform}
+          {processNetworkLabel}
+          {onCopy}
+        />
+      {:else if selectedWorkload?.kind === "group"}
+        <GroupInspector
+          detail={selectedWorkload}
+          {processHistory}
+          {copyStatus}
+          {activeTheme}
+          iconKind={selectedWorkloadIconKind}
+          iconSrc={selectedWorkloadIconSrc}
+          {onCopy}
+        />
+      {:else}
+        <div class="empty-panel">
+          <strong>The selected workload is no longer available</strong>
+          <span>Return to the system overview or choose another row from the workload queue.</span>
+        </div>
+      {/if}
     {:else}
       <SystemDetail
         {detailMode}

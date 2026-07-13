@@ -250,36 +250,99 @@ pub struct ProcessSample {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct ProcessViewRow {
-    pub kind: ProcessViewRowKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub process: Option<ProcessSample>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub representative: Option<ProcessSample>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_label: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_category: Option<String>,
-    pub group_count: usize,
-    pub icon_kind: String,
-    pub is_child: bool,
-    pub is_grouped: bool,
-    pub attention_label: String,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProcessViewRow {
+    Process {
+        detail: Box<ProcessDetail>,
+        group_key: String,
+        group_label: String,
+        group_category: String,
+        group_count: usize,
+        icon_kind: String,
+        is_child: bool,
+        is_grouped: bool,
+        attention_label: String,
+    },
+    Group {
+        detail: Box<GroupDetail>,
+        icon_kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        icon_source: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        example_label: Option<String>,
+        attention_label: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ProcessDetail {
+    pub kind: ProcessDetailKind,
+    pub workload_id: String,
+    pub process: ProcessSample,
+    pub io_bps: u64,
+    pub network_bps: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct GroupDetail {
+    pub kind: GroupDetailKind,
+    pub workload_id: String,
+    pub group_key: String,
+    pub label: String,
+    pub category: String,
+    pub process_count: usize,
     pub cpu_percent: f64,
     pub memory_bytes: u64,
     pub io_bps: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_io_bps: Option<u64>,
     pub network_bps: u64,
     pub threads: u64,
+    pub quality: GroupMetricQuality,
+    pub coverage: GroupMetricCoverage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GroupMetricQuality {
+    pub cpu: MetricQualityInfo,
+    pub memory: MetricQualityInfo,
+    pub io: MetricQualityInfo,
+    pub other_io: MetricQualityInfo,
+    pub network: MetricQualityInfo,
+    pub threads: MetricQualityInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GroupMetricCoverage {
+    pub cpu: MetricCoverage,
+    pub memory: MetricCoverage,
+    pub io: MetricCoverage,
+    pub other_io: MetricCoverage,
+    pub network: MetricCoverage,
+    pub threads: MetricCoverage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessViewRowKind {
-    Group,
+pub struct MetricCoverage {
+    pub available: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessDetailKind {
     Process,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupDetailKind {
+    Group,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -892,6 +955,61 @@ mod tests {
     }
 
     #[test]
+    fn process_and_group_detail_shapes_are_not_substitutable() {
+        let process_row = sample_process_view_row_json();
+        let group_row = sample_group_view_row_json();
+
+        assert!(serde_json::from_value::<ProcessViewRow>(process_row.clone()).is_ok());
+        assert!(serde_json::from_value::<ProcessViewRow>(group_row.clone()).is_ok());
+
+        let mut process_as_group = process_row;
+        process_as_group["kind"] = json!("group");
+        assert!(serde_json::from_value::<ProcessViewRow>(process_as_group).is_err());
+
+        let mut group_as_process = group_row;
+        group_as_process["kind"] = json!("process");
+        assert!(serde_json::from_value::<ProcessViewRow>(group_as_process).is_err());
+    }
+
+    #[test]
+    fn shared_workload_detail_fixture_round_trips_through_rust() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../scripts/fixtures/workload-details.v1.json"
+        ))
+        .expect("shared workload fixture parses");
+        let rows: Vec<ProcessViewRow> =
+            serde_json::from_value(expected.clone()).expect("shared workload fixture matches Rust");
+
+        assert_eq!(
+            serde_json::to_value(rows).expect("workload fixture serializes"),
+            expected
+        );
+    }
+
+    #[test]
+    fn group_detail_rejects_representative_process_fields() {
+        let mut group_row = sample_group_view_row_json();
+        group_row["representative"] = sample_process_json();
+        assert!(serde_json::from_value::<ProcessViewRow>(group_row).is_err());
+
+        let serialized = sample_group_view_row_json();
+        let detail = &serialized["detail"];
+        for forbidden in [
+            "pid",
+            "parent_pid",
+            "exe",
+            "access_state",
+            "process",
+            "representative",
+        ] {
+            assert!(
+                detail.get(forbidden).is_none(),
+                "group detail exposed {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_settings_serializes_sort_and_direction_as_snake_case() {
         let settings = RuntimeSettings {
             query: RuntimeQuery {
@@ -1081,7 +1199,13 @@ mod tests {
     fn sample_process_view_row_json() -> serde_json::Value {
         json!({
             "kind": "process",
-            "process": sample_process_json(),
+            "detail": {
+                "kind": "process",
+                "workload_id": "process:1234:1699999999000",
+                "process": sample_process_json(),
+                "io_bps": 24,
+                "network_bps": 0
+            },
             "group_key": "batcave.app.exe",
             "group_label": "BatCave.App.exe",
             "group_category": "BatCave",
@@ -1089,12 +1213,46 @@ mod tests {
             "icon_kind": "batcave",
             "is_child": false,
             "is_grouped": false,
-            "attention_label": "steady",
-            "cpu_percent": 8.25,
-            "memory_bytes": 65_536,
-            "io_bps": 24,
-            "network_bps": 0,
-            "threads": 9
+            "attention_label": "steady"
+        })
+    }
+
+    fn sample_group_view_row_json() -> serde_json::Value {
+        json!({
+            "kind": "group",
+            "detail": {
+                "kind": "group",
+                "workload_id": "group:batcave.app.exe",
+                "group_key": "batcave.app.exe",
+                "label": "BatCave.App.exe",
+                "category": "BatCave",
+                "process_count": 2,
+                "cpu_percent": 12.5,
+                "memory_bytes": 131_072,
+                "io_bps": 48,
+                "network_bps": 0,
+                "threads": 18,
+                "quality": {
+                    "cpu": { "quality": "estimated", "source": "process_aggregate" },
+                    "memory": { "quality": "native", "source": "process_aggregate" },
+                    "io": { "quality": "native", "source": "process_aggregate" },
+                    "other_io": { "quality": "unavailable", "source": "process_aggregate", "message": "0 of 2 processes contribute to this aggregate." },
+                    "network": { "quality": "unavailable", "source": "process_aggregate", "message": "0 of 2 processes contribute to this aggregate." },
+                    "threads": { "quality": "native", "source": "process_aggregate" }
+                },
+                "coverage": {
+                    "cpu": { "available": 2, "total": 2 },
+                    "memory": { "available": 2, "total": 2 },
+                    "io": { "available": 2, "total": 2 },
+                    "other_io": { "available": 0, "total": 2 },
+                    "network": { "available": 0, "total": 2 },
+                    "threads": { "available": 2, "total": 2 }
+                }
+            },
+            "icon_kind": "batcave",
+            "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "example_label": "BatCave.App",
+            "attention_label": "CPU activity"
         })
     }
 

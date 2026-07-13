@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  compareProcessGroups,
   compareProcessSamples,
-  groupProcessFromRow,
+  groupAttentionLabel,
+  isProcessViewRow,
+  processAttentionLabel,
   processIoRate,
   processNeedsAttention,
   processOtherIoRate,
@@ -26,6 +29,7 @@ import {
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
 import type {
   ProcessSample,
+  GroupDetail,
   ProcessViewRow,
   RuntimeAdminModeStatus,
   RuntimeEnvironment,
@@ -45,6 +49,9 @@ const provenanceFixtures = JSON.parse(
   expected_collection_label: string;
   expected_package_label: string;
 }>;
+const workloadDetails = JSON.parse(
+  readFileSync(new URL("./fixtures/workload-details.v1.json", import.meta.url), "utf8"),
+);
 const themeCss = readFileSync(new URL("../src/styles/themes.css", import.meta.url), "utf8");
 const releaseManifest = readFileSync(
   new URL("../src-tauri/release.manifest.xml", import.meta.url),
@@ -212,6 +219,25 @@ test("helper actions cover enable, disable, and retry without touching an elevat
   );
 });
 
+test("shared workload fixture keeps process and group details disjoint", () => {
+  assert.equal(workloadDetails.length, 2);
+  assert.ok(workloadDetails.every(isProcessViewRow));
+
+  const processAsGroup = structuredClone(workloadDetails[0]);
+  processAsGroup.kind = "group";
+  assert.equal(isProcessViewRow(processAsGroup), false);
+
+  const groupAsProcess = structuredClone(workloadDetails[1]);
+  groupAsProcess.kind = "process";
+  assert.equal(isProcessViewRow(groupAsProcess), false);
+
+  const representativeAggregate = structuredClone(workloadDetails[1]);
+  representativeAggregate.detail.pid = "42";
+  representativeAggregate.detail.exe = "/usr/bin/code";
+  representativeAggregate.detail.access_state = "full";
+  assert.equal(isProcessViewRow(representativeAggregate), false);
+});
+
 test("diagnostics render one limitation per stable key with the current admin action", () => {
   const warnings: RuntimeWarning[] = [
     warning("collector.network_attribution", "network_attribution_failed: access denied", 1),
@@ -275,6 +301,138 @@ test("fixture comparator honors network sorting", () => {
     rows.map((row) => row.name),
     ["high", "low"],
   );
+});
+
+test("fixture singleton CPU and attention sorts use raw process values regardless of quality", () => {
+  const nativeLow = process({
+    name: "NativeLow.exe",
+    exe: "C:\\NativeLow.exe",
+    cpu_percent: 10,
+  });
+  const unavailableHigh = process({
+    name: "UnavailableHigh.exe",
+    exe: "C:\\UnavailableHigh.exe",
+    cpu_percent: 90,
+    quality: { cpu: { quality: "unavailable", source: "runtime" } },
+  });
+  const missingHigh = process({
+    name: "MissingHigh.exe",
+    exe: "C:\\MissingHigh.exe",
+    cpu_percent: 80,
+    quality: undefined,
+  });
+  const group = (sample: ProcessSample) => ({
+    key: sample.exe,
+    label: sample.name,
+    processes: [sample],
+    cpuPercent: 0,
+    memoryBytes: 0,
+    ioBps: 0,
+    networkBps: 0,
+    threads: 0,
+  });
+
+  for (const sort_column of ["cpu_pct", "attention"] as const) {
+    const query = {
+      ...makeDefaultRuntimeQuery(),
+      sort_column,
+      sort_direction: "desc" as const,
+    };
+    for (const [high, expected] of [
+      [unavailableHigh, "UnavailableHigh.exe"],
+      [missingHigh, "MissingHigh.exe"],
+    ] as const) {
+      const first = [group(nativeLow), group(high)].sort((left, right) =>
+        compareProcessGroups(left, right, query),
+      )[0];
+      assert.equal(first.processes[0].name, expected);
+    }
+  }
+});
+
+test("singleton attention labels publish only quality-backed activity", () => {
+  const quality = (value: "native" | "estimated" | "partial" | "held" | "unavailable") => {
+    const metric = { quality: value, source: "direct_api" as const };
+    return { cpu: metric, memory: metric, io: metric, network: metric };
+  };
+
+  assert.equal(processAttentionLabel(process({ cpu_percent: 9 })), "steady");
+  assert.equal(processAttentionLabel(process({ cpu_percent: 10 })), "CPU activity");
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("held") })),
+    "Pending",
+  );
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("unavailable") })),
+    "Unavailable",
+  );
+  assert.equal(processAttentionLabel(process({ cpu_percent: 90, quality: undefined })), "Limited");
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("partial") })),
+    "CPU activity · limited",
+  );
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("estimated") })),
+    "CPU activity · estimated",
+  );
+  assert.equal(
+    processAttentionLabel(
+      process({
+        cpu_percent: 0,
+        network_received_bps: 2 * 1024 * 1024,
+        quality: quality("partial"),
+      }),
+    ),
+    "network activity · limited",
+  );
+});
+
+test("fixture group attention exposes nonpublishable and mixed coverage states", () => {
+  const detail = (
+    quality: "native" | "partial" | "held" | "unavailable",
+    available: number,
+    cpuPercent = 0,
+  ): GroupDetail => {
+    const metric = { quality, source: "process_aggregate" as const };
+    const coverage = { available, total: 2 };
+    return {
+      kind: "group",
+      workload_id: "group:searchindexer.exe",
+      group_key: "searchindexer.exe",
+      label: "SearchIndexer.exe",
+      category: "Windows",
+      process_count: 2,
+      cpu_percent: cpuPercent,
+      memory_bytes: 0,
+      io_bps: 0,
+      network_bps: 0,
+      threads: 0,
+      quality: {
+        cpu: metric,
+        memory: metric,
+        io: metric,
+        other_io: { quality: "unavailable", source: "process_aggregate" },
+        network: metric,
+        threads: metric,
+      },
+      coverage: {
+        cpu: coverage,
+        memory: coverage,
+        io: coverage,
+        other_io: { available: 0, total: 2 },
+        network: coverage,
+        threads: coverage,
+      },
+    };
+  };
+
+  assert.equal(groupAttentionLabel(detail("held", 0), false), "Pending · 0/2 coverage");
+  assert.equal(groupAttentionLabel(detail("unavailable", 0), false), "Unavailable · 0/2 coverage");
+  assert.equal(groupAttentionLabel(detail("partial", 0), false), "Limited · 0/2 coverage");
+
+  const mixed = detail("partial", 1, 10);
+  assert.deepEqual(mixed.coverage.cpu, { available: 1, total: 2 });
+  assert.equal(groupAttentionLabel(mixed, false), "CPU activity · 1/2 · limited");
 });
 
 test("process contributor semantics keep read/write I/O distinct from physical disk", () => {
@@ -374,36 +532,13 @@ test("contributor ambiguity is summarized from the full process set", () => {
   assert.equal(contributors.cpu_name_ambiguous, true);
 });
 
-test("synthetic groups keep Other I/O unavailable instead of borrowing or fabricating zero", () => {
-  const representative = process({
-    name: "worker",
-    other_io_total_bytes: 8_192,
-    other_io_bps: 512,
-  });
-  const row: ProcessViewRow = {
-    kind: "group",
-    representative,
-    group_key: "worker",
-    group_label: "worker",
-    group_count: 2,
-    icon_kind: "process",
-    is_child: false,
-    is_grouped: true,
-    attention_label: "steady",
-    cpu_percent: 0,
-    memory_bytes: 2,
-    io_bps: 0,
-    network_bps: 0,
-    threads: 2,
-  };
-
-  const group = groupProcessFromRow(row);
-
-  assert.equal(group.other_io_total_bytes, undefined);
-  assert.equal(group.other_io_bps, undefined);
-  assert.equal(group.quality?.other_io?.quality, "unavailable");
-  assert.equal(processOtherIoRate(group, {}), undefined);
-  assert.equal(formatOptionalRate(processOtherIoRate(group, {})), "Unavailable");
+test("typed groups keep Other I/O separate and unavailable", () => {
+  const group = (workloadDetails as ProcessViewRow[]).find((row) => row.kind === "group");
+  assert.ok(group?.kind === "group");
+  assert.equal(group.detail.other_io_bps, undefined);
+  assert.equal(group.detail.quality.other_io.quality, "unavailable");
+  assert.deepEqual(group.detail.coverage.other_io, { available: 0, total: 2 });
+  assert.equal(formatOptionalRate(group.detail.other_io_bps), "Unavailable");
   assert.equal(formatOptionalRate(processOtherIoRate(process({ other_io_bps: 0 }), {})), "0 B/s");
 });
 
