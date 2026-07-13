@@ -9,7 +9,12 @@
     type ProcessIconKind,
     type SortKey,
   } from "../../process";
-  import { formatPercent, formatRate, processMemoryTitle } from "../../format";
+  import {
+    displayProcessMetricValue,
+    formatPercent,
+    formatRate,
+    processMemoryTitle,
+  } from "../../format";
   import { residentMemoryValue } from "../../platformPresentation";
   import type { ProcessSample, ProcessViewRow, RuntimePlatform, SortDirection } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
@@ -55,13 +60,25 @@
 
   function networkCellLabel(row: ProcessViewRow): string {
     const quality = (row.process ?? row.representative)?.quality?.network;
-    if (quality?.quality === "unavailable") return "Not available";
-    if (quality?.quality === "held") return "Waiting";
-    return formatRate(row.network_bps);
+    return displayProcessMetricValue(row.network_bps, quality, formatRate);
   }
 
   function networkCellTitle(row: ProcessViewRow): string {
     return (row.process ?? row.representative)?.quality?.network?.message ?? "";
+  }
+
+  function cpuCellLabel(row: ProcessViewRow): string {
+    const quality = (row.process ?? row.representative)?.quality?.cpu;
+    return displayProcessMetricValue(row.cpu_percent, quality, formatPercent);
+  }
+
+  function ioCellLabel(row: ProcessViewRow): string {
+    const quality = (row.process ?? row.representative)?.quality?.io;
+    return displayProcessMetricValue(row.io_bps, quality, formatRate);
+  }
+
+  function metricCellTitle(row: ProcessViewRow, metric: "cpu" | "io"): string {
+    return (row.process ?? row.representative)?.quality?.[metric]?.message ?? "";
   }
 
   function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
@@ -150,11 +167,11 @@
               {:else if column.key === "attention"}
                 <td><span class="impact-label">{row.attention_label || "Normal"}</span></td>
               {:else if column.key === "cpu"}
-                <td>{formatPercent(row.cpu_percent)}</td>
+                <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
               {:else if column.key === "memory"}
                 <td>{representative ? residentMemoryValue({ ...representative, memory_bytes: row.memory_bytes }, platform) : "--"}</td>
               {:else if column.key === "io"}
-                <td>{formatRate(row.io_bps)}</td>
+                <td title={metricCellTitle(row, "io")}>{ioCellLabel(row)}</td>
               {:else if column.key === "network"}
                 <td title={networkCellTitle(row)}>{networkCellLabel(row)}</td>
               {:else}
@@ -193,11 +210,11 @@
               {:else if column.key === "attention"}
                 <td><span class="impact-label">{row.attention_label || "Normal"}</span></td>
               {:else if column.key === "cpu"}
-                <td>{formatPercent(process.cpu_percent)}</td>
+                <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
               {:else if column.key === "memory"}
                 <td title={processMemoryTitle(process)}>{residentMemoryValue(process, platform)}</td>
               {:else if column.key === "io"}
-                <td>{formatRate(row.io_bps)}</td>
+                <td title={metricCellTitle(row, "io")}>{ioCellLabel(row)}</td>
               {:else if column.key === "network"}
                 <td title={networkCellTitle(row)}>{networkCellLabel(row)}</td>
               {:else}

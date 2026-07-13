@@ -45,6 +45,12 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
     threads: 1,
     handles: 1,
     access_state: "full",
+    quality: {
+      cpu: { quality: "native", source: "direct_api" },
+      memory: { quality: "native", source: "direct_api" },
+      io: { quality: "native", source: "direct_api" },
+      network: { quality: "native", source: "direct_api" },
+    },
     ...overrides,
   };
 }
@@ -168,8 +174,23 @@ test("process contributor selection excludes unavailable metrics and preserves q
     }),
   ]);
 
-  assert.equal(contributors.cpu, "Estimated lower");
-  assert.equal(contributors.cpu_quality?.quality, "estimated");
+  assert.equal(contributors.cpu, null);
+  assert.equal(contributors.cpu_quality?.quality, "unavailable");
+
+  const blockedPositive = summarizeProcessContributors([
+    process({
+      name: "Native visible",
+      cpu_percent: 25,
+      quality: { cpu: { quality: "native", source: "direct_api" } },
+    }),
+    process({
+      name: "Held placeholder",
+      cpu_percent: 0,
+      quality: { cpu: { quality: "held", source: "runtime" } },
+    }),
+  ]);
+  assert.equal(blockedPositive.cpu, null);
+  assert.equal(blockedPositive.cpu_quality?.quality, "held");
 
   const unavailable = summarizeProcessContributors([
     process({
@@ -188,7 +209,14 @@ test("process contributor selection excludes unavailable metrics and preserves q
     }),
   ]);
   assert.equal(quiet.cpu, null);
-  assert.equal(quiet.cpu_quality?.quality, "native");
+  assert.equal(quiet.cpu_quality?.quality, "unavailable");
+
+  const pendingZero = summarizeProcessContributors([
+    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
+    process({ cpu_percent: 0, quality: { cpu: { quality: "held", source: "runtime" } } }),
+  ]);
+  assert.equal(pendingZero.cpu, null);
+  assert.equal(pendingZero.cpu_quality?.quality, "held");
 
   const limitedZero = summarizeProcessContributors([
     process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),

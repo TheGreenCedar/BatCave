@@ -82,6 +82,8 @@ export function buildResourceBrief(
       definition.contributorQuality,
       contributorNameAmbiguous,
       snapshot.total_process_count,
+      quality,
+      hasSample,
     ),
     contributorNameAmbiguous,
     attributionLabel: definition.attributionLabel,
@@ -213,8 +215,13 @@ function contributorStatusLabel(
   quality: MetricQualityInfo | undefined,
   contributorNameAmbiguous: boolean,
   totalProcessCount: number,
+  systemQuality: MetricQualityInfo | undefined,
+  hasSystemSample: boolean,
 ): string {
   if (mode === "disk") return "No compatible process attribution";
+  if (!hasSystemSample) return "Process attribution unavailable without a system sample";
+  if (systemQuality?.quality === "unavailable") return "Process attribution unavailable";
+  if (systemQuality?.quality === "held") return "Process attribution pending";
   if (contributor) {
     return contributorValueLabel(mode, process, quality, contributorNameAmbiguous);
   }

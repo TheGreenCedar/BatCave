@@ -3,8 +3,17 @@ import test from "node:test";
 import { buildResourceBrief } from "../src/lib/cockpit.ts";
 import {
   displayMetricValue,
+  displayProcessMetricValue,
+  formatOptionalRate,
+  formatPercent,
+  formatRate,
   metricQualityLabel,
   metricQualityShortLabel,
+  nextProcessMetricHistory,
+  processActivityLabel,
+  processBytesLabel,
+  processFindingLabel,
+  processTrustLabel,
 } from "../src/lib/format.ts";
 import { nextMetricHistory, resourceHistoryWindowLabel } from "../src/lib/history.ts";
 import {
@@ -134,6 +143,69 @@ test("missing contributor quality limits zero-activity attribution without hidin
   assert.equal(brief.leadingWorkload, null);
   assert.equal(brief.confidence, "Limited");
   assert.equal(brief.contributorStatusLabel, "Attribution quality not reported");
+});
+
+test("incomplete zero-activity coverage limits contributor confidence", () => {
+  const snapshot = resourceSnapshot(null);
+  snapshot.system.cpu_percent = 0;
+  snapshot.system.process_count = 2;
+  snapshot.total_process_count = 2;
+  snapshot.process_contributors.cpu_quality = { quality: "unavailable", source: "runtime" };
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(brief.leadingWorkload, null);
+  assert.equal(brief.confidence, "Limited");
+  assert.equal(brief.contributorStatusLabel, "Process attribution unavailable");
+});
+
+test("blocked process coverage suppresses a positive visible contributor", () => {
+  const snapshot = resourceSnapshot(null);
+  snapshot.system.cpu_percent = 25;
+  snapshot.system.process_count = 2;
+  snapshot.total_process_count = 2;
+  snapshot.process_contributors.cpu_quality = { quality: "held", source: "runtime" };
+  snapshot.processes = [
+    process({ name: "Native visible", cpu_percent: 25, quality: { cpu: { quality: "native" } } }),
+    process({ name: "Held placeholder", cpu_percent: 0, quality: { cpu: { quality: "held" } } }),
+  ];
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(brief.leadingWorkload, null);
+  assert.equal(brief.confidence, "Limited");
+  assert.equal(brief.contributorStatusLabel, "Process attribution pending");
+});
+
+test("held system CPU suppresses its contributor without claiming no activity", () => {
+  const snapshot = resourceSnapshot("worker");
+  snapshot.system.cpu_percent = 0;
+  snapshot.system.process_count = 1;
+  snapshot.total_process_count = 1;
+  snapshot.system.quality!.cpu = { quality: "held", source: "direct_api" };
+  snapshot.processes = [process({ name: "worker", cpu_percent: 25 })];
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(brief.headline, "Machine-total CPU has no trusted sample.");
+  assert.equal(brief.leadingWorkload, null);
+  assert.equal(brief.contributorStatusLabel, "Process attribution pending");
+  assert.doesNotMatch(brief.contributorStatusLabel, /no process activity/i);
 });
 
 test("overview states cannot turn missing or retained samples into a reassuring zero", () => {
@@ -268,6 +340,177 @@ test("unavailable metrics remain explicit in compact and detailed labels", () =>
   assert.equal(displayMetricValue(0, { quality: "native" }, null, String), "Unavailable");
 });
 
+test("Linux first-sample and denied Windows rows never publish placeholder CPU or I/O zeros", () => {
+  const linuxFirstSample = process({
+    cpu_percent: 0,
+    io_read_bps: 0,
+    io_write_bps: 0,
+    quality: {
+      cpu: { quality: "held", source: "procfs" },
+      memory: { quality: "native", source: "procfs" },
+      io: { quality: "held", source: "procfs" },
+      other_io: { quality: "unavailable", source: "procfs" },
+      network: { quality: "unavailable", source: "procfs" },
+    },
+  });
+  assert.equal(
+    displayProcessMetricValue(
+      linuxFirstSample.cpu_percent,
+      linuxFirstSample.quality?.cpu,
+      formatPercent,
+    ),
+    "Pending",
+  );
+  assert.equal(
+    displayProcessMetricValue(
+      linuxFirstSample.io_read_bps + linuxFirstSample.io_write_bps,
+      linuxFirstSample.quality?.io,
+      formatRate,
+    ),
+    "Pending",
+  );
+  assert.deepEqual(nextProcessMetricHistory([12], 0, linuxFirstSample.quality?.cpu, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([4_096], 0, linuxFirstSample.quality?.io, 30), []);
+  assert.equal(
+    displayProcessMetricValue(0, linuxFirstSample.quality?.network, formatRate),
+    "Unavailable",
+  );
+  assert.equal(
+    displayProcessMetricValue(
+      linuxFirstSample.other_io_bps,
+      linuxFirstSample.quality?.other_io,
+      formatOptionalRate,
+    ),
+    "Unavailable",
+  );
+  assert.equal(processActivityLabel(linuxFirstSample, 0), "Pending");
+
+  const deniedWindows = process({
+    cpu_percent: 0,
+    memory_bytes: 2 * 1024 * 1024 * 1024,
+    io_read_bps: 0,
+    io_write_bps: 0,
+    access_state: "denied",
+    quality: {
+      cpu: { quality: "unavailable", source: "direct_api" },
+      memory: { quality: "unavailable", source: "direct_api" },
+      io: { quality: "unavailable", source: "direct_api" },
+      other_io: { quality: "unavailable", source: "direct_api" },
+      network: { quality: "unavailable", source: "direct_api" },
+    },
+  });
+  assert.equal(
+    displayProcessMetricValue(deniedWindows.cpu_percent, deniedWindows.quality?.cpu, formatPercent),
+    "Unavailable",
+  );
+  assert.equal(
+    displayProcessMetricValue(
+      deniedWindows.io_read_bps + deniedWindows.io_write_bps,
+      deniedWindows.quality?.io,
+      formatRate,
+    ),
+    "Unavailable",
+  );
+  assert.deepEqual(nextProcessMetricHistory([12], 0, deniedWindows.quality?.cpu, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([4_096], 0, deniedWindows.quality?.io, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([50], 0, deniedWindows.quality?.memory, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([8], 0, deniedWindows.quality?.network, 30), []);
+  assert.equal(processBytesLabel(deniedWindows, deniedWindows.memory_bytes), "Unavailable");
+  assert.equal(
+    displayProcessMetricValue(0, deniedWindows.quality?.network, formatRate),
+    "Unavailable",
+  );
+  assert.equal(
+    displayProcessMetricValue(
+      deniedWindows.other_io_bps,
+      deniedWindows.quality?.other_io,
+      formatOptionalRate,
+    ),
+    "Unavailable",
+  );
+  assert.equal(
+    processFindingLabel(deniedWindows, 0, "Working set"),
+    "Some activity metrics are unavailable for this workload.",
+  );
+  assert.equal(processActivityLabel(deniedWindows, 0), "Unavailable");
+});
+
+test("process history records only explicitly publishable metric samples", () => {
+  assert.deepEqual(nextProcessMetricHistory([12], 0, undefined, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([12], 0, { quality: "held" }, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([12], 0, { quality: "unavailable" }, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([12], 0, { quality: "native" }, 30), [12, 0]);
+  assert.deepEqual(nextProcessMetricHistory([12], 8, { quality: "estimated" }, 30), [12, 8]);
+});
+
+test("missing per-process metric quality never turns a placeholder zero into a measurement", () => {
+  const unknown = process({ cpu_percent: 0, io_read_bps: 0, io_write_bps: 0, quality: undefined });
+
+  assert.equal(
+    displayProcessMetricValue(unknown.cpu_percent, unknown.quality?.cpu, formatPercent),
+    "Quality not reported",
+  );
+  assert.equal(
+    displayProcessMetricValue(0, unknown.quality?.io, formatRate),
+    "Quality not reported",
+  );
+  assert.equal(processBytesLabel(unknown, unknown.memory_bytes), "Quality not reported");
+  assert.equal(
+    displayProcessMetricValue(0, unknown.quality?.network, formatRate),
+    "Quality not reported",
+  );
+  assert.equal(
+    displayProcessMetricValue(undefined, unknown.quality?.other_io, formatOptionalRate),
+    "Quality not reported",
+  );
+  assert.deepEqual(nextProcessMetricHistory([12], 0, unknown.quality?.cpu, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([50], 0, unknown.quality?.memory, 30), []);
+  assert.deepEqual(nextProcessMetricHistory([8], 0, unknown.quality?.network, 30), []);
+  assert.equal(
+    processFindingLabel(unknown, 0, "Working set"),
+    "Some activity metric quality was not reported for this workload.",
+  );
+  assert.equal(processActivityLabel(unknown, 0), "Quality not reported");
+});
+
+test("publishable process metrics retain real zero values", () => {
+  const native = process({
+    cpu_percent: 0,
+    memory_bytes: 0,
+    other_io_bps: 0,
+    quality: {
+      cpu: { quality: "native" },
+      memory: { quality: "native" },
+      io: { quality: "native" },
+      other_io: { quality: "native" },
+      network: { quality: "native" },
+    },
+  });
+
+  assert.equal(displayProcessMetricValue(0, native.quality?.cpu, formatPercent), "0%");
+  assert.equal(processBytesLabel(native, native.memory_bytes), "0 B");
+  assert.equal(displayProcessMetricValue(0, native.quality?.network, formatRate), "0 B/s");
+  assert.equal(
+    displayProcessMetricValue(native.other_io_bps, native.quality?.other_io, formatOptionalRate),
+    "0 B/s",
+  );
+});
+
+test("process trust summary reports the worst activity quality", () => {
+  const mixed = process({
+    quality: {
+      cpu: { quality: "native", source: "direct_api" },
+      memory: { quality: "unavailable", source: "direct_api" },
+      io: { quality: "estimated", source: "sysinfo" },
+      network: { quality: "partial", source: "interface_aggregate" },
+    },
+  });
+  assert.equal(processTrustLabel(mixed), "Unavailable / direct API");
+
+  delete mixed.quality?.network;
+  assert.equal(processTrustLabel(mixed), "Quality not reported");
+});
+
 test("sort helpers expose state and the next accessible action", () => {
   const cpuColumn: ProcessColumn = { key: "cpu", label: "CPU", metric: true };
 
@@ -358,6 +601,12 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
     threads: 1,
     handles: 1,
     access_state: "full",
+    quality: {
+      cpu: { quality: "native", source: "direct_api" },
+      memory: { quality: "native", source: "direct_api" },
+      io: { quality: "native", source: "direct_api" },
+      network: { quality: "native", source: "direct_api" },
+    },
     ...overrides,
   };
 }

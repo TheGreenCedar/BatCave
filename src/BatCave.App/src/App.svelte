@@ -16,12 +16,14 @@
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
     accessLabel,
+    displayProcessMetricValue,
     formatBytes,
     formatOptionalRate,
     formatPercent,
     formatRate,
     metricQualityLabel,
     metricQualityShortLabel,
+    nextProcessMetricHistory,
     processMemoryQuality,
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
@@ -694,23 +696,39 @@
     if (nextProcess) {
       const nextRates = processTrendRates(nextProcess);
       processHistory = {
-        cpu: pushPoint(processHistory.cpu, nextProcess.cpu_percent),
-        memory: pushPoint(
+        cpu: nextProcessMetricHistory(
+          processHistory.cpu,
+          nextProcess.cpu_percent,
+          nextProcess.quality?.cpu,
+          historyPointLimit,
+        ),
+        memory: nextProcessMetricHistory(
           processHistory.memory,
           percentage(nextProcess.memory_bytes, Math.max(next.system.memory_total_bytes, 1)),
+          processMemoryQuality(nextProcess),
+          historyPointLimit,
         ),
-        readRate: pushPoint(processHistory.readRate, nextRates.readRate),
-        writeRate: pushPoint(processHistory.writeRate, nextRates.writeRate),
-        networkRate: pushPoint(processHistory.networkRate, nextRates.networkRate),
+        readRate: nextProcessMetricHistory(
+          processHistory.readRate,
+          nextRates.readRate,
+          nextProcess.quality?.io,
+          historyPointLimit,
+        ),
+        writeRate: nextProcessMetricHistory(
+          processHistory.writeRate,
+          nextRates.writeRate,
+          nextProcess.quality?.io,
+          historyPointLimit,
+        ),
+        networkRate: nextProcessMetricHistory(
+          processHistory.networkRate,
+          nextRates.networkRate,
+          nextProcess.quality?.network,
+          historyPointLimit,
+        ),
       };
     } else if (previousProcess) {
-      processHistory = {
-        cpu: pushPoint(processHistory.cpu, 0),
-        memory: pushPoint(processHistory.memory, 0),
-        readRate: pushPoint(processHistory.readRate, 0),
-        writeRate: pushPoint(processHistory.writeRate, 0),
-        networkRate: pushPoint(processHistory.networkRate, 0),
-      };
+      processHistory = emptyProcessTrendState();
     }
 
     history = {
@@ -987,11 +1005,36 @@
   function resetProcessHistory(process: ProcessSample): void {
     const rates = processTrendRates(process);
     processHistory = {
-      cpu: [process.cpu_percent],
-      memory: [percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1))],
-      readRate: [rates.readRate],
-      writeRate: [rates.writeRate],
-      networkRate: [rates.networkRate],
+      cpu: nextProcessMetricHistory(
+        [],
+        process.cpu_percent,
+        process.quality?.cpu,
+        historyPointLimit,
+      ),
+      memory: nextProcessMetricHistory(
+        [],
+        percentage(process.memory_bytes, Math.max(snapshot.system.memory_total_bytes, 1)),
+        processMemoryQuality(process),
+        historyPointLimit,
+      ),
+      readRate: nextProcessMetricHistory(
+        [],
+        rates.readRate,
+        process.quality?.io,
+        historyPointLimit,
+      ),
+      writeRate: nextProcessMetricHistory(
+        [],
+        rates.writeRate,
+        process.quality?.io,
+        historyPointLimit,
+      ),
+      networkRate: nextProcessMetricHistory(
+        [],
+        rates.networkRate,
+        process.quality?.network,
+        historyPointLimit,
+      ),
     };
   }
 
@@ -1212,10 +1255,7 @@
   function processNetworkLabel(process: ProcessSample): string {
     const quality = process.quality?.network;
     const rate = (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
-
-    if (quality?.quality === "unavailable") return "Unavailable";
-    if (quality?.quality === "held") return "Waiting";
-    return formatRate(rate);
+    return displayProcessMetricValue(rate, quality, formatRate);
   }
 
   function processSummary(process: ProcessSample): string {
@@ -1225,11 +1265,11 @@
       `PID: ${process.pid}`,
       `Parent PID: ${process.parent_pid ?? "--"}`,
       `Status: ${process.status}`,
-      `CPU (one-core-equivalent): ${formatPercent(process.cpu_percent)}`,
+      `CPU (one-core-equivalent): ${displayProcessMetricValue(process.cpu_percent, process.quality?.cpu, formatPercent)}`,
       `${presentation.memoryLabel}: ${residentMemoryValue(process, snapshot.environment.platform)}`,
       `${presentation.privateMemoryLabel}: ${privateMemoryValue(process, snapshot.environment.platform)}`,
-      `Read/write I/O rate: ${formatRate(processIoRate(process, processRates))}`,
-      `Other I/O rate: ${formatOptionalRate(processOtherIoRate(process, processRates))}`,
+      `Read/write I/O rate: ${displayProcessMetricValue(processIoRate(process, processRates), process.quality?.io, formatRate)}`,
+      `Other I/O rate: ${displayProcessMetricValue(processOtherIoRate(process, processRates), process.quality?.other_io, formatOptionalRate)}`,
       `Network: ${processNetworkLabel(process)}`,
       `Access: ${accessLabel(process.access_state)}`,
       `Memory quality: ${metricQualityLabel(processMemoryQuality(process) as MetricQualityInfo | undefined, "Measured")}`,

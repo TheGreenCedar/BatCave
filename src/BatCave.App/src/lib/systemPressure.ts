@@ -45,31 +45,11 @@ function topProcessContributor(
   metric: (process: ProcessSample) => number,
   quality: (process: ProcessSample) => MetricQualityInfo | undefined,
 ): { name: string | null; quality?: MetricQualityInfo; ambiguous: boolean } {
-  const process = processes
-    .filter((candidate) => contributorQualityIsPublishable(quality(candidate)))
-    .reduce<ProcessSample | null>(
-      (best, candidate) => (!best || metric(candidate) > metric(best) ? candidate : best),
-      null,
-    );
-  if (process && metric(process) > 0) {
-    return {
-      name: process.name,
-      quality: quality(process),
-      ambiguous: processes.filter((candidate) => candidate.name === process.name).length > 1,
-    };
-  }
-
-  const publishable = processes.filter((candidate) =>
-    contributorQualityIsPublishable(quality(candidate)),
-  );
-  const summaryCandidates = publishable.length > 0 ? publishable : processes;
-  const hasUnknownPublishableQuality = publishable.some(
-    (candidate) => quality(candidate) === undefined,
-  );
-  const qualityCandidates = summaryCandidates
+  const hasUnknownQuality = processes.some((candidate) => quality(candidate) === undefined);
+  const qualityCandidates = processes
     .map(quality)
     .filter((candidate): candidate is MetricQualityInfo => candidate !== undefined);
-  const summaryQuality = hasUnknownPublishableQuality
+  const coverageQuality = hasUnknownQuality
     ? undefined
     : qualityCandidates.reduce<MetricQualityInfo | undefined>((selected, candidate) => {
         if (!selected) return candidate;
@@ -77,7 +57,28 @@ function topProcessContributor(
         const selectedRank = contributorQualityRank(selected);
         return candidateRank > selectedRank ? candidate : selected;
       }, undefined);
-  return { name: null, quality: summaryQuality ?? undefined, ambiguous: false };
+  const coverageIsPublishable = processes.every((candidate) => {
+    const candidateQuality = quality(candidate);
+    return candidateQuality !== undefined && contributorQualityIsPublishable(candidateQuality);
+  });
+  const process = processes
+    .filter((candidate) => contributorQualityIsPublishable(quality(candidate)))
+    .reduce<ProcessSample | null>(
+      (best, candidate) => (!best || metric(candidate) > metric(best) ? candidate : best),
+      null,
+    );
+  if (process && metric(process) > 0) {
+    if (!coverageIsPublishable) {
+      return { name: null, quality: coverageQuality, ambiguous: false };
+    }
+    return {
+      name: process.name,
+      quality: coverageQuality,
+      ambiguous: processes.filter((candidate) => candidate.name === process.name).length > 1,
+    };
+  }
+
+  return { name: null, quality: coverageQuality, ambiguous: false };
 }
 
 function contributorQualityIsPublishable(quality: MetricQualityInfo | undefined): boolean {

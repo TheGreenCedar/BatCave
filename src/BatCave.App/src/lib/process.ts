@@ -349,29 +349,6 @@ export function sortIndicator(key: SortKey, activeKey: SortKey, direction: SortD
   return direction === "asc" ? "Asc" : "Desc";
 }
 
-export function processAccent(
-  process: ProcessSample | undefined,
-  processRates: Record<string, ProcessRates>,
-): string {
-  if (!process) {
-    return "Idle";
-  }
-
-  if (process.cpu_percent >= 30) {
-    return "Hot";
-  }
-
-  if (process.memory_bytes >= 900 * 1024 * 1024) {
-    return "Heavy";
-  }
-
-  if (processIoRate(process, processRates) >= 500 * 1024) {
-    return "I/O";
-  }
-
-  return "Normal";
-}
-
 export function processIdentity(process: ProcessSample): ProcessIdentity {
   const haystack = `${process.name} ${process.exe}`.toLocaleLowerCase();
   const name = process.name.toLocaleLowerCase();

@@ -1220,6 +1220,10 @@ fn top_process_contributor<T>(
 where
     T: Copy + Default + PartialOrd,
 {
+    let coverage_quality = process_contributor_coverage_quality(processes, quality);
+    let coverage_is_publishable = processes.iter().all(|process| {
+        quality(process).is_some_and(|quality| contributor_quality_is_publishable(Some(quality)))
+    });
     let winner = processes
         .iter()
         .filter(|process| contributor_quality_is_publishable(quality(process)))
@@ -1230,9 +1234,16 @@ where
         });
 
     if let Some(process) = winner.filter(|process| metric(process) > T::default()) {
+        if !coverage_is_publishable {
+            return ProcessContributor {
+                name: None,
+                quality: coverage_quality,
+                ambiguous: false,
+            };
+        }
         return ProcessContributor {
             name: Some(process.name.clone()),
-            quality: quality(process).cloned(),
+            quality: coverage_quality,
             ambiguous: processes
                 .iter()
                 .filter(|candidate| candidate.name == process.name)
@@ -1241,33 +1252,26 @@ where
         };
     }
 
-    let publishable = processes
-        .iter()
-        .filter(|process| contributor_quality_is_publishable(quality(process)))
-        .collect::<Vec<_>>();
-    let summary_quality = if publishable.is_empty() {
-        processes
-            .iter()
-            .filter_map(quality)
-            .max_by_key(|quality| contributor_quality_rank(quality.quality))
-            .cloned()
-    } else {
-        (!publishable.iter().any(|process| quality(process).is_none()))
-            .then(|| {
-                publishable
-                    .into_iter()
-                    .filter_map(quality)
-                    .max_by_key(|quality| contributor_quality_rank(quality.quality))
-                    .cloned()
-            })
-            .flatten()
-    };
-
     ProcessContributor {
         name: None,
-        quality: summary_quality,
+        quality: coverage_quality,
         ambiguous: false,
     }
+}
+
+fn process_contributor_coverage_quality(
+    processes: &[ProcessSample],
+    quality: ProcessQualityAccessor,
+) -> Option<MetricQualityInfo> {
+    (!processes.iter().any(|process| quality(process).is_none()))
+        .then(|| {
+            processes
+                .iter()
+                .filter_map(quality)
+                .max_by_key(|quality| contributor_quality_rank(quality.quality))
+                .cloned()
+        })
+        .flatten()
 }
 
 fn contributor_quality_is_publishable(quality: Option<&MetricQualityInfo>) -> bool {
@@ -1926,7 +1930,7 @@ mod tests {
     }
 
     #[test]
-    fn process_contributor_quality_excludes_unavailable_and_preserves_valid_zero() {
+    fn process_contributor_quality_excludes_unpublishable_winners_and_limits_zero_coverage() {
         let quality = |value| {
             Some(crate::contracts::ProcessMetricQuality {
                 cpu: Some(MetricQualityInfo::new(value, MetricSource::DirectApi)),
@@ -1940,10 +1944,24 @@ mod tests {
 
         let selected = summarize_process_contributors(&[unavailable_high.clone(), estimated_lower]);
 
-        assert_eq!(selected.cpu.as_deref(), Some("EstimatedLower"));
+        assert_eq!(selected.cpu, None);
         assert_eq!(
             selected.cpu_quality.as_ref().map(|quality| quality.quality),
-            Some(MetricQuality::Estimated)
+            Some(MetricQuality::Unavailable)
+        );
+
+        let mut native_positive = sample("21", "NativePositive", 25.0);
+        native_positive.quality = quality(MetricQuality::Native);
+        let mut held_placeholder = sample("22", "HeldPlaceholder", 0.0);
+        held_placeholder.quality = quality(MetricQuality::Held);
+        let blocked_positive = summarize_process_contributors(&[native_positive, held_placeholder]);
+        assert_eq!(blocked_positive.cpu, None);
+        assert_eq!(
+            blocked_positive
+                .cpu_quality
+                .as_ref()
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
         );
 
         let unavailable = summarize_process_contributors(&[unavailable_high.clone()]);
@@ -1962,7 +1980,18 @@ mod tests {
         assert_eq!(quiet.cpu, None);
         assert_eq!(
             quiet.cpu_quality.as_ref().map(|quality| quality.quality),
-            Some(MetricQuality::Native)
+            Some(MetricQuality::Unavailable)
+        );
+
+        let mut held_zero = sample("31", "HeldZero", 0.0);
+        held_zero.quality = quality(MetricQuality::Held);
+        let mut native_zero_with_held = sample("32", "NativeZeroWithHeld", 0.0);
+        native_zero_with_held.quality = quality(MetricQuality::Native);
+        let pending = summarize_process_contributors(&[native_zero_with_held, held_zero]);
+        assert_eq!(pending.cpu, None);
+        assert_eq!(
+            pending.cpu_quality.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Held)
         );
 
         let mut partial_zero = sample("40", "PartialZero", 0.0);
@@ -1978,8 +2007,9 @@ mod tests {
 
         let mut known_zero = sample("42", "KnownZero", 0.0);
         known_zero.quality = quality(MetricQuality::Native);
-        let unknown =
-            summarize_process_contributors(&[known_zero, sample("50", "UnknownZero", 0.0)]);
+        let mut unknown_zero = sample("50", "UnknownZero", 0.0);
+        unknown_zero.quality = None;
+        let unknown = summarize_process_contributors(&[known_zero, unknown_zero]);
         assert_eq!(unknown.cpu, None);
         assert_eq!(unknown.cpu_quality, None);
     }
@@ -2634,7 +2664,25 @@ mod tests {
             threads: 1,
             handles: 1,
             access_state: AccessState::Full,
-            quality: None,
+            quality: Some(ProcessMetricQuality {
+                cpu: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                memory: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                io: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                network: Some(MetricQualityInfo::new(
+                    MetricQuality::Native,
+                    MetricSource::DirectApi,
+                )),
+                ..ProcessMetricQuality::default()
+            }),
         }
     }
 }
