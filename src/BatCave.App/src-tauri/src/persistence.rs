@@ -80,18 +80,18 @@ pub(crate) fn resolve_current_user_root(
         StoragePlatform::Macos => environment
             .home
             .as_ref()
-            .filter(|home| is_safe_absolute_path(home))
+            .filter(|home| is_safe_absolute_posix_path(home))
             .map(|home| home.join("Library").join("Application Support")),
         StoragePlatform::Linux => environment
             .xdg_data_home
             .as_ref()
-            .filter(|root| is_safe_absolute_path(root))
+            .filter(|root| is_safe_absolute_posix_path(root))
             .cloned()
             .or_else(|| {
                 environment
                     .home
                     .as_ref()
-                    .filter(|home| is_safe_absolute_path(home))
+                    .filter(|home| is_safe_absolute_posix_path(home))
                     .map(|home| home.join(".local").join("share"))
             }),
         StoragePlatform::Unsupported => None,
@@ -111,14 +111,12 @@ pub(crate) fn resolve_current_user_root(
     })
 }
 
-fn is_safe_absolute_path(path: &Path) -> bool {
-    path.is_absolute()
-        && path.components().all(|component| {
-            !matches!(
-                component,
-                std::path::Component::ParentDir | std::path::Component::CurDir
-            )
-        })
+fn is_safe_absolute_posix_path(path: &Path) -> bool {
+    let value = path.as_os_str().to_string_lossy();
+    value.starts_with('/')
+        && !value
+            .split('/')
+            .any(|component| matches!(component, "." | ".."))
 }
 
 fn is_absolute_windows_local_path(path: &Path) -> bool {
@@ -263,8 +261,22 @@ impl PersistenceFailure {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermissionVerification {
+    #[cfg_attr(
+        windows,
+        allow(
+            dead_code,
+            reason = "Unix ownership and mode checks can prove a private root"
+        )
+    )]
     VerifiedPrivate,
     Unverified,
+    #[cfg_attr(
+        windows,
+        allow(
+            dead_code,
+            reason = "Unix ownership and mode checks can reject an unsafe root"
+        )
+    )]
     Invalid,
 }
 
@@ -1293,11 +1305,28 @@ mod tests {
             assert_eq!(failure.operation, PersistenceOperation::ResolveRoot);
         }
 
-        for home in ["", "relative", "/Users/albert/../other"] {
+        for home in [
+            "",
+            "relative",
+            "/Users/albert/../other",
+            "/Users/albert/./other",
+        ] {
             let failure = resolve_current_user_root(
                 StoragePlatform::Macos,
                 &CurrentUserEnvironment {
                     home: Some(PathBuf::from(home)),
+                    ..CurrentUserEnvironment::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(failure.operation, PersistenceOperation::ResolveRoot);
+        }
+
+        for xdg_data_home in ["", "relative", "/var/../other", "/var/./other"] {
+            let failure = resolve_current_user_root(
+                StoragePlatform::Linux,
+                &CurrentUserEnvironment {
+                    xdg_data_home: Some(PathBuf::from(xdg_data_home)),
                     ..CurrentUserEnvironment::default()
                 },
             )

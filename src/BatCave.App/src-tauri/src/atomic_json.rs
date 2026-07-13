@@ -12,6 +12,10 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicWriteOperation {
     CreateDirectory,
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "Unix private-directory setup reports this stage")
+    )]
     SetPermissions,
     CreateTemporary,
     Write,
@@ -21,13 +25,28 @@ pub(crate) enum AtomicWriteOperation {
         allow(dead_code, reason = "MoveFileEx replacement is Windows-only")
     )]
     Replace,
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "Unix atomic replacement reports rename failures")
+    )]
     Rename,
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "Unix durability includes a parent-directory sync")
+    )]
     SyncDirectory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicWriteEffect {
     NotCommitted,
+    #[cfg_attr(
+        windows,
+        allow(
+            dead_code,
+            reason = "Unix can commit a rename before parent-directory sync fails"
+        )
+    )]
     CommittedDurabilityUncertain,
 }
 
@@ -49,6 +68,13 @@ impl AtomicWriteError {
         }
     }
 
+    #[cfg_attr(
+        windows,
+        allow(
+            dead_code,
+            reason = "Unix reports a committed rename whose directory sync failed"
+        )
+    )]
     fn committed_durability_uncertain(
         operation: AtomicWriteOperation,
         path: impl Into<PathBuf>,
