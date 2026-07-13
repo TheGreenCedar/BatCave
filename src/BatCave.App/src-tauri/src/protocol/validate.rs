@@ -269,7 +269,10 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
         }
         let quality = payload.quality_codes[usize::from(contributor.quality_code)];
         if contributor.process_id.is_some()
-            && (contributor.display_name.is_none()
+            && (contributor
+                .display_name
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
                 || contributor.available_contributors != contributor.total_contributors
                 || contributor.total_contributors == 0
                 || matches!(
@@ -654,6 +657,15 @@ fn validate_health(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
         }
         _ => {}
     }
+    if !health.degraded
+        && (matches!(health.engine_state, Some(RuntimeEngineStateV3::Fatal))
+            || matches!(
+                health.collector_state,
+                Some(RuntimeCollectorStateV3::Limited | RuntimeCollectorStateV3::Unavailable)
+            ))
+    {
+        return Err("protocol_health_degraded_state_invalid".to_string());
+    }
     if !matches!(health.engine_state, Some(RuntimeEngineStateV3::Fatal)) {
         if payload.settings.collection_paused
             && !matches!(
@@ -766,12 +778,25 @@ fn valid_process_id(id: &str, sample_seq: u64) -> bool {
         return false;
     }
     match (parts.next(), parts.next(), parts.next()) {
-        (Some("publication"), Some(sequence), None) => sequence
-            .parse::<u64>()
-            .is_ok_and(|value| value == sample_seq),
-        (Some(start_time), None, None) => start_time.parse::<u64>().is_ok_and(|value| value > 0),
+        (Some("publication"), Some(sequence), None) => {
+            valid_js_safe_decimal(sequence, true).is_some_and(|value| value == sample_seq)
+        }
+        (Some(start_time), None, None) => valid_js_safe_decimal(start_time, false).is_some(),
         _ => false,
     }
+}
+
+fn valid_js_safe_decimal(value: &str, allow_zero: bool) -> Option<u64> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|parsed| *parsed <= JS_MAX_SAFE_INTEGER && (allow_zero || *parsed > 0))
 }
 
 fn validate_observations(

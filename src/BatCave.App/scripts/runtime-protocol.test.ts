@@ -287,9 +287,39 @@ test("reader rejects descriptor, value, and membership corruption", () => {
   payload(impossibleFatal).health.engine_state = "fatal";
   assertMismatch(impossibleFatal, "fatal");
 
+  const nondegradedFatal = structuredClone(windows);
+  const nondegradedFatalPayload = payload(nondegradedFatal);
+  nondegradedFatalPayload.health.engine_state = "fatal";
+  nondegradedFatalPayload.health.fatal_error = {
+    code: "runtime_failed",
+    message: "The runtime failed.",
+    occurred_at_ms: nondegradedFatalPayload.published_at_ms,
+  };
+  assertMismatch(nondegradedFatal, "must be degraded");
+
+  const nondegradedLimited = structuredClone(windows);
+  payload(nondegradedLimited).health.engine_state = "running";
+  payload(nondegradedLimited).health.collector_state = "limited";
+  assertMismatch(nondegradedLimited, "must be degraded");
+  payload(nondegradedLimited).health.degraded = true;
+  assert.equal(decodeProtocolEnvelope(nondegradedLimited).kind, "snapshot");
+
+  const nondegradedUnavailable = structuredClone(windows);
+  payload(nondegradedUnavailable).health.engine_state = "running";
+  payload(nondegradedUnavailable).health.collector_state = "unavailable";
+  assertMismatch(nondegradedUnavailable, "must be degraded");
+
   const forgedRelease = structuredClone(windows);
   payload(forgedRelease).environment.release_identity.source_commit_sha = "not-a-sha";
   assertMismatch(forgedRelease, "release identity");
+
+  const multibyteReleaseBoundary = structuredClone(windows);
+  payload(multibyteReleaseBoundary).environment.release_identity.app_version = "é".repeat(32);
+  assert.equal(decodeProtocolEnvelope(multibyteReleaseBoundary).kind, "snapshot");
+
+  const multibyteRelease = structuredClone(windows);
+  payload(multibyteRelease).environment.release_identity.app_version = "é".repeat(40);
+  assertMismatch(multibyteRelease, "release identity");
 
   const healthyNothing = structuredClone(windows);
   payload(healthyNothing).persistence = {
@@ -352,6 +382,23 @@ test("reader rejects descriptor, value, and membership corruption", () => {
   const contributorNameWithoutIdentity = structuredClone(windows);
   payload(contributorNameWithoutIdentity).contributors[3].display_name = "orphan";
   assertMismatch(contributorNameWithoutIdentity, "name lacks stable identity");
+
+  const blankContributorName = structuredClone(windows);
+  payload(blankContributorName).contributors[0].display_name = " \t ";
+  assertMismatch(blankContributorName, "identity is inconsistent");
+
+  const maxSafeContributorIdentity = structuredClone(windows);
+  payload(maxSafeContributorIdentity).contributors[0].process_id = "process:1234:9007199254740991";
+  assert.equal(decodeProtocolEnvelope(maxSafeContributorIdentity).kind, "snapshot");
+
+  for (const processId of [
+    "process:1234:9007199254740992",
+    "process:1234:9999999999999999999999999999999999999999",
+  ]) {
+    const unsafeContributorIdentity = structuredClone(windows);
+    payload(unsafeContributorIdentity).contributors[0].process_id = processId;
+    assertMismatch(unsafeContributorIdentity, "metadata is malformed");
+  }
 
   const activeWithoutSource = structuredClone(windows);
   payload(activeWithoutSource).privileged_collection.state = "active";

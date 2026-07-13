@@ -509,6 +509,13 @@ function validatePayload(input: unknown): string | null {
   )
     return "Nonfatal runtime engine state cannot carry a fatal error.";
   if (
+    !health.degraded &&
+    (health.engine_state === "fatal" ||
+      health.collector_state === "limited" ||
+      health.collector_state === "unavailable")
+  )
+    return "Runtime failure or limited collection state must be degraded.";
+  if (
     health.engine_state !== null &&
     health.engine_state !== "fatal" &&
     payload.settings.collection_paused !== (health.engine_state === "paused")
@@ -802,7 +809,7 @@ function validReleaseIdentity(value: unknown): boolean {
   if (
     typeof value.app_version !== "string" ||
     value.app_version.trim().length === 0 ||
-    [...value.app_version].length > 64
+    new TextEncoder().encode(value.app_version).length > 64
   )
     return false;
   return (
@@ -1005,7 +1012,7 @@ function validateWorkloads(input: unknown, payload: Record<string, any>): string
     const quality = payload.quality_codes[contributor.quality_code];
     if (
       contributor.process_id !== null &&
-      (contributor.display_name === null ||
+      (!nonEmptyString(contributor.display_name) ||
         contributor.available_contributors !== contributor.total_contributors ||
         contributor.total_contributors === 0 ||
         quality === "held" ||
@@ -1177,8 +1184,12 @@ function networkScopeDefinition(
 }
 
 function validProcessId(value: string, sampleSeq: number): boolean {
-  const match = /^process:[^:]+:(?:[1-9]\d*|publication:(\d+))$/.exec(value);
-  return match !== null && (match[1] === undefined || Number(match[1]) === sampleSeq);
+  const match = /^process:[^:]+:(?:([1-9]\d*)|publication:(0|[1-9]\d*))$/.exec(value);
+  if (match === null) return false;
+  const numericComponent = Number(match[1] ?? match[2]);
+  return (
+    safeInteger(numericComponent) && (match[1] !== undefined || numericComponent === sampleSeq)
+  );
 }
 
 function validIndex(index: unknown, length: number): index is number | null {

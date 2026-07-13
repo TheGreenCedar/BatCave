@@ -638,6 +638,48 @@ mod tests {
             Err("protocol_fatal_state_without_error".to_string())
         );
 
+        let mut nondegraded_fatal = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut nondegraded_fatal.event else {
+            unreachable!()
+        };
+        payload.health.engine_state = Some(RuntimeEngineStateV3::Fatal);
+        payload.health.fatal_error = Some(RuntimeFatalErrorV3 {
+            code: "runtime_failed".to_string(),
+            message: "The runtime failed.".to_string(),
+            occurred_at_ms: payload.published_at_ms,
+        });
+        assert_eq!(
+            validate_envelope(&nondegraded_fatal),
+            Err("protocol_health_degraded_state_invalid".to_string())
+        );
+
+        let mut nondegraded_limited = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut nondegraded_limited.event else {
+            unreachable!()
+        };
+        payload.health.engine_state = Some(RuntimeEngineStateV3::Running);
+        payload.health.collector_state = Some(RuntimeCollectorStateV3::Limited);
+        assert_eq!(
+            validate_envelope(&nondegraded_limited),
+            Err("protocol_health_degraded_state_invalid".to_string())
+        );
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut nondegraded_limited.event else {
+            unreachable!()
+        };
+        payload.health.degraded = true;
+        assert_eq!(validate_envelope(&nondegraded_limited), Ok(()));
+
+        let mut nondegraded_unavailable = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut nondegraded_unavailable.event else {
+            unreachable!()
+        };
+        payload.health.engine_state = Some(RuntimeEngineStateV3::Running);
+        payload.health.collector_state = Some(RuntimeCollectorStateV3::Unavailable);
+        assert_eq!(
+            validate_envelope(&nondegraded_unavailable),
+            Err("protocol_health_degraded_state_invalid".to_string())
+        );
+
         let mut healthy_without_persistence = envelope.clone();
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut healthy_without_persistence.event else {
             unreachable!()
@@ -718,6 +760,23 @@ mod tests {
         assert_eq!(
             validate_envelope(&invalid_release_identity),
             Err("protocol_release_commit_invalid".to_string())
+        );
+
+        let mut multibyte_release_boundary = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut multibyte_release_boundary.event else {
+            unreachable!()
+        };
+        payload.environment.release_identity.app_version = "é".repeat(32);
+        assert_eq!(validate_envelope(&multibyte_release_boundary), Ok(()));
+
+        let mut multibyte_release_identity = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut multibyte_release_identity.event else {
+            unreachable!()
+        };
+        payload.environment.release_identity.app_version = "é".repeat(40);
+        assert_eq!(
+            validate_envelope(&multibyte_release_identity),
+            Err("protocol_release_version_invalid".to_string())
         );
 
         let mut forged_identity = envelope;
@@ -1029,6 +1088,38 @@ mod tests {
             validate_envelope(&name_without_identity),
             Err("protocol_contributor_name_without_identity".to_string())
         );
+
+        let mut blank_name = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut blank_name.event else {
+            unreachable!()
+        };
+        payload.contributors[0].display_name = Some(" \t ".to_string());
+        assert_eq!(
+            validate_envelope(&blank_name),
+            Err("protocol_contributor_identity_invalid".to_string())
+        );
+
+        let mut max_safe_identity = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut max_safe_identity.event else {
+            unreachable!()
+        };
+        payload.contributors[0].process_id = Some("process:1234:9007199254740991".to_string());
+        assert_eq!(validate_envelope(&max_safe_identity), Ok(()));
+
+        for process_id in [
+            "process:1234:9007199254740992",
+            "process:1234:9999999999999999999999999999999999999999",
+        ] {
+            let mut unsafe_identity = envelope.clone();
+            let ProtocolEvent::RuntimeSnapshot(payload) = &mut unsafe_identity.event else {
+                unreachable!()
+            };
+            payload.contributors[0].process_id = Some(process_id.to_string());
+            assert_eq!(
+                validate_envelope(&unsafe_identity),
+                Err("protocol_contributor_identity_malformed".to_string())
+            );
+        }
 
         let mut held_without_explanation = envelope.clone();
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut held_without_explanation.event else {
