@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::collections::VecDeque;
+
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -41,6 +44,8 @@ pub struct ElevatedHelperClient {
     pipe: Option<NamedPipeServer>,
     process: Option<ElevatedHelperProcess>,
     stopped: bool,
+    #[cfg(test)]
+    scripted_polls: VecDeque<Result<ElevatedPoll, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,10 +104,17 @@ impl ElevatedHelperClient {
             pipe,
             process,
             stopped: false,
+            #[cfg(test)]
+            scripted_polls: VecDeque::new(),
         })
     }
 
     pub fn poll_rows(&mut self) -> Result<ElevatedPoll, String> {
+        #[cfg(test)]
+        if let Some(poll) = self.scripted_polls.pop_front() {
+            return poll;
+        }
+
         if self
             .process
             .as_ref()
@@ -199,6 +211,31 @@ impl ElevatedHelperClient {
 
     pub fn remove_stale_artifacts(base_dir: &Path) {
         remove_helper_artifacts(base_dir);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scripted_for_test(
+        base_dir: &Path,
+        polls: Vec<Result<ElevatedPoll, String>>,
+    ) -> Self {
+        fs::create_dir_all(base_dir).expect("scripted helper directory exists");
+        Self {
+            data_file: base_dir.join("snapshot.json"),
+            stop_file: base_dir.join("stop.signal"),
+            token: "scripted-token".to_string(),
+            last_seq: 0,
+            started_at: Instant::now(),
+            last_snapshot_at: None,
+            collect_process_network: false,
+            last_warnings: Vec::new(),
+            recovering_detail: None,
+            read_buffer: Vec::new(),
+            #[cfg(windows)]
+            pipe: None,
+            process: None,
+            stopped: false,
+            scripted_polls: polls.into(),
+        }
     }
 
     fn accept_snapshot_payload(&mut self, payload: &str) -> Result<Option<ElevatedPoll>, String> {
@@ -1545,23 +1582,9 @@ mod tests {
     }
 
     fn test_client(base_dir: &Path) -> ElevatedHelperClient {
-        fs::create_dir_all(base_dir).expect("test dir exists");
-        ElevatedHelperClient {
-            data_file: base_dir.join("snapshot.json"),
-            stop_file: base_dir.join("stop.signal"),
-            token: "token".to_string(),
-            last_seq: 0,
-            started_at: Instant::now(),
-            last_snapshot_at: None,
-            collect_process_network: false,
-            last_warnings: Vec::new(),
-            recovering_detail: None,
-            read_buffer: Vec::new(),
-            #[cfg(windows)]
-            pipe: None,
-            process: None,
-            stopped: false,
-        }
+        let mut client = ElevatedHelperClient::scripted_for_test(base_dir, Vec::new());
+        client.token = "token".to_string();
+        client
     }
 
     fn payload(token: &str, seq: u64, rows: Vec<ProcessSample>) -> String {

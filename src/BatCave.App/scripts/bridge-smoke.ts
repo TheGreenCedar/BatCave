@@ -5,6 +5,7 @@ import {
   readNativeSnapshot,
   refreshRuntime,
   setRuntimePaused,
+  setRuntimeAdminMode,
   setRuntimeProcessQuery,
   setRuntimeSampleInterval,
   type RuntimeInvoke,
@@ -31,8 +32,15 @@ function snapshot(seq: number) {
     environment: {
       platform: "windows",
       admin_mode_available: true,
+      process_elevation: "standard",
       install_kind: "nsis",
       data_directory: "C:\\Users\\test\\BatCaveMonitor",
+    },
+    admin_mode: {
+      state: "off",
+      source: "none",
+      detail: null,
+      last_success_at_ms: null,
     },
     settings: {
       query: {
@@ -128,6 +136,8 @@ await setRuntimePaused(invoke, true);
 await setRuntimePaused(invoke, false);
 await refreshRuntime(invoke);
 await setRuntimeSampleInterval(invoke, 2000);
+await setRuntimeAdminMode(invoke, true);
+await setRuntimeAdminMode(invoke, false);
 await setRuntimeProcessQuery(invoke, {
   filter_text: "chrome",
   focus_mode: "io",
@@ -144,6 +154,8 @@ assert.deepEqual(
     ["resume_runtime", undefined],
     ["refresh_now", undefined],
     ["set_sample_interval", { sampleIntervalMs: 2000 }],
+    ["set_admin_mode", { enabled: true }],
+    ["set_admin_mode", { enabled: false }],
     [
       "set_process_query",
       {

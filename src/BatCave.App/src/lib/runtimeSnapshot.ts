@@ -26,11 +26,13 @@ export function makeEmptySnapshot(
     environment: {
       platform,
       admin_mode_available: false,
+      process_elevation: "not_applicable",
       install_kind: "portable",
       data_directory: null,
     },
     admin_mode: {
       state: "unavailable",
+      source: "none",
       detail: null,
       last_success_at_ms: null,
     },
@@ -115,4 +117,15 @@ export function hasNewRuntimeSample(
   incoming: Pick<RuntimeSnapshot, "sample_seq">,
 ): boolean {
   return incoming.sample_seq > current.sample_seq;
+}
+
+export function shouldApplyRuntimePublication(
+  current: Pick<RuntimeSnapshot, "publication_seq">,
+  incoming: Pick<RuntimeSnapshot, "publication_seq">,
+): boolean {
+  return incoming.publication_seq >= current.publication_seq;
+}
+
+export function shouldPollRuntime(paused: boolean, nativeRuntime: boolean): boolean {
+  return !paused || nativeRuntime;
 }

@@ -35,12 +35,22 @@ export interface ProcessContributorSummary {
 export interface RuntimeEnvironment {
   platform: RuntimePlatform;
   admin_mode_available: boolean;
+  process_elevation: RuntimeProcessElevation;
   install_kind: RuntimeInstallKind;
   data_directory: string | null;
 }
 
 export type RuntimePlatform = "windows" | "linux" | "macos" | "fixture";
-export type RuntimeInstallKind = "nsis" | "appimage" | "deb" | "dmg" | "portable";
+export type RuntimeProcessElevation = "unknown" | "standard" | "elevated" | "not_applicable";
+export type RuntimeInstallKind =
+  | "unknown"
+  | "nsis"
+  | "appimage"
+  | "deb"
+  | "dmg"
+  | "app_bundle"
+  | "portable"
+  | "development";
 
 export type RuntimeAdminModeState =
   | "unavailable"
@@ -52,9 +62,12 @@ export type RuntimeAdminModeState =
 
 export interface RuntimeAdminModeStatus {
   state: RuntimeAdminModeState;
+  source: RuntimePrivilegedSource;
   detail: string | null;
   last_success_at_ms: number | null;
 }
+
+export type RuntimePrivilegedSource = "none" | "current_process" | "elevated_helper";
 
 export type RuntimeTelemetrySource =
   | "tauri_runtime"

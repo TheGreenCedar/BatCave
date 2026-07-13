@@ -138,9 +138,10 @@ The native app exposes a small snake_case JSON contract through Tauri commands:
 - `resume_runtime`
 - `set_sample_interval`
 - `set_process_query`
-- `get_process_icon`
+- `set_admin_mode`
+- `get_process_icons`
 
-`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, cadence, and error publications cannot create fake chart samples. `environment` reports `platform`, `install_kind`, and the resolved local data directory. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
+`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, cadence, and error publications cannot create fake chart samples. `environment` reports `platform`, current-process `process_elevation`, runtime-derived `install_kind`, and the resolved local data directory. `admin_mode.source` separately reports whether privileged collection comes from the current process or the local elevated helper. Windows distinguishes an NSIS install whose registry location matches the running executable from portable and development binaries. Linux checks AppImage runtime state or local Debian package ownership. macOS distinguishes development, app-bundle, and standalone portable runtimes without claiming the app's original download container. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
 
 The Rust runtime store owns settings, pause/resume state, refresh cadence, query shaping, admin-mode preference, warm cache, diagnostics, health budgets, byte-rate derivation, and local JSON persistence.
 
@@ -163,6 +164,8 @@ Selecting a group shows aggregate CPU, memory, read/write I/O, network, and thre
 ## Platform Telemetry Notes
 
 Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, commit totals, kernel paged/nonpaged pool, top kernel pool tags with best-effort local driver candidates, system cache, interface network totals, and PDH physical-disk rates. Windows exposes commit through `memory_accounting` and omits cross-platform swap and process virtual-memory fields instead of relabeling commit charge.
+
+Windows current-process status comes from `GetTokenInformation(TokenElevation)`. An elevated token is reported as an administrator token; a standard token stays standard; a failed query is unknown. That truth does not change when the local elevated helper becomes active. The helper has its own source and lifecycle state, so a cancelled or denied UAC request leaves standard monitoring running and exposes a retry action. Linux and macOS report this Windows-specific helper capability as unavailable.
 
 Kernel pool tag driver names are candidates, not proof of ownership. BatCave reads current pool-tag usage from Windows and scans local installed `.sys` binaries for matching tag bytes when the app needs a driver clue for a leaking pool bucket. That local driver scan is cached and runs outside the telemetry hot path, so candidate names may appear after the first pool-tag snapshot.
 
