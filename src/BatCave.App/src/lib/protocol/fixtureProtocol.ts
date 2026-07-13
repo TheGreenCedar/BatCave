@@ -18,6 +18,10 @@ import { decodeProtocolEnvelope } from "./runtimeProtocol.ts";
 
 const qualityCodes: MetricQualityV3[] = ["native", "estimated", "held", "partial", "unavailable"];
 
+export function canonicalKernelPoolStableId(tag: string, kind: "paged" | "nonpaged"): string {
+  return `system:local:pool:${tag}:${kind}`.toLocaleLowerCase();
+}
+
 export function roundTripFixtureSnapshot(snapshot: RuntimeSnapshot): RuntimeSnapshot {
   const decoded = decodeProtocolEnvelope(encodeFixtureSnapshot(snapshot));
   if (decoded.kind !== "snapshot") throw new Error(decoded.mismatch.message);
@@ -392,7 +396,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
         ],
       })),
       kernel_pool_tags: (accounting?.kernel_pool_tags ?? []).map((tag) => ({
-        stable_id: `system:local:pool:${tag.tag}:${tag.kind}`,
+        stable_id: canonicalKernelPoolStableId(tag.tag, tag.kind),
         tag: tag.tag,
         kind: tag.kind,
         driver_candidates: tag.driver_candidates,

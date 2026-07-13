@@ -179,7 +179,7 @@ fn encode_snapshot_with_identity(
             minimum_reader_version: RUNTIME_PROTOCOL_VERSION,
             breaking: true,
         },
-        event: ProtocolEvent::RuntimeSnapshot(payload),
+        event: ProtocolEvent::RuntimeSnapshot(Box::new(payload)),
     };
     validate_envelope(&envelope)?;
     Ok(envelope)
@@ -972,7 +972,7 @@ fn io_total_quality(rate_quality: Option<&MetricQualityInfo>) -> Option<MetricQu
     let quality = rate_quality?;
     let pending = quality.quality == MetricQuality::Held
         && quality.limitation_code == Some(MetricLimitationCode::PendingBaseline);
-    pending.then(|| MetricQualityInfo {
+    pending.then_some(MetricQualityInfo {
         quality: match quality.source {
             Some(MetricSource::Sysinfo) => MetricQuality::Estimated,
             _ => MetricQuality::Native,

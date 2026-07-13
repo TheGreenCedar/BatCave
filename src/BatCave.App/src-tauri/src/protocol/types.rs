@@ -23,7 +23,7 @@ pub struct Compatibility {
 #[cfg_attr(test, derive(TS))]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum ProtocolEvent {
-    RuntimeSnapshot(RuntimeSnapshotPayloadV3),
+    RuntimeSnapshot(Box<RuntimeSnapshotPayloadV3>),
     ProtocolMismatch(ProtocolMismatchPayload),
 }
 

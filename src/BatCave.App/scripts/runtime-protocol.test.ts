@@ -7,6 +7,7 @@ import type {
   RuntimeSnapshotPayloadV3,
   WorkloadDetailV3,
 } from "../src/lib/generated/runtime-protocol-v3.ts";
+import { canonicalKernelPoolStableId } from "../src/lib/protocol/fixtureProtocol.ts";
 import { adaptRuntimePayload } from "../src/lib/protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope } from "../src/lib/protocol/runtimeProtocol.ts";
 
@@ -71,6 +72,10 @@ test("production fixture validates and preserves workload identity and order", (
       intervalMetric ? decoded.payload.settings.effective_sample_interval_ms : null,
     );
   }
+});
+
+test("dynamic fixture pool tags use canonical protocol identities", () => {
+  assert.equal(canonicalKernelPoolStableId("Leak", "nonpaged"), "system:local:pool:leak:nonpaged");
 });
 
 test("process identifiers require canonical JavaScript-safe decimal PID segments", () => {

@@ -1064,7 +1064,11 @@ mod tests {
         );
         assert_eq!(
             quality.network.map(|quality| quality.quality),
-            Some(MetricQuality::Unavailable)
+            Some(if cfg!(windows) {
+                MetricQuality::Held
+            } else {
+                MetricQuality::Unavailable
+            })
         );
     }
 
