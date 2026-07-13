@@ -31,10 +31,10 @@ Payload measurements are checked in at [`docs/evidence/dto-payload-spike-2026071
 
 | Strategy | Bytes | Change from v2 | Local parse p95 |
 | --- | ---: | ---: | ---: |
-| Current version 2 | 12,598,718 | baseline | 20.505 ms |
-| Metadata on every value | 16,093,433 | +27.7% | 33.717 ms |
-| Metadata repeated per family | 9,903,237 | -21.4% | 20.515 ms |
-| Shared descriptor catalog | 4,018,609 | -68.1% | 10.160 ms |
+| Current version 2 | 12,316,618 | baseline | 21.769 ms |
+| Metadata on every value | 16,093,433 | +30.7% | 27.664 ms |
+| Metadata repeated per family | 9,903,237 | -19.6% | 29.232 ms |
+| Shared descriptor catalog | 4,018,609 | -67.4% | 11.013 ms |
 
 Timings are directional local measurements. Serialized byte counts are deterministic for the fixture and are the primary architecture evidence.
 
@@ -63,7 +63,7 @@ The checked shared-catalog result passes those size and local timing budgets. Th
 
 - Continue handwritten Rust/TypeScript transport mirrors: low immediate cost, but it preserves the drift this spike is meant to remove.
 - Generate the existing runtime structs in place: optional-field and `u64` behavior makes the declarations misleading without a contract cleanup.
-- Repeat metadata per value: it is 27.7% larger than version 2 and fails the payload budget.
+- Repeat metadata per value: it is 30.7% larger than version 2 and fails the payload budget.
 - Repeat metadata per family: removing duplicate view rows makes it smaller than version 2, but it is still 2.46 times the selected shared-catalog payload and repeats invariant meaning in every workload.
 - Add JSON Schema, OpenAPI, Specta, or another general schema layer: no second schema consumer justifies the extra framework.
 - Generate frontend view models: presentation needs differ from transport stability and would couple UI refactors to IPC versioning.

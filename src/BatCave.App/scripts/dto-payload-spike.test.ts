@@ -11,6 +11,31 @@ test("the baseline preserves the real v2 envelope and duplicated view rows", () 
   assert.equal(payload.event_kind, "runtime_snapshot");
   assert.ok(payload.processes[0].quality.cpu);
   assert.equal(typeof payload.processes[0].disk_read_total_bytes, "number");
+  assert.deepEqual(Object.keys(payload.processes[0]).sort(), [
+    "access_state",
+    "cpu_percent",
+    "disk_read_bps",
+    "disk_read_total_bytes",
+    "disk_write_bps",
+    "disk_write_total_bytes",
+    "exe",
+    "handles",
+    "kernel_cpu_percent",
+    "memory_bytes",
+    "name",
+    "network_received_bps",
+    "network_transmitted_bps",
+    "other_io_bps",
+    "other_io_total_bytes",
+    "parent_pid",
+    "pid",
+    "private_bytes",
+    "quality",
+    "start_time_ms",
+    "status",
+    "threads",
+    "virtual_memory_bytes",
+  ]);
   assert.ok(payload.process_view_rows.some((row) => row.kind === "group"));
   assert.ok(payload.process_view_rows.some((row) => row.process?.quality));
   assert.ok(payload.system.memory_accounting);

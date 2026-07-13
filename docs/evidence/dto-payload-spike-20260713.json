@@ -20,52 +20,52 @@
       "group_row_count": 20,
       "strategies": {
         "current_v2": {
-          "bytes": 2517833,
+          "bytes": 2461413,
           "encode_ms": {
-            "median": 3.28,
-            "p95": 10.128
+            "median": 2.978,
+            "p95": 3.258
           },
           "parse_ms": {
-            "median": 5.25,
-            "p95": 10.718
+            "median": 3.958,
+            "p95": 4.869
           },
           "relative_to_current_percent": 0
         },
         "per_value_metadata_v3": {
           "bytes": 3221737,
           "encode_ms": {
-            "median": 3.591,
-            "p95": 7.221
+            "median": 3.718,
+            "p95": 4.625
           },
           "parse_ms": {
-            "median": 4.853,
-            "p95": 7.298
+            "median": 4.864,
+            "p95": 7.599
           },
-          "relative_to_current_percent": 28
+          "relative_to_current_percent": 30.9
         },
         "per_family_metadata_v3": {
           "bytes": 1981944,
           "encode_ms": {
-            "median": 2.228,
-            "p95": 2.567
+            "median": 2.494,
+            "p95": 3.703
           },
           "parse_ms": {
-            "median": 3.743,
-            "p95": 4.603
+            "median": 3.896,
+            "p95": 4.322
           },
-          "relative_to_current_percent": -21.3
+          "relative_to_current_percent": -19.5
         },
         "shared_descriptor_catalog_v3": {
           "bytes": 807481,
           "encode_ms": {
-            "median": 1.658,
-            "p95": 1.972
+            "median": 1.627,
+            "p95": 1.696
           },
           "parse_ms": {
-            "median": 1.8,
-            "p95": 2.544
+            "median": 1.651,
+            "p95": 2.436
           },
-          "relative_to_current_percent": -67.9
+          "relative_to_current_percent": -67.2
         }
       }
     },
@@ -75,52 +75,52 @@
       "group_row_count": 100,
       "strategies": {
         "current_v2": {
-          "bytes": 12598718,
+          "bytes": 12316618,
           "encode_ms": {
-            "median": 14.507,
-            "p95": 15.187
+            "median": 14.685,
+            "p95": 15.476
           },
           "parse_ms": {
-            "median": 19.815,
-            "p95": 20.505
+            "median": 21.062,
+            "p95": 21.769
           },
           "relative_to_current_percent": 0
         },
         "per_value_metadata_v3": {
           "bytes": 16093433,
           "encode_ms": {
-            "median": 18.235,
-            "p95": 21.535
+            "median": 20.185,
+            "p95": 22.588
           },
           "parse_ms": {
-            "median": 24.673,
-            "p95": 33.717
+            "median": 24.941,
+            "p95": 27.664
           },
-          "relative_to_current_percent": 27.7
+          "relative_to_current_percent": 30.7
         },
         "per_family_metadata_v3": {
           "bytes": 9903237,
           "encode_ms": {
-            "median": 12.479,
-            "p95": 13.854
+            "median": 13.686,
+            "p95": 15.115
           },
           "parse_ms": {
-            "median": 17.922,
-            "p95": 20.515
+            "median": 19.058,
+            "p95": 29.232
           },
-          "relative_to_current_percent": -21.4
+          "relative_to_current_percent": -19.6
         },
         "shared_descriptor_catalog_v3": {
           "bytes": 4018609,
           "encode_ms": {
-            "median": 9.276,
-            "p95": 9.853
+            "median": 9.178,
+            "p95": 10.645
           },
           "parse_ms": {
-            "median": 8.36,
-            "p95": 10.16
+            "median": 8.716,
+            "p95": 11.013
           },
-          "relative_to_current_percent": -68.1
+          "relative_to_current_percent": -67.4
         }
       }
     }

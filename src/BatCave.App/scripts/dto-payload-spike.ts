@@ -240,7 +240,6 @@ function quality(source: string, index: number, limited: boolean) {
 
 function currentProcess(index: number) {
   const limited = index % 19 === 0;
-  const observedAt = 1_720_000_000_000 + index * 1_000;
   return {
     pid: String(10_000 + index),
     parent_pid: index % 7 === 0 ? null : String(9_999 + index),
@@ -273,8 +272,11 @@ function currentProcess(index: number) {
       threads: quality("direct_api", index, false),
       handles: quality("direct_api", index, limited),
     },
-    observed_at_ms: observedAt,
   };
+}
+
+function processObservedAt(process: ProcessShape): number {
+  return process.quality.cpu.updated_at_ms;
 }
 
 function currentGroup(members: ProcessShape[], groupIndex: number) {
@@ -292,7 +294,7 @@ function currentGroup(members: ProcessShape[], groupIndex: number) {
       (member) => member.network_received_bps + member.network_transmitted_bps,
     ),
     threads: sum(members, (member) => member.threads),
-    observed_at_ms: Math.max(...members.map((member) => member.observed_at_ms)),
+    observed_at_ms: Math.max(...members.map(processObservedAt)),
   };
 }
 
@@ -502,7 +504,7 @@ function processDetail(strategy: CandidateStrategy, process: ProcessShape) {
         "process",
         processMetricSpecs,
         process,
-        process.observed_at_ms,
+        processObservedAt(process),
         limitationIndex,
       ),
     },
