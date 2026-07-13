@@ -44,6 +44,21 @@ async function expectNoAxeViolations(page: Page): Promise<void> {
   expect(result.violations, formatViolations(result.violations)).toEqual([]);
 }
 
+async function expectLogicalControlFocused(
+  page: Page,
+  attribute: "data-workload-id" | "data-resource-mode",
+  identity: string,
+): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ attribute, identity }) => document.activeElement?.getAttribute(attribute) === identity,
+        { attribute, identity },
+      ),
+    )
+    .toBe(true);
+}
+
 function formatViolations(
   violations: Awaited<ReturnType<AxeBuilder["analyze"]>>["violations"],
 ): string {
@@ -140,6 +155,69 @@ test("compact resource detail closes with Escape and restores the selected workl
 
   await expect(dialog).not.toBeVisible();
   await expect(opener).toBeFocused();
+});
+
+test("compact workload detail restores its live workload control after expanding to desktop", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 760, height: 900 });
+  await openFixture(page, "overview");
+  const workloadControl = page.locator("[data-workload-id]:visible").first();
+  const workloadId = await workloadControl.getAttribute("data-workload-id");
+  expect(workloadId).not.toBeNull();
+  await workloadControl.click();
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
+  await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
+});
+
+test("desktop workload detail restores its live workload control after collapsing to compact", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openFixture(page, "process");
+  const workloadControl = page.locator('[data-workload-id][aria-pressed="true"]:visible').first();
+  const workloadId = await workloadControl.getAttribute("data-workload-id");
+  expect(workloadId).not.toBeNull();
+  await page.getByRole("button", { name: "Copy workload summary" }).focus();
+
+  await page.setViewportSize({ width: 760, height: 900 });
+
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).not.toBeVisible();
+  await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
+});
+
+test("compact system detail restores its resource control after expanding to desktop", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 760, height: 900 });
+  await openFixture(page, "overview");
+  const resourceControl = page.locator('.resource-rail [data-resource-mode="memory"]');
+  await resourceControl.click();
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
+  await expectLogicalControlFocused(page, "data-resource-mode", "memory");
+});
+
+test("desktop system detail restores its resource control after collapsing to compact", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openFixture(page, "overview");
+  const resourceControl = page.locator('.resource-rail [data-resource-mode="memory"]');
+  await resourceControl.click();
+  await page.getByText("Memory accounting", { exact: true }).focus();
+
+  await page.setViewportSize({ width: 760, height: 900 });
+
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).not.toBeVisible();
+  await expectLogicalControlFocused(page, "data-resource-mode", "memory");
 });
 
 test("diagnostics stays horizontally contained and vertically reachable with dense text", async ({

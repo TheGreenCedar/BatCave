@@ -1,4 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+import { accessibilityServerSettings } from "./scripts/accessibilityServer";
+
+const server = accessibilityServerSettings(
+  fileURLToPath(new URL(".", import.meta.url)),
+  process.env.BATCAVE_ACCESSIBILITY_TEST_PORT,
+);
 
 export default defineConfig({
   testDir: "./scripts",
@@ -9,7 +16,7 @@ export default defineConfig({
   reporter: "line",
   outputDir: "../../artifacts/accessibility/test-results",
   use: {
-    baseURL: "http://127.0.0.1:1420",
+    baseURL: server.baseUrl,
     colorScheme: "dark",
     reducedMotion: "reduce",
     screenshot: "off",
@@ -23,9 +30,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev",
-    url: "http://127.0.0.1:1420",
-    reuseExistingServer: !process.env.CI,
+    command: server.command,
+    url: server.baseUrl,
+    reuseExistingServer: server.reuseExistingServer,
     timeout: 30_000,
   },
 });

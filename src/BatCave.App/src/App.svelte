@@ -12,6 +12,10 @@
   import HealthStatus from "./lib/components/shell/HealthStatus.svelte";
   import ProcessCommandBar from "./lib/components/shell/ProcessCommandBar.svelte";
   import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
+  import {
+    resolveAccessibilityFixtureState,
+    type AccessibilityFixtureState,
+  } from "./lib/accessibilityFixtures";
   import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
@@ -115,22 +119,14 @@
   const historyPointOptions = [30, 72, 180, 360] as const;
   type HistoryPointLimit = (typeof historyPointOptions)[number];
 
-  const accessibilityFixtureStates = [
-    "overview",
-    "process",
-    "group",
-    "settings",
-    "diagnostics",
-    "stale",
-    "degraded",
-    "compact",
-  ] as const;
-  type AccessibilityFixtureState = (typeof accessibilityFixtureStates)[number];
-
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
   const browserFixturePlatform = "macos" as const;
-  const accessibilityFixtureState = readAccessibilityFixtureState();
+  const accessibilityFixtureState = resolveAccessibilityFixtureState(
+    typeof window === "undefined" ? "" : window.location.search,
+    import.meta.env.DEV,
+    hasTauriRuntime(),
+  );
 
   let fixtureTick = 0;
   let snapshot: RuntimeSnapshot = makeEmptySnapshot();
@@ -429,6 +425,7 @@
 
   onMount(() => {
     let timeoutId: number | undefined;
+    let detailFocusFrame: number | undefined;
     let disposed = false;
     const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
     const compactDetailQuery = window.matchMedia("(max-width: 1279px)");
@@ -485,8 +482,27 @@
     };
 
     const handleCompactDetailChange = (event: MediaQueryListEvent) => {
+      if (isCompactDetail === event.matches) return;
+      if (detailFocusFrame !== undefined) {
+        window.cancelAnimationFrame(detailFocusFrame);
+        detailFocusFrame = undefined;
+      }
+      const active = document.activeElement;
+      const focusWasInDetail =
+        active instanceof HTMLElement && active.closest("#detail-pane") !== null;
+      const shouldRestoreLogicalFocus = isCompactDetail
+        ? compactDetailOpen
+        : focusWasInDetail;
       isCompactDetail = event.matches;
       compactDetailOpen = false;
+      if (shouldRestoreLogicalFocus) {
+        detailFocusFrame = window.requestAnimationFrame(() => {
+          detailFocusFrame = window.requestAnimationFrame(() => {
+            detailFocusFrame = undefined;
+            focusCurrentDetailControl();
+          });
+        });
+      }
     };
 
     systemThemeQuery.addEventListener("change", handleSystemThemeChange);
@@ -501,6 +517,9 @@
       }
       if (searchDebounceId !== undefined) {
         window.clearTimeout(searchDebounceId);
+      }
+      if (detailFocusFrame !== undefined) {
+        window.cancelAnimationFrame(detailFocusFrame);
       }
     };
   });
@@ -526,12 +545,6 @@
 
   function hasTauriRuntime(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  }
-
-  function readAccessibilityFixtureState(): AccessibilityFixtureState | null {
-    if (!import.meta.env.DEV || typeof window === "undefined") return null;
-    const requested = new URLSearchParams(window.location.search).get("a11y");
-    return accessibilityFixtureStates.find((state) => state === requested) ?? null;
   }
 
   function prepareAccessibilityFixture(
@@ -1031,6 +1044,21 @@
     selectedWorkloadId = "";
     openCompactDetail();
     applyPendingRankingIfReleased();
+  }
+
+  function focusCurrentDetailControl(): void {
+    const candidates =
+      detailSubject === "process" && selectedWorkloadId
+        ? document.querySelectorAll<HTMLElement>("[data-workload-id]")
+        : document.querySelectorAll<HTMLElement>(".resource-rail [data-resource-mode]");
+    const target = [...candidates].find((candidate) => {
+      const matchesIdentity =
+        detailSubject === "process" && selectedWorkloadId
+          ? candidate.dataset.workloadId === selectedWorkloadId
+          : candidate.dataset.resourceMode === detailMode;
+      return matchesIdentity && candidate.getClientRects().length > 0;
+    });
+    target?.focus({ preventScroll: true });
   }
 
   function openCompactDetail(): void {
