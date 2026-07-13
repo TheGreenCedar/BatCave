@@ -81,8 +81,21 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
       metric_window_seconds: payload.settings.metric_window_seconds,
       sample_interval_ms: payload.settings.effective_sample_interval_ms,
       paused: payload.settings.collection_paused,
+      ui_preferences: payload.settings.ui_preferences
+        ? { ...payload.settings.ui_preferences }
+        : null,
     },
     health: { ...payload.health },
+    persistence: payload.persistence
+      ? {
+          ...payload.persistence,
+          roots: payload.persistence.roots.map((root) => ({ ...root })),
+          components: payload.persistence.components.map((component) => ({
+            ...component,
+            active_failure: component.active_failure ? { ...component.active_failure } : null,
+          })),
+        }
+      : null,
     system,
     process_contributors: adaptContributors(payload),
     processes,

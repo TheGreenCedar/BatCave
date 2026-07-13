@@ -102,6 +102,7 @@
     setRuntimeAdminMode,
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
+    setRuntimeUiPreferences,
   } from "./lib/tauriBridge";
   import type {
     KernelPoolTag,
@@ -436,6 +437,8 @@
 
     if (isHistoryPointLimit(savedHistoryPointLimit)) {
       historyPointLimit = savedHistoryPointLimit;
+    } else if (window.localStorage.getItem(historyStorageKey) !== null) {
+      window.localStorage.removeItem(historyStorageKey);
     }
 
     if (runtimeMode() === "fixture") {
@@ -613,7 +616,11 @@
 
   function setTheme(preference: ThemePreference): void {
     themePreference = preference;
-    window.localStorage.setItem(themeStorageKey, preference);
+    if (runtimeMode() === "native" && runtimeMutationAllowed(protocolMismatch)) {
+      persistUiPreferences(preference, historyPointLimit);
+    } else {
+      window.localStorage.setItem(themeStorageKey, preference);
+    }
   }
 
   function setHistoryPointLimit(limit: number): void {
@@ -622,8 +629,46 @@
     }
 
     historyPointLimit = limit;
-    window.localStorage.setItem(historyStorageKey, String(limit));
+    if (runtimeMode() === "native" && runtimeMutationAllowed(protocolMismatch)) {
+      persistUiPreferences(themePreference, limit);
+    } else {
+      window.localStorage.setItem(historyStorageKey, String(limit));
+    }
     trimHistory();
+  }
+
+  function persistUiPreferences(
+    preference: ThemePreference,
+    limit: HistoryPointLimit,
+  ): void {
+    window.localStorage.setItem(themeStorageKey, preference);
+    window.localStorage.setItem(historyStorageKey, String(limit));
+    void (async () => {
+      try {
+        const next = await setRuntimeUiPreferences(invoke, {
+          theme: preference,
+          history_point_limit: limit,
+        });
+        applyNativeSnapshot(next);
+        clearMigratedUiPreferences(next);
+      } catch (error) {
+        commandError = runtimeCommandError(error, "Unable to save interface preferences.");
+      }
+    })();
+  }
+
+  function clearMigratedUiPreferences(next: RuntimeSnapshot): void {
+    const settingsPersistence = next.persistence?.components.find(
+      (component) => component.owner === "current_user" && component.kind === "settings",
+    );
+    if (
+      settingsPersistence?.state === "healthy" &&
+      settingsPersistence.durability === "durable" &&
+      settingsPersistence.active_failure === null
+    ) {
+      window.localStorage.removeItem(themeStorageKey);
+      window.localStorage.removeItem(historyStorageKey);
+    }
   }
 
   async function setPaused(nextPaused: boolean): Promise<void> {
@@ -1002,6 +1047,31 @@
     sortDirection = next.settings.query.sort_direction;
     focusMode = useAttentionByDefault ? "attention" : next.settings.query.focus_mode;
     isPaused = next.settings.paused;
+    const pendingTheme = parseThemePreference(window.localStorage.getItem(themeStorageKey));
+    const pendingHistory = Number(window.localStorage.getItem(historyStorageKey));
+    const hasPendingUiMigration =
+      pendingTheme !== null || isHistoryPointLimit(pendingHistory);
+    if (hasPendingUiMigration) {
+      if (pendingTheme !== null) themePreference = pendingTheme;
+      if (isHistoryPointLimit(pendingHistory)) historyPointLimit = pendingHistory;
+      window.setTimeout(
+        () => persistUiPreferences(themePreference, historyPointLimit),
+        0,
+      );
+    } else if (
+      next.settings.ui_preferences &&
+      parseThemePreference(next.settings.ui_preferences.theme) &&
+      isHistoryPointLimit(next.settings.ui_preferences.history_point_limit)
+    ) {
+      themePreference = next.settings.ui_preferences.theme as ThemePreference;
+      historyPointLimit = next.settings.ui_preferences.history_point_limit;
+      clearMigratedUiPreferences(next);
+    } else {
+      window.setTimeout(
+        () => persistUiPreferences(themePreference, historyPointLimit),
+        0,
+      );
+    }
     hasHydratedRuntimeSettings = true;
 
     if (useAttentionByDefault) {

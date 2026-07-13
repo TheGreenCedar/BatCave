@@ -57,6 +57,17 @@ function toDiagnosticIssue(
     };
   }
 
+  if (warning.category === "persistence" || value.includes("persistence_")) {
+    return {
+      ...baseIssue(warning),
+      title: "Local data needs attention",
+      impact:
+        "Monitoring continues, but settings, warm cache, or diagnostics may remain session-only.",
+      action: null,
+      actionLabel: null,
+    };
+  }
+
   if (value.includes("permission") || value.includes("access") || value.includes("denied")) {
     return {
       ...baseIssue(warning),

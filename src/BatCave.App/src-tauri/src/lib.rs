@@ -31,9 +31,10 @@ mod windows_process;
 #[cfg(any(windows, test))]
 mod windows_system;
 
-use contracts::{ProcessFocusMode, RuntimeQuery, SortColumn, SortDirection};
+use contracts::{ProcessFocusMode, RuntimeQuery, RuntimeUiPreferences, SortColumn, SortDirection};
 use protocol::{
-    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, SortColumnV3, SortDirectionV3,
+    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, RuntimeUiPreferencesV3,
+    SortColumnV3, SortDirectionV3,
 };
 use runtime_store::RuntimeState;
 use std::collections::HashMap;
@@ -121,6 +122,33 @@ fn set_admin_mode(
 }
 
 #[tauri::command(async)]
+fn set_ui_preferences(
+    state: tauri::State<'_, RuntimeState>,
+    preferences: RuntimeUiPreferencesV3,
+) -> Result<ProtocolEnvelope, String> {
+    let preferences = runtime_ui_preferences(preferences)?;
+    protocol::encode_snapshot(state.set_ui_preferences(preferences)?)
+}
+
+fn runtime_ui_preferences(
+    preferences: RuntimeUiPreferencesV3,
+) -> Result<RuntimeUiPreferences, String> {
+    if !matches!(
+        preferences.theme.as_str(),
+        "system" | "cave" | "aurora" | "ember" | "daylight"
+    ) {
+        return Err("runtime_ui_theme_invalid".to_string());
+    }
+    if !matches!(preferences.history_point_limit, 30 | 72 | 180 | 360) {
+        return Err("runtime_history_point_limit_invalid".to_string());
+    }
+    Ok(RuntimeUiPreferences {
+        theme: preferences.theme,
+        history_point_limit: preferences.history_point_limit,
+    })
+}
+
+#[tauri::command(async)]
 fn get_process_icons(
     state: tauri::State<'_, RuntimeState>,
     exes: Vec<String>,
@@ -178,6 +206,7 @@ pub fn run() -> Result<(), String> {
             set_process_query,
             set_sample_interval,
             set_admin_mode,
+            set_ui_preferences,
             get_process_icons
         ])
         .build(tauri::generate_context!())
@@ -252,5 +281,31 @@ mod tests {
         assert!(matches!(query.sort_column, SortColumn::NetworkBps));
         assert!(matches!(query.sort_direction, SortDirection::Asc));
         assert_eq!(query.limit, 25);
+    }
+
+    #[test]
+    fn ui_preferences_validate_at_the_command_boundary() {
+        let preferences = runtime_ui_preferences(RuntimeUiPreferencesV3 {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        })
+        .expect("supported preferences convert");
+        assert_eq!(preferences.theme, "ember");
+        assert_eq!(preferences.history_point_limit, 180);
+
+        assert_eq!(
+            runtime_ui_preferences(RuntimeUiPreferencesV3 {
+                theme: "remote-theme".to_string(),
+                history_point_limit: 180,
+            }),
+            Err("runtime_ui_theme_invalid".to_string())
+        );
+        assert_eq!(
+            runtime_ui_preferences(RuntimeUiPreferencesV3 {
+                theme: "cave".to_string(),
+                history_point_limit: 10_000,
+            }),
+            Err("runtime_history_point_limit_invalid".to_string())
+        );
     }
 }

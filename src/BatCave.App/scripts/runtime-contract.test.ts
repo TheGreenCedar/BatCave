@@ -259,6 +259,23 @@ test("diagnostics render one limitation per stable key with the current admin ac
   assert.equal(uniqueWarningCount(warnings), 1);
 });
 
+test("persistence failures explain session-only state without a process-access action", () => {
+  const issue = currentDiagnosticIssues(
+    [
+      {
+        ...warning("persistence.storage_full", "persistence_storage_full operation=write", 1),
+        category: "persistence",
+      },
+    ],
+    adminMode("off"),
+    true,
+  )[0];
+
+  assert.equal(issue.title, "Local data needs attention");
+  assert.match(issue.impact, /session-only/);
+  assert.equal(issue.action, null);
+});
+
 test("native metrics omit empty quality guidance", () => {
   assert.deepEqual(
     qualityGuidance({

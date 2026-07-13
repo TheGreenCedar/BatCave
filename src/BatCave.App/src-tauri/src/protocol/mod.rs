@@ -6,7 +6,8 @@ mod validate;
 pub use encode::encode_snapshot;
 pub(crate) use types::RuntimeReleaseIdentityV3;
 pub use types::{
-    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, SortColumnV3, SortDirectionV3,
+    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, RuntimeUiPreferencesV3,
+    SortColumnV3, SortDirectionV3,
 };
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 3;
@@ -32,8 +33,16 @@ mod tests {
         MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
         ProcessMetricQuality, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
-        RuntimeInstallKind, RuntimePlatform, RuntimePrivilegedSource, RuntimeProcessElevation,
-        RuntimeSnapshot, SystemMetricQuality,
+        RuntimeInstallKind, RuntimePersistence as ContractPersistence,
+        RuntimePersistenceComponent as ContractPersistenceComponent,
+        RuntimePersistenceDurability as ContractPersistenceDurability,
+        RuntimePersistenceKind as ContractPersistenceKind,
+        RuntimePersistenceOwner as ContractPersistenceOwner,
+        RuntimePersistencePermissionState as ContractPersistencePermissionState,
+        RuntimePersistenceRoot as ContractPersistenceRoot,
+        RuntimePersistenceState as ContractPersistenceState, RuntimePlatform,
+        RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, RuntimeUiPreferences,
+        SystemMetricQuality,
     };
     use ts_rs::{Config, TS};
 
@@ -465,6 +474,54 @@ mod tests {
             return;
         }
         assert_eq!(expected, checked, "{} is stale", path.display());
+    }
+
+    #[test]
+    fn encoder_publishes_runtime_owned_preferences_and_persistence_health() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.settings.ui_preferences = Some(RuntimeUiPreferences {
+            theme: "aurora".to_string(),
+            history_point_limit: 180,
+        });
+        snapshot.persistence = Some(ContractPersistence {
+            state: ContractPersistenceState::Healthy,
+            roots: vec![ContractPersistenceRoot {
+                owner: ContractPersistenceOwner::CurrentUser,
+                directory: Some("/tmp/BatCaveMonitor".to_string()),
+                permission_state: ContractPersistencePermissionState::Verified,
+            }],
+            components: vec![ContractPersistenceComponent {
+                owner: ContractPersistenceOwner::CurrentUser,
+                kind: ContractPersistenceKind::Settings,
+                state: ContractPersistenceState::Healthy,
+                durability: ContractPersistenceDurability::Durable,
+                last_success_at_ms: Some(snapshot.published_at_ms),
+                active_failure: None,
+            }],
+            suppressed_diagnostic_events: 0,
+        });
+
+        let envelope = encode_fixture(snapshot, RuntimeArchitectureV3::Aarch64);
+        let ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+            unreachable!()
+        };
+        let preferences = payload
+            .settings
+            .ui_preferences
+            .expect("preferences are published");
+        let persistence = payload.persistence.expect("persistence is published");
+
+        assert_eq!(preferences.theme, "aurora");
+        assert_eq!(preferences.history_point_limit, 180);
+        assert_eq!(persistence.state, RuntimePersistenceStateV3::Healthy);
+        assert_eq!(
+            persistence.roots[0].owner,
+            RuntimePersistenceOwnerV3::CurrentUser
+        );
+        assert_eq!(
+            persistence.components[0].kind,
+            RuntimePersistenceKindV3::Settings
+        );
     }
 
     #[test]
