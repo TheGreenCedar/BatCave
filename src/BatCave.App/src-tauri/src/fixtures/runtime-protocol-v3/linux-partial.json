@@ -559,14 +559,6 @@
         {
           "code": "pending_baseline",
           "message": "Waiting for process network attribution."
-        },
-        {
-          "code": "partial_coverage",
-          "message": "Some process fields were denied by procfs."
-        },
-        {
-          "code": "partial_coverage",
-          "message": "Waiting for process network attribution."
         }
       ],
       "system": {
@@ -1019,14 +1011,14 @@
               [
                 47,
                 null,
-                4,
+                2,
                 null,
                 5
               ],
               [
                 48,
                 null,
-                4,
+                2,
                 null,
                 5
               ],
@@ -1151,14 +1143,14 @@
               [
                 47,
                 null,
-                4,
+                2,
                 null,
                 5
               ],
               [
                 48,
                 null,
-                4,
+                2,
                 null,
                 5
               ],
@@ -1201,7 +1193,7 @@
           "total_contributors": 2,
           "quality_code": 3,
           "source": "procfs",
-          "limitation_index": 6
+          "limitation_index": 3
         },
         {
           "metric": "io",
@@ -1221,9 +1213,9 @@
           "name_ambiguous": false,
           "available_contributors": 0,
           "total_contributors": 2,
-          "quality_code": 4,
+          "quality_code": 2,
           "source": "etw",
-          "limitation_index": 7
+          "limitation_index": 5
         }
       ],
       "total_process_count": 2,
@@ -1232,7 +1224,7 @@
         {
           "key": "collector.example",
           "publication_seq": 41,
-          "occurred_at_ms": 1700000000400,
+          "occurred_at_ms": 1700000000100,
           "category": "collector",
           "message": "example warning"
         }

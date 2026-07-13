@@ -287,6 +287,7 @@ function buildFixtureSnapshot(
             ? {
                 quality: "unavailable",
                 source: "fixture",
+                limitation_code: "unsupported_metric",
                 message: "Swap pressure is not available in this macOS layout fixture.",
               }
             : { quality: "estimated", source: "fixture" },
@@ -493,6 +494,14 @@ function groupMetricSummary(
     quality: {
       quality,
       source: "process_aggregate",
+      limitation_code:
+        coverage.available < coverage.total
+          ? "group_partial_coverage"
+          : quality === "held"
+            ? "held_value"
+            : quality === "unavailable"
+              ? "unsupported_metric"
+              : undefined,
       message:
         coverage.available < coverage.total
           ? `${coverage.available} of ${coverage.total} processes contribute to this aggregate.`
@@ -648,6 +657,7 @@ function makeProcess(
         ? {
             quality: "unavailable",
             source: "fixture",
+            limitation_code: "unsupported_metric",
             message: "Per-process network attribution is unavailable on macOS.",
           }
         : { quality: "estimated", source: "fixture" },

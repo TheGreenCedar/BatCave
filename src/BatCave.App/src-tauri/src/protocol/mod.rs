@@ -169,7 +169,7 @@ mod tests {
                 ),
             ),
             network: Some(
-                quality(MetricQuality::Unavailable, MetricSource::Etw).with_limitation(
+                quality(MetricQuality::Held, MetricSource::Etw).with_limitation(
                     MetricLimitationCode::PendingBaseline,
                     "Waiting for process network attribution.",
                 ),
@@ -322,7 +322,7 @@ mod tests {
                 total: 2,
             }),
             network_quality: Some(
-                quality(MetricQuality::Unavailable, MetricSource::Etw).with_limitation(
+                quality(MetricQuality::Held, MetricSource::Etw).with_limitation(
                     MetricLimitationCode::PendingBaseline,
                     "Waiting for process network attribution.",
                 ),
@@ -569,6 +569,27 @@ mod tests {
             Err("protocol_unavailable_observation_has_value".to_string())
         );
 
+        let mut negative_value = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut negative_value.event else {
+            unreachable!()
+        };
+        payload.system.metrics[0].1 = Some(-1.0);
+        assert_eq!(
+            validate_envelope(&negative_value),
+            Err("protocol_observation_not_finite".to_string())
+        );
+
+        let mut held_without_explanation = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut held_without_explanation.event else {
+            unreachable!()
+        };
+        payload.system.metrics[0].2 = 2;
+        payload.system.metrics[0].4 = None;
+        assert_eq!(
+            validate_envelope(&held_without_explanation),
+            Err("protocol_quality_explanation_missing".to_string())
+        );
+
         let mut dangling_member = envelope;
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut dangling_member.event else {
             unreachable!()
@@ -629,7 +650,7 @@ mod tests {
         });
         assert_eq!(
             validate_envelope(&healthy_without_persistence),
-            Err("protocol_persistence_overall_state_invalid".to_string())
+            Err("protocol_persistence_nonempty_state_invalid".to_string())
         );
 
         let mut service_without_identity = envelope.clone();
@@ -798,11 +819,13 @@ mod tests {
             .retain(|row| matches!(row, ProcessViewRow::Process { detail, .. } if detail.process.pid == "1235"));
         if let ProcessViewRow::Process {
             is_grouped,
+            is_child,
             group_count,
             ..
         } = &mut filtered_snapshot.process_view_rows[0]
         {
             *is_grouped = false;
+            *is_child = false;
             *group_count = 1;
         }
         let filtered = encode_snapshot(filtered_snapshot).expect("filtered fixture encodes");
@@ -895,5 +918,280 @@ mod tests {
         assert_eq!(cpu.available_contributors, 1);
         assert_eq!(cpu.total_contributors, 2);
         assert!(cpu.limitation_index.is_some());
+    }
+
+    #[test]
+    fn contributor_encoding_preserves_limitations_and_normalizes_missing_provenance() {
+        let envelope = encode_snapshot(fixture_snapshot()).expect("fixture encodes");
+        let ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+            unreachable!()
+        };
+        let network = payload
+            .contributors
+            .iter()
+            .find(|contributor| contributor.metric == ContributorMetricV3::Network)
+            .expect("network contributor");
+        assert_eq!(
+            payload.quality_codes[usize::from(network.quality_code)],
+            MetricQualityV3::Held
+        );
+        assert_eq!(
+            network
+                .limitation_index
+                .map(|index| payload.limitations[usize::from(index)].code),
+            Some(LimitationCode::PendingBaseline)
+        );
+
+        let mut missing = fixture_snapshot();
+        missing
+            .process_contributors
+            .cpu_quality
+            .as_mut()
+            .expect("CPU quality")
+            .source = None;
+        missing
+            .system
+            .quality
+            .as_mut()
+            .expect("system quality")
+            .cpu
+            .as_mut()
+            .expect("system CPU quality")
+            .source = None;
+        let envelope = encode_snapshot(missing).expect("missing provenance normalizes");
+        let ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+            unreachable!()
+        };
+        let cpu_contributor = payload
+            .contributors
+            .iter()
+            .find(|contributor| contributor.metric == ContributorMetricV3::Cpu)
+            .expect("CPU contributor");
+        assert_eq!(cpu_contributor.source, MetricSourceV3::Unknown);
+        assert_eq!(cpu_contributor.process_id, None);
+        assert_eq!(
+            payload.quality_codes[usize::from(cpu_contributor.quality_code)],
+            MetricQualityV3::Unavailable
+        );
+        assert_eq!(
+            cpu_contributor
+                .limitation_index
+                .map(|index| payload.limitations[usize::from(index)].code),
+            Some(LimitationCode::MissingMetadata)
+        );
+        let system_cpu = &payload.system.metrics[0];
+        assert_eq!(
+            payload.descriptors[usize::from(system_cpu.0)].source,
+            MetricSourceV3::Unknown
+        );
+        assert_eq!(
+            payload.quality_codes[usize::from(system_cpu.2)],
+            MetricQualityV3::Unavailable
+        );
+        assert_eq!(
+            system_cpu
+                .4
+                .map(|index| payload.limitations[usize::from(index)].code),
+            Some(LimitationCode::MissingMetadata)
+        );
+    }
+
+    #[test]
+    fn validator_rejects_contributor_quality_and_coverage_corruption() {
+        let envelope = encode_snapshot(fixture_snapshot()).expect("fixture encodes");
+
+        let mut missing = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut missing.event else {
+            unreachable!()
+        };
+        payload.contributors.pop();
+        assert_eq!(
+            validate_envelope(&missing),
+            Err("protocol_contributor_catalog_incomplete".to_string())
+        );
+
+        let mut duplicate = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut duplicate.event else {
+            unreachable!()
+        };
+        payload.contributors[1].metric = ContributorMetricV3::Cpu;
+        assert_eq!(
+            validate_envelope(&duplicate),
+            Err("protocol_duplicate_contributor_metric".to_string())
+        );
+
+        let mut name_without_identity = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut name_without_identity.event else {
+            unreachable!()
+        };
+        payload.contributors[3].display_name = Some("orphan".to_string());
+        assert_eq!(
+            validate_envelope(&name_without_identity),
+            Err("protocol_contributor_name_without_identity".to_string())
+        );
+
+        let mut held_without_explanation = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut held_without_explanation.event else {
+            unreachable!()
+        };
+        payload.contributors[3].available_contributors = payload.total_process_count;
+        payload.contributors[3].limitation_index = None;
+        assert_eq!(
+            validate_envelope(&held_without_explanation),
+            Err("protocol_quality_explanation_missing".to_string())
+        );
+
+        let mut contradictory = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut contradictory.event else {
+            unreachable!()
+        };
+        payload.contributors[3].limitation_index = Some(0);
+        assert_eq!(
+            validate_envelope(&contradictory),
+            Err("protocol_quality_limitation_contradiction".to_string())
+        );
+
+        let mut group_contradiction = envelope;
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut group_contradiction.event else {
+            unreachable!()
+        };
+        let group = payload
+            .workloads
+            .iter_mut()
+            .find_map(|workload| match workload {
+                WorkloadDetailV3::Group(group) => Some(group),
+                WorkloadDetailV3::Process(_) => None,
+            })
+            .expect("group fixture");
+        group.coverage[0].available_contributors = 1;
+        group.coverage[0].limitation_index = Some(0);
+        group.metrics[0].4 = Some(0);
+        assert_eq!(
+            validate_envelope(&group_contradiction),
+            Err("protocol_group_quality_coverage_contradiction".to_string())
+        );
+    }
+
+    #[test]
+    fn validator_rejects_warning_range_preferences_and_orphan_persistence() {
+        let envelope = encode_snapshot(fixture_snapshot()).expect("fixture encodes");
+
+        let mut oversized_theme = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut oversized_theme.event else {
+            unreachable!()
+        };
+        payload.settings.ui_preferences = Some(RuntimeUiPreferencesV3 {
+            theme: "x".repeat(65),
+            history_point_limit: 72,
+        });
+        assert_eq!(
+            validate_envelope(&oversized_theme),
+            Err("protocol_ui_preferences_invalid".to_string())
+        );
+
+        let mut future_warning = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut future_warning.event else {
+            unreachable!()
+        };
+        payload.warnings[0].publication_seq = payload.publication_seq + 1;
+        assert_eq!(
+            validate_envelope(&future_warning),
+            Err("protocol_warning_invalid".to_string())
+        );
+
+        let mut future_warning_time = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut future_warning_time.event else {
+            unreachable!()
+        };
+        payload.warnings[0].occurred_at_ms = payload.published_at_ms + 1;
+        assert_eq!(
+            validate_envelope(&future_warning_time),
+            Err("protocol_warning_invalid".to_string())
+        );
+
+        let mut unsafe_warning = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut unsafe_warning.event else {
+            unreachable!()
+        };
+        payload.warnings[0].publication_seq = 9_007_199_254_740_992;
+        assert_eq!(
+            validate_envelope(&unsafe_warning),
+            Err("protocol_warning_invalid".to_string())
+        );
+
+        let mut duplicate_warning = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut duplicate_warning.event else {
+            unreachable!()
+        };
+        payload.warnings.push(payload.warnings[0].clone());
+        assert_eq!(
+            validate_envelope(&duplicate_warning),
+            Err("protocol_warning_invalid".to_string())
+        );
+
+        let mut unsafe_publication = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut unsafe_publication.event else {
+            unreachable!()
+        };
+        payload.publication_seq = 9_007_199_254_740_992;
+        assert_eq!(
+            validate_envelope(&unsafe_publication),
+            Err("protocol_publication_metadata_invalid".to_string())
+        );
+
+        let mut unsafe_sample = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut unsafe_sample.event else {
+            unreachable!()
+        };
+        payload.sample_seq = 9_007_199_254_740_992;
+        assert_eq!(
+            validate_envelope(&unsafe_sample),
+            Err("protocol_publication_metadata_invalid".to_string())
+        );
+
+        let mut unsafe_start = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut unsafe_start.event else {
+            unreachable!()
+        };
+        let process = payload
+            .workloads
+            .iter_mut()
+            .find_map(|workload| match workload {
+                WorkloadDetailV3::Process(process) => Some(process),
+                WorkloadDetailV3::Group(_) => None,
+            })
+            .expect("process fixture");
+        process.start_time_ms = Some(9_007_199_254_740_992);
+        process.stable_id = format!("process:{}:9007199254740992", process.pid);
+        assert_eq!(
+            validate_envelope(&unsafe_start),
+            Err("protocol_process_identity_stability_invalid".to_string())
+        );
+
+        let mut orphan_component = envelope;
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut orphan_component.event else {
+            unreachable!()
+        };
+        payload.persistence = Some(RuntimePersistenceV3 {
+            state: RuntimePersistenceStateV3::Healthy,
+            roots: vec![RuntimePersistenceRootV3 {
+                owner: RuntimePersistenceOwnerV3::CurrentUser,
+                directory: Some("/tmp/batcave".to_string()),
+                permission_state: RuntimePersistencePermissionStateV3::Verified,
+            }],
+            components: vec![RuntimePersistenceComponentV3 {
+                owner: RuntimePersistenceOwnerV3::CollectorService,
+                kind: RuntimePersistenceKindV3::Settings,
+                state: RuntimePersistenceStateV3::Healthy,
+                durability: RuntimePersistenceDurabilityV3::Durable,
+                last_success_at_ms: None,
+                active_failure: None,
+            }],
+            suppressed_diagnostic_events: 0,
+        });
+        assert_eq!(
+            validate_envelope(&orphan_component),
+            Err("protocol_persistence_component_root_missing".to_string())
+        );
     }
 }

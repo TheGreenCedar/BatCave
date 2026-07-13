@@ -170,7 +170,7 @@ pub enum PrivilegedCollectionStateV3 {
 #[serde(rename_all = "snake_case")]
 pub enum PrivilegedCollectionSourceV3 {
     None,
-    CurrentProcess,
+    LocalProcess,
     CollectorService,
 }
 
@@ -551,6 +551,7 @@ pub enum MetricUnit {
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MetricSourceV3 {
+    Unknown,
     DirectApi,
     Libproc,
     Iokit,
@@ -749,7 +750,7 @@ pub struct ProcessContributorV3 {
     pub limitation_index: Option<u16>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ContributorMetricV3 {

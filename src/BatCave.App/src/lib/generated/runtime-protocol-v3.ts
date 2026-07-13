@@ -19,7 +19,7 @@ export type RuntimeReleaseIdentityV3 = { app_version: string, source_commit_sha:
 
 export type PrivilegedCollectionStateV3 = "unavailable" | "standard_only" | "connecting" | "active" | "recovering" | "failed";
 
-export type PrivilegedCollectionSourceV3 = "none" | "current_process" | "collector_service";
+export type PrivilegedCollectionSourceV3 = "none" | "local_process" | "collector_service";
 
 export type PrivilegedCollectionPreferenceV3 = "standard_only" | "best_available";
 
@@ -79,7 +79,7 @@ export type MetricScope = "system" | "process" | "group";
 
 export type MetricUnit = "percent_one_core" | "percent_system" | "bytes" | "bytes_per_second" | "count";
 
-export type MetricSourceV3 = "direct_api" | "libproc" | "iokit" | "pdh" | "interface_aggregate" | "process_aggregate" | "sysinfo" | "runtime" | "etw" | "procfs" | "ebpf" | "fixture";
+export type MetricSourceV3 = "unknown" | "direct_api" | "libproc" | "iokit" | "pdh" | "interface_aggregate" | "process_aggregate" | "sysinfo" | "runtime" | "etw" | "procfs" | "ebpf" | "fixture";
 
 export type MetricQualityV3 = "native" | "estimated" | "held" | "partial" | "unavailable";
 

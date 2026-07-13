@@ -1,15 +1,11 @@
 import {
   RUNTIME_PROTOCOL_VERSION,
-  type GroupDetailV3,
-  type MetricObservation,
   type MetricQualityV3,
   type MetricScope,
   type MetricSemantic,
   type MetricUnit,
   type NetworkScopeV3,
-  type ProtocolEnvelope,
   type RuntimeSnapshotPayloadV3,
-  type WorkloadDetailV3,
 } from "../generated/runtime-protocol-v3.ts";
 
 export interface ProtocolMismatchView {
@@ -72,6 +68,7 @@ const semantics = new Set<MetricSemantic>([
 ]);
 const units = new Set(["percent_one_core", "percent_system", "bytes", "bytes_per_second", "count"]);
 const sources = new Set([
+  "unknown",
   "direct_api",
   "libproc",
   "iokit",
@@ -106,7 +103,7 @@ const privilegedStates = new Set([
   "recovering",
   "failed",
 ]);
-const privilegedSources = new Set(["none", "current_process", "collector_service"]);
+const privilegedSources = new Set(["none", "local_process", "collector_service"]);
 const privilegedPreferences = new Set(["standard_only", "best_available"]);
 const collectorServiceStates = new Set([
   "not_installed",
@@ -147,6 +144,10 @@ const sortColumns = new Set([
 const sortDirections = new Set(["asc", "desc"]);
 const engineStates = new Set(["starting", "running", "paused", "fatal"]);
 const collectorStates = new Set(["healthy", "limited", "unavailable"]);
+const processIdentityStabilities = new Set(["stable", "publication"]);
+const accessStates = new Set(["full", "partial", "denied"]);
+const kernelPoolKinds = new Set(["paged", "nonpaged"]);
+const contributorMetrics = new Set(["cpu", "memory", "io", "network"]);
 const persistenceStates = new Set(["healthy", "degraded", "unavailable"]);
 const persistenceOwners = new Set(["current_user", "collector_service"]);
 const persistencePermissions = new Set(["verified", "invalid", "unavailable"]);
@@ -346,16 +347,16 @@ export function decodeProtocolEnvelope(input: unknown): ProtocolDecodeResult {
       "Protocol event kind is unknown.",
     );
   }
-  const envelope = input as unknown as ProtocolEnvelope;
-  const payload = envelope.event.payload as RuntimeSnapshotPayloadV3;
-  const error = validatePayload(payload);
+  const rawPayload = input.event.payload;
+  const error = validatePayload(rawPayload);
   return error
     ? mismatch(writerVersion, minimumReaderVersion, "malformed_payload", error)
-    : { kind: "snapshot", payload };
+    : { kind: "snapshot", payload: rawPayload as unknown as RuntimeSnapshotPayloadV3 };
 }
 
-function validatePayload(payload: RuntimeSnapshotPayloadV3): string | null {
-  if (!isRecord(payload)) return "Runtime payload is not an object.";
+function validatePayload(input: unknown): string | null {
+  if (!isRecord(input)) return "Runtime payload is not an object.";
+  const payload = input;
   for (const value of [payload.publication_seq, payload.published_at_ms, payload.sample_seq]) {
     if (!safeInteger(value)) return "Publication metadata is outside the safe integer range.";
   }
@@ -374,7 +375,7 @@ function validatePayload(payload: RuntimeSnapshotPayloadV3): string | null {
   if (!validReleaseIdentity(payload.environment.release_identity))
     return "Runtime release identity is malformed.";
   if (
-    typeof payload.source !== "string" ||
+    !nonEmptyString(payload.source) ||
     !platforms.has(payload.environment.platform) ||
     !architectures.has(payload.environment.architecture) ||
     !elevations.has(payload.environment.process_elevation) ||
@@ -395,6 +396,11 @@ function validatePayload(payload: RuntimeSnapshotPayloadV3): string | null {
   ) {
     return "Privileged collection context is malformed.";
   }
+  if (
+    (payload.privileged_collection.state === "active") !==
+    (payload.privileged_collection.source !== "none")
+  )
+    return "Privileged collection state and source are inconsistent.";
   const collectorServiceError = validateCollectorService(
     payload.privileged_collection,
     payload.health,
@@ -417,6 +423,7 @@ function validatePayload(payload: RuntimeSnapshotPayloadV3): string | null {
       (!isRecord(payload.settings.ui_preferences) ||
         typeof payload.settings.ui_preferences.theme !== "string" ||
         payload.settings.ui_preferences.theme.trim().length === 0 ||
+        [...payload.settings.ui_preferences.theme].length > 64 ||
         !safeInteger(payload.settings.ui_preferences.history_point_limit) ||
         payload.settings.ui_preferences.history_point_limit === 0))
   )
@@ -562,44 +569,74 @@ function validatePayload(payload: RuntimeSnapshotPayloadV3): string | null {
   ) {
     return "Limitation catalog is malformed.";
   }
-  const systemError = validateObservations(payload.system.metrics, "system", payload);
+  const systemError = validateSystem(payload.system, payload);
   if (systemError) return systemError;
+  const workloadError = validateWorkloads(payload.workloads, payload);
+  if (workloadError) return workloadError;
+  const warningKeys = new Set<string>();
+  for (const warning of payload.warnings) {
+    if (
+      !isRecord(warning) ||
+      !nonEmptyString(warning.key) ||
+      warningKeys.has(warning.key) ||
+      !safeInteger(warning.publication_seq) ||
+      warning.publication_seq > payload.publication_seq ||
+      !safeInteger(warning.occurred_at_ms) ||
+      warning.occurred_at_ms > payload.published_at_ms ||
+      !nonEmptyString(warning.category) ||
+      !nonEmptyString(warning.message)
+    ) {
+      return "Runtime warnings are malformed.";
+    }
+    warningKeys.add(warning.key);
+  }
+  return null;
+}
+
+function validateSystem(input: unknown, payload: Record<string, any>): string | null {
   if (
-    !Array.isArray(payload.system.logical_cpus) ||
-    !Array.isArray(payload.system.kernel_pool_tags)
+    !isRecord(input) ||
+    input.stable_id !== "system:local" ||
+    !Array.isArray(input.logical_cpus) ||
+    !Array.isArray(input.kernel_pool_tags)
   )
-    return "System facets are malformed.";
-  for (const logical of payload.system.logical_cpus) {
-    if (!isRecord(logical) || !safeInteger(logical.index))
-      return "Logical CPU identity is malformed.";
+    return "System identity or facets are malformed.";
+  const systemMetricError = validateObservations(input.metrics, "system", payload);
+  if (systemMetricError) return systemMetricError;
+
+  const logicalIds = new Set<string>();
+  const logicalIndexes = new Set<number>();
+  for (const logical of input.logical_cpus) {
+    if (
+      !isRecord(logical) ||
+      !safeInteger(logical.index) ||
+      logical.stable_id !== `system:local:cpu:${logical.index}` ||
+      logicalIds.has(logical.stable_id) ||
+      logicalIndexes.has(logical.index)
+    )
+      return "Logical CPU identity is malformed or duplicated.";
+    logicalIds.add(logical.stable_id);
+    logicalIndexes.add(logical.index);
     const error = validateObservations(logical.metrics, "system", payload);
     if (error) return error;
   }
-  for (const tag of payload.system.kernel_pool_tags) {
+
+  const poolIds = new Set<string>();
+  for (const tag of input.kernel_pool_tags) {
     if (
       !isRecord(tag) ||
-      typeof tag.stable_id !== "string" ||
-      typeof tag.tag !== "string" ||
-      !Array.isArray(tag.driver_candidates)
+      !nonEmptyString(tag.tag) ||
+      !kernelPoolKinds.has(tag.kind) ||
+      tag.stable_id !== `system:local:pool:${tag.tag}:${tag.kind}`.toLocaleLowerCase() ||
+      poolIds.has(tag.stable_id) ||
+      !Array.isArray(tag.driver_candidates) ||
+      tag.driver_candidates.some((candidate) => !nonEmptyString(candidate)) ||
+      typeof tag.driver_candidates_pending !== "boolean"
     )
-      return "Kernel pool tag is malformed.";
+      return "Kernel pool tag is malformed or duplicated.";
+    poolIds.add(tag.stable_id);
     const error = validateObservations(tag.metrics, "system", payload);
     if (error) return error;
-  }
-  const workloadError = validateWorkloads(payload.workloads, payload);
-  if (workloadError) return workloadError;
-  if (
-    payload.warnings.some(
-      (warning) =>
-        !isRecord(warning) ||
-        typeof warning.key !== "string" ||
-        !safeInteger(warning.publication_seq) ||
-        !safeInteger(warning.occurred_at_ms) ||
-        typeof warning.category !== "string" ||
-        typeof warning.message !== "string",
-    )
-  ) {
-    return "Runtime warnings are malformed.";
   }
   return null;
 }
@@ -650,6 +687,7 @@ function validatePersistence(input: unknown, evaluatedAtMs: number): string | nu
     const failure = component.active_failure;
     if (
       !persistenceOwners.has(component.owner) ||
+      !rootOwners.has(component.owner) ||
       !persistenceKinds.has(component.kind) ||
       componentKeys.has(key) ||
       !persistenceStates.has(component.state) ||
@@ -686,6 +724,8 @@ function validatePersistence(input: unknown, evaluatedAtMs: number): string | nu
     if (component.durability !== "not_applicable")
       recordState(component.state as "healthy" | "degraded" | "unavailable");
   }
+  if (input.state !== "unavailable" && (input.roots.length === 0 || input.components.length === 0))
+    return "Runtime persistence active state requires roots and components.";
   if (input.state !== (worstState ?? "unavailable"))
     return "Runtime persistence overall state is inconsistent.";
   return null;
@@ -752,6 +792,8 @@ function validateCollectorService(
     (privileged.state !== "active" || service.state !== "active")
   )
     return "Collector-service source is not active.";
+  if (privileged.source === "local_process" && service.state === "active")
+    return "Local and collector-service collection cannot both be active.";
   return null;
 }
 
@@ -760,7 +802,7 @@ function validReleaseIdentity(value: unknown): boolean {
   if (
     typeof value.app_version !== "string" ||
     value.app_version.trim().length === 0 ||
-    value.app_version.length > 64
+    [...value.app_version].length > 64
   )
     return false;
   return (
@@ -781,40 +823,56 @@ function sameReleaseIdentity(left: unknown, right: unknown): boolean {
   );
 }
 
-function validateWorkloads(
-  workloads: WorkloadDetailV3[],
-  payload: RuntimeSnapshotPayloadV3,
-): string | null {
+function validateWorkloads(input: unknown, payload: Record<string, any>): string | null {
+  if (!Array.isArray(input)) return "Workload catalog is not an array.";
+  const workloads = input;
   const processIds = new Set<string>();
-  const processes = new Map<string, Extract<WorkloadDetailV3, { kind: "process" }>["detail"]>();
+  const processes = new Map<string, Record<string, any>>();
   for (const workload of workloads) {
     if (!isRecord(workload) || !isRecord(workload.detail)) return "Workload is malformed.";
     if (workload.kind === "process") {
+      const detail = workload.detail;
+      const presentation = detail.presentation;
       if (
-        typeof workload.detail.stable_id !== "string" ||
-        processIds.has(workload.detail.stable_id) ||
-        !isRecord(workload.detail.presentation) ||
-        typeof workload.detail.pid !== "string"
+        !nonEmptyString(detail.stable_id) ||
+        processIds.has(detail.stable_id) ||
+        !nonEmptyString(detail.pid) ||
+        detail.pid.includes(":") ||
+        !processIdentityStabilities.has(detail.identity_stability) ||
+        (detail.parent_pid !== null && typeof detail.parent_pid !== "string") ||
+        (detail.parent_process_id !== null && typeof detail.parent_process_id !== "string") ||
+        !nonEmptyString(detail.display_name) ||
+        typeof detail.executable !== "string" ||
+        !nonEmptyString(detail.status) ||
+        !accessStates.has(detail.access_state) ||
+        !isRecord(presentation) ||
+        (presentation.group_id !== null && typeof presentation.group_id !== "string") ||
+        !nonEmptyString(presentation.group_key) ||
+        !nonEmptyString(presentation.group_label) ||
+        !nonEmptyString(presentation.group_category) ||
+        !safeInteger(presentation.group_count) ||
+        presentation.group_count === 0 ||
+        !nonEmptyString(presentation.icon_kind) ||
+        typeof presentation.is_child !== "boolean" ||
+        typeof presentation.is_grouped !== "boolean"
       )
-        return "Process identity is malformed or duplicated.";
-      const startTime = workload.detail.start_time_ms;
+        return "Process identity or presentation is malformed or duplicated.";
+      const startTime = detail.start_time_ms;
       const expectedId =
         startTime === null
-          ? `process:${workload.detail.pid}:publication:${payload.sample_seq}`
-          : `process:${workload.detail.pid}:${startTime}`;
+          ? `process:${detail.pid}:publication:${payload.sample_seq}`
+          : `process:${detail.pid}:${startTime}`;
       if (
-        !workload.detail.pid ||
-        workload.detail.pid.includes(":") ||
         (startTime !== null && (!safeInteger(startTime) || startTime === 0)) ||
         (startTime === null
-          ? workload.detail.identity_stability !== "publication"
-          : workload.detail.identity_stability !== "stable") ||
-        workload.detail.stable_id !== expectedId
+          ? detail.identity_stability !== "publication"
+          : detail.identity_stability !== "stable") ||
+        detail.stable_id !== expectedId
       )
         return "Process stable identity does not match its PID and start time.";
-      processIds.add(workload.detail.stable_id);
-      processes.set(workload.detail.stable_id, workload.detail);
-      const error = validateObservations(workload.detail.metrics, "process", payload);
+      processIds.add(detail.stable_id);
+      processes.set(detail.stable_id, detail);
+      const error = validateObservations(detail.metrics, "process", payload);
       if (error) return error;
     } else if (workload.kind !== "group") return "Workload kind is unknown.";
   }
@@ -829,22 +887,26 @@ function validateWorkloads(
   }
   for (const workload of workloads) {
     if (workload.kind !== "group") continue;
-    const detail = workload.detail as GroupDetailV3;
+    const detail = workload.detail;
     if (
-      typeof detail.stable_id !== "string" ||
-      typeof detail.group_key !== "string" ||
-      groupIds.has(detail.stable_id)
+      !isRecord(detail) ||
+      !nonEmptyString(detail.stable_id) ||
+      !nonEmptyString(detail.group_key) ||
+      !nonEmptyString(detail.label) ||
+      !nonEmptyString(detail.category) ||
+      !nonEmptyString(detail.icon_kind) ||
+      (detail.icon_source !== null && !nonEmptyString(detail.icon_source)) ||
+      (detail.example_label !== null && !nonEmptyString(detail.example_label)) ||
+      groupIds.has(detail.stable_id) ||
+      !Array.isArray(detail.member_ids) ||
+      detail.member_ids.length < 2 ||
+      detail.member_ids.some((member) => !nonEmptyString(member)) ||
+      !Array.isArray(detail.coverage)
     )
-      return "Group identity is malformed or duplicated.";
+      return "Group identity, presentation, or coverage is malformed.";
     if (detail.stable_id !== `group:${detail.group_key}`)
       return "Group stable identity does not match its group key.";
     groupIds.add(detail.stable_id);
-    if (
-      !Array.isArray(detail.member_ids) ||
-      detail.member_ids.length < 2 ||
-      !Array.isArray(detail.coverage)
-    )
-      return "Group identity or coverage is malformed.";
     if (new Set(detail.member_ids).size !== detail.member_ids.length)
       return "Group member identity is duplicated.";
     for (const member of detail.member_ids) {
@@ -854,7 +916,11 @@ function validateWorkloads(
       if (
         !process.presentation.is_grouped ||
         process.presentation.group_id !== detail.stable_id ||
-        process.presentation.group_key !== detail.group_key
+        process.presentation.group_key !== detail.group_key ||
+        process.presentation.group_label !== detail.label ||
+        process.presentation.group_category !== detail.category ||
+        process.presentation.group_count !== detail.member_ids.length ||
+        process.presentation.icon_kind !== detail.icon_kind
       )
         return "Group presentation does not match its membership.";
       claimedMembers.add(member);
@@ -863,39 +929,63 @@ function validateWorkloads(
     if (error) return error;
     if (detail.coverage.length !== detail.metrics.length)
       return "Group coverage count does not match observations.";
-    for (const observation of detail.metrics) {
-      const matches = detail.coverage.filter(
-        (coverage) => coverage.descriptor_index === observation[0],
-      );
+    const coverageByDescriptor = new Map<number, Record<string, any>>();
+    for (const coverage of detail.coverage) {
       if (
-        matches.length !== 1 ||
-        matches[0].total_contributors !== detail.member_ids.length ||
-        matches[0].available_contributors > matches[0].total_contributors
+        !isRecord(coverage) ||
+        !safeInteger(coverage.descriptor_index) ||
+        coverageByDescriptor.has(coverage.descriptor_index) ||
+        !safeInteger(coverage.available_contributors) ||
+        !safeInteger(coverage.total_contributors) ||
+        coverage.available_contributors > coverage.total_contributors ||
+        coverage.total_contributors !== detail.member_ids.length ||
+        !validIndex(coverage.limitation_index, payload.limitations.length)
       )
-        return "Group coverage is inconsistent with membership.";
-      if (!validIndex(matches[0].limitation_index, payload.limitations.length))
-        return "Group coverage limitation index is invalid.";
-      if (matches[0].limitation_index !== observation[4])
+        return "Group coverage is malformed or inconsistent with membership.";
+      coverageByDescriptor.set(coverage.descriptor_index, coverage);
+    }
+    for (const observation of detail.metrics) {
+      const coverage = coverageByDescriptor.get(observation[0]);
+      if (!coverage) return "Group coverage is inconsistent with membership.";
+      if (coverage.limitation_index !== observation[4])
         return "Group coverage limitation does not match its observation.";
+      if (
+        coverage.available_contributors < coverage.total_contributors &&
+        coverage.limitation_index === null
+      )
+        return "Group coverage loss is unexplained.";
+      const quality = payload.quality_codes[observation[2]];
+      if (
+        coverage.available_contributors < coverage.total_contributors &&
+        (quality === "native" || quality === "estimated")
+      )
+        return "Group quality contradicts contributor coverage.";
     }
   }
   for (const [id, process] of processes) {
     if (
       process.presentation.is_grouped !== claimedMembers.has(id) ||
-      process.presentation.is_grouped !== (process.presentation.group_id !== null)
+      process.presentation.is_grouped !== (process.presentation.group_id !== null) ||
+      (!process.presentation.is_grouped &&
+        (process.presentation.is_child || process.presentation.group_count !== 1))
     ) {
       return "Process grouping state is inconsistent.";
     }
   }
-  const visible = workloads.filter((workload) => workload.kind === "process").length;
-  if (payload.visible_process_count !== visible || payload.total_process_count < visible)
+  const visible = processes.size;
+  if (
+    !safeInteger(payload.visible_process_count) ||
+    !safeInteger(payload.total_process_count) ||
+    payload.visible_process_count !== visible ||
+    payload.total_process_count < visible
+  )
     return "Process counts are inconsistent.";
-  const contributorMetrics = new Set<string>();
+  const seenContributorMetrics = new Set<string>();
   for (const contributor of payload.contributors) {
     if (
       !isRecord(contributor) ||
-      !["cpu", "memory", "io", "network"].includes(contributor.metric) ||
-      contributorMetrics.has(contributor.metric) ||
+      !contributorMetrics.has(contributor.metric) ||
+      seenContributorMetrics.has(contributor.metric) ||
       !safeInteger(contributor.quality_code) ||
       !payload.quality_codes[contributor.quality_code] ||
       !safeInteger(contributor.available_contributors) ||
@@ -912,35 +1002,56 @@ function validateWorkloads(
     ) {
       return "Process contributor metadata is malformed.";
     }
+    const quality = payload.quality_codes[contributor.quality_code];
     if (
       contributor.process_id !== null &&
       (contributor.display_name === null ||
         contributor.available_contributors !== contributor.total_contributors ||
-        contributor.total_contributors === 0)
+        contributor.total_contributors === 0 ||
+        quality === "held" ||
+        quality === "unavailable")
     )
       return "Process contributor identity is inconsistent.";
+    if (contributor.process_id === null && contributor.display_name !== null)
+      return "Process contributor name lacks stable identity.";
     if (
       contributor.available_contributors < contributor.total_contributors &&
       contributor.limitation_index === null
     )
       return "Process contributor coverage is unexplained.";
-    contributorMetrics.add(contributor.metric);
+    const qualityError = validateQualityLimitation(quality, contributor.limitation_index, payload);
+    if (qualityError) return qualityError;
+    if (
+      contributor.source === "unknown" &&
+      (quality !== "unavailable" ||
+        (contributor.limitation_index === null
+          ? null
+          : payload.limitations[contributor.limitation_index]?.code) !== "missing_metadata")
+    )
+      return "Process contributor source contradicts its quality.";
+    if (
+      contributor.available_contributors < contributor.total_contributors &&
+      (quality === "native" || quality === "estimated")
+    )
+      return "Process contributor quality contradicts coverage.";
+    seenContributorMetrics.add(contributor.metric);
   }
-  if (contributorMetrics.size !== 4) return "Process contributor catalog is incomplete.";
+  if (seenContributorMetrics.size !== contributorMetrics.size || payload.contributors.length !== 4)
+    return "Process contributor catalog is incomplete.";
   return null;
 }
 
 function validateObservations(
   input: unknown,
   scope: MetricScope,
-  payload: RuntimeSnapshotPayloadV3,
+  payload: Record<string, any>,
 ): string | null {
   if (!Array.isArray(input)) return `${scope} observations are not an array.`;
   const observed = new Set<string>();
   for (const candidate of input) {
     if (!Array.isArray(candidate) || candidate.length !== 5)
       return `${scope} observation tuple is malformed.`;
-    const observation = candidate as MetricObservation;
+    const observation = candidate;
     if (!safeInteger(observation[0]) || !safeInteger(observation[2]))
       return `${scope} observation indexes are malformed.`;
     const descriptor = payload.descriptors[observation[0]];
@@ -950,10 +1061,7 @@ function validateObservations(
     if (observed.has(descriptor.semantic))
       return `${scope} subject repeats ${descriptor.semantic}.`;
     observed.add(descriptor.semantic);
-    if (
-      observation[1] !== null &&
-      (typeof observation[1] !== "number" || !Number.isFinite(observation[1]))
-    )
+    if (observation[1] !== null && !nonNegativeFiniteNumber(observation[1]))
       return `${scope} observation value is invalid.`;
     if (quality === "unavailable" && observation[1] !== null)
       return `${scope} unavailable observation carries a value.`;
@@ -977,8 +1085,45 @@ function validateObservations(
       return `${scope} held observation time is after the sample.`;
     if (!validIndex(observation[4], payload.limitations.length))
       return `${scope} limitation index is invalid.`;
+    const qualityError = validateQualityLimitation(quality, observation[4], payload);
+    if (qualityError) return `${scope} ${qualityError}`;
+    if (
+      descriptor.source === "unknown" &&
+      (quality !== "unavailable" ||
+        (observation[4] === null ? null : payload.limitations[observation[4]]?.code) !==
+          "missing_metadata")
+    )
+      return `${scope} observation source contradicts its quality.`;
   }
   return null;
+}
+
+function validateQualityLimitation(
+  quality: unknown,
+  limitationIndex: unknown,
+  payload: Record<string, any>,
+): string | null {
+  if (!qualityCodes.some((candidate) => candidate === quality)) return "quality code is unknown.";
+  if (!validIndex(limitationIndex, payload.limitations.length))
+    return "quality limitation index is invalid.";
+  const code =
+    limitationIndex === null ? null : (payload.limitations[limitationIndex]?.code ?? null);
+  if ((quality === "held" || quality === "partial" || quality === "unavailable") && code === null)
+    return "quality requires a typed explanation.";
+  const valid =
+    quality === "native"
+      ? code === null
+      : quality === "estimated"
+        ? code !== "pending_baseline" && code !== "held_value" && code !== "group_partial_coverage"
+        : quality === "held"
+          ? code === "pending_baseline" || code === "held_value"
+          : quality === "partial"
+            ? code !== null &&
+              code !== "pending_baseline" &&
+              code !== "held_value" &&
+              code !== "numeric_range"
+            : code !== null && code !== "pending_baseline" && code !== "held_value";
+  return valid ? null : "quality and limitation code contradict each other.";
 }
 
 function mismatch(
@@ -1005,11 +1150,16 @@ function nonNegativeFiniteNumber(value: unknown): value is number {
   return finiteNumber(value) && value >= 0;
 }
 
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function networkScopeDefinition(
   semantic: MetricSemantic,
   scope: MetricScope,
   source: string,
 ): NetworkScopeV3 | null {
+  if (source === "unknown") return null;
   const systemNetwork = [
     "network_receive_total",
     "network_transmit_total",
@@ -1031,7 +1181,7 @@ function validProcessId(value: string, sampleSeq: number): boolean {
   return match !== null && (match[1] === undefined || Number(match[1]) === sampleSeq);
 }
 
-function validIndex(index: unknown, length: number): boolean {
+function validIndex(index: unknown, length: number): index is number | null {
   return index === null || (safeInteger(index) && index < length);
 }
 

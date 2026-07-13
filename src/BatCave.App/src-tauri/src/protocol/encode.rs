@@ -3,7 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     catalog::{
-        metric_quality_code, metric_source, CatalogBuilder, MetricDefinition, QUALITY_CODES,
+        metric_limitation_code, metric_quality_code, metric_source, CatalogBuilder,
+        MetricDefinition, QUALITY_CODES,
     },
     types::*,
     validate::validate_envelope,
@@ -863,13 +864,35 @@ fn encode_contributors(
             available: 0,
             total: snapshot.total_process_count,
         });
-        let quality_code = quality
+        let quality_has_source = quality.is_some_and(|quality| quality.source.is_some());
+        let mut quality_code = quality
+            .filter(|_| quality_has_source)
             .map(|quality| metric_quality_code(quality.quality))
-            .unwrap_or(4);
-        let limitation_index = if let Some(message) =
-            quality.and_then(|quality| quality.message.as_ref())
-        {
-            Some(catalog.limitation(LimitationCode::PartialCoverage, message.clone())?)
+            .unwrap_or_else(|| metric_quality_code(MetricQuality::Unavailable));
+        let mut limitation_index = if let Some((code, message)) = quality.and_then(|quality| {
+            quality.message.as_ref().map(|message| {
+                (
+                    quality
+                        .limitation_code
+                        .map(metric_limitation_code)
+                        .unwrap_or(match quality.quality {
+                            MetricQuality::Held => LimitationCode::HeldValue,
+                            MetricQuality::Partial => LimitationCode::PartialCoverage,
+                            MetricQuality::Unavailable => LimitationCode::UnsupportedMetric,
+                            MetricQuality::Native | MetricQuality::Estimated => {
+                                LimitationCode::CollectorFailure
+                            }
+                        }),
+                    message,
+                )
+            })
+        }) {
+            Some(catalog.limitation(code, message.clone())?)
+        } else if !quality_has_source {
+            Some(catalog.limitation(
+                LimitationCode::MissingMetadata,
+                "Contributor source provenance was not reported by the runtime.".to_string(),
+            )?)
         } else if coverage_missing {
             Some(catalog.limitation(
                 LimitationCode::MissingMetadata,
@@ -891,10 +914,40 @@ fn encode_contributors(
         } else {
             None
         };
+        let quality_requires_explanation = [
+            MetricQuality::Held,
+            MetricQuality::Partial,
+            MetricQuality::Unavailable,
+        ]
+        .into_iter()
+        .any(|quality| quality_code == metric_quality_code(quality));
+        if quality_requires_explanation && limitation_index.is_none() {
+            quality_code = metric_quality_code(MetricQuality::Unavailable);
+            limitation_index = Some(catalog.limitation(
+                LimitationCode::MissingMetadata,
+                "Contributor quality is missing a typed explanation.".to_string(),
+            )?);
+        }
+        if coverage.available < coverage.total
+            && [MetricQuality::Native, MetricQuality::Estimated]
+                .into_iter()
+                .any(|quality| quality_code == metric_quality_code(quality))
+        {
+            quality_code = metric_quality_code(MetricQuality::Partial);
+            limitation_index = Some(catalog.limitation(
+                LimitationCode::PartialCoverage,
+                format!(
+                    "{} of {} processes provide this contributor metric.",
+                    coverage.available, coverage.total
+                ),
+            )?);
+        }
+        let process_id = process_id.filter(|_| quality_has_source);
+        let display_name = process_id.as_ref().and(name).cloned();
         Ok(ProcessContributorV3 {
             metric,
             process_id,
-            display_name: name.cloned(),
+            display_name,
             name_ambiguous: ambiguous,
             available_contributors: to_u32(
                 coverage.available,
@@ -908,7 +961,7 @@ fn encode_contributors(
             source: quality
                 .and_then(|quality| quality.source)
                 .map(metric_source)
-                .unwrap_or(MetricSourceV3::Runtime),
+                .unwrap_or(MetricSourceV3::Unknown),
             limitation_index,
         })
     })
@@ -1051,8 +1104,9 @@ fn admin_state(value: RuntimeAdminModeState) -> PrivilegedCollectionStateV3 {
 fn privileged_source(value: RuntimePrivilegedSource) -> PrivilegedCollectionSourceV3 {
     match value {
         RuntimePrivilegedSource::None => PrivilegedCollectionSourceV3::None,
-        RuntimePrivilegedSource::CurrentProcess => PrivilegedCollectionSourceV3::CurrentProcess,
-        RuntimePrivilegedSource::ElevatedHelper => PrivilegedCollectionSourceV3::None,
+        RuntimePrivilegedSource::CurrentProcess | RuntimePrivilegedSource::ElevatedHelper => {
+            PrivilegedCollectionSourceV3::LocalProcess
+        }
     }
 }
 fn focus_mode(value: ProcessFocusMode) -> ProcessFocusModeV3 {

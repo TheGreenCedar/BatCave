@@ -293,30 +293,49 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
   const contributor = (metric: "cpu" | "memory" | "io" | "network") => {
     const name = snapshot.process_contributors[metric];
     const quality = snapshot.process_contributors[`${metric}_quality`];
-    const processId = snapshot.process_contributors[`${metric}_process_id`];
+    const hasSource = quality?.source != null;
     const coverage = snapshot.process_contributors[`${metric}_coverage`];
+    let qualityCode = quality?.source ? qualityCodes.indexOf(quality.quality) : 4;
+    let limitationIndex = quality?.message
+      ? catalog.limit(
+          quality.limitation_code ??
+            (quality.quality === "held"
+              ? "held_value"
+              : quality.quality === "partial"
+                ? "partial_coverage"
+                : "unsupported_metric"),
+          quality.message,
+        )
+      : !hasSource
+        ? catalog.limit(
+            "missing_metadata",
+            "Contributor source provenance was not reported by fixture telemetry.",
+          )
+        : coverage.available < coverage.total
+          ? catalog.limit(
+              "partial_coverage",
+              `${coverage.available} of ${coverage.total} processes provide this contributor metric.`,
+            )
+          : null;
+    if (coverage.available < coverage.total && [0, 1].includes(qualityCode)) qualityCode = 3;
+    if ([2, 3, 4].includes(qualityCode) && limitationIndex === null) {
+      qualityCode = 4;
+      limitationIndex = catalog.limit(
+        "missing_metadata",
+        "Contributor quality is missing a typed explanation.",
+      );
+    }
+    const processId = hasSource ? snapshot.process_contributors[`${metric}_process_id`] : null;
     return {
       metric,
       process_id: processId,
-      display_name: name,
+      display_name: processId ? name : null,
       name_ambiguous: snapshot.process_contributors[`${metric}_name_ambiguous`],
       available_contributors: coverage.available,
       total_contributors: coverage.total,
-      quality_code: quality ? qualityCodes.indexOf(quality.quality) : 4,
-      source: quality?.source ?? "runtime",
-      limitation_index: quality?.message
-        ? catalog.limit("partial_coverage", quality.message)
-        : name && !processId
-          ? catalog.limit(
-              "missing_metadata",
-              "Fixture contributor identity is not owned by the Rust runtime.",
-            )
-          : coverage.available < coverage.total
-            ? catalog.limit(
-                "partial_coverage",
-                `${coverage.available} of ${coverage.total} processes provide this contributor metric.`,
-              )
-            : null,
+      quality_code: qualityCode,
+      source: quality?.source ?? "unknown",
+      limitation_index: limitationIndex,
     };
   };
   const payload = {
@@ -335,8 +354,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
     },
     privileged_collection: {
       state: fixturePrivilegedState(snapshot.admin_mode.state),
-      source:
-        snapshot.admin_mode.source === "elevated_helper" ? "none" : snapshot.admin_mode.source,
+      source: fixturePrivilegedSource(snapshot),
       preference: snapshot.settings.admin_mode_requested
         ? ("best_available" as const)
         : ("standard_only" as const),
@@ -431,6 +449,13 @@ function fixturePrivilegedState(
   if (state === "off") return "standard_only";
   if (state === "requesting") return "connecting";
   return state;
+}
+
+function fixturePrivilegedSource(
+  snapshot: RuntimeSnapshot,
+): "none" | "local_process" | "collector_service" {
+  if (fixturePrivilegedState(snapshot.admin_mode.state) !== "active") return "none";
+  return snapshot.admin_mode.source === "collector_service" ? "collector_service" : "local_process";
 }
 
 function fixtureHealth(snapshot: RuntimeSnapshot): RuntimeSnapshot["health"] {
@@ -583,7 +608,8 @@ class FixtureCatalog {
     quality: MetricQualityInfo | undefined,
     sampled: number | null,
   ): MetricObservation {
-    const source = quality?.source ?? "runtime";
+    const missingSource = quality?.source == null;
+    const source = quality?.source ?? "unknown";
     const descriptor =
       this.descriptors.find(
         (entry) =>
@@ -593,9 +619,8 @@ class FixtureCatalog {
           entry.source === source,
       ) ?? this.addDescriptor(semantic, scope, unit, source);
     let value = input ?? null;
-    let qualityCode = quality ? qualityCodes.indexOf(quality.quality) : 4;
-    const pending =
-      quality?.quality === "held" && quality.message?.toLocaleLowerCase().includes("baseline");
+    let qualityCode = quality && !missingSource ? qualityCodes.indexOf(quality.quality) : 4;
+    const pending = quality?.quality === "held" && quality.limitation_code === "pending_baseline";
     if (qualityCode === 4 || pending || !Number.isFinite(value)) value = null;
     if (value === null && [0, 1, 3].includes(qualityCode)) qualityCode = 4;
     if (qualityCode < 0) qualityCode = 4;
@@ -605,20 +630,38 @@ class FixtureCatalog {
       value = null;
       qualityCode = 4;
     }
-    const limitation = heldMissingTime
-      ? this.limit("missing_metadata", "Held metric is missing its original observation time.")
-      : quality?.message
-        ? this.limit(
-            pending
-              ? "pending_baseline"
-              : quality.quality === "held"
-                ? "held_value"
-                : "partial_coverage",
-            quality.message,
-          )
-        : value === null
-          ? this.limit("unsupported_metric", "Metric is unavailable in fixture telemetry.")
-          : null;
+    let limitation = missingSource
+      ? this.limit(
+          "missing_metadata",
+          "Metric source provenance was not reported by fixture telemetry.",
+        )
+      : heldMissingTime
+        ? this.limit("missing_metadata", "Held metric is missing its original observation time.")
+        : quality?.message
+          ? this.limit(
+              quality.limitation_code ??
+                (pending
+                  ? "pending_baseline"
+                  : quality.quality === "held"
+                    ? "held_value"
+                    : quality.quality === "partial"
+                      ? "partial_coverage"
+                      : "unsupported_metric"),
+              quality.message,
+            )
+          : value === null
+            ? this.limit("unsupported_metric", "Metric is unavailable in fixture telemetry.")
+            : null;
+    if (limitation === null && [2, 3, 4].includes(qualityCode)) {
+      limitation = this.limit(
+        qualityCode === 2
+          ? "held_value"
+          : qualityCode === 3
+            ? "partial_coverage"
+            : "unsupported_metric",
+        "Fixture metric quality requires an explicit explanation.",
+      );
+    }
     return [
       descriptor.id,
       value,
@@ -668,6 +711,7 @@ function networkScope(
   scope: MetricScope,
   source: MetricSourceV3,
 ): "non_loopback_interface_aggregate" | "all_interface_aggregate" | "ip_socket_payload" | null {
+  if (source === "unknown") return null;
   if (
     scope === "system" &&
     [
@@ -687,8 +731,7 @@ function networkScope(
 }
 
 function totalsQuality(quality: MetricQualityInfo | undefined): MetricQualityInfo | undefined {
-  if (quality?.quality !== "held" || !quality.message?.toLocaleLowerCase().includes("baseline"))
-    return quality;
+  if (quality?.quality !== "held" || quality.limitation_code !== "pending_baseline") return quality;
   return { quality: quality.source === "sysinfo" ? "estimated" : "native", source: quality.source };
 }
 

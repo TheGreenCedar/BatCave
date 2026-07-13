@@ -95,6 +95,9 @@ pub fn network_scope_definition(
         NetworkRate, NetworkReceiveRate, NetworkReceiveTotal, NetworkTransmitRate,
         NetworkTransmitTotal,
     };
+    if source == MetricSourceV3::Unknown {
+        return None;
+    }
     match (scope, semantic) {
         (
             System,
@@ -176,10 +179,11 @@ impl CatalogBuilder {
         if definition.interval_ms == Some(0) {
             return Err("protocol_descriptor_interval_invalid".to_string());
         }
+        let missing_source = quality.is_none_or(|quality| quality.source.is_none());
         let source = quality
             .and_then(|quality| quality.source)
             .map(metric_source)
-            .unwrap_or(MetricSourceV3::Runtime);
+            .unwrap_or(MetricSourceV3::Unknown);
         let descriptor_index = self.descriptor(definition, source)?;
         let mut quality_code = quality
             .map(|quality| metric_quality_code(quality.quality))
@@ -197,11 +201,12 @@ impl CatalogBuilder {
             })
         });
 
-        if quality.is_none() {
+        if missing_source {
             normalized_value = None;
+            quality_code = metric_quality_code(MetricQuality::Unavailable);
             limitation = Some((
                 LimitationCode::MissingMetadata,
-                "Metric quality was not reported by the collector.".to_string(),
+                "Metric source provenance was not reported by the collector.".to_string(),
             ));
         } else if normalized_value.is_none()
             && quality.is_some_and(|quality| {
@@ -372,7 +377,7 @@ fn fallback_limitation_code(quality: MetricQuality) -> LimitationCode {
     }
 }
 
-fn metric_limitation_code(code: MetricLimitationCode) -> LimitationCode {
+pub fn metric_limitation_code(code: MetricLimitationCode) -> LimitationCode {
     match code {
         MetricLimitationCode::UnsupportedMetric => LimitationCode::UnsupportedMetric,
         MetricLimitationCode::AccessDenied => LimitationCode::AccessDenied,

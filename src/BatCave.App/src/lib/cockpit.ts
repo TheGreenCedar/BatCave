@@ -14,6 +14,7 @@ export interface ResourceBrief {
   stateLabel: string;
   confidence: ResourceConfidence;
   leadingWorkload: string | null;
+  leadingProcessId: string | null;
   contributorStatusLabel: string;
   contributorNameAmbiguous: boolean;
   attributionLabel: string;
@@ -51,13 +52,7 @@ export function buildResourceBrief(
   const contributorNameAmbiguous = definition.contributorProcessId
     ? false
     : contributor !== null && definition.contributorNameAmbiguous;
-  const leadingRow = definition.contributorProcessId
-    ? snapshot.process_view_rows.find(
-        (row) =>
-          row.kind === "process" && row.detail.workload_id === definition.contributorProcessId,
-      )
-    : undefined;
-  const leadingProcess = leadingRow?.kind === "process" ? leadingRow.detail.process : undefined;
+  const leadingProcess = resolveContributorProcess(snapshot, definition.contributorProcessId);
 
   return {
     mode,
@@ -79,6 +74,7 @@ export function buildResourceBrief(
       canShowValue,
     ),
     leadingWorkload: contributor ? displayProcessName(contributor) : null,
+    leadingProcessId: contributor ? definition.contributorProcessId : null,
     contributorStatusLabel: contributorStatusLabel(
       mode,
       contributor,
@@ -93,6 +89,17 @@ export function buildResourceBrief(
     contributorNameAmbiguous,
     attributionLabel: definition.attributionLabel,
   };
+}
+
+export function resolveContributorProcess(
+  snapshot: RuntimeSnapshot,
+  processId: string | null,
+): ProcessSample | null {
+  if (processId === null) return null;
+  const row = snapshot.process_view_rows.find(
+    (candidate) => candidate.kind === "process" && candidate.detail.workload_id === processId,
+  );
+  return row?.kind === "process" ? row.detail.process : null;
 }
 
 function resourceDefinition(
@@ -228,7 +235,7 @@ function resourceConfidence(
 function contributorStatusLabel(
   mode: DetailMode,
   contributor: string | null,
-  process: ProcessSample | undefined,
+  process: ProcessSample | null | undefined,
   quality: MetricQualityInfo | undefined,
   coverage: MetricCoverage,
   contributorNameAmbiguous: boolean,
@@ -271,7 +278,7 @@ function resourceHeadline(
 
 function contributorValueLabel(
   mode: DetailMode,
-  process: ProcessSample | undefined,
+  process: ProcessSample | null | undefined,
   quality: MetricQualityInfo | undefined,
   coverage: MetricCoverage,
   contributorNameAmbiguous: boolean,

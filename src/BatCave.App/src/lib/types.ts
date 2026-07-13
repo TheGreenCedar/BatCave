@@ -97,7 +97,20 @@ export type RuntimeTelemetrySource =
   | "fixture";
 
 export type MetricQuality = "native" | "estimated" | "held" | "partial" | "unavailable";
+export type MetricLimitationCode =
+  | "unsupported_metric"
+  | "access_denied"
+  | "authorization_scope"
+  | "partial_coverage"
+  | "pending_baseline"
+  | "held_value"
+  | "collector_failure"
+  | "data_loss"
+  | "missing_metadata"
+  | "group_partial_coverage"
+  | "numeric_range";
 export type MetricSource =
+  | "unknown"
   | "direct_api"
   | "libproc"
   | "iokit"
@@ -116,6 +129,7 @@ export interface MetricQualityInfo {
   source?: MetricSource;
   updated_at_ms?: number;
   age_ms?: number;
+  limitation_code?: MetricLimitationCode;
   message?: string;
 }
 

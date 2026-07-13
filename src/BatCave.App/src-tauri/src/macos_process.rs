@@ -78,6 +78,13 @@ unsafe extern "C" {
 pub struct MacosProcessCollection {
     pub denied_count: usize,
     pub partial_count: usize,
+    pub exited_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacosProcessOutcome {
+    Access(AccessState),
+    Exited,
 }
 
 #[derive(Debug, Default)]
@@ -88,27 +95,32 @@ impl MacosProcessCollector {
         Self
     }
 
-    pub fn enrich(&mut self, processes: &mut [ProcessSample]) -> MacosProcessCollection {
+    pub fn enrich(&mut self, processes: &mut Vec<ProcessSample>) -> MacosProcessCollection {
         let mut collection = MacosProcessCollection::default();
-        for process in processes {
+        processes.retain_mut(|process| {
             let Ok(pid) = process.pid.parse::<c_int>() else {
                 process.access_state = AccessState::Partial;
                 collection.partial_count += 1;
-                continue;
+                return true;
             };
 
             let outcome = enrich_process(process, pid);
             match outcome {
-                AccessState::Denied => collection.denied_count += 1,
-                AccessState::Partial => collection.partial_count += 1,
-                AccessState::Full => {}
+                MacosProcessOutcome::Access(AccessState::Denied) => collection.denied_count += 1,
+                MacosProcessOutcome::Access(AccessState::Partial) => collection.partial_count += 1,
+                MacosProcessOutcome::Access(AccessState::Full) => {}
+                MacosProcessOutcome::Exited => {
+                    collection.exited_count += 1;
+                    return false;
+                }
             }
-        }
+            true
+        });
         collection
     }
 }
 
-fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
+fn enrich_process(process: &mut ProcessSample, pid: c_int) -> MacosProcessOutcome {
     let mut successful_probes = 0_u8;
     let mut denied_probes = 0_u8;
     let quality = process
@@ -129,6 +141,9 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
             ));
         }
         Err(error) => {
+            if is_process_exited(&error) {
+                return MacosProcessOutcome::Exited;
+            }
             let access_denied = is_access_denied(&error);
             denied_probes += usize::from(access_denied) as u8;
             let limitation = if access_denied {
@@ -141,13 +156,9 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
                 MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Sysinfo)
                     .with_limitation(limitation, PHYSICAL_FOOTPRINT_UNAVAILABLE),
             );
-            quality.io = Some(
-                MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
-                    .with_limitation(
-                    limitation,
-                    "Native process read/write totals are unavailable; using the sysinfo fallback.",
-                ),
-            );
+            process.io_read_total_bytes = 0;
+            process.io_write_total_bytes = 0;
+            quality.io = Some(unavailable_io_quality(limitation));
         }
     }
 
@@ -162,6 +173,9 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
             ));
         }
         Err(error) => {
+            if is_process_exited(&error) {
+                return MacosProcessOutcome::Exited;
+            }
             let access_denied = is_access_denied(&error);
             denied_probes += usize::from(access_denied) as u8;
             process.threads = 0;
@@ -189,6 +203,9 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
             ));
         }
         Err(error) => {
+            if is_process_exited(&error) {
+                return MacosProcessOutcome::Exited;
+            }
             let access_denied = is_access_denied(&error);
             denied_probes += usize::from(access_denied) as u8;
             process.handles = 0;
@@ -229,7 +246,7 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> AccessState {
         AccessState::Partial
     };
     process.access_state = access;
-    access
+    MacosProcessOutcome::Access(access)
 }
 
 fn rusage_memory_values(fallback_resident: u64, rusage: &RusageInfoV2) -> (u64, u64) {
@@ -252,6 +269,13 @@ fn rusage_memory_quality(rusage: &RusageInfoV2) -> MetricQualityInfo {
             PHYSICAL_FOOTPRINT_UNAVAILABLE,
         )
     }
+}
+
+fn unavailable_io_quality(limitation: MetricLimitationCode) -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+        limitation,
+        "Native process read/write totals are unavailable.",
+    )
 }
 
 fn process_rusage(pid: c_int) -> io::Result<RusageInfoV2> {
@@ -299,10 +323,11 @@ fn file_descriptor_count(pid: c_int) -> io::Result<u32> {
 }
 
 fn is_access_denied(error: &io::Error) -> bool {
-    matches!(
-        error.raw_os_error(),
-        Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ESRCH)
-    )
+    matches!(error.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES))
+}
+
+fn is_process_exited(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ESRCH)
 }
 
 #[cfg(test)]
@@ -354,30 +379,43 @@ mod tests {
             .network
             .as_ref()
             .is_some_and(|quality| quality.quality == MetricQuality::Unavailable));
-    }
-
-    #[test]
-    fn missing_process_is_retained_as_denied() {
-        let mut rows = vec![sample(i32::MAX as u32)];
-        let summary = MacosProcessCollector::new().enrich(&mut rows);
-        assert_eq!(summary.denied_count, 1);
-        assert_eq!(rows[0].access_state, AccessState::Denied);
-        assert_eq!(rows[0].memory_bytes, 1);
-        assert_eq!(rows[0].private_bytes, 0);
         assert_eq!(
             rows[0]
                 .quality
                 .as_ref()
-                .and_then(|quality| quality.memory.as_ref())
-                .map(|quality| quality.quality),
-            Some(MetricQuality::Partial)
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| (quality.quality, quality.source)),
+            Some((MetricQuality::Native, Some(MetricSource::Libproc)))
         );
-        assert!(rows[0]
-            .quality
-            .as_ref()
-            .and_then(|quality| quality.memory.as_ref())
-            .and_then(|quality| quality.message.as_deref())
-            .is_some_and(|message| message.contains("physical footprint is unavailable")));
+    }
+
+    #[test]
+    fn missing_process_is_dropped_as_ordinary_churn() {
+        let mut rows = vec![sample(i32::MAX as u32)];
+        let summary = MacosProcessCollector::new().enrich(&mut rows);
+        assert_eq!(summary.denied_count, 0);
+        assert_eq!(summary.exited_count, 1);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn process_exit_is_not_classified_as_access_denial() {
+        let error = io::Error::from_raw_os_error(libc::ESRCH);
+        assert!(is_process_exited(&error));
+        assert!(!is_access_denied(&error));
+    }
+
+    #[test]
+    fn failed_direct_io_never_claims_a_sysinfo_estimate() {
+        for limitation in [
+            MetricLimitationCode::AccessDenied,
+            MetricLimitationCode::CollectorFailure,
+        ] {
+            let quality = unavailable_io_quality(limitation);
+            assert_eq!(quality.quality, MetricQuality::Unavailable);
+            assert_eq!(quality.source, Some(MetricSource::Libproc));
+            assert_eq!(quality.limitation_code, Some(limitation));
+        }
     }
 
     #[test]

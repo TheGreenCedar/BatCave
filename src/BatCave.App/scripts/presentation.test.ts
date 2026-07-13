@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildResourceBrief } from "../src/lib/cockpit.ts";
+import { buildResourceBrief, resolveContributorProcess } from "../src/lib/cockpit.ts";
 import {
   displayMetricValue,
   displayGroupMetricValue,
@@ -102,6 +102,7 @@ test("backend contributor identity disambiguates duplicate display names", () =>
   assert.equal(brief.contributorNameAmbiguous, false);
   assert.equal(brief.contributorStatusLabel, "40% of one core");
   assert.equal(brief.confidence, "High");
+  assert.equal(resolveContributorProcess(snapshot, brief.leadingProcessId)?.pid, "42");
 });
 
 test("legacy contributor summaries without ambiguity truth do not lend a visible row value", () => {
@@ -139,6 +140,7 @@ test("off-list contributor identity is never resolved by display name", () => {
     brief.contributorStatusLabel,
     "Contributor value is outside the current workload view",
   );
+  assert.equal(resolveContributorProcess(snapshot, brief.leadingProcessId), null);
 });
 
 test("physical disk summary rejects process I/O as compatible attribution", () => {

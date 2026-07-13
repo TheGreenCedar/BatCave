@@ -67,7 +67,10 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
     },
     admin_mode: {
       state: legacyAdminState(payload.privileged_collection.state),
-      source: payload.privileged_collection.source,
+      source:
+        payload.privileged_collection.source === "local_process"
+          ? "current_process"
+          : payload.privileged_collection.source,
       detail: payload.privileged_collection.detail,
       last_success_at_ms: payload.privileged_collection.last_success_at_ms,
     },
@@ -381,7 +384,10 @@ function adaptContributors(payload: RuntimeSnapshotPayloadV3): ProcessContributo
       quality: payload.quality_codes[contributor.quality_code],
       source: contributor.source,
       ...(contributor.limitation_index !== null
-        ? { message: payload.limitations[contributor.limitation_index]?.message }
+        ? {
+            limitation_code: payload.limitations[contributor.limitation_index]?.code,
+            message: payload.limitations[contributor.limitation_index]?.message,
+          }
         : {}),
     };
     const coverage = {
@@ -450,7 +456,7 @@ function measurement(
             age_ms: Math.max(0, payload.published_at_ms - observation[3]),
           }
         : {}),
-      ...(limitation ? { message: limitation.message } : {}),
+      ...(limitation ? { limitation_code: limitation.code, message: limitation.message } : {}),
     },
   };
 }

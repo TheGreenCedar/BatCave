@@ -18,6 +18,15 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
     let ProtocolEvent::RuntimeSnapshot(payload) = &envelope.event else {
         return Ok(());
     };
+    if payload.publication_seq > JS_MAX_SAFE_INTEGER
+        || payload.published_at_ms > JS_MAX_SAFE_INTEGER
+        || payload.sample_seq > JS_MAX_SAFE_INTEGER
+        || payload
+            .sampled_at_ms
+            .is_some_and(|sampled| sampled > JS_MAX_SAFE_INTEGER)
+    {
+        return Err("protocol_publication_metadata_invalid".to_string());
+    }
     if payload
         .sampled_at_ms
         .is_some_and(|sampled| sampled > payload.published_at_ms)
@@ -59,6 +68,7 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
             return Err("protocol_descriptor_interval_invalid".to_string());
         }
     }
+    validate_system(&payload.system, payload)?;
     let process_details = payload
         .workloads
         .iter()
@@ -86,6 +96,7 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
     for (id, process) in &known_processes {
         let expected_id = if let Some(start_time) = process.start_time_ms {
             if start_time == 0
+                || start_time > JS_MAX_SAFE_INTEGER
                 || !matches!(
                     process.identity_stability,
                     ProcessIdentityStabilityV3::Stable
@@ -108,6 +119,16 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
         }
     }
     for process in known_processes.values() {
+        if process.display_name.trim().is_empty()
+            || process.status.trim().is_empty()
+            || process.presentation.group_key.trim().is_empty()
+            || process.presentation.group_label.trim().is_empty()
+            || process.presentation.group_category.trim().is_empty()
+            || process.presentation.icon_kind.trim().is_empty()
+            || process.presentation.group_count == 0
+        {
+            return Err("protocol_process_presentation_invalid".to_string());
+        }
         if let Some(parent_id) = &process.parent_process_id {
             let parent_pid = process
                 .parent_pid
@@ -146,6 +167,21 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
                 if detail.member_ids.len() < 2 {
                     return Err("protocol_group_requires_multiple_members".to_string());
                 }
+                if detail.group_key.trim().is_empty()
+                    || detail.label.trim().is_empty()
+                    || detail.category.trim().is_empty()
+                    || detail.icon_kind.trim().is_empty()
+                    || detail
+                        .icon_source
+                        .as_deref()
+                        .is_some_and(|value| value.trim().is_empty())
+                    || detail
+                        .example_label
+                        .as_deref()
+                        .is_some_and(|value| value.trim().is_empty())
+                {
+                    return Err("protocol_group_presentation_invalid".to_string());
+                }
                 if detail.member_ids.iter().collect::<HashSet<_>>().len() != detail.member_ids.len()
                 {
                     return Err("protocol_duplicate_group_member".to_string());
@@ -161,6 +197,11 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
                         || process.presentation.group_id.as_deref()
                             != Some(detail.stable_id.as_str())
                         || process.presentation.group_key != detail.group_key
+                        || process.presentation.group_label != detail.label
+                        || process.presentation.group_category != detail.category
+                        || usize::try_from(process.presentation.group_count).ok()
+                            != Some(detail.member_ids.len())
+                        || process.presentation.icon_kind != detail.icon_kind
                     {
                         return Err("protocol_group_presentation_mismatch".to_string());
                     }
@@ -189,6 +230,19 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
                     if coverage.limitation_index != observation.4 {
                         return Err("protocol_group_coverage_limitation_mismatch".to_string());
                     }
+                    if coverage.available_contributors < coverage.total_contributors
+                        && coverage.limitation_index.is_none()
+                    {
+                        return Err("protocol_group_coverage_unexplained".to_string());
+                    }
+                    if coverage.available_contributors < coverage.total_contributors
+                        && matches!(
+                            payload.quality_codes[usize::from(observation.2)],
+                            MetricQualityV3::Native | MetricQualityV3::Estimated
+                        )
+                    {
+                        return Err("protocol_group_quality_coverage_contradiction".to_string());
+                    }
                 }
             }
         }
@@ -196,10 +250,13 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
     for (id, process) in &known_processes {
         if process.presentation.is_grouped != process_group.contains_key(id)
             || process.presentation.is_grouped != process.presentation.group_id.is_some()
+            || (!process.presentation.is_grouped
+                && (process.presentation.is_child || process.presentation.group_count != 1))
         {
             return Err("protocol_process_group_state_mismatch".to_string());
         }
     }
+    let mut contributor_metrics = HashSet::new();
     for contributor in &payload.contributors {
         if usize::from(contributor.quality_code) >= payload.quality_codes.len()
             || contributor.available_contributors > contributor.total_contributors
@@ -207,10 +264,18 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
         {
             return Err("protocol_contributor_invalid".to_string());
         }
+        if !contributor_metrics.insert(contributor.metric) {
+            return Err("protocol_duplicate_contributor_metric".to_string());
+        }
+        let quality = payload.quality_codes[usize::from(contributor.quality_code)];
         if contributor.process_id.is_some()
             && (contributor.display_name.is_none()
                 || contributor.available_contributors != contributor.total_contributors
-                || contributor.total_contributors == 0)
+                || contributor.total_contributors == 0
+                || matches!(
+                    quality,
+                    MetricQualityV3::Held | MetricQualityV3::Unavailable
+                ))
         {
             return Err("protocol_contributor_identity_invalid".to_string());
         }
@@ -221,13 +286,44 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
         {
             return Err("protocol_contributor_identity_malformed".to_string());
         }
+        if contributor.process_id.is_none() && contributor.display_name.is_some() {
+            return Err("protocol_contributor_name_without_identity".to_string());
+        }
         if contributor.available_contributors < contributor.total_contributors
             && contributor.limitation_index.is_none()
         {
             return Err("protocol_contributor_coverage_unexplained".to_string());
         }
-        validate_limitation_index(contributor.limitation_index, payload)?;
+        validate_quality_limitation(quality, contributor.limitation_index, payload)?;
+        if matches!(contributor.source, MetricSourceV3::Unknown)
+            && (quality != MetricQualityV3::Unavailable
+                || contributor
+                    .limitation_index
+                    .map(|index| payload.limitations[usize::from(index)].code)
+                    != Some(LimitationCode::MissingMetadata))
+        {
+            return Err("protocol_contributor_source_quality_contradiction".to_string());
+        }
+        if contributor.available_contributors < contributor.total_contributors
+            && matches!(
+                quality,
+                MetricQualityV3::Native | MetricQualityV3::Estimated
+            )
+        {
+            return Err("protocol_contributor_quality_coverage_contradiction".to_string());
+        }
     }
+    if contributor_metrics
+        != HashSet::from([
+            ContributorMetricV3::Cpu,
+            ContributorMetricV3::Memory,
+            ContributorMetricV3::Io,
+            ContributorMetricV3::Network,
+        ])
+    {
+        return Err("protocol_contributor_catalog_incomplete".to_string());
+    }
+    validate_warnings(payload)?;
     Ok(())
 }
 
@@ -251,11 +347,112 @@ fn validate_settings(settings: &RuntimeSettingsV3) -> Result<(), String> {
         return Err("protocol_runtime_settings_invalid".to_string());
     }
     if settings.ui_preferences.as_ref().is_some_and(|preferences| {
-        preferences.theme.trim().is_empty() || preferences.history_point_limit == 0
+        preferences.theme.trim().is_empty()
+            || preferences.theme.chars().count() > 64
+            || preferences.history_point_limit == 0
     }) {
         return Err("protocol_ui_preferences_invalid".to_string());
     }
     Ok(())
+}
+
+fn validate_system(
+    system: &SystemDetailV3,
+    _payload: &RuntimeSnapshotPayloadV3,
+) -> Result<(), String> {
+    if system.stable_id != "system:local" {
+        return Err("protocol_system_identity_invalid".to_string());
+    }
+    let mut logical_ids = HashSet::new();
+    let mut logical_indexes = HashSet::new();
+    for logical in &system.logical_cpus {
+        if logical.stable_id != format!("system:local:cpu:{}", logical.index)
+            || !logical_ids.insert(logical.stable_id.as_str())
+            || !logical_indexes.insert(logical.index)
+        {
+            return Err("protocol_logical_cpu_identity_invalid".to_string());
+        }
+    }
+    let mut pool_ids = HashSet::new();
+    for tag in &system.kernel_pool_tags {
+        let expected_id =
+            format!("system:local:pool:{}:{:?}", tag.tag, tag.kind).to_ascii_lowercase();
+        if tag.stable_id != expected_id
+            || tag.tag.trim().is_empty()
+            || !pool_ids.insert(tag.stable_id.as_str())
+            || tag
+                .driver_candidates
+                .iter()
+                .any(|candidate| candidate.trim().is_empty())
+        {
+            return Err("protocol_kernel_pool_identity_invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_warnings(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
+    let mut keys = HashSet::new();
+    for warning in &payload.warnings {
+        if warning.publication_seq > JS_MAX_SAFE_INTEGER
+            || warning.occurred_at_ms > JS_MAX_SAFE_INTEGER
+            || warning.publication_seq > payload.publication_seq
+            || warning.occurred_at_ms > payload.published_at_ms
+            || warning.key.trim().is_empty()
+            || warning.category.trim().is_empty()
+            || warning.message.trim().is_empty()
+            || !keys.insert(warning.key.as_str())
+        {
+            return Err("protocol_warning_invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_quality_limitation(
+    quality: MetricQualityV3,
+    limitation_index: Option<u16>,
+    payload: &RuntimeSnapshotPayloadV3,
+) -> Result<(), String> {
+    validate_limitation_index(limitation_index, payload)?;
+    let code = limitation_index.map(|index| payload.limitations[usize::from(index)].code);
+    if matches!(
+        quality,
+        MetricQualityV3::Held | MetricQualityV3::Partial | MetricQualityV3::Unavailable
+    ) && code.is_none()
+    {
+        return Err("protocol_quality_explanation_missing".to_string());
+    }
+    let valid = match quality {
+        MetricQualityV3::Native => code.is_none(),
+        MetricQualityV3::Estimated => !matches!(
+            code,
+            Some(
+                LimitationCode::PendingBaseline
+                    | LimitationCode::HeldValue
+                    | LimitationCode::GroupPartialCoverage
+            )
+        ),
+        MetricQualityV3::Held => matches!(
+            code,
+            Some(LimitationCode::PendingBaseline | LimitationCode::HeldValue)
+        ),
+        MetricQualityV3::Partial => !matches!(
+            code,
+            Some(
+                LimitationCode::PendingBaseline
+                    | LimitationCode::HeldValue
+                    | LimitationCode::NumericRange
+            ) | None
+        ),
+        MetricQualityV3::Unavailable => !matches!(
+            code,
+            Some(LimitationCode::PendingBaseline | LimitationCode::HeldValue) | None
+        ),
+    };
+    valid
+        .then_some(())
+        .ok_or_else(|| "protocol_quality_limitation_contradiction".to_string())
 }
 
 fn validate_persistence(
@@ -299,6 +496,9 @@ fn validate_persistence(
     }
     let mut component_keys = HashSet::new();
     for component in &persistence.components {
+        if !root_owners.contains(&component.owner) {
+            return Err("protocol_persistence_component_root_missing".to_string());
+        }
         if !component_keys.insert((component.owner, component.kind)) {
             return Err("protocol_persistence_component_duplicate".to_string());
         }
@@ -348,6 +548,11 @@ fn validate_persistence(
         }
     }
     let expected_state = worst_state.unwrap_or(RuntimePersistenceStateV3::Unavailable);
+    if !matches!(persistence.state, RuntimePersistenceStateV3::Unavailable)
+        && (persistence.roots.is_empty() || persistence.components.is_empty())
+    {
+        return Err("protocol_persistence_nonempty_state_invalid".to_string());
+    }
     if persistence.state != expected_state {
         return Err("protocol_persistence_overall_state_invalid".to_string());
     }
@@ -478,6 +683,11 @@ fn validate_health(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
 
 fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
     let privileged = &payload.privileged_collection;
+    if matches!(privileged.state, PrivilegedCollectionStateV3::Active)
+        != !matches!(privileged.source, PrivilegedCollectionSourceV3::None)
+    {
+        return Err("protocol_privileged_collection_state_source_invalid".to_string());
+    }
     if privileged
         .last_success_at_ms
         .is_some_and(|value| value > JS_MAX_SAFE_INTEGER || value > payload.health.evaluated_at_ms)
@@ -537,6 +747,16 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
     {
         return Err("protocol_collector_service_source_invalid".to_string());
     }
+    if matches!(
+        privileged.source,
+        PrivilegedCollectionSourceV3::LocalProcess
+    ) && privileged
+        .collector_service
+        .as_ref()
+        .is_some_and(|service| matches!(service.state, CollectorServiceStateV3::Active))
+    {
+        return Err("protocol_local_and_service_collection_conflict".to_string());
+    }
     Ok(())
 }
 
@@ -584,7 +804,10 @@ fn validate_observations(
         {
             return Err("protocol_null_observation_quality_invalid".to_string());
         }
-        if observation.1.is_some_and(|value| !value.is_finite()) {
+        if observation
+            .1
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
             return Err("protocol_observation_not_finite".to_string());
         }
         if observation.1.is_some() && observation.3.is_none() {
@@ -608,7 +831,16 @@ fn validate_observations(
         {
             return Err("protocol_held_observation_after_sample".to_string());
         }
-        validate_limitation_index(observation.4, payload)?;
+        validate_quality_limitation(*quality, observation.4, payload)?;
+        if matches!(descriptor.source, MetricSourceV3::Unknown)
+            && (*quality != MetricQualityV3::Unavailable
+                || observation
+                    .4
+                    .map(|index| payload.limitations[usize::from(index)].code)
+                    != Some(LimitationCode::MissingMetadata))
+        {
+            return Err("protocol_observation_source_quality_contradiction".to_string());
+        }
     }
     Ok(())
 }

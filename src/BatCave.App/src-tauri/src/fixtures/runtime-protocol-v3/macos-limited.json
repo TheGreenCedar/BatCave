@@ -555,10 +555,6 @@
         {
           "code": "pending_baseline",
           "message": "Waiting for process network attribution."
-        },
-        {
-          "code": "partial_coverage",
-          "message": "Waiting for process network attribution."
         }
       ],
       "system": {
@@ -1011,14 +1007,14 @@
               [
                 47,
                 null,
-                4,
+                2,
                 null,
                 4
               ],
               [
                 48,
                 null,
-                4,
+                2,
                 null,
                 4
               ],
@@ -1143,14 +1139,14 @@
               [
                 47,
                 null,
-                4,
+                2,
                 null,
                 4
               ],
               [
                 48,
                 null,
-                4,
+                2,
                 null,
                 4
               ],
@@ -1213,9 +1209,9 @@
           "name_ambiguous": false,
           "available_contributors": 0,
           "total_contributors": 2,
-          "quality_code": 4,
+          "quality_code": 2,
           "source": "etw",
-          "limitation_index": 5
+          "limitation_index": 4
         }
       ],
       "total_process_count": 2,
@@ -1224,7 +1220,7 @@
         {
           "key": "collector.example",
           "publication_seq": 41,
-          "occurred_at_ms": 1700000000400,
+          "occurred_at_ms": 1700000000100,
           "category": "collector",
           "message": "example warning"
         }

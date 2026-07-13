@@ -826,7 +826,7 @@ mod tests {
             warnings: vec![RuntimeWarning {
                 key: "collector.network_attribution".to_string(),
                 publication_seq: 41,
-                occurred_at_ms: 1_700_000_000_400,
+                occurred_at_ms: 1_700_000_000_100,
                 category: "collector".to_string(),
                 message: "partial process access".to_string(),
             }],
@@ -953,7 +953,7 @@ mod tests {
                 "warnings": [{
                     "key": "collector.network_attribution",
                     "publication_seq": 41,
-                    "occurred_at_ms": 1700000000400,
+                    "occurred_at_ms": 1700000000100,
                     "category": "collector",
                     "message": "partial process access"
                 }]

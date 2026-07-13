@@ -45,9 +45,11 @@ test("production fixture validates and preserves workload identity and order", (
     group.detail.member_ids,
   );
   assert.equal(adapted.process_view_rows[0].attention_label, "CPU activity · telemetry limited");
-  assert.equal(adapted.process_view_rows[1].attention_label, "Unavailable");
+  assert.equal(adapted.process_view_rows[1].attention_label, "Pending");
   assert.equal(adapted.process_contributors.cpu_process_id, "process:1234:1699999999000");
   assert.deepEqual(adapted.process_contributors.cpu_coverage, { available: 2, total: 2 });
+  assert.equal(adapted.process_contributors.network_quality?.quality, "held");
+  assert.equal(adapted.process_contributors.network_quality?.limitation_code, "pending_baseline");
   assert.equal(decoded.payload.health.engine_state, null);
   assert.equal(decoded.payload.health.collection_p95_ms, null);
   assert.equal(decoded.payload.persistence, null);
@@ -92,7 +94,7 @@ test("platform fixtures carry their privilege and collection limits", () => {
   if (elevatedDecoded.kind !== "snapshot") return;
   assert.equal(elevatedDecoded.payload.environment.process_elevation, "elevated");
   assert.equal(elevatedDecoded.payload.privileged_collection.state, "active");
-  assert.equal(elevatedDecoded.payload.privileged_collection.source, "none");
+  assert.equal(elevatedDecoded.payload.privileged_collection.source, "local_process");
   assert.equal(elevatedDecoded.payload.privileged_collection.preference, "best_available");
 
   const linuxDecoded = decodeProtocolEnvelope(linux);
@@ -229,6 +231,54 @@ test("reader rejects descriptor, value, and membership corruption", () => {
   firstProcess(payload(forgedIdentity)).detail.stable_id = "process:1234:1";
   assertMismatch(forgedIdentity, "stable identity");
 
+  const malformedDisplayName = structuredClone(windows);
+  (
+    firstProcess(payload(malformedDisplayName)).detail as unknown as {
+      display_name: unknown;
+    }
+  ).display_name = 17;
+  assertMismatch(malformedDisplayName, "process identity or presentation");
+
+  const malformedAccess = structuredClone(windows);
+  (
+    firstProcess(payload(malformedAccess)).detail as unknown as {
+      access_state: unknown;
+    }
+  ).access_state = "root";
+  assertMismatch(malformedAccess, "process identity or presentation");
+
+  const malformedGroupCount = structuredClone(windows);
+  (
+    firstProcess(payload(malformedGroupCount)).detail.presentation as unknown as {
+      group_count: unknown;
+    }
+  ).group_count = "many";
+  assertMismatch(malformedGroupCount, "process identity or presentation");
+
+  const negativeCoverage = structuredClone(windows);
+  firstGroup(payload(negativeCoverage)).detail.coverage[0].available_contributors = -1;
+  assertMismatch(negativeCoverage, "group coverage");
+
+  const nullCoverage = structuredClone(windows);
+  (firstGroup(payload(nullCoverage)).detail.coverage as unknown[])[0] = null;
+  assertMismatch(nullCoverage, "group coverage");
+
+  const malformedSystemIdentity = structuredClone(windows);
+  (
+    payload(malformedSystemIdentity).system as unknown as {
+      stable_id: unknown;
+    }
+  ).stable_id = null;
+  assertMismatch(malformedSystemIdentity, "system identity");
+
+  const malformedPoolKind = structuredClone(windows);
+  (
+    payload(malformedPoolKind).system.kernel_pool_tags[0] as unknown as {
+      kind: unknown;
+    }
+  ).kind = "invalid";
+  assertMismatch(malformedPoolKind, "kernel pool tag");
+
   const impossibleCount = structuredClone(windows);
   payload(impossibleCount).total_process_count = 1;
   assertMismatch(impossibleCount, "process counts");
@@ -248,7 +298,72 @@ test("reader rejects descriptor, value, and membership corruption", () => {
     components: [],
     suppressed_diagnostic_events: 0,
   };
-  assertMismatch(healthyNothing, "persistence overall");
+  assertMismatch(healthyNothing, "requires roots and components");
+
+  const orphanPersistenceComponent = structuredClone(windows);
+  payload(orphanPersistenceComponent).persistence = {
+    state: "healthy",
+    roots: [{ owner: "current_user", directory: "/tmp/batcave", permission_state: "verified" }],
+    components: [
+      {
+        owner: "collector_service",
+        kind: "settings",
+        state: "healthy",
+        durability: "durable",
+        last_success_at_ms: null,
+        active_failure: null,
+      },
+    ],
+    suppressed_diagnostic_events: 0,
+  };
+  assertMismatch(orphanPersistenceComponent, "component");
+
+  const oversizedTheme = structuredClone(windows);
+  payload(oversizedTheme).settings.ui_preferences = {
+    theme: "x".repeat(65),
+    history_point_limit: 72,
+  };
+  assertMismatch(oversizedTheme, "settings");
+
+  const negativeMetric = structuredClone(windows);
+  payload(negativeMetric).system.metrics[0][1] = -1;
+  assertMismatch(negativeMetric, "value is invalid");
+
+  const heldWithoutExplanation = structuredClone(windows);
+  const heldWithoutExplanationMetric = payload(heldWithoutExplanation).system.metrics[0];
+  heldWithoutExplanationMetric[2] = 2;
+  heldWithoutExplanationMetric[4] = null;
+  assertMismatch(heldWithoutExplanation, "requires a typed explanation");
+
+  const contradictoryQuality = structuredClone(windows);
+  const contradictoryMetric = payload(contradictoryQuality).system.metrics[0];
+  contradictoryMetric[2] = 2;
+  contradictoryMetric[4] = 0;
+  assertMismatch(contradictoryQuality, "contradict");
+
+  const missingContributor = structuredClone(windows);
+  payload(missingContributor).contributors.pop();
+  assertMismatch(missingContributor, "catalog is incomplete");
+
+  const duplicateContributor = structuredClone(windows);
+  payload(duplicateContributor).contributors[1].metric = "cpu";
+  assertMismatch(duplicateContributor, "metadata is malformed");
+
+  const contributorNameWithoutIdentity = structuredClone(windows);
+  payload(contributorNameWithoutIdentity).contributors[3].display_name = "orphan";
+  assertMismatch(contributorNameWithoutIdentity, "name lacks stable identity");
+
+  const activeWithoutSource = structuredClone(windows);
+  payload(activeWithoutSource).privileged_collection.state = "active";
+  assertMismatch(activeWithoutSource, "state and source are inconsistent");
+
+  const futureWarning = structuredClone(windows);
+  payload(futureWarning).warnings[0].publication_seq = payload(futureWarning).publication_seq + 1;
+  assertMismatch(futureWarning, "warnings are malformed");
+
+  const duplicateWarning = structuredClone(windows);
+  payload(duplicateWarning).warnings.push(structuredClone(payload(duplicateWarning).warnings[0]));
+  assertMismatch(duplicateWarning, "warnings are malformed");
 
   const matchingActiveService = structuredClone(windows);
   const matchingPayload = payload(matchingActiveService);
@@ -316,6 +431,12 @@ function firstProcess(payload: RuntimeSnapshotPayloadV3) {
   const process = payload.workloads.find((workload) => workload.kind === "process");
   if (!process || process.kind !== "process") throw new Error("expected process workload");
   return process;
+}
+
+function firstGroup(payload: RuntimeSnapshotPayloadV3) {
+  const group = payload.workloads.find((workload) => workload.kind === "group");
+  if (!group || group.kind !== "group") throw new Error("expected group workload");
+  return group;
 }
 
 function observation(

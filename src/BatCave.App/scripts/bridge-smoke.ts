@@ -12,6 +12,11 @@ import {
   type RuntimeInvoke,
 } from "../src/lib/tauriBridge.ts";
 import { encodeFixtureSnapshot } from "../src/lib/protocol/fixtureProtocol.ts";
+import { runtimeSurfaceMode } from "../src/lib/runtimeMode.ts";
+
+assert.equal(runtimeSurfaceMode(true, false), "native");
+assert.equal(runtimeSurfaceMode(false, true), "fixture");
+assert.equal(runtimeSurfaceMode(false, false), "unavailable");
 
 const canonicalSnapshot = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),

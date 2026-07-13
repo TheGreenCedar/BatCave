@@ -636,10 +636,7 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
                         MetricQuality::Estimated,
                         MetricSource::Sysinfo,
                     )),
-                    io: Some(MetricQualityInfo::new(
-                        MetricQuality::Estimated,
-                        MetricSource::Sysinfo,
-                    )),
+                    io: Some(process_io_seed_quality()),
                     other_io: Some(
                         MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo)
                             .with_limitation(
@@ -670,7 +667,7 @@ fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
 
 #[cfg(windows)]
 fn process_network_quality_unavailable() -> MetricQualityInfo {
-    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Etw).with_limitation(
+    MetricQualityInfo::new(MetricQuality::Held, MetricSource::Etw).with_limitation(
         MetricLimitationCode::PendingBaseline,
         "Waiting for ETW network attribution.",
     )
@@ -690,6 +687,19 @@ fn process_network_quality_unavailable() -> MetricQualityInfo {
         MetricLimitationCode::UnsupportedMetric,
         "Per-process network attribution is unavailable on macOS.",
     )
+}
+
+#[cfg(target_os = "macos")]
+fn process_io_seed_quality() -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+        MetricLimitationCode::CollectorFailure,
+        "Native process read/write totals have not been collected.",
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_io_seed_quality() -> MetricQualityInfo {
+    MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
 }
 
 fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> {
@@ -1177,6 +1187,18 @@ mod tests {
                     == Some(MetricSource::Procfs)
             }),
             "expected at least one Linux process row sourced from procfs"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sysinfo_seed_never_claims_process_io_provenance() {
+        let quality = process_io_seed_quality();
+        assert_eq!(quality.quality, MetricQuality::Unavailable);
+        assert_eq!(quality.source, Some(MetricSource::Libproc));
+        assert_eq!(
+            quality.limitation_code,
+            Some(MetricLimitationCode::CollectorFailure)
         );
     }
 

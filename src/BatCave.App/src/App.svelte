@@ -16,7 +16,11 @@
     resolveAccessibilityFixtureState,
     type AccessibilityFixtureState,
   } from "./lib/accessibilityFixtures";
-  import { buildResourceBrief, type CollectionState } from "./lib/cockpit";
+  import {
+    buildResourceBrief,
+    resolveContributorProcess,
+    type CollectionState,
+  } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
     installKindLabel,
@@ -77,6 +81,7 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
+  import { runtimeSurfaceMode } from "./lib/runtimeMode";
   import {
     chartPalettes,
     parseThemePreference,
@@ -257,25 +262,7 @@
     },
     collectionState,
   );
-  $: leadingContributor = resourceBrief.leadingWorkload
-    ? resourceBrief.mode === "cpu"
-      ? snapshot.process_contributors.cpu
-      : resourceBrief.mode === "memory"
-        ? snapshot.process_contributors.memory
-        : resourceBrief.mode === "network"
-          ? snapshot.process_contributors.network
-          : null
-    : null;
-  $: leadingProcess = leadingContributor
-    ? resourceBrief.contributorNameAmbiguous
-      ? null
-      : (() => {
-        const matches = snapshot.processes.filter(
-          (process) => process.name === leadingContributor,
-        );
-        return matches.length === 1 ? matches[0] : null;
-      })()
-    : null;
+  $: leadingProcess = resolveContributorProcess(snapshot, resourceBrief.leadingProcessId);
   $: leadingIdentity = leadingProcess ? processIdentity(leadingProcess) : null;
   $: limitationCount =
     uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warning_count;
@@ -451,7 +438,7 @@
       historyPointLimit = savedHistoryPointLimit;
     }
 
-    if (!hasTauriRuntime()) {
+    if (runtimeMode() === "fixture") {
       if (accessibilityFixtureState) {
         fixtureTick = 8;
         const next = makeFixtureSnapshot(
@@ -465,6 +452,10 @@
       } else {
         ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
       }
+    } else if (runtimeMode() === "unavailable") {
+      lastError = "BatCave telemetry requires the native desktop runtime.";
+      pollState = "error";
+      ingest(makeEmptySnapshot(lastError));
     }
 
     const loop = async () => {
@@ -530,12 +521,19 @@
   });
 
   async function readSnapshot(): Promise<RuntimeSnapshot> {
-    if (!hasTauriRuntime()) {
+    const mode = runtimeMode();
+    if (mode === "fixture") {
       fixtureTick += 1;
       pollState = "fixture";
       lastError = "";
       protocolMismatch = null;
       return makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform);
+    }
+    if (mode === "unavailable") {
+      const message = "BatCave telemetry requires the native desktop runtime.";
+      pollState = "error";
+      lastError = message;
+      return makeEmptySnapshot(message);
     }
 
     const next = await readNativeSnapshot(invoke, {
@@ -605,6 +603,10 @@
     detailSubject = "system";
   }
 
+  function runtimeMode() {
+    return runtimeSurfaceMode(hasTauriRuntime(), import.meta.env.DEV);
+  }
+
   function isHistoryPointLimit(value: number): value is HistoryPointLimit {
     return historyPointOptions.some((option) => option === value);
   }
@@ -626,9 +628,13 @@
 
   async function setPaused(nextPaused: boolean): Promise<void> {
     if (!runtimeMutationAllowed(protocolMismatch)) return;
+    if (runtimeMode() === "unavailable") {
+      commandError = "BatCave telemetry requires the native desktop runtime.";
+      return;
+    }
     const previousPaused = isPaused;
     isPaused = nextPaused;
-    if (!hasTauriRuntime()) {
+    if (runtimeMode() === "fixture") {
       return;
     }
 
@@ -642,9 +648,14 @@
   }
 
   async function refreshNow(): Promise<void> {
-    if (!hasTauriRuntime()) {
+    const mode = runtimeMode();
+    if (mode === "fixture") {
       fixtureTick += 1;
       ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+      return;
+    }
+    if (mode === "unavailable") {
+      commandError = "BatCave telemetry requires the native desktop runtime.";
       return;
     }
 
@@ -659,7 +670,7 @@
   async function setPollInterval(interval: number): Promise<void> {
     if (!runtimeMutationAllowed(protocolMismatch)) return;
     pollIntervalMs = interval as (typeof pollIntervals)[number];
-    if (!hasTauriRuntime()) return;
+    if (runtimeMode() !== "native") return;
 
     try {
       applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
@@ -670,7 +681,7 @@
 
   async function setAdminMode(enabled: boolean): Promise<void> {
     if (!runtimeMutationAllowed(protocolMismatch)) return;
-    if (!hasTauriRuntime()) return;
+    if (runtimeMode() !== "native") return;
 
     try {
       applyNativeSnapshot(await setRuntimeAdminMode(invoke, enabled));
@@ -783,11 +794,13 @@
     if (!runtimeMutationAllowed(protocolMismatch)) return;
     const query = currentRuntimeQuery();
 
-    if (!hasTauriRuntime()) {
+    const mode = runtimeMode();
+    if (mode === "fixture") {
       runtimeQueryRequestSeq += 1;
       ingest(makeFixtureSnapshot(fixtureTick, query, browserFixturePlatform));
       return;
     }
+    if (mode === "unavailable") return;
 
     const requestSeq = (runtimeQueryRequestSeq += 1);
     try {
