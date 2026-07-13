@@ -21,11 +21,10 @@ use crate::{
     atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
         AccessState, MetricQuality, MetricQualityInfo, MetricSource, ProcessContributorSummary,
-        ProcessFocusMode, ProcessMetricQuality, ProcessSample, ProcessViewRow, ProcessViewRowKind,
-        RuntimeAdminModeState, RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth,
-        RuntimeInstallKind, RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
-        RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot,
-        WarmCache,
+        ProcessFocusMode, ProcessSample, ProcessViewRow, ProcessViewRowKind, RuntimeAdminModeState,
+        RuntimeAdminModeStatus, RuntimeEnvironment, RuntimeHealth, RuntimeInstallKind,
+        RuntimePlatform, RuntimeQuery, RuntimeSettings, RuntimeSnapshot, RuntimeWarning,
+        SortColumn, SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     telemetry::{now_ms, TelemetryCollector},
 };
@@ -41,6 +40,9 @@ const ATTENTION_CPU_PERCENT: f64 = 10.0;
 const ATTENTION_MEMORY_BYTES: u64 = 900 * 1024 * 1024;
 const ATTENTION_IO_BPS: u64 = 500 * 1024;
 const ATTENTION_NETWORK_BPS: u64 = 1024 * 1024;
+const PROCESS_IO_BASELINE_PENDING: &str = "Process read/write I/O rates need a fresh prior sample.";
+const PROCESS_OTHER_IO_BASELINE_PENDING: &str =
+    "Process Other I/O rates need a fresh prior sample.";
 const PERSISTENCE_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
     write_failed: "persistence_write_failed",
     serialize_failed: "persistence_serialize_failed",
@@ -885,13 +887,40 @@ fn add_process_rates(
 ) -> Vec<ProcessSample> {
     let previous_by_identity = previous_processes
         .iter()
+        .filter(|process| process.start_time_ms != 0)
         .map(|process| ((process.pid.as_str(), process.start_time_ms), process))
         .collect::<HashMap<_, _>>();
     for process in &mut processes {
-        if let Some(previous) = baseline_is_live
+        let previous = (baseline_is_live && process.start_time_ms != 0)
             .then(|| previous_by_identity.get(&(process.pid.as_str(), process.start_time_ms)))
             .flatten()
-        {
+            .copied();
+        let current_io_quality = process
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.io.as_ref())
+            .cloned();
+        let current_other_io_quality = process
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.other_io.as_ref())
+            .cloned();
+        let previous_io_quality = previous
+            .and_then(|process| process.quality.as_ref())
+            .and_then(|quality| quality.io.as_ref());
+        let previous_other_io_quality = previous
+            .and_then(|process| process.quality.as_ref())
+            .and_then(|quality| quality.other_io.as_ref());
+
+        let io_baseline_is_valid = previous.is_some_and(|previous| {
+            cumulative_baseline_is_compatible(
+                current_io_quality.as_ref(),
+                previous_io_quality,
+                PROCESS_IO_BASELINE_PENDING,
+            ) && process.io_read_total_bytes >= previous.io_read_total_bytes
+                && process.io_write_total_bytes >= previous.io_write_total_bytes
+        });
+        if let Some(previous) = previous.filter(|_| io_baseline_is_valid) {
             process.io_read_bps = byte_rate(
                 process.io_read_total_bytes,
                 previous.io_read_total_bytes,
@@ -902,20 +931,41 @@ fn add_process_rates(
                 previous.io_write_total_bytes,
                 elapsed_seconds,
             );
-            match (process.other_io_total_bytes, previous.other_io_total_bytes) {
-                (Some(current), Some(previous)) => {
-                    process.other_io_bps = Some(byte_rate(current, previous, elapsed_seconds));
-                }
-                _ => {
-                    process.other_io_bps = None;
-                    hold_process_other_io_rate_quality(process);
-                }
-            }
         } else {
             process.io_read_bps = 0;
             process.io_write_bps = 0;
+            if cumulative_sample_is_valid(current_io_quality.as_ref()) {
+                hold_process_io_rate_quality(process);
+            }
+        }
+
+        let other_io_baseline_is_valid = match (
+            process.other_io_total_bytes,
+            previous.and_then(|process| process.other_io_total_bytes),
+        ) {
+            (Some(current), Some(previous)) => {
+                current >= previous
+                    && cumulative_baseline_is_compatible(
+                        current_other_io_quality.as_ref(),
+                        previous_other_io_quality,
+                        PROCESS_OTHER_IO_BASELINE_PENDING,
+                    )
+            }
+            _ => false,
+        };
+        if let (Some(current_total), Some(previous_total), true) = (
+            process.other_io_total_bytes,
+            previous.and_then(|process| process.other_io_total_bytes),
+            other_io_baseline_is_valid,
+        ) {
+            process.other_io_bps = Some(byte_rate(current_total, previous_total, elapsed_seconds));
+        } else {
             process.other_io_bps = None;
-            hold_process_rate_quality(process);
+            if process.other_io_total_bytes.is_some()
+                && cumulative_sample_is_valid(current_other_io_quality.as_ref())
+            {
+                hold_process_other_io_rate_quality(process);
+            }
         }
     }
 
@@ -934,53 +984,72 @@ fn hold_process_rates(mut processes: Vec<ProcessSample>) -> Vec<ProcessSample> {
 
 fn hold_process_rate_quality(process: &mut ProcessSample) {
     hold_process_io_rate_quality(process);
-    hold_process_other_io_rate_quality(process);
+    if process.other_io_total_bytes.is_some() {
+        hold_process_other_io_rate_quality(process);
+    }
 }
 
 fn hold_process_io_rate_quality(process: &mut ProcessSample) {
-    let quality = process
-        .quality
-        .get_or_insert_with(ProcessMetricQuality::default);
-    if !quality.io.as_ref().is_some_and(|quality| {
-        matches!(
-            quality.quality,
-            MetricQuality::Unavailable | MetricQuality::Held
-        )
-    }) {
-        let source = quality
-            .io
-            .as_ref()
-            .and_then(|quality| quality.source)
-            .unwrap_or(MetricSource::Runtime);
-        quality.io = Some(
-            MetricQualityInfo::new(MetricQuality::Held, source)
-                .with_message("Process read/write I/O rates need a fresh prior sample."),
-        );
+    if let Some(quality) = process.quality.as_mut() {
+        let Some(current) = quality.io.as_ref() else {
+            return;
+        };
+        if !cumulative_sample_is_valid(Some(current)) {
+            return;
+        }
+        let mut pending = current.clone();
+        pending.quality = MetricQuality::Held;
+        pending.message = Some(PROCESS_IO_BASELINE_PENDING.to_string());
+        quality.io = Some(pending);
     }
 }
 
 fn hold_process_other_io_rate_quality(process: &mut ProcessSample) {
-    let quality = process
-        .quality
-        .get_or_insert_with(ProcessMetricQuality::default);
-    if process.other_io_total_bytes.is_some()
-        && !quality.other_io.as_ref().is_some_and(|quality| {
-            matches!(
-                quality.quality,
-                MetricQuality::Unavailable | MetricQuality::Held
-            )
-        })
-    {
-        let source = quality
-            .other_io
-            .as_ref()
-            .and_then(|quality| quality.source)
-            .unwrap_or(MetricSource::Runtime);
-        quality.other_io = Some(
-            MetricQualityInfo::new(MetricQuality::Held, source)
-                .with_message("Process Other I/O rates need a fresh prior sample."),
-        );
+    if let Some(quality) = process.quality.as_mut() {
+        let Some(current) = quality.other_io.as_ref() else {
+            return;
+        };
+        if !cumulative_sample_is_valid(Some(current)) {
+            return;
+        }
+        let mut pending = current.clone();
+        pending.quality = MetricQuality::Held;
+        pending.message = Some(PROCESS_OTHER_IO_BASELINE_PENDING.to_string());
+        quality.other_io = Some(pending);
     }
+}
+
+fn cumulative_sample_is_valid(quality: Option<&MetricQualityInfo>) -> bool {
+    quality.is_some_and(|quality| {
+        matches!(
+            quality.quality,
+            MetricQuality::Native | MetricQuality::Estimated | MetricQuality::Partial
+        )
+    })
+}
+
+fn metric_is_pending_baseline(quality: &MetricQualityInfo, pending_message: &str) -> bool {
+    // These Held markers are written only after a valid cumulative sample, so that sample may
+    // become the baseline without treating collector-held or unavailable rows as counters.
+    quality.quality == MetricQuality::Held && quality.message.as_deref() == Some(pending_message)
+}
+
+fn cumulative_baseline_is_compatible(
+    current: Option<&MetricQualityInfo>,
+    previous: Option<&MetricQualityInfo>,
+    pending_message: &str,
+) -> bool {
+    let (Some(current), Some(previous)) = (current, previous) else {
+        return false;
+    };
+    let sources_are_compatible = match (current.source, previous.source) {
+        (Some(current), Some(previous)) => current == previous,
+        _ => false,
+    };
+    cumulative_sample_is_valid(Some(current))
+        && (cumulative_sample_is_valid(Some(previous))
+            || metric_is_pending_baseline(previous, pending_message))
+        && sources_are_compatible
 }
 
 #[cfg(test)]
@@ -2259,6 +2328,9 @@ mod tests {
         previous.io_read_total_bytes = 100;
         previous.io_write_total_bytes = 50;
         previous.other_io_total_bytes = Some(10);
+        previous.quality.as_mut().expect("process quality").other_io = Some(
+            MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi),
+        );
 
         let mut current = previous.clone();
         current.io_read_total_bytes = 600;
@@ -2343,7 +2415,7 @@ mod tests {
             second.io_read_total_bytes = 300;
             second.io_write_total_bytes = 150;
             second.other_io_total_bytes = Some(125);
-            let current = add_process_rates(vec![second], &[first.clone()], 1.0, true);
+            let current = add_process_rates(vec![second], &held, 1.0, true);
             assert_eq!(current[0].io_read_bps, 200, "{label} second read rate");
             assert_eq!(current[0].io_write_bps, 100, "{label} second write rate");
             assert_eq!(
@@ -2395,6 +2467,50 @@ mod tests {
                 "{label} read/write I/O remains publishable"
             );
 
+            let mut previous_without_io = first.clone();
+            previous_without_io
+                .quality
+                .as_mut()
+                .expect("process quality")
+                .io = Some(MetricQualityInfo::new(MetricQuality::Unavailable, source));
+            let mut current_with_independent_other = first.clone();
+            current_with_independent_other.io_read_total_bytes = 300;
+            current_with_independent_other.io_write_total_bytes = 150;
+            current_with_independent_other.other_io_total_bytes = Some(125);
+            let current_with_independent_other = add_process_rates(
+                vec![current_with_independent_other],
+                &[previous_without_io],
+                1.0,
+                true,
+            );
+            assert_eq!(
+                current_with_independent_other[0].io_read_bps, 0,
+                "{label} invalid read/write baseline"
+            );
+            assert_eq!(
+                current_with_independent_other[0].other_io_bps,
+                Some(100),
+                "{label} independent Other I/O baseline"
+            );
+            assert_eq!(
+                current_with_independent_other[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Held),
+                "{label} read/write waits independently"
+            );
+            assert_eq!(
+                current_with_independent_other[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.other_io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(collector_quality),
+                "{label} Other I/O keeps collector quality"
+            );
+
             let after_gap = add_process_rates(vec![first.clone()], &[first], 1.0, false);
             assert_eq!(
                 after_gap[0]
@@ -2406,6 +2522,377 @@ mod tests {
                 "{label} post-gap rate quality"
             );
         }
+    }
+
+    #[test]
+    fn process_rate_recovery_requires_a_valid_cumulative_baseline_across_sources() {
+        let collector_cases = [
+            ("direct_api", MetricSource::DirectApi, MetricQuality::Native),
+            ("procfs", MetricSource::Procfs, MetricQuality::Native),
+            ("sysinfo", MetricSource::Sysinfo, MetricQuality::Estimated),
+        ];
+
+        for (label, source, collector_quality) in collector_cases {
+            let mut unavailable = sample("10", label, 1.0);
+            unavailable.start_time_ms = 100;
+            unavailable.io_read_total_bytes = 0;
+            unavailable.io_write_total_bytes = 0;
+            unavailable.other_io_total_bytes = Some(0);
+            unavailable.io_read_bps = 999;
+            unavailable.io_write_bps = 999;
+            unavailable.other_io_bps = Some(999);
+            let quality = unavailable.quality.as_mut().expect("process quality");
+            quality.io = Some(MetricQualityInfo::new(MetricQuality::Unavailable, source));
+            quality.other_io = Some(MetricQualityInfo::new(MetricQuality::Unavailable, source));
+
+            let unavailable = add_process_rates(vec![unavailable], &[], 1.0, false);
+            assert_eq!(unavailable[0].io_read_bps, 0, "{label} unavailable read");
+            assert_eq!(
+                unavailable[0].other_io_bps, None,
+                "{label} unavailable other"
+            );
+            assert_eq!(
+                unavailable[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Unavailable),
+                "{label} unavailable read/write quality"
+            );
+            assert_eq!(
+                unavailable[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.other_io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Unavailable),
+                "{label} unavailable Other I/O quality"
+            );
+
+            let mut first_valid = sample("10", label, 1.0);
+            first_valid.start_time_ms = 100;
+            first_valid.io_read_total_bytes = 100;
+            first_valid.io_write_total_bytes = 50;
+            first_valid.other_io_total_bytes = Some(25);
+            let quality = first_valid.quality.as_mut().expect("process quality");
+            quality.io = Some(MetricQualityInfo::new(collector_quality, source));
+            quality.other_io = Some(MetricQualityInfo::new(collector_quality, source));
+
+            let valid_baseline = add_process_rates(vec![first_valid], &unavailable, 1.0, true);
+            assert_eq!(
+                valid_baseline[0].io_read_bps, 0,
+                "{label} recovery baseline"
+            );
+            assert_eq!(
+                valid_baseline[0].other_io_bps, None,
+                "{label} Other baseline"
+            );
+            assert_eq!(
+                valid_baseline[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Held),
+                "{label} recovery pending"
+            );
+            assert_eq!(
+                valid_baseline[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.other_io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(MetricQuality::Held),
+                "{label} Other recovery pending"
+            );
+
+            let mut second_valid = sample("10", label, 1.0);
+            second_valid.start_time_ms = 100;
+            second_valid.io_read_total_bytes = 300;
+            second_valid.io_write_total_bytes = 150;
+            second_valid.other_io_total_bytes = Some(125);
+            let quality = second_valid.quality.as_mut().expect("process quality");
+            quality.io = Some(MetricQualityInfo::new(collector_quality, source));
+            quality.other_io = Some(MetricQualityInfo::new(collector_quality, source));
+
+            let recovered = add_process_rates(vec![second_valid], &valid_baseline, 1.0, true);
+            assert_eq!(recovered[0].io_read_bps, 200, "{label} recovered read");
+            assert_eq!(recovered[0].io_write_bps, 100, "{label} recovered write");
+            assert_eq!(
+                recovered[0].other_io_bps,
+                Some(100),
+                "{label} recovered other"
+            );
+            assert_eq!(
+                recovered[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.io.as_ref())
+                    .map(|quality| quality.quality),
+                Some(collector_quality),
+                "{label} recovered collector quality"
+            );
+        }
+    }
+
+    #[test]
+    fn process_rate_source_transition_requires_a_new_compatible_baseline() {
+        let mut fallback = sample("10", "Source transition", 1.0);
+        fallback.io_read_total_bytes = 100;
+        fallback.io_write_total_bytes = 50;
+        fallback.other_io_total_bytes = Some(25);
+        let quality = fallback.quality.as_mut().expect("process quality");
+        quality.io = Some(MetricQualityInfo::new(
+            MetricQuality::Estimated,
+            MetricSource::Sysinfo,
+        ));
+        quality.other_io = Some(MetricQualityInfo::new(
+            MetricQuality::Estimated,
+            MetricSource::Sysinfo,
+        ));
+
+        let mut native = sample("10", "Source transition", 1.0);
+        native.io_read_total_bytes = 500;
+        native.io_write_total_bytes = 250;
+        native.other_io_total_bytes = Some(125);
+        native.quality.as_mut().expect("process quality").other_io = Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        ));
+
+        let native_baseline = add_process_rates(vec![native], &[fallback], 1.0, true);
+        assert_eq!(native_baseline[0].io_read_bps, 0);
+        assert_eq!(native_baseline[0].io_write_bps, 0);
+        assert_eq!(native_baseline[0].other_io_bps, None);
+        assert_eq!(
+            native_baseline[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| (quality.quality, quality.source)),
+            Some((MetricQuality::Held, Some(MetricSource::DirectApi)))
+        );
+        assert_eq!(
+            native_baseline[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.other_io.as_ref())
+                .map(|quality| (quality.quality, quality.source)),
+            Some((MetricQuality::Held, Some(MetricSource::DirectApi)))
+        );
+
+        let mut next_native = sample("10", "Source transition", 1.0);
+        next_native.io_read_total_bytes = 700;
+        next_native.io_write_total_bytes = 350;
+        next_native.other_io_total_bytes = Some(225);
+        next_native
+            .quality
+            .as_mut()
+            .expect("process quality")
+            .other_io = Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        ));
+
+        let recovered = add_process_rates(vec![next_native], &native_baseline, 1.0, true);
+        assert_eq!(recovered[0].io_read_bps, 200);
+        assert_eq!(recovered[0].io_write_bps, 100);
+        assert_eq!(recovered[0].other_io_bps, Some(100));
+        assert_eq!(
+            recovered[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Native)
+        );
+    }
+
+    #[test]
+    fn missing_prior_cumulative_quality_cannot_form_a_rate_baseline() {
+        let mut previous = sample("10", "Missing quality", 1.0);
+        previous.io_read_total_bytes = 100;
+        previous.io_write_total_bytes = 50;
+        previous.other_io_total_bytes = Some(25);
+        let quality = previous.quality.as_mut().expect("process quality");
+        quality.io = None;
+        quality.other_io = None;
+
+        let mut current = sample("10", "Missing quality", 1.0);
+        current.io_read_total_bytes = 500;
+        current.io_write_total_bytes = 250;
+        current.other_io_total_bytes = Some(125);
+        current.quality.as_mut().expect("process quality").other_io = Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        ));
+
+        let baseline = add_process_rates(vec![current], &[previous], 1.0, true);
+
+        assert_eq!(baseline[0].io_read_bps, 0);
+        assert_eq!(baseline[0].io_write_bps, 0);
+        assert_eq!(baseline[0].other_io_bps, None);
+        assert_eq!(
+            baseline[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
+        assert_eq!(
+            baseline[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.other_io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
+    }
+
+    #[test]
+    fn missing_cumulative_source_cannot_form_a_rate_baseline() {
+        let source_less = || {
+            let mut quality =
+                MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi);
+            quality.source = None;
+            quality
+        };
+        let mut previous = sample("10", "Missing source", 1.0);
+        previous.io_read_total_bytes = 100;
+        previous.io_write_total_bytes = 50;
+        previous.other_io_total_bytes = Some(25);
+        let quality = previous.quality.as_mut().expect("process quality");
+        quality.io = Some(source_less());
+        quality.other_io = Some(source_less());
+
+        let mut current = sample("10", "Missing source", 1.0);
+        current.io_read_total_bytes = 500;
+        current.io_write_total_bytes = 250;
+        current.other_io_total_bytes = Some(125);
+        let quality = current.quality.as_mut().expect("process quality");
+        quality.io = Some(source_less());
+        quality.other_io = Some(source_less());
+
+        let baseline = add_process_rates(vec![current], &[previous], 1.0, true);
+
+        assert_eq!(baseline[0].io_read_bps, 0);
+        assert_eq!(baseline[0].io_write_bps, 0);
+        assert_eq!(baseline[0].other_io_bps, None);
+        assert_eq!(
+            baseline[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| (quality.quality, quality.source)),
+            Some((MetricQuality::Held, None))
+        );
+        assert_eq!(
+            baseline[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.other_io.as_ref())
+                .map(|quality| (quality.quality, quality.source)),
+            Some((MetricQuality::Held, None))
+        );
+    }
+
+    #[test]
+    fn cumulative_counter_reset_requires_a_new_rate_baseline() {
+        let mut previous = sample("10", "Counter reset", 1.0);
+        previous.io_read_total_bytes = 500;
+        previous.io_write_total_bytes = 250;
+        previous.other_io_total_bytes = Some(125);
+        previous.quality.as_mut().expect("process quality").other_io = Some(
+            MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi),
+        );
+
+        let mut reset = sample("10", "Counter reset", 1.0);
+        reset.io_read_total_bytes = 100;
+        reset.io_write_total_bytes = 50;
+        reset.other_io_total_bytes = Some(25);
+        reset.quality.as_mut().expect("process quality").other_io = Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        ));
+        let reset_baseline = add_process_rates(vec![reset], &[previous], 1.0, true);
+
+        assert_eq!(reset_baseline[0].io_read_bps, 0);
+        assert_eq!(reset_baseline[0].io_write_bps, 0);
+        assert_eq!(reset_baseline[0].other_io_bps, None);
+        assert_eq!(
+            reset_baseline[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
+
+        let mut recovered = sample("10", "Counter reset", 1.0);
+        recovered.io_read_total_bytes = 300;
+        recovered.io_write_total_bytes = 150;
+        recovered.other_io_total_bytes = Some(125);
+        recovered
+            .quality
+            .as_mut()
+            .expect("process quality")
+            .other_io = Some(MetricQualityInfo::new(
+            MetricQuality::Native,
+            MetricSource::DirectApi,
+        ));
+        let recovered = add_process_rates(vec![recovered], &reset_baseline, 1.0, true);
+
+        assert_eq!(recovered[0].io_read_bps, 200);
+        assert_eq!(recovered[0].io_write_bps, 100);
+        assert_eq!(recovered[0].other_io_bps, Some(100));
+    }
+
+    #[test]
+    fn zero_start_time_never_forms_a_process_rate_identity() {
+        let mut previous = sample("10", "Unknown identity", 1.0);
+        previous.start_time_ms = 0;
+        previous.io_read_total_bytes = 100;
+        previous.io_write_total_bytes = 50;
+        previous.other_io_total_bytes = Some(25);
+
+        let mut current = previous.clone();
+        current.io_read_total_bytes = 500;
+        current.io_write_total_bytes = 250;
+        current.other_io_total_bytes = Some(125);
+        let first = add_process_rates(vec![current], &[previous], 1.0, true);
+
+        assert_eq!(first[0].io_read_bps, 0);
+        assert_eq!(first[0].io_write_bps, 0);
+        assert_eq!(first[0].other_io_bps, None);
+        assert_eq!(
+            first[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
+
+        let mut reused_pid = sample("10", "Reused PID", 1.0);
+        reused_pid.start_time_ms = 0;
+        reused_pid.io_read_total_bytes = 900;
+        reused_pid.io_write_total_bytes = 450;
+        reused_pid.other_io_total_bytes = Some(225);
+        let second = add_process_rates(vec![reused_pid], &first, 1.0, true);
+
+        assert_eq!(second[0].io_read_bps, 0);
+        assert_eq!(second[0].io_write_bps, 0);
+        assert_eq!(second[0].other_io_bps, None);
+        assert_eq!(
+            second[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.io.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
     }
 
     #[test]

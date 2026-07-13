@@ -317,7 +317,7 @@
       supportingLabel: "Peak logical core",
       supportingValue: metricValueLabel(
         corePeak,
-        systemQuality.logical_cpu ?? systemQuality.cpu,
+        logicalCpuMetricQuality(systemQuality),
         formatPercent,
       ),
       statusLabel: resourceQualityStatus(systemQuality.cpu, "Measured"),

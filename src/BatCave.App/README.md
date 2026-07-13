@@ -158,7 +158,7 @@ The attention queue groups rows by executable identity when available, then proc
 
 Live values may update in place, but ranking order is held while the pointer or keyboard focus is inside the queue, a group is expanded, or a workload is selected. A newer order is applied only through the visible `Ranking updated` control. At 1280px and wider the resource rail and inspector remain visible; from 900–1279px the resource selector becomes horizontal and the inspector becomes a drawer; below 900px the workload queue becomes a compact list of metric cards.
 
-Selecting a group shows aggregate CPU, memory, disk I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
+Selecting a group shows aggregate CPU, memory, read/write I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
 
 ## Platform Telemetry Notes
 

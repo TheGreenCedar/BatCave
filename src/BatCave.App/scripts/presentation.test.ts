@@ -239,7 +239,17 @@ test("Linux first system sample keeps CPU disk network and core history pending"
   snapshot.system.quality!.logical_cpu = { quality: "native", source: "procfs" };
   const aggregateHeldCoreQuality = logicalCpuMetricQuality(snapshot.system.quality!);
   assert.equal(aggregateHeldCoreQuality?.quality, "held");
+  assert.equal(
+    displayMetricValue(0, aggregateHeldCoreQuality, snapshot.sampled_at_ms, formatPercent),
+    "Waiting",
+  );
   assert.deepEqual(nextMetricHistory([12], 90, aggregateHeldCoreQuality, 30), []);
+  snapshot.system.quality!.cpu = { quality: "unavailable", source: "procfs" };
+  const aggregateUnavailableCoreQuality = logicalCpuMetricQuality(snapshot.system.quality!);
+  assert.equal(
+    displayMetricValue(0, aggregateUnavailableCoreQuality, snapshot.sampled_at_ms, formatPercent),
+    "Unavailable",
+  );
   assert.deepEqual(nextMetricHistory([1], 8, snapshot.system.quality?.disk, 30), []);
   assert.deepEqual(nextMetricHistory([1], 4, snapshot.system.quality?.network, 30), []);
 });
