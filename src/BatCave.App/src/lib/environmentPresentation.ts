@@ -82,7 +82,7 @@ export function privilegedCollectionNote(adminMode: RuntimeAdminModeStatus): str
         ? "The elevation request did not complete. Standard monitoring remains available."
         : "Privileged collection is inactive because the current process token could not be read.";
     case "requesting":
-      return "Standard monitoring remains available while Windows handles the elevation request.";
+      return "Windows owns the in-flight elevation decision. Standard monitoring remains available.";
     case "unavailable":
       return "Privileged collection is unavailable on this platform.";
     default:

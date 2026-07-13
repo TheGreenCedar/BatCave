@@ -141,6 +141,10 @@ test("requesting elevation waits for the Windows decision", () => {
   );
   assert.ok(requesting);
   assert.equal(privilegedCollectionLabel(requesting.admin_mode), "Waiting for Windows");
+  assert.equal(
+    privilegedCollectionNote(requesting.admin_mode),
+    "Windows owns the in-flight elevation decision. Standard monitoring remains available.",
+  );
   assert.equal(privilegedCollectionAction(true, requesting.admin_mode), null);
 });
 
@@ -181,10 +185,9 @@ test("diagnostics render one limitation per stable key with the current admin ac
     ]),
     [["collector.network_attribution", "enable"]],
   );
-  assert.equal(
-    currentDiagnosticIssues(warnings, adminMode("requesting"), true)[0].action,
-    "cancel",
-  );
+  const requesting = currentDiagnosticIssues(warnings, adminMode("requesting"), true)[0];
+  assert.equal(requesting.action, null);
+  assert.equal(requesting.actionLabel, null);
   assert.equal(currentDiagnosticIssues(warnings, adminMode("failed"), true)[0].action, "retry");
   assert.equal(currentDiagnosticIssues(warnings, adminMode("active"), true)[0].action, null);
   assert.equal(uniqueWarningCount(warnings), 1);
