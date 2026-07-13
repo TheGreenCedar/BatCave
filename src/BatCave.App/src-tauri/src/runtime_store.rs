@@ -2277,15 +2277,16 @@ mod tests {
             ..RuntimeSettings::default()
         };
         let visible_processes = shape_rows(&all_processes, &settings.query);
+        let provenance = RuntimeProvenance::detect(Path::new(""));
 
         let snapshot = build_snapshot(
             1,
             1,
             1,
             Some(1),
-            Path::new(""),
+            provenance.environment(),
             &settings,
-            &initial_admin_mode_status(),
+            &provenance.admin_mode_status(),
             RuntimeHealth::default(),
             empty_system(),
             &all_processes,
