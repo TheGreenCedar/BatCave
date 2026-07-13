@@ -1,9 +1,11 @@
 use std::{
     cmp::Ordering,
-    collections::HashMap,
     sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(not(target_os = "linux"))]
+use std::collections::HashMap;
 
 use sysinfo::{
     CpuRefreshKind, MemoryRefreshKind, Networks, ProcessRefreshKind, RefreshKind, System,
