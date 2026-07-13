@@ -2401,7 +2401,11 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                 group_label: group.label.clone(),
                 group_category: group.category.clone(),
                 group_count,
-                icon_kind: identity.icon_kind.to_string(),
+                icon_kind: if grouped {
+                    group.icon_kind.clone()
+                } else {
+                    identity.icon_kind.to_string()
+                },
                 is_child: grouped && identity.is_child,
                 is_grouped: grouped,
                 attention_label: process_attention_label(&process),
@@ -4356,6 +4360,35 @@ mod tests {
         };
         assert!(*is_grouped);
         assert_eq!(group_key, &detail.group_key);
+    }
+
+    #[test]
+    fn grouped_process_rows_share_the_group_icon_kind() {
+        let mut first = sample("10", "Helper-1.exe", 12.0);
+        first.exe = "C:\\node\\Helper-1.exe".to_string();
+        let mut second = sample("20", "Helper-2.exe", 8.0);
+        second.exe = "C:\\docker\\Helper-2.exe".to_string();
+
+        let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
+        let ProcessViewRow::Group {
+            icon_kind: group_icon,
+            ..
+        } = &rows[0]
+        else {
+            panic!("expected aggregate group row");
+        };
+        for row in &rows[1..] {
+            let ProcessViewRow::Process {
+                icon_kind,
+                is_grouped,
+                ..
+            } = row
+            else {
+                panic!("expected grouped process row");
+            };
+            assert!(*is_grouped);
+            assert_eq!(icon_kind, group_icon);
+        }
     }
 
     #[test]
