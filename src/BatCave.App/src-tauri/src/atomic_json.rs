@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -8,6 +8,86 @@ use std::{
 use serde::Serialize;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AtomicWriteOperation {
+    CreateDirectory,
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "Unix private-directory setup reports this stage")
+    )]
+    SetPermissions,
+    CreateTemporary,
+    Write,
+    SyncFile,
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "MoveFileEx replacement is Windows-only")
+    )]
+    Replace,
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "Unix atomic replacement reports rename failures")
+    )]
+    Rename,
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "Unix durability includes a parent-directory sync")
+    )]
+    SyncDirectory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AtomicWriteEffect {
+    NotCommitted,
+    #[cfg_attr(
+        windows,
+        allow(
+            dead_code,
+            reason = "Unix can commit a rename before parent-directory sync fails"
+        )
+    )]
+    CommittedDurabilityUncertain,
+}
+
+#[derive(Debug)]
+pub(crate) struct AtomicWriteError {
+    pub operation: AtomicWriteOperation,
+    pub effect: AtomicWriteEffect,
+    pub path: PathBuf,
+    pub error: io::Error,
+}
+
+impl AtomicWriteError {
+    fn new(operation: AtomicWriteOperation, path: impl Into<PathBuf>, error: io::Error) -> Self {
+        Self {
+            operation,
+            effect: AtomicWriteEffect::NotCommitted,
+            path: path.into(),
+            error,
+        }
+    }
+
+    #[cfg_attr(
+        windows,
+        allow(
+            dead_code,
+            reason = "Unix reports a committed rename whose directory sync failed"
+        )
+    )]
+    fn committed_durability_uncertain(
+        operation: AtomicWriteOperation,
+        path: impl Into<PathBuf>,
+        error: io::Error,
+    ) -> Self {
+        Self {
+            operation,
+            effect: AtomicWriteEffect::CommittedDurabilityUncertain,
+            path: path.into(),
+            error,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AtomicJsonErrorLabels {
@@ -23,46 +103,7 @@ pub(crate) fn write_json_atomic<T: Serialize>(
     value: &T,
     labels: AtomicJsonErrorLabels,
 ) -> Result<(), String> {
-    write_json_atomic_with_replacer(path, value, labels, replace_file)
-}
-
-fn write_json_atomic_with_replacer<T: Serialize>(
-    path: &Path,
-    value: &T,
-    labels: AtomicJsonErrorLabels,
-    replacer: impl FnOnce(&Path, &Path) -> Result<(), String>,
-) -> Result<(), String> {
-    let Some(parent) = path.parent() else {
-        return Err(format!(
-            "{} path={} error=MissingParent",
-            labels.write_failed,
-            path.display()
-        ));
-    };
-    #[cfg(unix)]
-    let parent_was_created = !parent.exists();
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "{} path={} error={}",
-            labels.write_failed,
-            parent.display(),
-            error
-        )
-    })?;
-    #[cfg(unix)]
-    if parent_was_created {
-        fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700)).map_err(
-            |error| {
-                format!(
-                    "{} path={} error={error}",
-                    labels.write_failed,
-                    parent.display()
-                )
-            },
-        )?;
-    }
-
-    let payload = serde_json::to_string(value).map_err(|error| {
+    let payload = serde_json::to_vec(value).map_err(|error| {
         if labels.serialize_error_includes_path {
             format!(
                 "{} path={} error={}",
@@ -74,41 +115,128 @@ fn write_json_atomic_with_replacer<T: Serialize>(
             format!("{}:{error}", labels.serialize_failed)
         }
     })?;
+    write_bytes_atomic(path, &payload).map_err(|error| {
+        let label = match error.operation {
+            AtomicWriteOperation::Replace => labels.replace_failed,
+            AtomicWriteOperation::Rename | AtomicWriteOperation::SyncDirectory => {
+                labels.rename_failed
+            }
+            AtomicWriteOperation::CreateDirectory
+            | AtomicWriteOperation::SetPermissions
+            | AtomicWriteOperation::CreateTemporary
+            | AtomicWriteOperation::Write
+            | AtomicWriteOperation::SyncFile => labels.write_failed,
+        };
+        format!(
+            "{} path={} error={}",
+            label,
+            error.path.display(),
+            error.error
+        )
+    })
+}
 
-    let (temp_path, mut temp_file) = create_temp_file(path, labels.write_failed)?;
-    if let Err(error) = temp_file.write_all(payload.as_bytes()) {
+pub(crate) fn write_bytes_atomic(path: &Path, payload: &[u8]) -> Result<(), AtomicWriteError> {
+    write_bytes_atomic_with_replacer(path, payload, replace_file)
+}
+
+fn write_bytes_atomic_with_replacer(
+    path: &Path,
+    payload: &[u8],
+    replacer: impl FnOnce(&Path, &Path) -> Result<(), AtomicWriteError>,
+) -> Result<(), AtomicWriteError> {
+    let parent = path.parent().ok_or_else(|| {
+        AtomicWriteError::new(
+            AtomicWriteOperation::CreateDirectory,
+            path,
+            io::Error::new(io::ErrorKind::InvalidInput, "missing parent directory"),
+        )
+    })?;
+    #[cfg(unix)]
+    let parent_was_created = !parent.exists();
+    fs::create_dir_all(parent).map_err(|error| {
+        AtomicWriteError::new(AtomicWriteOperation::CreateDirectory, parent, error)
+    })?;
+    #[cfg(unix)]
+    if parent_was_created {
+        fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700)).map_err(
+            |error| AtomicWriteError::new(AtomicWriteOperation::SetPermissions, parent, error),
+        )?;
+    }
+
+    let (temp_path, mut temp_file) = create_temp_file(path)?;
+    if let Err(error) = temp_file.write_all(payload) {
         drop(temp_file);
         let _ = fs::remove_file(&temp_path);
-        return Err(format!(
-            "{} path={} error={}",
-            labels.write_failed,
-            temp_path.display(),
-            error
+        return Err(AtomicWriteError::new(
+            AtomicWriteOperation::Write,
+            temp_path,
+            error,
         ));
     }
     if let Err(error) = temp_file.sync_all() {
         drop(temp_file);
         let _ = fs::remove_file(&temp_path);
-        return Err(format!(
-            "{} path={} error={}",
-            labels.write_failed,
-            temp_path.display(),
-            error
+        return Err(AtomicWriteError::new(
+            AtomicWriteOperation::SyncFile,
+            temp_path,
+            error,
         ));
     }
     drop(temp_file);
     if let Err(error) = replacer(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
-        let (label, error) = error
-            .strip_prefix("rename_failed:")
-            .map(|error| (labels.rename_failed, error))
-            .unwrap_or((labels.replace_failed, error.as_str()));
-        return Err(format!("{} path={} error={}", label, path.display(), error));
+        return Err(error);
     }
     Ok(())
 }
 
-fn create_temp_file(path: &Path, write_label: &str) -> Result<(PathBuf, File), String> {
+#[cfg(test)]
+fn write_json_atomic_with_replacer<T: Serialize>(
+    path: &Path,
+    value: &T,
+    labels: AtomicJsonErrorLabels,
+    replacer: impl FnOnce(&Path, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let payload = serde_json::to_vec(value).map_err(|error| {
+        if labels.serialize_error_includes_path {
+            format!(
+                "{} path={} error={}",
+                labels.serialize_failed,
+                path.display(),
+                error
+            )
+        } else {
+            format!("{}:{error}", labels.serialize_failed)
+        }
+    })?;
+    write_bytes_atomic_with_replacer(path, &payload, |temp_path, target_path| {
+        replacer(temp_path, target_path).map_err(|detail| {
+            let (operation, detail) = detail
+                .strip_prefix("rename_failed:")
+                .map(|detail| (AtomicWriteOperation::Rename, detail))
+                .unwrap_or((AtomicWriteOperation::Replace, detail.as_str()));
+            AtomicWriteError::new(operation, target_path, io::Error::other(detail.to_string()))
+        })
+    })
+    .map_err(|error| {
+        let label = match error.operation {
+            AtomicWriteOperation::Replace => labels.replace_failed,
+            AtomicWriteOperation::Rename | AtomicWriteOperation::SyncDirectory => {
+                labels.rename_failed
+            }
+            _ => labels.write_failed,
+        };
+        format!(
+            "{} path={} error={}",
+            label,
+            error.path.display(),
+            error.error
+        )
+    })
+}
+
+fn create_temp_file(path: &Path) -> Result<(PathBuf, File), AtomicWriteError> {
     let parent = path.parent().expect("parent checked before temp creation");
     let name = path
         .file_name()
@@ -125,24 +253,23 @@ fn create_temp_file(path: &Path, write_label: &str) -> Result<(PathBuf, File), S
             Ok(file) => return Ok((temp_path, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(format!(
-                    "{} path={} error={}",
-                    write_label,
-                    temp_path.display(),
-                    error
+                return Err(AtomicWriteError::new(
+                    AtomicWriteOperation::CreateTemporary,
+                    temp_path,
+                    error,
                 ));
             }
         }
     }
-    Err(format!(
-        "{} path={} error=TemporaryNameExhausted",
-        write_label,
-        path.display()
+    Err(AtomicWriteError::new(
+        AtomicWriteOperation::CreateTemporary,
+        path,
+        io::Error::new(io::ErrorKind::AlreadyExists, "temporary name exhausted"),
     ))
 }
 
 #[cfg(windows)]
-fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
+fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), AtomicWriteError> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
         Foundation::{GetLastError, ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION},
@@ -170,17 +297,35 @@ fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_millis(2));
             continue;
         }
-        return Err(format!("MoveFileExW error={error}"));
+        return Err(AtomicWriteError::new(
+            AtomicWriteOperation::Replace,
+            target_path,
+            io::Error::from_raw_os_error(error as i32),
+        ));
     }
     unreachable!()
 }
 
 #[cfg(not(windows))]
-fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
-    fs::rename(temp_path, target_path).map_err(|error| format!("rename_failed:{error}"))?;
-    File::open(target_path.parent().ok_or("rename_failed:missing_parent")?)
+fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), AtomicWriteError> {
+    fs::rename(temp_path, target_path)
+        .map_err(|error| AtomicWriteError::new(AtomicWriteOperation::Rename, target_path, error))?;
+    let parent = target_path.parent().ok_or_else(|| {
+        AtomicWriteError::new(
+            AtomicWriteOperation::SyncDirectory,
+            target_path,
+            io::Error::new(io::ErrorKind::InvalidInput, "missing parent directory"),
+        )
+    })?;
+    File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("rename_failed:{error}"))
+        .map_err(|error| {
+            AtomicWriteError::committed_durability_uncertain(
+                AtomicWriteOperation::SyncDirectory,
+                target_path,
+                error,
+            )
+        })
 }
 
 #[cfg(test)]
@@ -256,6 +401,42 @@ mod tests {
         let payload = fs::read_to_string(&path).expect("json file remains");
         assert_eq!(payload, r#"{"old":true}"#);
 
+        assert!(temp_files(&path).is_empty());
+        fs::remove_file(&path).expect("json cleanup");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn post_commit_directory_sync_failure_reports_installed_target() {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-atomic-json-post-commit-{}-settings.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        remove_temp_files(&path);
+        fs::write(&path, r#"{"old":true}"#).expect("old json fixture writes");
+
+        let error = write_bytes_atomic_with_replacer(&path, br#"{"new":true}"#, |temp, target| {
+            fs::rename(temp, target).expect("replacement commits");
+            Err(AtomicWriteError::committed_durability_uncertain(
+                AtomicWriteOperation::SyncDirectory,
+                target,
+                io::Error::new(
+                    io::ErrorKind::ReadOnlyFilesystem,
+                    "forced directory sync failure",
+                ),
+            ))
+        })
+        .expect_err("directory sync failure is surfaced");
+
+        assert_eq!(
+            error.effect,
+            AtomicWriteEffect::CommittedDurabilityUncertain
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("new target remains installed"),
+            r#"{"new":true}"#
+        );
         assert!(temp_files(&path).is_empty());
         fs::remove_file(&path).expect("json cleanup");
     }
