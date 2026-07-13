@@ -14,6 +14,9 @@ import {
   compareProcessGroups,
   compareProcessSamples,
   groupAttentionLabel,
+  normalizedProcessName,
+  processAttentionLabel,
+  processGroupKey,
   processIdentity,
   processNeedsAttention,
 } from "./process";
@@ -311,7 +314,7 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
 
   const groups = new Map<string, FixtureProcessGroup>();
   for (const process of rows) {
-    const key = processAppKey(process);
+    const key = processGroupKey(process);
     let group = groups.get(key);
     if (!group) {
       const identity = processIdentity(process);
@@ -366,13 +369,7 @@ function shapeProcessView(processes: ProcessSample[], query: RuntimeQuery): Proc
           icon_kind: identity.icon,
           is_child: identity.isChild,
           is_grouped: grouped,
-          attention_label: attentionLabel(
-            process.cpu_percent,
-            process.memory_bytes,
-            ioBps,
-            processNetworkRate(process),
-            process.access_state !== "full",
-          ),
+          attention_label: processAttentionLabel(process),
         };
       });
 
@@ -535,42 +532,12 @@ function matchesFocusMode(process: ProcessSample, focusMode: RuntimeQuery["focus
   return true;
 }
 
-function processAppKey(process: ProcessSample): string {
-  const executableName = normalizedProcessName(executableFileName(process.exe)).trim();
-  const processName = normalizedProcessName(process.name).trim();
-  return (executableName || processName || `pid:${process.pid}`).toLocaleLowerCase();
-}
-
-function executableFileName(path: string): string {
-  const trimmed = path.trim();
-  return trimmed.split(/[\\/]/).pop() || trimmed;
-}
-
-function normalizedProcessName(name: string): string {
-  return name.replace(/-\d+(?=\.exe$)/i, "");
-}
-
 function processIoRate(process: ProcessSample): number {
   return process.io_read_bps + process.io_write_bps;
 }
 
 function processNetworkRate(process: ProcessSample): number {
   return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
-}
-
-function attentionLabel(
-  cpuPercent: number,
-  memoryBytes: number,
-  ioBps: number,
-  networkBps: number,
-  limitedAccess: boolean,
-): string {
-  if (cpuPercent >= 1) return "CPU activity";
-  if (memoryBytes >= 900 * 1024 * 1024) return "memory activity";
-  if (ioBps >= 500 * 1024) return "I/O activity";
-  if (networkBps >= 1024 * 1024) return "network activity";
-  if (limitedAccess) return "access limited";
-  return "steady";
 }
 
 function makeProcess(

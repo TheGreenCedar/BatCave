@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   hasSameProcessOrder,
+  processGroupKey,
   processViewRowKey,
   processViewRowMetrics,
   prepareProcessViewRows,
@@ -108,6 +109,29 @@ test("selection follows identity through reorder and clears on disappearance or 
   assert.equal(selectedWorkloadDetail(reordered, selected)?.kind, "process");
   assert.equal(reconcileWorkloadSelection([], selected), "");
   assert.equal(reconcileWorkloadSelection(replacement, selected), "");
+});
+
+test("group identity and selection survive executable-path enrichment", () => {
+  const processRow = row("42", 1);
+  if (processRow.kind !== "process") throw new Error("expected process row");
+  const beforeSample = {
+    ...processRow.detail.process,
+    name: "Visual Studio Code",
+    exe: "",
+  };
+  const afterSample = {
+    ...beforeSample,
+    exe: "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+  };
+  const beforeKey = processGroupKey(beforeSample);
+  const afterKey = processGroupKey(afterSample);
+  const selected = `group:${beforeKey}`;
+  const enrichedRows = groupRows(afterKey, 2);
+
+  assert.equal(beforeKey, "visual studio code");
+  assert.equal(afterKey, beforeKey);
+  assert.equal(enrichedRows[0].detail.workload_id, selected);
+  assert.equal(reconcileWorkloadSelection(enrichedRows, selected), selected);
 });
 
 test("result window counts collapsed groups instead of their hidden children", () => {

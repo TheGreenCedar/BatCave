@@ -6,6 +6,7 @@ import {
   compareProcessSamples,
   groupAttentionLabel,
   isProcessViewRow,
+  processAttentionLabel,
   processIoRate,
   processNeedsAttention,
   processOtherIoRate,
@@ -216,6 +217,43 @@ test("fixture singleton CPU and attention sorts use raw process values regardles
       assert.equal(first.processes[0].name, expected);
     }
   }
+});
+
+test("singleton attention labels publish only quality-backed activity", () => {
+  const quality = (value: "native" | "estimated" | "partial" | "held" | "unavailable") => {
+    const metric = { quality: value, source: "direct_api" as const };
+    return { cpu: metric, memory: metric, io: metric, network: metric };
+  };
+
+  assert.equal(processAttentionLabel(process({ cpu_percent: 9 })), "steady");
+  assert.equal(processAttentionLabel(process({ cpu_percent: 10 })), "CPU activity");
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("held") })),
+    "Pending",
+  );
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("unavailable") })),
+    "Unavailable",
+  );
+  assert.equal(processAttentionLabel(process({ cpu_percent: 90, quality: undefined })), "Limited");
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("partial") })),
+    "CPU activity · limited",
+  );
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 90, quality: quality("estimated") })),
+    "CPU activity · estimated",
+  );
+  assert.equal(
+    processAttentionLabel(
+      process({
+        cpu_percent: 0,
+        network_received_bps: 2 * 1024 * 1024,
+        quality: quality("partial"),
+      }),
+    ),
+    "network activity · limited",
+  );
 });
 
 test("fixture group attention exposes nonpublishable and mixed coverage states", () => {

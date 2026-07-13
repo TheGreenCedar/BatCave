@@ -23,10 +23,12 @@ import {
 } from "../src/lib/format.ts";
 import { nextMetricHistory, resourceHistoryWindowLabel } from "../src/lib/history.ts";
 import {
+  nextSortDirection,
   processIdentity,
   processRowSecondaryLabel,
   sortAriaValue,
   sortButtonLabel,
+  sortDirectionButtonLabel,
   type ProcessColumn,
 } from "../src/lib/process.ts";
 import { makeEmptySnapshot } from "../src/lib/runtimeSnapshot.ts";
@@ -756,6 +758,26 @@ test("sort helpers expose state and the next accessible action", () => {
     sortButtonLabel({ key: "name", label: "Workload" }, "cpu", "desc"),
     "Sort by Workload ascending.",
   );
+  assert.equal(nextSortDirection("desc"), "asc");
+  assert.equal(nextSortDirection("asc"), "desc");
+  assert.equal(
+    sortDirectionButtonLabel("desc"),
+    "Sort direction: descending. Change to ascending.",
+  );
+});
+
+test("compact workload controls expose the active sort direction", () => {
+  const commandBar = readFileSync(
+    new URL("../src/lib/components/shell/ProcessCommandBar.svelte", import.meta.url),
+    "utf8",
+  );
+  const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+
+  assert.match(commandBar, /export let sortDirection: SortDirection/);
+  assert.match(commandBar, /aria-label=\{sortDirectionButtonLabel\(sortDirection\)\}/);
+  assert.match(commandBar, /onclick=\{onToggleDirection\}/);
+  assert.match(app, /function toggleSortDirection\(\): void/);
+  assert.match(app, /onToggleDirection=\{toggleSortDirection\}/);
 });
 
 test("process fallback icon categories are deterministic", () => {

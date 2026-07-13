@@ -1222,13 +1222,7 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                 icon_kind: identity.icon_kind.to_string(),
                 is_child: identity.is_child,
                 is_grouped: grouped,
-                attention_label: attention_label(
-                    process.cpu_percent,
-                    process.memory_bytes,
-                    process_io_rate(&process),
-                    process_network_rate(&process),
-                    process.access_state != AccessState::Full,
-                ),
+                attention_label: process_attention_label(&process),
             });
         }
     }
@@ -1799,11 +1793,8 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
 }
 
 fn process_app_key(process: &ProcessSample) -> String {
-    let executable_name = normalized_process_name(executable_file_name(&process.exe));
     let process_name = normalized_process_name(&process.name);
-    let key = if !executable_name.trim().is_empty() {
-        executable_name
-    } else if !process_name.trim().is_empty() {
+    let key = if !process_name.trim().is_empty() {
         process_name
     } else {
         format!("pid:{}", process.pid)
@@ -1814,15 +1805,6 @@ fn process_app_key(process: &ProcessSample) -> String {
 
 fn process_app_label(process: &ProcessSample) -> String {
     normalized_process_name(&process.name)
-}
-
-fn executable_file_name(path: &str) -> &str {
-    let trimmed = path.trim();
-    trimmed
-        .rsplit(['\\', '/'])
-        .next()
-        .filter(|file_name| !file_name.is_empty())
-        .unwrap_or(trimmed)
 }
 
 fn normalized_process_name(name: &str) -> String {
@@ -1846,33 +1828,114 @@ fn matches_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
-fn attention_label(
-    cpu_percent: f64,
-    memory_bytes: u64,
-    io_bps: u64,
-    network_bps: u64,
-    access_limited: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessAttentionMetricState {
+    Native,
+    Estimated,
+    Partial,
+    Held,
+    Unavailable,
+    Missing,
+}
+
+fn process_attention_metric_state(
+    process: &ProcessSample,
+    metric: GroupMetric,
+) -> ProcessAttentionMetricState {
+    let Some(quality) = group_metric_quality(process, metric) else {
+        return ProcessAttentionMetricState::Missing;
+    };
+    match quality.quality {
+        MetricQuality::Held => ProcessAttentionMetricState::Held,
+        MetricQuality::Unavailable => ProcessAttentionMetricState::Unavailable,
+        _ if !group_metric_has_value(process, metric) => ProcessAttentionMetricState::Unavailable,
+        MetricQuality::Native => ProcessAttentionMetricState::Native,
+        MetricQuality::Estimated => ProcessAttentionMetricState::Estimated,
+        MetricQuality::Partial => ProcessAttentionMetricState::Partial,
+    }
+}
+
+fn process_activity_attention_label(
+    label: &str,
+    state: ProcessAttentionMetricState,
+    all_metrics_complete: bool,
 ) -> String {
-    if cpu_percent >= ATTENTION_CPU_PERCENT {
-        return "CPU activity".to_string();
+    let mut qualifiers = Vec::new();
+    if state == ProcessAttentionMetricState::Partial {
+        qualifiers.push("limited");
+    }
+    if state == ProcessAttentionMetricState::Estimated {
+        qualifiers.push("estimated");
+    }
+    if !all_metrics_complete && state != ProcessAttentionMetricState::Partial {
+        qualifiers.push("telemetry limited");
     }
 
-    if memory_bytes >= ATTENTION_MEMORY_BYTES {
-        return "memory activity".to_string();
+    if qualifiers.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} · {}", qualifiers.join(" · "))
+    }
+}
+
+fn process_attention_label(process: &ProcessSample) -> String {
+    let metrics = [
+        GroupMetric::Cpu,
+        GroupMetric::Memory,
+        GroupMetric::Io,
+        GroupMetric::Network,
+    ];
+    let states = metrics.map(|metric| process_attention_metric_state(process, metric));
+    let all_metrics_complete = states.iter().all(|state| {
+        matches!(
+            state,
+            ProcessAttentionMetricState::Native | ProcessAttentionMetricState::Estimated
+        )
+    });
+    let activities = [
+        (process.cpu_percent >= ATTENTION_CPU_PERCENT, "CPU activity"),
+        (
+            process.memory_bytes >= ATTENTION_MEMORY_BYTES,
+            "memory activity",
+        ),
+        (process_io_rate(process) >= ATTENTION_IO_BPS, "I/O activity"),
+        (
+            process_network_rate(process) >= ATTENTION_NETWORK_BPS,
+            "network activity",
+        ),
+    ];
+
+    for (index, (threshold_reached, label)) in activities.into_iter().enumerate() {
+        let state = states[index];
+        if threshold_reached
+            && matches!(
+                state,
+                ProcessAttentionMetricState::Native
+                    | ProcessAttentionMetricState::Estimated
+                    | ProcessAttentionMetricState::Partial
+            )
+        {
+            return process_activity_attention_label(label, state, all_metrics_complete);
+        }
     }
 
-    if io_bps >= ATTENTION_IO_BPS {
-        return "I/O activity".to_string();
+    if states.contains(&ProcessAttentionMetricState::Unavailable) {
+        return "Unavailable".to_string();
     }
-
-    if network_bps >= ATTENTION_NETWORK_BPS {
-        return "network activity".to_string();
+    if states.contains(&ProcessAttentionMetricState::Held) {
+        return "Pending".to_string();
     }
-
-    if access_limited {
+    if states.contains(&ProcessAttentionMetricState::Missing)
+        || states.contains(&ProcessAttentionMetricState::Partial)
+    {
+        return "Limited".to_string();
+    }
+    if process.access_state != AccessState::Full {
         return "access limited".to_string();
     }
-
+    if states.contains(&ProcessAttentionMetricState::Estimated) {
+        return "steady · estimated".to_string();
+    }
     "steady".to_string()
 }
 
@@ -2585,6 +2648,83 @@ mod tests {
         };
         assert!(*is_grouped);
         assert_eq!(group_key, &detail.group_key);
+    }
+
+    #[test]
+    fn process_group_identity_survives_executable_path_enrichment() {
+        let mut first = sample("10", "Visual Studio Code", 12.0);
+        first.exe.clear();
+        let mut second = sample("20", "Visual Studio Code", 8.0);
+        second.exe.clear();
+        let before = shape_process_view(&[first.clone(), second.clone()], &RuntimeQuery::default());
+        let ProcessViewRow::Group {
+            detail: before_detail,
+            ..
+        } = &before[0]
+        else {
+            panic!("expected aggregate group row before enrichment");
+        };
+
+        first.exe = "C:\\Program Files\\Microsoft VS Code\\Code.exe".to_string();
+        second.exe = "C:\\Program Files\\Microsoft VS Code\\Code.exe".to_string();
+        let after = shape_process_view(&[first, second], &RuntimeQuery::default());
+        let ProcessViewRow::Group {
+            detail: after_detail,
+            ..
+        } = &after[0]
+        else {
+            panic!("expected aggregate group row after enrichment");
+        };
+
+        assert_eq!(before_detail.group_key, "visual studio code");
+        assert_eq!(after_detail.group_key, before_detail.group_key);
+        assert_eq!(after_detail.workload_id, before_detail.workload_id);
+    }
+
+    #[test]
+    fn singleton_attention_labels_publish_only_quality_backed_activity() {
+        let with_quality = |quality| {
+            let mut process = sample("10", "worker.exe", 90.0);
+            process.network_received_bps = Some(0);
+            process.network_transmitted_bps = Some(0);
+            process.quality = group_test_quality(quality);
+            process
+        };
+
+        let mut native_quiet = with_quality(MetricQuality::Native);
+        native_quiet.cpu_percent = 9.0;
+        assert_eq!(process_attention_label(&native_quiet), "steady");
+
+        let native_active = with_quality(MetricQuality::Native);
+        assert_eq!(process_attention_label(&native_active), "CPU activity");
+        assert_eq!(
+            process_attention_label(&with_quality(MetricQuality::Held)),
+            "Pending"
+        );
+        assert_eq!(
+            process_attention_label(&with_quality(MetricQuality::Unavailable)),
+            "Unavailable"
+        );
+
+        let mut missing = with_quality(MetricQuality::Native);
+        missing.quality = None;
+        assert_eq!(process_attention_label(&missing), "Limited");
+        assert_eq!(
+            process_attention_label(&with_quality(MetricQuality::Partial)),
+            "CPU activity · limited"
+        );
+        assert_eq!(
+            process_attention_label(&with_quality(MetricQuality::Estimated)),
+            "CPU activity · estimated"
+        );
+
+        let mut partial_network = with_quality(MetricQuality::Partial);
+        partial_network.cpu_percent = 0.0;
+        partial_network.network_received_bps = Some(2 * ATTENTION_NETWORK_BPS);
+        assert_eq!(
+            process_attention_label(&partial_network),
+            "network activity · limited"
+        );
     }
 
     #[test]

@@ -197,12 +197,26 @@ export function processSelectionKey(process: Pick<ProcessSample, "pid" | "start_
   return `process:${process.pid}:${process.start_time_ms}`;
 }
 
+export function normalizedProcessName(name: string): string {
+  return name.replace(/-\d+(?=\.exe$)/i, "");
+}
+
+export function processGroupKey(process: Pick<ProcessSample, "pid" | "name">): string {
+  const processName = normalizedProcessName(process.name).trim();
+  return (processName || `pid:${process.pid}`).toLocaleLowerCase();
+}
+
+const attentionCpuPercent = 10;
+const attentionMemoryBytes = 900 * 1024 * 1024;
+const attentionIoBps = 500 * 1024;
+const attentionNetworkBps = 1024 * 1024;
+
 export function processNeedsAttention(process: ProcessSample): boolean {
   return (
-    process.cpu_percent >= 10 ||
-    process.memory_bytes >= 900 * 1024 * 1024 ||
-    rawProcessIoRate(process) >= 500 * 1024 ||
-    rawProcessNetworkRate(process) >= 1024 * 1024 ||
+    process.cpu_percent >= attentionCpuPercent ||
+    process.memory_bytes >= attentionMemoryBytes ||
+    rawProcessIoRate(process) >= attentionIoBps ||
+    rawProcessNetworkRate(process) >= attentionNetworkBps ||
     process.access_state !== "full"
   );
 }
@@ -253,6 +267,90 @@ export function processAttentionScore(process: ProcessSample): number {
     Math.min(rawProcessNetworkRate(process) / (1024 * 1024), 20) +
     (process.access_state === "full" ? 0 : 12)
   );
+}
+
+type ProcessAttentionMetricState =
+  | "native"
+  | "estimated"
+  | "partial"
+  | "held"
+  | "unavailable"
+  | "missing";
+
+interface ProcessAttentionMetric {
+  thresholdReached: boolean;
+  label: string;
+  quality?: MetricQualityInfo;
+  hasValue: boolean;
+}
+
+function processAttentionMetricState(metric: ProcessAttentionMetric): ProcessAttentionMetricState {
+  if (!metric.quality) return "missing";
+  if (metric.quality.quality === "held") return "held";
+  if (metric.quality.quality === "unavailable" || !metric.hasValue) return "unavailable";
+  return metric.quality.quality;
+}
+
+function processActivityAttentionLabel(
+  metric: ProcessAttentionMetric,
+  state: "native" | "estimated" | "partial",
+  allMetricsComplete: boolean,
+): string {
+  const qualifiers: string[] = [];
+  if (state === "partial") qualifiers.push("limited");
+  if (state === "estimated") qualifiers.push("estimated");
+  if (!allMetricsComplete && state !== "partial") qualifiers.push("telemetry limited");
+  return qualifiers.length > 0 ? `${metric.label} · ${qualifiers.join(" · ")}` : metric.label;
+}
+
+export function processAttentionLabel(process: ProcessSample): string {
+  const metrics: ProcessAttentionMetric[] = [
+    {
+      thresholdReached: process.cpu_percent >= attentionCpuPercent,
+      label: "CPU activity",
+      quality: process.quality?.cpu,
+      hasValue: true,
+    },
+    {
+      thresholdReached: process.memory_bytes >= attentionMemoryBytes,
+      label: "memory activity",
+      quality: process.quality?.memory,
+      hasValue: true,
+    },
+    {
+      thresholdReached: rawProcessIoRate(process) >= attentionIoBps,
+      label: "I/O activity",
+      quality: process.quality?.io,
+      hasValue: true,
+    },
+    {
+      thresholdReached: rawProcessNetworkRate(process) >= attentionNetworkBps,
+      label: "network activity",
+      quality: process.quality?.network,
+      hasValue:
+        process.network_received_bps !== undefined || process.network_transmitted_bps !== undefined,
+    },
+  ];
+  const states = metrics.map(processAttentionMetricState);
+  const allMetricsComplete = states.every((state) => state === "native" || state === "estimated");
+
+  for (let index = 0; index < metrics.length; index += 1) {
+    const metric = metrics[index];
+    const state = states[index];
+    if (
+      metric.thresholdReached &&
+      (state === "native" || state === "estimated" || state === "partial")
+    ) {
+      return processActivityAttentionLabel(metric, state, allMetricsComplete);
+    }
+  }
+
+  if (states.includes("unavailable")) return "Unavailable";
+  if (states.includes("held")) return "Pending";
+  if (states.includes("missing") || states.includes("partial")) return "Limited";
+  if (process.access_state !== "full") return "access limited";
+  if (states.includes("estimated")) return "steady · estimated";
+  return "steady";
 }
 
 export interface ProcessGroupSortView {
@@ -563,6 +661,16 @@ export function defaultSortDirection(key: SortKey): SortDirection {
     key === "threads"
     ? "desc"
     : "asc";
+}
+
+export function nextSortDirection(direction: SortDirection): SortDirection {
+  return direction === "asc" ? "desc" : "asc";
+}
+
+export function sortDirectionButtonLabel(direction: SortDirection): string {
+  const current = direction === "asc" ? "ascending" : "descending";
+  const next = direction === "asc" ? "descending" : "ascending";
+  return `Sort direction: ${current}. Change to ${next}.`;
 }
 
 export function sortColumnForKey(key: SortKey): SortColumn {

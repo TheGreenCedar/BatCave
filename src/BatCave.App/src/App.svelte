@@ -40,6 +40,7 @@
     defaultSortDirection,
     focusOptions,
     hasSameProcessOrder,
+    nextSortDirection,
     processColumns,
     processIoRate,
     processIdentity,
@@ -599,12 +600,18 @@
 
   function toggleSortKey(key: SortKey): void {
     if (sortKey === key) {
-      sortDirection = sortDirection === "asc" ? "desc" : "asc";
+      sortDirection = nextSortDirection(sortDirection);
     } else {
       sortKey = key;
       sortDirection = defaultSortDirection(key);
     }
 
+    forceRankingRefresh = true;
+    flushRuntimeQuery();
+  }
+
+  function toggleSortDirection(): void {
+    sortDirection = nextSortDirection(sortDirection);
     forceRankingRefresh = true;
     flushRuntimeQuery();
   }
@@ -1479,12 +1486,14 @@
       <ProcessCommandBar
         {focusMode}
         {sortKey}
+        {sortDirection}
         {commandError}
         {rankingUpdateAvailable}
         {focusOptions}
         {sortOptions}
         onFocus={setFocusMode}
         onSort={setSortKey}
+        onToggleDirection={toggleSortDirection}
         onApplyRanking={applyPendingRanking}
       />
       <AttentionQueue
