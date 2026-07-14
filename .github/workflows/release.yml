@@ -100,7 +100,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/validate-release-evidence-packet.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/public-artifact-install-smoke.test.mjs
 
   windows:
     name: Build Windows release

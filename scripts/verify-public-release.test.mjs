@@ -16,6 +16,7 @@ import {
   buildPublicDownloadPlan,
   downloadPublicAssets,
   parseChecksumManifest,
+  requireVerifiedPublicReleaseReceipt,
   releaseVerificationArguments,
   runGitHubVerifications,
   verifyChecksumManifest,
@@ -102,7 +103,42 @@ test("verifies anonymous public bytes, checksums, release state, and source-boun
       ghRunner: (arguments_) => commands.push(arguments_),
     });
 
-    assert.deepEqual(result, { assetCount: 13, subjectCount: 11 });
+    assert.equal(result.assetCount, 13);
+    assert.equal(result.subjectCount, 11);
+    assert.deepEqual(
+      {
+        ...result.receipt,
+        assets: result.receipt.assets.map(({ name, size_bytes, sha256, public_url }) => ({
+          name,
+          size_bytes,
+          sha256,
+          public_url,
+        })),
+      },
+      {
+        schema_version: 1,
+        verifier: "scripts/verify-public-release.mjs",
+        disposition: "passed",
+        proof_scope: "contract_only",
+        repository: RELEASE_REPOSITORY,
+        tag,
+        source_sha: sourceSha,
+        app_version: "0.3.0",
+        assets: buildPublicDownloadPlan(candidate, release).map(({ name, size, digest, url }) => ({
+          name,
+          size_bytes: size,
+          sha256: digest,
+          public_url: url,
+        })),
+      },
+    );
+    assert.equal(requireVerifiedPublicReleaseReceipt(result.receipt), result.receipt);
+    assert.throws(
+      () => requireVerifiedPublicReleaseReceipt(structuredClone(result.receipt)),
+      /successful in-process verifyPublicRelease call/u,
+    );
+    assert.equal(Object.isFrozen(result.receipt), true);
+    assert.equal(Object.isFrozen(result.receipt.assets), true);
     assert.equal(requests.length, candidate.assets.length);
     assert.ok(
       requests.every(
