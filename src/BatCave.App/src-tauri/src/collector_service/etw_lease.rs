@@ -179,7 +179,8 @@ pub(crate) fn decide_etw_recovery(
             return EtwRecoveryDecision::Retain(EtwRecoveryHold::ControllerQueryUnavailable);
         }
         EtwControllerObservation::Present(controller)
-            if controller.process_id != lease.controller.process_id =>
+            if controller.process_id != lease.controller.process_id
+                || controller.process_started_at == 0 =>
         {
             return EtwRecoveryDecision::Retain(EtwRecoveryHold::ControllerObservationMismatch);
         }
@@ -330,15 +331,17 @@ mod tests {
             process_id: lease.controller.process_id + 1,
             process_started_at: lease.controller.process_started_at,
         };
-        assert_eq!(
-            decide(
-                EtwLeaseObservation::Trusted(lease.clone()),
-                EtwSessionObservation::Present(lease.session),
-                EtwControllerObservation::Present(unrelated),
-                EtwReclaimAttempt::NotAttempted,
-            ),
-            EtwRecoveryDecision::Retain(EtwRecoveryHold::ControllerObservationMismatch)
-        );
+        assert_controller_observation_retained(&lease, unrelated);
+    }
+
+    #[test]
+    fn zero_creation_time_does_not_prove_pid_reuse() {
+        let lease = lease(EtwLeasePhase::Active);
+        let unknown = EtwControllerIdentityV1 {
+            process_id: lease.controller.process_id,
+            process_started_at: 0,
+        };
+        assert_controller_observation_retained(&lease, unknown);
     }
 
     #[test]
@@ -590,6 +593,26 @@ mod tests {
             ),
             EtwRecoveryDecision::Conflict(expected_conflict)
         );
+    }
+
+    fn assert_controller_observation_retained(
+        lease: &EtwLeaseV1,
+        controller: EtwControllerIdentityV1,
+    ) {
+        for session in [
+            EtwSessionObservation::Present(lease.session.clone()),
+            EtwSessionObservation::Absent,
+        ] {
+            assert_eq!(
+                decide(
+                    EtwLeaseObservation::Trusted(lease.clone()),
+                    session,
+                    EtwControllerObservation::Present(controller.clone()),
+                    EtwReclaimAttempt::NotAttempted,
+                ),
+                EtwRecoveryDecision::Retain(EtwRecoveryHold::ControllerObservationMismatch)
+            );
+        }
     }
 
     fn expected() -> EtwExpectedOwnerV1 {

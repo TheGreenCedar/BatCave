@@ -32,7 +32,7 @@ The future native owner must store the lease under service-owned protected stora
 | `Conflict` | corrupt or untrusted lease, identity drift, live exact controller, session without a trusted lease, or observed-session mismatch | leave the lease and session untouched; keep attribution unavailable |
 | `Retain` | session/controller query unavailable, controller evidence is for the wrong PID, or a stop attempt failed | retain the lease, do not start a replacement, and exit or retry only through a later bounded recovery pass |
 
-A PID match is insufficient. PID plus process creation time identifies the controller. The process observation must be for the recorded PID; an arbitrary process observation proves nothing. A reused recorded PID with a different creation time proves the old controller is gone, but it does not authorize reclaim unless every lease and session field also matches.
+A PID match is insufficient. PID plus a nonzero process creation time identifies the controller. The process observation must be for the recorded PID; an arbitrary process observation or an unknown creation time proves nothing. A reused recorded PID with a different nonzero creation time proves the old controller is gone, but it does not authorize reclaim unless every lease and session field also matches.
 
 ## Crash ordering
 
