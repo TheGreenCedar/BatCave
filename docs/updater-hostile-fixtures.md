@@ -10,6 +10,8 @@ cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml updater_hostile_
 
 The tests bind an ephemeral loopback HTTP server and call the pinned `tauri-plugin-updater` 2.10.1 Rust API. Tauri performs the real HTTP request, JSON parsing, target selection, default forward-only SemVer comparison, payload download, and Minisign verification. Disposable fixture keys sign only the four-byte fixture payload and are compiled only into Rust tests.
 
+On Windows, `build.rs` embeds the existing Common-Controls v6 `release.manifest.xml` into every Cargo target. Tauri's default build helper links its manifest only to binaries, which leaves `tauri::test::mock_builder` test executables unable to load; the explicit all-target link is the [upstream accepted workaround](https://github.com/tauri-apps/tauri/issues/13419). The source contract test guards the no-duplicate-manifest configuration and link arguments.
+
 | Fixture | Expected boundary |
 | --- | --- |
 | HTTP 503, missing manifest, malformed JSON, empty response, or wrong target | Check fails; no payload request starts. |
@@ -19,7 +21,7 @@ The tests bind an ephemeral loopback HTTP server and call the pinned `tauri-plug
 | Unrelated key, malformed signature, or byte-tampered payload | Download fails during Tauri signature verification. No installer call is made. |
 | Unreachable loopback endpoint | Check fails as an ordinary offline error. |
 
-Frontend lifecycle tests run through `npm run test:update-lifecycle`. They prove a new explicit check closes the previous JavaScript `Update` before requesting another, and that download or installation completion and failure close the consumed resource. Cleanup treats only Tauri 2.11.5's exact invalid-resource-ID error as an idempotent already-removed handle. Any other close failure blocks replacement and remains available for Retry; a combined operation and cleanup failure preserves both errors.
+Frontend lifecycle tests run through `npm run test:update-lifecycle`. They exercise helper ordering, failure ownership, Retry routing, and the App wiring that calls those helpers. They do not instantiate a packaged Tauri JavaScript `Update`. Cleanup treats only Tauri 2.11.5's exact invalid-resource-ID error as an idempotent already-removed handle. Any other close failure blocks replacement and remains available for Retry; a combined operation and cleanup failure preserves both errors. The Rust matrix separately exercises Tauri's native resource table; packaged JavaScript-to-Rust resource cleanup remains outside this local fixture proof.
 
 ## Evidence boundary
 

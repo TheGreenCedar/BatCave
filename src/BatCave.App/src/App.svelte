@@ -737,7 +737,7 @@
           : "Update finished, but its local selection could not be released. Retry will clean it up before checking again.";
       } else {
         pendingUpdate = null;
-        updateMessage = "Update verification or installation failed. BatCave was not changed.";
+        updateMessage = "Update verification or installation did not complete. Monitoring remains available.";
       }
       updateStatus = "error";
     }

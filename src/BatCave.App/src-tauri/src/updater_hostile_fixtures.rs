@@ -391,9 +391,13 @@ fn wrong_key_invalid_signature_and_tampered_bytes_fail_before_installation() {
             .unwrap_or_else(|error| panic!("{name} metadata check failed: {error}"))
             .expect("forward update metadata is selected before payload verification");
 
+        let error = match download(&update) {
+            Ok(_) => panic!("{name} unexpectedly passed signature verification"),
+            Err(error) => error,
+        };
         assert!(
-            download(&update).is_err(),
-            "{name} payload must be rejected"
+            matches!(error, tauri_plugin_updater::Error::Minisign(_)),
+            "{name} must fail in Tauri's Minisign verification class; got {error:?}"
         );
         assert_eq!(server.requests(), vec!["/latest.json", "/payload.bin"]);
     }

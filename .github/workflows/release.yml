@@ -149,7 +149,6 @@ jobs:
       - name: Bundle signed Windows updater
         working-directory: src/BatCave.App
         env:
-          BATCAVE_INSTALLED_RELEASE: "1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
