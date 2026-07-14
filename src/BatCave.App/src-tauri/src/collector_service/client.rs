@@ -30,6 +30,8 @@ use super::{
 pub(crate) enum ClientFailureKind {
     NotInstalled,
     Stopped,
+    Restarted,
+    NotReady,
     Incompatible,
     Unauthorized,
     Failed,
@@ -40,6 +42,7 @@ pub(crate) struct ClientFailure {
     pub kind: ClientFailureKind,
     pub detail: String,
     pub service_release: Option<ReleaseIdentityV1>,
+    pub service_identity: Option<Box<ServiceIdentityV1>>,
 }
 
 impl ClientFailure {
@@ -49,11 +52,18 @@ impl ClientFailure {
             kind,
             detail: detail.chars().take(1_024).collect(),
             service_release: None,
+            service_identity: None,
         }
     }
 
     pub(crate) fn with_service_release(mut self, release: ReleaseIdentityV1) -> Self {
         self.service_release = Some(release);
+        self
+    }
+
+    pub(crate) fn with_service_identity(mut self, identity: &ServiceIdentityV1) -> Self {
+        self.service_release = Some(identity.release.clone());
+        self.service_identity = Some(Box::new(identity.clone()));
         self
     }
 }
@@ -121,6 +131,13 @@ impl<T: ClientTransport> ServiceClientSession<T> {
     }
 
     pub(crate) fn latest_sample(&mut self) -> Result<TelemetrySample, ClientFailure> {
+        match self.latest_sample_inner() {
+            Ok(sample) => Ok(sample),
+            Err(failure) => Err(failure.with_service_identity(&self.identity)),
+        }
+    }
+
+    fn latest_sample_inner(&mut self) -> Result<TelemetrySample, ClientFailure> {
         let request_id = self.take_request_id()?;
         let request = ClientRequestV1 {
             protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
@@ -201,16 +218,21 @@ fn response_outcome(
         ));
     }
     match response.outcome {
-        ServiceOutcomeV1::Error(failure) => Err(ClientFailure::new(
-            match failure.code {
+        ServiceOutcomeV1::Error(failure) => {
+            let kind = match failure.code {
+                ServiceFailureCodeV1::Incompatible
+                    if failure.detail == "collector_service_snapshot_not_ready" =>
+                {
+                    ClientFailureKind::NotReady
+                }
                 ServiceFailureCodeV1::Incompatible => ClientFailureKind::Incompatible,
                 ServiceFailureCodeV1::Unauthorized => ClientFailureKind::Unauthorized,
                 ServiceFailureCodeV1::Malformed
                 | ServiceFailureCodeV1::Oversized
                 | ServiceFailureCodeV1::StaleSequence => ClientFailureKind::Incompatible,
-            },
-            failure.detail,
-        )),
+            };
+            Err(ClientFailure::new(kind, failure.detail))
+        }
         outcome => Ok(outcome),
     }
 }
@@ -235,26 +257,35 @@ pub(crate) fn status_from_failure(
     let state = match failure.kind {
         ClientFailureKind::NotInstalled => RuntimeCollectorServiceState::NotInstalled,
         ClientFailureKind::Stopped => RuntimeCollectorServiceState::Stopped,
+        ClientFailureKind::Restarted => RuntimeCollectorServiceState::Recovering,
+        ClientFailureKind::NotReady => RuntimeCollectorServiceState::Connecting,
         ClientFailureKind::Incompatible => RuntimeCollectorServiceState::Incompatible,
         ClientFailureKind::Unauthorized => RuntimeCollectorServiceState::Unauthorized,
         ClientFailureKind::Failed if previously_active => RuntimeCollectorServiceState::Recovering,
         ClientFailureKind::Failed => RuntimeCollectorServiceState::Failed,
     };
-    let release_identity = failure.service_release.as_ref().map(runtime_release);
-    let version = failure
-        .service_release
-        .as_ref()
-        .map(|release| release.app_version.clone());
+    let identity = failure.service_identity.as_deref();
+    let release = identity
+        .map(|identity| &identity.release)
+        .or(failure.service_release.as_ref());
+    let release_identity = release.map(runtime_release);
+    let version = identity
+        .map(|identity| identity.service_version.clone())
+        .or_else(|| release.map(|release| release.app_version.clone()));
     RuntimeCollectorServiceStatus {
         state,
         release_identity,
         service_version: version.clone(),
-        negotiated_protocol_version: None,
-        minimum_desktop_version: (state == RuntimeCollectorServiceState::Incompatible)
-            .then_some(version)
-            .flatten(),
-        instance_id: None,
-        last_connected_at_ms: None,
+        negotiated_protocol_version: identity.map(|identity| identity.protocol_version),
+        minimum_desktop_version: identity
+            .map(|identity| identity.minimum_desktop_version.clone())
+            .or_else(|| {
+                (state == RuntimeCollectorServiceState::Incompatible)
+                    .then_some(version)
+                    .flatten()
+            }),
+        instance_id: identity.map(|identity| identity.instance_id.clone()),
+        last_connected_at_ms: identity.map(|_| now_ms()),
         detail: Some(failure.detail.clone()),
     }
 }
@@ -502,7 +533,10 @@ mod tests {
     use crate::{
         collector_service::{
             authorization::VerifiedServicePeer,
-            protocol::{NegotiatedV1, ServiceLimitsV1, ServiceOutcomeV1, COLLECTOR_SERVICE_NAME},
+            protocol::{
+                NegotiatedV1, ServiceFailureV1, ServiceLimitsV1, ServiceOutcomeV1,
+                COLLECTOR_SERVICE_NAME,
+            },
         },
         contracts::{RuntimeCollectorServiceState, RuntimeCollectorState},
     };
@@ -598,6 +632,54 @@ mod tests {
     }
 
     #[test]
+    fn negotiated_not_ready_preserves_verified_identity_for_connecting_fallback() {
+        let identity = identity("instance-starting");
+        let transport = FakeTransport {
+            peer: peer(identity.release.clone()),
+            responses: VecDeque::from([
+                response(
+                    1,
+                    ServiceOutcomeV1::Negotiated(NegotiatedV1 {
+                        negotiated_protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                        service: identity.clone(),
+                    }),
+                ),
+                response(
+                    2,
+                    ServiceOutcomeV1::Error(ServiceFailureV1 {
+                        code: ServiceFailureCodeV1::Incompatible,
+                        detail: "collector_service_snapshot_not_ready".to_string(),
+                    }),
+                ),
+            ]),
+            requests: Vec::new(),
+        };
+
+        let mut session = ServiceClientSession::connect(transport).unwrap();
+        let failure = session.latest_sample().unwrap_err();
+        assert_eq!(failure.kind, ClientFailureKind::NotReady);
+        assert_eq!(failure.service_identity.as_deref(), Some(&identity));
+
+        let status = status_from_failure(&failure, false);
+        assert_eq!(status.state, RuntimeCollectorServiceState::Connecting);
+        assert_eq!(
+            status.release_identity,
+            Some(runtime_release(&identity.release))
+        );
+        assert_eq!(status.service_version, Some(identity.service_version));
+        assert_eq!(
+            status.negotiated_protocol_version,
+            Some(COLLECTOR_SERVICE_PROTOCOL_VERSION)
+        );
+        assert_eq!(
+            status.minimum_desktop_version,
+            Some(identity.minimum_desktop_version)
+        );
+        assert_eq!(status.instance_id, Some(identity.instance_id));
+        assert!(status.last_connected_at_ms.is_some());
+    }
+
+    #[test]
     fn transport_failures_map_to_truthful_fallback_states() {
         for (kind, state) in [
             (
@@ -607,6 +689,10 @@ mod tests {
             (
                 ClientFailureKind::Stopped,
                 RuntimeCollectorServiceState::Stopped,
+            ),
+            (
+                ClientFailureKind::Restarted,
+                RuntimeCollectorServiceState::Recovering,
             ),
             (
                 ClientFailureKind::Unauthorized,

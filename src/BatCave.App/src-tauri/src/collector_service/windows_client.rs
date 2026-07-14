@@ -29,13 +29,15 @@ use super::{
     authorization::VerifiedServicePeer,
     client::{ClientFailure, ClientFailureKind, ClientTransport},
     framing::{encode_json_frame, FrameDecoder},
-    protocol::{decode_response, ClientRequestV1, ReleaseIdentityV1, ServiceResponseV1},
+    protocol::{
+        decode_response, ClientRequestV1, ReleaseIdentityV1, ServiceResponseV1,
+        COLLECTOR_SERVICE_NAME,
+    },
     transport_policy::DESKTOP_EXECUTABLE_NAME,
     windows_transport::{
         executable_release, file_identity, last_error_message, process_image_path,
         process_started_at, token_evidence, wide, OwnedHandle, PIPE_NAME,
     },
-    COLLECTOR_SERVICE_NAME,
 };
 
 const SERVICE_EXECUTABLE_NAME: &str = "batcave-collector-service.exe";
@@ -204,23 +206,25 @@ fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailur
     let first_probe = service_probe()?;
     first_probe.verify_running_process(process_id)?;
 
+    let peer_failure = |detail| classify_peer_verification_failure(pipe, process_id, detail);
+
     let process =
         OwnedHandle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) })
             .ok_or_else(|| {
-                unauthorized(last_error_message(
+                peer_failure(last_error_message(
                     "collector_service_server_process_open_failed",
                 ))
             })?;
-    let process_started_at = process_started_at(process.raw()).map_err(unauthorized)?;
-    let executable_path = process_image_path(process.raw()).map_err(unauthorized)?;
+    let process_started_at = process_started_at(process.raw()).map_err(peer_failure)?;
+    let executable_path = process_image_path(process.raw()).map_err(peer_failure)?;
     let canonical_path = PathBuf::from(&executable_path)
         .canonicalize()
         .map_err(|error| {
-            unauthorized(format!(
+            peer_failure(format!(
                 "collector_service_server_path_canonicalize_failed:{error}"
             ))
         })?;
-    verify_service_path(&canonical_path)?;
+    verify_service_path(&canonical_path).map_err(|failure| peer_failure(failure.detail))?;
     let path_wide = wide(&canonical_path.to_string_lossy());
     let executable = OwnedHandle::new(unsafe {
         CreateFileW(
@@ -234,35 +238,38 @@ fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailur
         )
     })
     .ok_or_else(|| {
-        unauthorized(last_error_message(
+        peer_failure(last_error_message(
             "collector_service_server_image_open_failed",
         ))
     })?;
-    let executable_file_identity = file_identity(executable.raw()).map_err(unauthorized)?;
-    let executable_release = executable_release(&path_wide).map_err(unauthorized)?;
+    let executable_file_identity = file_identity(executable.raw()).map_err(peer_failure)?;
+    let executable_release = executable_release(&path_wide).map_err(peer_failure)?;
 
     let mut token = std::ptr::null_mut();
     if unsafe { OpenProcessToken(process.raw(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(unauthorized(last_error_message(
+        return Err(peer_failure(last_error_message(
             "collector_service_server_token_open_failed",
         )));
     }
     let token = OwnedHandle::new(token)
-        .ok_or_else(|| unauthorized("collector_service_server_token_invalid"))?;
-    let token = token_evidence(token.raw()).map_err(unauthorized)?;
-    if token.principal_identity != local_system_principal_identity()? || token.elevated == false {
-        return Err(unauthorized(
+        .ok_or_else(|| peer_failure("collector_service_server_token_invalid"))?;
+    let token = token_evidence(token.raw()).map_err(peer_failure)?;
+    let local_system_identity =
+        local_system_principal_identity().map_err(|failure| peer_failure(failure.detail))?;
+    if token.principal_identity != local_system_identity || token.elevated == false {
+        return Err(peer_failure(
             "collector_service_server_principal_not_local_system",
         ));
     }
 
-    let confirmed_process_id = pipe_server_process_id(pipe)?;
-    let confirmed_probe = service_probe()?;
-    confirmed_probe.verify_running_process(process_id)?;
-    if confirmed_process_id != process_id || confirmed_probe.process_id != first_probe.process_id {
-        return Err(unauthorized(
-            "collector_service_server_process_identity_changed",
-        ));
+    match observe_peer_continuity(pipe, process_id)? {
+        PeerContinuity::Stable => {}
+        continuity => {
+            return Err(classify_peer_continuity(
+                "collector_service_server_process_identity_changed",
+                continuity,
+            ))
+        }
     }
 
     VerifiedServicePeer::from_transport_verification(
@@ -276,6 +283,70 @@ fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailur
         },
     )
     .map_err(|failure| unauthorized(failure.detail))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeerContinuity {
+    Stable,
+    Stopped,
+    Restarted,
+}
+
+fn classify_peer_verification_failure(
+    pipe: HANDLE,
+    expected_process_id: u32,
+    detail: impl Into<String>,
+) -> ClientFailure {
+    let detail = detail.into();
+    match observe_peer_continuity(pipe, expected_process_id) {
+        Ok(continuity) => classify_peer_continuity(detail, continuity),
+        Err(failure) => failure,
+    }
+}
+
+fn classify_peer_continuity(
+    detail: impl Into<String>,
+    continuity: PeerContinuity,
+) -> ClientFailure {
+    match continuity {
+        PeerContinuity::Stable => unauthorized(detail),
+        PeerContinuity::Stopped => ClientFailure::new(
+            ClientFailureKind::Stopped,
+            "collector_service_stopped_during_peer_verification",
+        ),
+        PeerContinuity::Restarted => ClientFailure::new(
+            ClientFailureKind::Restarted,
+            "collector_service_restarted_during_peer_verification",
+        ),
+    }
+}
+
+fn observe_peer_continuity(
+    pipe: HANDLE,
+    expected_process_id: u32,
+) -> Result<PeerContinuity, ClientFailure> {
+    let probe = service_probe()?;
+    if !probe.running {
+        return Ok(PeerContinuity::Stopped);
+    }
+    if !probe.own_process || probe.process_id == 0 || probe.process_id != expected_process_id {
+        return Ok(PeerContinuity::Restarted);
+    }
+
+    let mut pipe_process_id = 0_u32;
+    if unsafe { GetNamedPipeServerProcessId(pipe, &mut pipe_process_id) } == 0 {
+        return if unsafe { GetLastError() } == ERROR_ACCESS_DENIED {
+            Err(unauthorized(
+                "collector_service_server_pipe_reprobe_unauthorized",
+            ))
+        } else {
+            Ok(PeerContinuity::Restarted)
+        };
+    }
+    if pipe_process_id != expected_process_id {
+        return Ok(PeerContinuity::Restarted);
+    }
+    Ok(PeerContinuity::Stable)
 }
 
 fn verify_service_path(path: &std::path::Path) -> Result<(), ClientFailure> {
@@ -361,8 +432,14 @@ impl ServiceProbe {
                 "collector_service_stopped",
             ));
         }
-        if !self.own_process || self.process_id == 0 || self.process_id != process_id {
+        if !self.own_process || self.process_id == 0 {
             return Err(unauthorized("collector_service_scm_process_mismatch"));
+        }
+        if self.process_id != process_id {
+            return Err(ClientFailure::new(
+                ClientFailureKind::Restarted,
+                "collector_service_restarted_during_peer_verification",
+            ));
         }
         Ok(())
     }
@@ -477,5 +554,23 @@ mod tests {
     fn client_uses_fixed_versioned_local_pipe_and_exact_data_rights() {
         assert_eq!(PIPE_NAME, r"\\.\pipe\BatCaveCollector.v1");
         assert_eq!(FILE_READ_DATA | FILE_WRITE_DATA, 0x0000_0003);
+    }
+
+    #[test]
+    fn peer_failure_classification_distinguishes_stable_stop_and_restart() {
+        assert_eq!(
+            classify_peer_continuity("token denied", PeerContinuity::Stable).kind,
+            ClientFailureKind::Unauthorized
+        );
+        assert_eq!(
+            classify_peer_continuity("process vanished", PeerContinuity::Stopped).kind,
+            ClientFailureKind::Stopped
+        );
+        let restarted = classify_peer_continuity("process changed", PeerContinuity::Restarted);
+        assert_eq!(restarted.kind, ClientFailureKind::Restarted);
+        assert_eq!(
+            super::super::client::status_from_failure(&restarted, false).state,
+            crate::contracts::RuntimeCollectorServiceState::Recovering
+        );
     }
 }

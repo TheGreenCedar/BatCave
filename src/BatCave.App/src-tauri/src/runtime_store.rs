@@ -6379,6 +6379,70 @@ mod tests {
     }
 
     #[test]
+    fn negotiated_not_ready_fallback_round_trips_through_runtime_protocol() {
+        let base_dir = runtime_test_dir("collector-service-not-ready");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        let identity = crate::collector_service::protocol::ServiceIdentityV1 {
+            service_name: crate::collector_service::protocol::COLLECTOR_SERVICE_NAME.to_string(),
+            service_version: env!("CARGO_PKG_VERSION").to_string(),
+            release: crate::collector_service::host::current_release_identity(),
+            instance_id: "service-instance-starting".to_string(),
+            protocol_version:
+                crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            minimum_desktop_version: env!("CARGO_PKG_VERSION").to_string(),
+            limits: crate::collector_service::protocol::ServiceLimitsV1::contract(),
+        };
+        let status = crate::collector_service::client::status_from_failure(
+            &crate::collector_service::client::ClientFailure::new(
+                crate::collector_service::client::ClientFailureKind::NotReady,
+                "collector_service_snapshot_not_ready",
+            )
+            .with_service_identity(&identity),
+            false,
+        );
+        let sampled_at_ms = crate::telemetry::now_ms();
+        store.apply_raw_sample(
+            crate::telemetry::TelemetrySample {
+                latency_ms: 1,
+                collector_state: RuntimeCollectorState::Healthy,
+                system: empty_system(),
+                processes: Vec::new(),
+                warnings: vec![
+                    "collector_service_snapshot_not_ready; standard-access collector fallback is active"
+                        .to_string(),
+                ],
+                collector_service: Some(status),
+            },
+            1.0,
+            sampled_at_ms,
+            &NOOP_PROCESS_NETWORK_CONTROL,
+        );
+
+        let encoded = crate::protocol::encode_snapshot(store.snapshot.clone())
+            .expect("connecting fallback status encodes");
+        let bytes = serde_json::to_vec(&encoded).expect("encode runtime protocol JSON");
+        let decoded: crate::protocol::ProtocolEnvelope =
+            serde_json::from_slice(&bytes).expect("decode runtime protocol JSON");
+        let decoded = serde_json::to_value(decoded).expect("inspect decoded runtime protocol");
+        assert_eq!(
+            decoded.pointer("/event/payload/privileged_collection/collector_service/state"),
+            Some(&serde_json::json!("connecting"))
+        );
+        assert_eq!(
+            decoded
+                .pointer("/event/payload/privileged_collection/collector_service/service_version"),
+            Some(&serde_json::json!(env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(
+            decoded.pointer("/event/payload/privileged_collection/source"),
+            Some(&serde_json::json!("none"))
+        );
+
+        let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
     fn elevated_parent_uses_current_process_without_starting_helper() {
         let base_dir = runtime_test_dir("admin-current-process-source");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
