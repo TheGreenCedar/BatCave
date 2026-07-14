@@ -635,14 +635,14 @@ mod linux {
             observed_failures.push(FailureBoundary::Consumption);
         }
 
-        if !observed_failures.is_empty() {
-            if terminate_process_group(process_group, &mut child).is_err() {
-                return Err(LaunchFailure::after_spawn(
-                    observed_failures,
-                    child,
-                    process_group,
-                ));
-            }
+        if !observed_failures.is_empty()
+            && terminate_process_group(process_group, &mut child).is_err()
+        {
+            return Err(LaunchFailure::after_spawn(
+                observed_failures,
+                child,
+                process_group,
+            ));
         }
         let group_settled = match settle_process_group(process_group, &mut child) {
             Ok(settled) => settled,
@@ -978,6 +978,7 @@ mod linux {
     }
 
     #[test]
+    #[allow(clippy::zombie_processes)]
     fn fixed_descendant_spawner_entry() {
         if !child_mode() {
             return;
@@ -1167,7 +1168,7 @@ mod linux_tests {
         assert!(authority.retains_descriptor());
         assert!(authority.retains_process_group());
 
-        let close_error = authority.close().err().expect("early close fails");
+        let close_error = authority.close().expect_err("early close fails");
         assert_eq!(close_error.boundary(), FailureBoundary::Settlement);
         assert!(authority.retains_descriptor());
         assert!(authority.retains_process_group());
