@@ -6,8 +6,14 @@
     "target": "ES2022",
     "strict": true,
     "skipLibCheck": true,
+    "tsBuildInfoFile": "../../artifacts/tsconfig.node.tsbuildinfo",
     "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": [
+    "vite.config.ts",
+    "playwright.config.ts",
+    "scripts/accessibilityServer.ts",
+    "scripts/accessibility.spec.ts",
+    "scripts/accessibility-reduced-motion.spec.ts"
+  ]
 }
-
