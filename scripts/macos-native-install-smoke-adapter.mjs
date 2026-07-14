@@ -25,6 +25,29 @@ const SHARED_TOOL_IDS = Object.freeze([
   "stapler",
 ]);
 
+const CONSUMED_DESTINATION_REVALIDATION = deepFreeze({
+  boundary: "consumed_destination_only",
+  bundle_id_source: "compiled_tauri_identifier",
+  version_source: "verified_release_version",
+  required_architectures: ["arm64", "x86_64"],
+  required_gate_ids: [
+    "bundle_id",
+    "version",
+    "architectures",
+    "signature_integrity",
+    "developer_id_authority",
+    "notarization",
+    "staple",
+  ],
+  release_evidence_signature_role_ids: [
+    "contained_app_developer_id",
+    "contained_app_notarization",
+    "contained_app_staple",
+  ],
+  source_fixture_can_prove_destination_binding: false,
+  source_fixture_can_mint_proof: false,
+});
+
 export const MACOS_NATIVE_ADAPTER_SOURCE_PROFILES = deepFreeze({
   dmg: {
     package_operation: "install",
@@ -33,6 +56,7 @@ export const MACOS_NATIVE_ADAPTER_SOURCE_PROFILES = deepFreeze({
     trust_basis: "developer_id_notarization_and_staple",
     required_limitations: [],
     artifact_flow: "owned_dmg_mount_copy_required",
+    destination_revalidation: CONSUMED_DESTINATION_REVALIDATION,
     source_descriptor_tool_ids: ["hdiutil", "ditto", ...SHARED_TOOL_IDS],
     future_owned_resources: [
       "private_artifact_root",
@@ -49,6 +73,7 @@ export const MACOS_NATIVE_ADAPTER_SOURCE_PROFILES = deepFreeze({
     trust_basis: "contained_app_trust_and_tauri_updater",
     required_limitations: ["macos_updater_staging_only"],
     artifact_flow: "rust_owned_updater_archive_stream_required",
+    destination_revalidation: CONSUMED_DESTINATION_REVALIDATION,
     source_descriptor_tool_ids: [
       "rust_owned_stream_extractor",
       ...SHARED_TOOL_IDS,
