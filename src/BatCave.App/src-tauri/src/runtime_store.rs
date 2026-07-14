@@ -6680,7 +6680,12 @@ mod tests {
         assert!(store.snapshot.health.degraded);
         assert!(store.snapshot.health.status_summary.contains("persistence"));
         assert_eq!(store.engine_state, RuntimeEngineState::Starting);
-        assert_eq!(store.settings, RuntimeSettings::default());
+        let expected_settings = RuntimeSettings {
+            admin_mode_enabled: store.provenance.process_is_elevated(),
+            ..RuntimeSettings::default()
+        };
+        assert_eq!(store.settings, expected_settings);
+        assert!(!store.settings.admin_mode_requested);
         assert!(store
             .warnings
             .iter()
@@ -6843,6 +6848,8 @@ mod tests {
     fn shutdown_flushes_settings_and_warm_cache_once() {
         let base_dir = runtime_test_dir("shutdown-persistence-flush");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        // This fixture proves the standard-user cache flush path independently of the host token.
+        store.settings.admin_mode_enabled = false;
         store.settings.ui_preferences = Some(RuntimeUiPreferences {
             theme: "ember".to_string(),
             history_point_limit: 180,
@@ -6862,8 +6869,11 @@ mod tests {
         let cache =
             read_json::<WarmCache>(&base_dir.join(WARM_CACHE_FILE)).expect("warm cache persisted");
         assert_eq!(settings.ui_preferences, store.settings.ui_preferences);
+        assert!(!settings.admin_mode_requested);
+        assert!(!settings.admin_mode_enabled);
         assert_eq!(cache.seq, 12);
         assert_eq!(cache.rows.len(), 1);
+        assert_eq!(cache.rows[0].name, "Cached");
 
         let _ = fs::remove_dir_all(base_dir);
     }
