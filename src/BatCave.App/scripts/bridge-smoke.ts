@@ -9,6 +9,7 @@ import {
   setRuntimeAdminMode,
   setRuntimeProcessQuery,
   setRuntimeSampleInterval,
+  setRuntimeUiPreferences,
   type RuntimeInvoke,
 } from "../src/lib/tauriBridge.ts";
 import { encodeFixtureSnapshot } from "../src/lib/protocol/fixtureProtocol.ts";
@@ -167,6 +168,18 @@ await setRuntimeProcessQuery(invoke, {
   sort_direction: "desc",
   limit: 25,
 });
+await setRuntimeProcessQuery(
+  invoke,
+  {
+    filter_text: "chrome",
+    focus_mode: "attention",
+    sort_column: "attention",
+    sort_direction: "desc",
+    limit: 25,
+  },
+  "runtime_only",
+);
+await setRuntimeUiPreferences(invoke, { theme: "ember", history_point_limit: 180 });
 assert.deepEqual(await getRuntimeProcessIcons(invoke, ["C:\\Windows\\explorer.exe"]), {});
 
 assert.deepEqual(
@@ -188,11 +201,71 @@ assert.deepEqual(
           sort_direction: "desc",
           limit: 25,
         },
+        persist: true,
       },
     ],
+    [
+      "set_process_query",
+      {
+        query: {
+          filter_text: "chrome",
+          focus_mode: "attention",
+          sort_column: "attention",
+          sort_direction: "desc",
+          limit: 25,
+        },
+        persist: false,
+      },
+    ],
+    ["set_ui_preferences", { preferences: { theme: "ember", history_point_limit: 180 } }],
     ["get_process_icons", { exes: ["C:\\Windows\\explorer.exe"] }],
   ],
 );
+
+const orderedCalls: string[] = [];
+const orderedResolutions: Array<(value: unknown) => void> = [];
+const orderedInvoke: RuntimeInvoke = <T>(command: string) =>
+  new Promise<T>((resolve) => {
+    orderedCalls.push(command);
+    orderedResolutions.push((value) => resolve(value as T));
+  });
+const orderedMutations = [
+  setRuntimePaused(orderedInvoke, true),
+  setRuntimePaused(orderedInvoke, false),
+  setRuntimeSampleInterval(orderedInvoke, 500),
+  setRuntimeAdminMode(orderedInvoke, true),
+  setRuntimeProcessQuery(
+    orderedInvoke,
+    {
+      filter_text: "newest",
+      focus_mode: "attention",
+      sort_column: "attention",
+      sort_direction: "desc",
+      limit: 25,
+    },
+    "user_mutation",
+  ),
+  setRuntimeUiPreferences(orderedInvoke, { theme: "daylight", history_point_limit: 360 }),
+];
+const orderedCommands = [
+  "pause_runtime",
+  "resume_runtime",
+  "set_sample_interval",
+  "set_admin_mode",
+  "set_process_query",
+  "set_ui_preferences",
+];
+await Promise.resolve();
+assert.deepEqual(orderedCalls, orderedCommands.slice(0, 1));
+for (let index = 0; index < orderedMutations.length; index += 1) {
+  orderedResolutions[index](encodeFixtureSnapshot(snapshot(100 + index)));
+  await orderedMutations[index];
+  await Promise.resolve();
+  assert.deepEqual(
+    orderedCalls,
+    orderedCommands.slice(0, Math.min(index + 2, orderedCommands.length)),
+  );
+}
 
 const emptySnapshot = snapshot(0);
 const failedRead = await readNativeSnapshot(

@@ -124,11 +124,17 @@ enum EngineControl {
     Refresh,
     Pause(SnapshotReply),
     Resume(SnapshotReply),
-    SetQuery(RuntimeQuery, SnapshotReply),
+    SetQuery(RuntimeQuery, QueryWriteIntent, SnapshotReply),
     SetSampleInterval(u32, SnapshotReply),
     SetAdminMode(bool, SnapshotReply),
     SetUiPreferences(RuntimeUiPreferences, SnapshotReply),
     Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueryWriteIntent {
+    RuntimeOnly,
+    UserMutation,
 }
 
 pub struct RuntimeState {
@@ -264,7 +270,14 @@ impl RuntimeState {
     }
 
     pub fn set_query(&self, query: RuntimeQuery) -> Result<RuntimeSnapshot, String> {
-        self.request_snapshot(|reply| EngineControl::SetQuery(query, reply))
+        self.request_query(query, QueryWriteIntent::UserMutation)
+    }
+
+    pub(crate) fn set_query_runtime_only(
+        &self,
+        query: RuntimeQuery,
+    ) -> Result<RuntimeSnapshot, String> {
+        self.request_query(query, QueryWriteIntent::RuntimeOnly)
     }
 
     pub fn set_sample_interval(&self, sample_interval_ms: u32) -> Result<RuntimeSnapshot, String> {
@@ -356,6 +369,14 @@ impl RuntimeState {
             .try_send(control(reply))
             .map_err(control_send_error)?;
         receive_snapshot(receiver, self.clock.now_ms())
+    }
+
+    fn request_query(
+        &self,
+        query: RuntimeQuery,
+        intent: QueryWriteIntent,
+    ) -> Result<RuntimeSnapshot, String> {
+        self.request_snapshot(|reply| EngineControl::SetQuery(query, intent, reply))
     }
 
     fn published_snapshot(&self) -> Result<RuntimeSnapshot, String> {
@@ -635,9 +656,9 @@ fn sampling_engine_loop(
                     }
                 }
             }
-            Ok(EngineControl::SetQuery(query, reply)) => {
+            Ok(EngineControl::SetQuery(query, intent, reply)) => {
                 store.note_heartbeat();
-                store.set_query(query);
+                store.set_query_with_intent(query, intent);
                 reply_with_publication(reply, store, published);
             }
             Ok(EngineControl::SetSampleInterval(sample_interval_ms, reply)) => {
@@ -808,7 +829,7 @@ fn fatal_control_loop(receiver: &Receiver<EngineControl>, shutdown_requested: &A
             EngineControl::Pause(reply) | EngineControl::Resume(reply) => {
                 let _ = reply.send(Err("runtime_engine_fatal".to_string()));
             }
-            EngineControl::SetQuery(_, reply)
+            EngineControl::SetQuery(_, _, reply)
             | EngineControl::SetSampleInterval(_, reply)
             | EngineControl::SetAdminMode(_, reply)
             | EngineControl::SetUiPreferences(_, reply) => {
@@ -980,6 +1001,8 @@ struct RuntimeStore {
     persistence: RuntimePersistenceCoordinator,
     provenance: RuntimeProvenance,
     settings: RuntimeSettings,
+    // Runtime-only shaping can differ from the last user-authored query.
+    durable_query: RuntimeQuery,
     admin_mode: RuntimeAdminModeStatus,
     elevated: Option<ElevatedHelperClient>,
     snapshot: RuntimeSnapshot,
@@ -1182,6 +1205,7 @@ impl RuntimeStore {
             ..RuntimeHealth::default()
         };
         let health_window = metric_window(settings.metric_window_seconds);
+        let durable_query = settings.query.clone();
         let snapshot = build_snapshot(
             publication_seq,
             clock.now_ms(),
@@ -1205,6 +1229,7 @@ impl RuntimeStore {
             persistence,
             provenance,
             settings,
+            durable_query,
             admin_mode,
             elevated: None,
             snapshot,
@@ -1315,9 +1340,17 @@ impl RuntimeStore {
         self.snapshot.clone()
     }
 
-    fn set_query(&mut self, query: RuntimeQuery) -> RuntimeSnapshot {
-        self.settings.query = normalize_query(query);
-        let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
+    fn set_query_with_intent(
+        &mut self,
+        query: RuntimeQuery,
+        intent: QueryWriteIntent,
+    ) -> RuntimeSnapshot {
+        let query = normalize_query(query);
+        self.settings.query = query.clone();
+        if intent == QueryWriteIntent::UserMutation {
+            self.durable_query = query;
+            let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
+        }
         self.publish_snapshot_only(None);
         self.snapshot.clone()
     }
@@ -1912,6 +1945,7 @@ impl RuntimeStore {
             return Ok(());
         }
         let mut persisted = self.settings.clone();
+        persisted.query = self.durable_query.clone();
         persisted.admin_mode_requested = false;
         persisted.admin_mode_enabled = false;
         match self.persistence.write_json(
@@ -4256,6 +4290,71 @@ mod tests {
         );
         assert_eq!(resumed.sample_seq, 1);
         assert_eq!(collect_count.load(TestOrdering::SeqCst), 1);
+        state.shutdown().expect("engine joins");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn accepted_preference_mutations_apply_and_persist_in_fifo_order() {
+        let (collector, _) = FakeCollector::new([]);
+        let (state, base_dir) = state_with_collector("engine-preference-fifo", collector, false);
+        let first_preferences = RuntimeUiPreferences {
+            theme: "cave".to_string(),
+            history_point_limit: 72,
+        };
+        let latest_preferences = RuntimeUiPreferences {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        };
+        let (first_reply, first_receiver) = mpsc::channel();
+        let (latest_reply, latest_receiver) = mpsc::channel();
+
+        state
+            .control
+            .try_send(EngineControl::SetUiPreferences(
+                first_preferences,
+                first_reply,
+            ))
+            .expect("first preference is accepted");
+        state
+            .control
+            .try_send(EngineControl::SetUiPreferences(
+                latest_preferences.clone(),
+                latest_reply,
+            ))
+            .expect("latest preference is accepted");
+
+        let first = receive_snapshot(first_receiver, state.clock.now_ms())
+            .expect("first preference publishes");
+        let latest = receive_snapshot(latest_receiver, state.clock.now_ms())
+            .expect("latest preference publishes");
+        assert_eq!(
+            first
+                .settings
+                .ui_preferences
+                .as_ref()
+                .map(|value| value.theme.as_str()),
+            Some("cave")
+        );
+        assert_eq!(
+            latest.settings.ui_preferences,
+            Some(latest_preferences.clone())
+        );
+        assert_eq!(
+            state
+                .snapshot()
+                .expect("latest publication remains readable")
+                .settings
+                .ui_preferences,
+            Some(latest_preferences.clone())
+        );
+        assert_eq!(
+            read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE))
+                .expect("latest settings persist")
+                .ui_preferences,
+            Some(latest_preferences)
+        );
+
         state.shutdown().expect("engine joins");
         let _ = fs::remove_dir_all(base_dir);
     }
@@ -6898,6 +6997,42 @@ admin_mode_launcher_exit_failed:code=1";
         let _ = fs::remove_dir_all(parent);
     }
 
+    #[test]
+    fn runtime_only_query_does_not_leak_into_unrelated_settings_writes() {
+        let base_dir = runtime_test_dir("runtime-only-query-durability");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let runtime_only = store.set_query_with_intent(
+            RuntimeQuery {
+                focus_mode: ProcessFocusMode::Attention,
+                ..RuntimeQuery::default()
+            },
+            QueryWriteIntent::RuntimeOnly,
+        );
+        assert_eq!(
+            runtime_only.settings.query.focus_mode,
+            ProcessFocusMode::Attention
+        );
+
+        store.set_ui_preferences(RuntimeUiPreferences {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        });
+        let persisted =
+            read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE)).expect("settings persist");
+        assert_eq!(persisted.query, RuntimeQuery::default());
+        assert_eq!(
+            persisted.ui_preferences,
+            Some(RuntimeUiPreferences {
+                theme: "ember".to_string(),
+                history_point_limit: 180,
+            })
+        );
+        assert_eq!(store.settings.query.focus_mode, ProcessFocusMode::Attention);
+
+        drop(store);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn corrupt_settings_survive_ordinary_runtime_open_and_close() {
@@ -6920,6 +7055,65 @@ admin_mode_launcher_exit_failed:code=1";
                 .warnings
                 .iter()
                 .any(|warning| warning.message.contains("persistence_corrupt_data")));
+            let original_failure = serde_json::to_value(
+                store
+                    .snapshot
+                    .persistence
+                    .as_ref()
+                    .and_then(|persistence| {
+                        persistence.components.iter().find(|component| {
+                            component.kind == crate::contracts::RuntimePersistenceKind::Settings
+                        })
+                    })
+                    .and_then(|component| component.active_failure.as_ref()),
+            )
+            .expect("failure serializes");
+            store.previous_processes = vec![
+                sample("10", "Quiet", 0.1),
+                sample("20", "Busy", ATTENTION_CPU_PERCENT),
+            ];
+            store.live_process_snapshot = true;
+            store.publish_snapshot_only(None);
+            assert_eq!(store.snapshot.processes.len(), 2);
+
+            let runtime_only = store.set_query_with_intent(
+                RuntimeQuery {
+                    focus_mode: ProcessFocusMode::Attention,
+                    ..RuntimeQuery::default()
+                },
+                QueryWriteIntent::RuntimeOnly,
+            );
+            assert_eq!(
+                runtime_only.settings.query.focus_mode,
+                ProcessFocusMode::Attention
+            );
+            assert_eq!(runtime_only.processes.len(), 1);
+            assert_eq!(runtime_only.processes[0].pid, "20");
+            assert_eq!(runtime_only.process_view_rows.len(), 1);
+            assert_eq!(
+                runtime_only
+                    .persistence
+                    .as_ref()
+                    .map(|persistence| persistence.state),
+                Some(RuntimePersistenceState::Degraded)
+            );
+            assert_eq!(
+                serde_json::to_value(
+                    runtime_only
+                        .persistence
+                        .as_ref()
+                        .and_then(|persistence| {
+                            persistence.components.iter().find(|component| {
+                                component.kind == crate::contracts::RuntimePersistenceKind::Settings
+                            })
+                        })
+                        .and_then(|component| component.active_failure.as_ref()),
+                )
+                .expect("failure serializes"),
+                original_failure
+            );
+            assert!(store.settings_rewrite_blocked);
+            assert_eq!(fs::read(&path).expect("settings remain readable"), original);
             store
                 .shutdown_owned_resources()
                 .expect("ordinary shutdown leaves unreadable settings untouched");
@@ -6928,14 +7122,17 @@ admin_mode_launcher_exit_failed:code=1";
         assert_eq!(fs::read(&path).expect("settings remain readable"), original);
 
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.set_ui_preferences(RuntimeUiPreferences {
-            theme: "ember".to_string(),
-            history_point_limit: 180,
-        });
+        store.set_query_with_intent(
+            RuntimeQuery {
+                focus_mode: ProcessFocusMode::Io,
+                ..RuntimeQuery::default()
+            },
+            QueryWriteIntent::UserMutation,
+        );
         assert!(!store.settings_rewrite_blocked);
         let persisted =
             read_json::<RuntimeSettings>(&path).expect("user mutation replaces defaults");
-        assert_eq!(persisted.ui_preferences, store.settings.ui_preferences);
+        assert_eq!(persisted.query, store.settings.query);
 
         drop(store);
         let _ = fs::remove_dir_all(base_dir);
@@ -6995,10 +7192,13 @@ admin_mode_launcher_exit_failed:code=1";
         fs::remove_dir_all(&base_dir).expect("verified root is removed for invalidation");
         fs::write(&base_dir, "not a directory").expect("invalid root fixture writes");
 
-        let invalid = store.set_query(RuntimeQuery {
-            filter_text: "invalid".to_string(),
-            ..RuntimeQuery::default()
-        });
+        let invalid = store.set_query_with_intent(
+            RuntimeQuery {
+                filter_text: "invalid".to_string(),
+                ..RuntimeQuery::default()
+            },
+            QueryWriteIntent::UserMutation,
+        );
         let persistence = invalid
             .persistence
             .as_ref()
@@ -7021,10 +7221,13 @@ admin_mode_launcher_exit_failed:code=1";
         fs::create_dir_all(&base_dir).expect("root is recreated");
         fs::set_permissions(&base_dir, fs::Permissions::from_mode(0o700))
             .expect("recreated root is private");
-        let recovered = store.set_query(RuntimeQuery {
-            filter_text: "recovered".to_string(),
-            ..RuntimeQuery::default()
-        });
+        let recovered = store.set_query_with_intent(
+            RuntimeQuery {
+                filter_text: "recovered".to_string(),
+                ..RuntimeQuery::default()
+            },
+            QueryWriteIntent::UserMutation,
+        );
         let persistence = recovered
             .persistence
             .as_ref()

@@ -81,7 +81,10 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
-  import { dispatchAutomaticRuntimeHydration } from "./lib/runtimeHydration";
+  import {
+    dispatchAutomaticRuntimeHydration,
+    planAutomaticRuntimeFocusHydration,
+  } from "./lib/runtimeHydration";
   import { runtimeSurfaceMode } from "./lib/runtimeMode";
   import {
     chartPalettes,
@@ -104,6 +107,7 @@
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
     setRuntimeUiPreferences,
+    type RuntimeQueryWriteIntent,
   } from "./lib/tauriBridge";
   import type {
     KernelPoolTag,
@@ -872,24 +876,29 @@
     };
   }
 
-  async function syncRuntimeQuery(): Promise<void> {
+  async function syncRuntimeQuery(
+    query: RuntimeQuery = currentRuntimeQuery(),
+    intent: RuntimeQueryWriteIntent = "user_mutation",
+    onApplied?: () => void,
+  ): Promise<void> {
     if (!runtimeMutationAllowed(protocolMismatch)) return;
-    const query = currentRuntimeQuery();
 
     const mode = runtimeMode();
     if (mode === "fixture") {
       runtimeQueryRequestSeq += 1;
       ingest(makeFixtureSnapshot(fixtureTick, query, browserFixturePlatform));
+      onApplied?.();
       return;
     }
     if (mode === "unavailable") return;
 
     const requestSeq = (runtimeQueryRequestSeq += 1);
     try {
-      const next = await setRuntimeProcessQuery(invoke, query);
+      const next = await setRuntimeProcessQuery(invoke, query, intent);
       if (requestSeq !== runtimeQueryRequestSeq) {
         return;
       }
+      onApplied?.();
       applyNativeSnapshot(next);
     } catch (error) {
       if (requestSeq !== runtimeQueryRequestSeq) {
@@ -1079,10 +1088,11 @@
       !next.settings.query.filter_text.trim() &&
       isSystemPressured(next) &&
       next.processes.some(processNeedsAttention);
+    const focusHydration = planAutomaticRuntimeFocusHydration(next, useAttentionByDefault);
     searchText = next.settings.query.filter_text;
     sortKey = sortKeyForColumn(next.settings.query.sort_column);
     sortDirection = next.settings.query.sort_direction;
-    focusMode = useAttentionByDefault ? "attention" : next.settings.query.focus_mode;
+    focusMode = focusHydration.visible;
     isPaused = next.settings.paused;
     const pendingTheme = parseThemePreference(window.localStorage.getItem(themeStorageKey));
     const pendingHistory = Number(window.localStorage.getItem(historyStorageKey));
@@ -1109,12 +1119,20 @@
       next,
       {
         persistUiPreferences: shouldPersistUiPreferences,
-        syncRuntimeQuery: useAttentionByDefault,
+        syncRuntimeQuery: focusHydration.requiresSync,
       },
       {
         persistUiPreferences: () =>
           window.setTimeout(() => persistUiPreferences(themePreference, historyPointLimit), 0),
-        syncRuntimeQuery: () => window.setTimeout(() => void syncRuntimeQuery(), 0),
+        syncRuntimeQuery: () =>
+          void syncRuntimeQuery(
+            { ...currentRuntimeQuery(), focus_mode: focusHydration.desired },
+            "runtime_only",
+            () => {
+              focusMode = focusHydration.desired;
+              forceRankingRefresh = true;
+            },
+          ),
       },
     );
   }

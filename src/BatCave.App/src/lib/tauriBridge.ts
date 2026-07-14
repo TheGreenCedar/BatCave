@@ -4,6 +4,37 @@ import { adaptRuntimePayload } from "./protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope, type ProtocolMismatchView } from "./protocol/runtimeProtocol.ts";
 
 export type RuntimeInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+export type RuntimeQueryWriteIntent = "runtime_only" | "user_mutation";
+export const RUNTIME_MUTATION_QUEUE_CAPACITY = 32;
+
+export class RuntimeMutationQueue {
+  private readonly capacity: number;
+  private pending = 0;
+  private tail: Promise<void> = Promise.resolve();
+
+  constructor(capacity = RUNTIME_MUTATION_QUEUE_CAPACITY) {
+    this.capacity = capacity;
+  }
+
+  run<T>(mutation: () => Promise<T>): Promise<T> {
+    if (this.pending >= this.capacity) {
+      return Promise.reject("runtime_control_busy");
+    }
+    this.pending += 1;
+    const result = this.tail.then(mutation);
+    this.tail = result.then(
+      () => {
+        this.pending -= 1;
+      },
+      () => {
+        this.pending -= 1;
+      },
+    );
+    return result;
+  }
+}
+
+const runtimeMutationQueues = new WeakMap<RuntimeInvoke, RuntimeMutationQueue>();
 
 export interface NativeSnapshotRead {
   snapshot: RuntimeSnapshot;
@@ -52,7 +83,7 @@ export async function readNativeSnapshot(
 }
 
 export function setRuntimePaused(invoke: RuntimeInvoke, paused: boolean): Promise<RuntimeSnapshot> {
-  return invokeRuntimeSnapshot(invoke, paused ? "pause_runtime" : "resume_runtime");
+  return invokeRuntimeMutationSnapshot(invoke, paused ? "pause_runtime" : "resume_runtime");
 }
 
 export function refreshRuntime(invoke: RuntimeInvoke): Promise<RuntimeSnapshot> {
@@ -62,29 +93,33 @@ export function refreshRuntime(invoke: RuntimeInvoke): Promise<RuntimeSnapshot> 
 export function setRuntimeProcessQuery(
   invoke: RuntimeInvoke,
   query: RuntimeQueryInputV3,
+  intent: RuntimeQueryWriteIntent = "user_mutation",
 ): Promise<RuntimeSnapshot> {
-  return invokeRuntimeSnapshot(invoke, "set_process_query", { query });
+  return invokeRuntimeMutationSnapshot(invoke, "set_process_query", {
+    query,
+    persist: intent === "user_mutation",
+  });
 }
 
 export function setRuntimeSampleInterval(
   invoke: RuntimeInvoke,
   sampleIntervalMs: number,
 ): Promise<RuntimeSnapshot> {
-  return invokeRuntimeSnapshot(invoke, "set_sample_interval", { sampleIntervalMs });
+  return invokeRuntimeMutationSnapshot(invoke, "set_sample_interval", { sampleIntervalMs });
 }
 
 export function setRuntimeAdminMode(
   invoke: RuntimeInvoke,
   enabled: boolean,
 ): Promise<RuntimeSnapshot> {
-  return invokeRuntimeSnapshot(invoke, "set_admin_mode", { enabled });
+  return invokeRuntimeMutationSnapshot(invoke, "set_admin_mode", { enabled });
 }
 
 export function setRuntimeUiPreferences(
   invoke: RuntimeInvoke,
   preferences: RuntimeUiPreferencesV3,
 ): Promise<RuntimeSnapshot> {
-  return invokeRuntimeSnapshot(invoke, "set_ui_preferences", { preferences });
+  return invokeRuntimeMutationSnapshot(invoke, "set_ui_preferences", { preferences });
 }
 
 export class ProtocolMismatchError extends Error {
@@ -113,6 +148,19 @@ async function invokeRuntimeSnapshot(
   args?: Record<string, unknown>,
 ): Promise<RuntimeSnapshot> {
   return decodeRuntimeSnapshot(await invoke<unknown>(command, args));
+}
+
+function invokeRuntimeMutationSnapshot(
+  invoke: RuntimeInvoke,
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<RuntimeSnapshot> {
+  let queue = runtimeMutationQueues.get(invoke);
+  if (!queue) {
+    queue = new RuntimeMutationQueue();
+    runtimeMutationQueues.set(invoke, queue);
+  }
+  return queue.run(() => invokeRuntimeSnapshot(invoke, command, args));
 }
 
 export async function getRuntimeProcessIcons(
