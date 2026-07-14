@@ -153,6 +153,8 @@ Local state stays under:
 
 The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
 
+See [Current-user state ownership and retention](../../docs/current-user-state.md) for the owned files, permission checks, diagnostic limits, and safe cleanup boundary.
+
 ## Triage UI Contract
 
 The attention queue groups rows by executable identity when available, then process name, then PID as a last resort. Group rows always have a stable key so they can be expanded, collapsed, selected, and inspected.
