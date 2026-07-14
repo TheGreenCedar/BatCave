@@ -95,6 +95,15 @@ mod linux {
                 }
             }
         }
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::DebExtract => "deb_extract",
+                Self::AppImageDescriptorPath => "appimage_descriptor_path",
+                Self::AppImageExecveat => "appimage_execveat",
+                Self::AppImageFexecve => "appimage_fexecve",
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -1255,6 +1264,73 @@ mod linux {
         );
     }
 
+    fn parse_appimage_offset(
+        probe: FixedProbe,
+        stdout: &[u8],
+        artifact_size: u64,
+    ) -> Result<u64, String> {
+        let text = std::str::from_utf8(stdout)
+            .map_err(|_| invalid_appimage_offset(probe, stdout, "output was not UTF-8"))?;
+        let offset_line = match probe {
+            FixedProbe::AppImageDescriptorPath => text.strip_suffix('\n').unwrap_or(text),
+            FixedProbe::AppImageExecveat | FixedProbe::AppImageFexecve => text
+                .strip_prefix("\nrunning 1 test\n")
+                .and_then(|offset| offset.strip_suffix('\n'))
+                .ok_or_else(|| {
+                    invalid_appimage_offset(
+                        probe,
+                        stdout,
+                        "transcript shape did not match the fixed mode",
+                    )
+                })?,
+            FixedProbe::DebExtract => {
+                return Err(invalid_appimage_offset(
+                    probe,
+                    stdout,
+                    "probe is not an AppImage mode",
+                ));
+            }
+        };
+        if offset_line.is_empty() || !offset_line.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid_appimage_offset(
+                probe,
+                stdout,
+                "offset line was not ASCII decimal",
+            ));
+        }
+        let offset = offset_line.parse::<u64>().map_err(|_| {
+            invalid_appimage_offset(probe, stdout, "offset did not fit in an unsigned integer")
+        })?;
+        if offset == 0 || offset >= artifact_size {
+            return Err(invalid_appimage_offset(
+                probe,
+                stdout,
+                "offset was outside the owned artifact",
+            ));
+        }
+        Ok(offset)
+    }
+
+    fn invalid_appimage_offset(probe: FixedProbe, stdout: &[u8], reason: &str) -> String {
+        const PREVIEW_BYTES: usize = 160;
+        let preview = stdout
+            .iter()
+            .take(PREVIEW_BYTES)
+            .flat_map(|byte| std::ascii::escape_default(*byte))
+            .map(char::from)
+            .collect::<String>();
+        let truncated = if stdout.len() > PREVIEW_BYTES {
+            ", truncated"
+        } else {
+            ""
+        };
+        format!(
+            "{} AppImage offset output invalid: {reason}; length={}, preview=\"{preview}\"{truncated}",
+            probe.label(),
+            stdout.len()
+        )
+    }
+
     fn with_private_root<T>(
         label: &str,
         operation: impl FnOnce(&Path) -> Result<T, String>,
@@ -1279,6 +1355,80 @@ mod linux {
             !path.exists(),
             "explicit cleanup retry removes injected cleanup residue"
         );
+    }
+
+    #[test]
+    fn appimage_offset_transcripts_are_strict_and_mode_specific() {
+        const SIZE: u64 = 500_000;
+        const OFFSET: u64 = 191_840;
+        assert_eq!(
+            parse_appimage_offset(FixedProbe::AppImageDescriptorPath, b"191840\n", SIZE,),
+            Ok(OFFSET)
+        );
+        assert_eq!(
+            parse_appimage_offset(FixedProbe::AppImageDescriptorPath, b"191840", SIZE),
+            Ok(OFFSET)
+        );
+        for probe in [FixedProbe::AppImageExecveat, FixedProbe::AppImageFexecve] {
+            assert_eq!(
+                parse_appimage_offset(probe, b"\nrunning 1 test\n191840\n", SIZE),
+                Ok(OFFSET)
+            );
+        }
+
+        let hostile: &[(FixedProbe, &[u8])] = &[
+            (
+                FixedProbe::AppImageDescriptorPath,
+                b"running 1 test\n191840\n",
+            ),
+            (FixedProbe::AppImageDescriptorPath, b"\n191840\n"),
+            (FixedProbe::AppImageDescriptorPath, b"191840\n\n"),
+            (FixedProbe::AppImageDescriptorPath, b"191840\n191840\n"),
+            (FixedProbe::AppImageDescriptorPath, b"offset=191840\n"),
+            (FixedProbe::AppImageDescriptorPath, b" 191840\n"),
+            (
+                FixedProbe::AppImageDescriptorPath,
+                b"18446744073709551616\n",
+            ),
+            (FixedProbe::AppImageDescriptorPath, b"0\n"),
+            (FixedProbe::AppImageDescriptorPath, b"500000\n"),
+            (FixedProbe::AppImageDescriptorPath, b"\xff\n"),
+            (FixedProbe::AppImageExecveat, b"191840\n"),
+            (FixedProbe::AppImageExecveat, b"running 1 test\n191840\n"),
+            (
+                FixedProbe::AppImageExecveat,
+                b"\n\nrunning 1 test\n191840\n",
+            ),
+            (
+                FixedProbe::AppImageExecveat,
+                b"\nrunning 1 test\n\n191840\n",
+            ),
+            (
+                FixedProbe::AppImageExecveat,
+                b"\nrunning 1 test\n191840\n\n",
+            ),
+            (FixedProbe::AppImageExecveat, b"\nrunning 1 test\n191840"),
+            (FixedProbe::AppImageExecveat, b"running 2 tests\n191840\n"),
+            (
+                FixedProbe::AppImageExecveat,
+                b"running 1 test\nnoise\n191840\n",
+            ),
+            (
+                FixedProbe::AppImageFexecve,
+                b"running 1 test\n191840\nextra\n",
+            ),
+            (
+                FixedProbe::AppImageFexecve,
+                b"running 1 test\n191840\n191840\n",
+            ),
+        ];
+        for (probe, transcript) in hostile {
+            let error = parse_appimage_offset(*probe, transcript, SIZE)
+                .expect_err("unexpected output must not produce an offset");
+            assert!(error.contains(probe.label()));
+            assert!(error.contains("preview=\""));
+            assert!(!error.contains(char::from(0xff)));
+        }
     }
 
     #[test]
@@ -1308,6 +1458,7 @@ mod linux {
     fn built_appimage_runtime_accepts_all_closed_owned_descriptor_modes() {
         let _lock = lock_probes();
         let artifact = acquire_owned_artifact(PackageKind::AppImage).expect("acquire AppImage");
+        let mut expected_offset = None;
         for probe in [
             FixedProbe::AppImageDescriptorPath,
             FixedProbe::AppImageExecveat,
@@ -1316,12 +1467,13 @@ mod linux {
             let outcome = with_private_root("appimage", |root| run_probe(&artifact, probe, root))
                 .expect("run AppImage probe and clean private root");
             assert_non_proof(&outcome);
-            let offset = String::from_utf8(outcome.stdout)
-                .expect("AppImage offset is UTF-8")
-                .trim()
-                .parse::<u64>()
-                .expect("AppImage offset is numeric");
-            assert!(offset > 0 && offset < artifact.size);
+            let offset = parse_appimage_offset(probe, &outcome.stdout, artifact.size)
+                .unwrap_or_else(|error| panic!("{error}"));
+            if let Some(expected) = expected_offset {
+                assert_eq!(offset, expected, "owned descriptor modes disagree");
+            } else {
+                expected_offset = Some(offset);
+            }
         }
     }
 }
