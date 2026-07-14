@@ -19,41 +19,16 @@ const INTERVAL_LIVENESS_TIMEOUT: Duration = Duration::from_secs(3);
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_START_ATTEMPTS: u8 = 3;
 const INTERVAL_MARKER: &str = "BATCAVE_NETWORK_INTERVAL";
+const RX_BEGIN: &str = "BATCAVE_NETWORK_RX_BEGIN";
+const RX_ENTRY: &str = "BATCAVE_NETWORK_RX";
+const RX_END: &str = "BATCAVE_NETWORK_RX_END";
+const TX_BEGIN: &str = "BATCAVE_NETWORK_TX_BEGIN";
+const TX_ENTRY: &str = "BATCAVE_NETWORK_TX";
+const TX_END: &str = "BATCAVE_NETWORK_TX_END";
+const BPFTRACE_SCRIPT: &str = include_str!("../bpftrace/linux-network-attribution.bt");
 
-fn bpftrace_script() -> String {
-    format!(
-        r#"
-kprobe:sock_sendmsg {{
-  $socket = (struct socket *)arg0;
-  @batcave_tx_family[tid] = $socket->sk->__sk_common.skc_family;
-}}
-kretprobe:sock_sendmsg {{
-  $family = @batcave_tx_family[tid];
-  if ((int64)retval > 0 && ($family == {IPV4_SOCKET_FAMILY} || $family == {IPV6_SOCKET_FAMILY})) {{
-    @batcave_tx[pid] = sum((int64)retval);
-  }}
-  delete(@batcave_tx_family[tid]);
-}}
-kprobe:sock_recvmsg {{
-  $socket = (struct socket *)arg0;
-  @batcave_rx_family[tid] = $socket->sk->__sk_common.skc_family;
-}}
-kretprobe:sock_recvmsg {{
-  $family = @batcave_rx_family[tid];
-  if ((int64)retval > 0 && ($family == {IPV4_SOCKET_FAMILY} || $family == {IPV6_SOCKET_FAMILY})) {{
-    @batcave_rx[pid] = sum((int64)retval);
-  }}
-  delete(@batcave_rx_family[tid]);
-}}
-interval:s:1 {{
-  print(@batcave_rx);
-  print(@batcave_tx);
-  printf("{INTERVAL_MARKER}\n");
-  clear(@batcave_rx);
-  clear(@batcave_tx);
-}}
-"#
-    )
+fn bpftrace_script() -> &'static str {
+    BPFTRACE_SCRIPT
 }
 
 #[derive(Debug)]
@@ -72,7 +47,10 @@ impl LinuxNetworkAttribution {
         now: Instant,
     ) -> Self {
         let state = match result {
-            Ok(monitor) => LinuxNetworkAttributionState::Ready(monitor),
+            Ok(monitor) => LinuxNetworkAttributionState::Ready(ReadyState {
+                monitor,
+                attempts: 1,
+            }),
             Err(message) => {
                 LinuxNetworkAttributionState::Failed(FailureState::after_attempt(message, 1, now))
             }
@@ -81,24 +59,38 @@ impl LinuxNetworkAttribution {
     }
 
     pub fn sample(&mut self) -> NetworkAttributionSample {
+        let mut start = LinuxNetworkAttributionMonitor::start;
+        self.sample_at_with(Instant::now(), &mut start)
+    }
+
+    fn sample_at_with<F>(&mut self, now: Instant, start: &mut F) -> NetworkAttributionSample
+    where
+        F: FnMut() -> Result<LinuxNetworkAttributionMonitor, String>,
+    {
         let runtime_failure = match &mut self.state {
-            LinuxNetworkAttributionState::Ready(monitor) => match monitor.sample() {
-                NetworkAttributionSample::Failed(message) => Some(message),
+            LinuxNetworkAttributionState::Ready(ready) => match ready.monitor.sample() {
+                NetworkAttributionSample::Ready { rates_by_pid } => {
+                    ready.attempts = 0;
+                    return NetworkAttributionSample::Ready { rates_by_pid };
+                }
+                NetworkAttributionSample::Failed(message) => Some((message, ready.attempts.max(1))),
                 sample => return sample,
             },
             LinuxNetworkAttributionState::Failed(_) => None,
         };
 
-        let now = Instant::now();
-        if let Some(message) = runtime_failure {
+        if let Some((message, attempts)) = runtime_failure {
             self.state = LinuxNetworkAttributionState::Failed(FailureState::after_runtime_failure(
-                message, now,
+                message, attempts, now,
             ));
         }
-        self.retry_failed(now)
+        self.retry_failed_with(now, start)
     }
 
-    fn retry_failed(&mut self, now: Instant) -> NetworkAttributionSample {
+    fn retry_failed_with<F>(&mut self, now: Instant, start: &mut F) -> NetworkAttributionSample
+    where
+        F: FnMut() -> Result<LinuxNetworkAttributionMonitor, String>,
+    {
         let failure = match &self.state {
             LinuxNetworkAttributionState::Ready(_) => {
                 return NetworkAttributionSample::Held(
@@ -113,9 +105,12 @@ impl LinuxNetworkAttribution {
         }
 
         let attempt = failure.attempts.saturating_add(1);
-        match LinuxNetworkAttributionMonitor::start() {
+        match start() {
             Ok(monitor) => {
-                self.state = LinuxNetworkAttributionState::Ready(monitor);
+                self.state = LinuxNetworkAttributionState::Ready(ReadyState {
+                    monitor,
+                    attempts: attempt,
+                });
                 NetworkAttributionSample::Held(format!(
                     "Linux eBPF network attribution restarted on attempt {attempt}/{MAX_START_ATTEMPTS} and is warming up."
                 ))
@@ -132,8 +127,14 @@ impl LinuxNetworkAttribution {
 
 #[derive(Debug)]
 enum LinuxNetworkAttributionState {
-    Ready(LinuxNetworkAttributionMonitor),
+    Ready(ReadyState),
     Failed(FailureState),
+}
+
+#[derive(Debug)]
+struct ReadyState {
+    monitor: LinuxNetworkAttributionMonitor,
+    attempts: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -144,12 +145,8 @@ struct FailureState {
 }
 
 impl FailureState {
-    fn after_runtime_failure(message: String, now: Instant) -> Self {
-        Self {
-            message,
-            attempts: 0,
-            retry_at: Some(now + RETRY_DELAY),
-        }
+    fn after_runtime_failure(message: String, attempts: u8, now: Instant) -> Self {
+        Self::after_attempt(message, attempts.max(1), now)
     }
 
     fn after_attempt(message: String, attempts: u8, now: Instant) -> Self {
@@ -196,7 +193,13 @@ impl LinuxNetworkAttributionMonitor {
         ensure_bpftrace_available()?;
 
         let mut command = Command::new("bpftrace");
-        command.arg("-q").arg("-e").arg(bpftrace_script());
+        command
+            .arg("-q")
+            .arg("-B")
+            .arg("line")
+            .arg("--no-warnings")
+            .arg("-e")
+            .arg(bpftrace_script());
         Self::spawn(command)
     }
 
@@ -476,10 +479,52 @@ impl LinuxNetworkShared {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct PendingRates {
     received_by_pid: HashMap<u32, u64>,
     transmitted_by_pid: HashMap<u32, u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtocolStage {
+    AwaitingRxBegin,
+    ReadingRx,
+    AwaitingTxBegin,
+    ReadingTx,
+    AwaitingMarker,
+}
+
+impl ProtocolStage {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::AwaitingRxBegin => "awaiting_rx_begin",
+            Self::ReadingRx => "reading_rx",
+            Self::AwaitingTxBegin => "awaiting_tx_begin",
+            Self::ReadingTx => "reading_tx",
+            Self::AwaitingMarker => "awaiting_marker",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ProtocolAssembler {
+    expected_epoch: u64,
+    stage: ProtocolStage,
+    section_count: u64,
+    section_total: u64,
+    pending: PendingRates,
+}
+
+impl Default for ProtocolAssembler {
+    fn default() -> Self {
+        Self {
+            expected_epoch: 1,
+            stage: ProtocolStage::AwaitingRxBegin,
+            section_count: 0,
+            section_total: 0,
+            pending: PendingRates::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -562,7 +607,7 @@ fn ensure_bpftrace_available() -> Result<(), String> {
 
 fn read_bpftrace_stdout(stdout: impl Read, shared: Arc<Mutex<LinuxNetworkShared>>) {
     mark_reader_running(&shared, ReaderKind::Stdout);
-    let mut pending = PendingRates::default();
+    let mut protocol = ProtocolAssembler::default();
     let mut reader = BufReader::new(stdout);
     let mut accepting_protocol = true;
     loop {
@@ -573,7 +618,7 @@ fn read_bpftrace_stdout(stdout: impl Read, shared: Arc<Mutex<LinuxNetworkShared>
                 return;
             }
             Ok(_) if accepting_protocol => {
-                if let Err(message) = ingest_bpftrace_stdout_line(&line, &mut pending, &shared) {
+                if let Err(message) = ingest_bpftrace_stdout_line(&line, &mut protocol, &shared) {
                     mark_reader_failed(&shared, ReaderKind::Stdout, message);
                     accepting_protocol = false;
                 }
@@ -643,67 +688,203 @@ fn mark_reader_failed(shared: &Arc<Mutex<LinuxNetworkShared>>, kind: ReaderKind,
 
 fn ingest_bpftrace_stdout_line(
     line: &str,
-    pending: &mut PendingRates,
+    protocol: &mut ProtocolAssembler,
     shared: &Arc<Mutex<LinuxNetworkShared>>,
 ) -> Result<(), String> {
     let line = line.trim();
-    if line.is_empty() || matches!(line, "@batcave_rx: {}" | "@batcave_tx: {}") {
-        return Ok(());
-    }
-    if line == INTERVAL_MARKER {
+    let completed = protocol.ingest(line)?;
+    if let Some(mut completed) = completed {
         let mut shared = shared
             .lock()
             .map_err(|_| "linux_network_ebpf_state_lock_poisoned".to_string())?;
-        shared.completed.push(pending);
+        shared.completed.push(&mut completed);
         shared.last_interval_at = Some(Instant::now());
-        return Ok(());
-    }
-
-    let Some((direction, pid, bytes)) = parse_bpftrace_map_line(line) else {
-        let excerpt = line.chars().take(160).collect::<String>();
-        return Err(format!("linux_network_ebpf_stdout_malformed:{excerpt}"));
-    };
-    let previous = match direction {
-        NetworkDirection::Received => pending.received_by_pid.insert(pid, bytes),
-        NetworkDirection::Transmitted => pending.transmitted_by_pid.insert(pid, bytes),
-    };
-    if previous.is_some() {
-        return Err(format!(
-            "linux_network_ebpf_stdout_duplicate_pid:{}:{pid}",
-            direction.label()
-        ));
     }
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NetworkDirection {
-    Received,
-    Transmitted,
-}
+impl ProtocolAssembler {
+    fn ingest(&mut self, line: &str) -> Result<Option<PendingRates>, String> {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        let Some(kind) = fields.first().copied() else {
+            return Err(self.error("empty_line"));
+        };
 
-impl NetworkDirection {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Received => "received",
-            Self::Transmitted => "transmitted",
+        match kind {
+            RX_BEGIN => {
+                self.require_field_count(&fields, 2)?;
+                let epoch = self.parse_epoch(fields[1])?;
+                self.require_stage(ProtocolStage::AwaitingRxBegin, kind)?;
+                self.require_epoch(epoch)?;
+                self.stage = ProtocolStage::ReadingRx;
+                self.reset_section();
+                Ok(None)
+            }
+            RX_ENTRY => {
+                self.require_field_count(&fields, 4)?;
+                let epoch = self.parse_epoch(fields[1])?;
+                let pid = fields[2]
+                    .parse::<u32>()
+                    .map_err(|_| self.error("invalid_rx_pid"))?;
+                let bytes = fields[3]
+                    .parse::<u64>()
+                    .map_err(|_| self.error("invalid_rx_bytes"))?;
+                self.require_stage(ProtocolStage::ReadingRx, kind)?;
+                self.require_epoch(epoch)?;
+                if self.pending.received_by_pid.insert(pid, bytes).is_some() {
+                    return Err(self.error(&format!("duplicate_rx_pid:{pid}")));
+                }
+                self.add_section_entry(bytes)?;
+                Ok(None)
+            }
+            RX_END => {
+                self.require_field_count(&fields, 4)?;
+                let epoch = self.parse_epoch(fields[1])?;
+                let count = self.parse_summary_value(fields[2], "invalid_rx_count")?;
+                let total = self.parse_summary_value(fields[3], "invalid_rx_total")?;
+                self.require_stage(ProtocolStage::ReadingRx, kind)?;
+                self.require_epoch(epoch)?;
+                self.require_section_summary(count, total, "rx")?;
+                self.stage = ProtocolStage::AwaitingTxBegin;
+                self.reset_section();
+                Ok(None)
+            }
+            TX_BEGIN => {
+                self.require_field_count(&fields, 2)?;
+                let epoch = self.parse_epoch(fields[1])?;
+                self.require_stage(ProtocolStage::AwaitingTxBegin, kind)?;
+                self.require_epoch(epoch)?;
+                self.stage = ProtocolStage::ReadingTx;
+                Ok(None)
+            }
+            TX_ENTRY => {
+                self.require_field_count(&fields, 4)?;
+                let epoch = self.parse_epoch(fields[1])?;
+                let pid = fields[2]
+                    .parse::<u32>()
+                    .map_err(|_| self.error("invalid_tx_pid"))?;
+                let bytes = fields[3]
+                    .parse::<u64>()
+                    .map_err(|_| self.error("invalid_tx_bytes"))?;
+                self.require_stage(ProtocolStage::ReadingTx, kind)?;
+                self.require_epoch(epoch)?;
+                if self.pending.transmitted_by_pid.insert(pid, bytes).is_some() {
+                    return Err(self.error(&format!("duplicate_tx_pid:{pid}")));
+                }
+                self.add_section_entry(bytes)?;
+                Ok(None)
+            }
+            TX_END => {
+                self.require_field_count(&fields, 4)?;
+                let epoch = self.parse_epoch(fields[1])?;
+                let count = self.parse_summary_value(fields[2], "invalid_tx_count")?;
+                let total = self.parse_summary_value(fields[3], "invalid_tx_total")?;
+                self.require_stage(ProtocolStage::ReadingTx, kind)?;
+                self.require_epoch(epoch)?;
+                self.require_section_summary(count, total, "tx")?;
+                self.stage = ProtocolStage::AwaitingMarker;
+                self.reset_section();
+                Ok(None)
+            }
+            INTERVAL_MARKER => {
+                self.require_field_count(&fields, 2)?;
+                let epoch = self.parse_epoch(fields[1])?;
+                self.require_stage(ProtocolStage::AwaitingMarker, kind)?;
+                self.require_epoch(epoch)?;
+                self.expected_epoch = self
+                    .expected_epoch
+                    .checked_add(1)
+                    .ok_or_else(|| self.error("epoch_overflow"))?;
+                self.stage = ProtocolStage::AwaitingRxBegin;
+                Ok(Some(std::mem::take(&mut self.pending)))
+            }
+            _ => {
+                let excerpt = line.chars().take(160).collect::<String>();
+                Err(self.error(&format!("malformed:{excerpt}")))
+            }
         }
     }
-}
 
-fn parse_bpftrace_map_line(line: &str) -> Option<(NetworkDirection, u32, u64)> {
-    let (name, bytes) = line.split_once(':')?;
-    let bytes = bytes.trim().parse::<u64>().ok()?;
-    let (prefix, pid) = name.rsplit_once('[')?;
-    let pid = pid.strip_suffix(']')?.parse::<u32>().ok()?;
-    let direction = if prefix == "@batcave_rx" {
-        NetworkDirection::Received
-    } else if prefix == "@batcave_tx" {
-        NetworkDirection::Transmitted
-    } else {
-        return None;
-    };
-    Some((direction, pid, bytes))
+    fn require_field_count(&self, fields: &[&str], expected: usize) -> Result<(), String> {
+        if fields.len() == expected {
+            Ok(())
+        } else {
+            Err(self.error(&format!(
+                "invalid_field_count:actual={}:expected={expected}",
+                fields.len()
+            )))
+        }
+    }
+
+    fn parse_epoch(&self, value: &str) -> Result<u64, String> {
+        value
+            .parse::<u64>()
+            .map_err(|_| self.error("invalid_epoch"))
+    }
+
+    fn parse_summary_value(&self, value: &str, error: &str) -> Result<u64, String> {
+        value.parse::<u64>().map_err(|_| self.error(error))
+    }
+
+    fn require_stage(&self, expected: ProtocolStage, component: &str) -> Result<(), String> {
+        if self.stage == expected {
+            Ok(())
+        } else {
+            Err(self.error(&format!(
+                "unexpected_component:{component}:required_stage={}",
+                expected.label()
+            )))
+        }
+    }
+
+    fn require_epoch(&self, epoch: u64) -> Result<(), String> {
+        if epoch == self.expected_epoch {
+            Ok(())
+        } else {
+            Err(self.error(&format!("unexpected_epoch:{epoch}")))
+        }
+    }
+
+    fn add_section_entry(&mut self, bytes: u64) -> Result<(), String> {
+        self.section_count = self
+            .section_count
+            .checked_add(1)
+            .ok_or_else(|| self.error("section_count_overflow"))?;
+        self.section_total = self
+            .section_total
+            .checked_add(bytes)
+            .ok_or_else(|| self.error("section_total_overflow"))?;
+        Ok(())
+    }
+
+    fn require_section_summary(
+        &self,
+        count: u64,
+        total: u64,
+        direction: &str,
+    ) -> Result<(), String> {
+        if count == self.section_count && total == self.section_total {
+            Ok(())
+        } else {
+            Err(self.error(&format!(
+                "{direction}_summary_mismatch:received_count={}:expected_count={count}:received_total={}:expected_total={total}",
+                self.section_count, self.section_total
+            )))
+        }
+    }
+
+    fn reset_section(&mut self) {
+        self.section_count = 0;
+        self.section_total = 0;
+    }
+
+    fn error(&self, detail: &str) -> String {
+        format!(
+            "linux_network_ebpf_stdout_protocol:{detail}:expected_epoch={}:stage={}",
+            self.expected_epoch,
+            self.stage.label()
+        )
+    }
 }
 
 #[cfg(test)]
@@ -727,72 +908,91 @@ mod tests {
         assert!(!script.contains("|| $family == 1)"));
         assert!(script.contains("delete(@batcave_tx_family[tid])"));
         assert!(script.contains("delete(@batcave_rx_family[tid])"));
-    }
-
-    #[test]
-    fn parse_bpftrace_map_line_reads_receive_and_transmit_entries() {
-        assert_eq!(
-            parse_bpftrace_map_line("@batcave_rx[1234]: 4096"),
-            Some((NetworkDirection::Received, 1234, 4096))
-        );
-        assert_eq!(
-            parse_bpftrace_map_line("@batcave_tx[42]: 8192"),
-            Some((NetworkDirection::Transmitted, 42, 8192))
-        );
-    }
-
-    #[test]
-    fn parse_bpftrace_map_line_rejects_unrelated_and_hostile_output() {
-        for line in [
-            "Attaching 3 probes...",
-            "@other[42]: 1",
-            "@batcave_rx[-1]: 1",
-            "@batcave_tx[42]: -1",
-            "@batcave_rx[42]: 1:2",
-            "@batcave_rx[4294967296]: 1",
+        assert!(script.contains("@batcave_tx[pid, @batcave_epoch] = sum"));
+        assert!(script.contains("@batcave_rx[pid, @batcave_epoch] = sum"));
+        assert!(script.contains("@batcave_epoch = $completed_epoch + 1"));
+        assert!(script.contains("for ($kv : @batcave_rx)"));
+        assert!(script.contains("for ($kv : @batcave_tx)"));
+        assert!(script.contains("delete(@batcave_rx, $kv.0)"));
+        assert!(script.contains("delete(@batcave_tx, $kv.0)"));
+        assert!(script.contains("print_maps_on_exit=0"));
+        assert!(!script.contains("print(@batcave_"));
+        assert!(!script.contains("clear(@batcave_"));
+        for component in [
+            RX_BEGIN,
+            RX_ENTRY,
+            RX_END,
+            TX_BEGIN,
+            TX_ENTRY,
+            TX_END,
+            INTERVAL_MARKER,
         ] {
-            assert_eq!(parse_bpftrace_map_line(line), None, "line={line}");
+            assert!(
+                script.contains(&format!("printf(\"{component} ")),
+                "missing emitted component {component}"
+            );
         }
+
+        let flip = script
+            .find("@batcave_epoch = $completed_epoch + 1")
+            .unwrap();
+        let first_output = script.find(&format!("printf(\"{RX_BEGIN}")).unwrap();
+        assert!(
+            flip < first_output,
+            "the old epoch must be frozen before output"
+        );
     }
 
     #[test]
-    fn completed_intervals_accumulate_both_directions() {
-        let mut completed = CompletedIntervalAccumulator::default();
-        let mut first = PendingRates::default();
-        first.received_by_pid.insert(10, 100);
-        first.transmitted_by_pid.insert(10, 200);
-        first.transmitted_by_pid.insert(20, 300);
-        completed.push(&mut first);
+    fn emitted_epoch_protocol_accumulates_validated_intervals() {
+        let shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
+        let mut protocol = ProtocolAssembler::default();
+        ingest_emitted_interval(
+            &shared,
+            &mut protocol,
+            1,
+            &[(10, 100)],
+            &[(10, 200), (20, 300)],
+        )
+        .unwrap();
+        ingest_emitted_interval(&shared, &mut protocol, 2, &[(10, 300)], &[(10, 400)]).unwrap();
 
-        let mut second = PendingRates::default();
-        second.received_by_pid.insert(10, 300);
-        second.transmitted_by_pid.insert(10, 400);
-        completed.push(&mut second);
-
-        let sample = completed.take_rates().expect("completed sample");
+        let sample = shared
+            .lock()
+            .unwrap()
+            .completed
+            .take_rates()
+            .expect("completed sample");
         assert_eq!(sample.interval_count, 2);
         assert_eq!(sample.rates_by_pid[&10].received_bps, 200);
         assert_eq!(sample.rates_by_pid[&10].transmitted_bps, 300);
         assert_eq!(sample.rates_by_pid[&20].received_bps, 0);
         assert_eq!(sample.rates_by_pid[&20].transmitted_bps, 150);
-        assert!(completed.take_rates().is_none());
+        assert!(shared.lock().unwrap().completed.take_rates().is_none());
     }
 
     #[test]
-    fn supported_app_cadences_consume_every_completed_interval_once() {
+    fn supported_app_cadences_consume_every_emitted_interval_once() {
         for cadence_ms in [500_u64, 1_000, 2_000, 5_000] {
-            let mut completed = CompletedIntervalAccumulator::default();
+            let shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
+            let mut protocol = ProtocolAssembler::default();
             let mut consumed_intervals = 0;
             let mut ready_samples = 0;
             for elapsed_ms in (500_u64..=10_000).step_by(500) {
                 if elapsed_ms % 1_000 == 0 {
-                    let mut interval = PendingRates::default();
-                    interval.received_by_pid.insert(7, 1_000);
-                    interval.transmitted_by_pid.insert(7, 2_000);
-                    completed.push(&mut interval);
+                    let epoch = elapsed_ms / 1_000;
+                    ingest_emitted_interval(
+                        &shared,
+                        &mut protocol,
+                        epoch,
+                        &[(7, 1_000)],
+                        &[(7, 2_000)],
+                    )
+                    .unwrap();
                 }
                 if elapsed_ms % cadence_ms == 0 {
-                    if let Some(sample) = completed.take_rates() {
+                    let sample = shared.lock().unwrap().completed.take_rates();
+                    if let Some(sample) = sample {
                         consumed_intervals += sample.interval_count;
                         ready_samples += 1;
                         assert_eq!(sample.rates_by_pid[&7].received_bps, 1_000);
@@ -807,31 +1007,91 @@ mod tests {
                 10_000 / cadence_ms.max(1_000),
                 "cadence_ms={cadence_ms}"
             );
-            assert!(completed.take_rates().is_none());
+            assert!(shared.lock().unwrap().completed.take_rates().is_none());
         }
     }
 
     #[test]
-    fn malformed_and_duplicate_stdout_fail_the_reader_protocol() {
-        let shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
-        let mut pending = PendingRates::default();
-        ingest_bpftrace_stdout_line("@batcave_rx[4]: 10", &mut pending, &shared).unwrap();
-        let duplicate = ingest_bpftrace_stdout_line("@batcave_rx[4]: 20", &mut pending, &shared)
-            .expect_err("duplicate PID fails");
-        assert!(duplicate.contains("duplicate_pid:received:4"));
-
-        let malformed = ingest_bpftrace_stdout_line("not protocol", &mut pending, &shared)
-            .expect_err("unknown stdout fails");
-        assert!(malformed.contains("stdout_malformed"));
+    fn protocol_requires_one_rx_then_one_tx_section_before_marker() {
+        for (name, lines) in [
+            ("marker_only", vec![format!("{INTERVAL_MARKER} 1")]),
+            ("missing_rx", vec![format!("{TX_BEGIN} 1")]),
+            (
+                "duplicate_rx",
+                vec![format!("{RX_BEGIN} 1"), format!("{RX_BEGIN} 1")],
+            ),
+            (
+                "missing_tx",
+                vec![
+                    format!("{RX_BEGIN} 1"),
+                    format!("{RX_END} 1 0 0"),
+                    format!("{INTERVAL_MARKER} 1"),
+                ],
+            ),
+            (
+                "duplicate_tx",
+                vec![
+                    format!("{RX_BEGIN} 1"),
+                    format!("{RX_END} 1 0 0"),
+                    format!("{TX_BEGIN} 1"),
+                    format!("{TX_END} 1 0 0"),
+                    format!("{TX_BEGIN} 1"),
+                ],
+            ),
+            (
+                "out_of_order_entry",
+                vec![format!("{RX_BEGIN} 1"), format!("{TX_ENTRY} 1 4 10")],
+            ),
+        ] {
+            let mut protocol = ProtocolAssembler::default();
+            let error = lines
+                .iter()
+                .find_map(|line| protocol.ingest(line).err())
+                .unwrap_or_else(|| panic!("{name} must fail"));
+            assert!(error.contains("unexpected_component"), "{name}: {error}");
+        }
     }
 
     #[test]
-    fn empty_maps_and_interval_marker_publish_a_truthful_zero_interval() {
+    fn protocol_detects_output_loss_duplicates_malformed_lines_and_epoch_gaps() {
+        let cases = [
+            (
+                "lost_entry",
+                vec![format!("{RX_BEGIN} 1"), format!("{RX_END} 1 1 50")],
+                "summary_mismatch",
+            ),
+            (
+                "duplicate_entry",
+                vec![
+                    format!("{RX_BEGIN} 1"),
+                    format!("{RX_ENTRY} 1 4 10"),
+                    format!("{RX_ENTRY} 1 4 10"),
+                ],
+                "duplicate_rx_pid",
+            ),
+            ("malformed", vec!["not protocol".to_string()], "malformed"),
+            (
+                "epoch_gap",
+                vec![format!("{RX_BEGIN} 2")],
+                "unexpected_epoch",
+            ),
+        ];
+
+        for (name, lines, expected) in cases {
+            let mut protocol = ProtocolAssembler::default();
+            let error = lines
+                .iter()
+                .find_map(|line| protocol.ingest(line).err())
+                .unwrap_or_else(|| panic!("{name} must fail"));
+            assert!(error.contains(expected), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn explicit_empty_sections_publish_a_truthful_zero_interval() {
         let shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
-        let mut pending = PendingRates::default();
-        ingest_bpftrace_stdout_line("@batcave_rx: {}", &mut pending, &shared).unwrap();
-        ingest_bpftrace_stdout_line("@batcave_tx: {}", &mut pending, &shared).unwrap();
-        ingest_bpftrace_stdout_line(INTERVAL_MARKER, &mut pending, &shared).unwrap();
+        let mut protocol = ProtocolAssembler::default();
+        ingest_emitted_interval(&shared, &mut protocol, 1, &[], &[]).unwrap();
 
         let sample = shared
             .lock()
@@ -942,6 +1202,67 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn post_spawn_runtime_failures_preserve_attempts_until_retry_exhaustion() {
+        let started_at = Instant::now();
+        let initial = runtime_failure_monitor().expect("initial child spawns");
+        let mut attribution = LinuxNetworkAttribution::from_start_result(Ok(initial), started_at);
+        let mut restart = runtime_failure_monitor;
+
+        let first = wait_for_runtime_failure(&mut attribution, started_at, &mut restart);
+        assert!(first.contains("permission denied"));
+        assert!(first.contains("retry_attempts=1"));
+
+        for expected_attempt in 2..=MAX_START_ATTEMPTS {
+            let retry_at = match &attribution.state {
+                LinuxNetworkAttributionState::Failed(failure) => {
+                    failure.retry_at.expect("retry remains")
+                }
+                LinuxNetworkAttributionState::Ready(_) => panic!("failure state expected"),
+            };
+            let restarted = attribution.sample_at_with(retry_at, &mut restart);
+            assert!(matches!(restarted, NetworkAttributionSample::Held(_)));
+
+            let failure = wait_for_runtime_failure(&mut attribution, retry_at, &mut restart);
+            assert!(failure.contains(&format!("retry_attempts={expected_attempt}")));
+        }
+
+        let LinuxNetworkAttributionState::Failed(failure) = &attribution.state else {
+            panic!("runtime failures must finish exhausted");
+        };
+        assert_eq!(failure.attempts, MAX_START_ATTEMPTS);
+        assert!(failure.retry_at.is_none());
+        assert!(failure
+            .observable_message(started_at)
+            .contains("retry_state=exhausted"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_healthy_interval_resets_the_failure_episode() {
+        let started_at = Instant::now();
+        let monitor = healthy_interval_monitor().expect("healthy child spawns");
+        let mut attribution = LinuxNetworkAttribution::from_start_result(Ok(monitor), started_at);
+        let mut unexpected_restart = || Err("restart must not run".to_string());
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        loop {
+            match attribution.sample_at_with(started_at, &mut unexpected_restart) {
+                NetworkAttributionSample::Ready { .. } => break,
+                NetworkAttributionSample::Held(_) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                sample => panic!("healthy interval did not arrive: {sample:?}"),
+            }
+        }
+
+        let LinuxNetworkAttributionState::Ready(ready) = &attribution.state else {
+            panic!("healthy monitor must remain ready");
+        };
+        assert_eq!(ready.attempts, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn shutdown_reaps_child_and_joins_both_readers() {
         let mut command = Command::new("/bin/sh");
         command
@@ -970,6 +1291,82 @@ mod tests {
             panic!("killed child must fail attribution");
         };
         assert!(message.contains("linux_network_ebpf_exited:"));
+    }
+
+    fn ingest_emitted_interval(
+        shared: &Arc<Mutex<LinuxNetworkShared>>,
+        protocol: &mut ProtocolAssembler,
+        epoch: u64,
+        received: &[(u32, u64)],
+        transmitted: &[(u32, u64)],
+    ) -> Result<(), String> {
+        let received_total = received.iter().map(|(_, bytes)| bytes).sum::<u64>();
+        let transmitted_total = transmitted.iter().map(|(_, bytes)| bytes).sum::<u64>();
+        let mut lines = vec![format!("{RX_BEGIN} {epoch}")];
+        lines.extend(
+            received
+                .iter()
+                .map(|(pid, bytes)| format!("{RX_ENTRY} {epoch} {pid} {bytes}")),
+        );
+        lines.push(format!(
+            "{RX_END} {epoch} {} {received_total}",
+            received.len()
+        ));
+        lines.push(format!("{TX_BEGIN} {epoch}"));
+        lines.extend(
+            transmitted
+                .iter()
+                .map(|(pid, bytes)| format!("{TX_ENTRY} {epoch} {pid} {bytes}")),
+        );
+        lines.push(format!(
+            "{TX_END} {epoch} {} {transmitted_total}",
+            transmitted.len()
+        ));
+        lines.push(format!("{INTERVAL_MARKER} {epoch}"));
+
+        for line in lines {
+            ingest_bpftrace_stdout_line(&line, protocol, shared)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn runtime_failure_monitor() -> Result<LinuxNetworkAttributionMonitor, String> {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("printf 'permission denied\\n' >&2; exec sleep 60");
+        LinuxNetworkAttributionMonitor::spawn(command)
+    }
+
+    #[cfg(unix)]
+    fn healthy_interval_monitor() -> Result<LinuxNetworkAttributionMonitor, String> {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(format!(
+            "printf '%s\\n' '{RX_BEGIN} 1' '{RX_END} 1 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0' '{INTERVAL_MARKER} 1'; exec sleep 60"
+        ));
+        LinuxNetworkAttributionMonitor::spawn(command)
+    }
+
+    #[cfg(unix)]
+    fn wait_for_runtime_failure<F>(
+        attribution: &mut LinuxNetworkAttribution,
+        now: Instant,
+        restart: &mut F,
+    ) -> String
+    where
+        F: FnMut() -> Result<LinuxNetworkAttributionMonitor, String>,
+    {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match attribution.sample_at_with(now, restart) {
+                NetworkAttributionSample::Failed(message) => return message,
+                NetworkAttributionSample::Held(_) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                sample => panic!("runtime failure did not arrive: {sample:?}"),
+            }
+        }
     }
 
     struct AlwaysFails;

@@ -1,0 +1,71 @@
+config = {
+  print_maps_on_exit=0
+}
+
+BEGIN {
+  @batcave_epoch = 1;
+}
+
+kprobe:sock_sendmsg {
+  $socket = (struct socket *)arg0;
+  @batcave_tx_family[tid] = $socket->sk->__sk_common.skc_family;
+}
+
+kretprobe:sock_sendmsg {
+  $family = @batcave_tx_family[tid];
+  if ((int64)retval > 0 && ($family == 2 || $family == 10)) {
+    @batcave_tx[pid, @batcave_epoch] = sum((int64)retval);
+  }
+  delete(@batcave_tx_family[tid]);
+}
+
+kprobe:sock_recvmsg {
+  $socket = (struct socket *)arg0;
+  @batcave_rx_family[tid] = $socket->sk->__sk_common.skc_family;
+}
+
+kretprobe:sock_recvmsg {
+  $family = @batcave_rx_family[tid];
+  if ((int64)retval > 0 && ($family == 2 || $family == 10)) {
+    @batcave_rx[pid, @batcave_epoch] = sum((int64)retval);
+  }
+  delete(@batcave_rx_family[tid]);
+}
+
+interval:s:1 {
+  // Freeze the completed epoch before reading it. Scalar printf arguments are
+  // copied into bpftrace's async event stream; live maps are never printed or
+  // asynchronously cleared. Ordered boundaries and section summaries let the
+  // Rust reader reject dropped or reordered output instead of publishing it.
+  $completed_epoch = @batcave_epoch;
+  @batcave_epoch = $completed_epoch + 1;
+
+  printf("BATCAVE_NETWORK_RX_BEGIN %llu\n", $completed_epoch);
+  $rx_count = (uint64)0;
+  $rx_total = (uint64)0;
+  for ($kv : @batcave_rx) {
+    if ($kv.0.1 == $completed_epoch) {
+      $bytes = (uint64)$kv.1;
+      printf("BATCAVE_NETWORK_RX %llu %u %llu\n", $completed_epoch, $kv.0.0, $bytes);
+      $rx_count++;
+      $rx_total += $bytes;
+      delete(@batcave_rx, $kv.0);
+    }
+  }
+  printf("BATCAVE_NETWORK_RX_END %llu %llu %llu\n", $completed_epoch, $rx_count, $rx_total);
+
+  printf("BATCAVE_NETWORK_TX_BEGIN %llu\n", $completed_epoch);
+  $tx_count = (uint64)0;
+  $tx_total = (uint64)0;
+  for ($kv : @batcave_tx) {
+    if ($kv.0.1 == $completed_epoch) {
+      $bytes = (uint64)$kv.1;
+      printf("BATCAVE_NETWORK_TX %llu %u %llu\n", $completed_epoch, $kv.0.0, $bytes);
+      $tx_count++;
+      $tx_total += $bytes;
+      delete(@batcave_tx, $kv.0);
+    }
+  }
+  printf("BATCAVE_NETWORK_TX_END %llu %llu %llu\n", $completed_epoch, $tx_count, $tx_total);
+  printf("BATCAVE_NETWORK_INTERVAL %llu\n", $completed_epoch);
+}
