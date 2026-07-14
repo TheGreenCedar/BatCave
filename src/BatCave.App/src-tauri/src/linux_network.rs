@@ -18,6 +18,9 @@ const STARTUP_LIVENESS_TIMEOUT: Duration = Duration::from_secs(10);
 const INTERVAL_LIVENESS_TIMEOUT: Duration = Duration::from_secs(3);
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_START_ATTEMPTS: u8 = 3;
+const EPOCH_GRACE_INTERVALS: u64 = 1;
+const BPFTRACE_MAX_MAP_KEYS: usize = 16_384;
+const MAX_READER_ERROR_CHARS: usize = 2_048;
 const INTERVAL_MARKER: &str = "BATCAVE_NETWORK_INTERVAL";
 const RX_BEGIN: &str = "BATCAVE_NETWORK_RX_BEGIN";
 const RX_ENTRY: &str = "BATCAVE_NETWORK_RX";
@@ -29,6 +32,17 @@ const BPFTRACE_SCRIPT: &str = include_str!("../bpftrace/linux-network-attributio
 
 fn bpftrace_script() -> &'static str {
     BPFTRACE_SCRIPT
+}
+
+fn bpftrace_command() -> Command {
+    let mut command = Command::new("bpftrace");
+    command
+        .arg("-q")
+        .arg("-B")
+        .arg("line")
+        .arg("-e")
+        .arg(bpftrace_script());
+    command
 }
 
 #[derive(Debug)]
@@ -191,16 +205,7 @@ struct LinuxNetworkAttributionMonitor {
 impl LinuxNetworkAttributionMonitor {
     fn start() -> Result<Self, String> {
         ensure_bpftrace_available()?;
-
-        let mut command = Command::new("bpftrace");
-        command
-            .arg("-q")
-            .arg("-B")
-            .arg("line")
-            .arg("--no-warnings")
-            .arg("-e")
-            .arg(bpftrace_script());
-        Self::spawn(command)
+        Self::spawn(bpftrace_command())
     }
 
     fn spawn(mut command: Command) -> Result<Self, String> {
@@ -439,6 +444,13 @@ impl LinuxNetworkShared {
     }
 
     fn mark_reader_failed(&mut self, kind: ReaderKind, message: String) {
+        let message = match self.reader_state_mut(kind) {
+            ReaderState::Failed(existing) => format!("{existing}; {message}"),
+            _ => message,
+        }
+        .chars()
+        .take(MAX_READER_ERROR_CHARS)
+        .collect::<String>();
         self.last_error = Some(message.clone());
         *self.reader_state_mut(kind) = ReaderState::Failed(message);
     }
@@ -738,13 +750,15 @@ impl ProtocolAssembler {
                 Ok(None)
             }
             RX_END => {
-                self.require_field_count(&fields, 4)?;
+                self.require_field_count(&fields, 5)?;
                 let epoch = self.parse_epoch(fields[1])?;
                 let count = self.parse_summary_value(fields[2], "invalid_rx_count")?;
                 let total = self.parse_summary_value(fields[3], "invalid_rx_total")?;
+                let stale = self.parse_summary_value(fields[4], "invalid_rx_stale_count")?;
                 self.require_stage(ProtocolStage::ReadingRx, kind)?;
                 self.require_epoch(epoch)?;
                 self.require_section_summary(count, total, "rx")?;
+                self.require_no_stale_entries(stale, "rx")?;
                 self.stage = ProtocolStage::AwaitingTxBegin;
                 self.reset_section();
                 Ok(None)
@@ -775,13 +789,15 @@ impl ProtocolAssembler {
                 Ok(None)
             }
             TX_END => {
-                self.require_field_count(&fields, 4)?;
+                self.require_field_count(&fields, 5)?;
                 let epoch = self.parse_epoch(fields[1])?;
                 let count = self.parse_summary_value(fields[2], "invalid_tx_count")?;
                 let total = self.parse_summary_value(fields[3], "invalid_tx_total")?;
+                let stale = self.parse_summary_value(fields[4], "invalid_tx_stale_count")?;
                 self.require_stage(ProtocolStage::ReadingTx, kind)?;
                 self.require_epoch(epoch)?;
                 self.require_section_summary(count, total, "tx")?;
+                self.require_no_stale_entries(stale, "tx")?;
                 self.stage = ProtocolStage::AwaitingMarker;
                 self.reset_section();
                 Ok(None)
@@ -873,6 +889,14 @@ impl ProtocolAssembler {
         }
     }
 
+    fn require_no_stale_entries(&self, stale: u64, direction: &str) -> Result<(), String> {
+        if stale == 0 {
+            Ok(())
+        } else {
+            Err(self.error(&format!("late_{direction}_epoch_entries:{stale}")))
+        }
+    }
+
     fn reset_section(&mut self) {
         self.section_count = 0;
         self.section_total = 0;
@@ -910,7 +934,14 @@ mod tests {
         assert!(script.contains("delete(@batcave_rx_family[tid])"));
         assert!(script.contains("@batcave_tx[pid, @batcave_epoch] = sum"));
         assert!(script.contains("@batcave_rx[pid, @batcave_epoch] = sum"));
-        assert!(script.contains("@batcave_epoch = $completed_epoch + 1"));
+        assert_eq!(EPOCH_GRACE_INTERVALS, 1);
+        assert_eq!(BPFTRACE_MAX_MAP_KEYS, 16_384);
+        assert!(script.contains("max_map_keys=16384"));
+        assert!(script.contains("@batcave_epoch = $closing_epoch + 1"));
+        assert!(script.contains("$completed_epoch = $closing_epoch - 1"));
+        assert!(script.contains("$kv.0.1 < $completed_epoch"));
+        assert!(script.contains("$rx_stale++"));
+        assert!(script.contains("$tx_stale++"));
         assert!(script.contains("for ($kv : @batcave_rx)"));
         assert!(script.contains("for ($kv : @batcave_tx)"));
         assert!(script.contains("delete(@batcave_rx, $kv.0)"));
@@ -933,14 +964,28 @@ mod tests {
             );
         }
 
-        let flip = script
-            .find("@batcave_epoch = $completed_epoch + 1")
+        let flip = script.find("@batcave_epoch = $closing_epoch + 1").unwrap();
+        let quarantine = script
+            .find("$completed_epoch = $closing_epoch - 1")
             .unwrap();
         let first_output = script.find(&format!("printf(\"{RX_BEGIN}")).unwrap();
         assert!(
-            flip < first_output,
-            "the old epoch must be frozen before output"
+            flip < quarantine && quarantine < first_output,
+            "the epoch must rotate and age before output"
         );
+    }
+
+    #[test]
+    fn launcher_keeps_runtime_warnings_visible() {
+        let command = bpftrace_command();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(arguments.windows(2).any(|args| args == ["-B", "line"]));
+        assert!(arguments.contains(&"-q".to_string()));
+        assert!(!arguments.contains(&"--no-warnings".to_string()));
     }
 
     #[test]
@@ -1024,7 +1069,7 @@ mod tests {
                 "missing_tx",
                 vec![
                     format!("{RX_BEGIN} 1"),
-                    format!("{RX_END} 1 0 0"),
+                    format!("{RX_END} 1 0 0 0"),
                     format!("{INTERVAL_MARKER} 1"),
                 ],
             ),
@@ -1032,9 +1077,9 @@ mod tests {
                 "duplicate_tx",
                 vec![
                     format!("{RX_BEGIN} 1"),
-                    format!("{RX_END} 1 0 0"),
+                    format!("{RX_END} 1 0 0 0"),
                     format!("{TX_BEGIN} 1"),
-                    format!("{TX_END} 1 0 0"),
+                    format!("{TX_END} 1 0 0 0"),
                     format!("{TX_BEGIN} 1"),
                 ],
             ),
@@ -1057,7 +1102,7 @@ mod tests {
         let cases = [
             (
                 "lost_entry",
-                vec![format!("{RX_BEGIN} 1"), format!("{RX_END} 1 1 50")],
+                vec![format!("{RX_BEGIN} 1"), format!("{RX_END} 1 1 50 0")],
                 "summary_mismatch",
             ),
             (
@@ -1085,6 +1130,24 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} must fail"));
             assert!(error.contains(expected), "{name}: {error}");
         }
+    }
+
+    #[test]
+    fn late_old_epoch_write_is_quarantined_then_fails_the_next_sweep() {
+        assert_eq!(modeled_drain_epoch(1), None);
+        assert_eq!(modeled_drain_epoch(2), Some(1));
+        assert_eq!(modeled_drain_epoch(3), Some(2));
+
+        let shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
+        let mut protocol = ProtocolAssembler::default();
+        ingest_emitted_interval(&shared, &mut protocol, 1, &[], &[]).unwrap();
+
+        protocol.ingest(&format!("{RX_BEGIN} 2")).unwrap();
+        let error = protocol
+            .ingest(&format!("{RX_END} 2 0 0 1"))
+            .expect_err("a late epoch-one key must fail the epoch-two sweep");
+        assert!(error.contains("late_rx_epoch_entries:1"));
+        assert_eq!(shared.lock().unwrap().completed.interval_count, 1);
     }
 
     #[test]
@@ -1263,6 +1326,34 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn map_capacity_warning_fails_before_a_completed_interval_is_consumed() {
+        let mut monitor = capacity_warning_monitor().expect("capacity fixture child spawns");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let ready_to_assert = monitor.shared.lock().is_ok_and(|shared| {
+                shared.completed.interval_count == 1
+                    && matches!(shared.stderr_state, ReaderState::Failed(_))
+            });
+            if ready_to_assert {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "capacity warning fixture stalled"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let NetworkAttributionSample::Failed(message) = monitor.sample() else {
+            panic!("capacity warnings must outrank a completed interval");
+        };
+        assert!(message.contains("Map full"));
+        assert!(message.contains("map_update_elem"));
+        assert_eq!(monitor.shared.lock().unwrap().completed.interval_count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn shutdown_reaps_child_and_joins_both_readers() {
         let mut command = Command::new("/bin/sh");
         command
@@ -1309,7 +1400,7 @@ mod tests {
                 .map(|(pid, bytes)| format!("{RX_ENTRY} {epoch} {pid} {bytes}")),
         );
         lines.push(format!(
-            "{RX_END} {epoch} {} {received_total}",
+            "{RX_END} {epoch} {} {received_total} 0",
             received.len()
         ));
         lines.push(format!("{TX_BEGIN} {epoch}"));
@@ -1319,7 +1410,7 @@ mod tests {
                 .map(|(pid, bytes)| format!("{TX_ENTRY} {epoch} {pid} {bytes}")),
         );
         lines.push(format!(
-            "{TX_END} {epoch} {} {transmitted_total}",
+            "{TX_END} {epoch} {} {transmitted_total} 0",
             transmitted.len()
         ));
         lines.push(format!("{INTERVAL_MARKER} {epoch}"));
@@ -1328,6 +1419,12 @@ mod tests {
             ingest_bpftrace_stdout_line(&line, protocol, shared)?;
         }
         Ok(())
+    }
+
+    fn modeled_drain_epoch(closing_epoch: u64) -> Option<u64> {
+        closing_epoch
+            .checked_sub(EPOCH_GRACE_INTERVALS)
+            .filter(|epoch| *epoch > 0)
     }
 
     #[cfg(unix)]
@@ -1343,7 +1440,16 @@ mod tests {
     fn healthy_interval_monitor() -> Result<LinuxNetworkAttributionMonitor, String> {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(format!(
-            "printf '%s\\n' '{RX_BEGIN} 1' '{RX_END} 1 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0' '{INTERVAL_MARKER} 1'; exec sleep 60"
+            "printf '%s\\n' '{RX_BEGIN} 1' '{RX_END} 1 0 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0 0' '{INTERVAL_MARKER} 1'; exec sleep 60"
+        ));
+        LinuxNetworkAttributionMonitor::spawn(command)
+    }
+
+    #[cfg(unix)]
+    fn capacity_warning_monitor() -> Result<LinuxNetworkAttributionMonitor, String> {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(format!(
+            "printf '%s\\n' '{RX_BEGIN} 1' '{RX_END} 1 0 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0 0' '{INTERVAL_MARKER} 1'; printf '%s\\n' 'WARNING: Map full; cannot update element' 'Additional Info - helper: map_update_elem, retcode: -7' >&2; exec sleep 60"
         ));
         LinuxNetworkAttributionMonitor::spawn(command)
     }

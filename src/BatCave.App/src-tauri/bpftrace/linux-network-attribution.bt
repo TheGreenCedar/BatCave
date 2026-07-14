@@ -1,4 +1,5 @@
 config = {
+  max_map_keys=16384;
   print_maps_on_exit=0
 }
 
@@ -33,39 +34,53 @@ kretprobe:sock_recvmsg {
 }
 
 interval:s:1 {
-  // Freeze the completed epoch before reading it. Scalar printf arguments are
-  // copied into bpftrace's async event stream; live maps are never printed or
-  // asynchronously cleared. Ordered boundaries and section summaries let the
-  // Rust reader reject dropped or reordered output instead of publishing it.
-  $completed_epoch = @batcave_epoch;
-  @batcave_epoch = $completed_epoch + 1;
+  // Rotate immediately, quarantine the epoch that just closed, and drain the
+  // prior epoch only after one full interval. Kprobe programs are bounded and
+  // non-sleeping, so the grace keeps a return probe that observed the old epoch
+  // away from its drain. Older keys are retained and reported as stale rather
+  // than being silently stranded.
+  $closing_epoch = @batcave_epoch;
+  @batcave_epoch = $closing_epoch + 1;
+  if ($closing_epoch > 1) {
+    $completed_epoch = $closing_epoch - 1;
 
-  printf("BATCAVE_NETWORK_RX_BEGIN %llu\n", $completed_epoch);
-  $rx_count = (uint64)0;
-  $rx_total = (uint64)0;
-  for ($kv : @batcave_rx) {
-    if ($kv.0.1 == $completed_epoch) {
-      $bytes = (uint64)$kv.1;
-      printf("BATCAVE_NETWORK_RX %llu %u %llu\n", $completed_epoch, $kv.0.0, $bytes);
-      $rx_count++;
-      $rx_total += $bytes;
-      delete(@batcave_rx, $kv.0);
+    printf("BATCAVE_NETWORK_RX_BEGIN %llu\n", $completed_epoch);
+    $rx_count = (uint64)0;
+    $rx_total = (uint64)0;
+    $rx_stale = (uint64)0;
+    for ($kv : @batcave_rx) {
+      if ($kv.0.1 == $completed_epoch) {
+        $bytes = (uint64)$kv.1;
+        printf("BATCAVE_NETWORK_RX %llu %u %llu\n", $completed_epoch, $kv.0.0, $bytes);
+        $rx_count++;
+        $rx_total += $bytes;
+        delete(@batcave_rx, $kv.0);
+      } else {
+        if ($kv.0.1 < $completed_epoch) {
+          $rx_stale++;
+        }
+      }
     }
-  }
-  printf("BATCAVE_NETWORK_RX_END %llu %llu %llu\n", $completed_epoch, $rx_count, $rx_total);
+    printf("BATCAVE_NETWORK_RX_END %llu %llu %llu %llu\n", $completed_epoch, $rx_count, $rx_total, $rx_stale);
 
-  printf("BATCAVE_NETWORK_TX_BEGIN %llu\n", $completed_epoch);
-  $tx_count = (uint64)0;
-  $tx_total = (uint64)0;
-  for ($kv : @batcave_tx) {
-    if ($kv.0.1 == $completed_epoch) {
-      $bytes = (uint64)$kv.1;
-      printf("BATCAVE_NETWORK_TX %llu %u %llu\n", $completed_epoch, $kv.0.0, $bytes);
-      $tx_count++;
-      $tx_total += $bytes;
-      delete(@batcave_tx, $kv.0);
+    printf("BATCAVE_NETWORK_TX_BEGIN %llu\n", $completed_epoch);
+    $tx_count = (uint64)0;
+    $tx_total = (uint64)0;
+    $tx_stale = (uint64)0;
+    for ($kv : @batcave_tx) {
+      if ($kv.0.1 == $completed_epoch) {
+        $bytes = (uint64)$kv.1;
+        printf("BATCAVE_NETWORK_TX %llu %u %llu\n", $completed_epoch, $kv.0.0, $bytes);
+        $tx_count++;
+        $tx_total += $bytes;
+        delete(@batcave_tx, $kv.0);
+      } else {
+        if ($kv.0.1 < $completed_epoch) {
+          $tx_stale++;
+        }
+      }
     }
+    printf("BATCAVE_NETWORK_TX_END %llu %llu %llu %llu\n", $completed_epoch, $tx_count, $tx_total, $tx_stale);
+    printf("BATCAVE_NETWORK_INTERVAL %llu\n", $completed_epoch);
   }
-  printf("BATCAVE_NETWORK_TX_END %llu %llu %llu\n", $completed_epoch, $tx_count, $tx_total);
-  printf("BATCAVE_NETWORK_INTERVAL %llu\n", $completed_epoch);
 }
