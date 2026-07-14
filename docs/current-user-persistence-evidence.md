@@ -45,6 +45,12 @@ BATCAVE_SOURCE_COMMIT_SHA="$(git rev-parse HEAD)" \
 
 Run the build command from `src/BatCave.App`. The capture helper refuses to overwrite an existing output file. It rejects linked app roots, linked executable paths, and source-to-copy drift before execution. Its app-bundle digest is a bytewise-sorted sequence of length-prefixed type, relative-path, mode, and payload fields. The helper records the copied tree that it executes and rehashes that tree before removal. This repository-local digest is not a DMG digest. The resulting packet therefore retains the `staged_application_bundle_only` limitation and cannot fill the `macos-dmg` index profile.
 
+### Retained integration candidate
+
+[`macos-app-bundle-f010d2eaa8f3.json`](evidence/persistence/native-candidates/macos-app-bundle-f010d2eaa8f3.json) retains the sanitized app-bundle packet captured from integration source `f010d2eaa8f32959309ffda8deaef2a53ce5bda8` on macOS 26.5.2. The input was the sole app observed inside that source tree's freshly built, read-only-mounted local DMG. Its canonical tree digest matched the directly built app before the lifecycle run.
+
+The packet deliberately remains `artifact.kind: app_bundle` with `staged_application_bundle_only`. A path-based `hdiutil` mount cannot prove that DiskImages consumed the previously hashed DMG bytes, and the isolated application copy is not a canonical installation. The packet therefore does not populate the `macos-dmg` profile or prove Developer ID signing, notarization, stapling, publication, or release readiness. The contract tests validate every JSON packet under `native-candidates` even though those packets remain outside the package index.
+
 ## Packet and index rules
 
 [`validate-current-user-persistence-evidence.mjs`](../scripts/validate-current-user-persistence-evidence.mjs) is the executable version-1 packet and index contract. It enforces:
