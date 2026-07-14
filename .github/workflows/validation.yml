@@ -100,7 +100,7 @@ jobs:
 
   linux:
     name: Linux validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Preserve repository line endings
         run: git config --global core.autocrlf false
@@ -150,6 +150,11 @@ jobs:
 
       - name: Reject Rust warnings on the MSRV
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Probe closed Linux package transports
+        run: |
+          bash scripts/validate-tauri.sh --bundle-only
+          cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --test linux_package_owned_transport -- --ignored --nocapture
 
   macos:
     name: macOS universal validation

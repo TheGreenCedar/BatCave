@@ -40,6 +40,8 @@ On non-Linux hosts the fixed process probes return `unsupported` without spawnin
 
 ## Remaining work in #115
 
-Parent issue #115 remains open. A later exact-public-artifact lane must extend the opaque #111 capability without exposing a generic callback or replaceable path, make the fixed deb installer or AppImage stager consume those exact owned bytes, and complete package trust, launch, release identity, settings restart, degradation, telemetry, removal, process cleanup, and user-state gates.
+The [real-package owned-transport gate](decisions/0008-linux-package-owned-transport.md) now checks locally built deb extraction and AppImage runtime execution through sealed inherited descriptors on hosted Linux. It proves the package-facing transport choice without installing a deb, launching the AppImage payload, or treating pull-request bundles as public artifacts.
+
+Parent issue #115 remains open. A later exact-public-artifact lane must independently re-establish the public release inside the future Rust-owned complete operation, make the fixed deb installer or AppImage stager consume those exact owned bytes, and complete package trust, launch, release identity, settings restart, degradation, telemetry, removal, process cleanup, and user-state gates.
 
 Only that reviewed native path may create the internal native execution receipt and derive a sanitized #98 `release_evidence` packet. Source tests, fixed settlement probes, hosted validation, and local package fixtures are not Linux release proof.
