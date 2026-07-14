@@ -11,6 +11,7 @@ import {
   createInstallSmokePlan,
   runInstallSmoke,
   shapeInstallSmokeEvidence,
+  validateInstallSmokePlan,
   validateInstallSmokeResult,
 } from "./public-artifact-install-smoke.mjs";
 import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
@@ -58,6 +59,11 @@ function readJson(file) {
 
 function digest(contents) {
   return `sha256:${crypto.createHash("sha256").update(contents).digest("hex")}`;
+}
+
+function mutableIdentityCopy(value) {
+  const { identity_receipt: identityReceipt, ...serializable } = value;
+  return { ...structuredClone(serializable), identity_receipt: identityReceipt };
 }
 
 function publicReleaseFixture() {
@@ -349,6 +355,80 @@ test("returns a workflow-bound plan with one receipt-bound asset and no packet",
   assert.ok(result.steps.slice(2).every(({ status }) => status === "planned"));
 });
 
+test("plan validation rejects malformed or contradictory release identity", () => {
+  const source = createInstallSmokePlan(inputFor("linux-appimage.json", "plan"));
+  const mutations = [
+    (plan) => {
+      plan.observed_at_utc = "2000-02-30T00:00:00Z";
+    },
+    (plan) => {
+      plan.release.repository = "example/BatCave";
+    },
+    (plan) => {
+      plan.release.channel = "stable";
+    },
+    (plan) => {
+      plan.release.app_version = "9.9.8";
+    },
+    (plan) => {
+      plan.release.release_url = "https://github.com/TheGreenCedar/BatCave/releases/tag/v9.9.8";
+    },
+    (plan) => {
+      plan.release.main_sha = "f".repeat(40);
+    },
+    (plan) => {
+      plan.release.workflow_run.url =
+        "https://github.com/TheGreenCedar/BatCave/actions/runs/123456789/attempts/3";
+    },
+    (plan) => {
+      plan.asset.name = "BatCave.Monitor_9.9.9-rc.1_unknown.AppImage";
+    },
+    (plan) => {
+      plan.asset.sha256 = `sha256:${"F".repeat(64)}`;
+    },
+    (plan) => {
+      plan.platform.architecture = "sparc64";
+    },
+    (plan) => {
+      plan.platform.package.architecture = "universal";
+    },
+  ];
+  for (const mutate of mutations) {
+    const plan = mutableIdentityCopy(source);
+    mutate(plan);
+    assert.throws(
+      () => validateInstallSmokePlan(plan),
+      /packet|identity|release|platform|asset|app_version|source_sha/u,
+    );
+  }
+
+  const pairedDigestRewrite = mutableIdentityCopy(source);
+  pairedDigestRewrite.asset.sha256 = `sha256:${"f".repeat(64)}`;
+  pairedDigestRewrite.public_verification.asset.sha256 = pairedDigestRewrite.asset.sha256;
+  assert.throws(
+    () => validateInstallSmokePlan(pairedDigestRewrite),
+    /process-local selected-asset identity|bind the exact/u,
+  );
+
+  const pairedSizeRewrite = mutableIdentityCopy(source);
+  pairedSizeRewrite.asset.size_bytes += 1;
+  pairedSizeRewrite.public_verification.asset.size_bytes = pairedSizeRewrite.asset.size_bytes;
+  assert.throws(
+    () => validateInstallSmokePlan(pairedSizeRewrite),
+    /process-local selected-asset identity|bind the exact/u,
+  );
+
+  const pairedWorkflowRewrite = mutableIdentityCopy(source);
+  pairedWorkflowRewrite.release.workflow_run.run_id = 987654321;
+  pairedWorkflowRewrite.release.workflow_run.run_attempt = 4;
+  pairedWorkflowRewrite.release.workflow_run.url =
+    "https://github.com/TheGreenCedar/BatCave/actions/runs/987654321/attempts/4";
+  assert.throws(
+    () => validateInstallSmokePlan(pairedWorkflowRewrite),
+    /process-local selected-asset identity|bind the exact/u,
+  );
+});
+
 test("caller-authored native flags and injected functions cannot mint proof", async () => {
   const input = inputFor("linux-appimage.json", "plan");
   input.execution_kind = "native";
@@ -631,7 +711,7 @@ test("result validation rederives packet id, checks, limitations, and dispositio
     },
   ];
   for (const mutate of mutations) {
-    const candidate = structuredClone(result);
+    const candidate = mutableIdentityCopy(result);
     mutate(candidate);
     assert.throws(
       () => validateInstallSmokeResult(candidate),
@@ -639,9 +719,90 @@ test("result validation rederives packet id, checks, limitations, and dispositio
     );
   }
 
-  const reordered = structuredClone(result);
+  const reordered = mutableIdentityCopy(result);
   [reordered.steps[2], reordered.steps[3]] = [reordered.steps[3], reordered.steps[2]];
   assert.throws(() => validateInstallSmokeResult(reordered), /ordered gate/u);
+});
+
+test("result validation rejects malformed identity for planned, fixture, and partial states", async () => {
+  const planned = await runInstallSmoke(inputFor("linux-appimage.json", "plan"));
+  const fixtureInput = inputFor("linux-appimage.json");
+  const fixture = await runInstallSmoke(fixtureInput, adapterFor(fixtureInput).adapter);
+  const partialInput = inputFor("linux-appimage.json");
+  partialInput.isolation.step_timeout_ms = 5;
+  partialInput.isolation.termination_timeout_ms = 5;
+  const partialAdapter = adapterFor(
+    partialInput,
+    { "install.package_install": () => new Promise(() => {}) },
+    () => new Promise(() => {}),
+  ).adapter;
+  const partial = await runInstallSmoke(partialInput, partialAdapter);
+
+  for (const source of [planned, fixture, partial]) {
+    const appVersionMismatch = mutableIdentityCopy(source);
+    appVersionMismatch.release.app_version = "0.0.1";
+    assert.throws(() => validateInstallSmokeResult(appVersionMismatch), /app_version.*must equal/u);
+
+    const impossibleTime = mutableIdentityCopy(source);
+    impossibleTime.observed_at_utc = "2000-02-30T00:00:00Z";
+    assert.throws(() => validateInstallSmokeResult(impossibleTime), /real UTC time/u);
+  }
+
+  const mutations = [
+    (result) => {
+      result.release.channel = "stable";
+    },
+    (result) => {
+      result.release.main_sha = "f".repeat(40);
+    },
+    (result) => {
+      result.release.workflow_run.run_attempt += 1;
+    },
+    (result) => {
+      result.asset.name = "BatCave.Monitor_0.0.0-evidence.1_unknown.AppImage";
+    },
+    (result) => {
+      result.platform.package.architecture = "universal";
+    },
+  ];
+  for (const mutate of mutations) {
+    const result = mutableIdentityCopy(fixture);
+    mutate(result);
+    assert.throws(
+      () => validateInstallSmokeResult(result),
+      /packet|identity|release|platform|asset|source_sha/u,
+    );
+  }
+
+  const pairedDigestRewrite = mutableIdentityCopy(fixture);
+  pairedDigestRewrite.asset.sha256 = `sha256:${"f".repeat(64)}`;
+  pairedDigestRewrite.evidence_packet.assets[0].sha256 = pairedDigestRewrite.asset.sha256;
+  pairedDigestRewrite.evidence_packet.assets[0].api_digest = pairedDigestRewrite.asset.sha256;
+  assert.throws(
+    () => validateInstallSmokeResult(pairedDigestRewrite),
+    /process-local selected-asset identity|bind the exact/u,
+  );
+
+  const pairedSizeRewrite = mutableIdentityCopy(fixture);
+  pairedSizeRewrite.asset.size_bytes += 1;
+  pairedSizeRewrite.evidence_packet.assets[0].size_bytes = pairedSizeRewrite.asset.size_bytes;
+  assert.throws(
+    () => validateInstallSmokeResult(pairedSizeRewrite),
+    /process-local selected-asset identity|bind the exact/u,
+  );
+
+  const pairedWorkflowRewrite = mutableIdentityCopy(fixture);
+  pairedWorkflowRewrite.release.workflow_run.run_id = 987654321;
+  pairedWorkflowRewrite.release.workflow_run.run_attempt = 4;
+  pairedWorkflowRewrite.release.workflow_run.url =
+    "https://github.com/TheGreenCedar/BatCave/actions/runs/987654321/attempts/4";
+  pairedWorkflowRewrite.evidence_packet.release.workflow_run = structuredClone(
+    pairedWorkflowRewrite.release.workflow_run,
+  );
+  assert.throws(
+    () => validateInstallSmokeResult(pairedWorkflowRewrite),
+    /process-local selected-asset identity|bind the exact/u,
+  );
 });
 
 test("hosted release-contract jobs run the install-smoke suite", () => {

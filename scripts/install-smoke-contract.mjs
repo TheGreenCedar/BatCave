@@ -1,4 +1,7 @@
-import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
+import {
+  validateReleaseEvidenceIdentity,
+  validateReleaseEvidencePacket,
+} from "./validate-release-evidence-packet.mjs";
 import {
   RELEASE_REPOSITORY,
   RELEASE_SIGNER_WORKFLOW,
@@ -26,10 +29,10 @@ const RESULT_STATUSES = new Set([
 const SLUG = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/u;
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/u;
-const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
 const PUBLIC_VERIFIER = "scripts/verify-public-release.mjs";
 const PUBLIC_ASSET_URL_PREFIX = `https://github.com/${RELEASE_REPOSITORY}/releases/download/`;
 const QUALITY_STATES = new Set(["native", "limited"]);
+const installSmokeIdentityReceipts = new WeakSet();
 const PLATFORM_CONTRACTS = Object.freeze({
   "linux:appimage": Object.freeze({
     prepareAction: "stage_appimage",
@@ -181,6 +184,74 @@ function platformContract(platform) {
   const contract = PLATFORM_CONTRACTS[key];
   if (!contract) fail("platform", `has no install-smoke contract for ${key}`);
   return contract;
+}
+
+function createInstallSmokeIdentityReceipt(planId, observedAtUtc, release, platform, asset) {
+  const receipt = deepFreeze({
+    schema_version: INSTALL_SMOKE_SCHEMA_VERSION,
+    plan_id: planId,
+    observed_at_utc: observedAtUtc,
+    release: structuredClone(release),
+    platform: structuredClone(platform),
+    asset: structuredClone(asset),
+  });
+  installSmokeIdentityReceipts.add(receipt);
+  return receipt;
+}
+
+function validateInstallSmokeIdentityReceipt(value) {
+  exactKeys(value.identity_receipt, "identity.identity_receipt", [
+    "schema_version",
+    "plan_id",
+    "observed_at_utc",
+    "release",
+    "platform",
+    "asset",
+  ]);
+  const expected = {
+    schema_version: INSTALL_SMOKE_SCHEMA_VERSION,
+    plan_id: value.plan_id,
+    observed_at_utc: value.observed_at_utc,
+    release: value.release,
+    platform: value.platform,
+    asset: value.asset,
+  };
+  if (JSON.stringify(value.identity_receipt) !== JSON.stringify(expected)) {
+    fail(
+      "identity.identity_receipt",
+      "must bind the exact plan, release, platform, selected asset name, size, digest, and URL",
+    );
+  }
+  if (!installSmokeIdentityReceipts.has(value.identity_receipt)) {
+    fail(
+      "identity.identity_receipt",
+      "must retain the process-local selected-asset identity created by the harness",
+    );
+  }
+}
+
+function validateInstallSmokeIdentity(value) {
+  exactKeys(value.release, "identity.release", [
+    "repository",
+    "tag",
+    "channel",
+    "source_sha",
+    "main_sha",
+    "release_target_sha",
+    "release_url",
+    "app_version",
+    "workflow_run",
+  ]);
+  const { app_version: appVersion, ...release } = value.release;
+  validateReleaseEvidenceIdentity({
+    observed_at_utc: value.observed_at_utc,
+    release,
+    app_version: appVersion,
+    platform: value.platform,
+    asset: value.asset,
+  });
+  validateInstallSmokeIdentityReceipt(value);
+  return platformContract(value.platform);
 }
 
 function validateReleaseIdentity(template) {
@@ -453,6 +524,13 @@ export function createInstallSmokePlan(input) {
     release,
     platform: structuredClone(template.platform),
     asset,
+    identity_receipt: createInstallSmokeIdentityReceipt(
+      template.packet_id,
+      template.observed_at_utc,
+      release,
+      template.platform,
+      asset,
+    ),
     public_verification: {
       schema_version: INSTALL_SMOKE_SCHEMA_VERSION,
       verifier: PUBLIC_VERIFIER,
@@ -497,6 +575,7 @@ export function validateInstallSmokePlan(plan) {
     "release",
     "platform",
     "asset",
+    "identity_receipt",
     "public_verification",
     "isolation",
     "profile",
@@ -507,53 +586,7 @@ export function validateInstallSmokePlan(plan) {
     fail("plan.schema_version", "must equal 1");
   slug(plan.plan_id, "plan.plan_id");
   if (!EXECUTION_KINDS.has(plan.execution_kind)) fail("plan.execution_kind", "is not supported");
-  string(plan.observed_at_utc, "plan.observed_at_utc", { max: 20, pattern: UTC_TIMESTAMP });
-  exactKeys(plan.release, "plan.release", [
-    "repository",
-    "tag",
-    "channel",
-    "source_sha",
-    "main_sha",
-    "release_target_sha",
-    "release_url",
-    "app_version",
-    "workflow_run",
-  ]);
-  if (plan.release.repository !== RELEASE_REPOSITORY)
-    fail("plan.release.repository", "is not supported");
-  const parsedRelease = parseReleaseTag(plan.release.tag);
-  if (plan.release.app_version !== parsedRelease.version)
-    fail("plan.release.app_version", "must match the release tag");
-  for (const key of ["source_sha", "main_sha", "release_target_sha"]) {
-    string(plan.release[key], `plan.release.${key}`, { max: 40, pattern: COMMIT_SHA });
-  }
-  exactKeys(plan.release.workflow_run, "plan.release.workflow_run", [
-    "workflow_file",
-    "run_id",
-    "run_attempt",
-    "url",
-  ]);
-  if (plan.release.workflow_run.workflow_file !== ".github/workflows/release.yml") {
-    fail("plan.release.workflow_run.workflow_file", "must identify the release workflow");
-  }
-  positiveInteger(plan.release.workflow_run.run_id, "plan.release.workflow_run.run_id");
-  positiveInteger(plan.release.workflow_run.run_attempt, "plan.release.workflow_run.run_attempt");
-  const expectedRunUrl = `https://github.com/${RELEASE_REPOSITORY}/actions/runs/${plan.release.workflow_run.run_id}/attempts/${plan.release.workflow_run.run_attempt}`;
-  if (plan.release.workflow_run.url !== expectedRunUrl)
-    fail("plan.release.workflow_run.url", "must match the exact run attempt");
-  exactKeys(plan.platform, "plan.platform", ["os", "os_version", "architecture", "package"]);
-  exactKeys(plan.platform.package, "plan.platform.package", ["kind", "architecture", "asset_name"]);
-  exactKeys(plan.asset, "plan.asset", ["name", "size_bytes", "sha256", "public_url"]);
-  string(plan.asset.name, "plan.asset.name", { max: 180 });
-  positiveInteger(plan.asset.size_bytes, "plan.asset.size_bytes");
-  string(plan.asset.sha256, "plan.asset.sha256", { max: 71, pattern: SHA256_DIGEST });
-  if (
-    plan.asset.name !== plan.platform.package.asset_name ||
-    plan.asset.public_url !== publicAssetUrl(plan.release.tag, plan.asset.name)
-  ) {
-    fail("plan.asset", "must identify the selected anonymous public package asset");
-  }
-  const contract = platformContract(plan.platform);
+  const contract = validateInstallSmokeIdentity(plan);
   validateIsolation(plan.isolation, contract);
   exactKeys(plan.public_verification, "plan.public_verification", [
     "schema_version",
@@ -697,5 +730,6 @@ export const installSmokeContractInternals = Object.freeze({
   slug,
   sortedObject,
   string,
+  validateInstallSmokeIdentity,
   validateInput,
 });

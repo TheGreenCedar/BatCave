@@ -337,6 +337,18 @@ function assetUrl(tag, name) {
   return `https://github.com/${RELEASE_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
 }
 
+function validateObservedAtUtc(observedAtUtc) {
+  const observed = string(observedAtUtc, "packet.observed_at_utc", {
+    max: 20,
+    pattern: UTC_TIMESTAMP,
+  });
+  const date = new Date(observed);
+  if (Number.isNaN(date.valueOf()) || date.toISOString() !== observed.replace(/Z$/u, ".000Z")) {
+    fail("packet.observed_at_utc", "must be a real UTC time");
+  }
+  return observed;
+}
+
 function validateRelease(release) {
   exactKeys(release, "packet.release", [
     "repository",
@@ -382,7 +394,50 @@ function validateRelease(release) {
   if (run.url !== expectedRunUrl)
     fail("packet.release.workflow_run.url", "must match the exact run and attempt");
   const assetRoles = new Map(expectedReleaseAssetRoles(tag).roles.map((role) => [role.name, role]));
-  return { tag, sourceSha: release.source_sha, assetRoles };
+  return { tag, appVersion: version.version, sourceSha: release.source_sha, assetRoles };
+}
+
+export function validateReleaseEvidenceIdentity(identity) {
+  exactKeys(identity, "packet.identity", [
+    "observed_at_utc",
+    "release",
+    "app_version",
+    "platform",
+    "asset",
+  ]);
+  validateObservedAtUtc(identity.observed_at_utc);
+  const release = validateRelease(identity.release);
+  if (identity.app_version !== release.appVersion) {
+    fail("packet.identity.app_version", `must equal ${release.appVersion} from the release tag`);
+  }
+  exactKeys(identity.asset, "packet.identity.asset", [
+    "name",
+    "size_bytes",
+    "sha256",
+    "public_url",
+  ]);
+  let name;
+  try {
+    name = requireSafeReleaseAssetName(identity.asset.name);
+  } catch (error) {
+    fail("packet.identity.asset.name", error.message);
+  }
+  const role = release.assetRoles.get(name);
+  if (!role) {
+    fail("packet.identity.asset.name", `must be an exact release asset role for ${release.tag}`);
+  }
+  positiveInteger(identity.asset.size_bytes, "packet.identity.asset.size_bytes");
+  string(identity.asset.sha256, "packet.identity.asset.sha256", {
+    max: 71,
+    pattern: SHA256_DIGEST,
+  });
+  if (identity.asset.public_url !== assetUrl(release.tag, name)) {
+    fail("packet.identity.asset.public_url", "must be the exact public asset URL");
+  }
+  const limitations =
+    identity.platform?.package?.kind === "deb" ? { deb_checksum_attestation_only: true } : {};
+  validatePlatform(identity.platform, [{ name, role: role.role }], limitations);
+  return identity;
 }
 
 function validateSignatureIdentity(kind, identity, packetKind, field) {
@@ -560,13 +615,7 @@ export function validateReleaseEvidencePacket(packet) {
   if (!new Set(["release_evidence", "schema_fixture"]).has(packet.packet_kind))
     fail("packet.packet_kind", "must be release_evidence or schema_fixture");
   string(packet.packet_id, "packet.packet_id", { max: 120, pattern: SLUG });
-  const observed = string(packet.observed_at_utc, "packet.observed_at_utc", {
-    max: 20,
-    pattern: UTC_TIMESTAMP,
-  });
-  const date = new Date(observed);
-  if (Number.isNaN(date.valueOf()) || date.toISOString() !== observed.replace(/Z$/u, ".000Z"))
-    fail("packet.observed_at_utc", "must be a real UTC time");
+  validateObservedAtUtc(packet.observed_at_utc);
 
   const release = validateRelease(packet.release);
   validateLimitations(packet.limitations);

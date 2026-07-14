@@ -18,10 +18,10 @@ const {
   RESULT_STATUSES,
   exactKeys,
   fail,
-  platformContract,
   slug,
   sortedObject,
   string,
+  validateInstallSmokeIdentity,
 } = installSmokeContractInternals;
 
 const FIXTURE_OUTCOME = "Synthetic install-smoke fixture only.";
@@ -241,26 +241,6 @@ function validateFixtureStatuses(result) {
   }
 }
 
-function validateRelease(result) {
-  exactKeys(result.release, "result.release", [
-    "repository",
-    "tag",
-    "channel",
-    "source_sha",
-    "main_sha",
-    "release_target_sha",
-    "release_url",
-    "app_version",
-    "workflow_run",
-  ]);
-  exactKeys(result.release.workflow_run, "result.release.workflow_run", [
-    "workflow_file",
-    "run_id",
-    "run_attempt",
-    "url",
-  ]);
-}
-
 function validateProfile(result, contract) {
   exactKeys(result.profile, "result.profile", [
     "package_operation",
@@ -288,6 +268,7 @@ export function validateInstallSmokeResult(result) {
     "platform",
     "release",
     "asset",
+    "identity_receipt",
     "profile",
     "steps",
     "evidence_packet",
@@ -299,10 +280,7 @@ export function validateInstallSmokeResult(result) {
     fail("result.execution_kind", "is not supported");
   if (!INSTALL_SMOKE_DISPOSITIONS.includes(result.disposition))
     fail("result.disposition", "is not supported");
-  string(result.observed_at_utc, "result.observed_at_utc", { max: 20 });
-  validateRelease(result);
-  exactKeys(result.asset, "result.asset", ["name", "size_bytes", "sha256", "public_url"]);
-  const contract = platformContract(result.platform);
+  const contract = validateInstallSmokeIdentity(result);
   validateProfile(result, contract);
   if (!Array.isArray(result.steps) || result.steps.length !== PLAN_STEP_IDS.size) {
     fail("result.steps", `must contain all ${PLAN_STEP_IDS.size} required gates`);
@@ -372,6 +350,7 @@ export function buildInstallSmokeResult(plan, steps) {
     platform: structuredClone(plan.platform),
     release: structuredClone(plan.release),
     asset: structuredClone(plan.asset),
+    identity_receipt: plan.identity_receipt,
     profile: structuredClone(plan.profile),
     steps,
     evidence_packet: shapeInstallSmokeEvidence(plan, disposition),

@@ -16,6 +16,8 @@ Fixture mode uses an explicit `fixture_only` receipt. Injected actions, executor
 
 Plans bind the evidence template's observation time and exact workflow file, run ID, run attempt, and run URL. They retain only the selected receipt-bound package asset. Other template assets and signature claims are not copied into action context.
 
+The harness also carries a frozen process-local selected-identity receipt through each plan and result. Standalone validation compares the exact plan ID, observation time, release, platform, asset name, size, digest, and URL against that receipt. Copying the receipt or consistently rewriting both a fixture packet and its top-level asset does not preserve the receipt's process identity and fails validation.
+
 ## Closed package profiles
 
 | Platform path | Package operation | Fixture action | Runtime identity | Required limitation |
