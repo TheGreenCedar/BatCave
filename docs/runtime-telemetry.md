@@ -25,7 +25,7 @@ Svelte cockpit
           -> ETW per-process network attribution
           -> Linux /proc and /sys telemetry
           -> Linux optional bpftrace/eBPF network attribution
-          -> macOS sysinfo and libproc telemetry
+          -> macOS sysinfo, libproc, and deduplicated IOKit telemetry
           -> local elevated Windows helper launched on demand
           -> Rust benchmark CLI
 ```
@@ -72,13 +72,14 @@ Linux native telemetry:
 
 - Aggregate CPU, kernel CPU, logical CPU deltas, memory, swap, block-device I/O totals/rates, and interface network totals/rates.
 - Process identity, PID, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread count, and file descriptor count.
-- Optional per-process network attribution through `bpftrace`/eBPF kretprobes on `sock_sendmsg` and `sock_recvmsg`. Install this optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; base build dependencies do not include it.
+- Optional per-process network attribution through owned `bpftrace`/eBPF entry/return probes on `__sock_sendmsg` and `sock_recvmsg`. bpftrace 0.22.0 or newer is required for synchronous map iteration across probes, keyed existence checks, and controlled map printing on exit. The send probe follows the syscall path directly instead of relying on the unused `sock_sendmsg` wrapper present on some supported kernels. Every entry clears orphaned per-thread family state before admitting only IPv4 or IPv6, so a missed return cannot make later Unix-domain traffic look like IP traffic or consume attribution capacity. Each one-second boundary rotates to a new in-kernel epoch, quarantines the epoch that just closed for a full interval, and drains the prior epoch. The grace covers bounded, non-sleeping kprobe programs that observed the old epoch while it was active; every later sweep also counts keys older than its drain target and fails if one appears, so a late write is never silently stranded. Protocol v2 then holds each fully validated epoch in Rust until the following complete epoch boundary before it becomes publishable. Its ordered receive and transmit sections carry copied scalar entries plus count, byte, stale-key, and in-band map-overflow summaries, a monotonic epoch, and one final marker. Any mismatch, stale key, overflow, missing boundary, marker, or whole epoch fails closed without consuming the held epoch. The tracing maps have a hard 16,384-key limit and an 8,192-key soft insertion limit. The unused half reserves one check-to-insert race per configured CPU; startup fails closed above 8,192 configured CPUs, while existing keys can continue accumulating above the soft limit. The child redirects stderr into the same owned pipe as protocol output, so one reader observes the child's actual write order. Any non-protocol diagnostic is fatal, but diagnostics are defense in depth: the ordered overflow fields are the capacity-integrity proof. Validated, eligible windows accumulate without Rust-side replacement until the 500/1000/2000/5000 ms app cadence consumes them. The child and unified reader are reaped and joined at shutdown. A killed child, pipe EOF/error, malformed output, diagnostic, or missing interval marks attribution unavailable. Startup and post-spawn failures share a three-attempt budget, 30 seconds apart; only a complete publishable interval resets that failure episode. `scripts/install-linux-deps.sh --with-bpftrace` installs an apt candidate only when it meets the floor, or verifies a supported preinstalled build. It rejects Ubuntu 24.04's 0.20.x candidate before installation instead of pretending attribution is available; the base app remains functional and reports the limitation explicitly.
 
 macOS native telemetry:
 
 - Sysinfo aggregate CPU, logical CPU, available/used memory, swap, and interface network counters.
 - Local libproc enrichment for resident memory, physical footprint, virtual memory, process read/write totals, thread count, and file-descriptor count when process access allows.
-- Physical-disk throughput is unavailable until the macOS collector has a trusted device-level source. Process read/write I/O is never substituted for system disk telemetry.
+- IOKit `IOBlockStorageDriver` byte counters aggregated once per physical registry entry. Disk-image paths are excluded; incomplete physical coverage is unavailable, and topology changes establish a new rate baseline. Process read/write I/O is never substituted for system disk telemetry.
+- The sysinfo interface aggregate includes `lo0`; protocol v3 labels its scope `all_interface_aggregate` rather than non-loopback.
 - Per-process network attribution and privileged helper mode are unavailable in this release. Rows remain visible with quality messages rather than fabricated zero rates.
 
 Fallback behavior:
@@ -126,8 +127,9 @@ Examples:
 - Linux CPU, disk, and network retain independent last-good baselines. A failed read does not replace a baseline with zero, and the first recovered rate is derived only from valid counters.
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
-- macOS physical-disk quality is `unavailable/runtime`; the limitation explains that process read/write I/O remains a separate resource.
-- macOS libproc failures retain the sysinfo process row and identify physical footprint, thread, descriptor, read/write I/O, or network limitations independently.
+- Linux process `/proc` parsers remain manual after the bounded [`procfs` parity decision](decisions/0002-linux-procfs-parser-parity.md). Required malformed counters fail instead of becoming measured zero; a crate replacement requires native dual-reader parity first.
+- macOS physical-disk quality is `held/iokit` while a device identity baseline is pending, `native/iokit` for a complete stable device set, and `unavailable/iokit` when complete host coverage cannot be proven.
+- macOS libproc failures retain the sysinfo process row and classify exit, access denial, unsupported fields, and collector failures separately. Exit drops ordinary churn; independently successful fields remain publishable.
 
 ## Process Groups And History
 
@@ -205,9 +207,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.p
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle -BenchmarkGate -BenchmarkMaxP95Ms 10000
 ```
 
-The benchmark builds the current release CLI and measures `RuntimeState::refresh_now` plus snapshot JSON serialization in an isolated temporary data directory. Output labels this as `evidence_scope: core_runtime_host_only`: it does not measure the Tauri shell, webview, renderer, or whole process tree. The default protocol is 30 warmup ticks followed by five 120-tick measured repeats at 1000 ms, with the median repeat p95 used for gating. Normal validation overrides that protocol with zero warmup, one two-tick repeat, and no sleep.
+The benchmark builds the current release CLI and drives one-shot `RuntimeState::refresh_now` commands through the owned sampling engine in an isolated temporary data directory. Artifact format v4 counts collector work, transform, sorting, and persistence in collection latency. Publication latency starts with immutable snapshot construction and ends at the single `Arc`/`RwLock` swap. Protocol-v3 encoding and JSON serialization are measured afterward. Each repeat reports `collection_p95_ms`, `publication_p95_ms`, `serialization_p95_ms`, and `live_command_p95_ms`; the summary records the median of each component. The latency ceiling and baseline speed ratio use `median_live_command_p95_ms`.
 
-Protocol-v3 baselines record the source commit, release-binary SHA-256, binary-derived platform and architecture, machine class, workload, protocol parameters, repeat results, and selected median. Strict mode also requires advancing samples, app CPU at or below 25%, and RSS at or below 350 MiB.
+The default protocol is 30 warmup commands followed by five 120-command measured repeats with a 1000 ms inter-command delay. The CLI keeps `-SleepMs`/`--sleep-ms` for compatibility, while v4 JSON names the field `inter_command_delay_ms`. Normal validation uses zero warmup, one two-command repeat, and the same explicit delay. Every measured refresh must advance the sample sequence exactly once.
+
+V4 baseline artifacts record `measurement_origin: owned_sampling_engine_refresh_and_protocol_serialization`, `evidence_scope: core_runtime_host_only`, `whole_app_measured: false`, `live_command: refresh_now`, the in-process bounded-channel transport, and the protocol-v3 encoding/JSON serialization scope. They also record the source commit, release-binary SHA-256, binary-derived platform and architecture, machine class, workload, protocol parameters, component medians, repeat results, and `baseline_selection: median-by-live-command-p95`. Older artifact versions are rejected because their timing boundaries are different. Strict mode also requires app CPU at or below 25% and RSS at or below 350 MiB; these remain core-host measurements, not Tauri shell, webview, renderer, or process-tree evidence.
 
 ## Continuous Integration
 

@@ -9,14 +9,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cli_args,
-    protocol::{release_identity, RuntimeReleaseIdentityV3},
+    protocol::{encode_snapshot, release_identity, RuntimeReleaseIdentityV3},
     runtime_store::RuntimeState,
 };
 
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
 const HOST: &str = "core";
-const MEASUREMENT_ORIGIN: &str = "runtime_state_refresh_and_json_serialization";
+const MEASUREMENT_ORIGIN: &str = "owned_sampling_engine_refresh_and_protocol_serialization";
 const EVIDENCE_SCOPE: &str = "core_runtime_host_only";
+const LATENCY_GATE_METRIC: &str = "median_live_command_p95_ms";
+const LIVE_COMMAND: &str = "refresh_now";
+const COMMAND_TRANSPORT: &str = "in_process_bounded_channel";
+const SERIALIZATION_SCOPE: &str = "runtime_protocol_v3_encode_and_json";
 const DEFAULT_MIN_SPEED_RATIO: f64 = 0.90;
 const MAX_APP_CPU_PERCENT: f64 = 25.0;
 const MAX_APP_RSS_BYTES: u64 = 350 * 1024 * 1024;
@@ -24,7 +28,10 @@ const MAX_APP_RSS_BYTES: u64 = 350 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct BenchmarkRepeat {
-    tick_p95_ms: f64,
+    collection_p95_ms: f64,
+    publication_p95_ms: f64,
+    serialization_p95_ms: f64,
+    live_command_p95_ms: f64,
     peak_app_cpu_percent: f64,
     peak_app_rss_bytes: u64,
     samples_advanced: bool,
@@ -38,16 +45,24 @@ struct BenchmarkSummary {
     host: String,
     measurement_origin: String,
     evidence_scope: String,
+    whole_app_measured: bool,
+    live_command: String,
+    command_transport: String,
+    serialization_scope: String,
+    latency_gate_metric: String,
     platform: String,
     architecture: String,
     machine_class: String,
     workload_profile: String,
     warmup_ticks: usize,
     measured_ticks: usize,
-    sleep_ms: u64,
+    inter_command_delay_ms: u64,
     repeat_count: usize,
     repeats: Vec<BenchmarkRepeat>,
-    median_tick_p95_ms: f64,
+    median_collection_p95_ms: f64,
+    median_publication_p95_ms: f64,
+    median_serialization_p95_ms: f64,
+    median_live_command_p95_ms: f64,
     peak_app_cpu_percent: f64,
     peak_app_rss_bytes: u64,
     max_p95_passed: bool,
@@ -65,15 +80,21 @@ struct BenchmarkBaseline {
     format_version: u32,
     host: String,
     measurement_origin: String,
+    evidence_scope: String,
+    whole_app_measured: bool,
+    live_command: String,
+    command_transport: String,
+    serialization_scope: String,
+    latency_gate_metric: String,
     platform: String,
     architecture: String,
     machine_class: String,
     workload_profile: String,
     warmup_ticks: usize,
     measured_ticks: usize,
-    sleep_ms: u64,
+    inter_command_delay_ms: u64,
     repeat_count: usize,
-    median_tick_p95_ms: f64,
+    median_live_command_p95_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -157,24 +178,56 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
         .or_else(|| (strict && baseline.is_some()).then_some(DEFAULT_MIN_SPEED_RATIO));
 
     let runtime_dir = BenchmarkRuntimeDir::new()?;
-    let state = RuntimeState::from_base_dir(runtime_dir.path().to_path_buf());
-    if config.warmup_ticks > 0 {
-        measure_window(&state, config.warmup_ticks, config.sleep_ms)?;
-    }
+    let state = RuntimeState::from_base_dir_manual(runtime_dir.path().to_path_buf())?;
+    let measurement_result = (|| {
+        if config.warmup_ticks > 0 {
+            measure_window(&state, config.warmup_ticks, config.sleep_ms)?;
+        }
 
-    let mut repeats = Vec::with_capacity(config.repeat_count);
-    for _ in 0..config.repeat_count {
-        repeats.push(measure_window(
-            &state,
-            config.measured_ticks,
-            config.sleep_ms,
-        )?);
-    }
+        let mut repeats = Vec::with_capacity(config.repeat_count);
+        for _ in 0..config.repeat_count {
+            repeats.push(measure_window(
+                &state,
+                config.measured_ticks,
+                config.sleep_ms,
+            )?);
+        }
+        Ok::<_, String>(repeats)
+    })();
+    let shutdown_result = state.shutdown();
+    let repeats = match (measurement_result, shutdown_result) {
+        (Ok(repeats), Ok(())) => repeats,
+        (Err(error), Ok(())) => return Err(error),
+        (Err(error), Err(shutdown_error)) => {
+            return Err(format!(
+                "{error}; benchmark_shutdown_failed:{shutdown_error}"
+            ));
+        }
+        (Ok(_), Err(error)) => return Err(error),
+    };
 
-    let median_tick_p95_ms = median(
+    let median_collection_p95_ms = median(
         &repeats
             .iter()
-            .map(|repeat| repeat.tick_p95_ms)
+            .map(|repeat| repeat.collection_p95_ms)
+            .collect::<Vec<_>>(),
+    );
+    let median_publication_p95_ms = median(
+        &repeats
+            .iter()
+            .map(|repeat| repeat.publication_p95_ms)
+            .collect::<Vec<_>>(),
+    );
+    let median_serialization_p95_ms = median(
+        &repeats
+            .iter()
+            .map(|repeat| repeat.serialization_p95_ms)
+            .collect::<Vec<_>>(),
+    );
+    let median_live_command_p95_ms = median(
+        &repeats
+            .iter()
+            .map(|repeat| repeat.live_command_p95_ms)
             .collect::<Vec<_>>(),
     );
     let peak_app_cpu_percent = repeats
@@ -187,11 +240,14 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
         .max()
         .unwrap_or(0);
     let max_p95_passed = max_p95_ms
-        .map(|maximum| median_tick_p95_ms <= maximum)
+        .map(|maximum| median_live_command_p95_ms <= maximum)
         .unwrap_or(true);
-    let speed_ratio = baseline
-        .as_ref()
-        .map(|baseline| calculate_speed_ratio(baseline.median_tick_p95_ms, median_tick_p95_ms));
+    let speed_ratio = baseline.as_ref().map(|baseline| {
+        calculate_speed_ratio(
+            baseline.median_live_command_p95_ms,
+            median_live_command_p95_ms,
+        )
+    });
     let speed_ratio_passed = min_speed_ratio
         .map(|minimum| speed_ratio.is_some_and(|ratio| ratio >= minimum))
         .unwrap_or(true);
@@ -210,16 +266,24 @@ fn run_benchmark_from_args(args: &[String]) -> Result<BenchmarkSummary, String> 
         host: HOST.to_string(),
         measurement_origin: MEASUREMENT_ORIGIN.to_string(),
         evidence_scope: EVIDENCE_SCOPE.to_string(),
+        whole_app_measured: false,
+        live_command: LIVE_COMMAND.to_string(),
+        command_transport: COMMAND_TRANSPORT.to_string(),
+        serialization_scope: SERIALIZATION_SCOPE.to_string(),
+        latency_gate_metric: LATENCY_GATE_METRIC.to_string(),
         platform: config.platform,
         architecture: config.architecture,
         machine_class: config.machine_class,
         workload_profile: config.workload_profile,
         warmup_ticks: config.warmup_ticks,
         measured_ticks: config.measured_ticks,
-        sleep_ms: config.sleep_ms,
+        inter_command_delay_ms: config.sleep_ms,
         repeat_count: config.repeat_count,
         repeats,
-        median_tick_p95_ms: round1(median_tick_p95_ms),
+        median_collection_p95_ms: round1(median_collection_p95_ms),
+        median_publication_p95_ms: round1(median_publication_p95_ms),
+        median_serialization_p95_ms: round1(median_serialization_p95_ms),
+        median_live_command_p95_ms: round1(median_live_command_p95_ms),
         peak_app_cpu_percent: round1(peak_app_cpu_percent),
         peak_app_rss_bytes,
         max_p95_passed,
@@ -237,23 +301,32 @@ fn measure_window(
     ticks: usize,
     sleep_ms: u64,
 ) -> Result<BenchmarkRepeat, String> {
-    let mut durations = Vec::with_capacity(ticks);
+    let mut collection_durations = Vec::with_capacity(ticks);
+    let mut publication_durations = Vec::with_capacity(ticks);
+    let mut serialization_durations = Vec::with_capacity(ticks);
+    let mut live_command_durations = Vec::with_capacity(ticks);
     let mut peak_app_cpu_percent = 0.0_f64;
     let mut peak_app_rss_bytes = 0_u64;
-    let mut previous_sample_seq = None;
+    let mut previous_sample_seq = state.snapshot()?.sample_seq;
     let mut samples_advanced = true;
 
     for _ in 0..ticks {
         let started = Instant::now();
-        let snapshot = state.refresh_now()?;
-        serde_json::to_vec(&snapshot)
+        let measurement = state.refresh_now_measured()?;
+        live_command_durations.push(started.elapsed().as_secs_f64() * 1000.0);
+        collection_durations.push(measurement.collection_latency_ms);
+        publication_durations.push(measurement.publication_latency_ms);
+        let snapshot = measurement.snapshot;
+        let serialization_started = Instant::now();
+        let envelope = encode_snapshot(snapshot.clone())
+            .map_err(|error| format!("benchmark_protocol_encode_failed:{error}"))?;
+        serde_json::to_vec(&envelope)
             .map_err(|error| format!("benchmark_snapshot_serialize_failed:{error}"))?;
-        durations.push(started.elapsed().as_secs_f64() * 1000.0);
+        serialization_durations.push(serialization_started.elapsed().as_secs_f64() * 1000.0);
         peak_app_cpu_percent = peak_app_cpu_percent.max(snapshot.health.app_cpu_percent);
         peak_app_rss_bytes = peak_app_rss_bytes.max(snapshot.health.app_rss_bytes);
-        samples_advanced &=
-            previous_sample_seq.is_none_or(|previous| snapshot.sample_seq > previous);
-        previous_sample_seq = Some(snapshot.sample_seq);
+        samples_advanced &= snapshot.sample_seq == previous_sample_seq.saturating_add(1);
+        previous_sample_seq = snapshot.sample_seq;
 
         if sleep_ms > 0 {
             thread::sleep(Duration::from_millis(sleep_ms));
@@ -261,7 +334,10 @@ fn measure_window(
     }
 
     Ok(BenchmarkRepeat {
-        tick_p95_ms: round1(p95(&durations)),
+        collection_p95_ms: round1(p95(&collection_durations)),
+        publication_p95_ms: round1(p95(&publication_durations)),
+        serialization_p95_ms: round1(p95(&serialization_durations)),
+        live_command_p95_ms: round1(p95(&live_command_durations)),
         peak_app_cpu_percent: round1(peak_app_cpu_percent),
         peak_app_rss_bytes,
         samples_advanced,
@@ -295,19 +371,45 @@ fn parse_baseline(
 
     let payload = fs::read_to_string(&path)
         .map_err(|error| format!("baseline_json_read_failed path={path} error={error}"))?;
-    let baseline = serde_json::from_str::<BenchmarkBaseline>(&payload)
+    let value = serde_json::from_str::<serde_json::Value>(&payload)
         .map_err(|error| format!("baseline_json_parse_failed path={path} error={error}"))?;
-    if baseline.format_version != FORMAT_VERSION {
+    let actual_format_version = value
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            format!("baseline_json_parse_failed path={path} error=missing format_version")
+        })?;
+    if actual_format_version != u64::from(FORMAT_VERSION) {
         return Err(format!(
-            "baseline_metadata_mismatch field=format_version expected={} actual={}",
-            FORMAT_VERSION, baseline.format_version
+            "baseline_metadata_mismatch field=format_version expected={FORMAT_VERSION} actual={actual_format_version}"
         ));
     }
+    let baseline = serde_json::from_value::<BenchmarkBaseline>(value)
+        .map_err(|error| format!("baseline_json_parse_failed path={path} error={error}"))?;
+    require_number("format_version", FORMAT_VERSION, baseline.format_version)?;
     require_metadata("host", HOST, &baseline.host)?;
     require_metadata(
         "measurement_origin",
         MEASUREMENT_ORIGIN,
         &baseline.measurement_origin,
+    )?;
+    require_metadata("evidence_scope", EVIDENCE_SCOPE, &baseline.evidence_scope)?;
+    require_number("whole_app_measured", false, baseline.whole_app_measured)?;
+    require_metadata("live_command", LIVE_COMMAND, &baseline.live_command)?;
+    require_metadata(
+        "command_transport",
+        COMMAND_TRANSPORT,
+        &baseline.command_transport,
+    )?;
+    require_metadata(
+        "serialization_scope",
+        SERIALIZATION_SCOPE,
+        &baseline.serialization_scope,
+    )?;
+    require_metadata(
+        "latency_gate_metric",
+        LATENCY_GATE_METRIC,
+        &baseline.latency_gate_metric,
     )?;
     require_metadata("platform", &expected.platform, &baseline.platform)?;
     require_metadata(
@@ -331,11 +433,15 @@ fn parse_baseline(
         expected.measured_ticks,
         baseline.measured_ticks,
     )?;
-    require_number("sleep_ms", expected.sleep_ms, baseline.sleep_ms)?;
+    require_number(
+        "inter_command_delay_ms",
+        expected.sleep_ms,
+        baseline.inter_command_delay_ms,
+    )?;
     require_number("repeat_count", expected.repeat_count, baseline.repeat_count)?;
     validate_positive_finite(
-        "baseline.median_tick_p95_ms",
-        Some(baseline.median_tick_p95_ms),
+        "baseline.median_live_command_p95_ms",
+        Some(baseline.median_live_command_p95_ms),
     )?;
 
     Ok(Some(baseline))
@@ -569,18 +675,24 @@ mod tests {
     fn baseline_json(overrides: &str) -> String {
         format!(
             r#"{{
-                "format_version": 3,
+                "format_version": 4,
                 "host": "core",
-                "measurement_origin": "runtime_state_refresh_and_json_serialization",
+                "measurement_origin": "owned_sampling_engine_refresh_and_protocol_serialization",
+                "evidence_scope": "core_runtime_host_only",
+                "whole_app_measured": false,
+                "live_command": "refresh_now",
+                "command_transport": "in_process_bounded_channel",
+                "serialization_scope": "runtime_protocol_v3_encode_and_json",
+                "latency_gate_metric": "median_live_command_p95_ms",
                 "platform": "test-os",
                 "architecture": "test-arch",
                 "machine_class": "test-machine",
                 "workload_profile": "fixed-default",
                 "warmup_ticks": 0,
                 "measured_ticks": 2,
-                "sleep_ms": 0,
+                "inter_command_delay_ms": 0,
                 "repeat_count": 1,
-                "median_tick_p95_ms": 10.0{overrides}
+                "median_live_command_p95_ms": 10.0{overrides}
             }}"#
         )
     }
@@ -686,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn baseline_requires_v3_protocol_metadata() {
+    fn baseline_requires_v4_owned_engine_metadata() {
         let path = write_baseline(&baseline_json(""));
         let args = vec![
             "--benchmark".to_string(),
@@ -695,7 +807,24 @@ mod tests {
         ];
         let parsed = parse_baseline(&args, &config()).expect("matching baseline parses");
         fs::remove_file(&path).expect("baseline fixture cleanup");
-        assert_eq!(parsed.expect("baseline").median_tick_p95_ms, 10.0);
+        assert_eq!(parsed.expect("baseline").median_live_command_p95_ms, 10.0);
+    }
+
+    #[test]
+    fn v3_baseline_is_rejected_with_canonical_format_mismatch() {
+        let payload = baseline_json("").replace("\"format_version\": 4", "\"format_version\": 3");
+        let path = write_baseline(&payload);
+        let args = vec![
+            "--benchmark".to_string(),
+            "--baseline-json".to_string(),
+            path.display().to_string(),
+        ];
+        let error = parse_baseline(&args, &config()).expect_err("v3 baseline fails");
+        fs::remove_file(&path).expect("baseline fixture cleanup");
+        assert_eq!(
+            error,
+            "baseline_metadata_mismatch field=format_version expected=4 actual=3"
+        );
     }
 
     #[test]
@@ -710,5 +839,79 @@ mod tests {
         let error = parse_baseline(&args, &config()).expect_err("metadata mismatch fails");
         fs::remove_file(&path).expect("baseline fixture cleanup");
         assert!(error.contains("field=machine_class"));
+    }
+
+    #[test]
+    fn owned_engine_baseline_metadata_mismatches_fail() {
+        for (field, payload) in [
+            (
+                "measurement_origin",
+                baseline_json("").replace(MEASUREMENT_ORIGIN, "other-origin"),
+            ),
+            (
+                "evidence_scope",
+                baseline_json("").replace(EVIDENCE_SCOPE, "whole-app"),
+            ),
+            (
+                "latency_gate_metric",
+                baseline_json("").replace(
+                    &format!("\"latency_gate_metric\": \"{LATENCY_GATE_METRIC}\""),
+                    "\"latency_gate_metric\": \"other-p95\"",
+                ),
+            ),
+        ] {
+            let path = write_baseline(&payload);
+            let args = vec![
+                "--benchmark".to_string(),
+                "--baseline-json".to_string(),
+                path.display().to_string(),
+            ];
+            let error = parse_baseline(&args, &config()).expect_err("metadata mismatch fails");
+            fs::remove_file(&path).expect("baseline fixture cleanup");
+            assert!(error.contains(&format!("field={field}")), "{error}");
+        }
+    }
+
+    #[test]
+    fn v4_repeat_schema_has_disjoint_phase_metrics() {
+        let value = serde_json::to_value(BenchmarkRepeat {
+            collection_p95_ms: 1.0,
+            publication_p95_ms: 2.0,
+            serialization_p95_ms: 3.0,
+            live_command_p95_ms: 4.0,
+            peak_app_cpu_percent: 5.0,
+            peak_app_rss_bytes: 6,
+            samples_advanced: true,
+        })
+        .expect("repeat serializes");
+        for field in [
+            "collection_p95_ms",
+            "publication_p95_ms",
+            "serialization_p95_ms",
+            "live_command_p95_ms",
+        ] {
+            assert!(value.get(field).is_some(), "missing {field}");
+        }
+        assert!(value.get("tick_p95_ms").is_none());
+        assert!(value.get("median_tick_p95_ms").is_none());
+    }
+
+    #[test]
+    fn manual_benchmark_refresh_advances_once_and_joins() {
+        let directory = BenchmarkRuntimeDir::new().expect("benchmark directory");
+        let state = RuntimeState::from_base_dir_manual(directory.path().to_path_buf())
+            .expect("engine starts");
+        let before = state.snapshot().expect("initial snapshot").sample_seq;
+        let repeat = measure_window(&state, 1, 0).expect("one measured refresh");
+        let after = state.snapshot().expect("published snapshot").sample_seq;
+        assert!(repeat.samples_advanced);
+        assert_eq!(after, before + 1);
+        state.shutdown().expect("engine joins");
+        assert_eq!(
+            state
+                .refresh_now()
+                .expect_err("stopped engine rejects refresh"),
+            "runtime_engine_shutting_down"
+        );
     }
 }

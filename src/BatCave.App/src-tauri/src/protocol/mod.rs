@@ -6,7 +6,8 @@ mod validate;
 pub use encode::encode_snapshot;
 pub(crate) use types::RuntimeReleaseIdentityV3;
 pub use types::{
-    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, SortColumnV3, SortDirectionV3,
+    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, RuntimeUiPreferencesV3,
+    SortColumnV3, SortDirectionV3,
 };
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 3;
@@ -24,7 +25,7 @@ pub(crate) fn release_identity() -> RuntimeReleaseIdentityV3 {
 mod tests {
     use std::path::Path;
 
-    use super::catalog::{CatalogBuilder, MetricDefinition};
+    use super::catalog::{CatalogBuilder, MetricDefinition, QUALITY_CODES};
     use super::types::*;
     use super::{encode::encode_snapshot_at, encode_snapshot, validate::validate_envelope};
     use crate::contracts::{
@@ -32,8 +33,16 @@ mod tests {
         MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
         ProcessMetricQuality, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
-        RuntimeInstallKind, RuntimePlatform, RuntimePrivilegedSource, RuntimeProcessElevation,
-        RuntimeSnapshot, SystemMetricQuality,
+        RuntimeInstallKind, RuntimePersistence as ContractPersistence,
+        RuntimePersistenceComponent as ContractPersistenceComponent,
+        RuntimePersistenceDurability as ContractPersistenceDurability,
+        RuntimePersistenceKind as ContractPersistenceKind,
+        RuntimePersistenceOwner as ContractPersistenceOwner,
+        RuntimePersistencePermissionState as ContractPersistencePermissionState,
+        RuntimePersistenceRoot as ContractPersistenceRoot,
+        RuntimePersistenceState as ContractPersistenceState, RuntimePlatform,
+        RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, RuntimeUiPreferences,
+        SystemMetricQuality,
     };
     use ts_rs::{Config, TS};
 
@@ -414,30 +423,75 @@ mod tests {
                 snapshot.environment.data_directory =
                     Some("/Users/test/Library/Application Support/BatCaveMonitor".to_string());
                 snapshot.admin_mode.state = RuntimeAdminModeState::Unavailable;
-                snapshot
-                    .system
-                    .quality
-                    .as_mut()
-                    .expect("fixture system quality")
-                    .network = Some(quality(MetricQuality::Native, MetricSource::Sysinfo));
-                let estimated_memory = quality(MetricQuality::Estimated, MetricSource::Sysinfo);
+                snapshot.system.quality = Some(SystemMetricQuality {
+                    cpu: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    kernel_cpu: Some(
+                        quality(MetricQuality::Unavailable, MetricSource::Sysinfo)
+                            .with_limitation(
+                                MetricLimitationCode::UnsupportedMetric,
+                                "Kernel CPU is unavailable from the macOS system collector.",
+                            ),
+                    ),
+                    logical_cpu: Some(quality(
+                        MetricQuality::Estimated,
+                        MetricSource::Sysinfo,
+                    )),
+                    memory: Some(quality(MetricQuality::Native, MetricSource::Sysinfo)),
+                    swap: Some(quality(MetricQuality::Estimated, MetricSource::Sysinfo)),
+                    disk: Some(
+                        quality(MetricQuality::Held, MetricSource::Iokit).with_limitation(
+                            MetricLimitationCode::PendingBaseline,
+                            "Waiting for a stable IOKit physical-device baseline after storage topology changed.",
+                        ),
+                    ),
+                    network: Some(quality(MetricQuality::Native, MetricSource::Sysinfo)),
+                });
+                let estimated_memory = quality(MetricQuality::Partial, MetricSource::Sysinfo)
+                    .with_limitation(
+                    MetricLimitationCode::AccessDenied,
+                    "Resident memory uses the sysinfo fallback; physical footprint is unavailable.",
+                );
+                let process_io = quality(MetricQuality::Native, MetricSource::Libproc);
+                let unsupported_other_io =
+                    quality(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Other per-process I/O is unavailable on macOS.",
+                    );
+                let unsupported_network =
+                    quality(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+                        MetricLimitationCode::UnsupportedMetric,
+                        "Per-process network attribution is unavailable on macOS.",
+                    );
+                let native_libproc = quality(MetricQuality::Native, MetricSource::Libproc);
                 for process in &mut snapshot.processes {
                     process.private_bytes = 0;
-                    process.quality.as_mut().expect("fixture quality").memory =
-                        Some(estimated_memory.clone());
+                    process.network_received_bps = None;
+                    process.network_transmitted_bps = None;
+                    let quality = process.quality.as_mut().expect("fixture quality");
+                    quality.memory = Some(estimated_memory.clone());
+                    quality.io = Some(process_io.clone());
+                    quality.other_io = Some(unsupported_other_io.clone());
+                    quality.network = Some(unsupported_network.clone());
+                    quality.threads = Some(native_libproc.clone());
+                    quality.handles = Some(native_libproc.clone());
                 }
                 for row in &mut snapshot.process_view_rows {
                     if let ProcessViewRow::Process { detail, .. } = row {
                         detail.process.private_bytes = 0;
-                        detail
-                            .process
-                            .quality
-                            .as_mut()
-                            .expect("fixture quality")
-                            .memory = Some(estimated_memory.clone());
+                        detail.process.network_received_bps = None;
+                        detail.process.network_transmitted_bps = None;
+                        let quality = detail.process.quality.as_mut().expect("fixture quality");
+                        quality.memory = Some(estimated_memory.clone());
+                        quality.io = Some(process_io.clone());
+                        quality.other_io = Some(unsupported_other_io.clone());
+                        quality.network = Some(unsupported_network.clone());
+                        quality.threads = Some(native_libproc.clone());
+                        quality.handles = Some(native_libproc.clone());
                     }
                 }
                 snapshot.process_contributors.memory_quality = Some(estimated_memory);
+                snapshot.process_contributors.io_quality = Some(process_io);
+                snapshot.process_contributors.network_quality = Some(unsupported_network);
             }
             RuntimePlatform::Fixture => unreachable!("goldens model real platforms"),
         }
@@ -465,6 +519,54 @@ mod tests {
             return;
         }
         assert_eq!(expected, checked, "{} is stale", path.display());
+    }
+
+    #[test]
+    fn encoder_publishes_runtime_owned_preferences_and_persistence_health() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.settings.ui_preferences = Some(RuntimeUiPreferences {
+            theme: "aurora".to_string(),
+            history_point_limit: 180,
+        });
+        snapshot.persistence = Some(ContractPersistence {
+            state: ContractPersistenceState::Healthy,
+            roots: vec![ContractPersistenceRoot {
+                owner: ContractPersistenceOwner::CurrentUser,
+                directory: Some("/tmp/BatCaveMonitor".to_string()),
+                permission_state: ContractPersistencePermissionState::Verified,
+            }],
+            components: vec![ContractPersistenceComponent {
+                owner: ContractPersistenceOwner::CurrentUser,
+                kind: ContractPersistenceKind::Settings,
+                state: ContractPersistenceState::Healthy,
+                durability: ContractPersistenceDurability::Durable,
+                last_success_at_ms: Some(snapshot.published_at_ms),
+                active_failure: None,
+            }],
+            suppressed_diagnostic_events: 0,
+        });
+
+        let envelope = encode_fixture(snapshot, RuntimeArchitectureV3::Aarch64);
+        let ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+            unreachable!()
+        };
+        let preferences = payload
+            .settings
+            .ui_preferences
+            .expect("preferences are published");
+        let persistence = payload.persistence.expect("persistence is published");
+
+        assert_eq!(preferences.theme, "aurora");
+        assert_eq!(preferences.history_point_limit, 180);
+        assert_eq!(persistence.state, RuntimePersistenceStateV3::Healthy);
+        assert_eq!(
+            persistence.roots[0].owner,
+            RuntimePersistenceOwnerV3::CurrentUser
+        );
+        assert_eq!(
+            persistence.components[0].kind,
+            RuntimePersistenceKindV3::Settings
+        );
     }
 
     #[test]
@@ -893,6 +995,35 @@ mod tests {
         assert_eq!(
             descriptor.network_scope,
             Some(NetworkScopeV3::IpSocketPayload)
+        );
+    }
+
+    #[test]
+    fn observation_without_time_fails_closed() {
+        let mut catalog = CatalogBuilder::new(1_000).expect("catalog");
+        let quality = quality(MetricQuality::Native, MetricSource::Runtime);
+        let observation = catalog
+            .observation(
+                MetricDefinition::new(
+                    MetricSemantic::ProcessCount,
+                    MetricScope::System,
+                    MetricUnit::Count,
+                ),
+                Some(0.0),
+                Some(&quality),
+                None,
+            )
+            .expect("observation");
+
+        assert_eq!(observation.1, None);
+        assert_eq!(
+            QUALITY_CODES[usize::from(observation.2)],
+            MetricQualityV3::Unavailable
+        );
+        assert_eq!(observation.3, None);
+        assert_eq!(
+            catalog.limitations[usize::from(observation.4.expect("limitation"))].code,
+            LimitationCode::MissingMetadata
         );
     }
 

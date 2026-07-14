@@ -1,4 +1,4 @@
-import type { RuntimeAdminModeStatus, RuntimeWarning } from "./types";
+import type { RuntimeAdminModeStatus, RuntimePersistence, RuntimeWarning } from "./types";
 
 export type DiagnosticAction = "enable" | "retry";
 
@@ -10,6 +10,10 @@ export interface DiagnosticIssue {
   actionLabel: string | null;
   raw: string;
   occurredAtMs: number;
+}
+
+export function suppressedDiagnosticsLabel(persistence: RuntimePersistence | null): string {
+  return persistence ? String(persistence.suppressed_diagnostic_events) : "Not reported";
 }
 
 export function currentDiagnosticIssues(
@@ -54,6 +58,17 @@ function toDiagnosticIssue(
       title: "App network activity is unavailable",
       impact: "System network totals remain current, but app-level network values may be missing.",
       ...action,
+    };
+  }
+
+  if (warning.category === "persistence" || value.includes("persistence_")) {
+    return {
+      ...baseIssue(warning),
+      title: "Local data needs attention",
+      impact:
+        "Monitoring continues, but settings, warm cache, or diagnostics may remain session-only.",
+      action: null,
+      actionLabel: null,
     };
   }
 
