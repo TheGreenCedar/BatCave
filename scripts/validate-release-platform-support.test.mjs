@@ -192,6 +192,171 @@ function assertLinuxSourceEnforcementMatchesContract(sources) {
   assert.deepEqual(dependencyPackages, source.required_deb_runtime_packages);
 }
 
+function releaseSupportDocumentation() {
+  return {
+    readme: fs.readFileSync(path.join(ROOT, "README.md"), "utf8"),
+    capabilities: fs.readFileSync(path.join(ROOT, "docs", "platform-capabilities.md"), "utf8"),
+    releases: fs.readFileSync(path.join(ROOT, "docs", "releases.md"), "utf8"),
+  };
+}
+
+function markdownSection(source, heading) {
+  const marker = `## ${heading}`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `documentation must define ${marker}`);
+  const next = source.indexOf("\n## ", start + marker.length);
+  return source.slice(start, next === -1 ? source.length : next);
+}
+
+const PROFILE_DOCUMENTATION_ORDER = new Map([
+  ["windows-client-10-x86_64", 0],
+  ["ubuntu-22.04-x86_64-glibc", 1],
+  ["debian-12-x86_64-glibc", 2],
+  ["macos-12-universal", 3],
+]);
+
+const PACKAGE_DOCUMENTATION_ORDER = new Map([
+  ["nsis", 0],
+  ["deb", 0],
+  ["appimage", 1],
+  ["dmg", 0],
+  ["macos_updater", 1],
+]);
+
+function documentedPackageKinds(profile) {
+  return [...profile.packages]
+    .sort((left, right) => {
+      assert.ok(
+        PACKAGE_DOCUMENTATION_ORDER.has(left.kind),
+        `documentation package order is missing ${left.kind}`,
+      );
+      assert.ok(
+        PACKAGE_DOCUMENTATION_ORDER.has(right.kind),
+        `documentation package order is missing ${right.kind}`,
+      );
+      return (
+        PACKAGE_DOCUMENTATION_ORDER.get(left.kind) - PACKAGE_DOCUMENTATION_ORDER.get(right.kind)
+      );
+    })
+    .map(({ kind }) => {
+      switch (kind) {
+        case "nsis":
+          return "NSIS";
+        case "deb":
+          return "deb";
+        case "appimage":
+          return "AppImage";
+        case "dmg":
+          return "universal DMG";
+        case "macos_updater":
+          return "updater archive";
+        default:
+          assert.fail(`documentation package mapping is missing ${kind}`);
+      }
+    })
+    .join(", ");
+}
+
+function supportProfileTableRow(profileId) {
+  const profile = PROFILES.get(profileId);
+  assert.ok(profile, `machine contract must define ${profileId}`);
+  const sourceProof = `\`${profile.proof.source}\``;
+  const nativeProof = `\`${profile.proof.native_oldest_supported}\``;
+  const packages = documentedPackageKinds(profile);
+
+  switch (profileId) {
+    case "windows-client-10-x86_64":
+      return `| \`${profile.id}\` | Windows 10 client \`${profile.host.minimum}\`+ | \`${profile.host_architectures[0]}\` | ${packages} | ${sourceProof} | ${nativeProof} |`;
+    case "ubuntu-22.04-x86_64-glibc":
+      return `| \`${profile.id}\` | Ubuntu \`${profile.host.minimum}\`+ | \`${profile.host_architectures[0]}\`, ${profile.runtime.libc_family} | ${packages} | ${sourceProof} | ${nativeProof} |`;
+    case "debian-12-x86_64-glibc":
+      return `| \`${profile.id}\` | Debian \`${profile.host.minimum}\`+ | \`${profile.host_architectures[0]}\`, ${profile.runtime.libc_family} | ${packages} | ${sourceProof} | ${nativeProof} |`;
+    case "macos-12-universal":
+      return `| \`${profile.id}\` | macOS \`${profile.host.minimum}\`+ | \`${profile.host_architectures[0]}\` + \`${profile.host_architectures[1]}\` | ${packages} | ${sourceProof} | ${nativeProof} |`;
+    default:
+      assert.fail(`documentation mapping is missing ${profileId}`);
+  }
+}
+
+function assertLinuxSupportFacts(source) {
+  const linux = RELEASE_PLATFORM_SUPPORT_CONTRACT.linux_source_enforcement;
+  assert.ok(source.includes(`\`${linux.hosted_runner}\``));
+  assert.ok(source.includes(linux.architecture.replace("_", "-")));
+  assert.ok(source.includes(`\`GLIBC_${linux.maximum_glibc_version}\``));
+  for (const dependency of linux.required_deb_runtime_packages) {
+    assert.ok(source.includes(`\`${dependency}\``));
+  }
+}
+
+function assertReleaseSupportDocumentationMatchesContract(documents) {
+  const capabilities = markdownSection(documents.capabilities, "Distribution and CPU architecture");
+  const profileOrder = RELEASE_PLATFORM_SUPPORT_CONTRACT.profiles
+    .map(({ id }) => {
+      assert.ok(PROFILE_DOCUMENTATION_ORDER.has(id), `documentation order is missing ${id}`);
+      return id;
+    })
+    .sort(
+      (left, right) =>
+        PROFILE_DOCUMENTATION_ORDER.get(left) - PROFILE_DOCUMENTATION_ORDER.get(right),
+    );
+  assert.deepEqual(
+    capabilities.split("\n").filter((line) => line.startsWith("|")),
+    [
+      "| Profile | Minimum host | Host architecture/runtime | Contract release packages | Source proof | Oldest-host native proof |",
+      "| --- | --- | --- | --- | --- | --- |",
+      ...profileOrder.map(supportProfileTableRow),
+    ],
+  );
+
+  const readme = markdownSection(documents.readme, "Release Platform Support");
+  const releases = markdownSection(documents.releases, "Platform support and proof");
+  for (const source of [readme, capabilities, releases]) {
+    assert.match(source, /platform-support-contract\.v1\.json/u);
+  }
+
+  const windows = PROFILES.get("windows-client-10-x86_64");
+  const ubuntu = PROFILES.get("ubuntu-22.04-x86_64-glibc");
+  const debian = PROFILES.get("debian-12-x86_64-glibc");
+  const macos = PROFILES.get("macos-12-universal");
+  const linux = RELEASE_PLATFORM_SUPPORT_CONTRACT.linux_source_enforcement;
+  assert.ok(
+    readme.includes(
+      `Windows 10 client \`${windows.host.minimum}\`+ on \`${windows.host_architectures[0]}\` with NSIS`,
+    ),
+  );
+  assert.ok(
+    readme.includes(
+      `Ubuntu \`${ubuntu.host.minimum}\`+ and Debian \`${debian.host.minimum}\`+ on \`${linux.architecture}\` ${linux.libc_family} with deb and AppImage packages`,
+    ),
+  );
+  assert.ok(
+    readme.includes(
+      `macOS \`${macos.host.minimum}\`+ on universal \`${macos.host_architectures[0]}\` + \`${macos.host_architectures[1]}\` with a DMG and updater archive`,
+    ),
+  );
+  assert.ok(
+    readme.includes(
+      `Every profile is \`${windows.proof.source}\`; \`native_oldest_supported\` remains \`${windows.proof.native_oldest_supported}\``,
+    ),
+  );
+  assert.ok(
+    documents.readme.includes(
+      `From the repository root on Ubuntu ${ubuntu.host.minimum}, Debian ${debian.host.minimum}, or newer releases within those declared profiles:`,
+    ),
+  );
+
+  for (const proofTerm of ["declared", "source_enforced", "native_oldest_supported: pending"]) {
+    assert.ok(releases.includes(`\`${proofTerm}\``));
+  }
+  assertLinuxSupportFacts(capabilities);
+  assertLinuxSupportFacts(releases);
+  assert.ok(
+    capabilities.includes(
+      "Windows Server, Windows ARM64, Linux ARM64, musl, unlisted Linux distributions, and unlisted package/host combinations are explicit non-claims.",
+    ),
+  );
+}
+
 test("publishes the four closed version 1 support profiles", () => {
   assert.equal(RELEASE_PLATFORM_SUPPORT_CONTRACT.schema_version, 1);
   assert.deepEqual(
@@ -216,6 +381,38 @@ test("publishes the four closed version 1 support profiles", () => {
       source: "source_enforced",
       native_oldest_supported: "pending",
     });
+  }
+});
+
+test("keeps public platform support documentation aligned with the machine contract", () => {
+  assertReleaseSupportDocumentationMatchesContract(releaseSupportDocumentation());
+});
+
+test("rejects platform support documentation drift", () => {
+  const documents = releaseSupportDocumentation();
+  const mutations = [
+    ["capabilities", "`10.0.16299`+", "`10.0.19045`+"],
+    ["readme", "Ubuntu `22.04`+", "Ubuntu `24.04`+"],
+    ["capabilities", "Debian `12`+", "Debian `13`+"],
+    ["readme", "macOS `12.0`+", "macOS `13.0`+"],
+    ["capabilities", "`x86_64`, glibc", "`arm64`, glibc"],
+    ["capabilities", "deb, AppImage", "rpm"],
+    ["capabilities", "`source_enforced`", "`declared`"],
+    ["capabilities", "`ubuntu-22.04`", "`ubuntu-latest`"],
+    ["capabilities", "`GLIBC_2.35`", "`GLIBC_2.39`"],
+    ["capabilities", "`libgtk-3-0`", "`libgtk-4-1`"],
+    ["capabilities", "`libwebkit2gtk-4.1-0`", "`libwebkit2gtk-4.0-0`"],
+    ["capabilities", "Windows Server, ", ""],
+    ["readme", "Ubuntu 22.04, Debian 12", "Ubuntu 24.04, Debian 13"],
+  ];
+
+  for (const [file, current, drifted] of mutations) {
+    const mutated = { ...documents, [file]: documents[file].replace(current, drifted) };
+    assert.notEqual(mutated[file], documents[file], `${file} mutation must change the fixture`);
+    assert.throws(
+      () => assertReleaseSupportDocumentationMatchesContract(mutated),
+      assert.AssertionError,
+    );
   }
 });
 

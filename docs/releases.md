@@ -12,6 +12,12 @@ All build and publication jobs enter the protected `release` environment. Config
 
 Every release artifact contains the offline-capable Windows NSIS installer, Windows GUI and benchmark CLI executables, Linux deb and AppImage packages, the universal macOS DMG and updater archive, `SHA256SUMS.txt`, and a Sigstore/GitHub build-provenance bundle. Workflow artifacts are retained for 30 days; published GitHub Release assets are durable.
 
+## Platform support and proof
+
+The [platform capabilities matrix](platform-capabilities.md) is the canonical human view of supported release profiles; the [version 1 platform support contract](evidence/releases/platform-support-contract.v1.json) is the machine authority. `declared` records the intended host, architecture, runtime, and package boundary. `source_enforced` records that repository configuration, hosted builds, metadata, and extraction-only package checks agree with that boundary. Every current profile still has `native_oldest_supported: pending`, so none of those checks proves installation or runtime behavior on its oldest-supported host.
+
+Linux release builders are pinned to `ubuntu-22.04`. Package verification requires x86-64 ELF payloads, a maximum required symbol version of `GLIBC_2.35`, and deb dependencies on `libgtk-3-0` and `libwebkit2gtk-4.1-0`. Those are source/build gates only. Native evidence and the independent release decision remain separate requirements.
+
 Verify a downloaded file with `Get-FileHash -Algorithm SHA256` on Windows, `sha256sum --check SHA256SUMS.txt` on Linux, or `shasum -a 256 -c SHA256SUMS.txt` on macOS. Verify provenance with `gh attestation verify <file> --repo TheGreenCedar/BatCave`. On Windows, confirm the installed version in Apps settings and the executable file properties matches the release tag without the leading `v`.
 
 After publication, the release workflow downloads every expected asset again through its unauthenticated public URL into a new directory. It rejects any name, size, or SHA-256 difference from the prepublication inventory, verifies that `SHA256SUMS.txt` covers every build subject, requires GitHub's immutable-release attestation, and verifies each subject against the exact `main` source SHA and `.github/workflows/release.yml` on a GitHub-hosted runner. Passing contract tests proves the verifier source; only a successful run against the published assets proves a release, and that live evidence remains part of the stable-release gate.

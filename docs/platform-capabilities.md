@@ -1,6 +1,6 @@
 # Platform capabilities
 
-**Updated**: 2026-07-13
+**Updated**: 2026-07-14
 
 This is the static support contract for BatCave Monitor 0.2. Runtime protocol observations remain the authority for what one sample actually contains: a supported collector can still report `held`, `partial`, or `unavailable` when its source is starting, denied, missing, or malformed.
 
@@ -37,12 +37,17 @@ Process rates use PID plus start time and require compatible live cumulative-cou
 
 ## Distribution and CPU architecture
 
-| Platform | x86_64 | ARM64 | Published package |
-| --- | --- | --- | --- |
-| Windows | Supported and validated | **Unsupported**: no CI, native collector proof, installer, or release artifact | x86_64 NSIS installer and executables |
-| Linux | Supported and validated | **Unsupported**: no CI, native collector proof, `.deb`, AppImage, or release artifact | x86_64 `.deb` and AppImage |
-| macOS 12+ | Supported and validated | Supported and validated | One universal `x86_64` + `arm64` app, DMG, CLI, and updater archive |
+The [versioned machine contract](evidence/releases/platform-support-contract.v1.json) is authoritative for release hosts, architectures, package kinds, and proof states. This is its canonical human-readable matrix.
 
-Benchmark scripts accepting an architecture label do not create platform support. Windows ARM64 and Linux ARM64 remain unsupported until their native collectors, validation jobs, packages, and release artifacts are all exercised. macOS is different: validation rejects warnings for both Apple targets, and bundle verification requires both Mach-O slices.
+| Profile | Minimum host | Host architecture/runtime | Contract release packages | Source proof | Oldest-host native proof |
+| --- | --- | --- | --- | --- | --- |
+| `windows-client-10-x86_64` | Windows 10 client `10.0.16299`+ | `x86_64` | NSIS | `source_enforced` | `pending` |
+| `ubuntu-22.04-x86_64-glibc` | Ubuntu `22.04`+ | `x86_64`, glibc | deb, AppImage | `source_enforced` | `pending` |
+| `debian-12-x86_64-glibc` | Debian `12`+ | `x86_64`, glibc | deb, AppImage | `source_enforced` | `pending` |
+| `macos-12-universal` | macOS `12.0`+ | `arm64` + `x86_64` | universal DMG, updater archive | `source_enforced` | `pending` |
+
+`source_enforced` means repository, build, configuration, metadata, and extraction-only package checks agree with the contract. It is not native install or runtime proof. Linux builders are pinned to `ubuntu-22.04`; package inspection requires x86-64 ELF payloads, no required symbol newer than `GLIBC_2.35`, and deb dependencies on `libgtk-3-0` and `libwebkit2gtk-4.1-0`.
+
+Windows Server, Windows ARM64, Linux ARM64, musl, unlisted Linux distributions, and unlisted package/host combinations are explicit non-claims. Benchmark scripts accepting an architecture label do not create platform support. macOS validation rejects warnings for both Apple targets, and bundle verification requires both Mach-O slices, but oldest-supported macOS native proof remains pending.
 
 Ad-hoc artifacts from `main` are internal validation builds. Versioned macOS releases additionally require Developer ID signing, notarization, and stapling. See [Release channels and verification](releases.md) for promotion details and [Runtime telemetry](runtime-telemetry.md) for the live quality contract.

@@ -46,6 +46,10 @@ BatCave is ready for source-based testing and local preview builds.
 - macOS builds produce one universal Apple Silicon/Intel DMG with a macOS 12 minimum.
 - The signed updater is implemented; Windows Authenticode release promotion remains gated on SignPath approval.
 
+## Release Platform Support
+
+The canonical human-readable profile matrix is [Platform capabilities](docs/platform-capabilities.md), and the machine authority is the [version 1 platform support contract](docs/evidence/releases/platform-support-contract.v1.json). The declared release profiles are Windows 10 client `10.0.16299`+ on `x86_64` with NSIS; Ubuntu `22.04`+ and Debian `12`+ on `x86_64` glibc with deb and AppImage packages; and macOS `12.0`+ on universal `arm64` + `x86_64` with a DMG and updater archive. Every profile is `source_enforced`; `native_oldest_supported` remains `pending`. Hosted builds, metadata checks, and package inspection do not prove installation or runtime behavior on an oldest-supported host.
+
 ## Try It
 
 Install prerequisites first:
@@ -71,7 +75,7 @@ Run only the browser UI with deterministic fixture telemetry:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1 -WebOnly
 ```
 
-From the repository root on Ubuntu/Debian:
+From the repository root on Ubuntu 22.04, Debian 12, or newer releases within those declared profiles:
 
 ```bash
 bash scripts/install-linux-deps.sh
