@@ -14,7 +14,10 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::collector_engine::{CollectorEngine, CollectorEngineConfig};
+use crate::{
+    collector_engine::{CollectorEngine, CollectorEngineConfig},
+    telemetry::TelemetryCollector,
+};
 
 use super::{
     host::{new_instance_id, service_identity, CollectorSnapshotSource, SnapshotProvider},
@@ -87,7 +90,8 @@ fn run_service_body(
 ) -> Result<(), String> {
     let instance_id = new_instance_id();
     let identity = service_identity(instance_id.clone());
-    let engine = CollectorEngine::start_default(
+    let engine = CollectorEngine::start(
+        Box::new(TelemetryCollector::for_collector_service()),
         CollectorEngineConfig {
             interval: SAMPLE_INTERVAL,
             metric_window: METRIC_WINDOW,

@@ -5,7 +5,11 @@ use super::{
 };
 
 pub(crate) const DESKTOP_EXECUTABLE_NAME: &str = "batcave-monitor.exe";
-pub(crate) const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)";
+// FILE_GENERIC_READ | FILE_WRITE_DATA. FILE_GENERIC_WRITE is deliberately not
+// granted because it includes FILE_CREATE_PIPE_INSTANCE for named pipes.
+#[cfg(test)]
+pub(crate) const PIPE_INTERACTIVE_ACCESS_MASK: u32 = 0x0012_008b;
+pub(crate) const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;0x0012008b;;;IU)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExecutableReleaseEvidence {
@@ -209,12 +213,33 @@ mod tests {
     }
 
     #[test]
-    fn pipe_acl_names_only_system_and_local_interactive_clients() {
+    fn pipe_acl_names_only_system_and_local_interactive_data_clients() {
         assert!(PIPE_SDDL.contains(";;;SY)"));
         assert!(PIPE_SDDL.contains(";;;IU)"));
         for forbidden in [";;;WD)", ";;;AN)", ";;;NU)", ";;;AU)"] {
             assert!(!PIPE_SDDL.contains(forbidden));
         }
+
+        let interactive_mask = ace_mask(PIPE_SDDL, "IU").expect("interactive ACE exists");
+        assert_eq!(interactive_mask, PIPE_INTERACTIVE_ACCESS_MASK);
+        assert_ne!(interactive_mask & 0x0000_0001, 0, "FILE_READ_DATA");
+        assert_ne!(interactive_mask & 0x0000_0002, 0, "FILE_WRITE_DATA");
+        assert_eq!(
+            interactive_mask & 0x0000_0004,
+            0,
+            "FILE_CREATE_PIPE_INSTANCE must never be granted to clients"
+        );
+    }
+
+    fn ace_mask(sddl: &str, sid: &str) -> Option<u32> {
+        sddl.split('(').skip(1).find_map(|ace| {
+            let fields = ace.trim_end_matches(')').split(';').collect::<Vec<_>>();
+            if fields.get(5).copied() != Some(sid) {
+                return None;
+            }
+            let mask = fields.get(2)?.strip_prefix("0x")?;
+            u32::from_str_radix(mask, 16).ok()
+        })
     }
 
     fn evidence() -> VerifiedClientEvidence {
