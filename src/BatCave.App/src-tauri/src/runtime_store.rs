@@ -1403,13 +1403,14 @@ impl RuntimeStore {
 
         if let Some(error) = poll_error {
             self.settings.admin_mode_requested = false;
+            let mut failure = error;
             if let Some(mut client) = self.elevated.take() {
                 if let Err(stop_error) = client.stop() {
-                    self.add_warning("admin_mode", stop_error);
+                    failure = format!("{failure};admin_mode_cleanup_failed:{stop_error}");
                     self.elevated = Some(client);
                 }
             }
-            self.fail_admin_mode(error);
+            self.fail_admin_mode(failure);
         }
 
         let access_changed = before_enabled != self.settings.admin_mode_enabled;
@@ -3859,6 +3860,10 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use crate::contracts::{RuntimeInstallKind, RuntimePlatform};
+    use crate::elevation::{
+        HELPER_LAUNCHER_EXIT_FAILED, HELPER_LAUNCHER_EXIT_NO_CHILD,
+        HELPER_LAUNCHER_EXIT_SETTLED_FAILURE,
+    };
     use std::sync::{
         atomic::{AtomicUsize, Ordering as TestOrdering},
         Barrier,
@@ -6428,6 +6433,181 @@ mod tests {
         assert!(store.previous_processes.is_empty());
         assert!(!store.process_access_baseline_dirty);
         assert_eq!(resumed_rows[0].name, "ResumedStandard");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn pre_child_admin_denial_releases_session_for_retry() {
+        let base_dir = runtime_test_dir("admin-pre-child-denial");
+        let helper_dir = base_dir.join("scripted-helper");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &helper_dir,
+            HELPER_LAUNCHER_EXIT_NO_CHILD,
+            false,
+        ));
+        store.settings.admin_mode_requested = true;
+        store.admin_mode.state = RuntimeAdminModeState::Requesting;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+
+        let transition = store.advance_elevated_helper(1_783_944_006_000);
+
+        assert!(transition.publish);
+        assert!(!store.settings.admin_mode_requested);
+        assert!(!store.settings.admin_mode_enabled);
+        assert!(
+            store.elevated.is_none(),
+            "denial must permit a fresh request"
+        );
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
+        assert_eq!(
+            store.admin_mode.detail.as_deref(),
+            Some("admin_mode_launch_failed_or_cancelled")
+        );
+        assert_eq!(
+            store
+                .warnings
+                .iter()
+                .filter(|warning| warning.category == "admin_mode")
+                .map(|warning| warning.message.as_str())
+                .collect::<Vec<_>>(),
+            vec!["admin_mode_launch_failed_or_cancelled"]
+        );
+        assert!(!helper_dir.join("snapshot.json").exists());
+        assert!(!helper_dir.join("snapshot.json.tmp").exists());
+        assert!(!helper_dir.join("stop.signal").exists());
+        assert!(!helper_dir.join("accepted.signal").exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn post_child_admin_failure_retains_ownership_and_combined_diagnostic() {
+        let base_dir = runtime_test_dir("admin-post-child-failure");
+        let helper_dir = base_dir.join("scripted-helper");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &helper_dir,
+            HELPER_LAUNCHER_EXIT_FAILED,
+            true,
+        ));
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = true;
+        store.admin_mode.state = RuntimeAdminModeState::Active;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+
+        let transition = store.advance_elevated_helper(1_783_944_007_000);
+        let failure = "admin_mode_helper_exited:launcher_code=1;admin_mode_cleanup_failed:\
+admin_mode_launcher_exit_failed:code=1";
+
+        assert!(transition.publish);
+        assert!(!store.settings.admin_mode_requested);
+        assert!(!store.settings.admin_mode_enabled);
+        assert!(
+            store.elevated.is_some(),
+            "unsettled child ownership is retained"
+        );
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
+        assert_eq!(store.admin_mode.detail.as_deref(), Some(failure));
+        assert_eq!(
+            store
+                .warnings
+                .iter()
+                .filter(|warning| warning.category == "admin_mode")
+                .map(|warning| warning.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![failure]
+        );
+        assert!(helper_dir.join("snapshot.json").exists());
+        assert!(helper_dir.join("stop.signal").exists());
+        assert!(helper_dir.join("accepted.signal").exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn settled_post_child_admin_failure_releases_session_for_retry() {
+        let base_dir = runtime_test_dir("admin-settled-post-child-failure");
+        let helper_dir = base_dir.join("scripted-helper");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &helper_dir,
+            HELPER_LAUNCHER_EXIT_SETTLED_FAILURE,
+            true,
+        ));
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = true;
+        store.admin_mode.state = RuntimeAdminModeState::Active;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+
+        let transition = store.advance_elevated_helper(1_783_944_008_000);
+
+        assert!(transition.publish);
+        assert!(!store.settings.admin_mode_requested);
+        assert!(!store.settings.admin_mode_enabled);
+        assert!(
+            store.elevated.is_none(),
+            "settled child failure must permit a fresh request"
+        );
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
+        assert_eq!(
+            store.admin_mode.detail.as_deref(),
+            Some("admin_mode_helper_exited:launcher_code=3")
+        );
+        assert_eq!(
+            store
+                .warnings
+                .iter()
+                .filter(|warning| warning.category == "admin_mode")
+                .map(|warning| warning.message.as_str())
+                .collect::<Vec<_>>(),
+            vec!["admin_mode_helper_exited:launcher_code=3"]
+        );
+        assert!(!helper_dir.join("snapshot.json").exists());
+        assert!(!helper_dir.join("stop.signal").exists());
+        assert!(!helper_dir.join("accepted.signal").exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn paused_disable_retains_unsettled_post_child_session() {
+        let base_dir = runtime_test_dir("paused-admin-disable-unsettled");
+        let helper_dir = base_dir.join("scripted-helper");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        seed_paused_snapshot(&mut store);
+        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &helper_dir,
+            HELPER_LAUNCHER_EXIT_FAILED,
+            true,
+        ));
+        store.settings.admin_mode_requested = true;
+        store.settings.admin_mode_enabled = true;
+        store.admin_mode.state = RuntimeAdminModeState::Active;
+        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
+
+        let snapshot = store.set_admin_mode(false);
+
+        assert!(!snapshot.settings.admin_mode_requested);
+        assert!(!snapshot.settings.admin_mode_enabled);
+        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Off);
+        assert!(
+            store.elevated.is_some(),
+            "unsettled child ownership must survive disable"
+        );
+        assert_eq!(
+            snapshot
+                .warnings
+                .iter()
+                .filter(|warning| warning.category == "admin_mode")
+                .map(|warning| warning.message.as_str())
+                .collect::<Vec<_>>(),
+            vec!["admin_mode_launcher_exit_failed:code=1"]
+        );
+        assert!(helper_dir.join("snapshot.json").exists());
+        assert!(helper_dir.join("stop.signal").exists());
+        assert!(helper_dir.join("accepted.signal").exists());
         let _ = fs::remove_dir_all(base_dir);
     }
 

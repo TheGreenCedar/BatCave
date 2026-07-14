@@ -31,6 +31,9 @@ const HELPER_TOKEN_BYTES: usize = 32;
 const MAX_PIPE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const ELEVATED_HELPER_FLAG: &str = "--elevated-helper";
 const ELEVATED_HELPER_LAUNCHER_FLAG: &str = "--elevated-helper-launcher";
+pub(crate) const HELPER_LAUNCHER_EXIT_FAILED: u32 = 1;
+pub(crate) const HELPER_LAUNCHER_EXIT_NO_CHILD: u32 = 2;
+pub(crate) const HELPER_LAUNCHER_EXIT_SETTLED_FAILURE: u32 = 3;
 
 #[derive(Debug)]
 pub struct ElevatedHelperClient {
@@ -51,6 +54,8 @@ pub struct ElevatedHelperClient {
     stopped: bool,
     #[cfg(test)]
     scripted_polls: VecDeque<Result<ElevatedPoll, String>>,
+    #[cfg(test)]
+    scripted_exit_code: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +120,8 @@ impl ElevatedHelperClient {
             stopped: false,
             #[cfg(test)]
             scripted_polls: VecDeque::new(),
+            #[cfg(test)]
+            scripted_exit_code: None,
         })
     }
 
@@ -124,12 +131,8 @@ impl ElevatedHelperClient {
             return poll;
         }
 
-        if self
-            .process
-            .as_ref()
-            .is_some_and(ElevatedHelperProcess::has_exited)
-        {
-            return Err("admin_mode_helper_exited".to_string());
+        if self.launcher_has_exited() {
+            return Err(self.launcher_exit_detail());
         }
 
         if self.accepted_at.is_none() && self.accepted_file.exists() {
@@ -191,50 +194,46 @@ impl ElevatedHelperClient {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        self.stop_with_timeouts(HELPER_LAUNCHER_STOP_GRACE, HELPER_FORCE_EXIT_GRACE)
+        self.stop_with_timeout(HELPER_LAUNCHER_STOP_GRACE)
     }
 
-    fn stop_with_timeouts(
-        &mut self,
-        graceful_timeout: Duration,
-        forced_timeout: Duration,
-    ) -> Result<(), String> {
+    fn stop_with_timeout(&mut self, graceful_timeout: Duration) -> Result<(), String> {
         if self.stopped {
             return Ok(());
         }
 
         let stop_write_error = fs::write(&self.stop_file, "stop").err();
         let stop_write_suffix = stop_write_error
+            .as_ref()
             .map(|error| format!(":stop_signal_failed:{error}"))
             .unwrap_or_default();
-        let exited = self
-            .process
-            .as_ref()
-            .is_none_or(|process| process.wait(graceful_timeout));
-        let exited = if exited {
-            true
-        } else {
-            self.process
-                .as_ref()
-                .is_some_and(|process| process.terminate() && process.wait(forced_timeout))
-        };
 
+        if let Some(error) = &stop_write_error {
+            if !self.launcher_has_exited() {
+                return Err(format!("admin_mode_stop_signal_failed:{error}"));
+            }
+        }
+
+        let exited = self.launcher_has_exited()
+            || self
+                .process
+                .as_ref()
+                .is_none_or(|process| process.wait(graceful_timeout));
         if !exited {
             return Err(format!(
-                "admin_mode_helper_termination_failed{stop_write_suffix}"
+                "admin_mode_helper_settlement_timeout{stop_write_suffix}"
             ));
         }
 
-        match self
-            .process
-            .as_ref()
-            .map_or(Ok(0), ElevatedHelperProcess::exit_code)
-        {
-            Ok(0) => {
-                self.stopped = true;
-                remove_artifacts_for_snapshot(&self.data_file);
-                Ok(())
+        match self.launcher_exit_code() {
+            Ok(0) => self.finish_stopped_session(),
+            Ok(HELPER_LAUNCHER_EXIT_NO_CHILD) if !self.accepted_file.exists() => {
+                self.finish_stopped_session()
             }
+            Ok(HELPER_LAUNCHER_EXIT_SETTLED_FAILURE) => self.finish_stopped_session(),
+            Ok(HELPER_LAUNCHER_EXIT_NO_CHILD) => Err(format!(
+                "admin_mode_launcher_no_child_after_acceptance{stop_write_suffix}"
+            )),
             Ok(exit_code) => Err(format!(
                 "admin_mode_launcher_exit_failed:code={exit_code}{stop_write_suffix}"
             )),
@@ -269,7 +268,77 @@ impl ElevatedHelperClient {
             process: None,
             stopped: false,
             scripted_polls: polls.into(),
+            scripted_exit_code: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scripted_launcher_exit_for_test(
+        base_dir: &Path,
+        exit_code: u32,
+        accepted: bool,
+    ) -> Self {
+        let mut client = Self::scripted_for_test(base_dir, Vec::new());
+        fs::write(&client.data_file, "{}").expect("scripted snapshot writes");
+        fs::write(snapshot_temp_file(&client.data_file), "{}").expect("scripted temp writes");
+        if accepted {
+            fs::write(&client.accepted_file, "accepted")
+                .expect("scripted acceptance signal writes");
+        }
+        client.scripted_exit_code = Some(exit_code);
+        client
+    }
+
+    fn launcher_has_exited(&self) -> bool {
+        #[cfg(test)]
+        if self.scripted_exit_code.is_some() {
+            return true;
+        }
+
+        self.process
+            .as_ref()
+            .is_some_and(ElevatedHelperProcess::has_exited)
+    }
+
+    fn launcher_exit_code(&self) -> Result<u32, String> {
+        #[cfg(test)]
+        if let Some(exit_code) = self.scripted_exit_code {
+            return Ok(exit_code);
+        }
+
+        self.process
+            .as_ref()
+            .map_or(Ok(0), ElevatedHelperProcess::exit_code)
+    }
+
+    fn launcher_exit_detail(&self) -> String {
+        match self.launcher_exit_code() {
+            Ok(HELPER_LAUNCHER_EXIT_NO_CHILD) if !self.accepted_file.exists() => {
+                "admin_mode_launch_failed_or_cancelled".to_string()
+            }
+            Ok(exit_code) => format!("admin_mode_helper_exited:launcher_code={exit_code}"),
+            Err(error) => error,
+        }
+    }
+
+    fn finish_stopped_session(&mut self) -> Result<(), String> {
+        remove_artifacts_for_snapshot(&self.data_file);
+        let residue = [
+            self.data_file.clone(),
+            snapshot_temp_file(&self.data_file),
+            self.stop_file.clone(),
+            self.accepted_file.clone(),
+        ]
+        .into_iter()
+        .find(|path| path.exists());
+        if let Some(path) = residue {
+            return Err(format!(
+                "admin_mode_helper_cleanup_failed:path={}",
+                path.display()
+            ));
+        }
+        self.stopped = true;
+        Ok(())
     }
 
     fn accept_snapshot_payload(&mut self, payload: &str) -> Result<Option<ElevatedPoll>, String> {
@@ -403,22 +472,25 @@ fn run_elevated_helper_launcher(args: ElevatedHelperArgs) -> i32 {
     }
     let process = match shell_execute_elevated_helper(&args) {
         Ok(process) => process,
-        Err(error) => {
+        Err(ShellExecuteElevatedError::NoChild(error)) => {
             eprintln!("{error}");
-            return 1;
+            return HELPER_LAUNCHER_EXIT_NO_CHILD as i32;
+        }
+        Err(ShellExecuteElevatedError::OwnershipUnknown(error)) => {
+            eprintln!("{error}");
+            return HELPER_LAUNCHER_EXIT_FAILED as i32;
         }
     };
     if let Err(error) = fs::write(&args.accepted_file, "accepted") {
-        let _ = process.terminate();
-        let _ = process.wait(HELPER_FORCE_EXIT_GRACE);
         eprintln!("admin_mode_acceptance_signal_failed:{error}");
-        return 1;
+        settle_elevated_helper(process, &args.stop_file);
+        return HELPER_LAUNCHER_EXIT_SETTLED_FAILURE as i32;
     }
     match supervise_elevated_helper(process, &args.stop_file) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("{error}");
-            1
+            HELPER_LAUNCHER_EXIT_SETTLED_FAILURE as i32
         }
     }
 }
@@ -1386,18 +1458,29 @@ fn launch_elevated_helper(
 }
 
 #[cfg(windows)]
+#[derive(Debug)]
+enum ShellExecuteElevatedError {
+    NoChild(String),
+    OwnershipUnknown(String),
+}
+
+#[cfg(windows)]
 fn shell_execute_elevated_helper(
     args: &ElevatedHelperArgs,
-) -> Result<ElevatedHelperProcess, String> {
+) -> Result<ElevatedHelperProcess, ShellExecuteElevatedError> {
     use std::{mem::size_of, ptr::null};
 
-    use windows_sys::Win32::UI::{
-        Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
-        WindowsAndMessaging::SW_HIDE,
+    use windows_sys::Win32::{
+        Foundation::GetLastError,
+        UI::{
+            Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+            WindowsAndMessaging::SW_HIDE,
+        },
     };
 
-    let exe = std::env::current_exe()
-        .map_err(|error| format!("admin_mode_current_exe_failed:{error}"))?;
+    let exe = std::env::current_exe().map_err(|error| {
+        ShellExecuteElevatedError::NoChild(format!("admin_mode_current_exe_failed:{error}"))
+    })?;
     let exe_w = wide_os(exe.as_os_str());
     let verb_w = wide("runas");
     let params_w = wide(&format!(
@@ -1430,10 +1513,15 @@ fn shell_execute_elevated_helper(
 
     let ok = unsafe { ShellExecuteExW(&mut info) };
     if ok == 0 {
-        return Err("admin_mode_launch_failed_or_cancelled".to_string());
+        let error = unsafe { GetLastError() };
+        return Err(ShellExecuteElevatedError::NoChild(format!(
+            "admin_mode_launch_failed_or_cancelled:error={error}"
+        )));
     }
     if info.hProcess.is_null() {
-        return Err("admin_mode_launch_missing_process_handle".to_string());
+        return Err(ShellExecuteElevatedError::OwnershipUnknown(
+            "admin_mode_launch_missing_process_handle".to_string(),
+        ));
     }
 
     Ok(ElevatedHelperProcess {
@@ -1460,9 +1548,19 @@ fn supervise_elevated_helper(
             {
                 return Ok(());
             }
-            return Err("admin_mode_helper_termination_failed".to_string());
+            eprintln!("admin_mode_helper_termination_pending");
         }
         thread::sleep(HELPER_WATCHDOG_POLL);
+    }
+}
+
+#[cfg(windows)]
+fn settle_elevated_helper(process: ElevatedHelperProcess, stop_file: &Path) {
+    while !process.has_exited() {
+        if stop_file.exists() {
+            let _ = process.terminate();
+        }
+        let _ = process.wait(HELPER_WATCHDOG_POLL);
     }
 }
 
@@ -1870,6 +1968,119 @@ mod tests {
         let _ = fs::remove_dir_all(base_dir);
     }
 
+    #[test]
+    fn pre_child_launcher_exit_cleans_session_for_retry() {
+        let base_dir = test_dir("pre-child-exit");
+        let mut client = ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &base_dir,
+            HELPER_LAUNCHER_EXIT_NO_CHILD,
+            false,
+        );
+        let data_file = client.data_file.clone();
+        let temp_file = snapshot_temp_file(&data_file);
+        let stop_file = client.stop_file.clone();
+        let accepted_file = client.accepted_file.clone();
+
+        assert_eq!(
+            client
+                .poll_rows()
+                .expect_err("pre-child launcher exit is explicit"),
+            "admin_mode_launch_failed_or_cancelled"
+        );
+        client
+            .stop()
+            .expect("pre-child exit proves no child remains");
+
+        assert!(client.stopped);
+        assert!(!data_file.exists());
+        assert!(!temp_file.exists());
+        assert!(!stop_file.exists());
+        assert!(!accepted_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn unresolved_post_child_launcher_failure_retains_session_ownership() {
+        let base_dir = test_dir("post-child-exit");
+        let mut client = ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &base_dir,
+            HELPER_LAUNCHER_EXIT_FAILED,
+            true,
+        );
+
+        assert_eq!(
+            client
+                .poll_rows()
+                .expect_err("post-child launcher exit is explicit"),
+            "admin_mode_helper_exited:launcher_code=1"
+        );
+        assert_eq!(
+            client.stop().expect_err("post-child failure stays owned"),
+            "admin_mode_launcher_exit_failed:code=1"
+        );
+
+        assert!(!client.stopped);
+        assert!(client.data_file.exists());
+        assert!(client.stop_file.exists());
+        assert!(client.accepted_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn settled_post_child_launcher_failure_cleans_session_for_retry() {
+        let base_dir = test_dir("settled-post-child-exit");
+        let mut client = ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &base_dir,
+            HELPER_LAUNCHER_EXIT_SETTLED_FAILURE,
+            true,
+        );
+
+        assert_eq!(
+            client
+                .poll_rows()
+                .expect_err("settled helper failure is explicit"),
+            "admin_mode_helper_exited:launcher_code=3"
+        );
+        client
+            .stop()
+            .expect("settled child ownership permits cleanup");
+
+        assert!(client.stopped);
+        assert!(!client.data_file.exists());
+        assert!(!client.stop_file.exists());
+        assert!(!client.accepted_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn no_child_exit_after_acceptance_retains_session_ownership() {
+        let base_dir = test_dir("accepted-no-child-exit");
+        let mut client = ElevatedHelperClient::scripted_launcher_exit_for_test(
+            &base_dir,
+            HELPER_LAUNCHER_EXIT_NO_CHILD,
+            true,
+        );
+
+        assert_eq!(
+            client
+                .poll_rows()
+                .expect_err("acceptance prevents denial classification"),
+            "admin_mode_helper_exited:launcher_code=2"
+        );
+        assert_eq!(
+            client
+                .stop()
+                .expect_err("accepted sessions require ownership settlement"),
+            "admin_mode_launcher_no_child_after_acceptance"
+        );
+
+        assert!(!client.stopped);
+        assert!(client.data_file.exists());
+        assert!(client.stop_file.exists());
+        assert!(client.accepted_file.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
     #[cfg(windows)]
     #[test]
     fn parent_watchdog_is_cancellable_and_joined() {
@@ -1901,10 +2112,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn stop_rejects_forced_nonzero_launcher_exit_and_retains_artifacts() {
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-        };
+    fn stop_does_not_kill_broker_when_stop_signal_write_fails() {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
 
         let base_dir = test_dir("force-stop");
         let mut child = std::process::Command::new("powershell.exe")
@@ -1923,34 +2132,20 @@ mod tests {
         });
         assert_eq!(
             client
-                .stop_with_timeouts(Duration::ZERO, Duration::ZERO)
-                .expect_err("missing terminate access fails"),
-            "admin_mode_helper_termination_failed"
+                .stop_with_timeout(Duration::ZERO)
+                .expect_err("live broker remains owned"),
+            "admin_mode_helper_settlement_timeout"
         );
-        assert!(!client.stopped, "failed termination remains retryable");
+        assert!(!client.stopped, "unsettled broker remains retryable");
         assert!(client.stop_file.exists(), "stop signal is retained");
         fs::remove_file(&client.stop_file).expect("stop signal fixture removes");
         fs::create_dir(&client.stop_file).expect("stop signal write blocker creates");
 
-        let terminate_handle = unsafe {
-            OpenProcess(
-                PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                child.id(),
-            )
-        };
-        assert!(
-            !terminate_handle.is_null(),
-            "terminate process handle opens"
-        );
-        client.process = Some(ElevatedHelperProcess {
-            handle: terminate_handle,
-        });
         let error = client
-            .stop_with_timeouts(Duration::ZERO, Duration::from_secs(2))
-            .expect_err("forced launcher exit is not clean shutdown");
+            .stop_with_timeout(Duration::ZERO)
+            .expect_err("failed stop signal retains the live broker");
         assert!(
-            error.starts_with("admin_mode_launcher_exit_failed:code=1:stop_signal_failed:"),
+            error.starts_with("admin_mode_stop_signal_failed:"),
             "unexpected error: {error}"
         );
 
@@ -1959,10 +2154,62 @@ mod tests {
             client.stop_file.is_dir(),
             "failed stop artifact is retained"
         );
-        assert!(client
+        assert!(!client
             .process
             .as_ref()
             .is_some_and(ElevatedHelperProcess::has_exited));
+        child
+            .kill()
+            .expect("test process is terminated by its owner");
+        child.wait().expect("test process is reaped");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_does_not_kill_an_accepted_broker_before_child_settlement() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+
+        let base_dir = test_dir("accepted-broker-settlement");
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"])
+            .spawn()
+            .expect("test process starts");
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                child.id(),
+            )
+        };
+        assert!(!handle.is_null(), "test process handle opens");
+
+        let mut client = test_client(&base_dir);
+        fs::write(&client.accepted_file, "accepted").expect("accepted fixture writes");
+        client.process = Some(ElevatedHelperProcess { handle });
+
+        assert_eq!(
+            client
+                .stop_with_timeout(Duration::ZERO)
+                .expect_err("accepted broker stays owned until child settlement"),
+            "admin_mode_helper_settlement_timeout"
+        );
+        assert!(!client.stopped);
+        assert!(client.stop_file.exists(), "stop request remains observable");
+        assert!(
+            client.accepted_file.exists(),
+            "acceptance proof is retained"
+        );
+        assert!(!client
+            .process
+            .as_ref()
+            .is_some_and(ElevatedHelperProcess::has_exited));
+
+        child
+            .kill()
+            .expect("test process is terminated by its owner");
         child.wait().expect("test process is reaped");
         let _ = fs::remove_dir_all(base_dir);
     }
@@ -1984,7 +2231,7 @@ mod tests {
         });
 
         client
-            .stop_with_timeouts(Duration::from_secs(2), Duration::ZERO)
+            .stop_with_timeout(Duration::from_secs(2))
             .expect("zero launcher exit proves shutdown");
 
         assert!(client.stopped);
