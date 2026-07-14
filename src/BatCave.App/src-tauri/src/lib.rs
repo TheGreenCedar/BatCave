@@ -22,6 +22,8 @@ mod protocol;
 mod runtime_provenance;
 mod runtime_store;
 mod telemetry;
+#[cfg(test)]
+mod updater_hostile_fixtures;
 #[cfg(any(windows, test))]
 mod windows_network;
 #[cfg(any(windows, test))]
