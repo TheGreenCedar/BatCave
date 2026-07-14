@@ -444,7 +444,7 @@ fn product_version_string(buffer: &AlignedBuffer) -> Result<String, String> {
     } == 0
         || translations.is_null()
         || translations_len < 4
-        || translations_len % 4 != 0
+        || !translations_len.is_multiple_of(4)
     {
         return Err("collector_service_peer_product_version_translation_invalid".to_string());
     }
