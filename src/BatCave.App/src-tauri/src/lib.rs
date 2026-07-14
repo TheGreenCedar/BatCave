@@ -75,8 +75,18 @@ fn resume_runtime(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvel
 fn set_process_query(
     state: tauri::State<'_, RuntimeState>,
     query: RuntimeQueryInputV3,
+    persist: Option<bool>,
 ) -> Result<ProtocolEnvelope, String> {
-    protocol::encode_snapshot(state.set_query(runtime_query(query)?)?)
+    let query = runtime_query(query)?;
+    protocol::encode_snapshot(if query_should_persist(persist) {
+        state.set_query(query)?
+    } else {
+        state.set_query_runtime_only(query)?
+    })
+}
+
+fn query_should_persist(persist: Option<bool>) -> bool {
+    persist.unwrap_or(true)
 }
 
 fn runtime_query(query: RuntimeQueryInputV3) -> Result<RuntimeQuery, String> {
@@ -288,6 +298,13 @@ mod tests {
         assert!(matches!(query.sort_column, SortColumn::NetworkBps));
         assert!(matches!(query.sort_direction, SortDirection::Asc));
         assert_eq!(query.limit, 25);
+    }
+
+    #[test]
+    fn missing_query_persistence_flag_preserves_the_legacy_durable_behavior() {
+        assert!(query_should_persist(None));
+        assert!(query_should_persist(Some(true)));
+        assert!(!query_should_persist(Some(false)));
     }
 
     #[test]

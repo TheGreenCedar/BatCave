@@ -30,7 +30,11 @@ import {
   shouldApplyRuntimePublication,
   shouldPollRuntime,
 } from "../src/lib/runtimeSnapshot.ts";
-import { dispatchAutomaticRuntimeHydration } from "../src/lib/runtimeHydration.ts";
+import {
+  dispatchAutomaticRuntimeHydration,
+  planAutomaticRuntimeFocusHydration,
+} from "../src/lib/runtimeHydration.ts";
+import { RuntimeMutationQueue } from "../src/lib/tauriBridge.ts";
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
 import { UiPreferencePersistenceSequence } from "../src/lib/uiPreferencePersistence.ts";
 import type {
@@ -173,7 +177,69 @@ test("rapid UI preference saves keep the newest fallback through out-of-order re
   );
 });
 
-test("degraded first-snapshot hydration dispatches no native settings mutation", () => {
+test("runtime mutation queue preserves invocation order and continues after failure", async () => {
+  const queue = new RuntimeMutationQueue();
+  const invocations: string[] = [];
+  let releaseFirst = () => {};
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const first = queue.run(async () => {
+    invocations.push("first");
+    await firstGate;
+    return 1;
+  });
+  const second = queue.run(async () => {
+    invocations.push("second");
+    return 2;
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(invocations, ["first"]);
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), [1, 2]);
+  assert.deepEqual(invocations, ["first", "second"]);
+
+  await assert.rejects(
+    queue.run(async () => Promise.reject(new Error("expected"))),
+    /expected/u,
+  );
+  assert.equal(await queue.run(async () => 3), 3);
+
+  const bounded = new RuntimeMutationQueue(2);
+  let releaseBounded = () => {};
+  const boundedGate = new Promise<void>((resolve) => {
+    releaseBounded = resolve;
+  });
+  const held = bounded.run(async () => boundedGate);
+  const queued = bounded.run(async () => 2);
+  await assert.rejects(
+    bounded.run(async () => 3),
+    (error) => error === "runtime_control_busy",
+  );
+  releaseBounded();
+  await held;
+  assert.equal(await queued, 2);
+});
+
+test("automatic focus hydration keeps the published control until its query applies", () => {
+  const published = durablePreferenceSnapshot("system", 72);
+  published.settings.query.focus_mode = "all";
+
+  assert.deepEqual(planAutomaticRuntimeFocusHydration(published, true), {
+    desired: "attention",
+    requiresSync: true,
+    visible: "all",
+  });
+  assert.deepEqual(planAutomaticRuntimeFocusHydration(published, false), {
+    desired: "all",
+    requiresSync: false,
+    visible: "all",
+  });
+});
+
+test("degraded first-snapshot hydration dispatches only the runtime-only query", () => {
   const degraded = durablePreferenceSnapshot("system", 72);
   degraded.settings.ui_preferences = null;
   degraded.persistence = {
@@ -204,21 +270,35 @@ test("degraded first-snapshot hydration dispatches no native settings mutation",
     { persistUiPreferences: true, syncRuntimeQuery: true },
     {
       persistUiPreferences: () => nativeInvocations.push("set_ui_preferences"),
-      syncRuntimeQuery: () => nativeInvocations.push("set_process_query"),
+      syncRuntimeQuery: () => nativeInvocations.push("set_process_query:runtime_only"),
     },
   );
 
-  assert.deepEqual(nativeInvocations, []);
+  assert.deepEqual(nativeInvocations, ["set_process_query:runtime_only"]);
+
+  dispatchAutomaticRuntimeHydration(
+    degraded,
+    { persistUiPreferences: true, syncRuntimeQuery: false },
+    {
+      persistUiPreferences: () => nativeInvocations.push("set_ui_preferences"),
+      syncRuntimeQuery: () => nativeInvocations.push("set_process_query:runtime_only"),
+    },
+  );
+  assert.deepEqual(nativeInvocations, ["set_process_query:runtime_only"]);
 
   dispatchAutomaticRuntimeHydration(
     durablePreferenceSnapshot("system", 72),
     { persistUiPreferences: true, syncRuntimeQuery: true },
     {
       persistUiPreferences: () => nativeInvocations.push("set_ui_preferences"),
-      syncRuntimeQuery: () => nativeInvocations.push("set_process_query"),
+      syncRuntimeQuery: () => nativeInvocations.push("set_process_query:runtime_only"),
     },
   );
-  assert.deepEqual(nativeInvocations, ["set_ui_preferences", "set_process_query"]);
+  assert.deepEqual(nativeInvocations, [
+    "set_process_query:runtime_only",
+    "set_ui_preferences",
+    "set_process_query:runtime_only",
+  ]);
 });
 
 test("paused native lifecycle publications stay visible without advancing history", () => {
