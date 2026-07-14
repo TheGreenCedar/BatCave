@@ -37,7 +37,7 @@ The sanitized outcome contains the selected internal transport, failure boundari
 | `fexecve` or `execveat` | Rejected for package-byte transport | These execute an executable image. They do not make a deb payload consumable by `dpkg`, and they do not establish AppImage runtime, mount, or cleanup behavior. |
 | Caller-visible descriptor or path | Rejected | It lets the caller disclose, close, replay, or pair authority from different operations. |
 
-The follow-up [real-package transport gate](0006-linux-package-owned-transport.md) tests the child-private descriptor path, `execveat`, and `fexecve` against the AppImage built from the checkout, and fixed `dpkg-deb` extraction against the deb. That result remains a hosted, locally built transport check rather than public or native release proof.
+The follow-up [real-package transport gate](0008-linux-package-owned-transport.md) tests the child-private descriptor path, `execveat`, and `fexecve` against the AppImage built from the checkout, and fixed `dpkg-deb` extraction against the deb. That result remains a hosted, locally built transport check rather than public or native release proof.
 
 ## Failure behavior
 
