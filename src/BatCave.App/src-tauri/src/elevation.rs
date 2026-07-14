@@ -129,7 +129,6 @@ impl ElevatedHelperClient {
             .as_ref()
             .is_some_and(ElevatedHelperProcess::has_exited)
         {
-            remove_artifacts_for_snapshot(&self.data_file);
             return Err("admin_mode_helper_exited".to_string());
         }
 
@@ -205,6 +204,9 @@ impl ElevatedHelperClient {
         }
 
         let stop_write_error = fs::write(&self.stop_file, "stop").err();
+        let stop_write_suffix = stop_write_error
+            .map(|error| format!(":stop_signal_failed:{error}"))
+            .unwrap_or_default();
         let exited = self
             .process
             .as_ref()
@@ -217,16 +219,26 @@ impl ElevatedHelperClient {
                 .is_some_and(|process| process.terminate() && process.wait(forced_timeout))
         };
 
-        if exited {
-            self.stopped = true;
-            remove_artifacts_for_snapshot(&self.data_file);
-            Ok(())
-        } else {
-            remove_snapshot_artifacts(&self.data_file);
-            let suffix = stop_write_error
-                .map(|error| format!(":stop_signal_failed:{error}"))
-                .unwrap_or_default();
-            Err(format!("admin_mode_helper_termination_failed{suffix}"))
+        if !exited {
+            return Err(format!(
+                "admin_mode_helper_termination_failed{stop_write_suffix}"
+            ));
+        }
+
+        match self
+            .process
+            .as_ref()
+            .map_or(Ok(0), ElevatedHelperProcess::exit_code)
+        {
+            Ok(0) => {
+                self.stopped = true;
+                remove_artifacts_for_snapshot(&self.data_file);
+                Ok(())
+            }
+            Ok(exit_code) => Err(format!(
+                "admin_mode_launcher_exit_failed:code={exit_code}{stop_write_suffix}"
+            )),
+            Err(error) => Err(format!("{error}{stop_write_suffix}")),
         }
     }
 
@@ -1283,6 +1295,20 @@ impl ElevatedHelperProcess {
 
         unsafe { TerminateProcess(self.handle, 1) != 0 }
     }
+
+    fn exit_code(&self) -> Result<u32, String> {
+        use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+
+        let mut exit_code = 0_u32;
+        if unsafe { GetExitCodeProcess(self.handle, &mut exit_code) } == 0 {
+            Err(format!(
+                "admin_mode_launcher_exit_status_failed:{}",
+                std::io::Error::last_os_error()
+            ))
+        } else {
+            Ok(exit_code)
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1310,6 +1336,10 @@ impl ElevatedHelperProcess {
 
     fn terminate(&self) -> bool {
         true
+    }
+
+    fn exit_code(&self) -> Result<u32, String> {
+        Ok(0)
     }
 }
 
@@ -1871,9 +1901,9 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn stop_retries_and_force_terminates_after_failed_attempt() {
+    fn stop_rejects_forced_nonzero_launcher_exit_and_retains_artifacts() {
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
         };
 
         let base_dir = test_dir("force-stop");
@@ -1898,9 +1928,17 @@ mod tests {
             "admin_mode_helper_termination_failed"
         );
         assert!(!client.stopped, "failed termination remains retryable");
+        assert!(client.stop_file.exists(), "stop signal is retained");
+        fs::remove_file(&client.stop_file).expect("stop signal fixture removes");
+        fs::create_dir(&client.stop_file).expect("stop signal write blocker creates");
 
-        let terminate_handle =
-            unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, child.id()) };
+        let terminate_handle = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                child.id(),
+            )
+        };
         assert!(
             !terminate_handle.is_null(),
             "terminate process handle opens"
@@ -1908,16 +1946,50 @@ mod tests {
         client.process = Some(ElevatedHelperProcess {
             handle: terminate_handle,
         });
-        client
+        let error = client
             .stop_with_timeouts(Duration::ZERO, Duration::from_secs(2))
-            .expect("retry force terminates helper");
+            .expect_err("forced launcher exit is not clean shutdown");
+        assert!(
+            error.starts_with("admin_mode_launcher_exit_failed:code=1:stop_signal_failed:"),
+            "unexpected error: {error}"
+        );
 
-        assert!(client.stopped);
+        assert!(!client.stopped);
+        assert!(
+            client.stop_file.is_dir(),
+            "failed stop artifact is retained"
+        );
         assert!(client
             .process
             .as_ref()
             .is_some_and(ElevatedHelperProcess::has_exited));
         child.wait().expect("test process is reaped");
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_accepts_zero_launcher_exit_and_removes_artifacts() {
+        use std::os::windows::io::IntoRawHandle;
+
+        let base_dir = test_dir("clean-launcher-stop");
+        let mut client = test_client(&base_dir);
+        fs::write(&client.data_file, "{}").expect("snapshot fixture writes");
+        let child = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .expect("clean launcher fixture starts");
+        client.process = Some(ElevatedHelperProcess {
+            handle: child.into_raw_handle() as HANDLE,
+        });
+
+        client
+            .stop_with_timeouts(Duration::from_secs(2), Duration::ZERO)
+            .expect("zero launcher exit proves shutdown");
+
+        assert!(client.stopped);
+        assert!(!client.stop_file.exists());
+        assert!(!client.data_file.exists());
         let _ = fs::remove_dir_all(base_dir);
     }
 

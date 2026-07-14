@@ -1295,6 +1295,7 @@ impl RuntimeStore {
             if let Some(mut client) = self.elevated.take() {
                 if let Err(error) = client.stop() {
                     self.add_warning("admin_mode", error);
+                    self.elevated = Some(client);
                 }
             }
             let _ = self.collector.retry_process_network();
@@ -1305,7 +1306,9 @@ impl RuntimeStore {
             }
             self.process_access_baseline_dirty = false;
             let _ = self.purge_warm_cache();
-            ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
+            if self.elevated.is_none() {
+                ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
+            }
         }
         let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
         self.publish_snapshot_only(None);
@@ -1403,6 +1406,7 @@ impl RuntimeStore {
             if let Some(mut client) = self.elevated.take() {
                 if let Err(stop_error) = client.stop() {
                     self.add_warning("admin_mode", stop_error);
+                    self.elevated = Some(client);
                 }
             }
             self.fail_admin_mode(error);
@@ -2026,9 +2030,12 @@ impl RuntimeStore {
         if let Some(mut client) = self.elevated.take() {
             if let Err(error) = client.stop() {
                 errors.push(error);
+                self.elevated = Some(client);
             }
         }
-        ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
+        if self.elevated.is_none() {
+            ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
+        }
         if errors.is_empty() {
             Ok(())
         } else {
