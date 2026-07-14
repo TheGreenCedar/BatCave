@@ -1016,8 +1016,39 @@ fn apply_network_attribution(
                     Some(MetricQualityInfo::new(MetricQuality::Native, source));
             }
         }
+        NetworkAttributionSample::Partial {
+            rates_by_pid,
+            message,
+        } => {
+            for process in processes {
+                let rates = process
+                    .pid
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|pid| rates_by_pid.get(&pid).copied())
+                    .unwrap_or_default();
+                process.network_received_bps = Some(rates.received_bps);
+                process.network_transmitted_bps = Some(rates.transmitted_bps);
+                process_quality(process).network = Some(
+                    MetricQualityInfo::new(MetricQuality::Partial, source)
+                        .with_limitation(MetricLimitationCode::DataLoss, &message),
+                );
+            }
+        }
+        NetworkAttributionSample::PendingBaseline(message) => {
+            for process in processes {
+                process.network_received_bps = None;
+                process.network_transmitted_bps = None;
+                process_quality(process).network = Some(
+                    MetricQualityInfo::new(MetricQuality::Held, source)
+                        .with_limitation(MetricLimitationCode::PendingBaseline, &message),
+                );
+            }
+        }
         NetworkAttributionSample::Held(message) => {
             for process in processes {
+                process.network_received_bps = None;
+                process.network_transmitted_bps = None;
                 process_quality(process).network = Some(
                     MetricQualityInfo::new(MetricQuality::Held, source)
                         .with_limitation(MetricLimitationCode::HeldValue, &message),
@@ -1062,7 +1093,6 @@ fn fully_native_process_quality() -> ProcessMetricQuality {
 mod tests {
     use super::*;
     use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
-    #[cfg(windows)]
     use std::collections::HashMap;
 
     #[test]
@@ -1295,6 +1325,65 @@ mod tests {
         assert_eq!(network.quality, MetricQuality::Native);
         assert_eq!(network.source, Some(MetricSource::Etw));
         assert_eq!(network.message, None);
+    }
+
+    #[test]
+    fn apply_network_attribution_keeps_unproven_zero_out_of_native_quality() {
+        let mut processes = vec![sample_process("42")];
+
+        apply_network_attribution(
+            &mut processes,
+            NetworkAttributionSample::PendingBaseline(
+                "Waiting for a supported ETW event.".to_string(),
+            ),
+            MetricSource::Etw,
+        );
+
+        assert_eq!(processes[0].network_received_bps, None);
+        assert_eq!(processes[0].network_transmitted_bps, None);
+        let network = processes[0]
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.network.as_ref())
+            .expect("network quality");
+        assert_eq!(network.quality, MetricQuality::Held);
+        assert_eq!(
+            network.limitation_code,
+            Some(MetricLimitationCode::PendingBaseline)
+        );
+    }
+
+    #[test]
+    fn apply_network_attribution_marks_lossy_rows_partial() {
+        let mut processes = vec![sample_process("42")];
+
+        apply_network_attribution(
+            &mut processes,
+            NetworkAttributionSample::Partial {
+                rates_by_pid: HashMap::from([(
+                    42,
+                    ProcessNetworkRates {
+                        received_bps: 512,
+                        transmitted_bps: 256,
+                    },
+                )]),
+                message: "ETW reported data loss.".to_string(),
+            },
+            MetricSource::Etw,
+        );
+
+        assert_eq!(processes[0].network_received_bps, Some(512));
+        assert_eq!(processes[0].network_transmitted_bps, Some(256));
+        let network = processes[0]
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.network.as_ref())
+            .expect("network quality");
+        assert_eq!(network.quality, MetricQuality::Partial);
+        assert_eq!(
+            network.limitation_code,
+            Some(MetricLimitationCode::DataLoss)
+        );
     }
 
     #[cfg(target_os = "linux")]

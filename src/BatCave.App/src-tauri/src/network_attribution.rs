@@ -11,6 +11,11 @@ pub enum NetworkAttributionSample {
     Ready {
         rates_by_pid: HashMap<u32, ProcessNetworkRates>,
     },
+    Partial {
+        rates_by_pid: HashMap<u32, ProcessNetworkRates>,
+        message: String,
+    },
+    PendingBaseline(String),
     Held(String),
     Failed(String),
 }

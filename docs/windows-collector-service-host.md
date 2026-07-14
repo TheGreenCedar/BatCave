@@ -38,7 +38,7 @@ Each accepted connection gets an independent authorization session. Negotiation 
 
 SCM stop and shutdown controls set the service stop signal. The nonblocking listener and client loops observe that signal, client workers join, and the collector engine shuts down before the service reports `SERVICE_STOPPED`.
 
-This host starts the shared collector with process-network ETW disabled. Per-process network quality therefore remains explicitly held; #70 owns enabling it only after the service has leased session ownership, bounded shutdown, and truthful warm-up and recovery behavior.
+This host starts the shared collector with process-network ETW disabled. Per-process network quality therefore remains explicitly held. The dormant ETW monitor now fails closed until a supported event decodes, queries the exact session for loss and configuration drift, and requires a clean decoded interval after loss before returning to native quality. #70 still owns enabling it only after the service has leased session ownership and bounded shutdown.
 
 ## Remaining #69 work
 

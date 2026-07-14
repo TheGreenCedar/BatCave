@@ -4,6 +4,117 @@ use std::collections::HashMap;
 
 use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
 
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct EtwSessionStatistics {
+    events_lost: u64,
+    log_buffers_lost: u64,
+    realtime_buffers_lost: u64,
+}
+
+#[cfg(any(windows, test))]
+impl EtwSessionStatistics {
+    fn total_loss(self) -> u64 {
+        self.events_lost
+            .saturating_add(self.log_buffers_lost)
+            .saturating_add(self.realtime_buffers_lost)
+    }
+
+    fn decreased_from(self, previous: Self) -> bool {
+        self.events_lost < previous.events_lost
+            || self.log_buffers_lost < previous.log_buffers_lost
+            || self.realtime_buffers_lost < previous.realtime_buffers_lost
+    }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EtwHealthSnapshot {
+    consumer_started: bool,
+    consumer_error: Option<String>,
+    decoded_events: u64,
+    decoder_errors: u64,
+    session_statistics: Result<EtwSessionStatistics, String>,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EtwQualityDecision {
+    Native,
+    PendingBaseline,
+    DataLoss(String),
+    Unavailable(String),
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Default)]
+struct EtwQualityTracker {
+    decoded_events: u64,
+    decoder_errors: u64,
+    session_statistics: EtwSessionStatistics,
+    needs_clean_interval: bool,
+}
+
+#[cfg(any(windows, test))]
+impl EtwQualityTracker {
+    fn evaluate(&mut self, snapshot: EtwHealthSnapshot) -> EtwQualityDecision {
+        if let Some(error) = snapshot.consumer_error {
+            return EtwQualityDecision::Unavailable(error);
+        }
+
+        let statistics = match snapshot.session_statistics {
+            Ok(statistics) => statistics,
+            Err(error) => return EtwQualityDecision::Unavailable(error),
+        };
+        if statistics.decreased_from(self.session_statistics) {
+            return EtwQualityDecision::Unavailable(
+                "network_attribution_session_statistics_regressed".to_string(),
+            );
+        }
+
+        let decoded_delta = snapshot.decoded_events.saturating_sub(self.decoded_events);
+        let decoder_error_delta = snapshot.decoder_errors.saturating_sub(self.decoder_errors);
+        let loss_delta = statistics
+            .total_loss()
+            .saturating_sub(self.session_statistics.total_loss());
+        self.decoded_events = snapshot.decoded_events;
+        self.decoder_errors = snapshot.decoder_errors;
+        self.session_statistics = statistics;
+
+        if decoder_error_delta > 0 || loss_delta > 0 {
+            self.needs_clean_interval = true;
+            if snapshot.decoded_events == 0 {
+                return EtwQualityDecision::Unavailable(format!(
+                    "network_attribution_decoder_unproven:decoder_errors={decoder_error_delta}:lost={loss_delta}"
+                ));
+            }
+            return EtwQualityDecision::DataLoss(format!(
+                "ETW process-network attribution lost data: decoder_errors={decoder_error_delta}, lost_events_or_buffers={loss_delta}."
+            ));
+        }
+
+        if !snapshot.consumer_started {
+            return EtwQualityDecision::PendingBaseline;
+        }
+
+        if snapshot.decoded_events == 0 {
+            return EtwQualityDecision::PendingBaseline;
+        }
+
+        if self.needs_clean_interval {
+            if decoded_delta == 0 {
+                return EtwQualityDecision::DataLoss(
+                    "ETW process-network attribution is waiting for a clean decoded interval after data loss."
+                        .to_string(),
+                );
+            }
+            self.needs_clean_interval = false;
+        }
+
+        EtwQualityDecision::Native
+    }
+}
+
 #[cfg(windows)]
 pub struct NetworkAttributionMonitor {
     inner: WindowsNetworkAttributionMonitor,
@@ -141,7 +252,7 @@ mod windows_impl {
         ptr::{null, null_mut},
         slice,
         sync::{
-            atomic::{AtomicU64, Ordering},
+            atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex,
         },
         thread::{self, JoinHandle},
@@ -151,15 +262,14 @@ mod windows_impl {
     use windows_sys::{
         core::GUID,
         Win32::{
-            Foundation::{
-                ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
-            },
+            Foundation::{ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS},
             System::Diagnostics::Etw::{
                 CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW, TcpIpGuid,
                 TdhGetEventInformation, TdhGetProperty, TdhGetPropertySize, EVENT_RECORD,
-                EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW,
-                EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE,
-                PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
+                EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP,
+                EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
+                EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE, PROCESSTRACE_HANDLE,
+                PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
                 PROPERTY_DATA_DESCRIPTOR, TRACE_EVENT_INFO, WNODE_FLAG_TRACED_GUID,
             },
         },
@@ -167,6 +277,7 @@ mod windows_impl {
 
     use super::{
         apply_network_event, classify_direction, first_matching_property, rate_map_from_deltas,
+        EtwHealthSnapshot, EtwQualityDecision, EtwQualityTracker, EtwSessionStatistics,
         NetworkAttributionSample, NetworkByteCounters, NetworkDirection,
     };
 
@@ -178,7 +289,6 @@ mod windows_impl {
         data3: 0x4c39,
         data4: [0x91, 0xd3, 0x45, 0x1d, 0xb1, 0x87, 0x54, 0xe7],
     };
-    const ETW_WARMUP_MS: u128 = 1500;
     const PROPERTY_SIZE_NAMES: [&str; 6] = [
         "size",
         "Size",
@@ -195,6 +305,7 @@ mod windows_impl {
         process_thread: Option<JoinHandle<()>>,
         session_name: Vec<u16>,
         previous_sample_at: Mutex<Instant>,
+        quality: Mutex<EtwQualityTracker>,
     }
 
     impl WindowsNetworkAttributionMonitor {
@@ -235,14 +346,11 @@ mod windows_impl {
                 process_thread: Some(process_thread),
                 session_name,
                 previous_sample_at: Mutex::new(Instant::now()),
+                quality: Mutex::new(EtwQualityTracker::default()),
             })
         }
 
         pub fn sample(&self) -> NetworkAttributionSample {
-            if let Some(error) = self.shared.last_error() {
-                return NetworkAttributionSample::Failed(error);
-            }
-
             let current = self.shared.drain_counters();
             let now = Instant::now();
             let mut previous_sample_at = match self.previous_sample_at.lock() {
@@ -257,13 +365,35 @@ mod windows_impl {
             *previous_sample_at = now;
 
             let rates_by_pid = rate_map_from_deltas(&current, &HashMap::new(), elapsed_seconds);
+            let session_statistics = query_trace_statistics(self.trace_handle, &self.session_name);
+            let snapshot = EtwHealthSnapshot {
+                consumer_started: self.shared.consumer_started(),
+                consumer_error: self.shared.last_error(),
+                decoded_events: self.shared.decoded_events(),
+                decoder_errors: self.shared.decoder_errors(),
+                session_statistics,
+            };
+            let decision = match self.quality.lock() {
+                Ok(mut quality) => quality.evaluate(snapshot),
+                Err(_) => {
+                    return NetworkAttributionSample::Failed(
+                        "network_attribution_quality_lock_poisoned".to_string(),
+                    )
+                }
+            };
 
-            if self.shared.events_seen() == 0
-                && self.shared.started_at.elapsed().as_millis() < ETW_WARMUP_MS
-            {
-                NetworkAttributionSample::Held("ETW network attribution is warming up.".to_string())
-            } else {
-                NetworkAttributionSample::Ready { rates_by_pid }
+            match decision {
+                EtwQualityDecision::Native => NetworkAttributionSample::Ready { rates_by_pid },
+                EtwQualityDecision::PendingBaseline => NetworkAttributionSample::PendingBaseline(
+                    "Waiting for a supported ETW process-network event baseline.".to_string(),
+                ),
+                EtwQualityDecision::DataLoss(message) => NetworkAttributionSample::Partial {
+                    rates_by_pid,
+                    message,
+                },
+                EtwQualityDecision::Unavailable(message) => {
+                    NetworkAttributionSample::Failed(message)
+                }
             }
         }
     }
@@ -290,8 +420,9 @@ mod windows_impl {
     struct NetworkEtwShared {
         counters_by_pid: Mutex<HashMap<u32, NetworkByteCounters>>,
         error: Mutex<Option<String>>,
-        events_seen: AtomicU64,
-        started_at: Instant,
+        decoded_events: AtomicU64,
+        decoder_errors: AtomicU64,
+        consumer_started: AtomicBool,
     }
 
     impl NetworkEtwShared {
@@ -299,16 +430,21 @@ mod windows_impl {
             Self {
                 counters_by_pid: Mutex::new(HashMap::new()),
                 error: Mutex::new(None),
-                events_seen: AtomicU64::new(0),
-                started_at: Instant::now(),
+                decoded_events: AtomicU64::new(0),
+                decoder_errors: AtomicU64::new(0),
+                consumer_started: AtomicBool::new(false),
             }
         }
 
         fn record(&self, event: NetworkEtwEvent) {
             if let Ok(mut counters) = self.counters_by_pid.lock() {
                 apply_network_event(&mut counters, event.pid, event.direction, event.byte_count);
-                self.events_seen.fetch_add(1, Ordering::Relaxed);
+                self.decoded_events.fetch_add(1, Ordering::Relaxed);
             }
+        }
+
+        fn record_decoder_error(&self) {
+            self.decoder_errors.fetch_add(1, Ordering::Relaxed);
         }
 
         fn drain_counters(&self) -> HashMap<u32, NetworkByteCounters> {
@@ -328,8 +464,20 @@ mod windows_impl {
             self.error.lock().ok().and_then(|value| value.clone())
         }
 
-        fn events_seen(&self) -> u64 {
-            self.events_seen.load(Ordering::Relaxed)
+        fn mark_consumer_started(&self) {
+            self.consumer_started.store(true, Ordering::Release);
+        }
+
+        fn consumer_started(&self) -> bool {
+            self.consumer_started.load(Ordering::Acquire)
+        }
+
+        fn decoded_events(&self) -> u64 {
+            self.decoded_events.load(Ordering::Relaxed)
+        }
+
+        fn decoder_errors(&self) -> u64 {
+            self.decoder_errors.load(Ordering::Relaxed)
         }
     }
 
@@ -352,17 +500,18 @@ mod windows_impl {
             return;
         }
 
-        if let Some(event) = decode_network_event(event_record) {
-            (*shared).record(event);
+        match decode_network_event(event_record) {
+            NetworkEtwDecode::Decoded(event) => (*shared).record(event),
+            NetworkEtwDecode::Ignored => {}
+            NetworkEtwDecode::Failed => (*shared).record_decoder_error(),
         }
     }
 
     fn process_trace_loop(process_handle: PROCESSTRACE_HANDLE, shared: Arc<NetworkEtwShared>) {
+        shared.mark_consumer_started();
         let handles = [process_handle];
         let result = unsafe { ProcessTrace(handles.as_ptr(), 1, null(), null()) };
-        if result != ERROR_SUCCESS && result != ERROR_CANCELLED {
-            shared.set_error(format!("network_attribution_process_trace_failed:{result}"));
-        }
+        shared.set_error(format!("network_attribution_process_trace_ended:{result}"));
         unsafe {
             CloseTrace(process_handle);
         }
@@ -408,6 +557,42 @@ mod windows_impl {
         }
     }
 
+    fn query_trace_statistics(
+        trace_handle: u64,
+        session_name: &[u16],
+    ) -> Result<EtwSessionStatistics, String> {
+        let mut properties = trace_properties(session_name);
+        let result = unsafe {
+            ControlTraceW(
+                windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE {
+                    Value: trace_handle,
+                },
+                session_name.as_ptr(),
+                properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+                EVENT_TRACE_CONTROL_QUERY,
+            )
+        };
+        if result != ERROR_SUCCESS {
+            return Err(format!("network_attribution_query_trace_failed:{result}"));
+        }
+
+        let properties = unsafe { &*(properties.as_ptr() as *const EVENT_TRACE_PROPERTIES) };
+        if !same_guid(&properties.Wnode.Guid, &LOGGER_GUID)
+            || properties.EnableFlags & EVENT_TRACE_FLAG_NETWORK_TCPIP
+                != EVENT_TRACE_FLAG_NETWORK_TCPIP
+            || properties.LogFileMode & EVENT_TRACE_REAL_TIME_MODE == 0
+            || properties.LogFileMode & EVENT_TRACE_SYSTEM_LOGGER_MODE == 0
+        {
+            return Err("network_attribution_session_configuration_changed".to_string());
+        }
+
+        Ok(EtwSessionStatistics {
+            events_lost: u64::from(properties.EventsLost),
+            log_buffers_lost: u64::from(properties.LogBuffersLost),
+            realtime_buffers_lost: u64::from(properties.RealTimeBuffersLost),
+        })
+    }
+
     fn trace_properties(session_name: &[u16]) -> Vec<u64> {
         let properties_size = size_of::<EVENT_TRACE_PROPERTIES>();
         let name_bytes = std::mem::size_of_val(session_name);
@@ -433,24 +618,39 @@ mod windows_impl {
         buffer
     }
 
-    fn decode_network_event(event_record: *mut EVENT_RECORD) -> Option<NetworkEtwEvent> {
-        let metadata = read_event_metadata(event_record)?;
+    enum NetworkEtwDecode {
+        Decoded(NetworkEtwEvent),
+        Ignored,
+        Failed,
+    }
+
+    fn decode_network_event(event_record: *mut EVENT_RECORD) -> NetworkEtwDecode {
+        let Some(metadata) = read_event_metadata(event_record) else {
+            return NetworkEtwDecode::Failed;
+        };
         let event_name = metadata.string_at(metadata.event_name_offset);
         let task_name = metadata.string_at(metadata.task_name_offset);
         let opcode_name = metadata.string_at(metadata.opcode_name_offset);
-        let direction = classify_direction(
+        let Some(direction) = classify_direction(
             event_name.as_deref(),
             task_name.as_deref(),
             opcode_name.as_deref(),
-        )?;
+        ) else {
+            return NetworkEtwDecode::Ignored;
+        };
 
         let properties = metadata.numeric_properties(event_record);
-        let byte_count = first_matching_property(&properties, &PROPERTY_SIZE_NAMES)?;
+        let Some(byte_count) = first_matching_property(&properties, &PROPERTY_SIZE_NAMES) else {
+            return NetworkEtwDecode::Failed;
+        };
         let pid = first_matching_property(&properties, &PROPERTY_PID_NAMES)
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or_else(|| unsafe { (*event_record).EventHeader.ProcessId });
+        if pid == 0 || byte_count == 0 {
+            return NetworkEtwDecode::Failed;
+        }
 
-        Some(NetworkEtwEvent {
+        NetworkEtwDecode::Decoded(NetworkEtwEvent {
             pid,
             direction,
             byte_count,
@@ -637,6 +837,109 @@ use windows_impl::WindowsNetworkAttributionMonitor;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn health(
+        consumer_started: bool,
+        decoded_events: u64,
+        decoder_errors: u64,
+        session_statistics: Result<EtwSessionStatistics, String>,
+    ) -> EtwHealthSnapshot {
+        EtwHealthSnapshot {
+            consumer_started,
+            consumer_error: None,
+            decoded_events,
+            decoder_errors,
+            session_statistics,
+        }
+    }
+
+    #[test]
+    fn etw_quality_requires_a_supported_decoded_event_before_native_zero() {
+        let mut quality = EtwQualityTracker::default();
+
+        assert_eq!(
+            quality.evaluate(health(true, 0, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::PendingBaseline
+        );
+        assert_eq!(
+            quality.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::Native
+        );
+        assert_eq!(
+            quality.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::Native
+        );
+    }
+
+    #[test]
+    fn etw_quality_fails_closed_when_decoder_proof_never_succeeds() {
+        let mut quality = EtwQualityTracker::default();
+
+        let decision = quality.evaluate(health(true, 0, 1, Ok(EtwSessionStatistics::default())));
+
+        assert!(
+            matches!(decision, EtwQualityDecision::Unavailable(message) if message.contains("decoder_unproven"))
+        );
+
+        let mut quality = EtwQualityTracker::default();
+        let loss = EtwSessionStatistics {
+            realtime_buffers_lost: 1,
+            ..EtwSessionStatistics::default()
+        };
+        let decision = quality.evaluate(health(false, 0, 0, Ok(loss)));
+        assert!(
+            matches!(decision, EtwQualityDecision::Unavailable(message) if message.contains("lost=1"))
+        );
+    }
+
+    #[test]
+    fn etw_quality_requires_a_clean_decoded_interval_after_loss() {
+        let mut quality = EtwQualityTracker::default();
+        assert_eq!(
+            quality.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::Native
+        );
+
+        let loss = EtwSessionStatistics {
+            events_lost: 2,
+            ..EtwSessionStatistics::default()
+        };
+        assert!(matches!(
+            quality.evaluate(health(true, 2, 0, Ok(loss))),
+            EtwQualityDecision::DataLoss(_)
+        ));
+        assert!(matches!(
+            quality.evaluate(health(true, 2, 0, Ok(loss))),
+            EtwQualityDecision::DataLoss(_)
+        ));
+        assert_eq!(
+            quality.evaluate(health(true, 3, 0, Ok(loss))),
+            EtwQualityDecision::Native
+        );
+    }
+
+    #[test]
+    fn etw_quality_fails_closed_on_consumer_or_session_failure() {
+        let mut quality = EtwQualityTracker::default();
+        let mut consumer_failed = health(true, 1, 0, Ok(EtwSessionStatistics::default()));
+        consumer_failed.consumer_error = Some("network_attribution_process_trace_ended:0".into());
+        assert_eq!(
+            quality.evaluate(consumer_failed),
+            EtwQualityDecision::Unavailable(
+                "network_attribution_process_trace_ended:0".to_string()
+            )
+        );
+
+        assert_eq!(
+            quality.evaluate(health(
+                true,
+                1,
+                0,
+                Err("network_attribution_query_trace_failed:5".to_string())
+            )),
+            EtwQualityDecision::Unavailable("network_attribution_query_trace_failed:5".to_string())
+        );
+    }
 
     #[test]
     fn network_events_accumulate_by_pid_and_direction() {
