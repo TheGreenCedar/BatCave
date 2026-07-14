@@ -78,15 +78,23 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     }
 
     $artifact = Get-Content -LiteralPath $BaselineArtifactPath -Raw | ConvertFrom-Json
-    Assert-ArtifactValue $artifact "format_version" 3
+    Assert-ArtifactValue $artifact "format_version" 4
     Assert-ArtifactValue $artifact "host" $BenchmarkHost
+    Assert-ArtifactValue $artifact "measurement_origin" "owned_sampling_engine_refresh_and_protocol_serialization"
+    Assert-ArtifactValue $artifact "evidence_scope" "core_runtime_host_only"
+    Assert-ArtifactValue $artifact "whole_app_measured" $false
+    Assert-ArtifactValue $artifact "live_command" "refresh_now"
+    Assert-ArtifactValue $artifact "command_transport" "in_process_bounded_channel"
+    Assert-ArtifactValue $artifact "serialization_scope" "runtime_protocol_v3_encode_and_json"
+    Assert-ArtifactValue $artifact "latency_gate_metric" "median_live_command_p95_ms"
+    Assert-ArtifactValue $artifact "baseline_selection" "median-by-live-command-p95"
     Assert-ArtifactValue $artifact "platform" $runtimePlatform
     Assert-ArtifactValue $artifact "architecture" $architecture
     Assert-ArtifactValue $artifact "machine_class" $MachineClass
     Assert-ArtifactValue $artifact "workload_profile" $WorkloadProfile
     Assert-ArtifactValue $artifact "warmup_ticks" $WarmupTicks
     Assert-ArtifactValue $artifact "measured_ticks" $Ticks
-    Assert-ArtifactValue $artifact "sleep_ms" $SleepMs
+    Assert-ArtifactValue $artifact "inter_command_delay_ms" $SleepMs
     Assert-ArtifactValue $artifact "repeat_count" $Repeats
 
     $baselineSummary = $artifact.baseline_summary

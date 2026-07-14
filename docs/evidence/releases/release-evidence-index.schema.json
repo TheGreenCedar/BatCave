@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TheGreenCedar/BatCave/blob/main/docs/evidence/releases/release-evidence-index.schema.json",
+  "title": "BatCave release evidence index",
+  "description": "Version 1 structural schema for a review-only manifest of validated platform evidence packets. The repository validator enforces packet digests, exact shared release identity, profile and package-role coverage, selected public-asset identity, synthetic non-claims, and #98 packet validity.",
+  "type": "object",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "index_kind": { "const": "schema_fixture" }
+        }
+      },
+      "then": {
+        "properties": {
+          "non_claims": {
+            "const": [
+              "independent_review_and_live_publication_required",
+              "synthetic_fixture_no_release_claim"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "non_claims": {
+            "const": ["independent_review_and_live_publication_required"]
+          }
+        }
+      }
+    }
+  ],
+  "required": [
+    "schema_version",
+    "index_kind",
+    "index_id",
+    "release",
+    "support_contract_version",
+    "packet_references",
+    "non_claims"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "index_kind": { "enum": ["release_evidence_index", "schema_fixture"] },
+    "index_id": { "$ref": "#/$defs/slug" },
+    "release": { "$ref": "#/$defs/release" },
+    "support_contract_version": { "const": 1 },
+    "packet_references": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/packetReference" }
+    },
+    "non_claims": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "independent_review_and_live_publication_required",
+          "synthetic_fixture_no_release_claim"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "commitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "tag",
+        "channel",
+        "source_sha",
+        "main_sha",
+        "release_target_sha",
+        "release_url",
+        "workflow_run"
+      ],
+      "properties": {
+        "repository": { "const": "TheGreenCedar/BatCave" },
+        "tag": {
+          "type": "string",
+          "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "channel": { "enum": ["stable", "prerelease"] },
+        "source_sha": { "$ref": "#/$defs/commitSha" },
+        "main_sha": { "$ref": "#/$defs/commitSha" },
+        "release_target_sha": { "$ref": "#/$defs/commitSha" },
+        "release_url": { "type": "string", "format": "uri" },
+        "workflow_run": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workflow_file", "run_id", "run_attempt", "url"],
+          "properties": {
+            "workflow_file": { "const": ".github/workflows/release.yml" },
+            "run_id": { "type": "integer", "minimum": 1 },
+            "run_attempt": { "type": "integer", "minimum": 1 },
+            "url": { "type": "string", "format": "uri" }
+          }
+        }
+      }
+    },
+    "packetReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_id",
+        "path",
+        "packet_sha256",
+        "profile_id",
+        "package_role",
+        "public_asset"
+      ],
+      "properties": {
+        "packet_id": { "$ref": "#/$defs/slug" },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": "^docs/evidence/releases/.+\\.json$"
+        },
+        "packet_sha256": { "$ref": "#/$defs/digest" },
+        "profile_id": {
+          "enum": [
+            "debian-12-x86_64-glibc",
+            "macos-12-universal",
+            "ubuntu-22.04-x86_64-glibc",
+            "windows-client-10-x86_64"
+          ]
+        },
+        "package_role": {
+          "enum": [
+            "Linux AppImage package and updater payload",
+            "Linux deb package",
+            "Windows NSIS installer and updater payload",
+            "macOS universal DMG",
+            "macOS universal updater payload"
+          ]
+        },
+        "public_asset": { "$ref": "#/$defs/publicAsset" }
+      }
+    },
+    "publicAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "size_bytes", "sha256", "api_digest", "public_url"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "api_digest": { "$ref": "#/$defs/digest" },
+        "public_url": { "type": "string", "format": "uri" }
+      }
+    }
+  }
+}

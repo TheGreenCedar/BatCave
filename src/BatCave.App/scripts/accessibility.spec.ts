@@ -220,6 +220,81 @@ test("desktop system detail restores its resource control after collapsing to co
   await expectLogicalControlFocused(page, "data-resource-mode", "memory");
 });
 
+test("live refresh holds the focused workload order until keyboard confirmation", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openFixture(page, "overview");
+  const workloadControl = page.locator("[data-workload-id]:visible").first();
+  const workloadId = await workloadControl.getAttribute("data-workload-id");
+  expect(workloadId).not.toBeNull();
+  const initialOrder = await page
+    .locator(".attention-table [data-workload-id]:visible")
+    .evaluateAll((controls) => controls.map((control) => control.getAttribute("data-workload-id")));
+  const workloadRow = workloadControl.locator("xpath=ancestor::tr");
+  const initialContent = await workloadRow.textContent();
+  await workloadControl.focus();
+
+  await page
+    .getByRole("button", { name: "Refresh" })
+    .evaluate((button) => (button as HTMLButtonElement).click());
+
+  const updateOrder = page.getByRole("button", { name: "Update workload order" });
+  await expect(updateOrder).toBeVisible();
+  await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
+  await expect.poll(() => workloadRow.textContent()).not.toBe(initialContent);
+  await expect
+    .poll(() =>
+      page
+        .locator(".attention-table [data-workload-id]:visible")
+        .evaluateAll(
+          (controls, length) =>
+            controls.slice(0, length).map((control) => control.getAttribute("data-workload-id")),
+          initialOrder.length,
+        ),
+    )
+    .toEqual(initialOrder);
+
+  await updateOrder.focus();
+  await expect(updateOrder).toBeFocused();
+  const firstRefreshContent = await workloadRow.textContent();
+
+  await page
+    .getByRole("button", { name: "Refresh" })
+    .evaluate((button) => (button as HTMLButtonElement).click());
+
+  await expect(updateOrder).toBeVisible();
+  await expect(updateOrder).toBeFocused();
+  await expect.poll(() => workloadRow.textContent()).not.toBe(firstRefreshContent);
+  await expect
+    .poll(() =>
+      page
+        .locator(".attention-table [data-workload-id]:visible")
+        .evaluateAll(
+          (controls, length) =>
+            controls.slice(0, length).map((control) => control.getAttribute("data-workload-id")),
+          initialOrder.length,
+        ),
+    )
+    .toEqual(initialOrder);
+
+  await page.keyboard.press("Enter");
+
+  await expect(updateOrder).not.toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Process sort" })).toBeFocused();
+  await expect
+    .poll(() =>
+      page
+        .locator(".attention-table [data-workload-id]:visible")
+        .evaluateAll(
+          (controls, length) =>
+            controls.slice(0, length).map((control) => control.getAttribute("data-workload-id")),
+          initialOrder.length,
+        ),
+    )
+    .not.toEqual(initialOrder);
+});
+
 test("diagnostics stays horizontally contained and vertically reachable with dense text", async ({
   page,
 }) => {

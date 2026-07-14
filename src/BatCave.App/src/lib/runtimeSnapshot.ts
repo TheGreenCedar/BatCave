@@ -45,6 +45,7 @@ export function makeEmptySnapshot(
       metric_window_seconds: 60,
       sample_interval_ms: 1000,
       paused: false,
+      ui_preferences: null,
     },
     health: {
       engine_state: null,
@@ -68,6 +69,7 @@ export function makeEmptySnapshot(
       last_warning: statusSummary,
       fatal_error: null,
     },
+    persistence: null,
     system: {
       cpu_percent: 0,
       kernel_cpu_percent: 0,

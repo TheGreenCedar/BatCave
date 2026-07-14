@@ -52,12 +52,30 @@ Keep diagnostic logs and screenshots in access-controlled workflow artifacts acc
 
 ## Publication layout
 
-Real evidence packets use `packet_kind: release_evidence` and belong under `docs/evidence/releases/<tag>/`. A final release index may reference each platform packet by repository-relative file name and record its SHA-256 digest. The index must not rewrite packet contents or turn a failed or blocked packet into a passing release result.
+Real evidence packets use `packet_kind: release_evidence` and belong under `docs/evidence/releases/<tag>/`. The final review input for that tag is `docs/evidence/releases/<tag>/index.json`, using the structural schema at `docs/evidence/releases/release-evidence-index.schema.json`.
 
-Publishing a packet does not replace native execution or public-release verification. The packet records that evidence after it exists; it cannot manufacture it.
+The index records one release identity and a sorted reference for each selected platform packet. Every reference contains:
+
+- the exact packet ID, canonical repository-relative path, and SHA-256 of the complete packet file;
+- the declared support profile and exact package role selected by that packet; and
+- the selected public asset name, byte size, evidence SHA-256, GitHub API digest, and anonymous download URL.
+
+Validate the assembled index from the repository root:
+
+```sh
+node scripts/validate-release-evidence-index.mjs docs/evidence/releases/<tag>/index.json
+```
+
+The validator reads every referenced file and runs the existing packet validator before comparing identities. All packets must agree on repository, tag, channel, source/main/release-target commit, release URL, workflow run and attempt, and support-contract version. The reference must reproduce the packet's profile, package role, and selected asset exactly. Paths must be canonical and remain directly under the tag directory; missing, linked, duplicate, reordered, digest-drifted, or cross-release packet files fail closed.
+
+Coverage is derived from `platform-support-contract.v1.json`, rather than maintained as a second hand-authored list. Every declared support profile must appear, and each distinct public package role must appear exactly once. This binds Windows NSIS, Linux deb, Linux AppImage, macOS DMG, and macOS updater-archive evidence without turning one host packet into evidence for a different profile or package.
+
+The index has no accepted, passed, or overall disposition field. Its mandatory `independent_review_and_live_publication_required` non-claim makes it a review input only. Publishing a packet or index does not replace native execution, public-release verification, signed updater proof, or #76's independent final review. These files record evidence after it exists; they cannot manufacture it.
 
 The parameterized install smoke harness is documented in [Public-artifact install smoke harness](public-artifact-install-smoke.md). The [native executor boundary](native-install-smoke-executor.md) closes selected-byte ownership and validates the future packet mapping, but no platform adapter can mint its internal native execution receipt. Fixture runs emit only a normalized `schema_fixture`; plans and the source-slice executor emit no release packet. `release_evidence` remains reserved for a complete reviewed native run.
 
 ## Synthetic fixtures
 
-The Windows NSIS, Linux Debian, Linux AppImage, macOS DMG, and macOS updater examples under `docs/evidence/releases/fixtures/v1/` are schema fixtures only. They use the reserved `v0.0.0-evidence.*` tag, `packet_kind: schema_fixture`, synthetic identities and observations, and the required `synthetic_fixture_no_release_claim` limitation. Every fixture check and limitation disposition must remain `not_applicable`; a fixture that claims passed proof or an accepted release decision is invalid. These files exercise the contract and must not be cited as release evidence.
+The Windows NSIS, Linux Debian, Linux AppImage, macOS DMG, and macOS updater examples under `docs/evidence/releases/fixtures/v1/` are schema fixtures only. They use one reserved `v0.0.0-evidence.*` release identity so the synthetic index can exercise cross-packet binding, plus synthetic observations and the required `synthetic_fixture_no_release_claim` limitation. Every fixture check and limitation disposition remains `not_applicable`; a fixture that claims passed proof or an accepted release decision is invalid.
+
+`docs/evidence/releases/fixtures/release-evidence-index.v1.json` references those five packet fixtures by their real repository file digests. It uses `index_kind: schema_fixture` and carries both mandatory non-claims. The validator rejects those packets if the index is relabeled as a real release index. The fixture set exercises schema and hostile validation only; it must never be cited as native, public-release, or acceptance evidence.

@@ -7,6 +7,7 @@ use crate::contracts::{
 
 #[cfg(windows)]
 use std::{
+    collections::BTreeMap,
     mem::{align_of, size_of},
     ptr::{null_mut, read_unaligned},
     slice,
@@ -429,37 +430,35 @@ fn kernel_pool_tags_from_rows(
     rows: &[SystemPoolTagRaw],
     limit: usize,
 ) -> Vec<KernelPoolTagWithBytes> {
-    let mut tags = Vec::new();
+    let mut aggregated = BTreeMap::<(String, KernelPoolKind), KernelPoolTag>::new();
     for row in rows {
         if row.paged_used > 0 {
-            tags.push(KernelPoolTagWithBytes {
-                tag: KernelPoolTag {
-                    tag: pool_tag_display(row.tag),
-                    kind: KernelPoolKind::Paged,
-                    bytes: row.paged_used as u64,
-                    allocations: row.paged_allocs as u64,
-                    frees: row.paged_frees as u64,
-                    driver_candidates: Vec::new(),
-                    driver_candidates_pending: false,
-                },
-            });
+            merge_kernel_pool_tag(
+                &mut aggregated,
+                pool_tag_display(row.tag),
+                KernelPoolKind::Paged,
+                row.paged_used as u64,
+                row.paged_allocs as u64,
+                row.paged_frees as u64,
+            );
         }
 
         if row.nonpaged_used > 0 {
-            tags.push(KernelPoolTagWithBytes {
-                tag: KernelPoolTag {
-                    tag: pool_tag_display(row.tag),
-                    kind: KernelPoolKind::Nonpaged,
-                    bytes: row.nonpaged_used as u64,
-                    allocations: row.nonpaged_allocs as u64,
-                    frees: row.nonpaged_frees as u64,
-                    driver_candidates: Vec::new(),
-                    driver_candidates_pending: false,
-                },
-            });
+            merge_kernel_pool_tag(
+                &mut aggregated,
+                pool_tag_display(row.tag),
+                KernelPoolKind::Nonpaged,
+                row.nonpaged_used as u64,
+                row.nonpaged_allocs as u64,
+                row.nonpaged_frees as u64,
+            );
         }
     }
 
+    let mut tags = aggregated
+        .into_values()
+        .map(|tag| KernelPoolTagWithBytes { tag })
+        .collect::<Vec<_>>();
     tags.sort_by(|left, right| {
         right
             .tag
@@ -470,6 +469,33 @@ fn kernel_pool_tags_from_rows(
     });
     tags.truncate(limit);
     tags
+}
+
+#[cfg(windows)]
+fn merge_kernel_pool_tag(
+    tags: &mut BTreeMap<(String, KernelPoolKind), KernelPoolTag>,
+    display_tag: String,
+    kind: KernelPoolKind,
+    bytes: u64,
+    allocations: u64,
+    frees: u64,
+) {
+    let key = (display_tag.to_ascii_lowercase(), kind);
+    let tag = tags.entry(key).or_insert_with(|| KernelPoolTag {
+        tag: display_tag.clone(),
+        kind,
+        bytes: 0,
+        allocations: 0,
+        frees: 0,
+        driver_candidates: Vec::new(),
+        driver_candidates_pending: false,
+    });
+    if display_tag < tag.tag {
+        tag.tag = display_tag;
+    }
+    tag.bytes = tag.bytes.saturating_add(bytes);
+    tag.allocations = tag.allocations.saturating_add(allocations);
+    tag.frees = tag.frees.saturating_add(frees);
 }
 
 #[cfg(windows)]
@@ -644,6 +670,39 @@ mod tests {
         assert_eq!(tags[1].tag.tag, "Leak");
         assert_eq!(tags[1].tag.kind, KernelPoolKind::Paged);
         assert_eq!(tags[1].tag.bytes, 1_024);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn kernel_pool_tags_merge_case_insensitive_identity_collisions() {
+        let rows = vec![
+            SystemPoolTagRaw {
+                tag: *b"Leak",
+                paged_allocs: 10,
+                paged_frees: 2,
+                paged_used: 1_024,
+                nonpaged_allocs: 0,
+                nonpaged_frees: 0,
+                nonpaged_used: 0,
+            },
+            SystemPoolTagRaw {
+                tag: *b"leak",
+                paged_allocs: 20,
+                paged_frees: 4,
+                paged_used: 2_048,
+                nonpaged_allocs: 0,
+                nonpaged_frees: 0,
+                nonpaged_used: 0,
+            },
+        ];
+
+        let tags = kernel_pool_tags_from_rows(&rows, 8);
+
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].tag.tag, "Leak");
+        assert_eq!(tags[0].tag.bytes, 3_072);
+        assert_eq!(tags[0].tag.allocations, 30);
+        assert_eq!(tags[0].tag.frees, 6);
     }
 
     #[test]

@@ -14,7 +14,10 @@ import {
   requireOwnedNativeArtifactVerificationReceipt,
   verifyOwnedNativeArtifactCapability,
 } from "./native-artifact-capability.mjs";
-import { createInstallSmokePlan } from "./install-smoke-contract.mjs";
+import {
+  createInstallSmokePlan,
+  validateInstallSmokePlan,
+} from "./install-smoke-contract.mjs";
 import {
   runNativeInstallSmokeSourceSlice,
   validateNativeInstallSmokeResult,
@@ -779,6 +782,61 @@ test("native disposition and executor seams cannot be caller-authored", async ()
     () => validateNativeInstallSmokeResult(forged),
     /process-local closed-adapter execution receipt/u,
   );
+});
+
+test("serialized plans cannot authorize a separate Rust composition root", () => {
+  const plan = createInstallSmokePlan(planInput());
+  const structuredCopy = structuredClone(plan);
+  const jsonCopy = JSON.parse(JSON.stringify(plan));
+
+  assert.throws(
+    () => validateInstallSmokePlan(structuredCopy),
+    /must retain the process-local selected-asset identity/u,
+  );
+  assert.throws(
+    () => validateInstallSmokePlan(jsonCopy),
+    /must retain the process-local selected-asset identity/u,
+  );
+});
+
+test("accepted no-entry decision leaves every prohibited production bridge absent", () => {
+  const decision = fs.readFileSync(
+    path.join(
+      ROOT,
+      "docs",
+      "decisions",
+      "0004-rust-install-smoke-complete-operation-entry.md",
+    ),
+    "utf8",
+  );
+  const rustSourceRoot = path.join(ROOT, "src", "BatCave.App", "src-tauri", "src");
+  const rustSourceFiles = fs
+    .readdirSync(rustSourceRoot, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".rs"))
+    .map((entry) => path.join(entry.parentPath, entry.name));
+  const productionRust = rustSourceFiles
+    .map((file) => fs.readFileSync(file, "utf8"))
+    .join("\n");
+  const cargoManifest = fs.readFileSync(
+    path.join(ROOT, "src", "BatCave.App", "src-tauri", "Cargo.toml"),
+    "utf8",
+  );
+  const executor = fs.readFileSync(
+    path.join(ROOT, "scripts", "native-install-smoke-executor.mjs"),
+    "utf8",
+  );
+
+  assert.match(decision, /Status: accepted; no current product-owned entry/u);
+  assert.match(decision, /Do not add a production Rust install-smoke composition root yet/u);
+  assert.match(decision, /Rust independently reads the immutable public release/u);
+  assert.equal(
+    rustSourceFiles.filter((file) => /native[_-]install[_-]smoke/iu.test(file)).length,
+    0,
+  );
+  assert.doesNotMatch(productionRust, /native[_-]install[_-]smoke/iu);
+  assert.doesNotMatch(cargoManifest, /(?:^|\n)\s*\[\[bin\]\][\s\S]*native[_-]install[_-]smoke/iu);
+  assert.doesNotMatch(cargoManifest, /\b(?:napi|neon)\b/iu);
+  assert.equal(executor.match(/nativeExecutionReceipts\.add\s*\(/gu)?.length ?? 0, 0);
 });
 
 test("hosted release-contract jobs include the native executor hostile suite", () => {

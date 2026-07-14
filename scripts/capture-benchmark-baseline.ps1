@@ -70,7 +70,7 @@ $runArgs = @(
     "-Repeats", "$RepeatCount"
 )
 
-Write-Host "Capturing benchmark protocol v3 baseline ($BenchmarkHost)..."
+Write-Host "Capturing benchmark protocol v4 baseline ($BenchmarkHost)..."
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
@@ -93,21 +93,31 @@ if ((& git -C $repoRoot status --porcelain | Out-String).Trim()) {
 }
 
 $artifact = [ordered]@{
-    format_version = 3
+    format_version = 4
     captured_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     base_sha = $baseSha
     binary_sha256 = $binarySha256
     host = $summary.host
     measurement_origin = $summary.measurement_origin
+    evidence_scope = $summary.evidence_scope
+    whole_app_measured = $summary.whole_app_measured
+    live_command = $summary.live_command
+    command_transport = $summary.command_transport
+    serialization_scope = $summary.serialization_scope
+    latency_gate_metric = $summary.latency_gate_metric
     platform = $summary.platform
     architecture = $summary.architecture
     machine_class = $summary.machine_class
     workload_profile = $summary.workload_profile
     warmup_ticks = $summary.warmup_ticks
     measured_ticks = $summary.measured_ticks
-    sleep_ms = $summary.sleep_ms
+    inter_command_delay_ms = $summary.inter_command_delay_ms
     repeat_count = $summary.repeat_count
-    baseline_selection = "median-by-tick-p95"
+    baseline_selection = "median-by-live-command-p95"
+    median_collection_p95_ms = $summary.median_collection_p95_ms
+    median_publication_p95_ms = $summary.median_publication_p95_ms
+    median_serialization_p95_ms = $summary.median_serialization_p95_ms
+    median_live_command_p95_ms = $summary.median_live_command_p95_ms
     baseline_summary = $summary
     baseline_summary_path = $baselineSummaryPath
 }

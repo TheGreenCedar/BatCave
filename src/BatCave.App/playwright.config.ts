@@ -9,7 +9,7 @@ const server = accessibilityServerSettings(
 
 export default defineConfig({
   testDir: "./scripts",
-  testMatch: "accessibility.spec.ts",
+  testMatch: ["accessibility.spec.ts", "accessibility-reduced-motion.spec.ts"],
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,
@@ -18,7 +18,9 @@ export default defineConfig({
   use: {
     baseURL: server.baseUrl,
     colorScheme: "dark",
-    reducedMotion: "reduce",
+    contextOptions: {
+      reducedMotion: "reduce",
+    },
     screenshot: "off",
     trace: "off",
     video: "off",
