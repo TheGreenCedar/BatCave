@@ -86,7 +86,7 @@ jobs:
           if ($failed) { exit 1 }
 
       - name: Test native artifact capability
-        run: node --test scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs
+        run: node --test scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
       - name: Test release evidence index contract
         run: node --test scripts/validate-release-evidence-index.test.mjs
@@ -143,7 +143,7 @@ jobs:
         run: bash -n scripts/*.sh
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle
@@ -186,7 +186,7 @@ jobs:
         run: bash -n scripts/*.sh
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
       - name: Validate native macOS app
         run: bash scripts/validate-tauri.sh --skip-bundle

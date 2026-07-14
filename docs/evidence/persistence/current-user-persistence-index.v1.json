@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "index_kind": "current_user_persistence_evidence",
+  "profiles": [
+    {
+      "id": "linux-appimage",
+      "platform": "linux",
+      "package_kind": "appimage",
+      "status": "pending",
+      "packet_path": null,
+      "packet_sha256": null
+    },
+    {
+      "id": "linux-deb",
+      "platform": "linux",
+      "package_kind": "deb",
+      "status": "pending",
+      "packet_path": null,
+      "packet_sha256": null
+    },
+    {
+      "id": "macos-dmg",
+      "platform": "macos",
+      "package_kind": "dmg",
+      "status": "pending",
+      "packet_path": null,
+      "packet_sha256": null
+    },
+    {
+      "id": "windows-nsis",
+      "platform": "windows",
+      "package_kind": "nsis",
+      "status": "pending",
+      "packet_path": null,
+      "packet_sha256": null
+    }
+  ]
+}
