@@ -22,6 +22,10 @@ use std::path::Path;
 
 use crate::elevation::{ElevatedHelperClient, ElevatedPoll};
 use crate::{
+    collector_engine::{
+        CollectorCadence, CollectorEngine, CollectorEngineConfig, CollectorEngineHandle,
+        CollectorEvent, CollectorPublication, RawCollector,
+    },
     contracts::{
         AccessState, GroupDetail, GroupDetailKind, GroupMetricCoverage, GroupMetricQuality,
         MetricCoverage, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
@@ -37,7 +41,7 @@ use crate::{
         DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
     },
     runtime_provenance::RuntimeProvenance,
-    telemetry::{now_ms, TelemetryCollector},
+    telemetry::now_ms,
 };
 
 #[cfg(test)]
@@ -79,14 +83,21 @@ impl MonotonicWireClock {
     }
 
     fn now_ms(&self) -> u64 {
-        self.wire_origin_ms.saturating_add(
-            self.origin
-                .elapsed()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX),
-        )
+        self.at_ms(Instant::now())
     }
+
+    fn at_ms(&self, instant: Instant) -> u64 {
+        if let Some(elapsed) = instant.checked_duration_since(self.origin) {
+            self.wire_origin_ms.saturating_add(duration_ms(elapsed))
+        } else {
+            self.wire_origin_ms
+                .saturating_sub(duration_ms(self.origin.duration_since(instant)))
+        }
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[derive(Clone)]
@@ -121,6 +132,7 @@ struct RefreshGate {
 }
 
 enum EngineControl {
+    CollectorPublished,
     Refresh,
     Pause(SnapshotReply),
     Resume(SnapshotReply),
@@ -160,6 +172,14 @@ impl RuntimeState {
     }
 
     fn from_store(store: RuntimeStore, automatic_sampling: bool) -> Result<Self, String> {
+        Self::from_store_with_collector(store, automatic_sampling, None)
+    }
+
+    fn from_store_with_collector(
+        store: RuntimeStore,
+        automatic_sampling: bool,
+        collector: Option<Box<dyn RawCollector>>,
+    ) -> Result<Self, String> {
         let clock = Arc::clone(&store.clock);
         let published = Arc::new(RwLock::new(PublishedRuntime {
             snapshot: Arc::new(store.snapshot.clone()),
@@ -167,21 +187,45 @@ impl RuntimeState {
         }));
         let refresh_gate = Arc::new(RefreshGate::default());
         let (control, receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
+        let collector_notification_queued = Arc::new(AtomicBool::new(false));
+        let notifier_control = control.clone();
+        let notifier_queued = Arc::clone(&collector_notification_queued);
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if !notifier_queued.swap(true, AtomicOrdering::AcqRel)
+                && notifier_control
+                    .try_send(EngineControl::CollectorPublished)
+                    .is_err()
+            {
+                notifier_queued.store(false, AtomicOrdering::Release);
+            }
+        });
+        let collector_config = CollectorEngineConfig {
+            interval: sample_interval(store.settings.sample_interval_ms),
+            metric_window: metric_window(store.settings.metric_window_seconds),
+            paused: store.settings.paused,
+            automatic: automatic_sampling,
+        };
+        let collector_engine = match collector {
+            Some(collector) => CollectorEngine::start(collector, collector_config, notify)?,
+            None => CollectorEngine::start_default(collector_config, notify)?,
+        };
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let worker_published = Arc::clone(&published);
         let worker_refresh_gate = Arc::clone(&refresh_gate);
         let worker_shutdown = Arc::clone(&shutdown_requested);
+        let worker_notification_queued = Arc::clone(&collector_notification_queued);
         let (completion_sender, completion) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("batcave-sampling-engine".to_string())
             .spawn(move || {
                 let result = run_sampling_engine(
                     store,
+                    collector_engine,
                     receiver,
                     worker_published,
                     worker_refresh_gate,
                     worker_shutdown,
-                    automatic_sampling,
+                    worker_notification_queued,
                 );
                 let _ = completion_sender.send(result);
             })
@@ -417,127 +461,26 @@ fn control_send_error(error: TrySendError<EngineControl>) -> String {
     }
 }
 
-#[derive(Debug)]
-enum CollectionFailure {
-    Unavailable(String),
-    Fatal(String),
-}
-
-trait RuntimeCollector: Send {
-    fn collect(&mut self) -> Result<crate::telemetry::TelemetrySample, CollectionFailure>;
-    fn process_network_ready(&self) -> Result<bool, String>;
-    fn retry_process_network(&mut self) -> Result<(), String>;
-}
-
-impl RuntimeCollector for TelemetryCollector {
-    fn collect(&mut self) -> Result<crate::telemetry::TelemetrySample, CollectionFailure> {
-        TelemetryCollector::collect(self).map_err(|error| {
-            if error.contains("lock is poisoned") {
-                CollectionFailure::Fatal(error)
-            } else {
-                CollectionFailure::Unavailable(error)
-            }
-        })
-    }
-
-    fn process_network_ready(&self) -> Result<bool, String> {
-        TelemetryCollector::process_network_ready(self)
-    }
-
-    fn retry_process_network(&mut self) -> Result<(), String> {
-        TelemetryCollector::retry_process_network(self)
-    }
-}
-
-struct MonotonicScheduler {
-    interval: Duration,
-    next_deadline: Instant,
-    deadline_misses: u64,
-    recent_deadline_misses: CountWindow,
-    lateness_p95: P95Window,
-}
-
-impl MonotonicScheduler {
-    fn new(now: Instant, interval: Duration, paused: bool, metric_window: Duration) -> Self {
-        Self {
-            interval,
-            next_deadline: if paused { now + interval } else { now },
-            deadline_misses: 0,
-            recent_deadline_misses: CountWindow::new(metric_window),
-            lateness_p95: P95Window::new(metric_window),
-        }
-    }
-
-    fn wait_from(&self, now: Instant) -> Duration {
-        self.next_deadline.saturating_duration_since(now)
-    }
-
-    fn deadline_is_due(&self, now: Instant) -> bool {
-        now >= self.next_deadline
-    }
-
-    fn record_start(&mut self, now: Instant) {
-        self.lateness_p95.add_at(
-            now,
-            now.saturating_duration_since(self.next_deadline)
-                .as_secs_f64()
-                * 1000.0,
-        );
-    }
-
-    fn complete_scheduled_work(&mut self, completed_at: Instant) {
-        let mut next = self.next_deadline + self.interval;
-        let mut missed = 0_u64;
-        while next <= completed_at {
-            self.deadline_misses = self.deadline_misses.saturating_add(1);
-            missed = missed.saturating_add(1);
-            next += self.interval;
-        }
-        if missed > 0 {
-            self.recent_deadline_misses.add_at(completed_at, missed);
-        }
-        self.next_deadline = next;
-    }
-
-    fn complete_paused_work(&mut self, completed_at: Instant) {
-        let mut next = self.next_deadline + self.interval;
-        while next <= completed_at {
-            next += self.interval;
-        }
-        self.next_deadline = next;
-    }
-
-    fn reanchor(&mut self, now: Instant, interval: Duration, due_now: bool) {
-        self.interval = interval;
-        self.next_deadline = if due_now { now } else { now + interval };
-    }
-
-    fn lateness_p95_ms(&self, now: Instant) -> f64 {
-        self.lateness_p95.value_at(now)
-    }
-
-    fn recent_deadline_misses(&self, now: Instant) -> u64 {
-        self.recent_deadline_misses.value_at(now)
-    }
-}
-
 fn run_sampling_engine(
     mut store: RuntimeStore,
+    collector_engine: CollectorEngine,
     receiver: Receiver<EngineControl>,
     published: Arc<RwLock<PublishedRuntime>>,
     refresh_gate: Arc<RefreshGate>,
     shutdown_requested: Arc<AtomicBool>,
-    automatic_sampling: bool,
+    collector_notification_queued: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let clock = Arc::clone(&store.clock);
+    let collector = collector_engine.handle();
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         sampling_engine_loop(
             &mut store,
+            &collector,
             &receiver,
             &published,
             &refresh_gate,
             &shutdown_requested,
-            automatic_sampling,
+            &collector_notification_queued,
         )
     }));
     let fatal = match result {
@@ -555,28 +498,29 @@ fn run_sampling_engine(
             true
         }
     };
-    let cleanup_result = store.shutdown_owned_resources();
+    let collector_cleanup = collector_engine.shutdown();
+    let runtime_cleanup = store.shutdown_owned_resources();
     if fatal {
         fatal_control_loop(&receiver, &shutdown_requested);
     }
-    cleanup_result
+    match (collector_cleanup, runtime_cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(collector), Ok(())) => Err(collector),
+        (Ok(()), Err(runtime)) => Err(runtime),
+        (Err(collector), Err(runtime)) => Err(format!("{collector};{runtime}")),
+    }
 }
 
 fn sampling_engine_loop(
     store: &mut RuntimeStore,
+    collector: &CollectorEngineHandle,
     receiver: &Receiver<EngineControl>,
     published: &Arc<RwLock<PublishedRuntime>>,
     refresh_gate: &Arc<RefreshGate>,
     shutdown_requested: &AtomicBool,
-    automatic_sampling: bool,
+    collector_notification_queued: &AtomicBool,
 ) -> bool {
-    let now = Instant::now();
-    let mut scheduler = MonotonicScheduler::new(
-        now,
-        sample_interval(store.settings.sample_interval_ms),
-        store.settings.paused,
-        metric_window(store.settings.metric_window_seconds),
-    );
+    let mut last_collector_revision = 0_u64;
     store.set_engine_state(if store.settings.paused {
         crate::contracts::RuntimeEngineState::Paused
     } else {
@@ -588,71 +532,106 @@ fn sampling_engine_loop(
         if shutdown_requested.load(AtomicOrdering::Acquire) {
             return false;
         }
-        if automatic_sampling && scheduler.deadline_is_due(Instant::now()) {
-            store.note_heartbeat();
-            if store.settings.paused {
-                if !store.progress_paused_elevated_helper() {
-                    store.publish_snapshot_only(None);
-                }
-                publish_store(store, published);
-                scheduler.complete_paused_work(Instant::now());
-            } else if let Err(error) = collect_and_publish(store, &mut scheduler, published, true) {
-                terminate_refresh_gate(refresh_gate, error);
-                return true;
-            }
-            continue;
-        }
-
-        let received = if automatic_sampling {
-            receiver.recv_timeout(scheduler.wait_from(Instant::now()))
-        } else {
-            receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
-        };
-        match received {
+        match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(EngineControl::Shutdown) => return false,
+            Ok(EngineControl::CollectorPublished) => {
+                collector_notification_queued.store(false, AtomicOrdering::Release);
+                if let Err(error) = apply_latest_collector_publication(
+                    store,
+                    collector,
+                    published,
+                    &mut last_collector_revision,
+                ) {
+                    terminate_refresh_gate(refresh_gate, error);
+                    return true;
+                }
+            }
             Ok(EngineControl::Refresh) => {
                 let Some(generation) = begin_refresh_generation(refresh_gate) else {
                     continue;
                 };
-                let result = collect_and_publish(store, &mut scheduler, published, false);
-                match result {
-                    Ok(measurement) => {
-                        complete_refresh_generation(refresh_gate, generation, measurement)
-                    }
+                match collector.refresh_now() {
+                    Ok(publication) => match apply_collector_publication(
+                        store,
+                        collector,
+                        published,
+                        &mut last_collector_revision,
+                        publication,
+                    ) {
+                        Ok(Some(measurement)) => {
+                            complete_refresh_generation(refresh_gate, generation, measurement)
+                        }
+                        Ok(None) => fail_refresh_generation(
+                            refresh_gate,
+                            generation,
+                            "runtime_refresh_result_unavailable".to_string(),
+                        ),
+                        Err(error) => {
+                            terminate_refresh_gate(refresh_gate, error);
+                            return true;
+                        }
+                    },
                     Err(error) => {
-                        terminate_refresh_gate(refresh_gate, error);
-                        return true;
+                        if let Err(fatal) = apply_latest_collector_publication(
+                            store,
+                            collector,
+                            published,
+                            &mut last_collector_revision,
+                        ) {
+                            terminate_refresh_gate(refresh_gate, fatal);
+                            return true;
+                        }
+                        fail_refresh_generation(refresh_gate, generation, error);
                     }
                 }
             }
             Ok(EngineControl::Pause(reply)) => {
+                if let Err(error) = collector.pause() {
+                    let _ = reply.send(Err(error));
+                    continue;
+                }
+                if let Err(error) = apply_latest_collector_publication(
+                    store,
+                    collector,
+                    published,
+                    &mut last_collector_revision,
+                ) {
+                    let _ = reply.send(Err(error.clone()));
+                    terminate_refresh_gate(refresh_gate, error);
+                    return true;
+                }
                 store.note_heartbeat();
                 store.set_engine_state(crate::contracts::RuntimeEngineState::Paused);
                 store.set_paused(true);
-                scheduler.reanchor(
-                    Instant::now(),
-                    sample_interval(store.settings.sample_interval_ms),
-                    false,
-                );
                 reply_with_publication(reply, store, published);
             }
             Ok(EngineControl::Resume(reply)) => {
                 store.note_heartbeat();
                 store.set_engine_state(crate::contracts::RuntimeEngineState::Running);
                 store.set_paused(false);
-                scheduler.reanchor(
-                    Instant::now(),
-                    sample_interval(store.settings.sample_interval_ms),
-                    true,
-                );
-                match collect_and_publish(store, &mut scheduler, published, true) {
-                    Ok(measurement) => {
-                        let _ = reply.send(Ok(measurement.snapshot));
-                    }
+                match collector.resume() {
+                    Ok(publication) => match apply_collector_publication(
+                        store,
+                        collector,
+                        published,
+                        &mut last_collector_revision,
+                        publication,
+                    ) {
+                        Ok(Some(measurement)) => {
+                            let _ = reply.send(Ok(measurement.snapshot));
+                        }
+                        Ok(None) => {
+                            let _ =
+                                reply.send(Err("runtime_refresh_result_unavailable".to_string()));
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error.clone()));
+                            terminate_refresh_gate(refresh_gate, error);
+                            return true;
+                        }
+                    },
                     Err(error) => {
-                        let _ = reply.send(Err(error.clone()));
-                        terminate_refresh_gate(refresh_gate, error);
-                        return true;
+                        let _ = reply.send(Err(error));
                     }
                 }
             }
@@ -663,20 +642,19 @@ fn sampling_engine_loop(
             }
             Ok(EngineControl::SetSampleInterval(sample_interval_ms, reply)) => {
                 store.note_heartbeat();
-                let previous_interval_ms = store.settings.sample_interval_ms;
-                store.set_sample_interval(sample_interval_ms);
-                if store.settings.sample_interval_ms != previous_interval_ms {
-                    scheduler.reanchor(
-                        Instant::now(),
-                        sample_interval(store.settings.sample_interval_ms),
-                        false,
-                    );
+                let normalized = sample_interval_ms.clamp(500, 5_000);
+                if normalized != store.settings.sample_interval_ms {
+                    if let Err(error) = collector.set_interval(sample_interval(normalized)) {
+                        let _ = reply.send(Err(error));
+                        continue;
+                    }
                 }
+                store.set_sample_interval(normalized);
                 reply_with_publication(reply, store, published);
             }
             Ok(EngineControl::SetAdminMode(enabled, reply)) => {
                 store.note_heartbeat();
-                store.set_admin_mode(enabled);
+                store.set_admin_mode(enabled, collector);
                 reply_with_publication(reply, store, published);
             }
             Ok(EngineControl::SetUiPreferences(preferences, reply)) => {
@@ -684,57 +662,102 @@ fn sampling_engine_loop(
                 store.set_ui_preferences(preferences);
                 reply_with_publication(reply, store, published);
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(error) = apply_latest_collector_publication(
+                    store,
+                    collector,
+                    published,
+                    &mut last_collector_revision,
+                ) {
+                    terminate_refresh_gate(refresh_gate, error);
+                    return true;
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => return false,
         }
     }
 }
 
-fn collect_and_publish(
+fn apply_latest_collector_publication(
     store: &mut RuntimeStore,
-    scheduler: &mut MonotonicScheduler,
+    collector: &CollectorEngineHandle,
     published: &Arc<RwLock<PublishedRuntime>>,
-    account_deadline: bool,
-) -> Result<EngineRefreshMeasurement, String> {
-    let started_at = Instant::now();
-    if account_deadline {
-        scheduler.record_start(started_at);
+    last_collector_revision: &mut u64,
+) -> Result<(), String> {
+    let Some(publication) = collector.snapshot() else {
+        return Ok(());
+    };
+    if publication.revision <= *last_collector_revision {
+        return Ok(());
     }
-    store.note_heartbeat();
-    if !store.settings.paused {
+    apply_collector_publication(
+        store,
+        collector,
+        published,
+        last_collector_revision,
+        publication,
+    )
+    .map(|_| ())
+}
+
+fn apply_collector_publication(
+    store: &mut RuntimeStore,
+    collector: &CollectorEngineHandle,
+    published: &Arc<RwLock<PublishedRuntime>>,
+    last_collector_revision: &mut u64,
+    publication: Arc<CollectorPublication>,
+) -> Result<Option<EngineRefreshMeasurement>, String> {
+    if publication.revision <= *last_collector_revision {
+        return Ok(None);
+    }
+    *last_collector_revision = publication.revision;
+    let completed_at_ms = store.clock.at_ms(publication.completed_at);
+    store.note_heartbeat_at(completed_at_ms);
+    store.update_schedule_health(publication.cadence);
+    if !store.settings.paused && !matches!(&publication.event, CollectorEvent::PausedHeartbeat) {
         store.set_engine_state(crate::contracts::RuntimeEngineState::Running);
     }
 
-    let publication_started = match store.tick() {
-        Ok(publication_started) => publication_started,
-        Err(CollectionFailure::Unavailable(error)) => {
+    let publication_started = match &publication.event {
+        CollectorEvent::PausedHeartbeat => {
+            if !store.progress_paused_elevated_helper(collector) {
+                store.publish_snapshot_only(None);
+            }
+            publish_store(store, published);
+            return Ok(None);
+        }
+        CollectorEvent::Sample(sample) => store.apply_raw_sample(
+            (**sample).clone(),
+            publication.collection_latency_ms,
+            completed_at_ms,
+            collector,
+        ),
+        CollectorEvent::Unavailable(error) => {
+            store.record_collection_latency_ms(publication.collection_latency_ms);
             let publication_started = Instant::now();
-            store.publish_collector_unavailable(error);
+            store.publish_collector_unavailable(error.clone(), collector);
             publication_started
         }
-        Err(CollectionFailure::Fatal(error)) => {
+        CollectorEvent::Fatal { code, message } => {
+            store.record_collection_latency_ms(publication.collection_latency_ms);
             let publication_started = Instant::now();
-            store.mark_engine_fatal("collector_fatal", error.clone());
-            if account_deadline {
-                scheduler.complete_scheduled_work(Instant::now());
-            }
-            store.update_schedule_health(scheduler);
+            store.mark_engine_fatal(code, message.clone());
             publish_store_measured(store, published, publication_started);
-            return Err(format!("runtime_engine_fatal:{error}"));
+            return Err(if code == "collector_fatal" {
+                format!("runtime_engine_fatal:{message}")
+            } else {
+                "runtime_engine_fatal".to_string()
+            });
         }
     };
 
-    if account_deadline {
-        scheduler.complete_scheduled_work(Instant::now());
-    }
-    store.update_schedule_health(scheduler);
     let (snapshot, publication_latency_ms) =
         publish_store_measured(store, published, publication_started);
-    Ok(EngineRefreshMeasurement {
+    Ok(Some(EngineRefreshMeasurement {
         snapshot,
         collection_latency_ms: store.collection_latency_ms.unwrap_or_default(),
         publication_latency_ms,
-    })
+    }))
 }
 
 fn reply_with_publication(
@@ -825,7 +848,7 @@ fn fatal_control_loop(receiver: &Receiver<EngineControl>, shutdown_requested: &A
         };
         match control {
             EngineControl::Shutdown => return,
-            EngineControl::Refresh => {}
+            EngineControl::CollectorPublished | EngineControl::Refresh => {}
             EngineControl::Pause(reply) | EngineControl::Resume(reply) => {
                 let _ = reply.send(Err("runtime_engine_fatal".to_string()));
             }
@@ -994,8 +1017,22 @@ enum SettingsWriteIntent {
     UserMutation,
 }
 
+trait ProcessNetworkControl {
+    fn process_network_ready(&self) -> Result<bool, String>;
+    fn retry_process_network(&self) -> Result<(), String>;
+}
+
+impl ProcessNetworkControl for CollectorEngineHandle {
+    fn process_network_ready(&self) -> Result<bool, String> {
+        CollectorEngineHandle::process_network_ready(self)
+    }
+
+    fn retry_process_network(&self) -> Result<(), String> {
+        CollectorEngineHandle::retry_process_network(self)
+    }
+}
+
 struct RuntimeStore {
-    collector: Box<dyn RuntimeCollector>,
     clock: Arc<MonotonicWireClock>,
     base_dir: PathBuf,
     persistence: RuntimePersistenceCoordinator,
@@ -1223,7 +1260,6 @@ impl RuntimeStore {
         );
 
         Self {
-            collector: Box::new(TelemetryCollector::new()),
             clock,
             base_dir,
             persistence,
@@ -1282,7 +1318,11 @@ impl RuntimeStore {
         self.snapshot.clone()
     }
 
-    fn set_admin_mode(&mut self, enabled: bool) -> RuntimeSnapshot {
+    fn set_admin_mode(
+        &mut self,
+        enabled: bool,
+        collector: &dyn ProcessNetworkControl,
+    ) -> RuntimeSnapshot {
         let enabled = enabled && self.provenance.environment().admin_mode_available;
         let had_privileged_session = self.settings.admin_mode_requested
             || self.settings.admin_mode_enabled
@@ -1303,11 +1343,10 @@ impl RuntimeStore {
             self.admin_mode.detail = None;
             self.clear_warning("admin_mode");
             if self.elevated.is_none() {
-                let collect_process_network =
-                    !self.collector.process_network_ready().unwrap_or(false);
+                let collect_process_network = !collector.process_network_ready().unwrap_or(false);
                 match ElevatedHelperClient::start(&self.base_dir, collect_process_network) {
                     Ok(client) => self.elevated = Some(client),
-                    Err(error) => self.fail_admin_mode(error),
+                    Err(error) => self.fail_admin_mode(error, collector),
                 }
             }
         } else {
@@ -1323,7 +1362,7 @@ impl RuntimeStore {
                     self.elevated = Some(client);
                 }
             }
-            let _ = self.collector.retry_process_network();
+            let _ = collector.retry_process_network();
             if had_privileged_session {
                 self.previous_processes.clear();
                 self.previous_totals = None;
@@ -1369,15 +1408,19 @@ impl RuntimeStore {
         self.snapshot.clone()
     }
 
-    fn progress_paused_elevated_helper(&mut self) -> bool {
-        let transition = self.advance_elevated_helper(self.clock.now_ms());
+    fn progress_paused_elevated_helper(&mut self, collector: &dyn ProcessNetworkControl) -> bool {
+        let transition = self.advance_elevated_helper(self.clock.now_ms(), collector);
         if transition.publish {
             self.publish_snapshot_only(None);
         }
         transition.publish
     }
 
-    fn advance_elevated_helper(&mut self, success_at_ms: u64) -> ElevatedTransition {
+    fn advance_elevated_helper(
+        &mut self,
+        success_at_ms: u64,
+        collector: &dyn ProcessNetworkControl,
+    ) -> ElevatedTransition {
         let before_requested = self.settings.admin_mode_requested;
         let before_enabled = self.settings.admin_mode_enabled;
         let before_status = self.admin_mode.clone();
@@ -1443,7 +1486,7 @@ impl RuntimeStore {
                     self.elevated = Some(client);
                 }
             }
-            self.fail_admin_mode(failure);
+            self.fail_admin_mode(failure, collector);
         }
 
         let access_changed = before_enabled != self.settings.admin_mode_enabled;
@@ -1528,20 +1571,18 @@ impl RuntimeStore {
         }
     }
 
-    fn tick(&mut self) -> Result<Instant, CollectionFailure> {
+    fn apply_raw_sample(
+        &mut self,
+        sample: crate::telemetry::TelemetrySample,
+        raw_collection_latency_ms: f64,
+        sample_ts_ms: u64,
+        collector: &dyn ProcessNetworkControl,
+    ) -> Instant {
         let previous_process_baseline_live = self.live_process_snapshot;
         self.live_process_snapshot = false;
-        let collection_started = Instant::now();
-        let sample = match self.collector.collect() {
-            Ok(sample) => sample,
-            Err(error) => {
-                self.record_collection_latency(collection_started.elapsed());
-                return Err(error);
-            }
-        };
+        let processing_started = Instant::now();
         self.collector_state = Some(sample.collector_state);
 
-        let sample_ts_ms = self.clock.now_ms();
         let mut active_collector_warnings = sample.warnings;
 
         let elapsed_seconds = self
@@ -1556,7 +1597,7 @@ impl RuntimeStore {
         let mut system = sample.system;
         let mut sample_processes = sample.processes;
         let mut process_rows_fresh = true;
-        let elevated_transition = self.advance_elevated_helper(sample_ts_ms);
+        let elevated_transition = self.advance_elevated_helper(sample_ts_ms, collector);
         self.apply_elevated_process_transition(
             elevated_transition,
             &mut sample_processes,
@@ -1645,7 +1686,9 @@ impl RuntimeStore {
         {
             let _ = self.persist_warm_cache();
         }
-        self.record_collection_latency(collection_started.elapsed());
+        self.record_collection_latency_ms(
+            raw_collection_latency_ms + processing_started.elapsed().as_secs_f64() * 1000.0,
+        );
         let publication_started = Instant::now();
         let health = self.build_health(
             sample.latency_ms,
@@ -1668,10 +1711,10 @@ impl RuntimeStore {
             self.warnings.iter().cloned().collect(),
         );
 
-        Ok(publication_started)
+        publication_started
     }
 
-    fn fail_admin_mode(&mut self, error: String) {
+    fn fail_admin_mode(&mut self, error: String, collector: &dyn ProcessNetworkControl) {
         if self.elevated_helper_rows_published {
             self.process_access_baseline_dirty = true;
         }
@@ -1683,7 +1726,7 @@ impl RuntimeStore {
         self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
         self.admin_mode.detail = Some(error.clone());
         self.add_warning("admin_mode", error);
-        let _ = self.collector.retry_process_network();
+        let _ = collector.retry_process_network();
         let _ = self.persist_settings(SettingsWriteIntent::Automatic);
     }
 
@@ -1721,22 +1764,21 @@ impl RuntimeStore {
     }
 
     fn note_heartbeat(&mut self) {
-        self.last_heartbeat_at_ms = Some(self.clock.now_ms());
+        self.note_heartbeat_at(self.clock.now_ms());
     }
 
-    fn update_schedule_health(&mut self, scheduler: &MonotonicScheduler) {
-        self.update_schedule_health_at(scheduler, Instant::now());
+    fn note_heartbeat_at(&mut self, occurred_at_ms: u64) {
+        self.last_heartbeat_at_ms = Some(occurred_at_ms);
     }
 
-    fn update_schedule_health_at(&mut self, scheduler: &MonotonicScheduler, now: Instant) {
-        self.deadline_misses = scheduler.deadline_misses;
-        self.recent_deadline_misses = scheduler.recent_deadline_misses(now);
-        self.deadline_lateness_p95_ms = scheduler.lateness_p95_ms(now);
+    fn update_schedule_health(&mut self, cadence: CollectorCadence) {
+        self.deadline_misses = cadence.deadline_misses;
+        self.recent_deadline_misses = cadence.recent_deadline_misses;
+        self.deadline_lateness_p95_ms = cadence.deadline_lateness_p95_ms;
         self.refresh_snapshot_health();
     }
 
-    fn record_collection_latency(&mut self, elapsed: Duration) {
-        let latency_ms = elapsed.as_secs_f64() * 1000.0;
+    fn record_collection_latency_ms(&mut self, latency_ms: f64) {
         self.collection_latency_ms = Some(latency_ms);
         self.tick_p95.add_at(Instant::now(), latency_ms);
     }
@@ -1748,10 +1790,14 @@ impl RuntimeStore {
         self.refresh_snapshot_health();
     }
 
-    fn publish_collector_unavailable(&mut self, error: String) {
+    fn publish_collector_unavailable(
+        &mut self,
+        error: String,
+        collector: &dyn ProcessNetworkControl,
+    ) {
         self.collector_state = Some(RuntimeCollectorState::Unavailable);
         self.live_process_snapshot = false;
-        let transition = self.advance_elevated_helper(self.clock.now_ms());
+        let transition = self.advance_elevated_helper(self.clock.now_ms(), collector);
         if transition.access_changed || self.process_access_baseline_dirty {
             self.previous_processes.clear();
             self.elevated_helper_rows_published = false;
@@ -2123,42 +2169,10 @@ struct P95Window {
     window: Duration,
 }
 
-struct CountWindow {
-    values: VecDeque<(Instant, u64)>,
-    window: Duration,
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 struct CurrentAppMetrics {
     cpu_percent: f64,
     rss_bytes: u64,
-}
-
-impl CountWindow {
-    fn new(window: Duration) -> Self {
-        Self {
-            values: VecDeque::new(),
-            window,
-        }
-    }
-
-    fn add_at(&mut self, now: Instant, value: u64) {
-        if value > 0 {
-            self.values.push_back((now, value));
-        }
-        while self.values.front().is_some_and(|(recorded_at, _)| {
-            now.saturating_duration_since(*recorded_at) > self.window
-        }) {
-            self.values.pop_front();
-        }
-    }
-
-    fn value_at(&self, now: Instant) -> u64 {
-        self.values
-            .iter()
-            .filter(|(recorded_at, _)| now.saturating_duration_since(*recorded_at) <= self.window)
-            .fold(0_u64, |total, (_, value)| total.saturating_add(*value))
-    }
 }
 
 impl P95Window {
@@ -3760,7 +3774,7 @@ fn warning_key(category: &str, message: &str) -> String {
     format!("{category}.{code}")
 }
 
-fn empty_system() -> SystemMetricsSnapshot {
+pub(crate) fn empty_system() -> SystemMetricsSnapshot {
     SystemMetricsSnapshot {
         cpu_percent: 0.0,
         kernel_cpu_percent: 0.0,
@@ -3908,6 +3922,7 @@ fn round1(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collector_engine::CollectionFailure;
     use crate::contracts::{
         AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality,
         RuntimePersistencePermissionState, RuntimeProcessElevation,
@@ -3922,6 +3937,20 @@ mod tests {
         atomic::{AtomicUsize, Ordering as TestOrdering},
         Barrier,
     };
+
+    struct NoopProcessNetworkControl;
+
+    impl ProcessNetworkControl for NoopProcessNetworkControl {
+        fn process_network_ready(&self) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn retry_process_network(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    static NOOP_PROCESS_NETWORK_CONTROL: NoopProcessNetworkControl = NoopProcessNetworkControl;
 
     enum FakeOutcome {
         Sample,
@@ -3954,7 +3983,7 @@ mod tests {
         }
     }
 
-    impl RuntimeCollector for FakeCollector {
+    impl RawCollector for FakeCollector {
         fn collect(&mut self) -> Result<crate::telemetry::TelemetrySample, CollectionFailure> {
             let count = self.collect_count.fetch_add(1, TestOrdering::SeqCst) + 1;
             if count == 1 {
@@ -4012,59 +4041,108 @@ mod tests {
         automatic_sampling: bool,
     ) -> (RuntimeState, PathBuf) {
         let base_dir = runtime_test_dir(name);
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.collector = Box::new(collector);
+        let store = RuntimeStore::from_base_dir(base_dir.clone());
         (
-            RuntimeState::from_store(store, automatic_sampling).expect("engine starts"),
+            RuntimeState::from_store_with_collector(
+                store,
+                automatic_sampling,
+                Some(Box::new(collector)),
+            )
+            .expect("engine starts"),
             base_dir,
         )
     }
 
     #[test]
-    fn monotonic_scheduler_uses_absolute_deadlines_without_work_sleep_drift() {
-        let base = Instant::now();
-        for interval_ms in [500_u64, 1_000, 2_000, 5_000] {
-            let interval = Duration::from_millis(interval_ms);
-            let mut scheduler =
-                MonotonicScheduler::new(base, interval, false, Duration::from_secs(600));
-            scheduler.record_start(base);
-            scheduler.complete_scheduled_work(base + Duration::from_millis(123));
-            assert_eq!(scheduler.next_deadline, base + interval);
-            scheduler.record_start(base + interval);
-            scheduler.complete_scheduled_work(base + interval + Duration::from_millis(77));
-            assert_eq!(scheduler.next_deadline, base + interval + interval);
-            assert_eq!(scheduler.deadline_misses, 0);
-        }
+    fn delayed_collector_consumption_preserves_sample_time_and_rate_interval() {
+        let base_dir = runtime_test_dir("delayed-collector-publication");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let (collector, _) = FakeCollector::new([]);
+        let collector_engine = CollectorEngine::start(
+            Box::new(collector),
+            CollectorEngineConfig {
+                interval: Duration::from_millis(500),
+                metric_window: Duration::from_secs(15),
+                paused: false,
+                automatic: false,
+            },
+            Arc::new(|| {}),
+        )
+        .expect("manual collector engine starts");
+        let collector = collector_engine.handle();
+        let published = Arc::new(RwLock::new(PublishedRuntime {
+            snapshot: Arc::new(store.snapshot.clone()),
+            process_exe_authoritative: false,
+        }));
+        let mut last_collector_revision = 0;
+        let first_completed = Instant::now() - Duration::from_secs(5);
 
-        let mut slow = MonotonicScheduler::new(
-            base,
-            Duration::from_millis(500),
-            false,
-            Duration::from_secs(600),
-        );
-        slow.record_start(base);
-        slow.complete_scheduled_work(base + Duration::from_millis(1_250));
-        assert_eq!(slow.next_deadline, base + Duration::from_millis(1_500));
-        assert_eq!(slow.deadline_misses, 2);
+        let publication = |revision, completed_at, network_received_total_bytes| {
+            let mut system = empty_system();
+            system.network_received_total_bytes = network_received_total_bytes;
+            Arc::new(CollectorPublication {
+                revision,
+                completed_at,
+                event: CollectorEvent::Sample(Arc::new(crate::telemetry::TelemetrySample {
+                    latency_ms: 0,
+                    collector_state: RuntimeCollectorState::Healthy,
+                    system,
+                    processes: Vec::new(),
+                    warnings: Vec::new(),
+                })),
+                collection_latency_ms: 0.0,
+                cadence: CollectorCadence::default(),
+            })
+        };
+
+        apply_collector_publication(
+            &mut store,
+            &collector,
+            &published,
+            &mut last_collector_revision,
+            publication(1, first_completed, 1_000),
+        )
+        .expect("first delayed publication applies");
+        let first_sampled_at_ms = store.sampled_at_ms.expect("first sample time is retained");
+
+        let second_completed = first_completed + Duration::from_secs(1);
+        apply_collector_publication(
+            &mut store,
+            &collector,
+            &published,
+            &mut last_collector_revision,
+            publication(2, second_completed, 2_000),
+        )
+        .expect("second delayed publication applies");
+        let second_sampled_at_ms = store.sampled_at_ms.expect("second sample time is retained");
+
+        assert_eq!(second_sampled_at_ms - first_sampled_at_ms, 1_000);
+        assert_eq!(second_sampled_at_ms, store.clock.at_ms(second_completed));
+        assert!(store.clock.now_ms().saturating_sub(second_sampled_at_ms) >= 3_000);
+        assert_eq!(store.snapshot.system.network_received_bps, 1_000);
+        assert_eq!(store.last_heartbeat_at_ms, Some(second_sampled_at_ms));
+        let mut evaluated = store.snapshot.clone();
+        evaluate_snapshot_health(&mut evaluated, store.clock.now_ms());
+        assert!(evaluated.health.degraded);
+        assert_ne!(evaluated.health.status_summary, "Healthy.");
+
+        collector_engine.shutdown().expect("collector engine joins");
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
-    fn cadence_health_recovers_after_a_healthy_metric_window() {
-        let base = Instant::now();
-        let interval = Duration::from_millis(500);
-        let health_window = Duration::from_secs(15);
-        let mut scheduler = MonotonicScheduler::new(base, interval, false, health_window);
-        scheduler.record_start(base);
-        let missed_at = base + Duration::from_millis(1_250);
-        scheduler.complete_scheduled_work(missed_at);
-
+    fn cadence_health_reflects_engine_window_and_recovers() {
         let base_dir = runtime_test_dir("cadence-recovery");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.settings.paused = false;
         store.engine_state = RuntimeEngineState::Running;
         store.collector_state = Some(RuntimeCollectorState::Healthy);
         store.warnings.clear();
-        store.update_schedule_health_at(&scheduler, missed_at);
+        store.update_schedule_health(CollectorCadence {
+            deadline_misses: 2,
+            recent_deadline_misses: 2,
+            deadline_lateness_p95_ms: 750.0,
+        });
 
         let degraded = store.build_health(0, 0.0, 0);
         assert!(degraded.degraded);
@@ -4075,15 +4153,11 @@ mod tests {
             "Sampling missed 2 deadline(s) in the current health window."
         );
 
-        let mut deadline = base + Duration::from_millis(1_500);
-        let recover_after = missed_at + health_window + Duration::from_millis(250);
-        while deadline <= recover_after {
-            scheduler.record_start(deadline);
-            scheduler.complete_scheduled_work(deadline + Duration::from_millis(10));
-            deadline += interval;
-        }
-        let recovered_at = deadline - interval + Duration::from_millis(10);
-        store.update_schedule_health_at(&scheduler, recovered_at);
+        store.update_schedule_health(CollectorCadence {
+            deadline_misses: 2,
+            recent_deadline_misses: 0,
+            deadline_lateness_p95_ms: 0.0,
+        });
 
         let recovered = store.build_health(0, 0.0, 0);
         assert!(!recovered.degraded);
@@ -4215,6 +4289,10 @@ mod tests {
             .refresh_now()
             .expect("unavailable publishes held snapshot");
         assert_eq!(unavailable.sample_seq, 0);
+        assert_eq!(
+            unavailable.health.engine_state,
+            Some(RuntimeEngineState::Running)
+        );
         assert_eq!(
             unavailable.health.collector_state,
             Some(RuntimeCollectorState::Unavailable)
@@ -4386,8 +4464,8 @@ mod tests {
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.settings.paused = true;
         store.settings.sample_interval_ms = 500;
-        store.collector = Box::new(collector);
-        let state = RuntimeState::from_store(store, true).expect("engine starts");
+        let state = RuntimeState::from_store_with_collector(store, true, Some(Box::new(collector)))
+            .expect("engine starts");
         std::thread::sleep(Duration::from_millis(650));
         let snapshot = state.snapshot().expect("paused heartbeat snapshot");
         assert_eq!(
@@ -6130,7 +6208,7 @@ mod tests {
         let base_dir = runtime_test_dir("admin-unsupported");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
 
-        let snapshot = store.set_admin_mode(true);
+        let snapshot = store.set_admin_mode(true, &NOOP_PROCESS_NETWORK_CONTROL);
 
         assert!(!snapshot.settings.admin_mode_requested);
         assert!(!snapshot.settings.admin_mode_enabled);
@@ -6175,7 +6253,7 @@ mod tests {
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Elevated);
 
-        let snapshot = store.set_admin_mode(true);
+        let snapshot = store.set_admin_mode(true, &NOOP_PROCESS_NETWORK_CONTROL);
 
         assert_eq!(
             snapshot.environment.process_elevation,
@@ -6213,7 +6291,7 @@ mod tests {
         let processes =
             serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
 
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
 
         assert_eq!(
             store.snapshot.admin_mode.state,
@@ -6232,7 +6310,7 @@ mod tests {
             processes
         );
 
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
 
         assert_eq!(
             store.snapshot.admin_mode.state,
@@ -6281,9 +6359,9 @@ mod tests {
         let processes =
             serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
 
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
         let first_publication = store.snapshot.publication_seq;
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
 
         assert!(store.snapshot.publication_seq > first_publication);
         assert_eq!(
@@ -6327,8 +6405,8 @@ mod tests {
         let processes =
             serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
 
-        store.progress_paused_elevated_helper();
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
 
         assert_eq!(
             store.snapshot.admin_mode.state,
@@ -6373,8 +6451,8 @@ mod tests {
                 }),
             ],
         );
-        store.progress_paused_elevated_helper();
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
         let paused_sample_seq = store.snapshot.sample_seq;
         assert_eq!(
             store.snapshot.admin_mode.state,
@@ -6487,7 +6565,7 @@ mod tests {
         ));
         store.publish_snapshot_only(None);
 
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
         assert_eq!(store.snapshot.processes[0].name, "OlderElevated");
         let snapshot = publish_scripted_sample(
             &mut store,
@@ -6519,7 +6597,7 @@ mod tests {
         let processes =
             serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
 
-        store.progress_paused_elevated_helper();
+        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
 
         assert_eq!(
             store.snapshot.admin_mode.state,
@@ -6539,7 +6617,8 @@ mod tests {
         );
         assert!(store.process_access_baseline_dirty);
 
-        let transition = store.advance_elevated_helper(1_783_944_003_000);
+        let transition =
+            store.advance_elevated_helper(1_783_944_003_000, &NOOP_PROCESS_NETWORK_CONTROL);
         let mut resumed_rows = vec![sample("20", "ResumedStandard", 0.0)];
         let mut rows_fresh = true;
         let mut warnings = Vec::new();
@@ -6570,7 +6649,8 @@ mod tests {
         store.admin_mode.state = RuntimeAdminModeState::Requesting;
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
 
-        let transition = store.advance_elevated_helper(1_783_944_006_000);
+        let transition =
+            store.advance_elevated_helper(1_783_944_006_000, &NOOP_PROCESS_NETWORK_CONTROL);
 
         assert!(transition.publish);
         assert!(!store.settings.admin_mode_requested);
@@ -6616,7 +6696,8 @@ mod tests {
         store.admin_mode.state = RuntimeAdminModeState::Active;
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
 
-        let transition = store.advance_elevated_helper(1_783_944_007_000);
+        let transition =
+            store.advance_elevated_helper(1_783_944_007_000, &NOOP_PROCESS_NETWORK_CONTROL);
         let failure = "admin_mode_helper_exited:launcher_code=1;admin_mode_cleanup_failed:\
 admin_mode_launcher_exit_failed:code=1";
 
@@ -6660,7 +6741,8 @@ admin_mode_launcher_exit_failed:code=1";
         store.admin_mode.state = RuntimeAdminModeState::Active;
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
 
-        let transition = store.advance_elevated_helper(1_783_944_008_000);
+        let transition =
+            store.advance_elevated_helper(1_783_944_008_000, &NOOP_PROCESS_NETWORK_CONTROL);
 
         assert!(transition.publish);
         assert!(!store.settings.admin_mode_requested);
@@ -6706,7 +6788,7 @@ admin_mode_launcher_exit_failed:code=1";
         store.admin_mode.state = RuntimeAdminModeState::Active;
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
 
-        let snapshot = store.set_admin_mode(false);
+        let snapshot = store.set_admin_mode(false, &NOOP_PROCESS_NETWORK_CONTROL);
 
         assert!(!snapshot.settings.admin_mode_requested);
         assert!(!snapshot.settings.admin_mode_enabled);
@@ -6748,7 +6830,7 @@ admin_mode_launcher_exit_failed:code=1";
         let sample_seq = store.snapshot.sample_seq;
         let sampled_at_ms = store.snapshot.sampled_at_ms;
 
-        let snapshot = store.set_admin_mode(false);
+        let snapshot = store.set_admin_mode(false, &NOOP_PROCESS_NETWORK_CONTROL);
 
         assert!(snapshot.settings.paused);
         assert!(!snapshot.settings.admin_mode_requested);
@@ -6800,7 +6882,10 @@ admin_mode_launcher_exit_failed:code=1";
         store.settings.admin_mode_requested = true;
         store.settings.admin_mode_enabled = true;
 
-        store.fail_admin_mode("admin_mode_launch_failed_or_cancelled".to_string());
+        store.fail_admin_mode(
+            "admin_mode_launch_failed_or_cancelled".to_string(),
+            &NOOP_PROCESS_NETWORK_CONTROL,
+        );
 
         assert!(!store.settings.admin_mode_requested);
         assert!(!store.settings.admin_mode_enabled);
@@ -6940,7 +7025,7 @@ admin_mode_launcher_exit_failed:code=1";
         fs::write(helper_dir.join("snapshot.json.tmp"), "{}").expect("temp fixture rewrites");
         fs::write(helper_dir.join("stop.signal"), "stop").expect("stop fixture rewrites");
 
-        let snapshot = store.set_admin_mode(false);
+        let snapshot = store.set_admin_mode(false, &NOOP_PROCESS_NETWORK_CONTROL);
 
         assert!(!snapshot.settings.admin_mode_requested);
         assert!(store.previous_processes.is_empty());
@@ -7206,9 +7291,12 @@ admin_mode_launcher_exit_failed:code=1";
 
         let base_dir = runtime_test_dir("root-health-transition");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        let (collector, _) = FakeCollector::new([FakeOutcome::Sample]);
-        store.collector = Box::new(collector);
-        store.tick().expect("a valid sampled snapshot is published");
+        let (mut collector, _) = FakeCollector::new([FakeOutcome::Sample]);
+        let sample = collector
+            .collect()
+            .expect("a valid raw sample is available");
+        let sample_ts_ms = store.clock.now_ms();
+        store.apply_raw_sample(sample, 0.0, sample_ts_ms, &NOOP_PROCESS_NETWORK_CONTROL);
         fs::remove_dir_all(&base_dir).expect("verified root is removed for invalidation");
         fs::write(&base_dir, "not a directory").expect("invalid root fixture writes");
 
@@ -7310,11 +7398,12 @@ admin_mode_launcher_exit_failed:code=1";
         let base_dir = runtime_test_dir("health-warning");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.warnings.clear();
-        let (collector, _) = FakeCollector::new([FakeOutcome::Sample]);
-        store.collector = Box::new(collector);
-        store
-            .tick()
-            .expect("current-user runtime publishes a sampled snapshot");
+        let (mut collector, _) = FakeCollector::new([FakeOutcome::Sample]);
+        let sample = collector
+            .collect()
+            .expect("a valid raw sample is available");
+        let sample_ts_ms = store.clock.now_ms();
+        store.apply_raw_sample(sample, 0.0, sample_ts_ms, &NOOP_PROCESS_NETWORK_CONTROL);
 
         let persistence = store.persistence.health();
         assert_eq!(persistence.state, RuntimePersistenceState::Healthy);
@@ -7429,7 +7518,8 @@ admin_mode_launcher_exit_failed:code=1";
         sampled_at_ms: u64,
     ) -> RuntimeSnapshot {
         store.settings.paused = false;
-        let transition = store.advance_elevated_helper(sampled_at_ms);
+        let transition =
+            store.advance_elevated_helper(sampled_at_ms, &NOOP_PROCESS_NETWORK_CONTROL);
         let mut rows_fresh = true;
         let mut warnings = Vec::new();
         store.apply_elevated_process_transition(
