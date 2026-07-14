@@ -14,8 +14,10 @@ use crate::contracts::{
     AccessState, GroupDetail, KernelPoolKind, MetricLimitationCode, MetricQuality,
     MetricQualityInfo, MetricSource, ProcessContributorIdentity, ProcessDetail, ProcessFocusMode,
     ProcessSample, ProcessViewRow, RuntimeAdminModeState, RuntimeCollectorState,
-    RuntimeEngineState, RuntimeInstallKind, RuntimePlatform, RuntimePrivilegedSource,
-    RuntimeProcessElevation, RuntimeSnapshot, SortColumn, SortDirection,
+    RuntimeEngineState, RuntimeInstallKind, RuntimePersistence, RuntimePersistenceDurability,
+    RuntimePersistenceKind, RuntimePersistenceOperation, RuntimePersistenceOwner,
+    RuntimePersistencePermissionState, RuntimePersistenceState, RuntimePlatform,
+    RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, SortColumn, SortDirection,
 };
 
 pub fn encode_snapshot(snapshot: RuntimeSnapshot) -> Result<ProtocolEnvelope, String> {
@@ -122,7 +124,12 @@ fn encode_snapshot_with_identity(
             metric_window_seconds: snapshot.settings.metric_window_seconds,
             effective_sample_interval_ms: snapshot.settings.sample_interval_ms,
             collection_paused: snapshot.settings.paused,
-            ui_preferences: None,
+            ui_preferences: snapshot.settings.ui_preferences.map(|preferences| {
+                RuntimeUiPreferencesV3 {
+                    theme: preferences.theme,
+                    history_point_limit: preferences.history_point_limit,
+                }
+            }),
         },
         health: RuntimeHealthV3 {
             engine_state: snapshot.health.engine_state.map(engine_state),
@@ -161,7 +168,7 @@ fn encode_snapshot_with_identity(
                     occurred_at_ms: error.occurred_at_ms,
                 }),
         },
-        persistence: None,
+        persistence: snapshot.persistence.map(encode_persistence),
         descriptors: catalog.descriptors,
         quality_codes: QUALITY_CODES.to_vec(),
         limitations: catalog.limitations,
@@ -198,6 +205,122 @@ fn encode_snapshot_with_identity(
     };
     validate_envelope(&envelope)?;
     Ok(envelope)
+}
+
+fn encode_persistence(persistence: RuntimePersistence) -> RuntimePersistenceV3 {
+    RuntimePersistenceV3 {
+        state: persistence_state(persistence.state),
+        roots: persistence
+            .roots
+            .into_iter()
+            .map(|root| RuntimePersistenceRootV3 {
+                owner: persistence_owner(root.owner),
+                directory: root.directory,
+                permission_state: match root.permission_state {
+                    RuntimePersistencePermissionState::Verified => {
+                        RuntimePersistencePermissionStateV3::Verified
+                    }
+                    RuntimePersistencePermissionState::Invalid => {
+                        RuntimePersistencePermissionStateV3::Invalid
+                    }
+                    RuntimePersistencePermissionState::Unavailable => {
+                        RuntimePersistencePermissionStateV3::Unavailable
+                    }
+                },
+            })
+            .collect(),
+        components: persistence
+            .components
+            .into_iter()
+            .map(|component| RuntimePersistenceComponentV3 {
+                owner: persistence_owner(component.owner),
+                kind: match component.kind {
+                    RuntimePersistenceKind::Settings => RuntimePersistenceKindV3::Settings,
+                    RuntimePersistenceKind::WarmCache => RuntimePersistenceKindV3::WarmCache,
+                    RuntimePersistenceKind::Diagnostics => RuntimePersistenceKindV3::Diagnostics,
+                    RuntimePersistenceKind::ServiceState => RuntimePersistenceKindV3::ServiceState,
+                },
+                state: persistence_state(component.state),
+                durability: match component.durability {
+                    RuntimePersistenceDurability::Durable => {
+                        RuntimePersistenceDurabilityV3::Durable
+                    }
+                    RuntimePersistenceDurability::NotWritten => {
+                        RuntimePersistenceDurabilityV3::NotWritten
+                    }
+                    RuntimePersistenceDurability::SessionOnly => {
+                        RuntimePersistenceDurabilityV3::SessionOnly
+                    }
+                    RuntimePersistenceDurability::NotApplicable => {
+                        RuntimePersistenceDurabilityV3::NotApplicable
+                    }
+                },
+                last_success_at_ms: component.last_success_at_ms,
+                active_failure: component.active_failure.map(|failure| {
+                    RuntimePersistenceFailureV3 {
+                        code: failure.code,
+                        operation: match failure.operation {
+                            RuntimePersistenceOperation::ResolveRoot => {
+                                RuntimePersistenceOperationV3::ResolveRoot
+                            }
+                            RuntimePersistenceOperation::Create => {
+                                RuntimePersistenceOperationV3::Create
+                            }
+                            RuntimePersistenceOperation::Load => {
+                                RuntimePersistenceOperationV3::Load
+                            }
+                            RuntimePersistenceOperation::Parse => {
+                                RuntimePersistenceOperationV3::Parse
+                            }
+                            RuntimePersistenceOperation::Migrate => {
+                                RuntimePersistenceOperationV3::Migrate
+                            }
+                            RuntimePersistenceOperation::Serialize => {
+                                RuntimePersistenceOperationV3::Serialize
+                            }
+                            RuntimePersistenceOperation::Write => {
+                                RuntimePersistenceOperationV3::Write
+                            }
+                            RuntimePersistenceOperation::Sync => {
+                                RuntimePersistenceOperationV3::Sync
+                            }
+                            RuntimePersistenceOperation::Replace => {
+                                RuntimePersistenceOperationV3::Replace
+                            }
+                            RuntimePersistenceOperation::Rotate => {
+                                RuntimePersistenceOperationV3::Rotate
+                            }
+                            RuntimePersistenceOperation::Remove => {
+                                RuntimePersistenceOperationV3::Remove
+                            }
+                            RuntimePersistenceOperation::Permissions => {
+                                RuntimePersistenceOperationV3::Permissions
+                            }
+                        },
+                        occurred_at_ms: failure.occurred_at_ms,
+                        retryable: failure.retryable,
+                        summary: failure.summary,
+                    }
+                }),
+            })
+            .collect(),
+        suppressed_diagnostic_events: persistence.suppressed_diagnostic_events,
+    }
+}
+
+fn persistence_state(state: RuntimePersistenceState) -> RuntimePersistenceStateV3 {
+    match state {
+        RuntimePersistenceState::Healthy => RuntimePersistenceStateV3::Healthy,
+        RuntimePersistenceState::Degraded => RuntimePersistenceStateV3::Degraded,
+        RuntimePersistenceState::Unavailable => RuntimePersistenceStateV3::Unavailable,
+    }
+}
+
+fn persistence_owner(owner: RuntimePersistenceOwner) -> RuntimePersistenceOwnerV3 {
+    match owner {
+        RuntimePersistenceOwner::CurrentUser => RuntimePersistenceOwnerV3::CurrentUser,
+        RuntimePersistenceOwner::CollectorService => RuntimePersistenceOwnerV3::CollectorService,
+    }
 }
 
 fn encode_system(

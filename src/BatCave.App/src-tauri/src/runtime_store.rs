@@ -1,7 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
-    env, fs,
+    env,
     panic::AssertUnwindSafe,
     path::PathBuf,
     sync::{
@@ -14,30 +14,36 @@ use std::{
 };
 
 #[cfg(test)]
-use std::path::Path;
-
 use serde::de::DeserializeOwned;
+#[cfg(test)]
+use std::fs;
+#[cfg(test)]
+use std::path::Path;
 
 use crate::elevation::{ElevatedHelperClient, ElevatedPoll};
 use crate::{
-    atomic_json::{write_json_atomic, AtomicJsonErrorLabels},
     contracts::{
         AccessState, GroupDetail, GroupDetailKind, GroupMetricCoverage, GroupMetricQuality,
         MetricCoverage, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
         ProcessFocusMode, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
         RuntimeAdminModeStatus, RuntimeCollectorState, RuntimeEngineState, RuntimeEnvironment,
-        RuntimeFatalError, RuntimeHealth, RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings,
-        RuntimeSnapshot, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
+        RuntimeFatalError, RuntimeHealth, RuntimePersistence, RuntimePersistenceState,
+        RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
+        RuntimeUiPreferences, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
         SystemMetricsSnapshot, WarmCache,
+    },
+    persistence::{
+        DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
     },
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetryCollector},
 };
 
+#[cfg(test)]
 const SETTINGS_FILE: &str = "settings.json";
+#[cfg(test)]
 const WARM_CACHE_FILE: &str = "warm-cache.json";
-const DIAGNOSTICS_FILE: &str = "diagnostics.jsonl";
 const MAX_WARNINGS: usize = 16;
 const WARM_CACHE_WRITE_INTERVAL_TICKS: u64 = 10;
 const APP_CPU_DEGRADE_PCT: f64 = 25.0;
@@ -52,14 +58,6 @@ const ENGINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_IO_BASELINE_PENDING: &str = "Process read/write I/O rates need a fresh prior sample.";
 const PROCESS_OTHER_IO_BASELINE_PENDING: &str =
     "Process Other I/O rates need a fresh prior sample.";
-const PERSISTENCE_JSON_ERRORS: AtomicJsonErrorLabels = AtomicJsonErrorLabels {
-    write_failed: "persistence_write_failed",
-    serialize_failed: "persistence_serialize_failed",
-    replace_failed: "persistence_replace_failed",
-    rename_failed: "persistence_rename_failed",
-    serialize_error_includes_path: true,
-};
-
 type SnapshotReply = mpsc::Sender<Result<Arc<RuntimeSnapshot>, String>>;
 
 struct PublishedRuntime {
@@ -129,6 +127,7 @@ enum EngineControl {
     SetQuery(RuntimeQuery, SnapshotReply),
     SetSampleInterval(u32, SnapshotReply),
     SetAdminMode(bool, SnapshotReply),
+    SetUiPreferences(RuntimeUiPreferences, SnapshotReply),
     Shutdown,
 }
 
@@ -147,11 +146,7 @@ pub struct RuntimeState {
 
 impl RuntimeState {
     pub fn new() -> Result<Self, String> {
-        Self::from_base_dir(default_base_dir())
-    }
-
-    pub(crate) fn from_base_dir(base_dir: PathBuf) -> Result<Self, String> {
-        Self::from_store(RuntimeStore::from_base_dir(base_dir), true)
+        Self::from_store(RuntimeStore::from_current_process(), true)
     }
 
     pub(crate) fn from_base_dir_manual(base_dir: PathBuf) -> Result<Self, String> {
@@ -278,6 +273,13 @@ impl RuntimeState {
 
     pub fn set_admin_mode(&self, enabled: bool) -> Result<RuntimeSnapshot, String> {
         self.request_snapshot(|reply| EngineControl::SetAdminMode(enabled, reply))
+    }
+
+    pub fn set_ui_preferences(
+        &self,
+        preferences: RuntimeUiPreferences,
+    ) -> Result<RuntimeSnapshot, String> {
+        self.request_snapshot(|reply| EngineControl::SetUiPreferences(preferences, reply))
     }
 
     pub fn has_process_exe(&self, exe: &str) -> Result<bool, String> {
@@ -656,6 +658,11 @@ fn sampling_engine_loop(
                 store.set_admin_mode(enabled);
                 reply_with_publication(reply, store, published);
             }
+            Ok(EngineControl::SetUiPreferences(preferences, reply)) => {
+                store.note_heartbeat();
+                store.set_ui_preferences(preferences);
+                reply_with_publication(reply, store, published);
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return false,
         }
@@ -803,7 +810,8 @@ fn fatal_control_loop(receiver: &Receiver<EngineControl>, shutdown_requested: &A
             }
             EngineControl::SetQuery(_, reply)
             | EngineControl::SetSampleInterval(_, reply)
-            | EngineControl::SetAdminMode(_, reply) => {
+            | EngineControl::SetAdminMode(_, reply)
+            | EngineControl::SetUiPreferences(_, reply) => {
                 let _ = reply.send(Err("runtime_engine_fatal".to_string()));
             }
         }
@@ -959,10 +967,17 @@ fn evaluate_snapshot_health(snapshot: &mut RuntimeSnapshot, evaluated_at_ms: u64
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsWriteIntent {
+    Automatic,
+    UserMutation,
+}
+
 struct RuntimeStore {
     collector: Box<dyn RuntimeCollector>,
     clock: Arc<MonotonicWireClock>,
     base_dir: PathBuf,
+    persistence: RuntimePersistenceCoordinator,
     provenance: RuntimeProvenance,
     settings: RuntimeSettings,
     admin_mode: RuntimeAdminModeStatus,
@@ -991,6 +1006,9 @@ struct RuntimeStore {
     elevated_helper_rows_published: bool,
     last_verified_elevated_frame: Option<VerifiedElevatedFrame>,
     process_access_baseline_dirty: bool,
+    // A failed load may hide original bytes. Only a user mutation may replace them with defaults.
+    settings_rewrite_blocked: bool,
+    persistence_flushed: bool,
 }
 
 struct VerifiedElevatedFrame {
@@ -1019,11 +1037,31 @@ impl RuntimeStore {
 
     fn from_base_dir(base_dir: PathBuf) -> Self {
         let clock = Arc::new(MonotonicWireClock::new());
+        let persistence = RuntimePersistenceCoordinator::for_current_user_directory(
+            base_dir.clone(),
+            clock.now_ms(),
+        );
+        Self::from_base_dir_with_persistence(base_dir, clock, persistence)
+    }
+
+    fn from_current_process() -> Self {
+        let clock = Arc::new(MonotonicWireClock::new());
+        let persistence = RuntimePersistenceCoordinator::from_current_process(clock.now_ms());
+        let base_dir = persistence.runtime_directory().to_path_buf();
+        Self::from_base_dir_with_persistence(base_dir, clock, persistence)
+    }
+
+    fn from_base_dir_with_persistence(
+        base_dir: PathBuf,
+        clock: Arc<MonotonicWireClock>,
+        mut persistence: RuntimePersistenceCoordinator,
+    ) -> Self {
         ElevatedHelperClient::remove_stale_artifacts(&base_dir);
         let provenance = RuntimeProvenance::detect(&base_dir);
         let mut warnings = VecDeque::new();
         if let Some(warning) = provenance.privilege_warning() {
-            push_warning(
+            push_startup_warning(
+                &mut persistence,
                 &mut warnings,
                 0,
                 clock.now_ms(),
@@ -1031,30 +1069,99 @@ impl RuntimeStore {
                 warning.to_string(),
             );
         }
-        let settings =
-            read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE)).unwrap_or_else(|error| {
-                if let Some(message) = error {
-                    push_warning(&mut warnings, 0, clock.now_ms(), "persistence", message);
+        let (settings, settings_rewrite_blocked) = match persistence.load_json_migrating(
+            UserStorageComponent::Settings,
+            clock.now_ms(),
+            migrate_runtime_settings,
+        ) {
+            Ok(Some(load)) => {
+                if load.migrated {
+                    let event = serde_json::json!({
+                        "ts_ms": clock.now_ms(),
+                        "category": "persistence",
+                        "payload": { "message": "settings schema migrated" },
+                    });
+                    if let DiagnosticWriteOutcome::Failed(failure) =
+                        persistence.record_diagnostic(&event, clock.now_ms())
+                    {
+                        push_startup_persistence_failure(
+                            &mut persistence,
+                            &mut warnings,
+                            0,
+                            clock.now_ms(),
+                            &failure,
+                        );
+                    }
                 }
-                RuntimeSettings::default()
-            });
+                (load.value, false)
+            }
+            Ok(None) => {
+                let settings = RuntimeSettings::default();
+                if let Err(failure) = persistence.write_json(
+                    UserStorageComponent::Settings,
+                    &settings,
+                    clock.now_ms(),
+                ) {
+                    push_startup_persistence_failure(
+                        &mut persistence,
+                        &mut warnings,
+                        0,
+                        clock.now_ms(),
+                        &failure,
+                    );
+                }
+                (settings, false)
+            }
+            Err(failure) => {
+                push_startup_persistence_failure(
+                    &mut persistence,
+                    &mut warnings,
+                    0,
+                    clock.now_ms(),
+                    &failure,
+                );
+                (RuntimeSettings::default(), true)
+            }
+        };
         let settings_requested_admin = settings.admin_mode_requested;
-        let mut warm_cache = read_json::<WarmCache>(&base_dir.join(WARM_CACHE_FILE))
-            .unwrap_or_else(|error| {
-                if let Some(message) = error {
-                    push_warning(&mut warnings, 0, clock.now_ms(), "persistence", message);
-                }
+        let mut warm_cache = match persistence
+            .load_json::<WarmCache>(UserStorageComponent::WarmCache, clock.now_ms())
+        {
+            Ok(Some(cache)) => cache,
+            Ok(None) => WarmCache {
+                seq: 0,
+                rows: Vec::new(),
+            },
+            Err(failure) => {
+                push_startup_persistence_failure(
+                    &mut persistence,
+                    &mut warnings,
+                    0,
+                    clock.now_ms(),
+                    &failure,
+                );
                 WarmCache {
                     seq: 0,
                     rows: Vec::new(),
                 }
-            });
+            }
+        };
         let publication_seq = warm_cache.seq;
         let mut settings = normalize_settings(settings);
         settings.admin_mode_enabled = provenance.process_is_elevated();
         if settings_requested_admin {
             warm_cache.rows.clear();
-            let _ = fs::remove_file(base_dir.join(WARM_CACHE_FILE));
+            if let Err(failure) =
+                persistence.remove(UserStorageComponent::WarmCache, clock.now_ms())
+            {
+                push_startup_persistence_failure(
+                    &mut persistence,
+                    &mut warnings,
+                    publication_seq,
+                    clock.now_ms(),
+                    &failure,
+                );
+            }
         } else {
             warm_cache.rows = hold_process_rates(warm_cache.rows);
         }
@@ -1064,8 +1171,20 @@ impl RuntimeStore {
         } else {
             RuntimeEngineState::Starting
         };
+        let persistence_health = persistence.health();
+        let persistence_degraded = persistence_health.state != RuntimePersistenceState::Healthy;
         let initial_health = RuntimeHealth {
             engine_state: Some(engine_state),
+            degraded: persistence_degraded,
+            status_summary: if persistence_health.state == RuntimePersistenceState::Unavailable {
+                "Local persistence is unavailable; monitoring is starting with session-only state."
+                    .to_string()
+            } else if persistence_degraded {
+                "Local persistence is degraded; monitoring is starting with visible state loss risk."
+                    .to_string()
+            } else {
+                "Runtime starting.".to_string()
+            },
             ..RuntimeHealth::default()
         };
         let health_window = metric_window(settings.metric_window_seconds);
@@ -1078,6 +1197,7 @@ impl RuntimeStore {
             &settings,
             &admin_mode,
             initial_health,
+            Some(persistence_health),
             empty_system(),
             &warm_cache.rows,
             shape_rows(&warm_cache.rows, &settings.query),
@@ -1088,6 +1208,7 @@ impl RuntimeStore {
             collector: Box::new(TelemetryCollector::new()),
             clock,
             base_dir,
+            persistence,
             provenance,
             settings,
             admin_mode,
@@ -1116,6 +1237,8 @@ impl RuntimeStore {
             elevated_helper_rows_published: false,
             last_verified_elevated_frame: None,
             process_access_baseline_dirty: false,
+            settings_rewrite_blocked,
+            persistence_flushed: false,
         }
     }
 
@@ -1136,7 +1259,7 @@ impl RuntimeStore {
         if paused {
             self.live_process_snapshot = false;
         }
-        self.persist_settings();
+        let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
         self.publish_snapshot_only(None);
         self.snapshot.clone()
     }
@@ -1206,24 +1329,31 @@ impl RuntimeStore {
                 self.live_process_snapshot = false;
             }
             self.process_access_baseline_dirty = false;
-            self.purge_warm_cache();
+            let _ = self.purge_warm_cache();
             ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
         }
-        self.persist_settings();
+        let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
         self.publish_snapshot_only(None);
         self.snapshot.clone()
     }
 
     fn set_query(&mut self, query: RuntimeQuery) -> RuntimeSnapshot {
         self.settings.query = normalize_query(query);
-        self.persist_settings();
+        let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
         self.publish_snapshot_only(None);
         self.snapshot.clone()
     }
 
     fn set_sample_interval(&mut self, sample_interval_ms: u32) -> RuntimeSnapshot {
         self.settings.sample_interval_ms = sample_interval_ms.clamp(500, 5_000);
-        self.persist_settings();
+        let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
+        self.publish_snapshot_only(None);
+        self.snapshot.clone()
+    }
+
+    fn set_ui_preferences(&mut self, preferences: RuntimeUiPreferences) -> RuntimeSnapshot {
+        self.settings.ui_preferences = Some(preferences);
+        let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
         self.publish_snapshot_only(None);
         self.snapshot.clone()
     }
@@ -1502,7 +1632,7 @@ impl RuntimeStore {
             .sample_seq
             .is_multiple_of(WARM_CACHE_WRITE_INTERVAL_TICKS)
         {
-            self.persist_warm_cache();
+            let _ = self.persist_warm_cache();
         }
         self.record_collection_latency(collection_started.elapsed());
         let publication_started = Instant::now();
@@ -1520,6 +1650,7 @@ impl RuntimeStore {
             &self.settings,
             &self.admin_mode,
             health,
+            Some(self.persistence.health()),
             system,
             &self.previous_processes,
             rows,
@@ -1542,7 +1673,7 @@ impl RuntimeStore {
         self.admin_mode.detail = Some(error.clone());
         self.add_warning("admin_mode", error);
         let _ = self.collector.retry_process_network();
-        self.persist_settings();
+        let _ = self.persist_settings(SettingsWriteIntent::Automatic);
     }
 
     fn resolve_elevated_request(&mut self) -> bool {
@@ -1597,6 +1728,7 @@ impl RuntimeStore {
             &self.settings,
             &self.admin_mode,
             health,
+            Some(self.persistence.health()),
             self.snapshot.system.clone(),
             &self.previous_processes,
             rows,
@@ -1671,6 +1803,7 @@ impl RuntimeStore {
             app_metrics.cpu_percent,
             app_metrics.rss_bytes,
         );
+        self.snapshot.persistence = Some(self.persistence.health());
     }
 
     fn build_health(
@@ -1698,6 +1831,8 @@ impl RuntimeStore {
         );
         let fatal = self.engine_state == RuntimeEngineState::Fatal;
         let cadence_degraded = self.recent_deadline_misses > 0;
+        let persistence_state = self.persistence.health().state;
+        let persistence_degraded = persistence_state != RuntimePersistenceState::Healthy;
         let last_warning = self.warnings.back().map(|warning| warning.message.clone());
         let status_summary = if fatal {
             "Sampling engine stopped after a fatal error.".to_string()
@@ -1711,6 +1846,12 @@ impl RuntimeStore {
             "Collector unavailable; retaining the last published sample.".to_string()
         } else if self.collector_state == Some(RuntimeCollectorState::Limited) {
             "Collecting with limited telemetry quality.".to_string()
+        } else if persistence_state == RuntimePersistenceState::Unavailable {
+            "Local persistence is unavailable; monitoring continues with session-only state."
+                .to_string()
+        } else if persistence_degraded {
+            "Local persistence is degraded; monitoring continues with visible state loss risk."
+                .to_string()
         } else if cadence_degraded {
             format!(
                 "Sampling missed {} deadline(s) in the current health window.",
@@ -1739,7 +1880,8 @@ impl RuntimeStore {
                 || cadence_degraded
                 || cpu_degraded
                 || rss_degraded
-                || warning_degraded,
+                || warning_degraded
+                || persistence_degraded,
             collector_warnings: collector_warning_count,
             runtime_loop_enabled: true,
             runtime_loop_running: self.engine_state == RuntimeEngineState::Running,
@@ -1766,13 +1908,19 @@ impl RuntimeStore {
     }
 
     fn add_warning(&mut self, category: &str, message: String) {
-        let key = warning_key(category, &message);
+        if self.upsert_warning(category, &message) {
+            self.append_diagnostic(category, &message);
+        }
+    }
+
+    fn upsert_warning(&mut self, category: &str, message: &str) -> bool {
+        let key = warning_key(category, message);
         if self
             .warnings
             .iter()
             .any(|warning| warning.key == key && warning.message == message)
         {
-            return;
+            return false;
         }
         if let Some(index) = self.warnings.iter().position(|warning| warning.key == key) {
             self.warnings.remove(index);
@@ -1782,9 +1930,9 @@ impl RuntimeStore {
             self.publication_seq,
             self.clock.now_ms(),
             category,
-            message.clone(),
+            message.to_string(),
         );
-        self.append_diagnostic(category, &message);
+        true
     }
 
     fn sync_collector_warnings(&mut self, messages: Vec<String>) {
@@ -1813,77 +1961,129 @@ impl RuntimeStore {
         }
     }
 
-    fn persist_settings(&mut self) {
+    fn persist_settings(&mut self, intent: SettingsWriteIntent) -> Result<(), String> {
+        if intent == SettingsWriteIntent::UserMutation {
+            self.settings_rewrite_blocked = false;
+        } else if self.settings_rewrite_blocked {
+            return Ok(());
+        }
         let mut persisted = self.settings.clone();
         persisted.admin_mode_requested = false;
         persisted.admin_mode_enabled = false;
-        if let Err(error) = write_json_atomic(
-            &self.base_dir.join(SETTINGS_FILE),
+        match self.persistence.write_json(
+            UserStorageComponent::Settings,
             &persisted,
-            PERSISTENCE_JSON_ERRORS,
+            self.clock.now_ms(),
         ) {
-            self.add_warning("persistence", error);
+            Ok(()) => {
+                self.persistence.retry_diagnostics();
+                let event = serde_json::json!({
+                    "ts_ms": self.clock.now_ms(),
+                    "category": "persistence",
+                    "payload": { "message": "settings persisted" },
+                });
+                let _ = self
+                    .persistence
+                    .record_diagnostic(&event, self.clock.now_ms());
+                self.clear_persistence_warnings_if_healthy();
+                Ok(())
+            }
+            Err(failure) => {
+                let message = RuntimePersistenceCoordinator::failure_message(&failure);
+                self.add_warning("persistence", message.clone());
+                Err(message)
+            }
         }
     }
 
-    fn persist_warm_cache(&mut self) {
+    fn persist_warm_cache(&mut self) -> Result<(), String> {
         if self.settings.admin_mode_enabled {
-            return;
+            return Ok(());
         }
         let cache = WarmCache {
             seq: self.publication_seq,
             rows: self.previous_processes.clone(),
         };
-        if let Err(error) = write_json_atomic(
-            &self.base_dir.join(WARM_CACHE_FILE),
+        match self.persistence.write_json(
+            UserStorageComponent::WarmCache,
             &cache,
-            PERSISTENCE_JSON_ERRORS,
+            self.clock.now_ms(),
         ) {
-            self.add_warning("persistence", error);
+            Ok(()) => {
+                self.clear_persistence_warnings_if_healthy();
+                Ok(())
+            }
+            Err(failure) => {
+                let message = RuntimePersistenceCoordinator::failure_message(&failure);
+                self.add_warning("persistence", message.clone());
+                Err(message)
+            }
         }
     }
 
-    fn purge_warm_cache(&mut self) {
-        let path = self.base_dir.join(WARM_CACHE_FILE);
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => self.add_warning(
-                "persistence",
-                format!(
-                    "persistence_remove_failed path={} error={}",
-                    path.display(),
-                    error
-                ),
-            ),
+    fn purge_warm_cache(&mut self) -> Result<(), String> {
+        match self
+            .persistence
+            .remove(UserStorageComponent::WarmCache, self.clock.now_ms())
+        {
+            Ok(()) => {
+                self.clear_persistence_warnings_if_healthy();
+                Ok(())
+            }
+            Err(failure) => {
+                let message = RuntimePersistenceCoordinator::failure_message(&failure);
+                self.add_warning("persistence", message.clone());
+                Err(message)
+            }
         }
     }
 
-    fn append_diagnostic(&self, category: &str, message: &str) {
-        let path = self.base_dir.join(DIAGNOSTICS_FILE);
+    fn append_diagnostic(&mut self, category: &str, message: &str) {
         let payload = serde_json::json!({
             "ts_ms": self.clock.now_ms(),
             "category": category,
             "payload": { "message": message },
         });
-        let _ = fs::create_dir_all(&self.base_dir);
-        if fs::metadata(&path).is_ok_and(|metadata| metadata.len() >= 1024 * 1024) {
-            let backup = self.base_dir.join("diagnostics.jsonl.1");
-            let _ = fs::remove_file(&backup);
-            let _ = fs::rename(&path, backup);
+        if let DiagnosticWriteOutcome::Failed(failure) = self
+            .persistence
+            .record_diagnostic(&payload, self.clock.now_ms())
+        {
+            let message = RuntimePersistenceCoordinator::failure_message(&failure);
+            self.upsert_warning("persistence", &message);
         }
-        let _ = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .and_then(|mut file| {
-                use std::io::Write;
-                writeln!(file, "{payload}")
-            });
+    }
+
+    fn clear_persistence_warnings_if_healthy(&mut self) {
+        if self.persistence.health().state != RuntimePersistenceState::Healthy {
+            return;
+        }
+        let recovered = self
+            .warnings
+            .iter()
+            .filter(|warning| warning.category == "persistence")
+            .map(|warning| warning.key.clone())
+            .collect::<Vec<_>>();
+        for key in recovered {
+            self.clear_warning(&key);
+        }
     }
 
     fn shutdown_owned_resources(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
+        if !self.persistence_flushed {
+            self.persistence_flushed = true;
+            if let Err(error) = self.persist_settings(SettingsWriteIntent::Automatic) {
+                errors.push(error);
+            }
+            let cache_result = if self.settings.admin_mode_enabled {
+                self.purge_warm_cache()
+            } else {
+                self.persist_warm_cache()
+            };
+            if let Err(error) = cache_result {
+                errors.push(error);
+            }
+        }
         if let Some(mut launch) = self.elevated_request.take() {
             if let Some(worker) = launch.worker.take() {
                 if worker.join().is_err() {
@@ -2050,6 +2250,7 @@ fn build_snapshot(
     settings: &RuntimeSettings,
     admin_mode: &RuntimeAdminModeStatus,
     health: RuntimeHealth,
+    persistence: Option<RuntimePersistence>,
     system: SystemMetricsSnapshot,
     all_processes: &[ProcessSample],
     processes: Vec<ProcessSample>,
@@ -2067,6 +2268,7 @@ fn build_snapshot(
         admin_mode: admin_mode.clone(),
         settings: settings.clone(),
         health,
+        persistence,
         system,
         process_contributors: summarize_process_contributors(all_processes),
         processes,
@@ -3350,6 +3552,151 @@ fn normalize_settings(settings: RuntimeSettings) -> RuntimeSettings {
         metric_window_seconds: settings.metric_window_seconds.clamp(15, 600),
         sample_interval_ms: settings.sample_interval_ms.clamp(500, 5_000),
         paused: settings.paused,
+        ui_preferences: settings.ui_preferences.filter(valid_ui_preferences),
+    }
+}
+
+fn migrate_runtime_settings(
+    value: serde_json::Value,
+) -> Result<JsonMigration<RuntimeSettings>, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "settings schema must be a JSON object".to_string())?;
+    let unknown_field = object.keys().find(|field| {
+        !matches!(
+            field.as_str(),
+            "query"
+                | "admin_mode_requested"
+                | "admin_mode_enabled"
+                | "metric_window_seconds"
+                | "sample_interval_ms"
+                | "paused"
+                | "ui_preferences"
+                | "theme"
+                | "history_point_limit"
+        )
+    });
+    if let Some(field) = unknown_field {
+        return Err(format!("settings schema contains unknown field `{field}`"));
+    }
+    for (section, allowed) in [
+        (
+            "query",
+            &[
+                "filter_text",
+                "focus_mode",
+                "sort_column",
+                "sort_direction",
+                "limit",
+            ][..],
+        ),
+        ("ui_preferences", &["theme", "history_point_limit"][..]),
+    ] {
+        if let Some(fields) = object.get(section).and_then(serde_json::Value::as_object) {
+            if let Some(field) = fields
+                .keys()
+                .find(|field| !allowed.contains(&field.as_str()))
+            {
+                return Err(format!(
+                    "settings schema contains unknown field `{section}.{field}`"
+                ));
+            }
+        }
+    }
+    let mut settings = serde_json::from_value::<RuntimeSettings>(value.clone())
+        .map_err(|error| format!("settings schema is invalid: {error}"))?;
+    if settings
+        .ui_preferences
+        .as_ref()
+        .is_some_and(|preferences| !valid_ui_preferences(preferences))
+    {
+        return Err("settings UI preferences are invalid".to_string());
+    }
+    if settings.ui_preferences.is_none() {
+        let legacy_theme = value.get("theme").and_then(serde_json::Value::as_str);
+        let legacy_history_point_limit = value
+            .get("history_point_limit")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok());
+        match (legacy_theme, legacy_history_point_limit) {
+            (Some(theme), Some(history_point_limit)) => {
+                let preferences = RuntimeUiPreferences {
+                    theme: theme.to_string(),
+                    history_point_limit,
+                };
+                if !valid_ui_preferences(&preferences) {
+                    return Err("legacy UI preferences are invalid".to_string());
+                }
+                settings.ui_preferences = Some(preferences);
+                return Ok(JsonMigration::Migrated(settings));
+            }
+            (None, None) => {}
+            _ => return Err("legacy UI preferences are incomplete".to_string()),
+        }
+    }
+    Ok(JsonMigration::Current(settings))
+}
+
+fn valid_ui_preferences(preferences: &RuntimeUiPreferences) -> bool {
+    matches!(
+        preferences.theme.as_str(),
+        "system" | "cave" | "aurora" | "ember" | "daylight"
+    ) && matches!(preferences.history_point_limit, 30 | 72 | 180 | 360)
+}
+
+fn push_startup_persistence_failure(
+    persistence: &mut RuntimePersistenceCoordinator,
+    warnings: &mut VecDeque<RuntimeWarning>,
+    publication_seq: u64,
+    occurred_at_ms: u64,
+    failure: &crate::persistence::PersistenceFailure,
+) {
+    push_startup_warning(
+        persistence,
+        warnings,
+        publication_seq,
+        occurred_at_ms,
+        "persistence",
+        RuntimePersistenceCoordinator::failure_message(failure),
+    );
+}
+
+fn push_startup_warning(
+    persistence: &mut RuntimePersistenceCoordinator,
+    warnings: &mut VecDeque<RuntimeWarning>,
+    publication_seq: u64,
+    occurred_at_ms: u64,
+    category: &str,
+    message: String,
+) {
+    push_warning(
+        warnings,
+        publication_seq,
+        occurred_at_ms,
+        category,
+        message.clone(),
+    );
+    let event = serde_json::json!({
+        "ts_ms": occurred_at_ms,
+        "category": category,
+        "payload": { "message": message },
+    });
+    if let DiagnosticWriteOutcome::Failed(failure) =
+        persistence.record_diagnostic(&event, occurred_at_ms)
+    {
+        let diagnostic_message = RuntimePersistenceCoordinator::failure_message(&failure);
+        if !warnings
+            .iter()
+            .any(|warning| warning.message == diagnostic_message)
+        {
+            push_warning(
+                warnings,
+                publication_seq,
+                occurred_at_ms,
+                "persistence",
+                diagnostic_message,
+            );
+        }
     }
 }
 
@@ -3514,6 +3861,7 @@ fn byte_rate(current: u64, previous: u64, elapsed_seconds: f64) -> u64 {
     ((current - previous) as f64 / elapsed_seconds.max(0.001)).round() as u64
 }
 
+#[cfg(test)]
 fn read_json<T: DeserializeOwned>(path: &PathBuf) -> Result<T, Option<String>> {
     if !path.exists() {
         return Err(None);
@@ -3578,7 +3926,8 @@ fn round1(value: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::contracts::{
-        AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality, RuntimeProcessElevation,
+        AccessState, MetricQualityInfo, MetricSource, ProcessMetricQuality,
+        RuntimePersistencePermissionState, RuntimeProcessElevation,
     };
     #[cfg(target_os = "macos")]
     use crate::contracts::{RuntimeInstallKind, RuntimePlatform};
@@ -4143,6 +4492,7 @@ mod tests {
             &settings,
             &provenance.admin_mode_status(),
             RuntimeHealth::default(),
+            None,
             empty_system(),
             &all_processes,
             visible_processes,
@@ -4311,6 +4661,7 @@ mod tests {
             &settings,
             &provenance.admin_mode_status(),
             RuntimeHealth::default(),
+            None,
             empty_system(),
             &all_processes,
             visible_processes,
@@ -5637,6 +5988,7 @@ mod tests {
                 ..RuntimeQuery::default()
             },
             paused: false,
+            ui_preferences: None,
         });
 
         assert!(!settings.admin_mode_requested);
@@ -5645,6 +5997,37 @@ mod tests {
         assert_eq!(settings.query.filter_text, "code");
         assert_eq!(settings.query.focus_mode, ProcessFocusMode::Attention);
         assert_eq!(settings.query.limit, 20_000);
+    }
+
+    #[test]
+    fn legacy_user_preferences_migrate_into_runtime_settings() {
+        let migrated = migrate_runtime_settings(serde_json::json!({
+            "query": {},
+            "theme": "daylight",
+            "history_point_limit": 360
+        }))
+        .expect("legacy preferences migrate");
+        let JsonMigration::Migrated(settings) = migrated else {
+            panic!("legacy settings should be rewritten");
+        };
+        assert_eq!(
+            settings.ui_preferences,
+            Some(RuntimeUiPreferences {
+                theme: "daylight".to_string(),
+                history_point_limit: 360,
+            })
+        );
+
+        assert!(migrate_runtime_settings(serde_json::json!({
+            "theme": "ember"
+        }))
+        .is_err());
+        assert!(migrate_runtime_settings(serde_json::json!({
+            "schema_version": 99,
+            "theme": "future",
+            "history_point_limit": 72
+        }))
+        .is_err());
     }
 
     #[test]
@@ -5663,6 +6046,7 @@ mod tests {
             &store.settings,
             &store.admin_mode,
             RuntimeHealth::default(),
+            Some(store.persistence.health()),
             empty_system(),
             &all_processes,
             vec![trusted],
@@ -6401,33 +6785,257 @@ mod tests {
         store.previous_processes = vec![sample("10", "Elevated", 0.0)];
         store.publication_seq = 10;
 
-        store.persist_warm_cache();
+        let _ = store.persist_warm_cache();
 
         assert!(!base_dir.join(WARM_CACHE_FILE).exists());
         let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
-    fn collector_warning_marks_health_degraded() {
-        let mut store = RuntimeStore::new();
-        let base_dir = std::env::temp_dir().join(format!(
-            "batcave-runtime-health-warning-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&base_dir);
-        store.base_dir = base_dir.clone();
-        store.settings = RuntimeSettings::default();
-        store.warnings.clear();
-        store.add_warning(
-            "collector",
-            "network_attribution_failed:access_denied".to_string(),
+    fn standard_monitoring_starts_with_truthful_degraded_persistence() {
+        let parent = runtime_test_dir("invalid-persistence-root");
+        let base_dir = parent.join("not-a-directory");
+        fs::create_dir_all(&parent).expect("test parent exists");
+        fs::write(&base_dir, "occupied by a file").expect("invalid root fixture writes");
+
+        let store = RuntimeStore::from_base_dir(base_dir);
+        let persistence = store
+            .snapshot
+            .persistence
+            .as_ref()
+            .expect("health published");
+
+        assert_eq!(persistence.state, RuntimePersistenceState::Degraded);
+        assert!(store.snapshot.health.degraded);
+        assert!(store.snapshot.health.status_summary.contains("persistence"));
+        assert_eq!(store.engine_state, RuntimeEngineState::Starting);
+        let expected_settings = RuntimeSettings {
+            admin_mode_enabled: store.provenance.process_is_elevated(),
+            ..RuntimeSettings::default()
+        };
+        assert_eq!(store.settings, expected_settings);
+        assert!(!store.settings.admin_mode_requested);
+        assert!(store
+            .warnings
+            .iter()
+            .any(|warning| warning.category == "persistence"));
+
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_settings_survive_ordinary_runtime_open_and_close() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base_dir = runtime_test_dir("corrupt-settings-preserved");
+        fs::create_dir_all(&base_dir).expect("settings root exists");
+        fs::set_permissions(&base_dir, fs::Permissions::from_mode(0o700))
+            .expect("settings root is private");
+        let path = base_dir.join(SETTINGS_FILE);
+        let original = b"{not-json\n";
+        fs::write(&path, original).expect("corrupt settings fixture writes");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("settings fixture is private");
+
+        {
+            let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+            assert!(store.settings_rewrite_blocked);
+            assert!(store
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("persistence_corrupt_data")));
+            store
+                .shutdown_owned_resources()
+                .expect("ordinary shutdown leaves unreadable settings untouched");
+        }
+
+        assert_eq!(fs::read(&path).expect("settings remain readable"), original);
+
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.set_ui_preferences(RuntimeUiPreferences {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        });
+        assert!(!store.settings_rewrite_blocked);
+        let persisted =
+            read_json::<RuntimeSettings>(&path).expect("user mutation replaces defaults");
+        assert_eq!(persisted.ui_preferences, store.settings.ui_preferences);
+
+        drop(store);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_settings_migration_survives_ordinary_runtime_open_and_close() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (name, original) in [
+            (
+                "incomplete-settings-migration-preserved",
+                br#"{"theme":"ember"}"#.as_slice(),
+            ),
+            (
+                "unknown-settings-schema-preserved",
+                br#"{"schema_version":99,"theme":"future"}"#.as_slice(),
+            ),
+        ] {
+            let base_dir = runtime_test_dir(name);
+            fs::create_dir_all(&base_dir).expect("settings root exists");
+            fs::set_permissions(&base_dir, fs::Permissions::from_mode(0o700))
+                .expect("settings root is private");
+            let path = base_dir.join(SETTINGS_FILE);
+            fs::write(&path, original).expect("legacy settings fixture writes");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("settings fixture is private");
+
+            {
+                let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+                assert!(store.settings_rewrite_blocked);
+                assert!(store
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.message.contains("persistence_migration_failed")));
+                store
+                    .shutdown_owned_resources()
+                    .expect("ordinary shutdown leaves failed migration bytes untouched");
+            }
+
+            assert_eq!(fs::read(&path).expect("settings remain readable"), original);
+            let _ = fs::remove_dir_all(base_dir);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_snapshot_and_protocol_publish_root_invalidation_and_recovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base_dir = runtime_test_dir("root-health-transition");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let (collector, _) = FakeCollector::new([FakeOutcome::Sample]);
+        store.collector = Box::new(collector);
+        store.tick().expect("a valid sampled snapshot is published");
+        fs::remove_dir_all(&base_dir).expect("verified root is removed for invalidation");
+        fs::write(&base_dir, "not a directory").expect("invalid root fixture writes");
+
+        let invalid = store.set_query(RuntimeQuery {
+            filter_text: "invalid".to_string(),
+            ..RuntimeQuery::default()
+        });
+        let persistence = invalid
+            .persistence
+            .as_ref()
+            .expect("persistence is published");
+        assert_eq!(persistence.state, RuntimePersistenceState::Degraded);
+        assert_eq!(
+            persistence.roots[0].permission_state,
+            RuntimePersistencePermissionState::Invalid
+        );
+        let invalid_protocol = serde_json::to_value(
+            crate::protocol::encode_snapshot(invalid).expect("invalid root snapshot encodes"),
+        )
+        .expect("invalid root protocol serializes");
+        assert_eq!(
+            invalid_protocol["event"]["payload"]["persistence"]["roots"][0]["permission_state"],
+            "invalid"
         );
 
-        let health = store.build_health(3, 0.2, 64 * 1024 * 1024);
+        fs::remove_file(&base_dir).expect("invalid root fixture removes");
+        fs::create_dir_all(&base_dir).expect("root is recreated");
+        fs::set_permissions(&base_dir, fs::Permissions::from_mode(0o700))
+            .expect("recreated root is private");
+        let recovered = store.set_query(RuntimeQuery {
+            filter_text: "recovered".to_string(),
+            ..RuntimeQuery::default()
+        });
+        let persistence = recovered
+            .persistence
+            .as_ref()
+            .expect("recovered persistence is published");
+        assert_eq!(persistence.state, RuntimePersistenceState::Healthy);
+        assert_eq!(
+            persistence.roots[0].permission_state,
+            RuntimePersistencePermissionState::Verified
+        );
+        assert!(!recovered.health.degraded);
+        let recovered_protocol = serde_json::to_value(
+            crate::protocol::encode_snapshot(recovered).expect("recovered snapshot encodes"),
+        )
+        .expect("recovered protocol serializes");
+        assert_eq!(
+            recovered_protocol["event"]["payload"]["persistence"]["roots"][0]["permission_state"],
+            "verified"
+        );
 
+        drop(store);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn shutdown_flushes_settings_and_warm_cache_once() {
+        let base_dir = runtime_test_dir("shutdown-persistence-flush");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        // This fixture proves the standard-user cache flush path independently of the host token.
+        store.settings.admin_mode_enabled = false;
+        store.settings.ui_preferences = Some(RuntimeUiPreferences {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        });
+        store.previous_processes = vec![sample("10", "Cached", 0.0)];
+        store.publication_seq = 12;
+
+        store
+            .shutdown_owned_resources()
+            .expect("owned state flushes");
+        store
+            .shutdown_owned_resources()
+            .expect("second shutdown is idempotent");
+
+        let settings = read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE))
+            .expect("settings persisted");
+        let cache =
+            read_json::<WarmCache>(&base_dir.join(WARM_CACHE_FILE)).expect("warm cache persisted");
+        assert_eq!(settings.ui_preferences, store.settings.ui_preferences);
+        assert!(!settings.admin_mode_requested);
+        assert!(!settings.admin_mode_enabled);
+        assert_eq!(cache.seq, 12);
+        assert_eq!(cache.rows.len(), 1);
+        assert_eq!(cache.rows[0].name, "Cached");
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn current_user_persistence_keeps_collector_warning_health_protocol_valid() {
+        let base_dir = runtime_test_dir("health-warning");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.warnings.clear();
+        let (collector, _) = FakeCollector::new([FakeOutcome::Sample]);
+        store.collector = Box::new(collector);
+        store
+            .tick()
+            .expect("current-user runtime publishes a sampled snapshot");
+
+        let persistence = store.persistence.health();
+        assert_eq!(persistence.state, RuntimePersistenceState::Healthy);
+        assert_eq!(
+            persistence.roots[0].permission_state,
+            RuntimePersistencePermissionState::Verified
+        );
+
+        store.publish_snapshot_only(Some((
+            "collector",
+            "network_attribution_failed:access_denied".to_string(),
+        )));
+
+        let health = &store.snapshot.health;
         assert!(health.degraded);
         assert_eq!(health.collector_warnings, 1);
         assert!(health.status_summary.contains("1 telemetry limitation"));
+        crate::protocol::encode_snapshot(store.snapshot.clone())
+            .expect("collector warning snapshot remains protocol-valid");
 
         let _ = fs::remove_dir_all(&base_dir);
     }

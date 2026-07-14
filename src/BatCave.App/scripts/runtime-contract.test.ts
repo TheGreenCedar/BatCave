@@ -11,7 +11,11 @@ import {
   processNeedsAttention,
   processOtherIoRate,
 } from "../src/lib/process.ts";
-import { currentDiagnosticIssues, uniqueWarningCount } from "../src/lib/diagnostics.ts";
+import {
+  currentDiagnosticIssues,
+  suppressedDiagnosticsLabel,
+  uniqueWarningCount,
+} from "../src/lib/diagnostics.ts";
 import {
   installKindLabel,
   privilegedCollectionAction,
@@ -26,13 +30,16 @@ import {
   shouldApplyRuntimePublication,
   shouldPollRuntime,
 } from "../src/lib/runtimeSnapshot.ts";
+import { dispatchAutomaticRuntimeHydration } from "../src/lib/runtimeHydration.ts";
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
+import { UiPreferencePersistenceSequence } from "../src/lib/uiPreferencePersistence.ts";
 import type {
   ProcessSample,
   GroupDetail,
   ProcessViewRow,
   RuntimeAdminModeStatus,
   RuntimeEnvironment,
+  RuntimeSnapshot,
   RuntimeWarning,
 } from "../src/lib/types.ts";
 
@@ -92,6 +99,125 @@ function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
 test("control publications do not look like new telemetry samples", () => {
   assert.equal(hasNewRuntimeSample({ sample_seq: 7 }, { sample_seq: 7 }), false);
   assert.equal(hasNewRuntimeSample({ sample_seq: 7 }, { sample_seq: 8 }), true);
+});
+
+test("suppressed diagnostics stay unknown when persistence is not reported", () => {
+  assert.equal(suppressedDiagnosticsLabel(null), "Not reported");
+  assert.equal(
+    suppressedDiagnosticsLabel({
+      state: "healthy",
+      roots: [],
+      components: [],
+      suppressed_diagnostic_events: 0,
+    }),
+    "0",
+  );
+});
+
+function durablePreferenceSnapshot(theme: string, historyPointLimit: number): RuntimeSnapshot {
+  return {
+    ...canonicalSnapshot,
+    settings: {
+      ...canonicalSnapshot.settings,
+      ui_preferences: {
+        theme,
+        history_point_limit: historyPointLimit,
+      },
+    },
+    persistence: {
+      state: "healthy",
+      roots: [],
+      components: [
+        {
+          owner: "current_user",
+          kind: "settings",
+          state: "healthy",
+          durability: "durable",
+          last_success_at_ms: 10,
+          active_failure: null,
+        },
+      ],
+      suppressed_diagnostic_events: 0,
+    },
+  } as RuntimeSnapshot;
+}
+
+test("rapid UI preference saves keep the newest fallback through out-of-order responses", () => {
+  const sequence = new UiPreferencePersistenceSequence();
+  const first = sequence.begin({ theme: "cave", history_point_limit: 72 });
+  const latest = sequence.begin({ theme: "ember", history_point_limit: 180 });
+  let fallback: typeof latest.preferences | null = { ...latest.preferences };
+
+  if (sequence.isLatestDurable(first, durablePreferenceSnapshot("cave", 72))) {
+    fallback = null;
+  }
+  assert.equal(sequence.isLatest(first), false, "older failures are stale too");
+  assert.deepEqual(
+    fallback,
+    latest.preferences,
+    "an older durable response cannot clear newer state",
+  );
+
+  // The latest request fails, so it has no durable acknowledgement and the fallback survives.
+  assert.deepEqual(fallback, latest.preferences);
+  assert.equal(
+    sequence.isLatestDurable(latest, durablePreferenceSnapshot("ember", 72)),
+    false,
+    "a mismatched acknowledgement cannot clear the fallback",
+  );
+  assert.equal(
+    sequence.isLatestDurable(latest, durablePreferenceSnapshot("ember", 180)),
+    true,
+    "only the newest matching durable pair can clear the fallback",
+  );
+});
+
+test("degraded first-snapshot hydration dispatches no native settings mutation", () => {
+  const degraded = durablePreferenceSnapshot("system", 72);
+  degraded.settings.ui_preferences = null;
+  degraded.persistence = {
+    state: "degraded",
+    roots: [],
+    components: [
+      {
+        owner: "current_user",
+        kind: "settings",
+        state: "degraded",
+        durability: "session_only",
+        last_success_at_ms: null,
+        active_failure: {
+          code: "corrupt_data",
+          operation: "parse",
+          occurred_at_ms: 10,
+          retryable: false,
+          summary: "settings JSON is corrupt",
+        },
+      },
+    ],
+    suppressed_diagnostic_events: 0,
+  };
+  const nativeInvocations: string[] = [];
+
+  dispatchAutomaticRuntimeHydration(
+    degraded,
+    { persistUiPreferences: true, syncRuntimeQuery: true },
+    {
+      persistUiPreferences: () => nativeInvocations.push("set_ui_preferences"),
+      syncRuntimeQuery: () => nativeInvocations.push("set_process_query"),
+    },
+  );
+
+  assert.deepEqual(nativeInvocations, []);
+
+  dispatchAutomaticRuntimeHydration(
+    durablePreferenceSnapshot("system", 72),
+    { persistUiPreferences: true, syncRuntimeQuery: true },
+    {
+      persistUiPreferences: () => nativeInvocations.push("set_ui_preferences"),
+      syncRuntimeQuery: () => nativeInvocations.push("set_process_query"),
+    },
+  );
+  assert.deepEqual(nativeInvocations, ["set_ui_preferences", "set_process_query"]);
 });
 
 test("paused native lifecycle publications stay visible without advancing history", () => {
@@ -257,6 +383,23 @@ test("diagnostics render one limitation per stable key with the current admin ac
   assert.equal(currentDiagnosticIssues(warnings, adminMode("failed"), true)[0].action, "retry");
   assert.equal(currentDiagnosticIssues(warnings, adminMode("active"), true)[0].action, null);
   assert.equal(uniqueWarningCount(warnings), 1);
+});
+
+test("persistence failures explain session-only state without a process-access action", () => {
+  const issue = currentDiagnosticIssues(
+    [
+      {
+        ...warning("persistence.storage_full", "persistence_storage_full operation=write", 1),
+        category: "persistence",
+      },
+    ],
+    adminMode("off"),
+    true,
+  )[0];
+
+  assert.equal(issue.title, "Local data needs attention");
+  assert.match(issue.impact, /session-only/);
+  assert.equal(issue.action, null);
 });
 
 test("native metrics omit empty quality guidance", () => {

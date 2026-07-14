@@ -1,7 +1,7 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
-  import { currentDiagnosticIssues } from "../../diagnostics";
+  import { currentDiagnosticIssues, suppressedDiagnosticsLabel } from "../../diagnostics";
   import {
     installKindLabel,
     privilegedSourceLabel,
@@ -191,6 +191,9 @@
               <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
               <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>
               <div><dt>Collector p95</dt><dd>{snapshot.health.collection_p95_ms === null ? "Unavailable" : `${snapshot.health.collection_p95_ms.toFixed(1)} ms`}</dd></div>
+              <div><dt>Local persistence</dt><dd>{snapshot.persistence?.state ?? "Not reported"}</dd></div>
+              <div><dt>Current-user permissions</dt><dd>{snapshot.persistence?.roots.find((root) => root.owner === "current_user")?.permission_state ?? "Not reported"}</dd></div>
+              <div><dt>Suppressed diagnostics</dt><dd>{suppressedDiagnosticsLabel(snapshot.persistence)}</dd></div>
             </dl>
             <div class="local-data-detail">
               <span><strong>Local data</strong>{snapshot.environment.data_directory ?? "No native runtime directory"}</span>
