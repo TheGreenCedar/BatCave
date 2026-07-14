@@ -26,6 +26,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 packages=(
+  binutils \
   build-essential \
   curl \
   wget \
@@ -37,7 +38,8 @@ packages=(
   libwebkit2gtk-4.1-dev \
   libayatana-appindicator3-dev \
   librsvg2-dev \
-  libxdo-dev
+  libxdo-dev \
+  squashfs-tools
 )
 if [[ "$with_bpftrace" -eq 1 ]]; then
   packages+=(bpftrace)
