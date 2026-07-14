@@ -5,7 +5,15 @@
     "candidate": 3
   },
   "baseline_fixture": "scripts/fixtures/runtime-snapshot.v2.json",
+  "evidence_commit": "8c61a008471a5a8a590672acf5bdf4d352fd8b2c",
   "reproduction": "npm run benchmark:dto-spike -- --write ../../docs/evidence/dto-payload-spike-20260713.json",
+  "reproduction_status": "historical command at evidence_commit; not present on the current package surface",
+  "maintained_guardrails": [
+    "npm run test:protocol-payload",
+    "npm run benchmark:protocol-payload",
+    "cargo test --manifest-path src-tauri/Cargo.toml generated_typescript_matches_checked_contract",
+    "cargo test --manifest-path src-tauri/Cargo.toml production_protocol_fixtures_match_encoder"
+  ],
   "environment": {
     "node": "v24.18.0",
     "platform": "darwin",
