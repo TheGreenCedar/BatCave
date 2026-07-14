@@ -507,9 +507,11 @@ test("reader rejects descriptor, value, and membership corruption", () => {
   }
 
   const resourceVersionOnlyService = structuredClone(matchingActiveService);
-  payload(resourceVersionOnlyService).environment.release_identity.source_commit_sha = "a".repeat(40);
-  const resourceVersionIdentity =
-    payload(resourceVersionOnlyService).privileged_collection.collector_service?.release_identity;
+  payload(resourceVersionOnlyService).environment.release_identity.source_commit_sha = "a".repeat(
+    40,
+  );
+  const resourceVersionIdentity = payload(resourceVersionOnlyService).privileged_collection
+    .collector_service?.release_identity;
   assert.ok(resourceVersionIdentity);
   resourceVersionIdentity.source_commit_sha = null;
   assert.equal(decodeProtocolEnvelope(resourceVersionOnlyService).kind, "snapshot");

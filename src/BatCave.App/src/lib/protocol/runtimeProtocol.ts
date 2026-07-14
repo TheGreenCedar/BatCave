@@ -804,10 +804,7 @@ function validateCollectorService(
   return null;
 }
 
-function serviceReleaseMatchesDesktop(
-  service: unknown,
-  desktop: unknown,
-): boolean {
+function serviceReleaseMatchesDesktop(service: unknown, desktop: unknown): boolean {
   if (!validReleaseIdentity(service) || !validReleaseIdentity(desktop)) return false;
   if (!isRecord(service) || !isRecord(desktop)) return false;
   return (
