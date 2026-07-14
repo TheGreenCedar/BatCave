@@ -11,6 +11,7 @@ import {
   expectedReleaseAssetRoles,
   requireSafeReleaseAssetName,
 } from "./release-asset-contract.mjs";
+import { validateReleasePlatformSupport } from "./validate-release-platform-support.mjs";
 import { parseReleaseTag } from "./verify-release-version.mjs";
 
 export const RELEASE_EVIDENCE_SCHEMA_VERSION = 1;
@@ -76,36 +77,6 @@ const REQUIRED_CHECKS = {
   cleanup: ["application_removed", "owned_runtime_cleanup", "user_state_policy"],
   install: ["anonymous_download", "checksum", "package_install"],
   runtime: ["degradation", "launch", "release_identity", "settings", "telemetry"],
-};
-const PACKAGE_RULES = {
-  windows: {
-    host: ["x86_64"],
-    package: {
-      nsis: {
-        role: "Windows NSIS installer and updater payload",
-      },
-    },
-  },
-  linux: {
-    host: ["x86_64"],
-    package: {
-      appimage: {
-        role: "Linux AppImage package and updater payload",
-      },
-      deb: { role: "Linux deb package" },
-    },
-  },
-  macos: {
-    host: ["arm64", "x86_64"],
-    package: {
-      dmg: {
-        role: "macOS universal DMG",
-      },
-      macos_updater: {
-        role: "macOS universal updater payload",
-      },
-    },
-  },
 };
 export const RELEASE_EVIDENCE_ROLE_TRUST = {
   "Windows GUI executable": ["authenticode"],
@@ -397,7 +368,7 @@ function validateRelease(release) {
   return { tag, appVersion: version.version, sourceSha: release.source_sha, assetRoles };
 }
 
-export function validateReleaseEvidenceIdentity(identity) {
+export function validateReleaseEvidenceIdentity(identity, packetKind) {
   exactKeys(identity, "packet.identity", [
     "observed_at_utc",
     "release",
@@ -436,7 +407,7 @@ export function validateReleaseEvidenceIdentity(identity) {
   }
   const limitations =
     identity.platform?.package?.kind === "deb" ? { deb_checksum_attestation_only: true } : {};
-  validatePlatform(identity.platform, [{ name, role: role.role }], limitations);
+  validatePlatform(identity.platform, [{ name, role: role.role }], limitations, packetKind);
   return identity;
 }
 
@@ -568,27 +539,15 @@ function validateLimitations(limitations) {
   }
 }
 
-function validatePlatform(platform, assets, limitations) {
-  exactKeys(platform, "packet.platform", ["os", "os_version", "architecture", "package"]);
-  string(platform.os_version, "packet.platform.os_version", { max: 120 });
-  const rule = PACKAGE_RULES[platform.os];
-  if (!rule) fail("packet.platform.os", "must be windows, linux, or macos");
-  if (!rule.host.includes(platform.architecture))
-    fail("packet.platform.architecture", `is not supported for ${platform.os}`);
-
+function validatePlatform(platform, assets, limitations, packetKind) {
+  const support = validateReleasePlatformSupport(platform, packetKind);
   const package_ = platform.package;
-  exactKeys(package_, "packet.platform.package", ["kind", "architecture", "asset_name"]);
-  const packageRule = rule.package[package_.kind];
-  if (!packageRule) fail("packet.platform.package.kind", `is not valid for ${platform.os}`);
-  const expectedArchitecture = platform.os === "macos" ? "universal" : platform.architecture;
-  if (package_.architecture !== expectedArchitecture)
-    fail("packet.platform.package.architecture", `must equal ${expectedArchitecture}`);
   const asset = assets.find((candidate) => candidate.name === package_.asset_name);
   if (!asset) fail("packet.platform.package.asset_name", "must reference one packet asset");
-  if (asset.role !== packageRule.role) {
+  if (asset.role !== support.package.asset_role) {
     fail(
       "packet.platform.package.asset_name",
-      `${package_.kind} must reference the ${packageRule.role} asset`,
+      `${package_.kind} must reference the ${support.package.asset_role} asset`,
     );
   }
   if (package_.kind === "deb" && !Object.hasOwn(limitations, "deb_checksum_attestation_only")) {
@@ -596,7 +555,7 @@ function validatePlatform(platform, assets, limitations) {
   }
 }
 
-export function validateReleaseEvidencePacket(packet) {
+function validateReleaseEvidencePacketForPlatformContext(packet, platformContext) {
   object(packet, "packet");
   rejectSensitive(packet);
   exactKeys(packet, "packet", [
@@ -677,8 +636,19 @@ export function validateReleaseEvidencePacket(packet) {
     assets.map((asset) => asset.name),
     "packet.assets",
   );
-  validatePlatform(packet.platform, assets, packet.limitations);
+  validatePlatform(packet.platform, assets, packet.limitations, platformContext);
   return packet;
+}
+
+export function validateReleaseEvidencePacket(packet) {
+  return validateReleaseEvidencePacketForPlatformContext(packet, packet?.packet_kind);
+}
+
+export function validateReleaseEvidenceTemplatePacket(packet) {
+  if (packet?.packet_kind !== "release_evidence") {
+    fail("packet.packet_kind", "release templates must use release_evidence identity fields");
+  }
+  return validateReleaseEvidencePacketForPlatformContext(packet, "release_plan");
 }
 
 export function validateReleaseEvidencePacketFile(file) {

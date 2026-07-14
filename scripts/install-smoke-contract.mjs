@@ -1,6 +1,7 @@
 import {
   validateReleaseEvidenceIdentity,
   validateReleaseEvidencePacket,
+  validateReleaseEvidenceTemplatePacket,
 } from "./validate-release-evidence-packet.mjs";
 import {
   RELEASE_REPOSITORY,
@@ -243,13 +244,16 @@ function validateInstallSmokeIdentity(value) {
     "workflow_run",
   ]);
   const { app_version: appVersion, ...release } = value.release;
-  validateReleaseEvidenceIdentity({
-    observed_at_utc: value.observed_at_utc,
-    release,
-    app_version: appVersion,
-    platform: value.platform,
-    asset: value.asset,
-  });
+  validateReleaseEvidenceIdentity(
+    {
+      observed_at_utc: value.observed_at_utc,
+      release,
+      app_version: appVersion,
+      platform: value.platform,
+      asset: value.asset,
+    },
+    value.execution_kind === "fixture" ? "schema_fixture" : "release_plan",
+  );
   validateInstallSmokeIdentityReceipt(value);
   return platformContract(value.platform);
 }
@@ -436,12 +440,13 @@ function validateInput(input) {
     );
   }
   const template = structuredClone(input.evidence_template);
-  validateReleaseEvidencePacket(template);
   const expectedPacketKind =
     input.execution_kind === "fixture" ? "schema_fixture" : "release_evidence";
   if (template.packet_kind !== expectedPacketKind) {
     fail("input.evidence_template.packet_kind", `must equal ${expectedPacketKind}`);
   }
+  if (input.execution_kind === "fixture") validateReleaseEvidencePacket(template);
+  else validateReleaseEvidenceTemplatePacket(template);
   const release = validateReleaseIdentity(template);
   if (input.app_version !== release.app_version) {
     fail("input.app_version", `must equal ${release.app_version} from the release tag`);

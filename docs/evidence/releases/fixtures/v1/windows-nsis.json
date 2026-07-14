@@ -19,9 +19,19 @@
     }
   },
   "platform": {
+    "support_contract_version": 1,
+    "profile_id": "windows-client-10-x86_64",
+    "proof": {
+      "declaration": "declared",
+      "source": "pending",
+      "native": "pending"
+    },
     "os": "windows",
     "os_version": "synthetic-windows-fixture",
     "architecture": "x86_64",
+    "runtime": {
+      "libc_family": "not_applicable"
+    },
     "package": {
       "kind": "nsis",
       "architecture": "x86_64",

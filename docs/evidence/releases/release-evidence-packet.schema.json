@@ -5,6 +5,63 @@
   "description": "Version 1 structural schema. The repository validator enforces exact URLs, release-asset roles, shared identity, required check IDs, package trust, stable ordering, and sensitive-data rejection.",
   "type": "object",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "packet_kind": { "const": "schema_fixture" }
+        }
+      },
+      "then": {
+        "properties": {
+          "platform": {
+            "type": "object",
+            "properties": {
+              "os_version": {
+                "enum": [
+                  "synthetic-linux-fixture",
+                  "synthetic-macos-fixture",
+                  "synthetic-windows-fixture"
+                ]
+              },
+              "proof": {
+                "type": "object",
+                "properties": {
+                  "source": { "const": "pending" },
+                  "native": { "const": "pending" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "platform": {
+            "type": "object",
+            "properties": {
+              "os_version": {
+                "not": {
+                  "enum": [
+                    "synthetic-linux-fixture",
+                    "synthetic-macos-fixture",
+                    "synthetic-windows-fixture"
+                  ]
+                }
+              },
+              "proof": {
+                "type": "object",
+                "properties": {
+                  "source": { "const": "source_enforced" },
+                  "native": { "const": "observed" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "required": [
     "schema_version",
     "packet_kind",
@@ -94,11 +151,47 @@
     "platform": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["os", "os_version", "architecture", "package"],
+      "required": [
+        "support_contract_version",
+        "profile_id",
+        "proof",
+        "os",
+        "os_version",
+        "architecture",
+        "runtime",
+        "package"
+      ],
       "properties": {
+        "support_contract_version": { "const": 1 },
+        "profile_id": {
+          "enum": [
+            "debian-12-x86_64-glibc",
+            "macos-12-universal",
+            "ubuntu-22.04-x86_64-glibc",
+            "windows-client-10-x86_64"
+          ]
+        },
+        "proof": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["declaration", "source", "native"],
+          "properties": {
+            "declaration": { "const": "declared" },
+            "source": { "enum": ["pending", "source_enforced"] },
+            "native": { "enum": ["pending", "observed"] }
+          }
+        },
         "os": { "enum": ["windows", "linux", "macos"] },
         "os_version": { "type": "string", "minLength": 1 },
         "architecture": { "enum": ["x86_64", "arm64"] },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["libc_family"],
+          "properties": {
+            "libc_family": { "enum": ["glibc", "not_applicable"] }
+          }
+        },
         "package": {
           "type": "object",
           "additionalProperties": false,

@@ -14,7 +14,7 @@ import {
   validateInstallSmokePlan,
   validateInstallSmokeResult,
 } from "./public-artifact-install-smoke.mjs";
-import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
+import { validateReleaseEvidenceTemplatePacket } from "./validate-release-evidence-packet.mjs";
 import {
   CHECKSUM_MANIFEST,
   RELEASE_REPOSITORY,
@@ -146,6 +146,14 @@ function releaseTemplate(name) {
     run_attempt: 2,
     url: `https://github.com/${RELEASE_REPOSITORY}/actions/runs/123456789/attempts/2`,
   };
+  packet.platform.os_version = {
+    "debian-12-x86_64-glibc": "debian-12",
+    "macos-12-universal": "macos-12.0",
+    "ubuntu-22.04-x86_64-glibc": "ubuntu-22.04",
+    "windows-client-10-x86_64": "windows-client-10.0.16299",
+  }[packet.platform.profile_id];
+  packet.platform.proof.source = "source_enforced";
+  packet.platform.proof.native = "pending";
   delete packet.limitations.synthetic_fixture_no_release_claim;
   if (packet.platform.package.kind === "deb") {
     packet.limitations.deb_checksum_attestation_only.disposition = "accepted";
@@ -171,7 +179,7 @@ function releaseTemplate(name) {
       check.outcome = "Awaiting a future reviewed native install-smoke executor.";
     }
   }
-  validateReleaseEvidencePacket(packet);
+  validateReleaseEvidenceTemplatePacket(packet);
   return packet;
 }
 
@@ -339,6 +347,11 @@ test("returns a workflow-bound plan with one receipt-bound asset and no packet",
   assert.equal(result.disposition, "planned");
   assert.equal(result.evidence_packet, null);
   assert.equal(result.release.workflow_run.run_id, 123456789);
+  assert.deepEqual(result.platform.proof, {
+    declaration: "declared",
+    source: "source_enforced",
+    native: "pending",
+  });
   assert.equal(result.observed_at_utc, input.evidence_template.observed_at_utc);
   assert.deepEqual(Object.keys(plan.public_verification).sort(), [
     "app_version",
@@ -353,6 +366,12 @@ test("returns a workflow-bound plan with one receipt-bound asset and no packet",
   ]);
   assert.deepEqual(Object.keys(plan.asset).sort(), ["name", "public_url", "sha256", "size_bytes"]);
   assert.ok(result.steps.slice(2).every(({ status }) => status === "planned"));
+});
+
+test("rejects a plan template that claims a native observation", () => {
+  const input = inputFor("linux-appimage.json", "plan");
+  input.evidence_template.platform.proof.native = "observed";
+  assert.throws(() => createInstallSmokePlan(input), /proof.native: must equal pending/u);
 });
 
 test("plan validation rejects malformed or contradictory release identity", () => {

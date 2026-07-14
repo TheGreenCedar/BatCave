@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "contract_id": "batcave-release-platform-support",
+  "fixture_hosts": {
+    "linux": "synthetic-linux-fixture",
+    "macos": "synthetic-macos-fixture",
+    "windows": "synthetic-windows-fixture"
+  },
+  "linux_source_enforcement": {
+    "hosted_runner": "ubuntu-22.04",
+    "architecture": "x86_64",
+    "libc_family": "glibc",
+    "maximum_glibc_version": "2.35",
+    "required_deb_runtime_packages": ["libgtk-3-0", "libwebkit2gtk-4.1-0"]
+  },
+  "profiles": [
+    {
+      "id": "debian-12-x86_64-glibc",
+      "os": "linux",
+      "host": {
+        "kind": "debian_release",
+        "minimum": "12"
+      },
+      "host_architectures": ["x86_64"],
+      "runtime": {
+        "libc_family": "glibc"
+      },
+      "packages": [
+        {
+          "kind": "appimage",
+          "architecture": "x86_64",
+          "asset_role": "Linux AppImage package and updater payload",
+          "updater_targets": ["linux-x86_64"]
+        },
+        {
+          "kind": "deb",
+          "architecture": "x86_64",
+          "asset_role": "Linux deb package",
+          "updater_targets": []
+        }
+      ],
+      "proof": {
+        "declaration": "declared",
+        "source": "source_enforced",
+        "native_oldest_supported": "pending"
+      }
+    },
+    {
+      "id": "macos-12-universal",
+      "os": "macos",
+      "host": {
+        "kind": "macos_release",
+        "minimum": "12.0"
+      },
+      "host_architectures": ["arm64", "x86_64"],
+      "runtime": {
+        "libc_family": "not_applicable"
+      },
+      "packages": [
+        {
+          "kind": "dmg",
+          "architecture": "universal",
+          "asset_role": "macOS universal DMG",
+          "updater_targets": []
+        },
+        {
+          "kind": "macos_updater",
+          "architecture": "universal",
+          "asset_role": "macOS universal updater payload",
+          "updater_targets": ["darwin-aarch64", "darwin-x86_64"]
+        }
+      ],
+      "proof": {
+        "declaration": "declared",
+        "source": "source_enforced",
+        "native_oldest_supported": "pending"
+      }
+    },
+    {
+      "id": "ubuntu-22.04-x86_64-glibc",
+      "os": "linux",
+      "host": {
+        "kind": "ubuntu_release",
+        "minimum": "22.04"
+      },
+      "host_architectures": ["x86_64"],
+      "runtime": {
+        "libc_family": "glibc"
+      },
+      "packages": [
+        {
+          "kind": "appimage",
+          "architecture": "x86_64",
+          "asset_role": "Linux AppImage package and updater payload",
+          "updater_targets": ["linux-x86_64"]
+        },
+        {
+          "kind": "deb",
+          "architecture": "x86_64",
+          "asset_role": "Linux deb package",
+          "updater_targets": []
+        }
+      ],
+      "proof": {
+        "declaration": "declared",
+        "source": "source_enforced",
+        "native_oldest_supported": "pending"
+      }
+    },
+    {
+      "id": "windows-client-10-x86_64",
+      "os": "windows",
+      "host": {
+        "kind": "windows_client_build",
+        "minimum": "10.0.16299"
+      },
+      "host_architectures": ["x86_64"],
+      "runtime": {
+        "libc_family": "not_applicable"
+      },
+      "packages": [
+        {
+          "kind": "nsis",
+          "architecture": "x86_64",
+          "asset_role": "Windows NSIS installer and updater payload",
+          "updater_targets": ["windows-x86_64"]
+        }
+      ],
+      "proof": {
+        "declaration": "declared",
+        "source": "source_enforced",
+        "native_oldest_supported": "pending"
+      }
+    }
+  ]
+}

@@ -19,9 +19,19 @@
     }
   },
   "platform": {
+    "support_contract_version": 1,
+    "profile_id": "macos-12-universal",
+    "proof": {
+      "declaration": "declared",
+      "source": "pending",
+      "native": "pending"
+    },
     "os": "macos",
     "os_version": "synthetic-macos-fixture",
     "architecture": "arm64",
+    "runtime": {
+      "libc_family": "not_applicable"
+    },
     "package": {
       "kind": "dmg",
       "architecture": "universal",

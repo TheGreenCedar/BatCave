@@ -19,9 +19,19 @@
     }
   },
   "platform": {
+    "support_contract_version": 1,
+    "profile_id": "ubuntu-22.04-x86_64-glibc",
+    "proof": {
+      "declaration": "declared",
+      "source": "pending",
+      "native": "pending"
+    },
     "os": "linux",
     "os_version": "synthetic-linux-fixture",
     "architecture": "x86_64",
+    "runtime": {
+      "libc_family": "glibc"
+    },
     "package": {
       "kind": "appimage",
       "architecture": "x86_64",
