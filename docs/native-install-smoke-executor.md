@@ -2,11 +2,13 @@
 
 Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. The Linux source descriptor from #116 and the macOS source descriptor from #117 are registered, but no package command or private byte-consumption handshake can consume the capability yet. This slice cannot produce native proof or release evidence.
 
+Issue #130 accepts the architecture for that missing handshake in [the Rust-owned native artifact consumption authority decision](decisions/0003-private-native-artifact-consumption-authority.md). A private Rust composition root will own exact bytes, fixed platform dispatch, process supervision, sealed completion, cleanup, and residue classification without exposing an importable JavaScript authority, path, handle, command, callback, or result validator. The decision includes a Rust-only non-installing hostile prototype; it does not make the current production receipt reachable or claim platform proof.
+
 The implementation is split deliberately:
 
 - `scripts/native-artifact-capability.mjs` acquires and owns the selected bytes;
 - `scripts/native-install-smoke-executor.mjs` validates the closed result states and the future `release_evidence` derivation;
-- `scripts/linux-native-install-smoke-adapter.mjs` registers the built-in deb/AppImage source profiles and proves fixed process-group settlement without executing package bytes; and
+- `scripts/linux-native-install-smoke-adapter.mjs` registers the built-in deb/AppImage source profiles and proves fixed process-group settlement without executing package bytes;
 - `scripts/macos-native-install-smoke-adapter.mjs` registers the DMG/updater source descriptors without executing a process; and
 - `scripts/native-install-smoke-executor.test.mjs` exercises hostile path, receipt, caller-seam, and cleanup boundaries.
 
