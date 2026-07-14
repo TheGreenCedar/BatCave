@@ -37,6 +37,8 @@ Capturing JavaScript function references earlier only moves the timing assumptio
 
 The production follow-up must move the exact-byte acquisition and native operation into the Rust composition root. The current JavaScript capability remains a source-verification guard until that migration is independently reviewed; it must not grow a path getter, handle getter, spawn seam, callback, or completion validator.
 
+Issue #138 audited the missing complete-operation entry and found that no current repository boundary can carry the JavaScript verifier and plan brands into Rust. [ADR 0004](0004-rust-install-smoke-complete-operation-entry.md) blocks production-root implementation until Rust can independently re-establish the public release, source attestations, and exact bytes. Do not interpret the implementation sequence below as permission to add unreachable Rust code or a serialized-plan bridge.
+
 ## Threat boundary
 
 ### In scope
@@ -207,11 +209,12 @@ Rejected. A memory hash proves only that the fixed prototype worker saw the auth
 
 ## Implementation sequence
 
-1. Add a private Rust executor composition root while preserving the current JavaScript source-slice outcomes. Do not expose a Tauri command, generic helper, or native receipt.
-2. Move exact-byte acquisition into that Rust root and reproduce #111's hostile source and cleanup contracts before deleting the JavaScript capability.
-3. Implement Linux and macOS built-in adapters behind private Rust dispatch and prove their real descriptor/stream transports in #115 and #114.
-4. Implement the fixed Windows elevation broker, request authentication, private elevated acquisition, suspended `CreateProcessW` launch, Job ownership, denial mapping, and cleanup in #113.
-5. Make the private completion seal capable of deriving a native execution receipt only after each platform's ordered gates have independent native evidence.
+1. Establish the Rust-owned public-release verifier and complete-operation entry required by ADR 0004. Caller JSON, paths, hashes, statuses, and JavaScript receipts are selectors or rejected input, never proof.
+2. Add a private Rust executor composition root while preserving the current JavaScript source-slice outcomes. Do not expose a Tauri command, generic helper, or native receipt.
+3. Move exact-byte acquisition into that Rust root and reproduce #111's hostile source and cleanup contracts before deleting the JavaScript capability.
+4. Implement Linux and macOS built-in adapters behind private Rust dispatch and prove their real descriptor/stream transports in #115 and #114.
+5. Implement the fixed Windows elevation broker, request authentication, private elevated acquisition, suspended `CreateProcessW` launch, Job ownership, denial mapping, and cleanup in #113.
+6. Make the private completion seal capable of deriving a native execution receipt only after each platform's ordered gates have independent native evidence.
 
 Platform implementation can proceed in separate branches after this decision, but integration stays serial around the Rust composition root and completion derivation.
 
