@@ -77,7 +77,7 @@ baseline_summary_path="$output_directory/${artifact_prefix}.summary.json"
 raw_file="$(mktemp)"
 trap 'rm -f -- "$raw_file"' EXIT
 
-echo "Capturing benchmark protocol v3 baseline ($benchmark_host)..."
+echo "Capturing benchmark protocol v4 baseline ($benchmark_host)..."
 bash "$run_benchmark" \
   --benchmark-host "$benchmark_host" \
   --platform "$architecture" \
@@ -113,21 +113,31 @@ if start < 0 or end < start:
 summary = json.loads(raw[start : end + 1])
 
 artifact = {
-    "format_version": 3,
+    "format_version": 4,
     "captured_at_utc": datetime.now(timezone.utc).isoformat(),
     "base_sha": base_sha,
     "binary_sha256": binary_sha256,
     "host": summary["host"],
     "measurement_origin": summary["measurement_origin"],
+    "evidence_scope": summary["evidence_scope"],
+    "whole_app_measured": summary["whole_app_measured"],
+    "live_command": summary["live_command"],
+    "command_transport": summary["command_transport"],
+    "serialization_scope": summary["serialization_scope"],
+    "latency_gate_metric": summary["latency_gate_metric"],
     "platform": summary["platform"],
     "architecture": summary["architecture"],
     "machine_class": summary["machine_class"],
     "workload_profile": summary["workload_profile"],
     "warmup_ticks": summary["warmup_ticks"],
     "measured_ticks": summary["measured_ticks"],
-    "sleep_ms": summary["sleep_ms"],
+    "inter_command_delay_ms": summary["inter_command_delay_ms"],
     "repeat_count": summary["repeat_count"],
-    "baseline_selection": "median-by-tick-p95",
+    "baseline_selection": "median-by-live-command-p95",
+    "median_collection_p95_ms": summary["median_collection_p95_ms"],
+    "median_publication_p95_ms": summary["median_publication_p95_ms"],
+    "median_serialization_p95_ms": summary["median_serialization_p95_ms"],
+    "median_live_command_p95_ms": summary["median_live_command_p95_ms"],
     "baseline_summary": summary,
     "baseline_summary_path": summary_path,
 }

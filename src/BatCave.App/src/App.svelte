@@ -81,6 +81,7 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
+  import { dispatchAutomaticRuntimeHydration } from "./lib/runtimeHydration";
   import { runtimeSurfaceMode } from "./lib/runtimeMode";
   import {
     chartPalettes,
@@ -102,6 +103,7 @@
     setRuntimeAdminMode,
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
+    setRuntimeUiPreferences,
   } from "./lib/tauriBridge";
   import type {
     KernelPoolTag,
@@ -114,6 +116,7 @@
     TrendState,
     WorkloadDetail,
   } from "./lib/types";
+  import { UiPreferencePersistenceSequence } from "./lib/uiPreferencePersistence";
   import {
     checkAfterClosingUpdate,
     downloadInstallAndClose,
@@ -134,6 +137,7 @@
 
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
+  const uiPreferencePersistence = new UiPreferencePersistenceSequence();
   const browserFixturePlatform = "macos" as const;
   const accessibilityFixtureState = resolveAccessibilityFixtureState(
     typeof window === "undefined" ? "" : window.location.search,
@@ -236,6 +240,7 @@
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
     memoryAccounting?.denied_process_count ?? snapshot.processes.filter((process) => process.access_state === "denied").length;
+  $: adminStatus = privilegedCollectionLabel(snapshot.admin_mode, blockedProcessCount);
   $: diskReadRate = snapshot.system.disk_read_bps;
   $: diskWriteRate = snapshot.system.disk_write_bps;
   $: networkDownRate = snapshot.system.network_received_bps;
@@ -441,6 +446,8 @@
 
     if (isHistoryPointLimit(savedHistoryPointLimit)) {
       historyPointLimit = savedHistoryPointLimit;
+    } else if (window.localStorage.getItem(historyStorageKey) !== null) {
+      window.localStorage.removeItem(historyStorageKey);
     }
 
     if (runtimeMode() === "fixture") {
@@ -618,7 +625,11 @@
 
   function setTheme(preference: ThemePreference): void {
     themePreference = preference;
-    window.localStorage.setItem(themeStorageKey, preference);
+    if (runtimeMode() === "native" && runtimeMutationAllowed(protocolMismatch)) {
+      persistUiPreferences(preference, historyPointLimit);
+    } else {
+      window.localStorage.setItem(themeStorageKey, preference);
+    }
   }
 
   function setHistoryPointLimit(limit: number): void {
@@ -627,8 +638,65 @@
     }
 
     historyPointLimit = limit;
-    window.localStorage.setItem(historyStorageKey, String(limit));
+    if (runtimeMode() === "native" && runtimeMutationAllowed(protocolMismatch)) {
+      persistUiPreferences(themePreference, limit);
+    } else {
+      window.localStorage.setItem(historyStorageKey, String(limit));
+    }
     trimHistory();
+  }
+
+  function persistUiPreferences(
+    preference: ThemePreference,
+    limit: HistoryPointLimit,
+  ): void {
+    window.localStorage.setItem(themeStorageKey, preference);
+    window.localStorage.setItem(historyStorageKey, String(limit));
+    const save = uiPreferencePersistence.begin({
+      theme: preference,
+      history_point_limit: limit,
+    });
+    void (async () => {
+      try {
+        const next = await setRuntimeUiPreferences(invoke, {
+          theme: preference,
+          history_point_limit: limit,
+        });
+        if (!uiPreferencePersistence.isLatest(save)) return;
+        applyNativeSnapshot(next);
+        if (uiPreferencePersistence.isLatestDurable(save, next)) {
+          clearMigratedUiPreferences(next, save.preferences);
+        }
+      } catch (error) {
+        if (uiPreferencePersistence.isLatest(save)) {
+          commandError = runtimeCommandError(error, "Unable to save interface preferences.");
+        }
+      }
+    })();
+  }
+
+  function clearMigratedUiPreferences(
+    next: RuntimeSnapshot,
+    expected = next.settings.ui_preferences,
+  ): void {
+    if (
+      !expected ||
+      window.localStorage.getItem(themeStorageKey) !== expected.theme ||
+      Number(window.localStorage.getItem(historyStorageKey)) !== expected.history_point_limit
+    ) {
+      return;
+    }
+    const settingsPersistence = next.persistence?.components.find(
+      (component) => component.owner === "current_user" && component.kind === "settings",
+    );
+    if (
+      settingsPersistence?.state === "healthy" &&
+      settingsPersistence.durability === "durable" &&
+      settingsPersistence.active_failure === null
+    ) {
+      window.localStorage.removeItem(themeStorageKey);
+      window.localStorage.removeItem(historyStorageKey);
+    }
   }
 
   async function setPaused(nextPaused: boolean): Promise<void> {
@@ -1016,11 +1084,39 @@
     sortDirection = next.settings.query.sort_direction;
     focusMode = useAttentionByDefault ? "attention" : next.settings.query.focus_mode;
     isPaused = next.settings.paused;
-    hasHydratedRuntimeSettings = true;
-
-    if (useAttentionByDefault) {
-      window.setTimeout(() => void syncRuntimeQuery(), 0);
+    const pendingTheme = parseThemePreference(window.localStorage.getItem(themeStorageKey));
+    const pendingHistory = Number(window.localStorage.getItem(historyStorageKey));
+    const hasPendingUiMigration =
+      pendingTheme !== null || isHistoryPointLimit(pendingHistory);
+    let shouldPersistUiPreferences = false;
+    if (hasPendingUiMigration) {
+      if (pendingTheme !== null) themePreference = pendingTheme;
+      if (isHistoryPointLimit(pendingHistory)) historyPointLimit = pendingHistory;
+      shouldPersistUiPreferences = true;
+    } else if (
+      next.settings.ui_preferences &&
+      parseThemePreference(next.settings.ui_preferences.theme) &&
+      isHistoryPointLimit(next.settings.ui_preferences.history_point_limit)
+    ) {
+      themePreference = next.settings.ui_preferences.theme as ThemePreference;
+      historyPointLimit = next.settings.ui_preferences.history_point_limit;
+      clearMigratedUiPreferences(next);
+    } else {
+      shouldPersistUiPreferences = true;
     }
+    hasHydratedRuntimeSettings = true;
+    dispatchAutomaticRuntimeHydration(
+      next,
+      {
+        persistUiPreferences: shouldPersistUiPreferences,
+        syncRuntimeQuery: useAttentionByDefault,
+      },
+      {
+        persistUiPreferences: () =>
+          window.setTimeout(() => persistUiPreferences(themePreference, historyPointLimit), 0),
+        syncRuntimeQuery: () => window.setTimeout(() => void syncRuntimeQuery(), 0),
+      },
+    );
   }
 
   function isSystemPressured(next: RuntimeSnapshot): boolean {
@@ -1185,7 +1281,12 @@
     }
     incoming = prepared.rows;
 
-    if (forceRankingRefresh || displayProcessRows.length === 0 || !shouldHoldRanking()) {
+    const rankingConfirmationPending = rankingUpdateAvailable;
+    if (
+      forceRankingRefresh ||
+      displayProcessRows.length === 0 ||
+      (!shouldHoldRanking() && !rankingConfirmationPending)
+    ) {
       displayProcessRows = incoming;
       pendingProcessRows = [];
       rankingUpdateAvailable = false;
@@ -1193,7 +1294,8 @@
       return;
     }
 
-    rankingUpdateAvailable = !hasSameProcessOrder(displayProcessRows, incoming);
+    rankingUpdateAvailable =
+      rankingConfirmationPending || !hasSameProcessOrder(displayProcessRows, incoming);
     pendingProcessRows = incoming;
     displayProcessRows = stabilizeProcessRows(displayProcessRows, incoming);
   }
@@ -1224,7 +1326,7 @@
   }
 
   function applyPendingRankingIfReleased(): void {
-    if (!shouldHoldRanking()) {
+    if (!shouldHoldRanking() && !rankingUpdateAvailable) {
       applyPendingRanking();
     }
   }
@@ -1502,10 +1604,6 @@
     return [...(tags ?? [])].sort((left, right) => right.bytes - left.bytes).slice(0, 8);
   }
 
-  function adminStatusLabel(): string {
-    return privilegedCollectionLabel(snapshot.admin_mode, blockedProcessCount);
-  }
-
   function processNetworkLabel(process: ProcessSample): string {
     const quality = process.quality?.network;
     const rate = (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
@@ -1761,7 +1859,7 @@
     {systemQuality}
     {pollState}
     {lastError}
-    adminStatus={adminStatusLabel()}
+    {adminStatus}
     open={diagnosticsOpen}
     onClose={() => (diagnosticsOpen = false)}
   />
@@ -1777,7 +1875,7 @@
     adminAvailable={snapshot.environment.admin_mode_available}
     runtimeMutationsDisabled={protocolMismatch !== null}
     processStatus={processElevationLabel(snapshot.environment)}
-    adminStatus={adminStatusLabel()}
+    {adminStatus}
     adminNote={privilegedCollectionNote(snapshot.admin_mode)}
     adminAction={privilegedCollectionAction(
       snapshot.environment.admin_mode_available,

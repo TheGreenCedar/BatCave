@@ -205,18 +205,25 @@ elif int(exit_code) == 0:
     raise SystemExit("Unable to locate benchmark JSON payload in output.")
 
 report = {
-    "format_version": 3,
+    "format_version": 4,
     "captured_at_utc": datetime.now(timezone.utc).isoformat(),
     "candidate_sha": candidate_sha,
     "binary_sha256": binary_sha256,
     "host": host,
+    "measurement_origin": "owned_sampling_engine_refresh_and_protocol_serialization",
+    "evidence_scope": "core_runtime_host_only",
+    "whole_app_measured": False,
+    "live_command": "refresh_now",
+    "command_transport": "in_process_bounded_channel",
+    "serialization_scope": "runtime_protocol_v3_encode_and_json",
+    "latency_gate_metric": "median_live_command_p95_ms",
     "platform": platform,
     "architecture": architecture,
     "machine_class": machine_class,
     "workload_profile": workload_profile,
     "warmup_ticks": int(warmup_ticks),
     "measured_ticks": int(measured_ticks),
-    "sleep_ms": int(sleep_ms),
+    "inter_command_delay_ms": int(sleep_ms),
     "repeat_count": int(repeat_count),
     "strict": True,
     "baseline_json_path": baseline_json_path,
@@ -226,6 +233,10 @@ report = {
     "exit_code": int(exit_code),
     "strict_passed": bool(summary and summary.get("strict_passed")),
     "speed_ratio": summary.get("speed_ratio") if summary else None,
+    "median_collection_p95_ms": summary.get("median_collection_p95_ms") if summary else None,
+    "median_publication_p95_ms": summary.get("median_publication_p95_ms") if summary else None,
+    "median_serialization_p95_ms": summary.get("median_serialization_p95_ms") if summary else None,
+    "median_live_command_p95_ms": summary.get("median_live_command_p95_ms") if summary else None,
     "benchmark_summary": summary,
 }
 with open(report_path, "w", encoding="utf-8") as handle:
