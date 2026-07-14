@@ -11,6 +11,13 @@ pub enum NetworkAttributionSample {
     Ready {
         rates_by_pid: HashMap<u32, ProcessNetworkRates>,
     },
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Partial {
+        rates_by_pid: HashMap<u32, ProcessNetworkRates>,
+        message: String,
+    },
+    #[cfg_attr(not(windows), allow(dead_code))]
+    PendingBaseline(String),
     Held(String),
     Failed(String),
 }
