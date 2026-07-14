@@ -181,7 +181,9 @@ The child redirects stderr into the same owned pipe as protocol output, preservi
 
 `sysinfo` remains a fallback when native collectors cannot read the expected host files.
 
-macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, read/write I/O totals, thread count, and file-descriptor count when access allows. Physical-disk throughput stays explicitly unavailable because the current macOS collector has no trusted device-level source; process I/O is never substituted for it. Per-process network attribution and privileged helper mode are unavailable on macOS in this release.
+macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, read/write I/O totals, thread count, and file-descriptor count when access allows. Host disk comes from deduplicated IOKit physical block-driver byte counters; disk-image registry paths are excluded, incomplete device coverage fails closed, and a device-set change waits for a fresh rate baseline. Process I/O is never substituted for host disk. The sysinfo network aggregate includes `lo0`. Per-process network attribution and privileged helper mode are unavailable on macOS in this release.
+
+The canonical source/scope/privilege/package matrix is [docs/platform-capabilities.md](../../docs/platform-capabilities.md). Windows ARM64 and Linux ARM64 are unsupported: the repository does not validate their native collectors or publish packages for them. macOS ships one validated universal `x86_64` + `arm64` app.
 
 ## Benchmarking
 

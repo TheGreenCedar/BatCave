@@ -25,7 +25,7 @@ Svelte cockpit
           -> ETW per-process network attribution
           -> Linux /proc and /sys telemetry
           -> Linux optional bpftrace/eBPF network attribution
-          -> macOS sysinfo and libproc telemetry
+          -> macOS sysinfo, libproc, and deduplicated IOKit telemetry
           -> local elevated Windows helper launched on demand
           -> Rust benchmark CLI
 ```
@@ -78,7 +78,8 @@ macOS native telemetry:
 
 - Sysinfo aggregate CPU, logical CPU, available/used memory, swap, and interface network counters.
 - Local libproc enrichment for resident memory, physical footprint, virtual memory, process read/write totals, thread count, and file-descriptor count when process access allows.
-- Physical-disk throughput is unavailable until the macOS collector has a trusted device-level source. Process read/write I/O is never substituted for system disk telemetry.
+- IOKit `IOBlockStorageDriver` byte counters aggregated once per physical registry entry. Disk-image paths are excluded; incomplete physical coverage is unavailable, and topology changes establish a new rate baseline. Process read/write I/O is never substituted for system disk telemetry.
+- The sysinfo interface aggregate includes `lo0`; protocol v3 labels its scope `all_interface_aggregate` rather than non-loopback.
 - Per-process network attribution and privileged helper mode are unavailable in this release. Rows remain visible with quality messages rather than fabricated zero rates.
 
 Fallback behavior:
@@ -127,8 +128,8 @@ Examples:
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
 - Linux process `/proc` parsers remain manual after the bounded [`procfs` parity decision](decisions/0002-linux-procfs-parser-parity.md). Required malformed counters fail instead of becoming measured zero; a crate replacement requires native dual-reader parity first.
-- macOS physical-disk quality is `unavailable/runtime`; the limitation explains that process read/write I/O remains a separate resource.
-- macOS libproc failures retain the sysinfo process row and identify physical footprint, thread, descriptor, read/write I/O, or network limitations independently.
+- macOS physical-disk quality is `held/iokit` while a device identity baseline is pending, `native/iokit` for a complete stable device set, and `unavailable/iokit` when complete host coverage cannot be proven.
+- macOS libproc failures retain the sysinfo process row and classify exit, access denial, unsupported fields, and collector failures separately. Exit drops ordinary churn; independently successful fields remain publishable.
 
 ## Process Groups And History
 

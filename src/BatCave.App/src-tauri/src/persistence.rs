@@ -1,10 +1,12 @@
 //! Current-user storage primitives for issue #73.
 //!
-//! The runtime-store integration lands after the lifecycle work in #68. Windows access remains
-//! fail-closed until the later service/ACL slice can verify the current-user SID, DACL, and reparse
-//! boundary instead of inferring safety from a profile path.
+//! The runtime-store integration lands after the lifecycle work in #68. Windows current-user
+//! storage accepts only a real directory rooted through the current-user policy. The later #69
+//! service slice still owns service SID and DACL enforcement, ancestor reparse defense, ProgramData
+//! ownership, and installed-machine proof.
 
 use std::{
+    collections::{HashMap, HashSet},
     env, fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -13,7 +15,15 @@ use std::{
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::atomic_json::{write_bytes_atomic, AtomicWriteEffect, AtomicWriteOperation};
+use crate::{
+    atomic_json::{write_bytes_atomic, AtomicWriteEffect, AtomicWriteOperation},
+    contracts::{
+        RuntimePersistence, RuntimePersistenceComponent, RuntimePersistenceDurability,
+        RuntimePersistenceFailure, RuntimePersistenceKind, RuntimePersistenceOperation,
+        RuntimePersistenceOwner, RuntimePersistencePermissionState, RuntimePersistenceRoot,
+        RuntimePersistenceState,
+    },
+};
 
 const APPLICATION_DIRECTORY: &str = "BatCaveMonitor";
 
@@ -146,6 +156,14 @@ impl UserStorageComponent {
             Self::Diagnostics => "diagnostics.jsonl",
         }
     }
+
+    fn runtime_kind(self) -> RuntimePersistenceKind {
+        match self {
+            Self::Settings => RuntimePersistenceKind::Settings,
+            Self::WarmCache => RuntimePersistenceKind::WarmCache,
+            Self::Diagnostics => RuntimePersistenceKind::Diagnostics,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,20 +279,22 @@ impl PersistenceFailure {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermissionVerification {
+    // Accepted for the coordinator's CurrentUser contract. On Windows this does not assert an
+    // owner SID, private DACL, ancestor-reparse boundary, or installed-service policy.
+    VerifiedCurrentUser,
     #[cfg_attr(
-        windows,
+        any(unix, windows),
         allow(
             dead_code,
-            reason = "Unix ownership and mode checks can prove a private root"
+            reason = "Unsupported and future service-owned policies remain fail-closed"
         )
     )]
-    VerifiedPrivate,
     Unverified,
     #[cfg_attr(
-        windows,
+        not(any(unix, windows)),
         allow(
             dead_code,
-            reason = "Unix ownership and mode checks can reject an unsafe root"
+            reason = "Unsupported platforms do not classify filesystem roots"
         )
     )]
     Invalid,
@@ -329,6 +349,7 @@ trait StorageBackend: Send + Sync {
     fn file_len(&self, path: &Path) -> Result<Option<u64>, BackendError>;
     fn append_and_sync(&self, path: &Path, payload: &[u8]) -> Result<(), BackendError>;
     fn rotate_if_exists(&self, from: &Path, to: &Path) -> Result<bool, BackendError>;
+    fn remove_if_exists(&self, path: &Path) -> Result<bool, BackendError>;
 }
 
 #[derive(Debug, Default)]
@@ -341,8 +362,7 @@ impl StorageBackend for RealStorageBackend {
     ) -> Result<PermissionVerification, BackendError> {
         #[cfg(windows)]
         {
-            let _ = path;
-            Ok(PermissionVerification::Unverified)
+            prepare_windows_current_user_directory(path)
         }
 
         #[cfg(unix)]
@@ -487,6 +507,19 @@ impl StorageBackend for RealStorageBackend {
         }
         Ok(true)
     }
+
+    fn remove_if_exists(&self, path: &Path) -> Result<bool, BackendError> {
+        self.verify_component_file(path)?;
+        match fs::remove_file(path) {
+            Ok(()) => {
+                #[cfg(unix)]
+                sync_parent_directory(path)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(BackendError::new(PersistenceOperation::Remove, path, error)),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -542,10 +575,55 @@ fn verify_unix_private_directory(path: &Path) -> Result<PermissionVerification, 
         .map_err(|error| BackendError::new(PersistenceOperation::Permissions, path, error))?;
     verify_unix_root_metadata(path, &metadata)?;
     Ok(if metadata.mode() & 0o077 == 0 {
-        PermissionVerification::VerifiedPrivate
+        PermissionVerification::VerifiedCurrentUser
     } else {
         PermissionVerification::Invalid
     })
+}
+
+#[cfg(windows)]
+fn prepare_windows_current_user_directory(
+    path: &Path,
+) -> Result<PermissionVerification, BackendError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(path)
+                .map_err(|error| BackendError::new(PersistenceOperation::Create, path, error))?;
+            fs::symlink_metadata(path).map_err(|error| {
+                BackendError::new(PersistenceOperation::Permissions, path, error)
+            })?
+        }
+        Err(error) => {
+            return Err(BackendError::new(
+                PersistenceOperation::Permissions,
+                path,
+                error,
+            ));
+        }
+    };
+
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    // This is deliberately the current-user runtime policy, not #69's installed-service proof.
+    // It rejects an unsafe leaf but does not claim service SID/DACL or ancestor-reparse coverage.
+    Ok(windows_current_user_root_policy(
+        metadata.is_dir(),
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+    ))
+}
+
+#[cfg(any(windows, test))]
+fn windows_current_user_root_policy(
+    is_directory: bool,
+    is_reparse_point: bool,
+) -> PermissionVerification {
+    if is_directory && !is_reparse_point {
+        PermissionVerification::VerifiedCurrentUser
+    } else {
+        PermissionVerification::Invalid
+    }
 }
 
 fn verify_regular_file_or_missing(path: &Path) -> Result<(), BackendError> {
@@ -583,15 +661,21 @@ fn verify_regular_file_or_missing(path: &Path) -> Result<(), BackendError> {
 
                 // SAFETY: `geteuid` has no arguments and does not dereference memory.
                 let current_uid = unsafe { libc::geteuid() };
-                if metadata.uid() != current_uid || metadata.mode() & 0o077 != 0 {
+                if metadata.uid() != current_uid {
                     return Err(BackendError::new(
                         PersistenceOperation::Permissions,
                         path,
                         io::Error::new(
                             io::ErrorKind::PermissionDenied,
-                            "storage component is not private to the current user",
+                            "storage component is not owned by the current user",
                         ),
                     ));
+                }
+                if metadata.mode() & 0o077 != 0 {
+                    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+                        .map_err(|error| {
+                            BackendError::new(PersistenceOperation::Permissions, path, error)
+                        })?;
                 }
             }
             Ok(())
@@ -694,7 +778,7 @@ pub(crate) struct UserStorageCoordinator {
 }
 
 impl UserStorageCoordinator {
-    pub(crate) fn from_current_process() -> Result<Self, PersistenceFailure> {
+    fn from_current_process() -> Result<Self, PersistenceFailure> {
         let root = resolve_current_user_root(
             StoragePlatform::current(),
             &CurrentUserEnvironment::from_current_process(),
@@ -704,6 +788,17 @@ impl UserStorageCoordinator {
             RealStorageBackend,
             DiagnosticPolicy::default(),
         ))
+    }
+
+    pub(crate) fn for_current_user_directory(directory: PathBuf) -> Self {
+        Self::new(
+            ResolvedStorageRoot {
+                owner: StorageOwner::CurrentUser,
+                directory,
+            },
+            RealStorageBackend,
+            DiagnosticPolicy::default(),
+        )
     }
 
     fn new(
@@ -729,7 +824,7 @@ impl UserStorageCoordinator {
             .prepare_private_directory(&self.root.directory)
             .map_err(BackendError::into_failure)?;
         match verification {
-            PermissionVerification::VerifiedPrivate => Ok(verification),
+            PermissionVerification::VerifiedCurrentUser => Ok(verification),
             PermissionVerification::Invalid => Err(PersistenceFailure {
                 code: PersistenceFailureCode::PermissionDenied,
                 operation: PersistenceOperation::Permissions,
@@ -788,6 +883,17 @@ impl UserStorageCoordinator {
             .map_err(|error| PersistenceFailure::serialization(&path, error))?;
         self.backend
             .write_atomic(&path, &payload)
+            .map_err(BackendError::into_failure)
+    }
+
+    pub(crate) fn remove(
+        &self,
+        component: UserStorageComponent,
+    ) -> Result<bool, PersistenceFailure> {
+        self.ensure_root()?;
+        let path = self.component_path(component);
+        self.backend
+            .remove_if_exists(&path)
             .map_err(BackendError::into_failure)
     }
 
@@ -906,6 +1012,511 @@ impl UserStorageCoordinator {
     }
 }
 
+pub(crate) struct RuntimePersistenceCoordinator {
+    storage: UserStorageCoordinator,
+    root: RuntimePersistenceRoot,
+    components: HashMap<UserStorageComponent, RuntimePersistenceComponent>,
+    root_failure: Option<PersistenceFailure>,
+    // Root failures temporarily mask component truth; restore it after a verified recovery.
+    components_before_root_failure:
+        Option<HashMap<UserStorageComponent, RuntimePersistenceComponent>>,
+    components_attempted_during_root_failure: HashSet<UserStorageComponent>,
+    root_revalidation_enabled: bool,
+    root_failure_reported_to_diagnostics: bool,
+    root_failure_suppressed_diagnostics: u64,
+}
+
+impl RuntimePersistenceCoordinator {
+    pub(crate) fn from_current_process(now_ms: u64) -> Self {
+        match UserStorageCoordinator::from_current_process() {
+            Ok(storage) => Self::new(storage, now_ms),
+            Err(failure) => Self::unavailable(failure, now_ms),
+        }
+    }
+
+    pub(crate) fn for_current_user_directory(directory: PathBuf, now_ms: u64) -> Self {
+        Self::new(
+            UserStorageCoordinator::for_current_user_directory(directory),
+            now_ms,
+        )
+    }
+
+    fn new(storage: UserStorageCoordinator, now_ms: u64) -> Self {
+        let root = RuntimePersistenceRoot {
+            owner: RuntimePersistenceOwner::CurrentUser,
+            directory: Some(storage.root().directory.display().to_string()),
+            permission_state: RuntimePersistencePermissionState::Verified,
+        };
+        let components = [
+            UserStorageComponent::Settings,
+            UserStorageComponent::WarmCache,
+            UserStorageComponent::Diagnostics,
+        ]
+        .into_iter()
+        .map(|component| {
+            (
+                component,
+                RuntimePersistenceComponent {
+                    owner: RuntimePersistenceOwner::CurrentUser,
+                    kind: component.runtime_kind(),
+                    state: RuntimePersistenceState::Healthy,
+                    durability: RuntimePersistenceDurability::NotApplicable,
+                    last_success_at_ms: None,
+                    active_failure: None,
+                },
+            )
+        })
+        .collect();
+        let mut coordinator = Self {
+            storage,
+            root,
+            components,
+            root_failure: None,
+            components_before_root_failure: None,
+            components_attempted_during_root_failure: HashSet::new(),
+            root_revalidation_enabled: true,
+            root_failure_reported_to_diagnostics: false,
+            root_failure_suppressed_diagnostics: 0,
+        };
+        if let Err(failure) = coordinator.storage.ensure_root() {
+            coordinator.record_root_failure(&failure, now_ms);
+        }
+        coordinator
+    }
+
+    fn unavailable(failure: PersistenceFailure, now_ms: u64) -> Self {
+        let storage = UserStorageCoordinator::for_current_user_directory(
+            env::temp_dir().join("BatCaveMonitor-unavailable"),
+        );
+        let components = [
+            UserStorageComponent::Settings,
+            UserStorageComponent::WarmCache,
+            UserStorageComponent::Diagnostics,
+        ]
+        .into_iter()
+        .map(|component| {
+            (
+                component,
+                RuntimePersistenceComponent {
+                    owner: RuntimePersistenceOwner::CurrentUser,
+                    kind: component.runtime_kind(),
+                    state: RuntimePersistenceState::Unavailable,
+                    durability: RuntimePersistenceDurability::SessionOnly,
+                    last_success_at_ms: None,
+                    active_failure: Some(runtime_failure(&failure, now_ms)),
+                },
+            )
+        })
+        .collect();
+        Self {
+            storage,
+            root: RuntimePersistenceRoot {
+                owner: RuntimePersistenceOwner::CurrentUser,
+                directory: None,
+                permission_state: RuntimePersistencePermissionState::Unavailable,
+            },
+            components,
+            root_failure: Some(failure),
+            components_before_root_failure: None,
+            components_attempted_during_root_failure: HashSet::new(),
+            root_revalidation_enabled: false,
+            root_failure_reported_to_diagnostics: false,
+            root_failure_suppressed_diagnostics: 0,
+        }
+    }
+
+    pub(crate) fn runtime_directory(&self) -> &Path {
+        &self.storage.root().directory
+    }
+
+    pub(crate) fn load_json<T: DeserializeOwned>(
+        &mut self,
+        component: UserStorageComponent,
+        now_ms: u64,
+    ) -> Result<Option<T>, PersistenceFailure> {
+        self.revalidate_root(component, now_ms)?;
+        match self.storage.load_json(component) {
+            Ok(value) => {
+                let durability = if value.is_some() {
+                    RuntimePersistenceDurability::Durable
+                } else {
+                    RuntimePersistenceDurability::NotApplicable
+                };
+                self.record_success(component, durability, value.is_some().then_some(now_ms));
+                Ok(value)
+            }
+            Err(failure) => {
+                self.record_operation_failure(component, &failure, now_ms);
+                Err(failure)
+            }
+        }
+    }
+
+    pub(crate) fn load_json_migrating<T: Serialize>(
+        &mut self,
+        component: UserStorageComponent,
+        now_ms: u64,
+        migrate: impl FnOnce(serde_json::Value) -> Result<JsonMigration<T>, String>,
+    ) -> Result<Option<MigrationLoad<T>>, PersistenceFailure> {
+        self.revalidate_root(component, now_ms)?;
+        match self.storage.load_json_migrating(component, migrate) {
+            Ok(value) => {
+                let durability = if value.is_some() {
+                    RuntimePersistenceDurability::Durable
+                } else {
+                    RuntimePersistenceDurability::NotApplicable
+                };
+                self.record_success(component, durability, value.is_some().then_some(now_ms));
+                Ok(value)
+            }
+            Err(failure) => {
+                self.record_operation_failure(component, &failure, now_ms);
+                Err(failure)
+            }
+        }
+    }
+
+    pub(crate) fn write_json<T: Serialize>(
+        &mut self,
+        component: UserStorageComponent,
+        value: &T,
+        now_ms: u64,
+    ) -> Result<(), PersistenceFailure> {
+        self.revalidate_root(component, now_ms)?;
+        match self.storage.write_json(component, value) {
+            Ok(()) => {
+                self.record_success(
+                    component,
+                    RuntimePersistenceDurability::Durable,
+                    Some(now_ms),
+                );
+                Ok(())
+            }
+            Err(failure) => {
+                self.record_operation_failure(component, &failure, now_ms);
+                Err(failure)
+            }
+        }
+    }
+
+    pub(crate) fn remove(
+        &mut self,
+        component: UserStorageComponent,
+        now_ms: u64,
+    ) -> Result<(), PersistenceFailure> {
+        self.revalidate_root(component, now_ms)?;
+        match self.storage.remove(component) {
+            Ok(_) => {
+                self.record_success(component, RuntimePersistenceDurability::NotApplicable, None);
+                Ok(())
+            }
+            Err(failure) => {
+                self.record_operation_failure(component, &failure, now_ms);
+                Err(failure)
+            }
+        }
+    }
+
+    pub(crate) fn record_diagnostic<T: Serialize>(
+        &mut self,
+        event: &T,
+        now_ms: u64,
+    ) -> DiagnosticWriteOutcome {
+        if let Err(failure) = self.revalidate_root(UserStorageComponent::Diagnostics, now_ms) {
+            if self.root_failure_reported_to_diagnostics {
+                self.root_failure_suppressed_diagnostics =
+                    self.root_failure_suppressed_diagnostics.saturating_add(1);
+                return DiagnosticWriteOutcome::Suppressed;
+            }
+            self.root_failure_reported_to_diagnostics = true;
+            return DiagnosticWriteOutcome::Failed(failure);
+        }
+        let outcome = self.storage.record_diagnostic(event);
+        match &outcome {
+            DiagnosticWriteOutcome::Written => self.record_success(
+                UserStorageComponent::Diagnostics,
+                RuntimePersistenceDurability::Durable,
+                Some(now_ms),
+            ),
+            DiagnosticWriteOutcome::Suppressed => {}
+            DiagnosticWriteOutcome::Failed(failure) => {
+                self.record_operation_failure(UserStorageComponent::Diagnostics, failure, now_ms);
+            }
+        }
+        outcome
+    }
+
+    pub(crate) fn retry_diagnostics(&mut self) {
+        if self.root_failure.is_none() {
+            self.storage.retry_diagnostics();
+        }
+    }
+
+    fn revalidate_root(
+        &mut self,
+        component: UserStorageComponent,
+        now_ms: u64,
+    ) -> Result<(), PersistenceFailure> {
+        if !self.root_revalidation_enabled {
+            self.components_attempted_during_root_failure
+                .insert(component);
+            return Err(self
+                .root_failure
+                .clone()
+                .expect("unresolved roots retain their failure"));
+        }
+        match self.storage.ensure_root() {
+            Ok(PermissionVerification::VerifiedCurrentUser) => {
+                if let Some(failure) = self.root_failure.take() {
+                    self.root.permission_state = RuntimePersistencePermissionState::Verified;
+                    self.root.directory = Some(self.storage.root().directory.display().to_string());
+                    self.root_failure_reported_to_diagnostics = false;
+                    if let Some(components) = self.components_before_root_failure.take() {
+                        self.components = components;
+                    }
+                    for attempted in self.components_attempted_during_root_failure.drain() {
+                        let state = self
+                            .components
+                            .get_mut(&attempted)
+                            .expect("all current-user components are initialized");
+                        state.state = RuntimePersistenceState::Degraded;
+                        state.durability = RuntimePersistenceDurability::SessionOnly;
+                        state.active_failure = Some(runtime_failure(&failure, now_ms));
+                    }
+                }
+                Ok(())
+            }
+            Ok(PermissionVerification::Unverified) => {
+                unreachable!("unverified roots fail closed")
+            }
+            Ok(PermissionVerification::Invalid) => unreachable!("invalid roots fail closed"),
+            Err(failure) => {
+                self.record_root_failure(&failure, now_ms);
+                self.components_attempted_during_root_failure
+                    .insert(component);
+                Err(failure)
+            }
+        }
+    }
+
+    fn record_operation_failure(
+        &mut self,
+        component: UserStorageComponent,
+        failure: &PersistenceFailure,
+        now_ms: u64,
+    ) {
+        if failure.path.as_deref() == Some(self.storage.root().directory.as_path())
+            && matches!(
+                failure.operation,
+                PersistenceOperation::Create | PersistenceOperation::Permissions
+            )
+        {
+            self.record_root_failure(failure, now_ms);
+            self.components_attempted_during_root_failure
+                .insert(component);
+            return;
+        }
+        if self.root_revalidation_enabled {
+            if let Err(root_failure) = self.storage.ensure_root() {
+                self.record_root_failure(&root_failure, now_ms);
+                self.components_attempted_during_root_failure
+                    .insert(component);
+                return;
+            }
+        }
+        self.record_failure(component, failure, now_ms);
+    }
+
+    fn record_root_failure(&mut self, failure: &PersistenceFailure, now_ms: u64) {
+        if self.root_failure.is_none() {
+            self.components_before_root_failure = Some(self.components.clone());
+            self.root_failure_reported_to_diagnostics = false;
+        }
+        let permission_state = if failure.code == PersistenceFailureCode::VerificationUnavailable {
+            RuntimePersistencePermissionState::Unavailable
+        } else {
+            RuntimePersistencePermissionState::Invalid
+        };
+        self.root.permission_state = permission_state;
+        self.root.directory = (permission_state != RuntimePersistencePermissionState::Unavailable)
+            .then(|| self.storage.root().directory.display().to_string());
+        self.root_failure = Some(failure.clone());
+        for component in self.components.values_mut() {
+            component.state = if permission_state == RuntimePersistencePermissionState::Unavailable
+            {
+                RuntimePersistenceState::Unavailable
+            } else {
+                RuntimePersistenceState::Degraded
+            };
+            component.durability = RuntimePersistenceDurability::SessionOnly;
+            component.active_failure = Some(runtime_failure(failure, now_ms));
+        }
+    }
+
+    pub(crate) fn health(&self) -> RuntimePersistence {
+        let mut components = [
+            UserStorageComponent::Settings,
+            UserStorageComponent::WarmCache,
+            UserStorageComponent::Diagnostics,
+        ]
+        .into_iter()
+        .filter_map(|component| self.components.get(&component).cloned())
+        .collect::<Vec<_>>();
+        components.sort_by_key(|component| match component.kind {
+            RuntimePersistenceKind::Settings => 0,
+            RuntimePersistenceKind::WarmCache => 1,
+            RuntimePersistenceKind::Diagnostics => 2,
+            RuntimePersistenceKind::ServiceState => 3,
+        });
+        let root_state = match self.root.permission_state {
+            RuntimePersistencePermissionState::Verified => RuntimePersistenceState::Healthy,
+            RuntimePersistencePermissionState::Invalid => RuntimePersistenceState::Degraded,
+            RuntimePersistencePermissionState::Unavailable => RuntimePersistenceState::Unavailable,
+        };
+        let state = components
+            .iter()
+            .filter(|component| component.durability != RuntimePersistenceDurability::NotApplicable)
+            .fold(root_state, |state, component| {
+                worst_state(state, component.state)
+            });
+        RuntimePersistence {
+            state,
+            roots: vec![self.root.clone()],
+            components,
+            suppressed_diagnostic_events: self
+                .storage
+                .diagnostic_status()
+                .suppressed_events
+                .saturating_add(self.root_failure_suppressed_diagnostics),
+        }
+    }
+
+    pub(crate) fn failure_message(failure: &PersistenceFailure) -> String {
+        format!(
+            "persistence_{} operation={}{} error={}",
+            failure_code(failure.code),
+            operation_name(failure.operation),
+            failure
+                .path
+                .as_ref()
+                .map(|path| format!(" path={}", path.display()))
+                .unwrap_or_default(),
+            failure.summary
+        )
+    }
+
+    fn record_success(
+        &mut self,
+        component: UserStorageComponent,
+        durability: RuntimePersistenceDurability,
+        last_success_at_ms: Option<u64>,
+    ) {
+        let state = self
+            .components
+            .get_mut(&component)
+            .expect("all current-user components are initialized");
+        state.state = RuntimePersistenceState::Healthy;
+        state.durability = durability;
+        state.last_success_at_ms = last_success_at_ms.or(state.last_success_at_ms);
+        state.active_failure = None;
+    }
+
+    fn record_failure(
+        &mut self,
+        component: UserStorageComponent,
+        failure: &PersistenceFailure,
+        now_ms: u64,
+    ) {
+        let state = self
+            .components
+            .get_mut(&component)
+            .expect("all current-user components are initialized");
+        state.state =
+            if self.root.permission_state == RuntimePersistencePermissionState::Unavailable {
+                RuntimePersistenceState::Unavailable
+            } else {
+                RuntimePersistenceState::Degraded
+            };
+        state.durability = RuntimePersistenceDurability::SessionOnly;
+        state.active_failure = Some(runtime_failure(failure, now_ms));
+    }
+}
+
+fn runtime_failure(failure: &PersistenceFailure, now_ms: u64) -> RuntimePersistenceFailure {
+    RuntimePersistenceFailure {
+        code: failure_code(failure.code).to_string(),
+        operation: runtime_operation(failure.operation),
+        occurred_at_ms: now_ms,
+        retryable: failure.retryable,
+        summary: failure.summary.clone(),
+    }
+}
+
+fn failure_code(code: PersistenceFailureCode) -> &'static str {
+    match code {
+        PersistenceFailureCode::PermissionDenied => "permission_denied",
+        PersistenceFailureCode::ReadOnlyFilesystem => "read_only_filesystem",
+        PersistenceFailureCode::StorageFull => "storage_full",
+        PersistenceFailureCode::CorruptData => "corrupt_data",
+        PersistenceFailureCode::InvalidPath => "invalid_path",
+        PersistenceFailureCode::NotFound => "not_found",
+        PersistenceFailureCode::SerializationFailed => "serialization_failed",
+        PersistenceFailureCode::MigrationFailed => "migration_failed",
+        PersistenceFailureCode::VerificationUnavailable => "verification_unavailable",
+        PersistenceFailureCode::IoFailure => "io_failure",
+    }
+}
+
+fn operation_name(operation: PersistenceOperation) -> &'static str {
+    match operation {
+        PersistenceOperation::ResolveRoot => "resolve_root",
+        PersistenceOperation::Create => "create",
+        PersistenceOperation::Load => "load",
+        PersistenceOperation::Parse => "parse",
+        PersistenceOperation::Migrate => "migrate",
+        PersistenceOperation::Serialize => "serialize",
+        PersistenceOperation::Write => "write",
+        PersistenceOperation::Sync => "sync",
+        PersistenceOperation::Replace => "replace",
+        PersistenceOperation::Rotate => "rotate",
+        PersistenceOperation::Remove => "remove",
+        PersistenceOperation::Permissions => "permissions",
+    }
+}
+
+fn runtime_operation(operation: PersistenceOperation) -> RuntimePersistenceOperation {
+    match operation {
+        PersistenceOperation::ResolveRoot => RuntimePersistenceOperation::ResolveRoot,
+        PersistenceOperation::Create => RuntimePersistenceOperation::Create,
+        PersistenceOperation::Load => RuntimePersistenceOperation::Load,
+        PersistenceOperation::Parse => RuntimePersistenceOperation::Parse,
+        PersistenceOperation::Migrate => RuntimePersistenceOperation::Migrate,
+        PersistenceOperation::Serialize => RuntimePersistenceOperation::Serialize,
+        PersistenceOperation::Write => RuntimePersistenceOperation::Write,
+        PersistenceOperation::Sync => RuntimePersistenceOperation::Sync,
+        PersistenceOperation::Replace => RuntimePersistenceOperation::Replace,
+        PersistenceOperation::Rotate => RuntimePersistenceOperation::Rotate,
+        PersistenceOperation::Remove => RuntimePersistenceOperation::Remove,
+        PersistenceOperation::Permissions => RuntimePersistenceOperation::Permissions,
+    }
+}
+
+fn worst_state(
+    left: RuntimePersistenceState,
+    right: RuntimePersistenceState,
+) -> RuntimePersistenceState {
+    let rank = |state| match state {
+        RuntimePersistenceState::Healthy => 0,
+        RuntimePersistenceState::Degraded => 1,
+        RuntimePersistenceState::Unavailable => 2,
+    };
+    if rank(right) > rank(left) {
+        right
+    } else {
+        left
+    }
+}
+
 fn diagnostic_failure_opens_breaker(failure: &PersistenceFailure) -> bool {
     matches!(
         failure.operation,
@@ -926,44 +1537,6 @@ fn diagnostic_backup_path(path: &Path, index: usize) -> PathBuf {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "diagnostics.jsonl".to_string());
     path.with_file_name(format!("{file_name}.{index}"))
-}
-
-// Removal gate: #68 replaces this compile-link boundary when the runtime lifecycle constructs and
-// calls the coordinator. Keeping the allowance on this one boundary lets ordinary dead-code drift
-// inside the stacked #73 core remain visible.
-#[allow(
-    dead_code,
-    reason = "stacked #73 core is compiled before its #68 runtime integration"
-)]
-fn pending_runtime_integration_boundary() {
-    fn exercise(coordinator: &UserStorageCoordinator) {
-        let _ = coordinator.root();
-        let _ = coordinator.ensure_root();
-        let _ = coordinator.component_path(UserStorageComponent::WarmCache);
-        let _ = coordinator.load_json::<serde_json::Value>(UserStorageComponent::Settings);
-        let _ = coordinator.write_json(
-            UserStorageComponent::WarmCache,
-            &serde_json::json!({"compile_link": true}),
-        );
-        let _ = coordinator.load_json_migrating(UserStorageComponent::Settings, |value| {
-            Ok::<_, String>(JsonMigration::Migrated(value))
-        });
-        let _ = coordinator.record_diagnostic(&serde_json::json!({"compile_link": true}));
-        let _ = coordinator.diagnostic_status();
-        coordinator.retry_diagnostics();
-        let _ = PersistenceOperation::Remove;
-        let _ = PermissionVerification::Unverified;
-        let _ = JsonMigration::Current(serde_json::Value::Null);
-        let migration = MigrationLoad {
-            value: (),
-            migrated: false,
-        };
-        let _ = (migration.value, migration.migrated);
-    }
-
-    let _factory: fn() -> Result<UserStorageCoordinator, PersistenceFailure> =
-        UserStorageCoordinator::from_current_process;
-    let _exercise: fn(&UserStorageCoordinator) = exercise;
 }
 
 #[cfg(test)]
@@ -1093,7 +1666,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .permission
-                .unwrap_or(PermissionVerification::VerifiedPrivate))
+                .unwrap_or(PermissionVerification::VerifiedCurrentUser))
         }
 
         fn verify_component_file(&self, path: &Path) -> Result<(), BackendError> {
@@ -1197,6 +1770,16 @@ mod tests {
             )?;
             Ok(true)
         }
+
+        fn remove_if_exists(&self, path: &Path) -> Result<bool, BackendError> {
+            self.verify_component_file(path)?;
+            self.check_fault(
+                PersistenceOperation::Remove,
+                path,
+                PersistenceWriteEffect::NotCommitted,
+            )?;
+            Ok(self.state.lock().unwrap().files.remove(path).is_some())
+        }
     }
 
     fn root() -> ResolvedStorageRoot {
@@ -1215,6 +1798,21 @@ mod tests {
                 max_event_bytes: 128,
             },
         )
+    }
+
+    fn runtime_coordinator(backend: FakeBackend, now_ms: u64) -> RuntimePersistenceCoordinator {
+        RuntimePersistenceCoordinator::new(coordinator(backend), now_ms)
+    }
+
+    fn runtime_component(
+        health: &RuntimePersistence,
+        kind: RuntimePersistenceKind,
+    ) -> &RuntimePersistenceComponent {
+        health
+            .components
+            .iter()
+            .find(|component| component.kind == kind)
+            .expect("runtime persistence component exists")
     }
 
     #[test]
@@ -1258,6 +1856,22 @@ mod tests {
         assert_eq!(
             linux.directory,
             PathBuf::from("/var/user-data/BatCaveMonitor")
+        );
+    }
+
+    #[test]
+    fn windows_current_user_root_policy_accepts_only_a_real_non_reparse_leaf() {
+        assert_eq!(
+            windows_current_user_root_policy(true, false),
+            PermissionVerification::VerifiedCurrentUser
+        );
+        assert_eq!(
+            windows_current_user_root_policy(true, true),
+            PermissionVerification::Invalid
+        );
+        assert_eq!(
+            windows_current_user_root_policy(false, false),
+            PermissionVerification::Invalid
         );
     }
 
@@ -1379,6 +1993,294 @@ mod tests {
             PersistenceFailureCode::VerificationUnavailable
         );
         assert_eq!(backend.call_count(PersistenceOperation::Write), 0);
+    }
+
+    #[test]
+    fn runtime_health_fails_closed_when_permission_verification_is_unavailable() {
+        let backend = FakeBackend::default();
+        backend.state.lock().unwrap().permission = Some(PermissionVerification::Unverified);
+
+        let runtime = runtime_coordinator(backend, 10);
+        let health = runtime.health();
+
+        assert_eq!(health.state, RuntimePersistenceState::Unavailable);
+        assert_eq!(health.roots[0].directory, None);
+        assert_eq!(
+            health.roots[0].permission_state,
+            RuntimePersistencePermissionState::Unavailable
+        );
+        assert!(health.components.iter().all(|component| {
+            component.state == RuntimePersistenceState::Unavailable
+                && component.durability == RuntimePersistenceDurability::SessionOnly
+                && component.active_failure.is_some()
+        }));
+    }
+
+    #[test]
+    fn runtime_root_health_recovers_after_a_transient_verification_failure() {
+        let backend = FakeBackend::default();
+        backend.fail_next(
+            PersistenceOperation::Permissions,
+            io::ErrorKind::PermissionDenied,
+        );
+        let mut runtime = runtime_coordinator(backend.clone(), 10);
+
+        let degraded = runtime.health();
+        assert_eq!(degraded.state, RuntimePersistenceState::Degraded);
+        assert_eq!(
+            degraded.roots[0].permission_state,
+            RuntimePersistencePermissionState::Invalid
+        );
+
+        runtime
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"recovered": true}),
+                20,
+            )
+            .expect("the next operation revalidates the recovered root");
+
+        let recovered = runtime.health();
+        assert_eq!(recovered.state, RuntimePersistenceState::Healthy);
+        assert_eq!(
+            recovered.roots[0].permission_state,
+            RuntimePersistencePermissionState::Verified
+        );
+        let settings = recovered
+            .components
+            .iter()
+            .find(|component| component.kind == RuntimePersistenceKind::Settings)
+            .expect("settings health is published");
+        assert_eq!(settings.state, RuntimePersistenceState::Healthy);
+        assert_eq!(settings.durability, RuntimePersistenceDurability::Durable);
+        assert!(settings.active_failure.is_none());
+    }
+
+    #[test]
+    fn runtime_root_health_detects_later_permission_invalidation() {
+        let backend = FakeBackend::default();
+        let mut runtime = runtime_coordinator(backend.clone(), 10);
+        assert_eq!(runtime.health().state, RuntimePersistenceState::Healthy);
+        backend.state.lock().unwrap().permission = Some(PermissionVerification::Invalid);
+
+        let failure = runtime
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"unsafe": false}),
+                20,
+            )
+            .expect_err("an invalidated root fails before component I/O");
+
+        assert_eq!(failure.operation, PersistenceOperation::Permissions);
+        assert_eq!(backend.call_count(PersistenceOperation::Write), 0);
+        let invalid = runtime.health();
+        assert_eq!(invalid.state, RuntimePersistenceState::Degraded);
+        assert_eq!(
+            invalid.roots[0].permission_state,
+            RuntimePersistencePermissionState::Invalid
+        );
+        assert!(invalid.components.iter().all(|component| {
+            component.state == RuntimePersistenceState::Degraded
+                && component.durability == RuntimePersistenceDurability::SessionOnly
+                && component.active_failure.is_some()
+        }));
+    }
+
+    #[test]
+    fn cross_component_root_recovery_keeps_failed_settings_session_only() {
+        let backend = FakeBackend::default();
+        let mut runtime = runtime_coordinator(backend.clone(), 10);
+        let settings_path = root().directory.join("settings.json");
+        runtime
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"value": "A"}),
+                11,
+            )
+            .expect("initial settings are durable");
+        backend.state.lock().unwrap().permission = Some(PermissionVerification::Invalid);
+        runtime
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"value": "B"}),
+                20,
+            )
+            .expect_err("settings B cannot cross an invalid root");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&backend.file(&settings_path).unwrap())
+                .unwrap(),
+            serde_json::json!({"value": "A"})
+        );
+
+        backend.state.lock().unwrap().permission =
+            Some(PermissionVerification::VerifiedCurrentUser);
+        runtime
+            .write_json(
+                UserStorageComponent::WarmCache,
+                &serde_json::json!({"rows": []}),
+                30,
+            )
+            .expect("warm cache is first to recover the root");
+
+        let partially_recovered = runtime.health();
+        assert_eq!(
+            partially_recovered.roots[0].permission_state,
+            RuntimePersistencePermissionState::Verified
+        );
+        assert_eq!(partially_recovered.state, RuntimePersistenceState::Degraded);
+        let settings = partially_recovered
+            .components
+            .iter()
+            .find(|component| component.kind == RuntimePersistenceKind::Settings)
+            .expect("settings health is published");
+        assert_eq!(settings.state, RuntimePersistenceState::Degraded);
+        assert_eq!(
+            settings.durability,
+            RuntimePersistenceDurability::SessionOnly
+        );
+        assert!(settings.active_failure.is_some());
+
+        runtime
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"value": "B"}),
+                40,
+            )
+            .expect("settings independently re-prove durability");
+        assert_eq!(runtime.health().state, RuntimePersistenceState::Healthy);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&backend.file(&settings_path).unwrap())
+                .unwrap(),
+            serde_json::json!({"value": "B"})
+        );
+    }
+
+    #[test]
+    fn runtime_health_publishes_write_replace_and_full_disk_failures() {
+        for (operation, kind, code) in [
+            (
+                PersistenceOperation::Write,
+                io::ErrorKind::StorageFull,
+                "storage_full",
+            ),
+            (
+                PersistenceOperation::Write,
+                io::ErrorKind::PermissionDenied,
+                "permission_denied",
+            ),
+            (
+                PersistenceOperation::Replace,
+                io::ErrorKind::PermissionDenied,
+                "permission_denied",
+            ),
+        ] {
+            let backend = FakeBackend::default();
+            let mut runtime = runtime_coordinator(backend.clone(), 10);
+            backend.fail_next(operation, kind);
+
+            let failure = runtime
+                .write_json(
+                    UserStorageComponent::Settings,
+                    &serde_json::json!({"theme":"cave"}),
+                    20,
+                )
+                .unwrap_err();
+            let health = runtime.health();
+            let settings = runtime_component(&health, RuntimePersistenceKind::Settings);
+
+            assert_eq!(failure.operation, operation);
+            assert_eq!(health.state, RuntimePersistenceState::Degraded);
+            assert_eq!(settings.state, RuntimePersistenceState::Degraded);
+            assert_eq!(
+                settings.durability,
+                RuntimePersistenceDurability::SessionOnly
+            );
+            assert_eq!(settings.active_failure.as_ref().unwrap().code, code);
+            assert_eq!(settings.active_failure.as_ref().unwrap().occurred_at_ms, 20);
+        }
+    }
+
+    #[test]
+    fn runtime_health_publishes_serialization_and_corruption_failures() {
+        struct FailsSerialization;
+        impl Serialize for FailsSerialization {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                Err(serde::ser::Error::custom(
+                    "forced runtime serialization failure",
+                ))
+            }
+        }
+
+        let backend = FakeBackend::default();
+        let mut runtime = runtime_coordinator(backend, 10);
+        runtime
+            .write_json(UserStorageComponent::Settings, &FailsSerialization, 20)
+            .unwrap_err();
+        let health = runtime.health();
+        let settings = runtime_component(&health, RuntimePersistenceKind::Settings);
+        assert_eq!(
+            settings.active_failure.as_ref().unwrap().code,
+            "serialization_failed"
+        );
+        assert_eq!(
+            settings.active_failure.as_ref().unwrap().operation,
+            RuntimePersistenceOperation::Serialize
+        );
+
+        let path = root().directory.join("warm-cache.json");
+        let backend = FakeBackend::with_file(path, b"{not-json".to_vec());
+        let mut runtime = runtime_coordinator(backend, 30);
+        runtime
+            .load_json::<serde_json::Value>(UserStorageComponent::WarmCache, 40)
+            .unwrap_err();
+        let health = runtime.health();
+        let cache = runtime_component(&health, RuntimePersistenceKind::WarmCache);
+        assert_eq!(cache.active_failure.as_ref().unwrap().code, "corrupt_data");
+        assert_eq!(
+            cache.active_failure.as_ref().unwrap().operation,
+            RuntimePersistenceOperation::Parse
+        );
+    }
+
+    #[test]
+    fn runtime_health_publishes_rotation_failure_and_bounded_suppression() {
+        let backend = FakeBackend::default();
+        let mut runtime = runtime_coordinator(backend.clone(), 10);
+        let path = root().directory.join("diagnostics.jsonl");
+        backend
+            .state
+            .lock()
+            .unwrap()
+            .files
+            .insert(path, vec![b'a'; 30]);
+        backend.fail_next(
+            PersistenceOperation::Rotate,
+            io::ErrorKind::PermissionDenied,
+        );
+
+        assert!(matches!(
+            runtime.record_diagnostic(&serde_json::json!({"event":"first"}), 20),
+            DiagnosticWriteOutcome::Failed(_)
+        ));
+        for index in 0..100 {
+            assert_eq!(
+                runtime.record_diagnostic(&serde_json::json!({"event":index}), 21 + index),
+                DiagnosticWriteOutcome::Suppressed
+            );
+        }
+
+        let health = runtime.health();
+        let diagnostics = runtime_component(&health, RuntimePersistenceKind::Diagnostics);
+        assert_eq!(health.suppressed_diagnostic_events, 100);
+        assert_eq!(diagnostics.state, RuntimePersistenceState::Degraded);
+        assert_eq!(
+            diagnostics.active_failure.as_ref().unwrap().operation,
+            RuntimePersistenceOperation::Rotate
+        );
+        assert_eq!(backend.call_count(PersistenceOperation::Rotate), 1);
     }
 
     #[test]
@@ -1789,10 +2691,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn real_backend_creates_private_root_and_files() {
-        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let directory =
-            env::temp_dir().join(format!("batcave-persistence-real-{}", std::process::id()));
+            std::env::temp_dir().join(format!("batcave-persistence-real-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let coordinator = UserStorageCoordinator::new(
             ResolvedStorageRoot {
@@ -1805,7 +2707,7 @@ mod tests {
 
         assert_eq!(
             coordinator.ensure_root().unwrap(),
-            PermissionVerification::VerifiedPrivate
+            PermissionVerification::VerifiedCurrentUser
         );
         coordinator
             .write_json(
@@ -1821,15 +2723,21 @@ mod tests {
                 & 0o777,
             0o600
         );
+        let settings_path = coordinator.component_path(UserStorageComponent::Settings);
+        fs::set_permissions(&settings_path, fs::Permissions::from_mode(0o644)).unwrap();
+        coordinator
+            .load_json::<serde_json::Value>(UserStorageComponent::Settings)
+            .expect("legacy current-user file is hardened before loading");
+        assert_eq!(fs::metadata(settings_path).unwrap().mode() & 0o777, 0o600);
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
-    fn real_backend_rejects_symlink_root_and_component_boundaries() {
+    fn real_backend_rejects_symlinks_and_hardens_owned_component_permissions() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
-        let fixture = env::temp_dir().join(format!(
+        let fixture = std::env::temp_dir().join(format!(
             "batcave-persistence-symlink-{}",
             std::process::id()
         ));
@@ -1885,16 +2793,14 @@ mod tests {
         fs::remove_file(&component).unwrap();
         fs::write(&component, r#"{"public":true}"#).unwrap();
         fs::set_permissions(&component, fs::Permissions::from_mode(0o644)).unwrap();
-        let permission_failure = coordinator
+        let migrated = coordinator
             .load_json::<serde_json::Value>(UserStorageComponent::Settings)
-            .unwrap_err();
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated, serde_json::json!({"public": true}));
         assert_eq!(
-            permission_failure.operation,
-            PersistenceOperation::Permissions
-        );
-        assert_eq!(
-            permission_failure.code,
-            PersistenceFailureCode::PermissionDenied
+            fs::metadata(&component).unwrap().permissions().mode() & 0o777,
+            0o600
         );
 
         fs::remove_dir_all(fixture).unwrap();

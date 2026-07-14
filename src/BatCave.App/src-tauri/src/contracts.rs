@@ -13,6 +13,8 @@ pub struct RuntimeSnapshot {
     pub admin_mode: RuntimeAdminModeStatus,
     pub settings: RuntimeSettings,
     pub health: RuntimeHealth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence: Option<RuntimePersistence>,
     pub system: SystemMetricsSnapshot,
     pub process_contributors: ProcessContributorSummary,
     pub processes: Vec<ProcessSample>,
@@ -540,7 +542,7 @@ pub struct RuntimeWarning {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeSettings {
     #[serde(default)]
@@ -555,9 +557,114 @@ pub struct RuntimeSettings {
     pub sample_interval_ms: u32,
     #[serde(default)]
     pub paused: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_preferences: Option<RuntimeUiPreferences>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimeUiPreferences {
+    pub theme: String,
+    pub history_point_limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimePersistence {
+    pub state: RuntimePersistenceState,
+    pub roots: Vec<RuntimePersistenceRoot>,
+    pub components: Vec<RuntimePersistenceComponent>,
+    pub suppressed_diagnostic_events: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePersistenceState {
+    Healthy,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimePersistenceRoot {
+    pub owner: RuntimePersistenceOwner,
+    pub directory: Option<String>,
+    pub permission_state: RuntimePersistencePermissionState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePersistenceOwner {
+    CurrentUser,
+    CollectorService,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePersistencePermissionState {
+    Verified,
+    Invalid,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimePersistenceComponent {
+    pub owner: RuntimePersistenceOwner,
+    pub kind: RuntimePersistenceKind,
+    pub state: RuntimePersistenceState,
+    pub durability: RuntimePersistenceDurability,
+    pub last_success_at_ms: Option<u64>,
+    pub active_failure: Option<RuntimePersistenceFailure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePersistenceKind {
+    Settings,
+    WarmCache,
+    Diagnostics,
+    ServiceState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePersistenceDurability {
+    Durable,
+    NotWritten,
+    SessionOnly,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimePersistenceFailure {
+    pub code: String,
+    pub operation: RuntimePersistenceOperation,
+    pub occurred_at_ms: u64,
+    pub retryable: bool,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePersistenceOperation {
+    ResolveRoot,
+    Create,
+    Load,
+    Parse,
+    Migrate,
+    Serialize,
+    Write,
+    Sync,
+    Replace,
+    Rotate,
+    Remove,
+    Permissions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RuntimeQuery {
     #[serde(default)]
@@ -631,6 +738,7 @@ impl Default for RuntimeSettings {
             metric_window_seconds: default_metric_window_seconds(),
             sample_interval_ms: default_sample_interval_ms(),
             paused: false,
+            ui_preferences: None,
         }
     }
 }
@@ -763,6 +871,7 @@ mod tests {
                 metric_window_seconds: 30,
                 sample_interval_ms: 1_000,
                 paused: true,
+                ui_preferences: None,
             },
             health: RuntimeHealth {
                 tick_count: 7,
@@ -791,6 +900,7 @@ mod tests {
                 publication_p95_ms: None,
                 fatal_error: None,
             },
+            persistence: None,
             system: SystemMetricsSnapshot {
                 cpu_percent: 13.5,
                 kernel_cpu_percent: 2.5,
@@ -1135,6 +1245,7 @@ mod tests {
             metric_window_seconds: 15,
             sample_interval_ms: 1_000,
             paused: false,
+            ui_preferences: None,
         };
 
         let actual = serde_json::to_value(settings).expect("settings serializes");

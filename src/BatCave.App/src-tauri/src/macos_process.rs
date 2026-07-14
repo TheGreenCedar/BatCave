@@ -82,9 +82,52 @@ pub struct MacosProcessCollection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessProbeFailure {
+    Exited,
+    Denied,
+    Unsupported,
+    Failed(i32),
+}
+
+impl ProcessProbeFailure {
+    fn limitation_code(self) -> MetricLimitationCode {
+        match self {
+            Self::Denied => MetricLimitationCode::AccessDenied,
+            Self::Unsupported => MetricLimitationCode::UnsupportedMetric,
+            Self::Exited | Self::Failed(_) => MetricLimitationCode::CollectorFailure,
+        }
+    }
+}
+
+type ProcessProbeResult<T> = Result<T, ProcessProbeFailure>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MacosProcessOutcome {
     Access(AccessState),
     Exited,
+}
+
+trait MacosProcessProbes {
+    fn rusage(&self, pid: c_int) -> ProcessProbeResult<RusageInfoV2>;
+    fn task_info(&self, pid: c_int) -> ProcessProbeResult<ProcTaskInfo>;
+    fn file_descriptor_count(&self, pid: c_int) -> ProcessProbeResult<u32>;
+}
+
+#[derive(Debug, Default)]
+struct NativeMacosProcessProbes;
+
+impl MacosProcessProbes for NativeMacosProcessProbes {
+    fn rusage(&self, pid: c_int) -> ProcessProbeResult<RusageInfoV2> {
+        process_rusage(pid).map_err(classify_probe_error)
+    }
+
+    fn task_info(&self, pid: c_int) -> ProcessProbeResult<ProcTaskInfo> {
+        task_info(pid).map_err(classify_probe_error)
+    }
+
+    fn file_descriptor_count(&self, pid: c_int) -> ProcessProbeResult<u32> {
+        file_descriptor_count(pid).map_err(classify_probe_error)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -96,6 +139,14 @@ impl MacosProcessCollector {
     }
 
     pub fn enrich(&mut self, processes: &mut Vec<ProcessSample>) -> MacosProcessCollection {
+        self.enrich_with_probes(processes, &NativeMacosProcessProbes)
+    }
+
+    fn enrich_with_probes(
+        &mut self,
+        processes: &mut Vec<ProcessSample>,
+        probes: &impl MacosProcessProbes,
+    ) -> MacosProcessCollection {
         let mut collection = MacosProcessCollection::default();
         processes.retain_mut(|process| {
             let Ok(pid) = process.pid.parse::<c_int>() else {
@@ -104,7 +155,7 @@ impl MacosProcessCollector {
                 return true;
             };
 
-            let outcome = enrich_process(process, pid);
+            let outcome = enrich_process(process, pid, probes);
             match outcome {
                 MacosProcessOutcome::Access(AccessState::Denied) => collection.denied_count += 1,
                 MacosProcessOutcome::Access(AccessState::Partial) => collection.partial_count += 1,
@@ -120,14 +171,19 @@ impl MacosProcessCollector {
     }
 }
 
-fn enrich_process(process: &mut ProcessSample, pid: c_int) -> MacosProcessOutcome {
+fn enrich_process(
+    process: &mut ProcessSample,
+    pid: c_int,
+    probes: &impl MacosProcessProbes,
+) -> MacosProcessOutcome {
     let mut successful_probes = 0_u8;
     let mut denied_probes = 0_u8;
+    let mut unavailable_probes = 0_u8;
     let quality = process
         .quality
         .get_or_insert_with(ProcessMetricQuality::default);
 
-    match process_rusage(pid) {
+    match probes.rusage(pid) {
         Ok(rusage) => {
             successful_probes += 1;
             (process.memory_bytes, process.private_bytes) =
@@ -140,17 +196,16 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> MacosProcessOutcom
                 MetricSource::Libproc,
             ));
         }
-        Err(error) => {
-            if is_process_exited(&error) {
+        Err(failure) => {
+            if failure == ProcessProbeFailure::Exited {
                 return MacosProcessOutcome::Exited;
             }
-            let access_denied = is_access_denied(&error);
-            denied_probes += usize::from(access_denied) as u8;
-            let limitation = if access_denied {
-                MetricLimitationCode::AccessDenied
+            if failure == ProcessProbeFailure::Denied {
+                denied_probes += 1;
             } else {
-                MetricLimitationCode::CollectorFailure
-            };
+                unavailable_probes += 1;
+            }
+            let limitation = failure.limitation_code();
             process.private_bytes = 0;
             quality.memory = Some(
                 MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Sysinfo)
@@ -162,7 +217,7 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> MacosProcessOutcom
         }
     }
 
-    match task_info(pid) {
+    match probes.task_info(pid) {
         Ok(task) => {
             successful_probes += 1;
             process.virtual_memory_bytes = (task.virtual_size > 0).then_some(task.virtual_size);
@@ -172,28 +227,27 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> MacosProcessOutcom
                 MetricSource::Libproc,
             ));
         }
-        Err(error) => {
-            if is_process_exited(&error) {
+        Err(failure) => {
+            if failure == ProcessProbeFailure::Exited {
                 return MacosProcessOutcome::Exited;
             }
-            let access_denied = is_access_denied(&error);
-            denied_probes += usize::from(access_denied) as u8;
+            if failure == ProcessProbeFailure::Denied {
+                denied_probes += 1;
+            } else {
+                unavailable_probes += 1;
+            }
             process.threads = 0;
             quality.threads = Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc)
                     .with_limitation(
-                        if access_denied {
-                            MetricLimitationCode::AccessDenied
-                        } else {
-                            MetricLimitationCode::CollectorFailure
-                        },
+                        failure.limitation_code(),
                         "Thread count is unavailable for this process.",
                     ),
             );
         }
     }
 
-    match file_descriptor_count(pid) {
+    match probes.file_descriptor_count(pid) {
         Ok(count) => {
             successful_probes += 1;
             process.handles = count;
@@ -202,21 +256,20 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> MacosProcessOutcom
                 MetricSource::Libproc,
             ));
         }
-        Err(error) => {
-            if is_process_exited(&error) {
+        Err(failure) => {
+            if failure == ProcessProbeFailure::Exited {
                 return MacosProcessOutcome::Exited;
             }
-            let access_denied = is_access_denied(&error);
-            denied_probes += usize::from(access_denied) as u8;
+            if failure == ProcessProbeFailure::Denied {
+                denied_probes += 1;
+            } else {
+                unavailable_probes += 1;
+            }
             process.handles = 0;
             quality.handles = Some(
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc)
                     .with_limitation(
-                        if access_denied {
-                            MetricLimitationCode::AccessDenied
-                        } else {
-                            MetricLimitationCode::CollectorFailure
-                        },
+                        failure.limitation_code(),
                         "File-descriptor count is unavailable for this process.",
                     ),
             );
@@ -240,7 +293,7 @@ fn enrich_process(process: &mut ProcessSample, pid: c_int) -> MacosProcessOutcom
 
     let access = if successful_probes == 3 {
         AccessState::Full
-    } else if successful_probes == 0 && denied_probes > 0 {
+    } else if successful_probes == 0 && denied_probes > 0 && unavailable_probes == 0 {
         AccessState::Denied
     } else {
         AccessState::Partial
@@ -314,10 +367,7 @@ fn file_descriptor_count(pid: c_int) -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     if bytes == 0 && unsafe { libc::kill(pid, 0) } != 0 {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            return Err(error);
-        }
+        return Err(io::Error::last_os_error());
     }
     Ok((bytes as usize / 8).min(u32::MAX as usize) as u32)
 }
@@ -330,10 +380,66 @@ fn is_process_exited(error: &io::Error) -> bool {
     error.raw_os_error() == Some(libc::ESRCH)
 }
 
+fn classify_probe_error(error: io::Error) -> ProcessProbeFailure {
+    if is_process_exited(&error) {
+        return ProcessProbeFailure::Exited;
+    }
+    if is_access_denied(&error) {
+        return ProcessProbeFailure::Denied;
+    }
+    let code = error.raw_os_error().unwrap_or(0);
+    if [libc::ENOSYS, libc::ENOTSUP].contains(&code) {
+        ProcessProbeFailure::Unsupported
+    } else {
+        ProcessProbeFailure::Failed(code)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::contracts::{ProcessMetricQuality, ProcessSample};
+
+    #[derive(Clone)]
+    struct FixtureProbes {
+        rusage: ProcessProbeResult<RusageInfoV2>,
+        task: ProcessProbeResult<ProcTaskInfo>,
+        descriptor_count: ProcessProbeResult<u32>,
+    }
+
+    impl FixtureProbes {
+        fn full() -> Self {
+            Self {
+                rusage: Ok(RusageInfoV2 {
+                    resident_size: 4_096,
+                    physical_footprint: 3_072,
+                    disk_bytes_read: 400,
+                    disk_bytes_written: 200,
+                    ..RusageInfoV2::default()
+                }),
+                task: Ok(ProcTaskInfo {
+                    virtual_size: 8_192,
+                    thread_count: 4,
+                    ..ProcTaskInfo::default()
+                }),
+                descriptor_count: Ok(12),
+            }
+        }
+    }
+
+    impl MacosProcessProbes for FixtureProbes {
+        fn rusage(&self, _pid: c_int) -> ProcessProbeResult<RusageInfoV2> {
+            self.rusage
+        }
+
+        fn task_info(&self, _pid: c_int) -> ProcessProbeResult<ProcTaskInfo> {
+            self.task
+        }
+
+        fn file_descriptor_count(&self, _pid: c_int) -> ProcessProbeResult<u32> {
+            self.descriptor_count
+        }
+    }
 
     fn sample(pid: u32) -> ProcessSample {
         ProcessSample {
@@ -403,6 +509,96 @@ mod tests {
         let error = io::Error::from_raw_os_error(libc::ESRCH);
         assert!(is_process_exited(&error));
         assert!(!is_access_denied(&error));
+        assert_eq!(classify_probe_error(error), ProcessProbeFailure::Exited);
+    }
+
+    #[test]
+    fn exit_fixture_drops_churn_without_degrading_access() {
+        let mut rows = vec![sample(42)];
+        let mut probes = FixtureProbes::full();
+        probes.rusage = Err(ProcessProbeFailure::Exited);
+
+        let summary = MacosProcessCollector::new().enrich_with_probes(&mut rows, &probes);
+
+        assert_eq!(summary.exited_count, 1);
+        assert_eq!(summary.denied_count, 0);
+        assert_eq!(summary.partial_count, 0);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn denial_fixture_preserves_the_row_without_publishable_io() {
+        let mut rows = vec![sample(42)];
+        let probes = FixtureProbes {
+            rusage: Err(ProcessProbeFailure::Denied),
+            task: Err(ProcessProbeFailure::Denied),
+            descriptor_count: Err(ProcessProbeFailure::Denied),
+        };
+
+        let summary = MacosProcessCollector::new().enrich_with_probes(&mut rows, &probes);
+
+        assert_eq!(summary.denied_count, 1);
+        assert_eq!(summary.exited_count, 0);
+        assert_eq!(rows[0].access_state, AccessState::Denied);
+        assert_eq!(rows[0].io_read_total_bytes, 0);
+        assert_eq!(rows[0].io_write_total_bytes, 0);
+        let io = rows[0]
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.io.as_ref())
+            .expect("I/O quality");
+        assert_eq!(io.quality, MetricQuality::Unavailable);
+        assert_eq!(io.limitation_code, Some(MetricLimitationCode::AccessDenied));
+    }
+
+    #[test]
+    fn partial_enrichment_fixture_keeps_independent_probe_truth() {
+        let mut rows = vec![sample(42)];
+        let mut probes = FixtureProbes::full();
+        probes.task = Err(ProcessProbeFailure::Unsupported);
+
+        let summary = MacosProcessCollector::new().enrich_with_probes(&mut rows, &probes);
+
+        assert_eq!(summary.partial_count, 1);
+        assert_eq!(rows[0].access_state, AccessState::Partial);
+        assert_eq!(rows[0].private_bytes, 3_072);
+        assert_eq!(rows[0].io_read_total_bytes, 400);
+        assert_eq!(rows[0].handles, 12);
+        let quality = rows[0].quality.as_ref().expect("process quality");
+        assert_eq!(
+            quality.io.as_ref().map(|quality| quality.quality),
+            Some(MetricQuality::Native)
+        );
+        assert_eq!(
+            quality
+                .threads
+                .as_ref()
+                .and_then(|quality| quality.limitation_code),
+            Some(MetricLimitationCode::UnsupportedMetric)
+        );
+        assert_eq!(
+            quality
+                .network
+                .as_ref()
+                .and_then(|quality| quality.limitation_code),
+            Some(MetricLimitationCode::UnsupportedMetric)
+        );
+    }
+
+    #[test]
+    fn mixed_denial_and_collector_failure_is_partial_not_denied() {
+        let mut rows = vec![sample(42)];
+        let probes = FixtureProbes {
+            rusage: Err(ProcessProbeFailure::Denied),
+            task: Err(ProcessProbeFailure::Failed(libc::EIO)),
+            descriptor_count: Err(ProcessProbeFailure::Unsupported),
+        };
+
+        let summary = MacosProcessCollector::new().enrich_with_probes(&mut rows, &probes);
+
+        assert_eq!(summary.denied_count, 0);
+        assert_eq!(summary.partial_count, 1);
+        assert_eq!(rows[0].access_state, AccessState::Partial);
     }
 
     #[test]
