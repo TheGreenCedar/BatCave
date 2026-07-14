@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
 
 const IPV4_SOCKET_FAMILY: u16 = 2;
@@ -20,7 +23,10 @@ const RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_START_ATTEMPTS: u8 = 3;
 const EPOCH_GRACE_INTERVALS: u64 = 1;
 const BPFTRACE_MAX_MAP_KEYS: usize = 16_384;
+const BPFTRACE_SOFT_MAP_KEYS: usize = 8_192;
 const MAX_READER_ERROR_CHARS: usize = 2_048;
+const PROTOCOL_HEADER: &str = "BATCAVE_NETWORK_PROTOCOL";
+const PROTOCOL_VERSION: u64 = 2;
 const INTERVAL_MARKER: &str = "BATCAVE_NETWORK_INTERVAL";
 const RX_BEGIN: &str = "BATCAVE_NETWORK_RX_BEGIN";
 const RX_ENTRY: &str = "BATCAVE_NETWORK_RX";
@@ -41,7 +47,9 @@ fn bpftrace_command() -> Command {
         .arg("-B")
         .arg("line")
         .arg("-e")
-        .arg(bpftrace_script());
+        .arg(bpftrace_script())
+        .arg(BPFTRACE_SOFT_MAP_KEYS.to_string())
+        .env("BPFTRACE_MAX_MAP_KEYS", BPFTRACE_MAX_MAP_KEYS.to_string());
     command
 }
 
@@ -197,71 +205,64 @@ impl FailureState {
 struct LinuxNetworkAttributionMonitor {
     child: Child,
     shared: Arc<Mutex<LinuxNetworkShared>>,
-    stdout_thread: Option<JoinHandle<()>>,
-    stderr_thread: Option<JoinHandle<()>>,
+    output_thread: Option<JoinHandle<()>>,
     stopped: bool,
 }
 
 impl LinuxNetworkAttributionMonitor {
     fn start() -> Result<Self, String> {
         ensure_bpftrace_available()?;
+        ensure_map_insert_reserve()?;
         Self::spawn(bpftrace_command())
     }
 
     fn spawn(mut command: Command) -> Result<Self, String> {
-        let mut child = command
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        unsafe {
+            // SAFETY: pre_exec runs after stdout is installed as a pipe. dup2 is
+            // async-signal-safe and gives both child descriptors one ordered pipe.
+            command.pre_exec(|| {
+                if libc::dup2(libc::STDOUT_FILENO, libc::STDERR_FILENO) == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+
+        let mut child = command
             .spawn()
             .map_err(|error| format!("linux_network_ebpf_start_failed:{error}"))?;
 
-        let stdout = match child.stdout.take() {
-            Some(stdout) => stdout,
+        let output = match child.stdout.take() {
+            Some(output) => output,
             None => {
                 terminate_child(&mut child);
-                return Err("linux_network_ebpf_stdout_unavailable".to_string());
-            }
-        };
-        let stderr = match child.stderr.take() {
-            Some(stderr) => stderr,
-            None => {
-                terminate_child(&mut child);
-                return Err("linux_network_ebpf_stderr_unavailable".to_string());
+                return Err("linux_network_ebpf_output_unavailable".to_string());
             }
         };
 
         let shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
-        let stdout_shared = Arc::clone(&shared);
-        let stdout_thread = match thread::Builder::new()
-            .name("batcave-linux-network-ebpf-stdout".to_string())
-            .spawn(move || read_bpftrace_stdout(stdout, stdout_shared))
+        let output_shared = Arc::clone(&shared);
+        let output_thread = match thread::Builder::new()
+            .name("batcave-linux-network-ebpf-output".to_string())
+            .spawn(move || read_bpftrace_output(output, output_shared))
         {
             Ok(thread) => thread,
             Err(error) => {
                 terminate_child(&mut child);
-                return Err(format!("linux_network_ebpf_stdout_thread_failed:{error}"));
-            }
-        };
-
-        let stderr_shared = Arc::clone(&shared);
-        let stderr_thread = match thread::Builder::new()
-            .name("batcave-linux-network-ebpf-stderr".to_string())
-            .spawn(move || read_bpftrace_stderr(stderr, stderr_shared))
-        {
-            Ok(thread) => thread,
-            Err(error) => {
-                terminate_child(&mut child);
-                let _ = stdout_thread.join();
-                return Err(format!("linux_network_ebpf_stderr_thread_failed:{error}"));
+                return Err(format!("linux_network_ebpf_output_thread_failed:{error}"));
             }
         };
 
         Ok(Self {
             child,
             shared,
-            stdout_thread: Some(stdout_thread),
-            stderr_thread: Some(stderr_thread),
+            output_thread: Some(output_thread),
             stopped: false,
         })
     }
@@ -293,12 +294,8 @@ impl LinuxNetworkAttributionMonitor {
             }
         }
 
-        let stdout_finished = self
-            .stdout_thread
-            .as_ref()
-            .is_none_or(JoinHandle::is_finished);
-        let stderr_finished = self
-            .stderr_thread
+        let output_finished = self
+            .output_thread
             .as_ref()
             .is_none_or(JoinHandle::is_finished);
         let mut shared = match self.shared.lock() {
@@ -309,9 +306,7 @@ impl LinuxNetworkAttributionMonitor {
                 );
             }
         };
-        if let Some(message) =
-            shared.reader_failure(Instant::now(), stdout_finished, stderr_finished)
-        {
+        if let Some(message) = shared.reader_failure(Instant::now(), output_finished) {
             return NetworkAttributionSample::Failed(message);
         }
 
@@ -356,18 +351,11 @@ impl LinuxNetworkAttributionMonitor {
         }
 
         if self
-            .stdout_thread
+            .output_thread
             .take()
             .is_some_and(|thread| thread.join().is_err())
         {
-            errors.push("linux_network_ebpf_stdout_join_failed".to_string());
-        }
-        if self
-            .stderr_thread
-            .take()
-            .is_some_and(|thread| thread.join().is_err())
-        {
-            errors.push("linux_network_ebpf_stderr_join_failed".to_string());
+            errors.push("linux_network_ebpf_output_join_failed".to_string());
         }
 
         if errors.is_empty() {
@@ -397,19 +385,13 @@ enum ReaderState {
     Failed(String),
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ReaderKind {
-    Stdout,
-    Stderr,
-}
-
 #[derive(Debug)]
 struct LinuxNetworkShared {
     started_at: Instant,
     last_interval_at: Option<Instant>,
     completed: CompletedIntervalAccumulator,
-    stdout_state: ReaderState,
-    stderr_state: ReaderState,
+    quarantined: Option<PendingRates>,
+    output_state: ReaderState,
     last_error: Option<String>,
 }
 
@@ -419,32 +401,33 @@ impl LinuxNetworkShared {
             started_at,
             last_interval_at: None,
             completed: CompletedIntervalAccumulator::default(),
-            stdout_state: ReaderState::Starting,
-            stderr_state: ReaderState::Starting,
+            quarantined: None,
+            output_state: ReaderState::Starting,
             last_error: None,
         }
     }
 
-    fn reader_state_mut(&mut self, kind: ReaderKind) -> &mut ReaderState {
-        match kind {
-            ReaderKind::Stdout => &mut self.stdout_state,
-            ReaderKind::Stderr => &mut self.stderr_state,
+    fn accept_interval(&mut self, pending: PendingRates, completed_at: Instant) {
+        // A validated interval becomes eligible only after the next complete
+        // boundary. This keeps a trailing diagnostic from racing publication.
+        if let Some(mut eligible) = self.quarantined.replace(pending) {
+            self.completed.push(&mut eligible);
+        }
+        self.last_interval_at = Some(completed_at);
+    }
+
+    fn mark_reader_running(&mut self) {
+        self.output_state = ReaderState::Running;
+    }
+
+    fn mark_reader_closed(&mut self) {
+        if !matches!(self.output_state, ReaderState::Failed(_)) {
+            self.output_state = ReaderState::Closed;
         }
     }
 
-    fn mark_reader_running(&mut self, kind: ReaderKind) {
-        *self.reader_state_mut(kind) = ReaderState::Running;
-    }
-
-    fn mark_reader_closed(&mut self, kind: ReaderKind) {
-        let state = self.reader_state_mut(kind);
-        if !matches!(state, ReaderState::Failed(_)) {
-            *state = ReaderState::Closed;
-        }
-    }
-
-    fn mark_reader_failed(&mut self, kind: ReaderKind, message: String) {
-        let message = match self.reader_state_mut(kind) {
+    fn mark_reader_failed(&mut self, message: String) {
+        let message = match &self.output_state {
             ReaderState::Failed(existing) => format!("{existing}; {message}"),
             _ => message,
         }
@@ -452,39 +435,27 @@ impl LinuxNetworkShared {
         .take(MAX_READER_ERROR_CHARS)
         .collect::<String>();
         self.last_error = Some(message.clone());
-        *self.reader_state_mut(kind) = ReaderState::Failed(message);
+        self.output_state = ReaderState::Failed(message);
     }
 
-    fn reader_failure(
-        &self,
-        now: Instant,
-        stdout_finished: bool,
-        stderr_finished: bool,
-    ) -> Option<String> {
-        for (name, state, finished) in [
-            ("stdout", &self.stdout_state, stdout_finished),
-            ("stderr", &self.stderr_state, stderr_finished),
-        ] {
-            match state {
-                ReaderState::Failed(message) => return Some(message.clone()),
-                ReaderState::Closed => {
-                    return Some(format!("linux_network_ebpf_{name}_closed"));
-                }
-                ReaderState::Starting | ReaderState::Running if finished => {
-                    return Some(format!("linux_network_ebpf_{name}_thread_stopped"));
-                }
-                ReaderState::Starting | ReaderState::Running => {}
+    fn reader_failure(&self, now: Instant, output_finished: bool) -> Option<String> {
+        match &self.output_state {
+            ReaderState::Failed(message) => return Some(message.clone()),
+            ReaderState::Closed => return Some("linux_network_ebpf_output_closed".to_string()),
+            ReaderState::Starting | ReaderState::Running if output_finished => {
+                return Some("linux_network_ebpf_output_thread_stopped".to_string());
             }
+            ReaderState::Starting | ReaderState::Running => {}
         }
 
         match self.last_interval_at {
             Some(last_interval_at)
                 if now.saturating_duration_since(last_interval_at) > INTERVAL_LIVENESS_TIMEOUT =>
             {
-                Some("linux_network_ebpf_stdout_stalled".to_string())
+                Some("linux_network_ebpf_output_stalled".to_string())
             }
             None if now.saturating_duration_since(self.started_at) > STARTUP_LIVENESS_TIMEOUT => {
-                Some("linux_network_ebpf_stdout_startup_stalled".to_string())
+                Some("linux_network_ebpf_output_startup_stalled".to_string())
             }
             _ => None,
         }
@@ -499,6 +470,7 @@ struct PendingRates {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProtocolStage {
+    AwaitingHeader,
     AwaitingRxBegin,
     ReadingRx,
     AwaitingTxBegin,
@@ -509,6 +481,7 @@ enum ProtocolStage {
 impl ProtocolStage {
     const fn label(self) -> &'static str {
         match self {
+            Self::AwaitingHeader => "awaiting_header",
             Self::AwaitingRxBegin => "awaiting_rx_begin",
             Self::ReadingRx => "reading_rx",
             Self::AwaitingTxBegin => "awaiting_tx_begin",
@@ -531,7 +504,7 @@ impl Default for ProtocolAssembler {
     fn default() -> Self {
         Self {
             expected_epoch: 1,
-            stage: ProtocolStage::AwaitingRxBegin,
+            stage: ProtocolStage::AwaitingHeader,
             section_count: 0,
             section_total: 0,
             pending: PendingRates::default(),
@@ -617,62 +590,60 @@ fn ensure_bpftrace_available() -> Result<(), String> {
     }
 }
 
-fn read_bpftrace_stdout(stdout: impl Read, shared: Arc<Mutex<LinuxNetworkShared>>) {
-    mark_reader_running(&shared, ReaderKind::Stdout);
+#[cfg(target_os = "linux")]
+fn ensure_map_insert_reserve() -> Result<(), String> {
+    let configured_cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
+    if configured_cpus <= 0 {
+        return Err("linux_network_ebpf_cpu_count_unavailable".to_string());
+    }
+    let configured_cpus = usize::try_from(configured_cpus)
+        .map_err(|_| "linux_network_ebpf_cpu_count_out_of_range".to_string())?;
+    validate_map_insert_reserve(configured_cpus)
+}
+
+fn validate_map_insert_reserve(configured_cpus: usize) -> Result<(), String> {
+    if configured_cpus > BPFTRACE_MAX_MAP_KEYS - BPFTRACE_SOFT_MAP_KEYS {
+        return Err(format!(
+            "linux_network_ebpf_cpu_reserve_exceeded:configured_cpus={configured_cpus}:reserve={}",
+            BPFTRACE_MAX_MAP_KEYS - BPFTRACE_SOFT_MAP_KEYS
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_map_insert_reserve() -> Result<(), String> {
+    Ok(())
+}
+
+fn read_bpftrace_output(output: impl Read, shared: Arc<Mutex<LinuxNetworkShared>>) {
+    mark_reader_running(&shared);
     let mut protocol = ProtocolAssembler::default();
-    let mut reader = BufReader::new(stdout);
+    let mut reader = BufReader::new(output);
     let mut accepting_protocol = true;
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => {
-                mark_reader_closed(&shared, ReaderKind::Stdout);
+                mark_reader_closed(&shared);
                 return;
             }
             Ok(_) if accepting_protocol => {
-                if let Err(message) = ingest_bpftrace_stdout_line(&line, &mut protocol, &shared) {
-                    mark_reader_failed(&shared, ReaderKind::Stdout, message);
+                if let Err(message) = ingest_bpftrace_output_line(&line, &mut protocol, &shared) {
+                    mark_reader_failed(&shared, message);
                     accepting_protocol = false;
                 }
             }
-            Ok(_) => {}
-            Err(error) => {
-                mark_reader_failed(
-                    &shared,
-                    ReaderKind::Stdout,
-                    format!("linux_network_ebpf_stdout_read_failed:{error}"),
-                );
-                return;
-            }
-        }
-    }
-}
-
-fn read_bpftrace_stderr(stderr: impl Read, shared: Arc<Mutex<LinuxNetworkShared>>) {
-    mark_reader_running(&shared, ReaderKind::Stderr);
-    let mut reader = BufReader::new(stderr);
-    loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => {
-                mark_reader_closed(&shared, ReaderKind::Stderr);
-                return;
-            }
             Ok(_) => {
                 let message = line.trim();
-                if !message.is_empty() {
-                    mark_reader_failed(
-                        &shared,
-                        ReaderKind::Stderr,
-                        format!("linux_network_ebpf_stderr:{message}"),
-                    );
+                if !message.is_empty() && !is_protocol_line(message) {
+                    mark_reader_failed(&shared, format!("linux_network_ebpf_diagnostic:{message}"));
                 }
             }
             Err(error) => {
                 mark_reader_failed(
                     &shared,
-                    ReaderKind::Stderr,
-                    format!("linux_network_ebpf_stderr_read_failed:{error}"),
+                    format!("linux_network_ebpf_output_read_failed:{error}"),
                 );
                 return;
             }
@@ -680,37 +651,52 @@ fn read_bpftrace_stderr(stderr: impl Read, shared: Arc<Mutex<LinuxNetworkShared>
     }
 }
 
-fn mark_reader_running(shared: &Arc<Mutex<LinuxNetworkShared>>, kind: ReaderKind) {
+fn is_protocol_line(line: &str) -> bool {
+    matches!(
+        line.split_whitespace().next(),
+        Some(
+            PROTOCOL_HEADER
+                | RX_BEGIN
+                | RX_ENTRY
+                | RX_END
+                | TX_BEGIN
+                | TX_ENTRY
+                | TX_END
+                | INTERVAL_MARKER
+        )
+    )
+}
+
+fn mark_reader_running(shared: &Arc<Mutex<LinuxNetworkShared>>) {
     if let Ok(mut shared) = shared.lock() {
-        shared.mark_reader_running(kind);
+        shared.mark_reader_running();
     }
 }
 
-fn mark_reader_closed(shared: &Arc<Mutex<LinuxNetworkShared>>, kind: ReaderKind) {
+fn mark_reader_closed(shared: &Arc<Mutex<LinuxNetworkShared>>) {
     if let Ok(mut shared) = shared.lock() {
-        shared.mark_reader_closed(kind);
+        shared.mark_reader_closed();
     }
 }
 
-fn mark_reader_failed(shared: &Arc<Mutex<LinuxNetworkShared>>, kind: ReaderKind, message: String) {
+fn mark_reader_failed(shared: &Arc<Mutex<LinuxNetworkShared>>, message: String) {
     if let Ok(mut shared) = shared.lock() {
-        shared.mark_reader_failed(kind, message);
+        shared.mark_reader_failed(message);
     }
 }
 
-fn ingest_bpftrace_stdout_line(
+fn ingest_bpftrace_output_line(
     line: &str,
     protocol: &mut ProtocolAssembler,
     shared: &Arc<Mutex<LinuxNetworkShared>>,
 ) -> Result<(), String> {
     let line = line.trim();
     let completed = protocol.ingest(line)?;
-    if let Some(mut completed) = completed {
+    if let Some(completed) = completed {
         let mut shared = shared
             .lock()
             .map_err(|_| "linux_network_ebpf_state_lock_poisoned".to_string())?;
-        shared.completed.push(&mut completed);
-        shared.last_interval_at = Some(Instant::now());
+        shared.accept_interval(completed, Instant::now());
     }
     Ok(())
 }
@@ -723,6 +709,18 @@ impl ProtocolAssembler {
         };
 
         match kind {
+            PROTOCOL_HEADER => {
+                self.require_field_count(&fields, 2)?;
+                self.require_stage(ProtocolStage::AwaitingHeader, kind)?;
+                let version = fields[1]
+                    .parse::<u64>()
+                    .map_err(|_| self.error("invalid_protocol_version"))?;
+                if version != PROTOCOL_VERSION {
+                    return Err(self.error(&format!("unsupported_protocol_version:{version}")));
+                }
+                self.stage = ProtocolStage::AwaitingRxBegin;
+                Ok(None)
+            }
             RX_BEGIN => {
                 self.require_field_count(&fields, 2)?;
                 let epoch = self.parse_epoch(fields[1])?;
@@ -750,15 +748,17 @@ impl ProtocolAssembler {
                 Ok(None)
             }
             RX_END => {
-                self.require_field_count(&fields, 5)?;
+                self.require_field_count(&fields, 6)?;
                 let epoch = self.parse_epoch(fields[1])?;
                 let count = self.parse_summary_value(fields[2], "invalid_rx_count")?;
                 let total = self.parse_summary_value(fields[3], "invalid_rx_total")?;
                 let stale = self.parse_summary_value(fields[4], "invalid_rx_stale_count")?;
+                let overflow = self.parse_summary_value(fields[5], "invalid_rx_overflow_count")?;
                 self.require_stage(ProtocolStage::ReadingRx, kind)?;
                 self.require_epoch(epoch)?;
                 self.require_section_summary(count, total, "rx")?;
                 self.require_no_stale_entries(stale, "rx")?;
+                self.require_no_overflow(overflow, "rx")?;
                 self.stage = ProtocolStage::AwaitingTxBegin;
                 self.reset_section();
                 Ok(None)
@@ -789,15 +789,17 @@ impl ProtocolAssembler {
                 Ok(None)
             }
             TX_END => {
-                self.require_field_count(&fields, 5)?;
+                self.require_field_count(&fields, 6)?;
                 let epoch = self.parse_epoch(fields[1])?;
                 let count = self.parse_summary_value(fields[2], "invalid_tx_count")?;
                 let total = self.parse_summary_value(fields[3], "invalid_tx_total")?;
                 let stale = self.parse_summary_value(fields[4], "invalid_tx_stale_count")?;
+                let overflow = self.parse_summary_value(fields[5], "invalid_tx_overflow_count")?;
                 self.require_stage(ProtocolStage::ReadingTx, kind)?;
                 self.require_epoch(epoch)?;
                 self.require_section_summary(count, total, "tx")?;
                 self.require_no_stale_entries(stale, "tx")?;
+                self.require_no_overflow(overflow, "tx")?;
                 self.stage = ProtocolStage::AwaitingMarker;
                 self.reset_section();
                 Ok(None)
@@ -897,6 +899,14 @@ impl ProtocolAssembler {
         }
     }
 
+    fn require_no_overflow(&self, overflow: u64, direction: &str) -> Result<(), String> {
+        if overflow == 0 {
+            Ok(())
+        } else {
+            Err(self.error(&format!("{direction}_map_capacity_exceeded:{overflow}")))
+        }
+    }
+
     fn reset_section(&mut self) {
         self.section_count = 0;
         self.section_total = 0;
@@ -904,7 +914,7 @@ impl ProtocolAssembler {
 
     fn error(&self, detail: &str) -> String {
         format!(
-            "linux_network_ebpf_stdout_protocol:{detail}:expected_epoch={}:stage={}",
+            "linux_network_ebpf_output_protocol:{detail}:expected_epoch={}:stage={}",
             self.expected_epoch,
             self.stage.label()
         )
@@ -932,11 +942,28 @@ mod tests {
         assert!(!script.contains("|| $family == 1)"));
         assert!(script.contains("delete(@batcave_tx_family[tid])"));
         assert!(script.contains("delete(@batcave_rx_family[tid])"));
-        assert!(script.contains("@batcave_tx[pid, @batcave_epoch] = sum"));
-        assert!(script.contains("@batcave_rx[pid, @batcave_epoch] = sum"));
+        assert!(script.contains("@batcave_tx[pid, $epoch] = sum"));
+        assert!(script.contains("@batcave_rx[pid, $epoch] = sum"));
         assert_eq!(EPOCH_GRACE_INTERVALS, 1);
         assert_eq!(BPFTRACE_MAX_MAP_KEYS, 16_384);
+        assert_eq!(BPFTRACE_SOFT_MAP_KEYS, 8_192);
         assert!(script.contains("max_map_keys=16384"));
+        assert!(script.contains("BATCAVE_NETWORK_PROTOCOL 2"));
+        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(script.matches(" < $1").count(), 4);
+        for map in [
+            "@batcave_tx_family",
+            "@batcave_tx",
+            "@batcave_rx_family",
+            "@batcave_rx",
+        ] {
+            assert!(script.contains(&format!("has_key({map}")));
+            assert!(script.contains(&format!("len({map})")));
+        }
+        assert!(script.contains("@batcave_tx_overflow[$epoch] = (uint64)1"));
+        assert!(script.contains("@batcave_rx_overflow[$epoch] = (uint64)1"));
+        assert!(script.contains("delete(@batcave_tx_overflow, $completed_epoch)"));
+        assert!(script.contains("delete(@batcave_rx_overflow, $completed_epoch)"));
         assert!(script.contains("@batcave_epoch = $closing_epoch + 1"));
         assert!(script.contains("$completed_epoch = $closing_epoch - 1"));
         assert!(script.contains("$kv.0.1 < $completed_epoch"));
@@ -986,6 +1013,49 @@ mod tests {
         assert!(arguments.windows(2).any(|args| args == ["-B", "line"]));
         assert!(arguments.contains(&"-q".to_string()));
         assert!(!arguments.contains(&"--no-warnings".to_string()));
+        assert_eq!(arguments.last().map(String::as_str), Some("8192"));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "BPFTRACE_MAX_MAP_KEYS" && value.is_some_and(|value| value == "16384")
+        }));
+    }
+
+    #[test]
+    fn soft_map_limit_reserves_one_concurrent_insert_per_configured_cpu() {
+        assert!(validate_map_insert_reserve(8_192).is_ok());
+        let error = validate_map_insert_reserve(8_193).unwrap_err();
+        assert!(error.contains("cpu_reserve_exceeded"));
+        assert!(error.contains("reserve=8192"));
+    }
+
+    #[test]
+    fn protocol_version_and_in_band_capacity_flags_fail_closed() {
+        let mut wrong_version = ProtocolAssembler::default();
+        let error = wrong_version
+            .ingest(&format!("{PROTOCOL_HEADER} {}", PROTOCOL_VERSION + 1))
+            .unwrap_err();
+        assert!(error.contains("unsupported_protocol_version"));
+
+        let mut rx_overflow = ProtocolAssembler::default();
+        rx_overflow
+            .ingest(&format!("{PROTOCOL_HEADER} {PROTOCOL_VERSION}"))
+            .unwrap();
+        rx_overflow.ingest(&format!("{RX_BEGIN} 1")).unwrap();
+        let error = rx_overflow
+            .ingest(&format!("{RX_END} 1 0 0 0 1"))
+            .unwrap_err();
+        assert!(error.contains("rx_map_capacity_exceeded:1"));
+
+        let mut tx_overflow = ProtocolAssembler::default();
+        tx_overflow
+            .ingest(&format!("{PROTOCOL_HEADER} {PROTOCOL_VERSION}"))
+            .unwrap();
+        tx_overflow.ingest(&format!("{RX_BEGIN} 1")).unwrap();
+        tx_overflow.ingest(&format!("{RX_END} 1 0 0 0 0")).unwrap();
+        tx_overflow.ingest(&format!("{TX_BEGIN} 1")).unwrap();
+        let error = tx_overflow
+            .ingest(&format!("{TX_END} 1 0 0 0 1"))
+            .unwrap_err();
+        assert!(error.contains("tx_map_capacity_exceeded:1"));
     }
 
     #[test]
@@ -1000,7 +1070,13 @@ mod tests {
             &[(10, 200), (20, 300)],
         )
         .unwrap();
+        {
+            let mut shared = shared.lock().unwrap();
+            assert!(shared.completed.take_rates().is_none());
+            assert!(shared.quarantined.is_some());
+        }
         ingest_emitted_interval(&shared, &mut protocol, 2, &[(10, 300)], &[(10, 400)]).unwrap();
+        ingest_emitted_interval(&shared, &mut protocol, 3, &[], &[]).unwrap();
 
         let sample = shared
             .lock()
@@ -1045,11 +1121,18 @@ mod tests {
                     }
                 }
             }
+            ingest_emitted_interval(&shared, &mut protocol, 11, &[], &[]).unwrap();
+            if let Some(sample) = shared.lock().unwrap().completed.take_rates() {
+                consumed_intervals += sample.interval_count;
+                ready_samples += 1;
+                assert_eq!(sample.rates_by_pid[&7].received_bps, 1_000);
+                assert_eq!(sample.rates_by_pid[&7].transmitted_bps, 2_000);
+            }
 
             assert_eq!(consumed_intervals, 10, "cadence_ms={cadence_ms}");
             assert_eq!(
                 ready_samples,
-                10_000 / cadence_ms.max(1_000),
+                10_000 / cadence_ms.max(1_000) + u64::from(cadence_ms > 1_000),
                 "cadence_ms={cadence_ms}"
             );
             assert!(shared.lock().unwrap().completed.take_rates().is_none());
@@ -1069,7 +1152,7 @@ mod tests {
                 "missing_tx",
                 vec![
                     format!("{RX_BEGIN} 1"),
-                    format!("{RX_END} 1 0 0 0"),
+                    format!("{RX_END} 1 0 0 0 0"),
                     format!("{INTERVAL_MARKER} 1"),
                 ],
             ),
@@ -1077,9 +1160,9 @@ mod tests {
                 "duplicate_tx",
                 vec![
                     format!("{RX_BEGIN} 1"),
-                    format!("{RX_END} 1 0 0 0"),
+                    format!("{RX_END} 1 0 0 0 0"),
                     format!("{TX_BEGIN} 1"),
-                    format!("{TX_END} 1 0 0 0"),
+                    format!("{TX_END} 1 0 0 0 0"),
                     format!("{TX_BEGIN} 1"),
                 ],
             ),
@@ -1089,6 +1172,9 @@ mod tests {
             ),
         ] {
             let mut protocol = ProtocolAssembler::default();
+            protocol
+                .ingest(&format!("{PROTOCOL_HEADER} {PROTOCOL_VERSION}"))
+                .unwrap();
             let error = lines
                 .iter()
                 .find_map(|line| protocol.ingest(line).err())
@@ -1102,7 +1188,7 @@ mod tests {
         let cases = [
             (
                 "lost_entry",
-                vec![format!("{RX_BEGIN} 1"), format!("{RX_END} 1 1 50 0")],
+                vec![format!("{RX_BEGIN} 1"), format!("{RX_END} 1 1 50 0 0")],
                 "summary_mismatch",
             ),
             (
@@ -1124,6 +1210,9 @@ mod tests {
 
         for (name, lines, expected) in cases {
             let mut protocol = ProtocolAssembler::default();
+            protocol
+                .ingest(&format!("{PROTOCOL_HEADER} {PROTOCOL_VERSION}"))
+                .unwrap();
             let error = lines
                 .iter()
                 .find_map(|line| protocol.ingest(line).err())
@@ -1144,10 +1233,11 @@ mod tests {
 
         protocol.ingest(&format!("{RX_BEGIN} 2")).unwrap();
         let error = protocol
-            .ingest(&format!("{RX_END} 2 0 0 1"))
+            .ingest(&format!("{RX_END} 2 0 0 1 0"))
             .expect_err("a late epoch-one key must fail the epoch-two sweep");
         assert!(error.contains("late_rx_epoch_entries:1"));
-        assert_eq!(shared.lock().unwrap().completed.interval_count, 1);
+        assert_eq!(shared.lock().unwrap().completed.interval_count, 0);
+        assert!(shared.lock().unwrap().quarantined.is_some());
     }
 
     #[test]
@@ -1155,6 +1245,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
         let mut protocol = ProtocolAssembler::default();
         ingest_emitted_interval(&shared, &mut protocol, 1, &[], &[]).unwrap();
+        ingest_emitted_interval(&shared, &mut protocol, 2, &[], &[]).unwrap();
 
         let sample = shared
             .lock()
@@ -1170,15 +1261,13 @@ mod tests {
     fn closed_malformed_and_stalled_readers_are_not_healthy_zero() {
         let started_at = Instant::now();
         let mut shared = LinuxNetworkShared::new(started_at);
-        shared.stdout_state = ReaderState::Running;
-        shared.stderr_state = ReaderState::Running;
+        shared.output_state = ReaderState::Running;
         assert_eq!(
             shared.reader_failure(
                 started_at + STARTUP_LIVENESS_TIMEOUT + Duration::from_millis(1),
                 false,
-                false,
             ),
-            Some("linux_network_ebpf_stdout_startup_stalled".to_string())
+            Some("linux_network_ebpf_output_startup_stalled".to_string())
         );
 
         shared.last_interval_at = Some(started_at);
@@ -1186,41 +1275,41 @@ mod tests {
             shared.reader_failure(
                 started_at + INTERVAL_LIVENESS_TIMEOUT + Duration::from_millis(1),
                 false,
-                false,
             ),
-            Some("linux_network_ebpf_stdout_stalled".to_string())
+            Some("linux_network_ebpf_output_stalled".to_string())
         );
 
-        shared.stdout_state = ReaderState::Closed;
+        shared.output_state = ReaderState::Closed;
         assert_eq!(
-            shared.reader_failure(started_at, true, false),
-            Some("linux_network_ebpf_stdout_closed".to_string())
+            shared.reader_failure(started_at, true),
+            Some("linux_network_ebpf_output_closed".to_string())
         );
 
-        shared.stdout_state = ReaderState::Failed("malformed".to_string());
+        shared.output_state = ReaderState::Failed("malformed".to_string());
         assert_eq!(
-            shared.reader_failure(started_at, true, false),
+            shared.reader_failure(started_at, true),
             Some("malformed".to_string())
         );
     }
 
     #[test]
-    fn stdout_read_error_and_stderr_output_are_explicit_failures() {
-        let stdout_shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
-        read_bpftrace_stdout(AlwaysFails, Arc::clone(&stdout_shared));
+    fn output_read_error_and_diagnostics_are_explicit_failures() {
+        let output_shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
+        read_bpftrace_output(AlwaysFails, Arc::clone(&output_shared));
         assert!(matches!(
-            stdout_shared.lock().unwrap().stdout_state,
-            ReaderState::Failed(ref message) if message.contains("stdout_read_failed")
+            output_shared.lock().unwrap().output_state,
+            ReaderState::Failed(ref message) if message.contains("output_read_failed")
         ));
 
-        let stderr_shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
-        read_bpftrace_stderr(
-            io::Cursor::new(b"permission denied\n"),
-            Arc::clone(&stderr_shared),
+        let diagnostic_shared = Arc::new(Mutex::new(LinuxNetworkShared::new(Instant::now())));
+        read_bpftrace_output(
+            io::Cursor::new(b"permission denied\nadditional detail\n"),
+            Arc::clone(&diagnostic_shared),
         );
         assert!(matches!(
-            stderr_shared.lock().unwrap().stderr_state,
-            ReaderState::Failed(ref message) if message.contains("permission denied")
+            diagnostic_shared.lock().unwrap().output_state,
+            ReaderState::Failed(ref message)
+                if message.contains("permission denied") && message.contains("additional detail")
         ));
     }
 
@@ -1326,13 +1415,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn map_capacity_warning_fails_before_a_completed_interval_is_consumed() {
+    fn delayed_capacity_diagnostic_cannot_overtake_interval_quarantine() {
         let mut monitor = capacity_warning_monitor().expect("capacity fixture child spawns");
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let ready_to_assert = monitor.shared.lock().is_ok_and(|shared| {
-                shared.completed.interval_count == 1
-                    && matches!(shared.stderr_state, ReaderState::Failed(_))
+                shared.completed.interval_count == 0
+                    && shared.quarantined.is_some()
+                    && matches!(shared.output_state, ReaderState::Running)
             });
             if ready_to_assert {
                 break;
@@ -1344,17 +1434,37 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
 
+        assert!(matches!(
+            monitor.sample(),
+            NetworkAttributionSample::Held(_)
+        ));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if monitor
+                .shared
+                .lock()
+                .is_ok_and(|shared| matches!(shared.output_state, ReaderState::Failed(_)))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "delayed diagnostic stalled");
+            thread::sleep(Duration::from_millis(5));
+        }
+
         let NetworkAttributionSample::Failed(message) = monitor.sample() else {
             panic!("capacity warnings must outrank a completed interval");
         };
         assert!(message.contains("Map full"));
         assert!(message.contains("map_update_elem"));
-        assert_eq!(monitor.shared.lock().unwrap().completed.interval_count, 1);
+        let shared = monitor.shared.lock().unwrap();
+        assert_eq!(shared.completed.interval_count, 0);
+        assert!(shared.quarantined.is_some());
     }
 
     #[cfg(unix)]
     #[test]
-    fn shutdown_reaps_child_and_joins_both_readers() {
+    fn shutdown_reaps_child_and_joins_unified_reader() {
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
@@ -1364,8 +1474,7 @@ mod tests {
         monitor.shutdown().expect("owned resources stop");
 
         assert!(monitor.child.try_wait().unwrap().is_some());
-        assert!(monitor.stdout_thread.is_none());
-        assert!(monitor.stderr_thread.is_none());
+        assert!(monitor.output_thread.is_none());
         assert!(monitor.stopped);
     }
 
@@ -1391,6 +1500,13 @@ mod tests {
         received: &[(u32, u64)],
         transmitted: &[(u32, u64)],
     ) -> Result<(), String> {
+        if protocol.stage == ProtocolStage::AwaitingHeader {
+            ingest_bpftrace_output_line(
+                &format!("{PROTOCOL_HEADER} {PROTOCOL_VERSION}"),
+                protocol,
+                shared,
+            )?;
+        }
         let received_total = received.iter().map(|(_, bytes)| bytes).sum::<u64>();
         let transmitted_total = transmitted.iter().map(|(_, bytes)| bytes).sum::<u64>();
         let mut lines = vec![format!("{RX_BEGIN} {epoch}")];
@@ -1400,7 +1516,7 @@ mod tests {
                 .map(|(pid, bytes)| format!("{RX_ENTRY} {epoch} {pid} {bytes}")),
         );
         lines.push(format!(
-            "{RX_END} {epoch} {} {received_total} 0",
+            "{RX_END} {epoch} {} {received_total} 0 0",
             received.len()
         ));
         lines.push(format!("{TX_BEGIN} {epoch}"));
@@ -1410,13 +1526,13 @@ mod tests {
                 .map(|(pid, bytes)| format!("{TX_ENTRY} {epoch} {pid} {bytes}")),
         );
         lines.push(format!(
-            "{TX_END} {epoch} {} {transmitted_total} 0",
+            "{TX_END} {epoch} {} {transmitted_total} 0 0",
             transmitted.len()
         ));
         lines.push(format!("{INTERVAL_MARKER} {epoch}"));
 
         for line in lines {
-            ingest_bpftrace_stdout_line(&line, protocol, shared)?;
+            ingest_bpftrace_output_line(&line, protocol, shared)?;
         }
         Ok(())
     }
@@ -1440,7 +1556,7 @@ mod tests {
     fn healthy_interval_monitor() -> Result<LinuxNetworkAttributionMonitor, String> {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(format!(
-            "printf '%s\\n' '{RX_BEGIN} 1' '{RX_END} 1 0 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0 0' '{INTERVAL_MARKER} 1'; exec sleep 60"
+            "printf '%s\\n' '{PROTOCOL_HEADER} {PROTOCOL_VERSION}' '{RX_BEGIN} 1' '{RX_END} 1 0 0 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0 0 0' '{INTERVAL_MARKER} 1' '{RX_BEGIN} 2' '{RX_END} 2 0 0 0 0' '{TX_BEGIN} 2' '{TX_END} 2 0 0 0 0' '{INTERVAL_MARKER} 2'; exec sleep 60"
         ));
         LinuxNetworkAttributionMonitor::spawn(command)
     }
@@ -1449,7 +1565,7 @@ mod tests {
     fn capacity_warning_monitor() -> Result<LinuxNetworkAttributionMonitor, String> {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(format!(
-            "printf '%s\\n' '{RX_BEGIN} 1' '{RX_END} 1 0 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0 0' '{INTERVAL_MARKER} 1'; printf '%s\\n' 'WARNING: Map full; cannot update element' 'Additional Info - helper: map_update_elem, retcode: -7' >&2; exec sleep 60"
+            "printf '%s\\n' '{PROTOCOL_HEADER} {PROTOCOL_VERSION}' '{RX_BEGIN} 1' '{RX_END} 1 0 0 0 0' '{TX_BEGIN} 1' '{TX_END} 1 0 0 0 0' '{INTERVAL_MARKER} 1'; sleep 1; printf '%s\\n' 'WARNING: Map full; cannot update element' 'Additional Info - helper: map_update_elem, retcode: -7' >&2; exec sleep 60"
         ));
         LinuxNetworkAttributionMonitor::spawn(command)
     }

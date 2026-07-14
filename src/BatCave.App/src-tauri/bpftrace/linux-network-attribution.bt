@@ -3,32 +3,57 @@ config = {
   print_maps_on_exit=0
 }
 
+// $1 is the launcher-enforced 8192-key soft limit. The remaining 8192 hard-map
+// slots reserve one concurrent check-to-insert race per configured CPU. A new
+// key that reaches the soft limit is reported in-band; existing keys continue
+// accumulating.
 BEGIN {
   @batcave_epoch = 1;
+  printf("BATCAVE_NETWORK_PROTOCOL 2\n");
 }
 
 kprobe:sock_sendmsg {
   $socket = (struct socket *)arg0;
-  @batcave_tx_family[tid] = $socket->sk->__sk_common.skc_family;
+  $epoch = @batcave_epoch;
+  if (has_key(@batcave_tx_family, tid) || (uint64)len(@batcave_tx_family) < $1) {
+    @batcave_tx_family[tid] = $socket->sk->__sk_common.skc_family;
+  } else {
+    @batcave_tx_overflow[$epoch] = (uint64)1;
+  }
 }
 
 kretprobe:sock_sendmsg {
   $family = @batcave_tx_family[tid];
+  $epoch = @batcave_epoch;
   if ((int64)retval > 0 && ($family == 2 || $family == 10)) {
-    @batcave_tx[pid, @batcave_epoch] = sum((int64)retval);
+    if (has_key(@batcave_tx, (pid, $epoch)) || (uint64)len(@batcave_tx) < $1) {
+      @batcave_tx[pid, $epoch] = sum((int64)retval);
+    } else {
+      @batcave_tx_overflow[$epoch] = (uint64)1;
+    }
   }
   delete(@batcave_tx_family[tid]);
 }
 
 kprobe:sock_recvmsg {
   $socket = (struct socket *)arg0;
-  @batcave_rx_family[tid] = $socket->sk->__sk_common.skc_family;
+  $epoch = @batcave_epoch;
+  if (has_key(@batcave_rx_family, tid) || (uint64)len(@batcave_rx_family) < $1) {
+    @batcave_rx_family[tid] = $socket->sk->__sk_common.skc_family;
+  } else {
+    @batcave_rx_overflow[$epoch] = (uint64)1;
+  }
 }
 
 kretprobe:sock_recvmsg {
   $family = @batcave_rx_family[tid];
+  $epoch = @batcave_epoch;
   if ((int64)retval > 0 && ($family == 2 || $family == 10)) {
-    @batcave_rx[pid, @batcave_epoch] = sum((int64)retval);
+    if (has_key(@batcave_rx, (pid, $epoch)) || (uint64)len(@batcave_rx) < $1) {
+      @batcave_rx[pid, $epoch] = sum((int64)retval);
+    } else {
+      @batcave_rx_overflow[$epoch] = (uint64)1;
+    }
   }
   delete(@batcave_rx_family[tid]);
 }
@@ -61,7 +86,9 @@ interval:s:1 {
         }
       }
     }
-    printf("BATCAVE_NETWORK_RX_END %llu %llu %llu %llu\n", $completed_epoch, $rx_count, $rx_total, $rx_stale);
+    $rx_overflow = (uint64)@batcave_rx_overflow[$completed_epoch];
+    delete(@batcave_rx_overflow, $completed_epoch);
+    printf("BATCAVE_NETWORK_RX_END %llu %llu %llu %llu %llu\n", $completed_epoch, $rx_count, $rx_total, $rx_stale, $rx_overflow);
 
     printf("BATCAVE_NETWORK_TX_BEGIN %llu\n", $completed_epoch);
     $tx_count = (uint64)0;
@@ -80,7 +107,9 @@ interval:s:1 {
         }
       }
     }
-    printf("BATCAVE_NETWORK_TX_END %llu %llu %llu %llu\n", $completed_epoch, $tx_count, $tx_total, $tx_stale);
+    $tx_overflow = (uint64)@batcave_tx_overflow[$completed_epoch];
+    delete(@batcave_tx_overflow, $completed_epoch);
+    printf("BATCAVE_NETWORK_TX_END %llu %llu %llu %llu %llu\n", $completed_epoch, $tx_count, $tx_total, $tx_stale, $tx_overflow);
     printf("BATCAVE_NETWORK_INTERVAL %llu\n", $completed_epoch);
   }
 }
