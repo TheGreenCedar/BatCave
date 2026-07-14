@@ -14,6 +14,10 @@ import {
   validateReleaseEvidencePacket,
   validateSanitizedReleaseEvidenceValue,
 } from "./validate-release-evidence-packet.mjs";
+import {
+  createClosedLinuxAdapterSourceDescriptor,
+  requireClosedLinuxAdapterSourceDescriptor,
+} from "./linux-native-install-smoke-adapter.mjs";
 
 export const NATIVE_INSTALL_SMOKE_DISPOSITIONS = Object.freeze([
   "skipped",
@@ -100,7 +104,7 @@ function prerequisiteSteps(plan) {
     );
 }
 
-function unavailableSteps(plan, capabilityFailed) {
+function unavailableSteps(plan, capabilityFailed, linuxSourceRegistered = false) {
   const steps = prerequisiteSteps(plan);
   for (const step of plan.steps.slice(2)) {
     if (capabilityFailed && step.id === "preflight.asset_rehash") {
@@ -112,7 +116,9 @@ function unavailableSteps(plan, capabilityFailed) {
         fixedStep(
           step,
           "unsupported",
-          "No reviewed native platform adapter is registered in this source slice.",
+          linuxSourceRegistered
+            ? "The closed Linux source adapter is registered, but exact package execution is unavailable."
+            : "No reviewed native platform adapter is registered in this source slice.",
         ),
       );
     } else {
@@ -339,7 +345,13 @@ export async function runNativeInstallSmokeSourceSlice(plan, options) {
   try {
     capability = await acquireNativeArtifactCapability(plan, options);
     artifactReceipt = await verifyOwnedNativeArtifactCapability(capability);
-    steps = unavailableSteps(plan, false);
+    let linuxSourceRegistered = false;
+    if (plan.platform.os === "linux") {
+      const descriptor = createClosedLinuxAdapterSourceDescriptor(plan);
+      requireClosedLinuxAdapterSourceDescriptor(descriptor, plan);
+      linuxSourceRegistered = true;
+    }
+    steps = unavailableSteps(plan, false, linuxSourceRegistered);
   } catch (error) {
     steps = unavailableSteps(plan, true);
     if (error instanceof NativeArtifactCapabilityCleanupError) {
