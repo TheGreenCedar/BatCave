@@ -19,7 +19,7 @@ export function verifyReleaseCandidateIdentity({
   mainSha,
   approvedSourceSha,
 }) {
-  const { prerelease } = verifyReleaseVersion(tag, {});
+  const { prerelease } = verifyReleaseVersion(tag);
   requireCommitSha("source SHA", sourceSha);
   requireCommitSha("origin/main SHA", mainSha);
   requireCommitSha("approved source SHA", approvedSourceSha);
@@ -85,7 +85,7 @@ export function stageReleaseAssets(inputRoot, outputRoot) {
 }
 
 export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
-  verifyReleaseVersion(tag, {});
+  verifyReleaseVersion(tag);
   requireCommitSha("source SHA", sourceSha);
   if (typeof prerelease !== "boolean") throw new Error("prerelease must be a boolean");
 

@@ -1,21 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const VERSION_PATTERN = /^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
 
-export function verifyReleaseVersion(tag, versions) {
+export function verifyReleaseVersion(tag, cargoVersion) {
   const match = VERSION_PATTERN.exec(tag);
   if (!match) throw new Error(`release tag must be v<semver>; received ${tag}`);
   const expected = match[1];
-  const mismatches = Object.entries(versions).filter(([, version]) => version !== expected);
-  if (mismatches.length > 0) {
-    throw new Error(
-      [
-        `release tag ${tag} expects version ${expected}`,
-        ...mismatches.map(([file, version]) => `${file}: ${version}`),
-      ].join("\n"),
-    );
+  if (cargoVersion !== undefined && cargoVersion !== expected) {
+    throw new Error(`release tag ${tag} expects version ${expected}\nCargo.toml: ${cargoVersion}`);
   }
   return { version: expected, prerelease: expected.includes("-") };
 }
@@ -26,30 +20,26 @@ function tomlPackageVersion(contents, file) {
   return match[1];
 }
 
-export function readWorkspaceVersions(repoRoot) {
+export function readCargoVersion(repoRoot) {
   const appRoot = path.join(repoRoot, "src", "BatCave.App");
-  const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
-  const packageJson = readJson(path.join(appRoot, "package.json"));
-  const packageLock = readJson(path.join(appRoot, "package-lock.json"));
-  const tauriConfig = readJson(path.join(appRoot, "src-tauri", "tauri.conf.json"));
   const cargoFile = path.join(appRoot, "src-tauri", "Cargo.toml");
-  return {
-    "package.json": packageJson.version,
-    "package-lock.json": packageLock.version,
-    "package-lock.json workspace": packageLock.packages?.[""]?.version,
-    "Cargo.toml": tomlPackageVersion(fs.readFileSync(cargoFile, "utf8"), cargoFile),
-    "tauri.conf.json": tauriConfig.version,
-  };
+  return tomlPackageVersion(fs.readFileSync(cargoFile, "utf8"), cargoFile);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const tag = process.argv[2];
   if (!tag) {
-    console.error("usage: node scripts/verify-release-version.mjs <vX.Y.Z[-prerelease]>");
+    console.error("usage: node scripts/verify-release-version.mjs <vX.Y.Z[-prerelease]|--print>");
     process.exit(2);
   }
   try {
-    const result = verifyReleaseVersion(tag, readWorkspaceVersions(process.cwd()));
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const cargoVersion = readCargoVersion(repoRoot);
+    if (tag === "--print") {
+      console.log(cargoVersion);
+      process.exit(0);
+    }
+    const result = verifyReleaseVersion(tag, cargoVersion);
     console.log(
       `release version aligned: ${result.version} (${result.prerelease ? "prerelease" : "stable"})`,
     );

@@ -80,7 +80,7 @@ export function buildPublicDownloadPlan(candidate, release) {
   if (typeof candidate.tag !== "string" || candidate.tag.length === 0) {
     throw new Error("release candidate tag is missing");
   }
-  verifyReleaseVersion(candidate.tag, {});
+  verifyReleaseVersion(candidate.tag);
   if (!COMMIT_SHA.test(candidate.source_sha)) {
     throw new Error(
       "release candidate source SHA must be an exact lowercase 40-character commit SHA",
@@ -305,7 +305,7 @@ export function verifyChecksumManifest(candidate, directory) {
 }
 
 export function releaseVerificationArguments(tag) {
-  verifyReleaseVersion(tag, {});
+  verifyReleaseVersion(tag);
   return ["release", "verify", tag, "--repo", RELEASE_REPOSITORY, "--format", "json"];
 }
 

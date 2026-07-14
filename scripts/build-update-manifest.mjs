@@ -14,7 +14,7 @@ export function buildUpdateManifest(tag, repository, artifacts) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) {
     throw new Error(`invalid GitHub repository: ${repository}`);
   }
-  const { version } = verifyReleaseVersion(tag, {});
+  const { version } = verifyReleaseVersion(tag);
   const names = Object.keys(artifacts);
   const platforms = Object.fromEntries(
     TARGETS.map(([target, suffix]) => {
