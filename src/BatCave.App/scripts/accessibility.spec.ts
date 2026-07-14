@@ -235,7 +235,9 @@ test("live refresh holds the focused workload order until keyboard confirmation"
   const initialContent = await workloadRow.textContent();
   await workloadControl.focus();
 
-  await page.getByRole("button", { name: "Refresh" }).evaluate((button) => button.click());
+  await page
+    .getByRole("button", { name: "Refresh" })
+    .evaluate((button) => (button as HTMLButtonElement).click());
 
   const updateOrder = page.getByRole("button", { name: "Update workload order" });
   await expect(updateOrder).toBeVisible();
@@ -257,7 +259,9 @@ test("live refresh holds the focused workload order until keyboard confirmation"
   await expect(updateOrder).toBeFocused();
   const firstRefreshContent = await workloadRow.textContent();
 
-  await page.getByRole("button", { name: "Refresh" }).evaluate((button) => button.click());
+  await page
+    .getByRole("button", { name: "Refresh" })
+    .evaluate((button) => (button as HTMLButtonElement).click());
 
   await expect(updateOrder).toBeVisible();
   await expect(updateOrder).toBeFocused();
