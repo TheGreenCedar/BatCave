@@ -4,12 +4,6 @@
     "beforeBuildCommand": null
   },
   "bundle": {
-    "targets": ["app", "dmg"],
-    "icon": ["icons/icon.icns"],
-    "createUpdaterArtifacts": true,
-    "macOS": {
-      "minimumSystemVersion": "12.0",
-      "hardenedRuntime": true
-    }
+    "createUpdaterArtifacts": true
   }
 }
