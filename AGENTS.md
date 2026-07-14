@@ -14,7 +14,7 @@
 - `bash scripts/validate-tauri.sh`: Linux/macOS validation equivalent for frontend build/type/lint/format checks, Rust fmt/check/test, and the Tauri bundle; Darwin builds the universal target by default.
 - `cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml`: run Rust runtime, contract, collector, helper, and benchmark tests.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark.ps1 -BenchmarkHost core -Platform x64 -Ticks 120 -SleepMs 1000`: run benchmark gates through the Rust runtime host.
-- `bash scripts/run-benchmark.sh --benchmark-host core --ticks 120 --sleep-ms 1000`: Linux/macOS benchmark gate.
+- `bash scripts/run-benchmark.sh --benchmark-host core --ticks 120 --sleep-ms 1000`: Linux/macOS benchmark run; use `scripts/run-benchmark-gate.sh` when budget regressions must fail the command.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-baseline.ps1 -BenchmarkHost core -Platform x64`: capture baseline summaries and artifacts under `artifacts/benchmarks`.
 
 ## Coding Style & Naming Conventions
