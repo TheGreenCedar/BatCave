@@ -156,8 +156,8 @@ The [current-user state ownership and retention contract](docs/current-user-stat
 
 - Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
 - The Windows app starts with the invoking user's token. Privileged mode launches the existing local helper out of process through a Windows elevation request; cancellation or denial leaves standard monitoring running. The runtime and UI keep parent token truth separate from the helper's collection state and source. A copied release executable is reported as portable, development builds as development, and an NSIS install only when the executable directory matches Tauri's uninstall-registry location. Failed executable or registry probes are reported as unavailable instead of portable. The UI reports the Windows token state as unavailable when it cannot be read.
-- Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses `bpftrace`/eBPF when the host has the needed permissions or capabilities. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
-- macOS telemetry uses sysinfo plus local libproc data for process details. Per-process network attribution and privileged helper mode are intentionally unavailable in this release; the cockpit labels those gaps instead of reporting zero traffic.
+- Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses owned `bpftrace`/eBPF probes when the host has the needed permissions or capabilities. It counts IPv4/IPv6 sockets only, excludes Unix-domain traffic, and marks a failed or missing collector unavailable rather than reporting zero. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
+- macOS telemetry uses sysinfo plus local libproc process details and deduplicated IOKit physical block-driver counters. Disk images are excluded from host disk, host network includes loopback, and per-process network attribution and privileged helper mode are intentionally unavailable.
 - Browser fixture mode is for UI work. It is deterministic on purpose and is not proof of native collector behavior.
 
 ## Benchmarks
@@ -184,7 +184,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -
 
 Linux and macOS equivalents are available at `scripts/run-benchmark.sh`, `scripts/capture-benchmark-baseline.sh`, and `scripts/run-benchmark-gate.sh`; the shared scripts detect the host and normalize Apple `arm64` to the public `aarch64` contract.
 
-The release benchmark measures the core runtime host's `RuntimeState::refresh_now` path plus snapshot JSON serialization in an isolated temporary data directory. Output carries `evidence_scope: core_runtime_host_only`; it is not whole-app or process-tree evidence. Protocol v3 derives platform and architecture from the executing binary, requires samples to advance, and gates strict runs on latency, speed ratio, app CPU, and RSS. Baseline artifacts include the commit, release-binary hash, machine class, workload, and every repeat.
+Benchmark artifact format v4 measures the owned sampling engine's `refresh_now` command and protocol-v3 encoding/JSON serialization as separate phases in an isolated temporary data directory. Collection includes transform, sorting, and persistence; publication covers the immutable snapshot build and swap. It reports median collection, publication, serialization, and live-command p95 values; latency ceilings and baseline speed ratios gate `median_live_command_p95_ms`. Output carries `evidence_scope: core_runtime_host_only` and `whole_app_measured: false`, so it is not whole-app or process-tree evidence. The CLI flag remains `-SleepMs`/`--sleep-ms`, while the schema records it as `inter_command_delay_ms`. Samples must advance exactly once per measured command. Baseline artifacts include the commit, release-binary hash, machine class, workload, every repeat, and the component medians.
 
 The complete-remediation release comparison is preserved in [docs/evidence/benchmarks/remediation-20260710.json](docs/evidence/benchmarks/remediation-20260710.json), including source hashes, commit provenance, protocol settings, all repeats, and the strict gate result.
 
@@ -196,6 +196,7 @@ Pull requests and `codex/**` pushes run Windows, Linux, and dual-architecture ma
 
 - [App runbook](src/BatCave.App/README.md) covers native/browser run modes, app scripts, and platform troubleshooting.
 - [Runtime telemetry](docs/runtime-telemetry.md) covers the Rust runtime store, native collectors, quality states, admin helper behavior, and benchmark surfaces.
+- [Platform capabilities](docs/platform-capabilities.md) is the canonical telemetry, scope, privilege, package, and CPU-architecture matrix.
 - [Release channels and verification](docs/releases.md) covers version alignment, stable/prerelease policy, checksums, provenance, and publication.
 
 ## Contributing

@@ -33,9 +33,10 @@ mod windows_process;
 #[cfg(any(windows, test))]
 mod windows_system;
 
-use contracts::{ProcessFocusMode, RuntimeQuery, SortColumn, SortDirection};
+use contracts::{ProcessFocusMode, RuntimeQuery, RuntimeUiPreferences, SortColumn, SortDirection};
 use protocol::{
-    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, SortColumnV3, SortDirectionV3,
+    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, RuntimeUiPreferencesV3,
+    SortColumnV3, SortDirectionV3,
 };
 use runtime_store::RuntimeState;
 use std::collections::HashMap;
@@ -50,27 +51,27 @@ fn run_cli(args: &[String]) -> Option<i32> {
     elevation::run_cli(args).or_else(|| benchmark::run_cli(args))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_snapshot(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.snapshot()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn refresh_now(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.refresh_now()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pause_runtime(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.pause()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn resume_runtime(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.resume()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_process_query(
     state: tauri::State<'_, RuntimeState>,
     query: RuntimeQueryInputV3,
@@ -106,7 +107,7 @@ fn runtime_query(query: RuntimeQueryInputV3) -> Result<RuntimeQuery, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_sample_interval(
     state: tauri::State<'_, RuntimeState>,
     sample_interval_ms: u32,
@@ -114,7 +115,7 @@ fn set_sample_interval(
     protocol::encode_snapshot(state.set_sample_interval(sample_interval_ms)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_admin_mode(
     state: tauri::State<'_, RuntimeState>,
     enabled: bool,
@@ -122,7 +123,34 @@ fn set_admin_mode(
     protocol::encode_snapshot(state.set_admin_mode(enabled)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
+fn set_ui_preferences(
+    state: tauri::State<'_, RuntimeState>,
+    preferences: RuntimeUiPreferencesV3,
+) -> Result<ProtocolEnvelope, String> {
+    let preferences = runtime_ui_preferences(preferences)?;
+    protocol::encode_snapshot(state.set_ui_preferences(preferences)?)
+}
+
+fn runtime_ui_preferences(
+    preferences: RuntimeUiPreferencesV3,
+) -> Result<RuntimeUiPreferences, String> {
+    if !matches!(
+        preferences.theme.as_str(),
+        "system" | "cave" | "aurora" | "ember" | "daylight"
+    ) {
+        return Err("runtime_ui_theme_invalid".to_string());
+    }
+    if !matches!(preferences.history_point_limit, 30 | 72 | 180 | 360) {
+        return Err("runtime_history_point_limit_invalid".to_string());
+    }
+    Ok(RuntimeUiPreferences {
+        theme: preferences.theme,
+        history_point_limit: preferences.history_point_limit,
+    })
+}
+
+#[tauri::command(async)]
 fn get_process_icons(
     state: tauri::State<'_, RuntimeState>,
     exes: Vec<String>,
@@ -155,8 +183,8 @@ fn validate_process_icon_request(
     Ok(())
 }
 
-pub fn run() {
-    tauri::Builder::default()
+pub fn run() -> Result<(), String> {
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -165,9 +193,11 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let state = RuntimeState::new();
+            let state = RuntimeState::new().map_err(std::io::Error::other)?;
             state.start();
-            app.manage(state);
+            if !app.manage(state) {
+                return Err(std::io::Error::other("runtime_state_already_managed").into());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -178,10 +208,19 @@ pub fn run() {
             set_process_query,
             set_sample_interval,
             set_admin_mode,
+            set_ui_preferences,
             get_process_icons
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running BatCave Monitor");
+        .build(tauri::generate_context!())
+        .map_err(|error| format!("desktop_runtime_build_failed:{error}"))?;
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Err(error) = app_handle.state::<RuntimeState>().shutdown() {
+                eprintln!("runtime_shutdown_failed:{error}");
+            }
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -224,6 +263,11 @@ mod tests {
             Some(2),
             "a malformed helper invocation must be handled as helper CLI"
         );
+        assert_eq!(
+            run_cli(&["--elevated-helper-launcher".to_string()]),
+            Some(2),
+            "a malformed launcher invocation must be handled as helper CLI"
+        );
         assert_eq!(run_cli(&[]), None);
     }
 
@@ -244,5 +288,31 @@ mod tests {
         assert!(matches!(query.sort_column, SortColumn::NetworkBps));
         assert!(matches!(query.sort_direction, SortDirection::Asc));
         assert_eq!(query.limit, 25);
+    }
+
+    #[test]
+    fn ui_preferences_validate_at_the_command_boundary() {
+        let preferences = runtime_ui_preferences(RuntimeUiPreferencesV3 {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        })
+        .expect("supported preferences convert");
+        assert_eq!(preferences.theme, "ember");
+        assert_eq!(preferences.history_point_limit, 180);
+
+        assert_eq!(
+            runtime_ui_preferences(RuntimeUiPreferencesV3 {
+                theme: "remote-theme".to_string(),
+                history_point_limit: 180,
+            }),
+            Err("runtime_ui_theme_invalid".to_string())
+        );
+        assert_eq!(
+            runtime_ui_preferences(RuntimeUiPreferencesV3 {
+                theme: "cave".to_string(),
+                history_point_limit: 10_000,
+            }),
+            Err("runtime_history_point_limit_invalid".to_string())
+        );
     }
 }

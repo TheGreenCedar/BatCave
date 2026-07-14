@@ -9,6 +9,7 @@ export interface RuntimeSnapshot {
   admin_mode: RuntimeAdminModeStatus;
   settings: RuntimeSettings;
   health: RuntimeHealth;
+  persistence: RuntimePersistence | null;
   system: SystemMetricsSnapshot;
   process_contributors: ProcessContributorSummary;
   processes: ProcessSample[];
@@ -354,6 +355,54 @@ export interface RuntimeSettings {
   metric_window_seconds: number;
   sample_interval_ms: number;
   paused: boolean;
+  ui_preferences: RuntimeUiPreferences | null;
+}
+
+export interface RuntimeUiPreferences {
+  theme: string;
+  history_point_limit: number;
+}
+
+export interface RuntimePersistence {
+  state: "healthy" | "degraded" | "unavailable";
+  roots: RuntimePersistenceRoot[];
+  components: RuntimePersistenceComponent[];
+  suppressed_diagnostic_events: number;
+}
+
+export interface RuntimePersistenceRoot {
+  owner: "current_user" | "collector_service";
+  directory: string | null;
+  permission_state: "verified" | "invalid" | "unavailable";
+}
+
+export interface RuntimePersistenceComponent {
+  owner: "current_user" | "collector_service";
+  kind: "settings" | "warm_cache" | "diagnostics" | "service_state";
+  state: "healthy" | "degraded" | "unavailable";
+  durability: "durable" | "not_written" | "session_only" | "not_applicable";
+  last_success_at_ms: number | null;
+  active_failure: RuntimePersistenceFailure | null;
+}
+
+export interface RuntimePersistenceFailure {
+  code: string;
+  operation:
+    | "resolve_root"
+    | "create"
+    | "load"
+    | "parse"
+    | "migrate"
+    | "serialize"
+    | "write"
+    | "sync"
+    | "replace"
+    | "rotate"
+    | "remove"
+    | "permissions";
+  occurred_at_ms: number;
+  retryable: boolean;
+  summary: string;
 }
 
 export interface RuntimeWarning {
