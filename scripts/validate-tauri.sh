@@ -134,7 +134,9 @@ if [[ "$skip_bundle" -eq 0 ]]; then
     npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json --no-bundle
     bash "$repo_root/scripts/build-macos-universal-cli.sh" --lipo-only
     npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json
+    bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc
   else
     npm run "$tauri_build_script"
+    bash "$repo_root/scripts/verify-linux-bundle.sh"
   fi
 fi

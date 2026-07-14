@@ -6,7 +6,6 @@ on:
       tag:
         description: Version tag matching the app version
         required: true
-        default: v0.2.0-rc.2
       source_sha:
         description: Exact 40-character commit SHA approved for release from the tip of main
         required: true
@@ -101,7 +100,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs
 
   windows:
     name: Build Windows release
@@ -150,7 +149,6 @@ jobs:
       - name: Bundle signed Windows updater
         working-directory: src/BatCave.App
         env:
-          BATCAVE_INSTALLED_RELEASE: "1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
@@ -174,7 +172,7 @@ jobs:
   linux:
     name: Build Linux release
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment: release
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -219,6 +217,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
+
+      - name: Verify Linux package version
+        run: bash scripts/verify-linux-bundle.sh
 
       - name: Collect Linux distributables
         run: |
@@ -434,6 +435,9 @@ jobs:
           mv "${checksums}" SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
 
+      - name: Verify pre-attestation release inventory
+        run: node scripts/verify-release-candidate.mjs verify-inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.prerelease }}" pre-attestation dist
+
       - name: Generate build provenance
         id: attest
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
@@ -442,6 +446,9 @@ jobs:
 
       - name: Retain provenance with release files
         run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/BatCave-${{ needs.prepare.outputs.tag }}-provenance.json"
+
+      - name: Verify complete release inventory
+        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -527,3 +534,14 @@ jobs:
             exit 1
           fi
           node scripts/verify-release-candidate.mjs verify-latest "${candidate}" "${latest_readback}"
+
+      - name: Verify anonymous public release bytes and attestations
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          candidate="${RUNNER_TEMP}/release-candidate.json"
+          readback="${RUNNER_TEMP}/release-published-readback.json"
+          public_downloads="${RUNNER_TEMP}/release-public-downloads"
+          node scripts/verify-public-release.mjs "${candidate}" "${readback}" "${public_downloads}"

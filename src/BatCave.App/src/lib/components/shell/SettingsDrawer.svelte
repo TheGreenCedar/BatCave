@@ -210,7 +210,7 @@
             </button>
           </div>
           <p class="setting-note">
-            Checks contact github.com. Prereleases and downgrades are never installed automatically; invalid signatures are rejected.
+            Checks contact github.com. Prereleases and downgrades are not offered; downloaded updates must pass payload-signature verification.
           </p>
         </section>
 

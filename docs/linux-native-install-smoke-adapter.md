@@ -1,0 +1,45 @@
+# Linux native install-smoke adapter source boundary
+
+Issue #116 adds the source-only boundary for the Linux deb and AppImage adapters. It registers the two built-in profiles with the native executor and proves the Linux process-group settlement contract. It does not execute package bytes, install a deb, stage or launch an AppImage, or emit native release evidence.
+
+## Closed profiles
+
+`scripts/linux-native-install-smoke-adapter.mjs` accepts only an already validated contract-only plan. The package identity must be exactly `linux:deb` or `linux:appimage`, and the plan's operation, install kind, trust basis, limitations, and 13 ordered gates must match the existing install-smoke platform contract.
+
+The returned descriptor is process-local. A clone or reconstruction is not a registered adapter. The descriptor contains no command, environment, host path, callback, caller status, observation, native receipt, or evidence packet. The native executor creates and validates this descriptor itself; its public options remain limited to `verified_root`.
+
+| Profile | Source contract | Trust boundary retained | Execution in this slice |
+| --- | --- | --- | --- |
+| Linux deb | install/remove gates remain mandatory | public checksum and source-bound attestation; `deb_checksum_attestation_only` remains required | none |
+| Linux AppImage | stage/remove gates remain mandatory | Tauri updater trust remains required | none |
+
+Registering the source descriptor changes only the explanation attached to the existing `unsupported` package-trust gate. The source result remains `skipped`, `native_execution_receipt` remains `null`, and `evidence_packet` remains `null`.
+
+## Process settlement contract
+
+The module contains one private Linux process supervisor. There is no exported generic spawn function. Its source test runs only fixed internal probes through the current absolute Node executable with tokenized arguments, `shell: false`, a minimal fixed environment, a private mode-700 temporary root, and a 4 KiB combined-output limit.
+
+The probes cover:
+
+- ordinary child exit;
+- a stubborn descendant that survives its parent exit until the owned process group is terminated;
+- a stubborn process tree that requires escalation from `SIGTERM` to `SIGKILL`; and
+- output-limit termination.
+
+A timeout or output limit is incomplete until both the direct child and its entire process group settle. Normal parent exit also waits for the group and terminates surviving descendants. Every wait is bounded. If hard-stop settlement cannot be confirmed, the result is `failed` with `cleanup: retained_unsettled`; the supervisor does not remove the private root while an owned group may still use it. A filesystem cleanup error is a distinct `cleanup: failed` result.
+
+The settlement result is process-local and always records `package_bytes_executed: false`, `native_execution_receipt: null`, and `evidence_packet: null`. Probe output and host paths are never returned.
+
+Run the focused contract with:
+
+```sh
+node --test scripts/linux-native-install-smoke-adapter.test.mjs
+```
+
+On non-Linux hosts the fixed process probes return `unsupported` without spawning or mutating anything; descriptor and forgery tests still run.
+
+## Remaining work in #115
+
+Parent issue #115 remains open. A later exact-public-artifact lane must extend the opaque #111 capability without exposing a generic callback or replaceable path, make the fixed deb installer or AppImage stager consume those exact owned bytes, and complete package trust, launch, release identity, settings restart, degradation, telemetry, removal, process cleanup, and user-state gates.
+
+Only that reviewed native path may create the internal native execution receipt and derive a sanitized #98 `release_evidence` packet. Source tests, fixed settlement probes, hosted validation, and local package fixtures are not Linux release proof.

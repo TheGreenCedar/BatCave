@@ -64,6 +64,7 @@ const releaseManifest = readFileSync(
   new URL("../src-tauri/release.manifest.xml", import.meta.url),
   "utf8",
 );
+const tauriBuildScript = readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8");
 
 function process(overrides: Partial<ProcessSample> = {}): ProcessSample {
   return {
@@ -306,6 +307,15 @@ test("provenance fixtures keep package and privilege copy deterministic", () => 
 test("shipped Windows release starts as the invoking user", () => {
   assert.match(releaseManifest, /requestedExecutionLevel level="asInvoker"/);
   assert.doesNotMatch(releaseManifest, /requireAdministrator/);
+});
+
+test("Windows binaries and test executables embed the Common-Controls manifest", () => {
+  assert.match(releaseManifest, /name="Microsoft\.Windows\.Common-Controls"/);
+  assert.match(releaseManifest, /version="6\.0\.0\.0"/);
+  assert.match(tauriBuildScript, /WindowsAttributes::new_without_app_manifest\(\)/);
+  assert.match(tauriBuildScript, /\.join\("release\.manifest\.xml"\)/);
+  assert.match(tauriBuildScript, /cargo:rustc-link-arg=\/MANIFEST:EMBED/);
+  assert.match(tauriBuildScript, /cargo:rustc-link-arg=\/MANIFESTINPUT:/);
 });
 
 test("requesting elevation waits for the Windows decision", () => {

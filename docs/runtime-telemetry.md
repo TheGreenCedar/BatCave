@@ -149,6 +149,8 @@ Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
 
 The runtime publishes the resolved path through `environment.data_directory`. The typed `environment.install_kind` is derived from running-package evidence:
 
+The [current-user state ownership and retention contract](current-user-state.md) defines the files below this path, their permissions, failure behavior, retention limits, and manual-cleanup boundary.
+
 - Windows reports `nsis` only when the current executable directory matches Tauri's `BatCave Monitor` uninstall-registry location; unmatched release executables are `portable`, and debug binaries running from a development output directory are `development`. If the executable path or required registry evidence cannot be read, the package state is `unknown` rather than fabricated as portable.
 - Linux reports `appimage` from the AppImage runtime environment, `deb` when the local Debian package database owns the executable, `development` for a debug binary in a development output directory, and `portable` otherwise.
 - macOS reports `development` for a debug binary in a development output directory, `app_bundle` for a running `.app`, and `portable` for a standalone binary. A copied app does not claim `dmg` because its original download container is no longer observable at runtime.

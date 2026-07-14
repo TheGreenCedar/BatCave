@@ -1,6 +1,5 @@
 {
   "name": "batcave-monitor",
-  "version": "0.2.0-rc.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,18 +17,16 @@
     "test:accessibility": "playwright test --config playwright.config.ts",
     "test:runtime-protocol": "node --test scripts/runtime-protocol.test.ts",
     "test:protocol-payload": "node --test scripts/protocol-payload-guardrail.test.ts",
+    "test:update-lifecycle": "node --test scripts/update-lifecycle.test.ts",
     "benchmark:protocol-payload": "node scripts/protocol-payload-guardrail.ts",
     "verify": "npm run check && npm run format:check",
-    "check": "npm run test:process-order && npm run test:presentation && npm run test:runtime-contract && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
+    "check": "npm run test:process-order && npm run test:presentation && npm run test:runtime-contract && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:update-lifecycle && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
     "tauri:dev:windows": "tauri dev --config src-tauri/tauri.windows.conf.json",
     "tauri:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
     "tauri:dev:linux": "tauri dev --config src-tauri/tauri.linux.conf.json",
     "tauri:build:linux": "tauri build --config src-tauri/tauri.linux.conf.json",
     "tauri:dev:macos": "tauri dev --config src-tauri/tauri.macos.conf.json",
-    "tauri:build:macos": "tauri build --config src-tauri/tauri.macos.conf.json",
     "tauri:build:macos:universal": "tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json"
   },
   "dependencies": {
@@ -48,7 +45,6 @@
     "oxlint": "1.61.0",
     "svelte": "5.56.4",
     "svelte-check": "4.4.6",
-    "tslib": "2.8.1",
     "typescript": "6.0.3",
     "vite": "8.1.0"
   }

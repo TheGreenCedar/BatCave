@@ -102,19 +102,17 @@ Linux or macOS:
 bash scripts/validate-tauri.sh
 ```
 
-Fast recovery loops after a successful full build:
+Fast validation loops after a successful full build:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1 -NoBuild
 ```
 
 ```bash
 bash scripts/validate-tauri.sh --skip-bundle
-bash scripts/run-dev.sh --no-build
 ```
 
-Use `-SkipBundle`/`--skip-bundle` and `-NoBuild`/`--no-build` only after a successful full build and only when the edit does not affect packaging or generated assets.
+Use `-SkipBundle`/`--skip-bundle` only after a successful full build and only when the edit does not affect packaging or generated assets. The development launchers start the existing Vite or Tauri development path directly; production frontend builds remain part of verification and packaging.
 
 The validation scripts run frontend checks, Rust formatting, Rust check, Rust tests, and the Tauri bundle unless explicitly skipped.
 
@@ -152,6 +150,8 @@ Local state stays under:
 - macOS: `~/Library/Application Support/BatCaveMonitor`
 
 The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
+
+See [Current-user state ownership and retention](../../docs/current-user-state.md) for the owned files, permission checks, diagnostic limits, and safe cleanup boundary.
 
 ## Triage UI Contract
 

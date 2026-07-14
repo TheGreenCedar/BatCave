@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { buildUpdateManifest } from "./build-update-manifest.mjs";
 
 const artifacts = {
@@ -10,6 +15,12 @@ const artifacts = {
   "BatCave.Monitor.app.tar.gz": "",
   "BatCave.Monitor.app.tar.gz.sig": "macos-signature\n",
 };
+
+function artifactsForVersion(version) {
+  return Object.fromEntries(
+    Object.entries(artifacts).map(([name, contents]) => [name.replace("0.3.0", version), contents]),
+  );
+}
 
 test("builds stable signed update entries for Windows, Linux, and universal macOS", () => {
   assert.deepEqual(buildUpdateManifest("v0.3.0", "TheGreenCedar/BatCave", artifacts), {
@@ -37,7 +48,13 @@ test("builds stable signed update entries for Windows, Linux, and universal macO
 });
 
 test("keeps prerelease versions explicit", () => {
-  assert.equal(buildUpdateManifest("v0.3.0-rc.1", "owner/repo", artifacts).version, "0.3.0-rc.1");
+  const manifest = buildUpdateManifest(
+    "v0.3.0-rc.1",
+    "owner/repo",
+    artifactsForVersion("0.3.0-rc.1"),
+  );
+  assert.equal(manifest.version, "0.3.0-rc.1");
+  assert.match(manifest.platforms["windows-x86_64"].url, /0\.3\.0-rc\.1_x64-setup/);
 });
 
 test("rejects missing signatures", () => {
@@ -59,7 +76,14 @@ test("requires exactly one universal macOS updater archive", () => {
         "another.app.tar.gz": "",
         "another.app.tar.gz.sig": "other-signature",
       }),
-    /darwin-aarch64 requires exactly one \.app\.tar\.gz asset/,
+    /macOS universal updater payload requires exactly one asset; found 2/,
+  );
+});
+
+test("binds updater payload and signature names to the exact tag version", () => {
+  assert.throws(
+    () => buildUpdateManifest("v0.3.0", "owner/repo", artifactsForVersion("9.9.9")),
+    /must be named BatCave\.Monitor_0\.3\.0_x64-setup\.exe/,
   );
 });
 
@@ -68,4 +92,26 @@ test("rejects invalid repository names", () => {
     () => buildUpdateManifest("v0.3.0", "not-a-repository", artifacts),
     /invalid GitHub repository/,
   );
+});
+
+test("executable manifest generation binds the tag to Cargo before writing", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-update-version-"));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./build-update-manifest.mjs", import.meta.url)),
+        "v9.9.9",
+        "owner/repo",
+        root,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /release tag v9\.9\.9 expects version 9\.9\.9/u);
+    assert.match(result.stderr, /Cargo\.toml:/u);
+    assert.equal(fs.existsSync(path.join(root, "latest.json")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
