@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "index_kind": "schema_fixture",
+  "index_id": "release-evidence-index-schema-fixture",
+  "release": {
+    "repository": "TheGreenCedar/BatCave",
+    "tag": "v0.0.0-evidence.1",
+    "channel": "prerelease",
+    "source_sha": "1111111111111111111111111111111111111111",
+    "main_sha": "1111111111111111111111111111111111111111",
+    "release_target_sha": "1111111111111111111111111111111111111111",
+    "release_url": "https://github.com/TheGreenCedar/BatCave/releases/tag/v0.0.0-evidence.1",
+    "workflow_run": {
+      "workflow_file": ".github/workflows/release.yml",
+      "run_id": 900000001,
+      "run_attempt": 1,
+      "url": "https://github.com/TheGreenCedar/BatCave/actions/runs/900000001/attempts/1"
+    }
+  },
+  "support_contract_version": 1,
+  "packet_references": [
+    {
+      "packet_id": "linux-appimage-schema-fixture",
+      "path": "docs/evidence/releases/fixtures/v1/linux-appimage.json",
+      "packet_sha256": "sha256:503c2fdf9db66f03c9758eb26ab92b1c36c94f8d92d8198153800f88e3abb60f",
+      "profile_id": "ubuntu-22.04-x86_64-glibc",
+      "package_role": "Linux AppImage package and updater payload",
+      "public_asset": {
+        "name": "BatCave.Monitor_0.0.0-evidence.1_amd64.AppImage",
+        "size_bytes": 1000004,
+        "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "api_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_amd64.AppImage"
+      }
+    },
+    {
+      "packet_id": "linux-deb-schema-fixture",
+      "path": "docs/evidence/releases/fixtures/v1/linux-deb.json",
+      "packet_sha256": "sha256:ef08f1807c3d5514bfce60d67d82552c0b59006e25535a392a5d71613892baec",
+      "profile_id": "debian-12-x86_64-glibc",
+      "package_role": "Linux deb package",
+      "public_asset": {
+        "name": "BatCave.Monitor_0.0.0-evidence.1_amd64.deb",
+        "size_bytes": 1000002,
+        "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "api_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_amd64.deb"
+      }
+    },
+    {
+      "packet_id": "macos-dmg-schema-fixture",
+      "path": "docs/evidence/releases/fixtures/v1/macos-dmg.json",
+      "packet_sha256": "sha256:8c782ec8bc7eecc7e2a3435eefa4e4c94ba2ae16287198412dfd96fc0289df55",
+      "profile_id": "macos-12-universal",
+      "package_role": "macOS universal DMG",
+      "public_asset": {
+        "name": "BatCave.Monitor_0.0.0-evidence.1_universal.dmg",
+        "size_bytes": 1000003,
+        "sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "api_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_universal.dmg"
+      }
+    },
+    {
+      "packet_id": "macos-updater-schema-fixture",
+      "path": "docs/evidence/releases/fixtures/v1/macos-updater.json",
+      "packet_sha256": "sha256:dfa58dc6bf37e2a7aa2bd56bb3982c1eaba19828c86418e8d9afb59d3cba86d3",
+      "profile_id": "macos-12-universal",
+      "package_role": "macOS universal updater payload",
+      "public_asset": {
+        "name": "BatCave.Monitor.app.tar.gz",
+        "size_bytes": 1000005,
+        "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "api_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor.app.tar.gz"
+      }
+    },
+    {
+      "packet_id": "windows-nsis-schema-fixture",
+      "path": "docs/evidence/releases/fixtures/v1/windows-nsis.json",
+      "packet_sha256": "sha256:1390fca0a8d409a9bea0632048063a5196e034cbcc97bc54bee022fa40509700",
+      "profile_id": "windows-client-10-x86_64",
+      "package_role": "Windows NSIS installer and updater payload",
+      "public_asset": {
+        "name": "BatCave.Monitor_0.0.0-evidence.1_x64-setup.exe",
+        "size_bytes": 1000001,
+        "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "api_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_x64-setup.exe"
+      }
+    }
+  ],
+  "non_claims": [
+    "independent_review_and_live_publication_required",
+    "synthetic_fixture_no_release_claim"
+  ]
+}

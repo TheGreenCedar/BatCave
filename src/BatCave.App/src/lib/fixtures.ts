@@ -183,6 +183,7 @@ function buildFixtureSnapshot(
       metric_window_seconds: 60,
       sample_interval_ms: 1000,
       paused: false,
+      ui_preferences: null,
     },
     health: {
       engine_state: null,
@@ -206,6 +207,7 @@ function buildFixtureSnapshot(
       last_warning: null,
       fatal_error: null,
     },
+    persistence: null,
     system: {
       cpu_percent: clamp(cpu, 0, 100),
       kernel_cpu_percent: clamp(cpu * 0.18, 0, 100),
