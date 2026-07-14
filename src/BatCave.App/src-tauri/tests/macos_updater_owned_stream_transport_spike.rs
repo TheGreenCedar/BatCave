@@ -7,7 +7,7 @@
 //! a private root, verified, and removed. It does not verify or launch an app,
 //! mint a native receipt, or emit release evidence.
 
-use flate2::{write::GzEncoder, Compression, GzBuilder};
+use flate2::{Compression, GzBuilder};
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Write};
 use tar::{Builder, EntryType, Header};
@@ -96,7 +96,7 @@ mod adapter {
         Cleanup,
     }
 
-    #[derive(Debug, Eq, PartialEq)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(super) struct AdapterError {
         boundary: FailureBoundary,
         code: &'static str,
@@ -113,6 +113,82 @@ mod adapter {
 
         pub(super) fn code(&self) -> &'static str {
             self.code
+        }
+    }
+
+    pub(super) struct StageError {
+        primary: AdapterError,
+        cleanup_failure: Option<AdapterError>,
+        retained_root: Option<PrivateRoot>,
+    }
+
+    impl std::fmt::Debug for StageError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("StageError")
+                .field("primary", &self.primary)
+                .field("cleanup_failure", &self.cleanup_failure)
+                .field("residue_retained", &self.residue_retained())
+                .finish()
+        }
+    }
+
+    impl StageError {
+        fn plain(primary: AdapterError) -> Self {
+            Self {
+                primary,
+                cleanup_failure: None,
+                retained_root: None,
+            }
+        }
+
+        fn retained(
+            primary: AdapterError,
+            cleanup_failure: AdapterError,
+            root: PrivateRoot,
+        ) -> Self {
+            Self {
+                primary,
+                cleanup_failure: Some(cleanup_failure),
+                retained_root: Some(root),
+            }
+        }
+
+        pub(super) fn boundary(&self) -> FailureBoundary {
+            self.cleanup_failure.unwrap_or(self.primary).boundary()
+        }
+
+        pub(super) fn code(&self) -> &'static str {
+            self.cleanup_failure.unwrap_or(self.primary).code()
+        }
+
+        pub(super) fn primary_boundary(&self) -> FailureBoundary {
+            self.primary.boundary()
+        }
+
+        pub(super) fn primary_code(&self) -> &'static str {
+            self.primary.code()
+        }
+
+        pub(super) fn residue_retained(&self) -> bool {
+            self.retained_root.is_some()
+        }
+
+        pub(super) fn retry_cleanup(&mut self) -> Result<(), AdapterError> {
+            let Some(root) = self.retained_root.as_mut() else {
+                return Ok(());
+            };
+            match root.cleanup() {
+                Ok(()) => {
+                    self.retained_root.take();
+                    self.cleanup_failure = None;
+                    Ok(())
+                }
+                Err(error) => {
+                    self.cleanup_failure = Some(error);
+                    Err(error)
+                }
+            }
         }
     }
 
@@ -167,45 +243,45 @@ mod adapter {
         expected_sha256: [u8; 32],
         limits: Limits,
         fail_cleanup_once: bool,
-        fail_stage_cleanup_once: bool,
+        stage_cleanup_failures: usize,
         create_materialization_collision: bool,
         create_verification_collision: bool,
     }
 
     pub(super) fn closed_fixture_plan(archive: &[u8]) -> ClosedPlan {
-        plan_with_options(archive, Limits::production(), false, false, false, false)
+        plan_with_options(archive, Limits::production(), false, 0, false, false)
     }
 
     #[cfg(test)]
     pub(super) fn limited_fixture_plan(archive: &[u8], limits: Limits) -> ClosedPlan {
-        plan_with_options(archive, limits, false, false, false, false)
+        plan_with_options(archive, limits, false, 0, false, false)
     }
 
     #[cfg(test)]
     pub(super) fn cleanup_failure_fixture_plan(archive: &[u8]) -> ClosedPlan {
-        plan_with_options(archive, Limits::production(), true, false, false, false)
+        plan_with_options(archive, Limits::production(), true, 0, false, false)
     }
 
     #[cfg(test)]
     pub(super) fn materialization_collision_fixture_plan(archive: &[u8]) -> ClosedPlan {
-        plan_with_options(archive, Limits::production(), false, false, true, false)
+        plan_with_options(archive, Limits::production(), false, 0, true, false)
     }
 
     #[cfg(test)]
     pub(super) fn materialization_cleanup_failure_fixture_plan(archive: &[u8]) -> ClosedPlan {
-        plan_with_options(archive, Limits::production(), false, true, true, false)
+        plan_with_options(archive, Limits::production(), false, 2, true, false)
     }
 
     #[cfg(test)]
     pub(super) fn verification_cleanup_failure_fixture_plan(archive: &[u8]) -> ClosedPlan {
-        plan_with_options(archive, Limits::production(), false, true, false, true)
+        plan_with_options(archive, Limits::production(), false, 2, false, true)
     }
 
     fn plan_with_options(
         archive: &[u8],
         limits: Limits,
         fail_cleanup_once: bool,
-        fail_stage_cleanup_once: bool,
+        stage_cleanup_failures: usize,
         create_materialization_collision: bool,
         create_verification_collision: bool,
     ) -> ClosedPlan {
@@ -215,7 +291,7 @@ mod adapter {
             expected_sha256: Sha256::digest(archive).into(),
             limits,
             fail_cleanup_once,
-            fail_stage_cleanup_once,
+            stage_cleanup_failures,
             create_materialization_collision,
             create_verification_collision,
         }
@@ -249,20 +325,22 @@ mod adapter {
     }
 
     impl UpdaterStreamAuthority {
-        pub(super) fn stage(&mut self) -> Result<StagedUpdater, AdapterError> {
+        pub(super) fn stage(&mut self) -> Result<StagedUpdater, StageError> {
             if self.phase != AuthorityPhase::Acquired {
-                return Err(AdapterError::new(
+                return Err(StageError::plain(AdapterError::new(
                     FailureBoundary::Authority,
                     "archive_authority_replayed",
-                ));
+                )));
             }
             self.phase = AuthorityPhase::Staged;
             let preflight = preflight(
                 &self.owned_archive,
                 self.plan.expected_app_name,
                 self.plan.limits,
-            )?;
-            let mut root = PrivateRoot::create(self.plan.fail_stage_cleanup_once)?;
+            )
+            .map_err(StageError::plain)?;
+            let mut root =
+                PrivateRoot::create(self.plan.stage_cleanup_failures).map_err(StageError::plain)?;
             let staged = (|| {
                 if self.plan.create_materialization_collision {
                     let collision = root.path().join(self.plan.expected_app_name);
@@ -290,7 +368,10 @@ mod adapter {
                 verify_staged_tree(root.path(), &preflight)
             })();
             if let Err(error) = staged {
-                return Err(root.abort(error));
+                return match root.cleanup() {
+                    Ok(()) => Err(StageError::plain(error)),
+                    Err(cleanup) => Err(StageError::retained(error, cleanup, root)),
+                };
             }
             Ok(StagedUpdater {
                 root: root.take(),
@@ -467,7 +548,7 @@ mod adapter {
                 None
             };
 
-            path_budget.charge(path_payload_bytes(&parts))?;
+            path_budget.charge(retained_path_bytes(&parts, parts.capacity())?)?;
             register_prefixes(&mut canonical, &parts, &kind, limits, &mut path_budget)?;
             records.push(ArchiveRecord {
                 parts,
@@ -479,8 +560,18 @@ mod adapter {
         }
 
         let mut reader = archive.into_inner();
-        io::copy(&mut reader, &mut io::sink())
-            .map_err(|_| preflight_error("archive_stream_invalid"))?;
+        match validate_zero_tar_tail(&mut reader) {
+            Ok(()) => {}
+            Err(TarTailError::Stream) => {
+                return Err(preflight_error("archive_stream_invalid"));
+            }
+            Err(TarTailError::EndMarker) => {
+                return Err(preflight_error("archive_end_marker_invalid"));
+            }
+            Err(TarTailError::NonZero) => {
+                return Err(preflight_error("archive_trailing_tar_data"));
+            }
+        }
         let decoder = reader.into_inner();
         if decoder.get_ref().position() != owned_archive.len() as u64 {
             return Err(preflight_error("archive_trailing_data"));
@@ -558,8 +649,8 @@ mod adapter {
                         return Err(preflight_error("canonical_prefix_budget_exceeded"));
                     }
                     path_budget.charge(
-                        path_payload_bytes(&prefix)
-                            .checked_add(path_payload_bytes(&key))
+                        retained_path_bytes(&prefix, prefix.capacity())?
+                            .checked_add(retained_path_bytes(&key, key.capacity())?)
                             .ok_or_else(|| preflight_error("path_bookkeeping_budget_exceeded"))?,
                     )?;
                     canonical.insert(
@@ -595,8 +686,20 @@ mod adapter {
             .collect()
     }
 
-    fn path_payload_bytes(parts: &[String]) -> usize {
-        parts.iter().map(String::len).sum()
+    fn retained_path_bytes(parts: &[String], vec_capacity: usize) -> Result<usize, AdapterError> {
+        let string_slots = vec_capacity
+            .checked_mul(std::mem::size_of::<String>())
+            .ok_or_else(|| preflight_error("path_bookkeeping_budget_exceeded"))?;
+        parts.iter().try_fold(
+            std::mem::size_of::<Vec<String>>()
+                .checked_add(string_slots)
+                .ok_or_else(|| preflight_error("path_bookkeeping_budget_exceeded"))?,
+            |total, part| {
+                total
+                    .checked_add(part.capacity())
+                    .ok_or_else(|| preflight_error("path_bookkeeping_budget_exceeded"))
+            },
+        )
     }
 
     struct PathBudget {
@@ -696,10 +799,36 @@ mod adapter {
             return Err(materialization_error());
         }
         let mut reader = archive.into_inner();
-        io::copy(&mut reader, &mut io::sink()).map_err(|_| materialization_error())?;
+        validate_zero_tar_tail(&mut reader).map_err(|_| materialization_error())?;
         let decoder = reader.into_inner();
         if decoder.get_ref().position() != owned_archive.len() as u64 {
             return Err(materialization_error());
+        }
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    enum TarTailError {
+        Stream,
+        EndMarker,
+        NonZero,
+    }
+
+    fn validate_zero_tar_tail(reader: &mut impl Read) -> Result<(), TarTailError> {
+        let mut buffer = [0_u8; COPY_CHUNK_BYTES];
+        let mut consumed = 0_usize;
+        loop {
+            let read = reader.read(&mut buffer).map_err(|_| TarTailError::Stream)?;
+            if read == 0 {
+                break;
+            }
+            if buffer[..read].iter().any(|byte| *byte != 0) {
+                return Err(TarTailError::NonZero);
+            }
+            consumed = consumed.checked_add(read).ok_or(TarTailError::EndMarker)?;
+        }
+        if consumed < 512 || !consumed.is_multiple_of(512) {
+            return Err(TarTailError::EndMarker);
         }
         Ok(())
     }
@@ -880,11 +1009,11 @@ mod adapter {
 
     struct PrivateRoot {
         path: Option<PathBuf>,
-        fail_cleanup_once: bool,
+        cleanup_failures_remaining: usize,
     }
 
     impl PrivateRoot {
-        fn create(fail_cleanup_once: bool) -> Result<Self, AdapterError> {
+        fn create(cleanup_failures_remaining: usize) -> Result<Self, AdapterError> {
             for _ in 0..32 {
                 let sequence = ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
                 let nanos = SystemTime::now()
@@ -899,7 +1028,7 @@ mod adapter {
                     Ok(()) => {
                         return Ok(Self {
                             path: Some(root),
-                            fail_cleanup_once,
+                            cleanup_failures_remaining,
                         })
                     }
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -929,8 +1058,8 @@ mod adapter {
             let Some(root) = self.path.as_ref() else {
                 return Ok(());
             };
-            if self.fail_cleanup_once {
-                self.fail_cleanup_once = false;
+            if self.cleanup_failures_remaining > 0 {
+                self.cleanup_failures_remaining -= 1;
                 return Err(AdapterError::new(
                     FailureBoundary::Cleanup,
                     "staging_cleanup_after_failure_failed",
@@ -944,13 +1073,6 @@ mod adapter {
             })?;
             self.path.take();
             Ok(())
-        }
-
-        fn abort(mut self, primary: AdapterError) -> AdapterError {
-            match self.cleanup() {
-                Ok(()) => primary,
-                Err(cleanup) => cleanup,
-            }
         }
     }
 
@@ -1082,11 +1204,47 @@ fn valid_archive() -> Vec<u8> {
     ])
 }
 
+fn archive_with_hidden_entry_after_end_marker() -> Vec<u8> {
+    let mut raw = raw_archive(&[
+        FixtureEntry {
+            name: APP_NAME,
+            kind: FixtureKind::Directory,
+            bytes: b"",
+        },
+        FixtureEntry {
+            name: "BatCave Monitor.app/Contents",
+            kind: FixtureKind::Directory,
+            bytes: b"",
+        },
+        FixtureEntry {
+            name: FIXTURE_FILE,
+            kind: FixtureKind::File,
+            bytes: FIXTURE_BYTES,
+        },
+    ]);
+    let first_zero = raw
+        .chunks_exact(512)
+        .position(|block| block.iter().all(|byte| *byte == 0))
+        .expect("fixture tar has an end marker")
+        * 512;
+    let hidden = raw_archive(&[FixtureEntry {
+        name: "BatCave Monitor.app/Contents/hidden",
+        kind: FixtureKind::File,
+        bytes: b"hidden",
+    }]);
+    raw.splice(
+        first_zero + 512..first_zero + 512,
+        hidden[..1024].iter().copied(),
+    );
+    gzip_member(&raw)
+}
+
 fn archive(entries: &[FixtureEntry<'_>]) -> Vec<u8> {
-    let encoder: GzEncoder<Vec<u8>> = GzBuilder::new()
-        .mtime(0)
-        .write(Vec::new(), Compression::default());
-    let mut builder = Builder::new(encoder);
+    gzip_member(&raw_archive(entries))
+}
+
+fn raw_archive(entries: &[FixtureEntry<'_>]) -> Vec<u8> {
+    let mut builder = Builder::new(Vec::new());
     builder.mode(tar::HeaderMode::Deterministic);
     for fixture in entries {
         let mut header = Header::new_gnu();
@@ -1126,8 +1284,7 @@ fn archive(entries: &[FixtureEntry<'_>]) -> Vec<u8> {
             .append(&header, Cursor::new(fixture.bytes))
             .expect("append fixture archive entry");
     }
-    let encoder = builder.into_inner().expect("finish fixture tar stream");
-    encoder.finish().expect("finish fixture gzip stream")
+    builder.into_inner().expect("finish fixture tar stream")
 }
 
 fn gzip_member(bytes: &[u8]) -> Vec<u8> {
@@ -1475,11 +1632,13 @@ fn gzip_trailer_trailing_bytes_and_second_members_fail_before_staging() {
 
     let mut second_member = valid;
     second_member.extend_from_slice(&gzip_member(b"second gzip member"));
+    let hidden_after_end_marker = archive_with_hidden_entry_after_end_marker();
 
     for (archive, expected_code) in [
         (invalid_trailer, "archive_stream_invalid"),
         (trailing_bytes, "archive_trailing_data"),
         (second_member, "archive_trailing_data"),
+        (hidden_after_end_marker, "archive_trailing_tar_data"),
     ] {
         let mut authority =
             adapter::acquire(adapter::closed_fixture_plan(&archive), &archive).expect("acquire");
@@ -1493,7 +1652,7 @@ fn gzip_trailer_trailing_bytes_and_second_members_fail_before_staging() {
 }
 
 #[test]
-fn path_budget_counts_retained_record_and_canonical_prefix_clones() {
+fn path_budget_counts_retained_string_and_vec_allocations_for_deep_prefixes() {
     let archive = archive(&[
         FixtureEntry {
             name: APP_NAME,
@@ -1506,7 +1665,7 @@ fn path_budget_counts_retained_record_and_canonical_prefix_clones() {
             bytes: b"fixture",
         },
     ]);
-    let limits = adapter::Limits::production().with_path_bookkeeping_limit(128);
+    let limits = adapter::Limits::production().with_path_bookkeeping_limit(1_024);
     let mut authority = adapter::acquire(adapter::limited_fixture_plan(&archive, limits), &archive)
         .expect("acquire");
     let error = match authority.stage() {
@@ -1536,17 +1695,39 @@ fn materialization_collision_fails_without_a_completion() {
 #[test]
 fn materialization_and_verification_cleanup_failures_are_reported() {
     let archive = valid_archive();
-    for plan in [
-        adapter::materialization_cleanup_failure_fixture_plan(&archive),
-        adapter::verification_cleanup_failure_fixture_plan(&archive),
+    for (plan, primary_boundary, primary_code) in [
+        (
+            adapter::materialization_cleanup_failure_fixture_plan(&archive),
+            adapter::FailureBoundary::Materialization,
+            "staging_materialization_failed",
+        ),
+        (
+            adapter::verification_cleanup_failure_fixture_plan(&archive),
+            adapter::FailureBoundary::Verification,
+            "staged_tree_identity_mismatch",
+        ),
     ] {
         let mut authority = adapter::acquire(plan, &archive).expect("acquire");
-        let error = match authority.stage() {
+        let mut error = match authority.stage() {
             Ok(_) => panic!("stage failure with failed cleanup must not be hidden"),
             Err(error) => error,
         };
         assert_eq!(error.boundary(), adapter::FailureBoundary::Cleanup);
         assert_eq!(error.code(), "staging_cleanup_after_failure_failed");
+        assert_eq!(error.primary_boundary(), primary_boundary);
+        assert_eq!(error.primary_code(), primary_code);
+        assert!(error.residue_retained());
+
+        let retry = error
+            .retry_cleanup()
+            .expect_err("persistent cleanup failure remains reported");
+        assert_eq!(retry.boundary(), adapter::FailureBoundary::Cleanup);
+        assert!(error.residue_retained());
+
+        error
+            .retry_cleanup()
+            .expect("bounded cleanup retry succeeds");
+        assert!(!error.residue_retained());
     }
 }
 

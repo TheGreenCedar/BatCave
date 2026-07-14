@@ -21,12 +21,12 @@ The probe:
 
 - copies the exact expected fixture bytes into immutable Rust-owned storage before the original source can matter again;
 - accepts one closed updater profile and rejects replay or completion from another authority;
-- accepts exactly one gzip member, consumes through its validated trailer, and rejects trailing bytes or a second gzip member;
-- enforces the same compressed, decompressed, member, path, prefix, file, and expanded-size ceilings as the release extractor, including the retained record and canonical-prefix string copies charged to the path-bookkeeping ceiling;
+- accepts exactly one gzip member, consumes through its validated trailer, requires the complete tar tail after the first end marker to be zero block-aligned padding, and rejects hidden entries, trailing bytes, or a second gzip member;
+- enforces the same compressed, decompressed, member, path, prefix, file, and expanded-size ceilings as the release extractor, including retained record and canonical-prefix `Vec<String>` storage and string capacities charged to the path-bookkeeping ceiling;
 - preflights every archive entry before creating a staging root;
 - rejects absolute paths, traversal, backslashes, invalid UTF-8, links, devices, extra roots, nested apps, duplicate paths, file/directory conflicts, and macOS case or Unicode-normalization collisions;
 - decodes and fully consumes the immutable stream a second time, creates files with exclusive no-follow semantics on Unix, rechecks every header and file digest, and rejects extra staged entries;
-- creates the private root with restrictive permissions in the create operation, removes it on materialization or verification failure, and reports a cleanup failure instead of hiding it;
+- creates the private root with restrictive permissions in the create operation, removes it on materialization or verification failure, and returns a sanitized retention handle that preserves both the primary and cleanup failures until bounded cleanup retries settle;
 - removes the complete successful staging root or reports retained cleanup state for a bounded retry; and
 - returns only a sanitized fixture outcome with no path, raw archive member, command, trust assertion, native receipt, or evidence packet.
 
@@ -44,7 +44,7 @@ cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
 node --test scripts/native-install-smoke-executor.test.mjs
 ```
 
-The focused Rust suite covers valid staging, source replacement, wrong bytes, replay, cross-operation completion, hostile entry types, macOS path collisions, retained-prefix budgets, invalid gzip trailers, trailing bytes, second gzip members, materialization and verification cleanup failures, cleanup retention, cleanup retry, and absence of a production entry.
+The focused Rust suite covers valid staging, source replacement, wrong bytes, replay, cross-operation completion, hostile entry types, macOS path collisions, retained `String` and `Vec` prefix budgets, invalid gzip trailers, hidden entries after an end marker, trailing bytes, second gzip members, persistent materialization and verification cleanup failures, cleanup retention, cleanup retry, and absence of a production entry.
 
 ## Non-claims
 
