@@ -56,6 +56,8 @@ Real evidence packets use `packet_kind: release_evidence` and belong under `docs
 
 Publishing a packet does not replace native execution or public-release verification. The packet records that evidence after it exists; it cannot manufacture it.
 
+The parameterized install smoke harness is documented in [Public-artifact install smoke harness](public-artifact-install-smoke.md). Its plan and result state machine remains separate from this packet schema: only actual native runs map to `release_evidence`, fixture runs remain `schema_fixture`, and unexecuted plans emit no packet.
+
 ## Synthetic fixtures
 
 The Windows NSIS, Linux Debian, Linux AppImage, macOS DMG, and macOS updater examples under `docs/evidence/releases/fixtures/v1/` are schema fixtures only. They use the reserved `v0.0.0-evidence.*` tag, `packet_kind: schema_fixture`, synthetic identities and observations, and the required `synthetic_fixture_no_release_claim` limitation. Every fixture check and limitation disposition must remain `not_applicable`; a fixture that claims passed proof or an accepted release decision is invalid. These files exercise the contract and must not be cited as release evidence.

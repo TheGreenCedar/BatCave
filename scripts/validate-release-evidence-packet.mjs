@@ -324,6 +324,11 @@ function rejectSensitive(value, field = "packet") {
   }
 }
 
+export function validateSanitizedReleaseEvidenceValue(value, field = "evidence") {
+  rejectSensitive(value, field);
+  return value;
+}
+
 function releaseUrl(tag) {
   return `https://github.com/${RELEASE_REPOSITORY}/releases/tag/${encodeURIComponent(tag)}`;
 }

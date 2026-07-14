@@ -20,6 +20,45 @@ export const CHECKSUM_MANIFEST = "SHA256SUMS.txt";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_DIGEST = /^sha256:([0-9a-f]{64})$/;
+const verifiedPublicReleaseReceipts = new WeakSet();
+
+function deepFreeze(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}
+
+function createVerifiedPublicReleaseReceipt(candidate, plan) {
+  const { version } = parseReleaseTag(candidate.tag);
+  const receipt = deepFreeze({
+    schema_version: 1,
+    verifier: "scripts/verify-public-release.mjs",
+    disposition: "passed",
+    repository: RELEASE_REPOSITORY,
+    tag: candidate.tag,
+    source_sha: candidate.source_sha,
+    app_version: version,
+    assets: plan.map(({ name, size, digest, url }) => ({
+      name,
+      size_bytes: size,
+      sha256: digest,
+      public_url: url,
+    })),
+  });
+  verifiedPublicReleaseReceipts.add(receipt);
+  return receipt;
+}
+
+export function requireVerifiedPublicReleaseReceipt(receipt) {
+  if (!receipt || typeof receipt !== "object" || !verifiedPublicReleaseReceipts.has(receipt)) {
+    throw new Error(
+      "public verification receipt must come from a successful in-process verifyPublicRelease call",
+    );
+  }
+  return receipt;
+}
 
 export function requireSafeAssetName(name) {
   return requireSafeReleaseAssetName(name);
@@ -373,7 +412,11 @@ export async function verifyPublicRelease(
   await verifyDownloadedAssets(candidate, directory);
   const proof = verifyChecksumManifest(candidate, directory);
   runGitHubVerifications(candidate, proof, directory, ghRunner);
-  return { assetCount: plan.length, subjectCount: proof.subjects.length };
+  return {
+    assetCount: plan.length,
+    subjectCount: proof.subjects.length,
+    receipt: createVerifiedPublicReleaseReceipt(candidate, plan),
+  };
 }
 
 function readJson(file, label) {
