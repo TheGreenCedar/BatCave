@@ -2,7 +2,7 @@
 
 Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. The Linux source descriptor from #116 and the macOS source descriptor from #117 are registered, but no package command or private byte-consumption handshake can consume the capability yet. This slice cannot produce native proof or release evidence.
 
-Issue #130 accepts the architecture for that missing handshake in [the Rust-owned native artifact consumption authority decision](decisions/0003-private-native-artifact-consumption-authority.md). A private Rust composition root will own exact bytes, fixed platform dispatch, process supervision, sealed completion, cleanup, and residue classification without exposing an importable JavaScript authority, path, handle, command, callback, or result validator. The decision includes a Rust-only non-installing hostile prototype; it does not make the current production receipt reachable or claim platform proof.
+Issue #130 accepts the architecture for that missing handshake in [the Rust-owned native artifact consumption authority decision](decisions/0003-private-native-artifact-consumption-authority.md). Issue #138 then audited the complete-operation entry. [That decision](decisions/0004-rust-install-smoke-complete-operation-entry.md) found no current boundary that can transfer the process-local JavaScript verifier and plan brands into Rust without trusting caller data or exposing a prohibited authority protocol. No production Rust composition root is registered. The #130 Rust-only hostile prototype remains non-installing and test-only.
 
 The implementation is split deliberately:
 
@@ -40,6 +40,8 @@ const result = await runNativeInstallSmokeSourceSlice(plan, {
 
 With valid selected bytes it returns `skipped`, marks `preflight.package_trust` unsupported, blocks native actions, and returns `evidence_packet: null`. Artifact acquisition or cleanup failure returns a derived `failed` disposition and still returns no packet. Callers cannot provide an adapter, command, disposition, or native receipt.
 
+A structured clone, JSON document, separate Node process, or Rust process cannot preserve the verifier or plan brand. A future Rust entry must independently verify the immutable public release, complete asset inventory, checksums, source attestations, and selected bytes; accepting the visible plan fields or this API's `verified_root` would not preserve the current proof boundary.
+
 Run the capability and executor contract suite with:
 
 ```sh
@@ -62,7 +64,7 @@ The [macOS source boundary](macos-native-install-smoke-adapter.md) binds the exa
 
 ## Remaining native adapter work
 
-A later reviewed adapter must consume the private owned capability as the install or staging input itself. Draining or rehashing the capability and then executing an unrelated path is insufficient. The closed adapter must also own package trust, exact argument arrays, minimal environment, timeouts and settled process-tree termination, runtime identity and settings probes, degradation and telemetry observations, application removal, residue checks, and user-state policy.
+A later Rust-owned complete operation must first satisfy ADR 0004, then consume its private owned capability as the install or staging input itself. Draining or rehashing the capability and then executing an unrelated path is insufficient. The closed adapter must also own package trust, exact argument arrays, minimal environment, timeouts and settled process-tree termination, runtime identity and settings probes, degradation and telemetry observations, application removal, residue checks, and user-state policy.
 
 Only that internal adapter may mint the still-unreachable native execution receipt. After every ordered gate passes, the executor can derive `native_proven` and construct the sanitized #98 packet from its own receipt and observations. Timeout, partial settlement, unsupported operation, command failure, cleanup failure, and residue must remain explicit gate outcomes; all prevent a release-proof claim.
 
