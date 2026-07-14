@@ -1,11 +1,12 @@
 # Native install-smoke executor boundary
 
-Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. No platform adapter or installer command is registered yet, so this slice cannot produce native proof or release evidence.
+Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. The Linux source descriptor from #116 is now registered, but no package command can consume the capability yet, so this slice cannot produce native proof or release evidence.
 
 The implementation is split deliberately:
 
 - `scripts/native-artifact-capability.mjs` acquires and owns the selected bytes;
-- `scripts/native-install-smoke-executor.mjs` validates the closed result states and the future `release_evidence` derivation; and
+- `scripts/native-install-smoke-executor.mjs` validates the closed result states and the future `release_evidence` derivation;
+- `scripts/linux-native-install-smoke-adapter.mjs` registers the built-in deb/AppImage source profiles and proves fixed process-group settlement without executing package bytes; and
 - `scripts/native-install-smoke-executor.test.mjs` exercises hostile path, receipt, caller-seam, and cleanup boundaries.
 
 ## Artifact ownership
@@ -47,12 +48,12 @@ node --test scripts/native-install-smoke-executor.test.mjs
 | Package profile | Native operation required later | Registered command now |
 | --- | --- | --- |
 | Windows NSIS | install and uninstall | none |
-| Linux deb | install and remove | none |
-| Linux AppImage | stage, launch, and remove | none |
+| Linux deb | install and remove | source descriptor only; no package command |
+| Linux AppImage | stage, launch, and remove | source descriptor only; no package command |
 | macOS DMG | mount, copy, launch, and remove | none |
 | macOS updater archive | extract, stage, launch, and remove | none |
 
-There is no general command runner, shell-string surface, public handle accessor, or injected callback that can create a native execution receipt.
+There is no general command runner, shell-string surface, public handle accessor, or injected callback that can create a native execution receipt. The [Linux source boundary](linux-native-install-smoke-adapter.md) runs fixed internal settlement probes only; it never executes the selected package.
 
 ## Remaining native adapter work
 
