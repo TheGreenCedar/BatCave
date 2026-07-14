@@ -56,4 +56,5 @@ libc = "0.2"
 icns = { version = "0.4", default-features = false, features = ["pngio"] }
 
 [dev-dependencies]
+tauri = { version = "2.11.5", features = ["test"] }
 ts-rs = "12.0.1"

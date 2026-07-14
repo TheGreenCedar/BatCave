@@ -114,6 +114,11 @@
     TrendState,
     WorkloadDetail,
   } from "./lib/types";
+  import {
+    checkAfterClosingUpdate,
+    downloadInstallAndClose,
+    UpdateResourceCleanupError,
+  } from "./lib/updateLifecycle";
   import type { ProtocolMismatchView } from "./lib/protocol/runtimeProtocol";
 
   interface ProcessTrendState {
@@ -698,9 +703,11 @@
     }
     updateStatus = "checking";
     updateMessage = "Checking the stable release channel…";
-    pendingUpdate = null;
+    const previousUpdate = pendingUpdate;
     try {
-      pendingUpdate = await check({ timeout: 15_000 });
+      pendingUpdate = await checkAfterClosingUpdate(previousUpdate, () =>
+        check({ timeout: 15_000 }),
+      );
       if (pendingUpdate) {
         updateStatus = "available";
         updateMessage = `Version ${pendingUpdate.version} is available.`;
@@ -708,24 +715,31 @@
         updateStatus = "current";
         updateMessage = "BatCave is up to date.";
       }
-    } catch (error) {
+    } catch {
       updateStatus = "error";
-      updateMessage = String(error).includes("404")
-        ? "No stable release is published yet."
-        : "Unable to reach the update service. Monitoring remains available offline.";
+      updateMessage = "Unable to check for updates. Monitoring remains available offline.";
     }
   }
 
   async function installStableUpdate(): Promise<void> {
-    if (!pendingUpdate) return;
+    const update = pendingUpdate;
+    if (!update) return;
     updateStatus = "installing";
     updateMessage = "Downloading and verifying the signed update…";
     try {
       updateMessage = "Installing the verified update. BatCave will close when installation begins.";
-      await pendingUpdate.downloadAndInstall();
-    } catch {
+      await downloadInstallAndClose(update);
+      pendingUpdate = null;
+    } catch (error) {
+      if (error instanceof UpdateResourceCleanupError) {
+        updateMessage = error.operationError
+          ? "Update failed and its local selection could not be released. Retry will clean it up before checking again."
+          : "Update finished, but its local selection could not be released. Retry will clean it up before checking again.";
+      } else {
+        pendingUpdate = null;
+        updateMessage = "Update verification or installation failed. BatCave was not changed.";
+      }
       updateStatus = "error";
-      updateMessage = "Update verification or installation failed. BatCave was not changed.";
     }
   }
 
