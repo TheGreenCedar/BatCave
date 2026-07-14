@@ -38,7 +38,7 @@ Payload measurements are checked in at [`docs/evidence/dto-payload-spike-2026071
 
 Timings are directional local measurements. Serialized byte counts are deterministic for the fixture and are the primary architecture evidence.
 
-Reproduce from `src/BatCave.App`:
+Historical reproduction from `src/BatCave.App` at commit `8c61a008471a5a8a590672acf5bdf4d352fd8b2c`:
 
 ```bash
 npm run test:dto-spike
@@ -46,6 +46,20 @@ npm run benchmark:dto-spike -- --write ../../docs/evidence/dto-payload-spike-202
 cargo test --manifest-path src-tauri/Cargo.toml dto_spike
 npm run typecheck
 ```
+
+Those DTO-spike scripts belong to the recorded experiment and are no longer part of the current package surface. The checked evidence remains the output of that exact commit; current commands do not regenerate or supersede its four-strategy measurements.
+
+Use the maintained production protocol guardrails from `src/BatCave.App` for current code:
+
+```bash
+npm run test:protocol-payload
+npm run benchmark:protocol-payload
+cargo test --manifest-path src-tauri/Cargo.toml generated_typescript_matches_checked_contract
+cargo test --manifest-path src-tauri/Cargo.toml production_protocol_fixtures_match_encoder
+npm run typecheck
+```
+
+These commands exercise the checked production version 3 envelope, its generated TypeScript contract, and its production fixtures. They are ongoing regression checks, not a reproduction of the historical spike.
 
 ## Metadata budget and guardrail
 
