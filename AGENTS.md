@@ -6,7 +6,7 @@
 - `artifacts/`: generated benchmark, screenshot, and comparison outputs; treat as disposable generated output.
 
 ## Build, Test, and Development Commands
-- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1`: build the Svelte frontend and launch the Tauri desktop app.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1`: start the Vite development server and launch the Tauri desktop app.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1 -WebOnly`: run the browser dev server with fixture telemetry.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1`: run frontend build/type/lint/format checks, Rust fmt/check/test, and the Tauri bundle.
 - `bash scripts/install-linux-deps.sh`: install Ubuntu/Debian native Tauri prerequisites.

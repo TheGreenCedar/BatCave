@@ -1,6 +1,5 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
-    [switch]$NoBuild,
     [switch]$WebOnly,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$AppArgs
@@ -13,13 +12,6 @@ $tauriDevScript = "tauri:dev:windows"
 
 Push-Location $appRoot
 try {
-    if (-not $NoBuild) {
-        npm run build
-        if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-        }
-    }
-
     if ($WebOnly) {
         Write-Warning "Browser fixture mode is layout-only. Do not use it for product screenshots or verification; capture the native Tauri window with Computer Use."
         npm run dev

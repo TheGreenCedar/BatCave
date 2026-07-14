@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-no_build=0
 web_only=0
 app_args=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --no-build)
-      no_build=1
-      shift
-      ;;
     --web-only)
       web_only=1
       shift
@@ -45,10 +40,6 @@ case "$(uname -s)" in
 esac
 
 cd "$app_root"
-
-if [[ "$no_build" -eq 0 ]]; then
-  npm run build
-fi
 
 if [[ "$web_only" -eq 1 ]]; then
   echo "Browser fixture mode is layout-only. Do not use it for product screenshots or verification; capture the native Tauri window with Computer Use." >&2
