@@ -726,18 +726,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_build_exposes_the_full_release_metadata_used_for_peer_trust() {
-        let executable = std::env::current_exe()
-            .expect("current Windows test executable")
-            .canonicalize()
-            .expect("canonical Windows test executable");
-        let release = executable_release(&wide(&executable.to_string_lossy()))
-            .expect("Windows ProductVersion resource");
-
-        assert_eq!(release, ExecutableReleaseEvidence::package().unwrap());
-    }
-
-    #[test]
     fn client_restricted_pipe_security_descriptor_is_accepted_by_windows() {
         PipeSecurity::new().expect("valid protected pipe security descriptor");
     }

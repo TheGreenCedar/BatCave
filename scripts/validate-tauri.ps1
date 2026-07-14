@@ -73,6 +73,48 @@ function Get-PeSubsystem {
     }
 }
 
+function Assert-CollectorServiceReleaseMetadata {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $metadataJson = cargo metadata --manifest-path "$cargoManifest" --format-version 1 --no-deps
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    $metadata = $metadataJson | ConvertFrom-Json
+    $package = $metadata.packages | Where-Object { $_.name -eq "batcave-monitor" }
+    if ($null -eq $package) {
+        throw "Could not resolve the batcave-monitor package version."
+    }
+
+    $expectedProductVersion = $package.version
+    $semver = [regex]::Match($expectedProductVersion, '^(?<major>0|[1-9][0-9]*)\.(?<minor>0|[1-9][0-9]*)\.(?<patch>0|[1-9][0-9]*)')
+    if (-not $semver.Success) {
+        throw "Unsupported batcave-monitor package version '$expectedProductVersion'."
+    }
+
+    $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    if ($version.ProductVersion -cne $expectedProductVersion) {
+        throw "Collector service ProductVersion '$($version.ProductVersion)' does not match package version '$expectedProductVersion'."
+    }
+
+    $expectedParts = @(
+        [int]$semver.Groups['major'].Value,
+        [int]$semver.Groups['minor'].Value,
+        [int]$semver.Groups['patch'].Value
+    )
+    $actualParts = @($version.FileMajorPart, $version.FileMinorPart, $version.FileBuildPart)
+    for ($index = 0; $index -lt $expectedParts.Count; $index++) {
+        if ($actualParts[$index] -ne $expectedParts[$index]) {
+            throw "Collector service file version '$($version.FileVersion)' does not match package version '$expectedProductVersion'."
+        }
+    }
+
+    Write-Host "Verified collector service release metadata: $Path"
+}
+
 Push-Location $appRoot
 try {
     if (-not $BundleOnly.IsPresent) {
@@ -90,6 +132,13 @@ try {
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
+
+        cargo build --manifest-path "$cargoManifest" --bin batcave-collector-service
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+        $collectorServiceExecutable = Join-Path $appRoot "src-tauri/target/debug/batcave-collector-service.exe"
+        Assert-CollectorServiceReleaseMetadata -Path $collectorServiceExecutable
 
         if ($BenchmarkGate.IsPresent) {
             Run-Step "Owned-engine live-command p95 regression gate" {
