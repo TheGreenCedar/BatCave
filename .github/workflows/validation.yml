@@ -88,6 +88,9 @@ jobs:
       - name: Test native artifact capability
         run: node --test scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs
 
+      - name: Test release evidence index contract
+        run: node --test scripts/validate-release-evidence-index.test.mjs
+
       - name: Validate Windows app
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle

@@ -459,7 +459,7 @@ test("the CLI validates only the synthetic review input", () => {
   assert.equal(validateReleaseEvidenceIndexFile(INDEX_FIXTURE).index_kind, "schema_fixture");
 });
 
-test("release and validation workflows run the index contract tests", () => {
+test("release and every validation lane run the index contract tests", () => {
   const releaseWorkflow = fs.readFileSync(
     path.join(ROOT, ".github", "workflows", "release.yml"),
     "utf8",
@@ -474,6 +474,18 @@ test("release and validation workflows run the index contract tests", () => {
   );
   assert.equal(
     validationWorkflow.match(/scripts\/validate-release-evidence-index\.test\.mjs/gu)?.length,
-    2,
+    3,
   );
+  const validationLanes = [
+    ["windows", "linux"],
+    ["linux", "macos"],
+    ["macos", undefined],
+  ];
+  for (const [lane, nextLane] of validationLanes) {
+    const start = validationWorkflow.indexOf(`\n  ${lane}:\n`);
+    assert.notEqual(start, -1, `${lane} validation lane is present`);
+    const end = nextLane ? validationWorkflow.indexOf(`\n  ${nextLane}:\n`, start) : undefined;
+    const job = validationWorkflow.slice(start, end);
+    assert.match(job, /scripts\/validate-release-evidence-index\.test\.mjs/u, `${lane} lane`);
+  }
 });
