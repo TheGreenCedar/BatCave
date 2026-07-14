@@ -24,7 +24,7 @@ use crate::network_attribution::NetworkAttributionSample;
 use crate::windows_process;
 #[cfg(target_os = "linux")]
 use crate::{
-    linux_network::LinuxNetworkAttributionMonitor, linux_process::LinuxProcessCollector,
+    linux_network::LinuxNetworkAttribution, linux_process::LinuxProcessCollector,
     linux_system::LinuxSystemCollector,
 };
 #[cfg(target_os = "macos")]
@@ -53,7 +53,7 @@ pub struct TelemetryCollector {
     #[cfg(target_os = "linux")]
     linux_processes: Mutex<LinuxProcessCollector>,
     #[cfg(target_os = "linux")]
-    linux_network_attribution: Mutex<LinuxNetworkAttributionState>,
+    linux_network_attribution: Mutex<LinuxNetworkAttribution>,
     #[cfg(target_os = "macos")]
     macos_system: Mutex<MacosSystemCollector>,
     #[cfg(target_os = "macos")]
@@ -115,7 +115,7 @@ impl TelemetryCollector {
             #[cfg(target_os = "linux")]
             linux_processes: Mutex::new(LinuxProcessCollector::new()),
             #[cfg(target_os = "linux")]
-            linux_network_attribution: Mutex::new(LinuxNetworkAttributionState::new()),
+            linux_network_attribution: Mutex::new(LinuxNetworkAttribution::new()),
             #[cfg(target_os = "macos")]
             macos_system: Mutex::new(MacosSystemCollector::new()),
             #[cfg(target_os = "macos")]
@@ -626,29 +626,11 @@ impl TelemetryCollector {
             .linux_network_attribution
             .lock()
             .map_err(|_| "linux network attribution telemetry lock is poisoned".to_string())?;
-        match &mut *state {
-            LinuxNetworkAttributionState::Ready(monitor) => {
-                let sample = monitor.sample();
-                if let NetworkAttributionSample::Failed(message) = &sample {
-                    warnings.push(format!("linux_network_attribution_failed:{message}"));
-                    *state = LinuxNetworkAttributionState::Failed {
-                        message: message.clone(),
-                        failed_at: Instant::now(),
-                    };
-                }
-                Ok(sample)
-            }
-            LinuxNetworkAttributionState::Failed { message, failed_at } => {
-                if failed_at.elapsed() >= std::time::Duration::from_secs(30) {
-                    *state = LinuxNetworkAttributionState::new();
-                    return Ok(NetworkAttributionSample::Held(
-                        "Linux network attribution is retrying.".to_string(),
-                    ));
-                }
-                warnings.push(format!("linux_network_attribution_failed:{message}"));
-                Ok(NetworkAttributionSample::Failed(message.clone()))
-            }
+        let sample = state.sample();
+        if let NetworkAttributionSample::Failed(message) = &sample {
+            warnings.push(format!("linux_network_attribution_failed:{message}"));
         }
+        Ok(sample)
     }
 }
 
@@ -997,25 +979,6 @@ enum NetworkAttributionState {
 impl NetworkAttributionState {
     fn new() -> Self {
         match NetworkAttributionMonitor::new() {
-            Ok(monitor) => Self::Ready(monitor),
-            Err(message) => Self::Failed {
-                message,
-                failed_at: Instant::now(),
-            },
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-enum LinuxNetworkAttributionState {
-    Ready(LinuxNetworkAttributionMonitor),
-    Failed { message: String, failed_at: Instant },
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxNetworkAttributionState {
-    fn new() -> Self {
-        match LinuxNetworkAttributionMonitor::start() {
             Ok(monitor) => Self::Ready(monitor),
             Err(message) => Self::Failed {
                 message,

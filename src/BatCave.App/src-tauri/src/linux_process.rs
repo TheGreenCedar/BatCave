@@ -1,6 +1,6 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
-use std::{collections::HashMap, fs, path::Path, process::Command};
+use std::{collections::HashMap, fmt::Display, fs, path::Path, process::Command, str::FromStr};
 
 use crate::contracts::{
     AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
@@ -178,11 +178,11 @@ fn read_process(
     let measured_private_bytes = read_private_bytes(&proc_dir);
     let private_bytes =
         measured_private_bytes.unwrap_or_else(|| rss_bytes(stat.rss_pages, page_size));
-    let handles = fs::read_dir(proc_dir.join("fd"))
-        .map(|entries| entries.filter_map(Result::ok).count() as u32)
-        .unwrap_or_default();
+    let handles_result = fs::read_dir(proc_dir.join("fd"))
+        .map(|entries| u32::try_from(entries.filter_map(Result::ok).count()).unwrap_or(u32::MAX));
+    let has_fd = handles_result.is_ok();
+    let handles = handles_result.unwrap_or_default();
     let has_exe = !exe.is_empty();
-    let has_fd = handles > 0;
     let access_state = if has_exe && has_io && has_fd {
         AccessState::Full
     } else {
@@ -240,6 +240,9 @@ fn parse_process_stat(content: &str) -> Result<ProcessStat, String> {
     let close = content
         .rfind(')')
         .ok_or_else(|| "linux_proc_stat_missing_name_close".to_string())?;
+    if close <= open {
+        return Err("linux_proc_stat_invalid_name_bounds".to_string());
+    }
     let pid = content[..open]
         .trim()
         .parse::<u32>()
@@ -250,22 +253,29 @@ fn parse_process_stat(content: &str) -> Result<ProcessStat, String> {
         return Err("linux_proc_stat_too_short".to_string());
     }
 
+    let parent_pid = parse_process_stat_field::<u32>(&fields, 1, "parent_pid")?;
     Ok(ProcessStat {
         pid,
         name,
         status: process_status_label(fields[0]),
-        parent_pid: fields[1]
-            .parse::<u32>()
-            .ok()
-            .filter(|parent| *parent != 0)
-            .map(|parent| parent.to_string()),
-        user_ticks: fields[11].parse::<u64>().unwrap_or_default(),
-        kernel_ticks: fields[12].parse::<u64>().unwrap_or_default(),
-        threads: fields[17].parse::<u32>().unwrap_or_default(),
-        start_time_ticks: fields[19].parse::<u64>().unwrap_or_default(),
-        virtual_memory_bytes: fields[20].parse::<u64>().unwrap_or_default(),
-        rss_pages: fields[21].parse::<i64>().unwrap_or_default(),
+        parent_pid: (parent_pid != 0).then(|| parent_pid.to_string()),
+        user_ticks: parse_process_stat_field(&fields, 11, "user_ticks")?,
+        kernel_ticks: parse_process_stat_field(&fields, 12, "kernel_ticks")?,
+        threads: parse_process_stat_field(&fields, 17, "threads")?,
+        start_time_ticks: parse_process_stat_field(&fields, 19, "start_time_ticks")?,
+        virtual_memory_bytes: parse_process_stat_field(&fields, 20, "virtual_memory_bytes")?,
+        rss_pages: parse_process_stat_field(&fields, 21, "rss_pages")?,
     })
+}
+
+fn parse_process_stat_field<T>(fields: &[&str], index: usize, name: &str) -> Result<T, String>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    fields[index]
+        .parse::<T>()
+        .map_err(|error| format!("linux_proc_stat_{name}_parse_failed:{error}"))
 }
 
 fn read_process_io(proc_dir: &Path) -> Result<ProcessIo, String> {
@@ -276,19 +286,33 @@ fn read_process_io(proc_dir: &Path) -> Result<ProcessIo, String> {
 }
 
 fn parse_process_io(content: &str) -> Result<ProcessIo, String> {
-    let mut io = ProcessIo::default();
+    let mut read_bytes = None;
+    let mut write_bytes = None;
     for line in content.lines() {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-        let value = value.trim().parse::<u64>().unwrap_or_default();
-        match key {
-            "read_bytes" => io.read_bytes = value,
-            "write_bytes" => io.write_bytes = value,
-            _ => {}
+        let slot = match key {
+            "read_bytes" => &mut read_bytes,
+            "write_bytes" => &mut write_bytes,
+            _ => continue,
+        };
+        if slot.is_some() {
+            return Err(format!("linux_proc_process_io_duplicate_field:{key}"));
         }
+        *slot = Some(
+            value
+                .trim()
+                .parse::<u64>()
+                .map_err(|error| format!("linux_proc_process_io_{key}_parse_failed:{error}"))?,
+        );
     }
-    Ok(io)
+    Ok(ProcessIo {
+        read_bytes: read_bytes
+            .ok_or_else(|| "linux_proc_process_io_missing_read_bytes".to_string())?,
+        write_bytes: write_bytes
+            .ok_or_else(|| "linux_proc_process_io_missing_write_bytes".to_string())?,
+    })
 }
 
 fn read_private_bytes(proc_dir: &Path) -> Option<u64> {
@@ -300,14 +324,21 @@ fn read_private_bytes(proc_dir: &Path) -> Option<u64> {
 }
 
 fn parse_status_value_kib(content: &str, key: &str) -> Option<u64> {
-    content.lines().find_map(|line| {
-        let (name, rest) = line.split_once(':')?;
-        (name == key).then(|| {
-            rest.split_whitespace()
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-        })?
-    })
+    for line in content.lines() {
+        let Some((name, rest)) = line.split_once(':') else {
+            continue;
+        };
+        if name != key {
+            continue;
+        }
+        let mut fields = rest.split_whitespace();
+        let value = fields.next()?.parse::<u64>().ok()?;
+        if fields.next()? != "kB" || fields.next().is_some() {
+            return None;
+        }
+        return Some(value);
+    }
+    None
 }
 
 fn read_cpu_snapshot() -> Result<CpuSnapshot, String> {
@@ -319,20 +350,28 @@ fn read_cpu_snapshot() -> Result<CpuSnapshot, String> {
 
 fn parse_cpu_snapshot(content: &str) -> Result<CpuSnapshot, String> {
     let mut total_ticks = None;
-    let mut logical_cpu_count = 0;
+    let mut logical_cpu_count = 0_usize;
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("cpu ") {
-            total_ticks = Some(
-                rest.split_whitespace()
-                    .filter_map(|value| value.parse::<u64>().ok())
-                    .fold(0_u64, u64::saturating_add),
-            );
-        } else if line
-            .strip_prefix("cpu")
-            .and_then(|rest| rest.chars().next())
-            .is_some_and(|value| value.is_ascii_digit())
-        {
-            logical_cpu_count += 1;
+            let mut parsed_any = false;
+            let mut total = 0_u64;
+            for value in rest.split_whitespace() {
+                parsed_any = true;
+                total =
+                    total.saturating_add(value.parse::<u64>().map_err(|error| {
+                        format!("linux_proc_stat_cpu_total_parse_failed:{error}")
+                    })?);
+            }
+            if !parsed_any {
+                return Err("linux_proc_stat_cpu_total_empty".to_string());
+            }
+            total_ticks = Some(total);
+        } else if line.split_whitespace().next().is_some_and(|label| {
+            label.strip_prefix("cpu").is_some_and(|index| {
+                !index.is_empty() && index.chars().all(|value| value.is_ascii_digit())
+            })
+        }) {
+            logical_cpu_count = logical_cpu_count.saturating_add(1);
         }
     }
 
@@ -479,6 +518,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_process_stat_handles_parentheses_inside_process_name() {
+        let stat = parse_process_stat(
+            "42 (bat ) cave (worker)) S 0 2 3 4 5 6 7 8 9 10 100 30 14 15 16 17 8 19 12345 4096 -1",
+        )
+        .unwrap();
+
+        assert_eq!(stat.name, "bat ) cave (worker)");
+        assert_eq!(stat.parent_pid, None);
+        assert_eq!(stat.rss_pages, -1);
+    }
+
+    #[test]
+    fn parse_process_stat_rejects_invalid_bounds_and_numeric_fields() {
+        assert_eq!(
+            parse_process_stat(") 42 (").unwrap_err(),
+            "linux_proc_stat_invalid_name_bounds"
+        );
+        assert!(parse_process_stat(
+            "42 (worker) S nope 2 3 4 5 6 7 8 9 10 100 30 14 15 16 17 8 19 12345 4096 3",
+        )
+        .unwrap_err()
+        .starts_with("linux_proc_stat_parent_pid_parse_failed:"));
+        assert!(parse_process_stat(
+            "42 (worker) S 1 2 3 4 5 6 7 8 9 10 invalid 30 14 15 16 17 8 19 12345 4096 3",
+        )
+        .unwrap_err()
+        .starts_with("linux_proc_stat_user_ticks_parse_failed:"));
+        assert_eq!(
+            parse_process_stat("42 (worker) S 1 2 3").unwrap_err(),
+            "linux_proc_stat_too_short"
+        );
+    }
+
+    #[test]
     fn parse_process_io_extracts_disk_bytes() {
         let io = parse_process_io("rchar: 10\nwchar: 20\nread_bytes: 4096\nwrite_bytes: 8192\n")
             .unwrap();
@@ -488,19 +561,65 @@ mod tests {
     }
 
     #[test]
+    fn parse_process_io_rejects_missing_duplicate_and_malformed_counters() {
+        assert_eq!(
+            parse_process_io("read_bytes: 1\n").unwrap_err(),
+            "linux_proc_process_io_missing_write_bytes"
+        );
+        assert_eq!(
+            parse_process_io("read_bytes: 1\nread_bytes: 2\nwrite_bytes: 3\n").unwrap_err(),
+            "linux_proc_process_io_duplicate_field:read_bytes"
+        );
+        assert!(parse_process_io("read_bytes: -1\nwrite_bytes: 3\n")
+            .unwrap_err()
+            .starts_with("linux_proc_process_io_read_bytes_parse_failed:"));
+        assert!(
+            parse_process_io("read_bytes: 1\nwrite_bytes: 18446744073709551616\n")
+                .unwrap_err()
+                .starts_with("linux_proc_process_io_write_bytes_parse_failed:")
+        );
+    }
+
+    #[test]
     fn parse_status_value_reads_kib_values() {
         assert_eq!(
             parse_status_value_kib("Name:\ttest\nRssAnon:\t  128 kB\n", "RssAnon"),
             Some(128)
         );
+        assert_eq!(
+            parse_status_value_kib("RssAnon:\t128 MB\n", "RssAnon"),
+            None
+        );
+        assert_eq!(parse_status_value_kib("RssAnon:\t-1 kB\n", "RssAnon"), None);
+        assert_eq!(
+            parse_status_value_kib("RssAnon:\t128 kB trailing\n", "RssAnon"),
+            None
+        );
     }
 
     #[test]
     fn parse_cpu_snapshot_counts_logical_cpus() {
-        let snapshot = parse_cpu_snapshot("cpu  1 2 3 4\ncpu0 1 1 1 1\ncpu1 1 1 1 1\n").unwrap();
+        let snapshot =
+            parse_cpu_snapshot("cpu  1 2 3 4\ncpu0 1 1 1 1\ncpu1 1 1 1 1\ncpu1guest 1 1 1 1\n")
+                .unwrap();
 
         assert_eq!(snapshot.total_ticks, 10);
         assert_eq!(snapshot.logical_cpu_count, 2);
+    }
+
+    #[test]
+    fn parse_cpu_snapshot_rejects_partial_or_empty_totals() {
+        assert!(parse_cpu_snapshot("cpu  1 nope 3\ncpu0 1 1 1\n")
+            .unwrap_err()
+            .starts_with("linux_proc_stat_cpu_total_parse_failed:"));
+        assert_eq!(
+            parse_cpu_snapshot("cpu \ncpu0 1 1 1\n").unwrap_err(),
+            "linux_proc_stat_cpu_total_empty"
+        );
+        assert_eq!(
+            parse_cpu_snapshot("intr 1\n").unwrap_err(),
+            "linux_proc_stat_missing_cpu_total"
+        );
     }
 
     #[test]
