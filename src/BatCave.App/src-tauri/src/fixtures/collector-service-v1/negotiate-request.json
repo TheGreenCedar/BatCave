@@ -1,0 +1,15 @@
+{
+  "protocol_version": 1,
+  "request_id": 1,
+  "operation": {
+    "kind": "negotiate",
+    "payload": {
+      "minimum_protocol_version": 1,
+      "maximum_protocol_version": 1,
+      "desktop_release": {
+        "app_version": "0.2.0-rc.2",
+        "source_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+}
