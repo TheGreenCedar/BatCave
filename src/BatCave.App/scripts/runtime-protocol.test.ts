@@ -124,7 +124,7 @@ test("unsupported process values remain unavailable instead of becoming zero", (
 
   const adapted = adaptRuntimePayload(decoded.payload);
   assert.ok(Number.isNaN(adapted.processes[0].private_bytes));
-  assert.equal(adapted.processes[0].quality?.memory?.quality, "estimated");
+  assert.equal(adapted.processes[0].quality?.memory?.quality, "partial");
 });
 
 test("platform fixtures carry their privilege and collection limits", () => {
@@ -135,6 +135,11 @@ test("platform fixtures carry their privilege and collection limits", () => {
   assert.equal(elevatedDecoded.payload.privileged_collection.state, "active");
   assert.equal(elevatedDecoded.payload.privileged_collection.source, "local_process");
   assert.equal(elevatedDecoded.payload.privileged_collection.preference, "best_available");
+  assert.equal(adaptRuntimePayload(elevatedDecoded.payload).admin_mode.source, "current_process");
+
+  const helperPayload = structuredClone(elevatedDecoded.payload);
+  helperPayload.environment.process_elevation = "standard";
+  assert.equal(adaptRuntimePayload(helperPayload).admin_mode.source, "elevated_helper");
 
   const linuxDecoded = decodeProtocolEnvelope(linux);
   assert.equal(linuxDecoded.kind, "snapshot");
@@ -155,6 +160,18 @@ test("platform fixtures carry their privilege and collection limits", () => {
   );
   assert.equal(macNetwork?.source, "sysinfo");
   assert.equal(macNetwork?.network_scope, "all_interface_aggregate");
+  const macDisk = macosDecoded.payload.descriptors.find(
+    (descriptor) =>
+      descriptor.scope === "system" && descriptor.semantic === "physical_disk_read_total",
+  );
+  assert.equal(macDisk?.source, "iokit");
+  const macDiskObservation = macosDecoded.payload.system.metrics.find(
+    (candidate) =>
+      macosDecoded.payload.descriptors[candidate[0]].semantic === "physical_disk_read_total",
+  );
+  assert.ok(macDiskObservation);
+  if (!macDiskObservation) return;
+  assert.equal(macosDecoded.payload.quality_codes[macDiskObservation[2]], "held");
 });
 
 test("I/O baseline transitions retain totals while holding only rates", () => {

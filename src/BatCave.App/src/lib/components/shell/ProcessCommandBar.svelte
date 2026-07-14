@@ -16,7 +16,16 @@
   export let onFocus: (mode: FocusMode) => void;
   export let onSort: (key: SortKey) => void;
   export let onToggleDirection: () => void;
+  // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
   export let onApplyRanking: () => void;
+
+  function applyRanking(event: MouseEvent & { currentTarget: HTMLButtonElement }): void {
+    const sortSelect = event.currentTarget
+      .closest(".process-command-bar")
+      ?.querySelector<HTMLSelectElement>(".sort-select");
+    sortSelect?.focus({ preventScroll: true });
+    onApplyRanking();
+  }
 </script>
 
 <section class="process-command-bar" aria-label="Workload controls">
@@ -52,7 +61,7 @@
       aria-label="Update workload order"
       title="Update workload order"
       disabled={mutationsDisabled}
-      onclick={onApplyRanking}
+      onclick={applyRanking}
     >
       <ArrowClockwise size={16} weight="bold" aria-hidden="true" />
       <span>Update order</span>

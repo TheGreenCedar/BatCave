@@ -93,7 +93,7 @@ try {
         }
 
         if ($BenchmarkGate.IsPresent) {
-            Run-Step "Rust benchmark regression gate" {
+            Run-Step "Owned-engine live-command p95 regression gate" {
                 Push-Location $repoRoot
                 try {
                     $gateScript = Join-Path $repoRoot "scripts/run-benchmark-gate.ps1"
@@ -125,7 +125,7 @@ try {
             }
         }
         else {
-            Run-Step "Rust benchmark smoke" {
+            Run-Step "Owned-engine live-command p95 smoke" {
                 Push-Location $repoRoot
                 try {
                     $benchmarkScript = Join-Path $repoRoot "scripts/run-benchmark.ps1"
