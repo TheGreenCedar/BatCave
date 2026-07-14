@@ -261,6 +261,11 @@ mod tests {
             Some(2),
             "a malformed helper invocation must be handled as helper CLI"
         );
+        assert_eq!(
+            run_cli(&["--elevated-helper-launcher".to_string()]),
+            Some(2),
+            "a malformed launcher invocation must be handled as helper CLI"
+        );
         assert_eq!(run_cli(&[]), None);
     }
 

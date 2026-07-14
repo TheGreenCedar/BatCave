@@ -235,6 +235,7 @@
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
     memoryAccounting?.denied_process_count ?? snapshot.processes.filter((process) => process.access_state === "denied").length;
+  $: adminStatus = privilegedCollectionLabel(snapshot.admin_mode, blockedProcessCount);
   $: diskReadRate = snapshot.system.disk_read_bps;
   $: diskWriteRate = snapshot.system.disk_write_bps;
   $: networkDownRate = snapshot.system.network_received_bps;
@@ -1589,10 +1590,6 @@
     return [...(tags ?? [])].sort((left, right) => right.bytes - left.bytes).slice(0, 8);
   }
 
-  function adminStatusLabel(): string {
-    return privilegedCollectionLabel(snapshot.admin_mode, blockedProcessCount);
-  }
-
   function processNetworkLabel(process: ProcessSample): string {
     const quality = process.quality?.network;
     const rate = (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
@@ -1848,7 +1845,7 @@
     {systemQuality}
     {pollState}
     {lastError}
-    adminStatus={adminStatusLabel()}
+    {adminStatus}
     open={diagnosticsOpen}
     onClose={() => (diagnosticsOpen = false)}
   />
@@ -1864,7 +1861,7 @@
     adminAvailable={snapshot.environment.admin_mode_available}
     runtimeMutationsDisabled={protocolMismatch !== null}
     processStatus={processElevationLabel(snapshot.environment)}
-    adminStatus={adminStatusLabel()}
+    {adminStatus}
     adminNote={privilegedCollectionNote(snapshot.admin_mode)}
     adminAction={privilegedCollectionAction(
       snapshot.environment.admin_mode_available,

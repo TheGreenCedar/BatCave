@@ -135,6 +135,11 @@ test("platform fixtures carry their privilege and collection limits", () => {
   assert.equal(elevatedDecoded.payload.privileged_collection.state, "active");
   assert.equal(elevatedDecoded.payload.privileged_collection.source, "local_process");
   assert.equal(elevatedDecoded.payload.privileged_collection.preference, "best_available");
+  assert.equal(adaptRuntimePayload(elevatedDecoded.payload).admin_mode.source, "current_process");
+
+  const helperPayload = structuredClone(elevatedDecoded.payload);
+  helperPayload.environment.process_elevation = "standard";
+  assert.equal(adaptRuntimePayload(helperPayload).admin_mode.source, "elevated_helper");
 
   const linuxDecoded = decodeProtocolEnvelope(linux);
   assert.equal(linuxDecoded.kind, "snapshot");

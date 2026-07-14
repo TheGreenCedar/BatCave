@@ -277,6 +277,14 @@ impl CatalogBuilder {
                 .and_then(|quality| quality.updated_at_ms)
                 .or(sampled_at_ms)
         };
+        if normalized_value.is_some() && observed_at_ms.is_none() {
+            normalized_value = None;
+            quality_code = metric_quality_code(MetricQuality::Unavailable);
+            limitation = Some((
+                LimitationCode::MissingMetadata,
+                "Metric observation time was not reported by the collector.".to_string(),
+            ));
+        }
         if observed_at_ms.is_some_and(|value| value > JS_MAX_SAFE_INTEGER) {
             return Err("protocol_timestamp_out_of_range".to_string());
         }

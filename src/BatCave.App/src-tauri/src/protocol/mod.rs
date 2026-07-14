@@ -25,7 +25,7 @@ pub(crate) fn release_identity() -> RuntimeReleaseIdentityV3 {
 mod tests {
     use std::path::Path;
 
-    use super::catalog::{CatalogBuilder, MetricDefinition};
+    use super::catalog::{CatalogBuilder, MetricDefinition, QUALITY_CODES};
     use super::types::*;
     use super::{encode::encode_snapshot_at, encode_snapshot, validate::validate_envelope};
     use crate::contracts::{
@@ -995,6 +995,35 @@ mod tests {
         assert_eq!(
             descriptor.network_scope,
             Some(NetworkScopeV3::IpSocketPayload)
+        );
+    }
+
+    #[test]
+    fn observation_without_time_fails_closed() {
+        let mut catalog = CatalogBuilder::new(1_000).expect("catalog");
+        let quality = quality(MetricQuality::Native, MetricSource::Runtime);
+        let observation = catalog
+            .observation(
+                MetricDefinition::new(
+                    MetricSemantic::ProcessCount,
+                    MetricScope::System,
+                    MetricUnit::Count,
+                ),
+                Some(0.0),
+                Some(&quality),
+                None,
+            )
+            .expect("observation");
+
+        assert_eq!(observation.1, None);
+        assert_eq!(
+            QUALITY_CODES[usize::from(observation.2)],
+            MetricQualityV3::Unavailable
+        );
+        assert_eq!(observation.3, None);
+        assert_eq!(
+            catalog.limitations[usize::from(observation.4.expect("limitation"))].code,
+            LimitationCode::MissingMetadata
         );
     }
 

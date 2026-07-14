@@ -879,7 +879,7 @@ fn apply_native_process_enrichment_quality(
     quality.cpu = Some(if has_cpu {
         MetricQualityInfo::new(MetricQuality::Estimated, MetricSource::Sysinfo)
     } else {
-        MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo).with_limitation(
+        MetricQualityInfo::new(MetricQuality::Held, MetricSource::Sysinfo).with_limitation(
             MetricLimitationCode::PendingBaseline,
             "Process CPU needs a second Rust-native timing pass.",
         )
@@ -1167,6 +1167,23 @@ mod tests {
             } else {
                 MetricQuality::Unavailable
             })
+        );
+    }
+
+    #[test]
+    fn native_enrichment_marks_first_process_cpu_pass_as_pending() {
+        let mut process = sample_process("42");
+
+        apply_native_process_enrichment_quality(&mut process, false, false);
+
+        let cpu = process
+            .quality
+            .and_then(|quality| quality.cpu)
+            .expect("CPU quality");
+        assert_eq!(cpu.quality, MetricQuality::Held);
+        assert_eq!(
+            cpu.limitation_code,
+            Some(MetricLimitationCode::PendingBaseline)
         );
     }
 

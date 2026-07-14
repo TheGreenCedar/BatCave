@@ -67,10 +67,10 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
     },
     admin_mode: {
       state: legacyAdminState(payload.privileged_collection.state),
-      source:
-        payload.privileged_collection.source === "local_process"
-          ? "current_process"
-          : payload.privileged_collection.source,
+      source: legacyPrivilegedSource(
+        payload.privileged_collection.source,
+        payload.environment.process_elevation,
+      ),
       detail: payload.privileged_collection.detail,
       last_success_at_ms: payload.privileged_collection.last_success_at_ms,
     },
@@ -122,6 +122,16 @@ function legacyAdminState(
     case "failed":
       return "failed";
   }
+}
+
+function legacyPrivilegedSource(
+  source: RuntimeSnapshotPayloadV3["privileged_collection"]["source"],
+  processElevation: RuntimeSnapshotPayloadV3["environment"]["process_elevation"],
+): RuntimeSnapshot["admin_mode"]["source"] {
+  if (source === "local_process") {
+    return processElevation === "elevated" ? "current_process" : "elevated_helper";
+  }
+  return source;
 }
 
 function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {

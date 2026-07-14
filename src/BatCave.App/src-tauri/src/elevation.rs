@@ -25,16 +25,21 @@ const HELPER_STALE_GRACE: Duration = Duration::from_secs(3);
 const HELPER_FAILURE_GRACE: Duration = Duration::from_secs(15);
 const HELPER_STOP_GRACE: Duration = Duration::from_secs(2);
 const HELPER_FORCE_EXIT_GRACE: Duration = Duration::from_secs(2);
+const HELPER_LAUNCHER_STOP_GRACE: Duration = Duration::from_secs(5);
+const HELPER_WATCHDOG_POLL: Duration = Duration::from_millis(50);
 const HELPER_TOKEN_BYTES: usize = 32;
 const MAX_PIPE_FRAME_BYTES: usize = 8 * 1024 * 1024;
+const ELEVATED_HELPER_FLAG: &str = "--elevated-helper";
+const ELEVATED_HELPER_LAUNCHER_FLAG: &str = "--elevated-helper-launcher";
 
 #[derive(Debug)]
 pub struct ElevatedHelperClient {
     data_file: PathBuf,
     stop_file: PathBuf,
+    accepted_file: PathBuf,
     token: String,
     last_seq: u64,
-    started_at: Instant,
+    accepted_at: Option<Instant>,
     last_snapshot_at: Option<Instant>,
     collect_process_network: bool,
     last_warnings: Vec<String>,
@@ -63,6 +68,7 @@ pub enum ElevatedPoll {
 
 impl ElevatedHelperClient {
     pub fn start(base_dir: &Path, collect_process_network: bool) -> Result<Self, String> {
+        let owner_window = current_process_owner_window()?;
         remove_helper_artifacts(base_dir);
         let session = prepare_helper_session(base_dir)?;
 
@@ -78,8 +84,10 @@ impl ElevatedHelperClient {
         let process = match launch_elevated_helper(
             &session.pipe_name,
             &session.stop_file,
+            &session.accepted_file,
             &session.token,
             std::process::id(),
+            owner_window,
             collect_process_network,
         ) {
             Ok(process) => process,
@@ -92,9 +100,10 @@ impl ElevatedHelperClient {
         Ok(Self {
             data_file: session.data_file,
             stop_file: session.stop_file,
+            accepted_file: session.accepted_file,
             token: session.token,
             last_seq: 0,
-            started_at: Instant::now(),
+            accepted_at: None,
             last_snapshot_at: None,
             collect_process_network,
             last_warnings: Vec::new(),
@@ -124,6 +133,10 @@ impl ElevatedHelperClient {
             return Err("admin_mode_helper_exited".to_string());
         }
 
+        if self.accepted_at.is_none() && self.accepted_file.exists() {
+            self.accepted_at = Some(Instant::now());
+        }
+
         #[cfg(windows)]
         if let Some(pipe) = &mut self.pipe {
             let mut snapshot = None;
@@ -137,8 +150,10 @@ impl ElevatedHelperClient {
             }
             if let Some(snapshot) = snapshot {
                 if matches!(snapshot, ElevatedPoll::Recovering(_))
-                    && self.last_snapshot_at.unwrap_or(self.started_at).elapsed()
-                        > HELPER_FAILURE_GRACE
+                    && self
+                        .last_snapshot_at
+                        .or(self.accepted_at)
+                        .is_some_and(|at| at.elapsed() > HELPER_FAILURE_GRACE)
                 {
                     return Err("admin_mode_snapshot_timeout".to_string());
                 }
@@ -146,7 +161,13 @@ impl ElevatedHelperClient {
             }
         }
 
-        let since = self.last_snapshot_at.unwrap_or(self.started_at).elapsed();
+        let Some(since) = self
+            .last_snapshot_at
+            .or(self.accepted_at)
+            .map(|at| at.elapsed())
+        else {
+            return Ok(ElevatedPoll::Pending);
+        };
         if since > HELPER_FAILURE_GRACE {
             return Err("admin_mode_snapshot_timeout".to_string());
         }
@@ -171,7 +192,7 @@ impl ElevatedHelperClient {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        self.stop_with_timeouts(HELPER_STOP_GRACE, HELPER_FORCE_EXIT_GRACE)
+        self.stop_with_timeouts(HELPER_LAUNCHER_STOP_GRACE, HELPER_FORCE_EXIT_GRACE)
     }
 
     fn stop_with_timeouts(
@@ -222,9 +243,10 @@ impl ElevatedHelperClient {
         Self {
             data_file: base_dir.join("snapshot.json"),
             stop_file: base_dir.join("stop.signal"),
+            accepted_file: base_dir.join("accepted.signal"),
             token: "scripted-token".to_string(),
             last_seq: 0,
-            started_at: Instant::now(),
+            accepted_at: None,
             last_snapshot_at: None,
             collect_process_network: false,
             last_warnings: Vec::new(),
@@ -249,6 +271,7 @@ impl ElevatedHelperClient {
             return Ok(None);
         }
 
+        self.accepted_at.get_or_insert_with(Instant::now);
         self.last_seq = snapshot.seq;
         Ok(Some(if let Some(error) = snapshot.error {
             self.recovering_detail = Some(error.clone());
@@ -286,18 +309,30 @@ struct ElevatedSnapshot {
 struct ElevatedHelperArgs {
     pipe_name: String,
     stop_file: PathBuf,
+    accepted_file: PathBuf,
     token: String,
     parent_pid: u32,
+    owner_window: usize,
     collect_process_network: bool,
 }
 
 pub fn run_cli(args: &[String]) -> Option<i32> {
-    if !args.iter().any(|arg| arg == "--elevated-helper") {
+    let (flag, run) = if args.iter().any(|arg| arg == ELEVATED_HELPER_LAUNCHER_FLAG) {
+        (
+            ELEVATED_HELPER_LAUNCHER_FLAG,
+            run_elevated_helper_launcher as fn(ElevatedHelperArgs) -> i32,
+        )
+    } else if args.iter().any(|arg| arg == ELEVATED_HELPER_FLAG) {
+        (
+            ELEVATED_HELPER_FLAG,
+            run_elevated_helper as fn(ElevatedHelperArgs) -> i32,
+        )
+    } else {
         return None;
-    }
+    };
 
-    match parse_helper_args(args).and_then(validate_helper_args) {
-        Ok(helper_args) => Some(run_elevated_helper(helper_args)),
+    match parse_helper_args(args, flag).and_then(validate_helper_args) {
+        Ok(helper_args) => Some(run(helper_args)),
         Err(error) => {
             eprintln!("{error}");
             Some(2)
@@ -308,10 +343,13 @@ pub fn run_cli(args: &[String]) -> Option<i32> {
 #[cfg(windows)]
 fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
     let mut seq = 0_u64;
-    if let Err(error) = start_helper_exit_watchdog(args.parent_pid, args.stop_file.clone()) {
-        eprintln!("{error}");
-        return 1;
-    }
+    let mut watchdog = match ParentExitWatchdog::start(args.parent_pid) {
+        Ok(watchdog) => watchdog,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
     let pipe = match PipeClient::connect(&args.pipe_name) {
         Ok(pipe) => pipe,
         Err(error) => {
@@ -320,7 +358,7 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
         }
     };
     let collector = TelemetryCollector::for_elevated_helper(args.collect_process_network);
-    while !args.stop_file.exists() {
+    while !args.stop_file.exists() && !watchdog.parent_exited() {
         seq = seq.saturating_add(1);
         let write = match collector.collect() {
             Ok(sample) => {
@@ -337,56 +375,141 @@ fn run_elevated_helper(args: ElevatedHelperArgs) -> i32 {
         thread::sleep(Duration::from_millis(HELPER_INTERVAL_MS));
     }
 
-    0
+    match watchdog.stop() {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
 }
 
 #[cfg(windows)]
-fn start_helper_exit_watchdog(parent_pid: u32, stop_file: PathBuf) -> Result<(), String> {
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT},
-        System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
-    };
-
-    let parent_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
-    if parent_handle.is_null() {
-        return Err(format!("admin_mode_parent_watch_failed error={}", unsafe {
-            GetLastError()
-        }));
+fn run_elevated_helper_launcher(args: ElevatedHelperArgs) -> i32 {
+    if args.stop_file.exists() {
+        return 0;
     }
-    let parent_handle_value = parent_handle as usize;
+    let process = match shell_execute_elevated_helper(&args) {
+        Ok(process) => process,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    if let Err(error) = fs::write(&args.accepted_file, "accepted") {
+        let _ = process.terminate();
+        let _ = process.wait(HELPER_FORCE_EXIT_GRACE);
+        eprintln!("admin_mode_acceptance_signal_failed:{error}");
+        return 1;
+    }
+    match supervise_elevated_helper(process, &args.stop_file) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
+}
 
-    thread::Builder::new()
-        .name("batcave-admin-watchdog".to_string())
-        .spawn(move || {
-            let parent_handle = parent_handle_value as HANDLE;
-            loop {
-                if stop_file.exists() {
-                    unsafe { CloseHandle(parent_handle) };
-                    std::process::exit(0);
-                }
+#[cfg(windows)]
+#[derive(Debug)]
+struct ParentExitWatchdog {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    parent_exited: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<thread::JoinHandle<Result<(), String>>>,
+}
 
-                match unsafe { WaitForSingleObject(parent_handle, 50) } {
-                    WAIT_TIMEOUT => {}
-                    WAIT_OBJECT_0 => {
-                        unsafe { CloseHandle(parent_handle) };
-                        std::process::exit(0);
+#[cfg(windows)]
+impl ParentExitWatchdog {
+    fn start(parent_pid: u32) -> Result<Self, String> {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT},
+            System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+        };
+
+        let parent_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
+        if parent_handle.is_null() {
+            return Err(format!("admin_mode_parent_watch_failed error={}", unsafe {
+                GetLastError()
+            }));
+        }
+        let parent_handle_value = parent_handle as usize;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parent_exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = std::sync::Arc::clone(&cancel);
+        let worker_parent_exited = std::sync::Arc::clone(&parent_exited);
+
+        let worker = thread::Builder::new()
+            .name("batcave-admin-watchdog".to_string())
+            .spawn(move || {
+                let parent_handle = parent_handle_value as HANDLE;
+                let result = loop {
+                    if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
+                        break Ok(());
                     }
-                    _ => {
-                        unsafe { CloseHandle(parent_handle) };
-                        std::process::exit(1);
+
+                    match unsafe {
+                        WaitForSingleObject(parent_handle, HELPER_WATCHDOG_POLL.as_millis() as u32)
+                    } {
+                        WAIT_TIMEOUT => {}
+                        WAIT_OBJECT_0 => {
+                            worker_parent_exited.store(true, std::sync::atomic::Ordering::Release);
+                            break Ok(());
+                        }
+                        _ => {
+                            break Err(format!(
+                                "admin_mode_parent_watch_failed error={}",
+                                unsafe { GetLastError() }
+                            ));
+                        }
                     }
-                }
-            }
+                };
+                unsafe { CloseHandle(parent_handle) };
+                result
+            })
+            .map_err(|error| {
+                unsafe { CloseHandle(parent_handle) };
+                format!("admin_mode_parent_watch_start_failed:{error}")
+            })?;
+
+        Ok(Self {
+            cancel,
+            parent_exited,
+            worker: Some(worker),
         })
-        .map(|_| ())
-        .map_err(|error| {
-            unsafe { CloseHandle(parent_handle) };
-            format!("admin_mode_parent_watch_start_failed:{error}")
+    }
+
+    fn parent_exited(&self) -> bool {
+        self.parent_exited
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn stop(&mut self) -> Result<(), String> {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.worker.take().map_or(Ok(()), |worker| {
+            worker
+                .join()
+                .map_err(|_| "admin_mode_parent_watch_join_failed".to_string())?
         })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ParentExitWatchdog {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
 }
 
 #[cfg(not(windows))]
 fn run_elevated_helper(_args: ElevatedHelperArgs) -> i32 {
+    eprintln!("admin_mode_requires_windows");
+    1
+}
+
+#[cfg(not(windows))]
+fn run_elevated_helper_launcher(_args: ElevatedHelperArgs) -> i32 {
     eprintln!("admin_mode_requires_windows");
     1
 }
@@ -738,6 +861,7 @@ fn drain_payloads(buffer: &mut Vec<u8>) -> Result<Vec<String>, String> {
 struct ElevatedHelperSession {
     data_file: PathBuf,
     stop_file: PathBuf,
+    accepted_file: PathBuf,
     pipe_name: String,
     token: String,
 }
@@ -768,6 +892,7 @@ fn prepare_helper_session(base_dir: &Path) -> Result<ElevatedHelperSession, Stri
     Ok(ElevatedHelperSession {
         data_file: helper_dir.join("snapshot.json"),
         stop_file: helper_dir.join("stop.signal"),
+        accepted_file: helper_dir.join("accepted.signal"),
         pipe_name: format!(r"\\.\pipe\batcave-elevated-{token}"),
         token,
     })
@@ -894,7 +1019,12 @@ fn remove_helper_artifacts(base_dir: &Path) {
     let mut has_artifacts = false;
     for data_file in &data_files {
         let stop_file = data_file.with_file_name("stop.signal");
-        if data_file.exists() || snapshot_temp_file(data_file).exists() || stop_file.exists() {
+        let accepted_file = data_file.with_file_name("accepted.signal");
+        if data_file.exists()
+            || snapshot_temp_file(data_file).exists()
+            || stop_file.exists()
+            || accepted_file.exists()
+        {
             has_artifacts = true;
             let _ = fs::write(&stop_file, "stop");
         }
@@ -910,6 +1040,7 @@ fn remove_helper_artifacts(base_dir: &Path) {
 fn remove_artifacts_for_snapshot(data_file: &Path) {
     remove_snapshot_artifacts(data_file);
     let _ = fs::remove_file(data_file.with_file_name("stop.signal"));
+    let _ = fs::remove_file(data_file.with_file_name("accepted.signal"));
     remove_empty_run_dir(data_file);
 }
 
@@ -931,22 +1062,28 @@ fn remove_empty_run_dir(data_file: &Path) {
     }
 }
 
-fn parse_helper_args(args: &[String]) -> Result<ElevatedHelperArgs, String> {
-    reject_unknown_helper_args(args)?;
+fn parse_helper_args(args: &[String], flag: &str) -> Result<ElevatedHelperArgs, String> {
+    reject_unknown_helper_args(args, flag)?;
     let pipe_name = required_value(args, "--pipe-name")?;
     let stop_file = PathBuf::from(required_value(args, "--stop-file")?);
+    let accepted_file = PathBuf::from(required_value(args, "--accepted-file")?);
     let token = required_value(args, "--token")?;
     let parent_pid = required_value(args, "--parent-pid")?
         .parse::<u32>()
         .map_err(|_| "invalid_elevated_helper_parent_pid".to_string())?;
+    let owner_window = required_value(args, "--owner-window")?
+        .parse::<usize>()
+        .map_err(|_| "invalid_elevated_helper_owner_window".to_string())?;
     let collect_process_network = required_value(args, "--collect-process-network")?
         .parse::<bool>()
         .map_err(|_| "invalid_elevated_helper_process_network".to_string())?;
     Ok(ElevatedHelperArgs {
         pipe_name,
         stop_file,
+        accepted_file,
         token,
         parent_pid,
+        owner_window,
         collect_process_network,
     })
 }
@@ -974,6 +1111,9 @@ fn validate_helper_args_for_base(
     if args.parent_pid == 0 {
         return Err("invalid_elevated_helper_parent_pid".to_string());
     }
+    if !owner_window_matches_parent(args.owner_window, args.parent_pid) {
+        return Err("invalid_elevated_helper_owner_window".to_string());
+    }
 
     let expected_run_dir = format!("run-{}", args.token);
     let run_dir = args
@@ -995,22 +1135,39 @@ fn validate_helper_args_for_base(
     if !valid_shape {
         return Err("invalid_elevated_helper_stop_file".to_string());
     }
+    let valid_accepted_shape = args.accepted_file.is_absolute()
+        && args
+            .accepted_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some("accepted.signal")
+        && args.accepted_file.parent() == Some(run_dir)
+        && !args
+            .accepted_file
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir));
+    if !valid_accepted_shape {
+        return Err("invalid_elevated_helper_accepted_file".to_string());
+    }
     reject_reparse_path(helper_root, true)?;
     reject_reparse_path(run_dir, true)?;
     reject_reparse_path(&args.stop_file, false)?;
+    reject_reparse_path(&args.accepted_file, false)?;
 
     Ok(args)
 }
 
-fn reject_unknown_helper_args(args: &[String]) -> Result<(), String> {
+fn reject_unknown_helper_args(args: &[String], flag: &str) -> Result<(), String> {
     let known_with_value = [
         "--pipe-name",
         "--stop-file",
+        "--accepted-file",
         "--token",
         "--parent-pid",
+        "--owner-window",
         "--collect-process-network",
     ];
-    let known_flags = ["--elevated-helper"];
+    let known_flags = [flag];
     cli_args::reject_unknown_args(args, &known_with_value, &known_flags)
 }
 
@@ -1026,6 +1183,67 @@ fn required_value(args: &[String], name: &str) -> Result<String, String> {
     }
 
     Ok(value.clone())
+}
+
+#[cfg(windows)]
+fn current_process_owner_window() -> Result<usize, String> {
+    use windows_sys::Win32::{
+        Foundation::{HWND, LPARAM},
+        UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible},
+    };
+
+    struct WindowSearch {
+        process_id: u32,
+        window: HWND,
+    }
+
+    unsafe extern "system" fn visit_window(window: HWND, state: LPARAM) -> windows_sys::core::BOOL {
+        let search = unsafe { &mut *(state as *mut WindowSearch) };
+        let mut process_id = 0_u32;
+        unsafe { GetWindowThreadProcessId(window, &mut process_id) };
+        if process_id == search.process_id && unsafe { IsWindowVisible(window) } != 0 {
+            search.window = window;
+            return 0;
+        }
+        1
+    }
+
+    let mut search = WindowSearch {
+        process_id: std::process::id(),
+        window: std::ptr::null_mut(),
+    };
+    unsafe {
+        EnumWindows(
+            Some(visit_window),
+            &mut search as *mut WindowSearch as LPARAM,
+        )
+    };
+    if search.window.is_null() {
+        return Err("admin_mode_owner_window_not_found".to_string());
+    }
+    Ok(search.window as usize)
+}
+
+#[cfg(not(windows))]
+fn current_process_owner_window() -> Result<usize, String> {
+    Ok(0)
+}
+
+#[cfg(windows)]
+fn owner_window_matches_parent(owner_window: usize, parent_pid: u32) -> bool {
+    use windows_sys::Win32::{Foundation::HWND, UI::WindowsAndMessaging::GetWindowThreadProcessId};
+
+    if owner_window == 0 {
+        return true;
+    }
+    let mut owner_pid = 0_u32;
+    unsafe { GetWindowThreadProcessId(owner_window as HWND, &mut owner_pid) };
+    owner_pid == parent_pid
+}
+
+#[cfg(not(windows))]
+fn owner_window_matches_parent(owner_window: usize, _parent_pid: u32) -> bool {
+    owner_window == 0
 }
 
 #[cfg(windows)]
@@ -1099,10 +1317,48 @@ impl ElevatedHelperProcess {
 fn launch_elevated_helper(
     pipe_name: &str,
     stop_file: &Path,
+    accepted_file: &Path,
     token: &str,
     parent_pid: u32,
+    owner_window: usize,
     collect_process_network: bool,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
+    use std::{os::windows::io::IntoRawHandle, os::windows::process::CommandExt};
+
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("admin_mode_current_exe_failed:{error}"))?;
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg(ELEVATED_HELPER_LAUNCHER_FLAG)
+        .arg("--pipe-name")
+        .arg(pipe_name)
+        .arg("--stop-file")
+        .arg(stop_file)
+        .arg("--accepted-file")
+        .arg(accepted_file)
+        .arg("--token")
+        .arg(token)
+        .arg("--parent-pid")
+        .arg(parent_pid.to_string())
+        .arg("--owner-window")
+        .arg(owner_window.to_string())
+        .arg("--collect-process-network")
+        .arg(collect_process_network.to_string());
+    command.creation_flags(CREATE_NO_WINDOW);
+    let child = command
+        .spawn()
+        .map_err(|error| format!("admin_mode_launcher_spawn_failed:{error}"))?;
+    Ok(Some(ElevatedHelperProcess {
+        handle: child.into_raw_handle() as HANDLE,
+    }))
+}
+
+#[cfg(windows)]
+fn shell_execute_elevated_helper(
+    args: &ElevatedHelperArgs,
+) -> Result<ElevatedHelperProcess, String> {
     use std::{mem::size_of, ptr::null};
 
     use windows_sys::Win32::UI::{
@@ -1115,17 +1371,19 @@ fn launch_elevated_helper(
     let exe_w = wide_os(exe.as_os_str());
     let verb_w = wide("runas");
     let params_w = wide(&format!(
-        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --token \"{}\" --parent-pid {} --collect-process-network {}",
-        pipe_name,
-        stop_file.display(),
-        token,
-        parent_pid,
-        collect_process_network,
+        "--elevated-helper --pipe-name \"{}\" --stop-file \"{}\" --accepted-file \"{}\" --token \"{}\" --parent-pid {} --owner-window {} --collect-process-network {}",
+        args.pipe_name,
+        args.stop_file.display(),
+        args.accepted_file.display(),
+        args.token,
+        args.parent_pid,
+        args.owner_window,
+        args.collect_process_network,
     ));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS,
-        hwnd: 0 as _,
+        hwnd: args.owner_window as _,
         lpVerb: verb_w.as_ptr(),
         lpFile: exe_w.as_ptr(),
         lpParameters: params_w.as_ptr(),
@@ -1148,17 +1406,44 @@ fn launch_elevated_helper(
         return Err("admin_mode_launch_missing_process_handle".to_string());
     }
 
-    Ok(Some(ElevatedHelperProcess {
+    Ok(ElevatedHelperProcess {
         handle: info.hProcess,
-    }))
+    })
+}
+
+#[cfg(windows)]
+fn supervise_elevated_helper(
+    process: ElevatedHelperProcess,
+    stop_file: &Path,
+) -> Result<(), String> {
+    loop {
+        if process.has_exited() {
+            return if stop_file.exists() {
+                Ok(())
+            } else {
+                Err("admin_mode_helper_exited".to_string())
+            };
+        }
+        if stop_file.exists() {
+            if process.wait(HELPER_STOP_GRACE)
+                || (process.terminate() && process.wait(HELPER_FORCE_EXIT_GRACE))
+            {
+                return Ok(());
+            }
+            return Err("admin_mode_helper_termination_failed".to_string());
+        }
+        thread::sleep(HELPER_WATCHDOG_POLL);
+    }
 }
 
 #[cfg(not(windows))]
 fn launch_elevated_helper(
     _pipe_name: &str,
     _stop_file: &Path,
+    _accepted_file: &Path,
     _token: &str,
     _parent_pid: u32,
+    _owner_window: usize,
     _collect_process_network: bool,
 ) -> Result<Option<ElevatedHelperProcess>, String> {
     Err("admin_mode_requires_windows".to_string())
@@ -1184,7 +1469,7 @@ mod tests {
         let args = vec!["--elevated-helper".to_string()];
 
         assert_eq!(
-            parse_helper_args(&args),
+            parse_helper_args(&args, ELEVATED_HELPER_FLAG),
             Err("missing_required_argument:--pipe-name".to_string())
         );
     }
@@ -1201,8 +1486,26 @@ mod tests {
         ];
 
         assert_eq!(
-            parse_helper_args(&args),
+            parse_helper_args(&args, ELEVATED_HELPER_FLAG),
             Err("missing_value_for_argument:--pipe-name".to_string())
+        );
+    }
+
+    #[test]
+    fn helper_modes_reject_each_others_flags() {
+        assert_eq!(
+            parse_helper_args(
+                &[ELEVATED_HELPER_FLAG.to_string()],
+                ELEVATED_HELPER_LAUNCHER_FLAG
+            ),
+            Err("unknown_argument:--elevated-helper".to_string())
+        );
+        assert_eq!(
+            parse_helper_args(
+                &[ELEVATED_HELPER_LAUNCHER_FLAG.to_string()],
+                ELEVATED_HELPER_FLAG
+            ),
+            Err("unknown_argument:--elevated-helper-launcher".to_string())
         );
     }
 
@@ -1215,6 +1518,22 @@ mod tests {
             client.poll_rows().expect("missing snapshot is pending"),
             ElevatedPoll::Pending
         ));
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn accepted_helper_without_a_snapshot_times_out() {
+        let base_dir = test_dir("accepted-timeout");
+        let mut client = test_client(&base_dir);
+        client.accepted_at = Some(Instant::now() - HELPER_FAILURE_GRACE - Duration::from_millis(1));
+
+        assert_eq!(
+            client
+                .poll_rows()
+                .expect_err("accepted helper without a snapshot fails closed"),
+            "admin_mode_snapshot_timeout"
+        );
 
         let _ = fs::remove_dir_all(base_dir);
     }
@@ -1242,7 +1561,15 @@ mod tests {
             first.stop_file.file_name().and_then(|name| name.to_str()),
             Some("stop.signal")
         );
+        assert_eq!(
+            first
+                .accepted_file
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("accepted.signal")
+        );
         assert_eq!(first.data_file.parent(), first.stop_file.parent());
+        assert_eq!(first.data_file.parent(), first.accepted_file.parent());
         assert!(first
             .data_file
             .parent()
@@ -1352,8 +1679,10 @@ mod tests {
         let valid = ElevatedHelperArgs {
             pipe_name: format!(r"\\.\pipe\batcave-elevated-{token}"),
             stop_file: run_dir.join("stop.signal"),
+            accepted_file: run_dir.join("accepted.signal"),
             token: token.clone(),
             parent_pid: 1,
+            owner_window: 0,
             collect_process_network: false,
         };
 
@@ -1500,13 +1829,44 @@ mod tests {
         let temp_file = snapshot_temp_file(&client.data_file);
         fs::write(&client.data_file, "{}").expect("snapshot fixture writes");
         fs::write(&temp_file, "{}").expect("temp fixture writes");
+        fs::write(&client.accepted_file, "accepted").expect("accepted fixture writes");
 
         client.stop().expect("helper stops");
 
         assert!(!client.stop_file.exists());
         assert!(!client.data_file.exists());
         assert!(!temp_file.exists());
+        assert!(!client.accepted_file.exists());
         let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parent_watchdog_is_cancellable_and_joined() {
+        let mut watchdog = ParentExitWatchdog::start(std::process::id()).expect("watchdog starts");
+
+        assert!(!watchdog.parent_exited());
+        watchdog.stop().expect("watchdog joins");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parent_watchdog_reports_parent_exit_without_exiting_the_helper_process() {
+        let mut parent = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"])
+            .spawn()
+            .expect("parent fixture starts");
+        let mut watchdog = ParentExitWatchdog::start(parent.id()).expect("watchdog starts");
+
+        parent.kill().expect("parent fixture stops");
+        parent.wait().expect("parent fixture is reaped");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !watchdog.parent_exited() && Instant::now() < deadline {
+            thread::sleep(HELPER_WATCHDOG_POLL);
+        }
+
+        assert!(watchdog.parent_exited());
+        watchdog.stop().expect("watchdog joins");
     }
 
     #[cfg(windows)]
@@ -1569,15 +1929,18 @@ mod tests {
         let data_file = helper_dir.join("snapshot.json");
         let temp_file = snapshot_temp_file(&data_file);
         let stop_file = helper_dir.join("stop.signal");
+        let accepted_file = helper_dir.join("accepted.signal");
         fs::write(&data_file, "{}").expect("snapshot fixture writes");
         fs::write(&temp_file, "{}").expect("temp fixture writes");
         fs::write(&stop_file, "stop").expect("stop fixture writes");
+        fs::write(&accepted_file, "accepted").expect("accepted fixture writes");
 
         ElevatedHelperClient::remove_stale_artifacts(&base_dir);
 
         assert!(!data_file.exists());
         assert!(!temp_file.exists());
         assert!(!stop_file.exists());
+        assert!(!accepted_file.exists());
         let _ = fs::remove_dir_all(base_dir);
     }
 

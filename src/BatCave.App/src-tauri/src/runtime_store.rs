@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
-        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
         Arc, Condvar, Mutex, RwLock,
     },
     thread::JoinHandle,
@@ -982,7 +982,6 @@ struct RuntimeStore {
     settings: RuntimeSettings,
     admin_mode: RuntimeAdminModeStatus,
     elevated: Option<ElevatedHelperClient>,
-    elevated_request: Option<ElevatedLaunch>,
     snapshot: RuntimeSnapshot,
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
@@ -1015,11 +1014,6 @@ struct VerifiedElevatedFrame {
     rows: Vec<ProcessSample>,
     warnings: Vec<String>,
     collects_process_network: bool,
-}
-
-struct ElevatedLaunch {
-    receiver: Receiver<Result<ElevatedHelperClient, String>>,
-    worker: Option<JoinHandle<()>>,
 }
 
 struct ElevatedTransition {
@@ -1213,7 +1207,6 @@ impl RuntimeStore {
             settings,
             admin_mode,
             elevated: None,
-            elevated_request: None,
             snapshot,
             warnings,
             previous_totals: None,
@@ -1269,7 +1262,6 @@ impl RuntimeStore {
         let had_privileged_session = self.settings.admin_mode_requested
             || self.settings.admin_mode_enabled
             || self.elevated.is_some()
-            || self.elevated_request.is_some()
             || self.elevated_helper_rows_published
             || self.last_verified_elevated_frame.is_some()
             || self.process_access_baseline_dirty;
@@ -1285,29 +1277,12 @@ impl RuntimeStore {
             self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
             self.admin_mode.detail = None;
             self.clear_warning("admin_mode");
-            if self.elevated.is_none() && self.elevated_request.is_none() {
+            if self.elevated.is_none() {
                 let collect_process_network =
                     !self.collector.process_network_ready().unwrap_or(false);
-                let base_dir = self.base_dir.clone();
-                let (sender, receiver) = mpsc::channel();
-                let worker = std::thread::Builder::new()
-                    .name("batcave-elevated-helper-launch".to_string())
-                    .spawn(move || {
-                        let _ = sender.send(ElevatedHelperClient::start(
-                            &base_dir,
-                            collect_process_network,
-                        ));
-                    });
-                match worker {
-                    Ok(worker) => {
-                        self.elevated_request = Some(ElevatedLaunch {
-                            receiver,
-                            worker: Some(worker),
-                        });
-                    }
-                    Err(error) => {
-                        self.fail_admin_mode(format!("admin_mode_launch_thread_failed:{error}"))
-                    }
+                match ElevatedHelperClient::start(&self.base_dir, collect_process_network) {
+                    Ok(client) => self.elevated = Some(client),
+                    Err(error) => self.fail_admin_mode(error),
                 }
             }
         } else {
@@ -1370,7 +1345,6 @@ impl RuntimeStore {
         let before_requested = self.settings.admin_mode_requested;
         let before_enabled = self.settings.admin_mode_enabled;
         let before_status = self.admin_mode.clone();
-        let request_resolved = self.resolve_elevated_request();
         let mut poll = None;
         let mut collects_process_network = false;
         let mut poll_error = None;
@@ -1441,8 +1415,7 @@ impl RuntimeStore {
         let state_changed = before_requested != self.settings.admin_mode_requested
             || access_changed
             || before_status != self.admin_mode;
-        let publish =
-            request_resolved || state_changed || matches!(&poll, Some(ElevatedPoll::Fresh { .. }));
+        let publish = state_changed || matches!(&poll, Some(ElevatedPoll::Fresh { .. }));
 
         ElevatedTransition {
             poll,
@@ -1674,40 +1647,6 @@ impl RuntimeStore {
         self.add_warning("admin_mode", error);
         let _ = self.collector.retry_process_network();
         let _ = self.persist_settings(SettingsWriteIntent::Automatic);
-    }
-
-    fn resolve_elevated_request(&mut self) -> bool {
-        let result = match self
-            .elevated_request
-            .as_ref()
-            .map(|launch| launch.receiver.try_recv())
-        {
-            Some(Ok(result)) => Some(result),
-            Some(Err(TryRecvError::Disconnected)) => {
-                Some(Err("admin_mode_launch_channel_closed".to_string()))
-            }
-            Some(Err(TryRecvError::Empty)) | None => None,
-        };
-        let Some(result) = result else {
-            return false;
-        };
-        if let Some(mut launch) = self.elevated_request.take() {
-            if let Some(worker) = launch.worker.take() {
-                let _ = worker.join();
-            }
-        }
-
-        match (self.settings.admin_mode_requested, result) {
-            (true, Ok(client)) => self.elevated = Some(client),
-            (true, Err(error)) => self.fail_admin_mode(error),
-            (false, Ok(mut client)) => {
-                if let Err(error) = client.stop() {
-                    self.fail_admin_mode(error);
-                }
-            }
-            (false, Err(_)) => {}
-        }
-        true
     }
 
     fn publish_snapshot_only(&mut self, warning: Option<(&str, String)>) {
@@ -2082,24 +2021,6 @@ impl RuntimeStore {
             };
             if let Err(error) = cache_result {
                 errors.push(error);
-            }
-        }
-        if let Some(mut launch) = self.elevated_request.take() {
-            if let Some(worker) = launch.worker.take() {
-                if worker.join().is_err() {
-                    errors.push("admin_mode_launcher_join_failed".to_string());
-                }
-            }
-            match launch.receiver.try_recv() {
-                Ok(Ok(mut client)) => {
-                    if let Err(error) = client.stop() {
-                        errors.push(error);
-                    }
-                }
-                Ok(Err(_)) | Err(TryRecvError::Disconnected) => {}
-                Err(TryRecvError::Empty) => {
-                    errors.push("admin_mode_launcher_result_missing".to_string());
-                }
             }
         }
         if let Some(mut client) = self.elevated.take() {
@@ -6136,7 +6057,7 @@ mod tests {
         assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Active);
         assert!(snapshot.settings.admin_mode_enabled);
         assert!(!snapshot.settings.admin_mode_requested);
-        assert!(store.elevated_request.is_none());
+        assert!(store.elevated.is_none());
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -6594,39 +6515,6 @@ mod tests {
             .expect("settings read succeeds");
         assert!(!persisted.admin_mode_requested);
         assert!(!persisted.admin_mode_enabled);
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn failed_background_elevation_request_becomes_retryable() {
-        let base_dir = runtime_test_dir("admin-background-failure");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        let (sender, receiver) = mpsc::channel();
-        store.settings.admin_mode_requested = true;
-        store.admin_mode.state = RuntimeAdminModeState::Requesting;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.settings.paused = true;
-        store.elevated_request = Some(ElevatedLaunch {
-            receiver,
-            worker: None,
-        });
-        sender
-            .send(Err("admin_mode_launch_failed_or_cancelled".to_string()))
-            .expect("test result sends");
-
-        store.progress_paused_elevated_helper();
-
-        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
-        assert_eq!(
-            store.admin_mode.source,
-            RuntimePrivilegedSource::ElevatedHelper
-        );
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Failed
-        );
-        assert!(store.elevated_request.is_none());
-        assert!(!store.settings.admin_mode_requested);
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -7117,16 +7005,11 @@ mod tests {
     fn queue_scripted_helper(store: &mut RuntimeStore, polls: Vec<Result<ElevatedPoll, String>>) {
         let client =
             ElevatedHelperClient::scripted_for_test(&store.base_dir.join("scripted-helper"), polls);
-        let (sender, receiver) = mpsc::channel();
-        sender.send(Ok(client)).expect("scripted helper sends");
         store.settings.admin_mode_requested = true;
         store.settings.admin_mode_enabled = false;
         store.admin_mode.state = RuntimeAdminModeState::Requesting;
         store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.elevated_request = Some(ElevatedLaunch {
-            receiver,
-            worker: None,
-        });
+        store.elevated = Some(client);
         store.publish_snapshot_only(None);
     }
 
