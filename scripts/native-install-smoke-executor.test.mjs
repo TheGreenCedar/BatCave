@@ -19,6 +19,10 @@ import {
   runNativeInstallSmokeSourceSlice,
   validateNativeInstallSmokeResult,
 } from "./native-install-smoke-executor.mjs";
+import {
+  bindMacosNativeAdapterSource,
+  requireMacosNativeAdapterSourceReceipt,
+} from "./macos-native-install-smoke-adapter.mjs";
 import { expectedReleaseAssetRoles } from "./release-asset-contract.mjs";
 import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
 import {
@@ -40,6 +44,9 @@ const FIXTURE = path.join(
 const SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567";
 const TAG = "v9.9.9-rc.1";
 const UPDATER_KEY = "sha256:0dad0009cf5cc87a778f2e951cefaa0faaba637b95a22f6f3064f12cd4136545";
+const DEVELOPER_ID = "Developer ID Application: BatCave Monitor (ABCDEFGHIJ)";
+const NOTARIZATION_ID = "submission-id:12345678-1234-4234-8234-123456789abc";
+const STAPLE_ID = `ticket-sha256:${"a".repeat(64)}`;
 
 let contractReceipt;
 let payloads;
@@ -157,6 +164,71 @@ function planInput() {
       degradation_scenario: "permission-limited-telemetry",
     },
   };
+}
+
+function macosReleaseTemplate(packageKind) {
+  const packet = releaseTemplate();
+  const role =
+    packageKind === "dmg" ? "macOS universal DMG" : "macOS universal updater payload";
+  const assetName = expectedReleaseAssetRoles(TAG).roles.find(
+    ({ role: candidateRole }) => candidateRole === role,
+  ).name;
+  const verified = contractReceipt.assets.find(({ name }) => name === assetName);
+  packet.packet_id = `macos-${packageKind}-native-source-slice`;
+  packet.platform = {
+    os: "macos",
+    os_version: "15.0",
+    architecture: "arm64",
+    package: { kind: packageKind, architecture: "universal", asset_name: assetName },
+  };
+  packet.assets[0] = {
+    name: assetName,
+    size_bytes: verified.size_bytes,
+    sha256: verified.sha256,
+    api_digest: verified.sha256,
+    public_url: verified.public_url,
+    attestation: {
+      verified: true,
+      repository: RELEASE_REPOSITORY,
+      source_sha: SOURCE_SHA,
+      source_ref: "refs/heads/main",
+      signer_workflow: "TheGreenCedar/BatCave/.github/workflows/release.yml",
+    },
+    signatures:
+      packageKind === "dmg"
+        ? {
+            apple_notarization: { identity: NOTARIZATION_ID, verified: true },
+            apple_staple: { identity: STAPLE_ID, verified: true },
+            contained_app_developer_id: { identity: DEVELOPER_ID, verified: true },
+            contained_app_notarization: { identity: NOTARIZATION_ID, verified: true },
+            contained_app_staple: { identity: STAPLE_ID, verified: true },
+            developer_id: { identity: DEVELOPER_ID, verified: true },
+          }
+        : {
+            contained_app_developer_id: { identity: DEVELOPER_ID, verified: true },
+            contained_app_notarization: { identity: NOTARIZATION_ID, verified: true },
+            contained_app_staple: { identity: STAPLE_ID, verified: true },
+            tauri_updater: { identity: UPDATER_KEY, verified: true },
+          },
+  };
+  packet.limitations =
+    packageKind === "macos_updater"
+      ? {
+          macos_updater_staging_only: {
+            disposition: "accepted",
+            summary: "Archive extraction is staging only and does not prove A-to-B installation.",
+          },
+        }
+      : {};
+  validateReleaseEvidencePacket(packet);
+  return packet;
+}
+
+function macosPlanInput(packageKind) {
+  const input = planInput();
+  input.evidence_template = macosReleaseTemplate(packageKind);
+  input.isolation.scope_id = `macos-${packageKind}-native-source-slice`;
+  return input;
 }
 
 function fixturePlan() {
@@ -480,6 +552,113 @@ test("source slice distinguishes skipped and failed without release evidence", a
   assert.equal(failed.steps.find(({ id }) => id === "preflight.asset_rehash").status, "failed");
   assert.equal(validateNativeInstallSmokeResult(failed), failed);
   assert.doesNotMatch(JSON.stringify(failed), /(?:\/private\/|[A-Za-z]:\\)/u);
+});
+
+test("closed macOS source binding is verified-identity-bound and cannot mint proof", async () => {
+  for (const packageKind of ["dmg", "macos_updater"]) {
+    const plan = createInstallSmokePlan(macosPlanInput(packageKind));
+    const root = await verifiedRootFor(plan);
+    const capability = await acquireNativeArtifactCapability(plan, { verified_root: root });
+    const artifactReceipt = await verifyOwnedNativeArtifactCapability(capability);
+    const sourceReceipt = bindMacosNativeAdapterSource(plan, artifactReceipt);
+
+    assert.equal(
+      requireMacosNativeAdapterSourceReceipt(sourceReceipt, plan, artifactReceipt),
+      sourceReceipt,
+    );
+    assert.equal(sourceReceipt.profile.package_operation, packageKind === "dmg" ? "install" : "stage");
+    assert.deepEqual(
+      sourceReceipt.profile.required_limitations,
+      packageKind === "dmg" ? [] : ["macos_updater_staging_only"],
+    );
+    assert.deepEqual(sourceReceipt.claims, {
+      verified_asset_identity_bound: true,
+      live_capability_held: false,
+      descriptor_only: true,
+      package_consumed: false,
+      process_executed: false,
+      trust_verified: false,
+      runtime_executed: false,
+      cleanup_proven: false,
+      native_proven: false,
+      release_evidence_emitted: false,
+    });
+    assert.doesNotMatch(
+      JSON.stringify(sourceReceipt),
+      /(?:verified_root|selected_path|command|status|trust_identity|evidence_packet|\/private\/|[A-Za-z]:\\)/u,
+    );
+    await assert.rejects(
+      async () => bindMacosNativeAdapterSource(plan, artifactReceipt, { command: "injected" }),
+      /does not accept caller commands, paths, statuses, trust, cleanup, or evidence/u,
+    );
+    assert.throws(
+      () => requireMacosNativeAdapterSourceReceipt({ ...sourceReceipt }, plan, artifactReceipt),
+      /process-local closed macOS source adapter/u,
+    );
+    const secondCapability = await acquireNativeArtifactCapability(plan, { verified_root: root });
+    const secondArtifactReceipt = await verifyOwnedNativeArtifactCapability(secondCapability);
+    assert.throws(
+      () => requireMacosNativeAdapterSourceReceipt(sourceReceipt, plan, secondArtifactReceipt),
+      /exact process-local plan and artifact verification receipt identities/u,
+    );
+    await closeNativeArtifactCapability(secondCapability);
+    await closeNativeArtifactCapability(capability);
+  }
+});
+
+test("macOS source receipts cannot replay across an equivalent process-local plan", async () => {
+  const firstPlan = createInstallSmokePlan(macosPlanInput("dmg"));
+  const secondPlan = createInstallSmokePlan(macosPlanInput("dmg"));
+  assert.equal(firstPlan.plan_id, secondPlan.plan_id);
+  assert.deepEqual(firstPlan.asset, secondPlan.asset);
+  assert.notEqual(firstPlan.identity_receipt, secondPlan.identity_receipt);
+
+  const firstRoot = await verifiedRootFor(firstPlan);
+  const secondRoot = await verifiedRootFor(secondPlan);
+  const firstCapability = await acquireNativeArtifactCapability(firstPlan, {
+    verified_root: firstRoot,
+  });
+  const secondCapability = await acquireNativeArtifactCapability(secondPlan, {
+    verified_root: secondRoot,
+  });
+  const firstArtifactReceipt = await verifyOwnedNativeArtifactCapability(firstCapability);
+  const secondArtifactReceipt = await verifyOwnedNativeArtifactCapability(secondCapability);
+  const sourceReceipt = bindMacosNativeAdapterSource(firstPlan, firstArtifactReceipt);
+
+  assert.throws(
+    () =>
+      requireMacosNativeAdapterSourceReceipt(
+        sourceReceipt,
+        secondPlan,
+        secondArtifactReceipt,
+      ),
+    /exact process-local plan and artifact verification receipt identities/u,
+  );
+  await closeNativeArtifactCapability(secondCapability);
+  await closeNativeArtifactCapability(firstCapability);
+});
+
+test("macOS source execution stays skipped and preserves updater staging-only", async () => {
+  for (const packageKind of ["dmg", "macos_updater"]) {
+    const plan = createInstallSmokePlan(macosPlanInput(packageKind));
+    const root = await verifiedRootFor(plan);
+    const result = await runNativeInstallSmokeSourceSlice(plan, { verified_root: root });
+
+    assert.equal(result.disposition, "skipped");
+    assert.equal(result.native_execution_receipt, null);
+    assert.equal(result.evidence_packet, null);
+    assert.equal(result.steps.find(({ id }) => id === "preflight.asset_rehash").status, "passed");
+    assert.equal(
+      result.steps.find(({ id }) => id === "preflight.package_trust").status,
+      "unsupported",
+    );
+    assert.equal(result.steps.find(({ id }) => id === "install.package_install").status, "blocked");
+    assert.deepEqual(
+      result.profile.required_limitations,
+      packageKind === "dmg" ? [] : ["macos_updater_staging_only"],
+    );
+    assert.equal(validateNativeInstallSmokeResult(result), result);
+  }
 });
 
 test("owned capability cleanup failure is represented as a failed gate", async () => {

@@ -18,6 +18,10 @@ import {
   createClosedLinuxAdapterSourceDescriptor,
   requireClosedLinuxAdapterSourceDescriptor,
 } from "./linux-native-install-smoke-adapter.mjs";
+import {
+  bindMacosNativeAdapterSource,
+  requireMacosNativeAdapterSourceReceipt,
+} from "./macos-native-install-smoke-adapter.mjs";
 
 export const NATIVE_INSTALL_SMOKE_DISPOSITIONS = Object.freeze([
   "skipped",
@@ -104,21 +108,37 @@ function prerequisiteSteps(plan) {
     );
 }
 
-function unavailableSteps(plan, capabilityFailed, linuxSourceRegistered = false) {
+function unavailableSteps(
+  plan,
+  capabilityFailed,
+  linuxSourceRegistered = false,
+  macosSourceReceipt = null,
+) {
   const steps = prerequisiteSteps(plan);
+  const unavailableTrustOutcome = macosSourceReceipt
+    ? "Signed destination trust remains blocked on exact native macOS execution."
+    : linuxSourceRegistered
+      ? "The closed Linux source adapter is registered, but exact package execution is unavailable."
+      : "No reviewed native platform adapter is registered in this source slice.";
   for (const step of plan.steps.slice(2)) {
     if (capabilityFailed && step.id === "preflight.asset_rehash") {
       steps.push(
         fixedStep(step, "failed", "Selected artifact capability acquisition failed closed."),
+      );
+    } else if (macosSourceReceipt && step.id === "preflight.asset_rehash") {
+      steps.push(
+        fixedStep(
+          step,
+          "passed",
+          "Verified asset identity is bound to the macOS adapter source descriptor.",
+        ),
       );
     } else if (!capabilityFailed && step.id === "preflight.package_trust") {
       steps.push(
         fixedStep(
           step,
           "unsupported",
-          linuxSourceRegistered
-            ? "The closed Linux source adapter is registered, but exact package execution is unavailable."
-            : "No reviewed native platform adapter is registered in this source slice.",
+          unavailableTrustOutcome,
         ),
       );
     } else {
@@ -341,17 +361,22 @@ export async function runNativeInstallSmokeSourceSlice(plan, options) {
   exactKeys(options, "native_executor.options", ["verified_root"]);
   let capability;
   let artifactReceipt = null;
+  let linuxSourceRegistered = false;
+  let macosSourceReceipt = null;
   let steps;
   try {
     capability = await acquireNativeArtifactCapability(plan, options);
     artifactReceipt = await verifyOwnedNativeArtifactCapability(capability);
-    let linuxSourceRegistered = false;
     if (plan.platform.os === "linux") {
       const descriptor = createClosedLinuxAdapterSourceDescriptor(plan);
       requireClosedLinuxAdapterSourceDescriptor(descriptor, plan);
       linuxSourceRegistered = true;
     }
-    steps = unavailableSteps(plan, false, linuxSourceRegistered);
+    if (plan.platform.os === "macos") {
+      macosSourceReceipt = bindMacosNativeAdapterSource(plan, artifactReceipt);
+      requireMacosNativeAdapterSourceReceipt(macosSourceReceipt, plan, artifactReceipt);
+    }
+    steps = unavailableSteps(plan, false, linuxSourceRegistered, macosSourceReceipt);
   } catch (error) {
     steps = unavailableSteps(plan, true);
     if (error instanceof NativeArtifactCapabilityCleanupError) {
