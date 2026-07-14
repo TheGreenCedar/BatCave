@@ -150,6 +150,8 @@ Runtime state, settings, warm cache, helper snapshots, and logs stay under:
 
 Theme preference is stored in browser `localStorage` under `batcave.monitor.theme`.
 
+The [current-user state ownership and retention contract](docs/current-user-state.md) defines the owned files, permission checks, diagnostic limits, and safe cleanup boundary.
+
 ## Platform Notes
 
 - Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
