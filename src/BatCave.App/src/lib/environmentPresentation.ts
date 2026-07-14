@@ -1,5 +1,6 @@
 import type {
   RuntimeAdminModeStatus,
+  RuntimeCollectorServiceStatus,
   RuntimeEnvironment,
   RuntimeInstallKind,
   RuntimePrivilegedSource,
@@ -44,6 +45,13 @@ export function privilegedCollectionLabel(
   adminMode: RuntimeAdminModeStatus,
   blockedProcessCount = 0,
 ): string {
+  if (adminMode.collector_service) {
+    const serviceLabel = collectorServiceStateLabel(adminMode.collector_service);
+    return adminMode.collector_service.state === "active" && blockedProcessCount > 0
+      ? `${serviceLabel}, ${blockedProcessCount} blocked`
+      : serviceLabel;
+  }
+
   switch (adminMode.state) {
     case "requesting":
       return "Waiting for Windows";
@@ -70,6 +78,10 @@ export function privilegedCollectionLabel(
 }
 
 export function privilegedCollectionNote(adminMode: RuntimeAdminModeStatus): string {
+  if (adminMode.collector_service) {
+    return collectorServiceNote(adminMode.collector_service);
+  }
+
   switch (adminMode.state) {
     case "active":
       return adminMode.source === "current_process"
@@ -96,8 +108,52 @@ export function privilegedSourceLabel(source: RuntimePrivilegedSource): string {
       return "Current process";
     case "elevated_helper":
       return "Local elevated helper";
+    case "collector_service":
+      return "Installed collector service";
     default:
       return "None";
+  }
+}
+
+export function collectorServiceStateLabel(service: RuntimeCollectorServiceStatus): string {
+  switch (service.state) {
+    case "not_installed":
+      return "Collector service not installed";
+    case "stopped":
+      return "Collector service stopped";
+    case "connecting":
+      return "Collector service connecting";
+    case "recovering":
+      return "Collector service recovering";
+    case "active":
+      return "Collector service active";
+    case "incompatible":
+      return "Collector service incompatible";
+    case "unauthorized":
+      return "Collector service unauthorized";
+    case "failed":
+      return "Collector service failed";
+  }
+}
+
+function collectorServiceNote(service: RuntimeCollectorServiceStatus): string {
+  switch (service.state) {
+    case "active":
+      return "Protected fields come from the installed collector service; the app keeps its standard token.";
+    case "connecting":
+      return "The installed collector service is connecting; standard monitoring remains current.";
+    case "recovering":
+      return "The installed collector service is recovering; standard monitoring remains current.";
+    case "not_installed":
+      return "The collector service is not installed; standard monitoring remains current.";
+    case "stopped":
+      return "The collector service is stopped; standard monitoring remains current.";
+    case "incompatible":
+      return "The collector service is incompatible with this app; standard monitoring remains current.";
+    case "unauthorized":
+      return "The app could not authorize the collector service; standard monitoring remains current.";
+    case "failed":
+      return "The collector service failed; standard monitoring remains current.";
   }
 }
 
@@ -112,6 +168,7 @@ export function privilegedCollectionAction(
 ): PrivilegedCollectionAction | null {
   if (
     !available ||
+    adminMode.collector_service != null ||
     adminMode.source === "current_process" ||
     adminMode.state === "requesting" ||
     adminMode.state === "unavailable"

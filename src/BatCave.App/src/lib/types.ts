@@ -1,3 +1,8 @@
+import type {
+  CollectorServiceStateV3,
+  CollectorServiceStatusV3,
+} from "./generated/runtime-protocol-v3.ts";
+
 export interface RuntimeSnapshot {
   event_kind: "runtime_snapshot";
   publication_seq: number;
@@ -83,7 +88,11 @@ export interface RuntimeAdminModeStatus {
   source: RuntimePrivilegedSource;
   detail: string | null;
   last_success_at_ms: number | null;
+  collector_service: RuntimeCollectorServiceStatus | null;
 }
+
+export type RuntimeCollectorServiceState = CollectorServiceStateV3;
+export type RuntimeCollectorServiceStatus = CollectorServiceStatusV3;
 
 export type RuntimePrivilegedSource =
   | "none"

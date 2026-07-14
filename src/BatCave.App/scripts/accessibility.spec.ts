@@ -95,6 +95,17 @@ test("compact workload detail has no automated WCAG A/AA violations", async ({ p
   await expectNoAxeViolations(page);
 });
 
+test("diagnostics exposes collector-service identity without a helper action", async ({ page }) => {
+  await openFixture(page, "diagnostics");
+  const dialog = page.getByRole("dialog", { name: "Diagnostics" });
+  await page.getByText("Technical details", { exact: true }).click();
+
+  await expect(dialog.getByText("Collector service active", { exact: true }).first()).toBeVisible();
+  await expect(dialog.getByText("Installed collector service", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("accessibility-fixture-service", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /helper/i })).toHaveCount(0);
+});
+
 for (const drawer of ["Settings", "Diagnostics"] as const) {
   test(`${drawer} dialog closes with Escape, contains focus, and restores its opener`, async ({
     page,

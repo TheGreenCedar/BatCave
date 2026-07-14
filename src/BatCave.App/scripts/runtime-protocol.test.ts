@@ -487,7 +487,24 @@ test("reader rejects descriptor, value, and membership corruption", () => {
       detail: null,
     },
   };
-  assert.equal(decodeProtocolEnvelope(matchingActiveService).kind, "snapshot");
+  const decodedActiveService = decodeProtocolEnvelope(matchingActiveService);
+  assert.equal(decodedActiveService.kind, "snapshot");
+  if (decodedActiveService.kind === "snapshot") {
+    const adapted = adaptRuntimePayload(decodedActiveService.payload);
+    assert.equal(adapted.admin_mode.source, "collector_service");
+    assert.deepEqual(
+      adapted.admin_mode.collector_service,
+      matchingPayload.privileged_collection.collector_service,
+    );
+    assert.notEqual(
+      adapted.admin_mode.collector_service,
+      matchingPayload.privileged_collection.collector_service,
+    );
+    assert.notEqual(
+      adapted.admin_mode.collector_service?.release_identity,
+      matchingPayload.privileged_collection.collector_service?.release_identity,
+    );
+  }
 
   const mismatchedActiveService = structuredClone(matchingActiveService);
   const collectorIdentity =

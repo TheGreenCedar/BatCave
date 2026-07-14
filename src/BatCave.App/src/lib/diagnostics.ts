@@ -39,6 +39,17 @@ function toDiagnosticIssue(
   const value = `${warning.key} ${warning.category} ${warning.message}`.toLocaleLowerCase();
   const action = adminAction(adminMode, adminAvailable);
 
+  if (value.includes("collector_service")) {
+    return {
+      ...baseIssue(warning),
+      title: "Collector service needs attention",
+      impact:
+        "Standard monitoring remains current while service-only process fields may be unavailable.",
+      action: null,
+      actionLabel: null,
+    };
+  }
+
   if (warning.key === "admin_mode" || value.includes("admin_mode") || value.includes("elevat")) {
     return {
       ...baseIssue(warning),
@@ -104,6 +115,7 @@ function adminAction(
 ): Pick<DiagnosticIssue, "action" | "actionLabel"> {
   if (
     !adminAvailable ||
+    adminMode.collector_service != null ||
     adminMode.state === "unavailable" ||
     adminMode.state === "active" ||
     adminMode.state === "recovering"

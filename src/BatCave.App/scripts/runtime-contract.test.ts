@@ -14,10 +14,12 @@ import {
   uniqueWarningCount,
 } from "../src/lib/diagnostics.ts";
 import {
+  collectorServiceStateLabel,
   installKindLabel,
   privilegedCollectionAction,
   privilegedCollectionLabel,
   privilegedCollectionNote,
+  privilegedSourceLabel,
   processElevationLabel,
 } from "../src/lib/environmentPresentation.ts";
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
@@ -37,6 +39,8 @@ import type {
   GroupDetail,
   ProcessViewRow,
   RuntimeAdminModeStatus,
+  RuntimeCollectorServiceState,
+  RuntimeCollectorServiceStatus,
   RuntimeEnvironment,
   RuntimeSnapshot,
   RuntimeWarning,
@@ -430,6 +434,69 @@ test("helper actions cover enable, disable, and retry without touching an elevat
   );
 });
 
+test("collector-service states stay explicit and never expose helper actions", () => {
+  const expectedLabels: Record<RuntimeCollectorServiceState, string> = {
+    not_installed: "Collector service not installed",
+    stopped: "Collector service stopped",
+    connecting: "Collector service connecting",
+    recovering: "Collector service recovering",
+    active: "Collector service active",
+    incompatible: "Collector service incompatible",
+    unauthorized: "Collector service unauthorized",
+    failed: "Collector service failed",
+  };
+
+  for (const [state, expectedLabel] of Object.entries(expectedLabels) as Array<
+    [RuntimeCollectorServiceState, string]
+  >) {
+    const status = collectorService(state);
+    const mode: RuntimeAdminModeStatus = {
+      state: state === "active" ? "active" : state === "recovering" ? "recovering" : "off",
+      source: state === "active" ? "collector_service" : "none",
+      detail: null,
+      last_success_at_ms: state === "active" ? 1_783_944_001_000 : null,
+      collector_service: status,
+    };
+
+    assert.equal(collectorServiceStateLabel(status), expectedLabel);
+    assert.equal(privilegedCollectionLabel(mode), expectedLabel);
+    assert.equal(privilegedCollectionAction(true, mode), null);
+    assert.match(
+      privilegedCollectionNote(mode),
+      state === "active" ? /standard token/ : /standard monitoring remains current/,
+    );
+  }
+
+  const active: RuntimeAdminModeStatus = {
+    state: "active",
+    source: "collector_service",
+    detail: null,
+    last_success_at_ms: 1_783_944_001_000,
+    collector_service: collectorService("active"),
+  };
+  assert.equal(privilegedCollectionLabel(active, 2), "Collector service active, 2 blocked");
+  assert.equal(privilegedSourceLabel(active.source), "Installed collector service");
+});
+
+test("collector-service warnings remain actionless in diagnostics", () => {
+  const mode: RuntimeAdminModeStatus = {
+    state: "failed",
+    source: "none",
+    detail: "collector_service_unauthorized",
+    last_success_at_ms: null,
+    collector_service: collectorService("unauthorized"),
+  };
+  const issue = currentDiagnosticIssues(
+    [warning("collector_service.unauthorized", "collector_service_unauthorized", 1)],
+    mode,
+    true,
+  )[0];
+
+  assert.equal(issue.title, "Collector service needs attention");
+  assert.equal(issue.action, null);
+  assert.match(issue.impact, /Standard monitoring remains current/);
+});
+
 test("shared workload fixture keeps process and group details disjoint", () => {
   assert.equal(workloadDetails.length, 2);
   assert.ok(workloadDetails.every(isProcessViewRow));
@@ -656,5 +723,25 @@ function warning(key: string, message: string, publicationSeq: number): RuntimeW
 }
 
 function adminMode(state: RuntimeAdminModeStatus["state"]): RuntimeAdminModeStatus {
-  return { state, detail: null, last_success_at_ms: null };
+  return {
+    state,
+    source: "none",
+    detail: null,
+    last_success_at_ms: null,
+    collector_service: null,
+  };
+}
+
+function collectorService(state: RuntimeCollectorServiceState): RuntimeCollectorServiceStatus {
+  return {
+    state,
+    release_identity:
+      state === "active" ? { app_version: "1.0.0", source_commit_sha: "abc" } : null,
+    service_version: state === "active" || state === "incompatible" ? "1.0.0" : null,
+    negotiated_protocol_version: state === "active" ? 3 : null,
+    minimum_desktop_version: state === "incompatible" ? "2.0.0" : null,
+    instance_id: state === "active" ? "collector-instance" : null,
+    last_connected_at_ms: state === "active" ? 1_783_944_001_000 : null,
+    detail: state === "active" ? null : `collector_service_${state}`,
+  };
 }
