@@ -585,6 +585,24 @@ test("closed macOS source binding is verified-identity-bound and cannot mint pro
       sourceReceipt.profile.required_limitations,
       packageKind === "dmg" ? [] : ["macos_updater_staging_only"],
     );
+    assert.equal(
+      sourceReceipt.profile.artifact_flow,
+      packageKind === "dmg"
+        ? "owned_dmg_mount_copy_required"
+        : "rust_owned_updater_archive_stream_required",
+    );
+    assert.equal(
+      sourceReceipt.profile.source_descriptor_tool_ids.includes(
+        "rust_owned_stream_extractor",
+      ),
+      packageKind === "macos_updater",
+    );
+    assert.equal(
+      sourceReceipt.profile.source_descriptor_tool_ids.includes(
+        "python_archive_extractor",
+      ),
+      false,
+    );
     assert.deepEqual(sourceReceipt.claims, {
       verified_asset_identity_bound: true,
       live_capability_held: false,

@@ -4,7 +4,7 @@ Issue #117 defines the source-only handoff between the #111 artifact capability 
 
 `scripts/macos-native-install-smoke-adapter.mjs` accepts only a process-local install-smoke plan and the historical `artifact_owned_bytes_verified` receipt produced by #111. It derives one frozen descriptor for `macos:dmg` or `macos:macos_updater`; callers cannot provide a command, path, status, trust observation, cleanup assertion, or evidence field. A private `WeakMap` binds that descriptor to the exact plan object, its exact identity receipt, and the exact #111 receipt object. An equivalent plan, a second valid receipt for the same asset, or a copied descriptor cannot replay it.
 
-The descriptor records the closed profile, fixed future tool identifiers, future resource ownership, plan timeouts, exact selected asset identity, and mandatory limitations. Tool identifiers are design constraints only. This slice does not invoke `hdiutil`, the archive extractor, `codesign`, `spctl`, `stapler`, `lipo`, `PlistBuddy`, `ditto`, or an application process.
+The descriptor records the closed profile, fixed future tool identifiers, future resource ownership, plan timeouts, exact selected asset identity, and mandatory limitations. Tool identifiers are design constraints only. This slice does not invoke `hdiutil`, the Rust owned-stream extractor, `codesign`, `spctl`, `stapler`, `lipo`, `PlistBuddy`, `ditto`, or an application process.
 
 ## Exact current claim
 
@@ -23,10 +23,12 @@ The native executor therefore keeps `preflight.package_trust` unsupported and ev
 
 | Profile               | Future package claim                     | Source descriptor                             | Required limitation          |
 | --------------------- | ---------------------------------------- | --------------------------------------------- | ---------------------------- |
-| macOS DMG             | mount, copy, and install an isolated app | `owned_dmg_mount_copy_required`               | none                         |
-| macOS updater archive | safely extract and stage an isolated app | `owned_updater_archive_safe_extract_required` | `macos_updater_staging_only` |
+| macOS DMG             | mount, copy, and install an isolated app | `owned_dmg_mount_copy_required`                  | none                         |
+| macOS updater archive | safely extract and stage an isolated app | `rust_owned_updater_archive_stream_required`     | `macos_updater_staging_only` |
 
 The updater profile can never reinterpret staging as installation or a public A-to-B update. Both profiles remain blocked until a reviewed private process boundary consumes the still-live #111 capability and derives observations from settled native execution.
+
+The transport decisions are now distinct. [ADR 0006](decisions/0006-macos-dmg-owned-byte-transport.md) records that `hdiutil` cannot consume the Rust-owned `/dev/fd/N` input and forbids a path fallback. [ADR 0007](decisions/0007-macos-updater-owned-stream-transport.md) records that updater archives can be preflighted and staged from Rust-owned immutable compressed bytes without a package path. ADR 0007 is a test-only transport proof; it does not create the production composition root that ADR 0004 still requires.
 
 ## Verification
 
@@ -34,12 +36,14 @@ Run the source contract with:
 
 ```sh
 node --test scripts/native-install-smoke-executor.test.mjs
+cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
+  --test macos_updater_owned_stream_transport_spike
 ```
 
-That suite creates process-local plans and #111 capabilities, rejects injected adapter arguments, copied descriptors, same-asset receipt substitution, and equivalent-plan replay, checks the two distinct macOS profiles, and confirms every source result remains skipped with null native/evidence receipts. The existing validation and release workflows run the suite on Windows, Linux, and universal macOS.
+The JavaScript suite creates process-local plans and #111 capabilities, rejects injected adapter arguments, copied descriptors, same-asset receipt substitution, and equivalent-plan replay, checks the two distinct macOS profiles, and confirms every source result remains skipped with null native/evidence receipts. The Rust probe copies fixture bytes into an immutable owned stream, consumes and validates one complete gzip member and a zero-only tar tail, rejects trailers, hidden post-marker entries, trailing data, second members, hostile tar entries, and macOS filesystem collisions before materialization, charges retained `String` and `Vec` prefix allocations to its path budget, rechecks every staged file, proves one-shot completion identity, and retains cleanup authority with both failures visible until bounded retry succeeds. Existing validation and release workflows run both suites on Windows, Linux, and universal macOS.
 
-Archive traversal, link, collision, size-budget, and replacement coverage remains in `scripts/test-macos-updater-archive.sh`. Those fixtures validate safe extraction code; they do not prove that the future native adapter consumed a selected public archive.
+The release extractor retains its separate traversal, link, collision, size-budget, and replacement coverage in `scripts/test-macos-updater-archive.sh`. Those fixtures and the Rust transport probe use local archives. Neither proves that a production adapter consumed the selected public updater archive.
 
 ## What closes #114
 
-#114 still requires a reviewed private handshake that holds #111-owned bytes through fixed tokenized process execution, exact signed public universal DMG and updater artifacts, destination trust and identity rechecks, bounded termination with settled cleanup, launch and runtime gates, removal and residue proof, sanitized #98 evidence, and the explicit updater staging-only non-claim. Hosted source tests cannot supply that evidence.
+#114 still requires a Rust-owned public-release verifier and complete-operation entry, exact signed public universal DMG and updater artifacts, destination trust and identity rechecks, bounded termination with settled cleanup, launch and runtime gates, removal and residue proof, sanitized #98 evidence, and the explicit updater staging-only non-claim. The DMG transport also needs a safe primitive other than the rejected descriptor or path fallback. Hosted source tests cannot supply that evidence.
