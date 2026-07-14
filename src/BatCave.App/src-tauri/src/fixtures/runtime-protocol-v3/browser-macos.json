@@ -1,0 +1,7302 @@
+{
+  "protocol_version": 3,
+  "compatibility": {
+    "minimum_reader_version": 3,
+    "breaking": true
+  },
+  "event": {
+    "kind": "runtime_snapshot",
+    "payload": {
+      "publication_seq": 42,
+      "published_at_ms": 1700000000123,
+      "sample_seq": 40,
+      "sampled_at_ms": 1700000000000,
+      "source": "protocol_fixture",
+      "environment": {
+        "platform": "macos",
+        "architecture": "aarch64",
+        "process_elevation": "not_applicable",
+        "install_kind": "app_bundle",
+        "data_directory": "/Users/test/Library/Application Support/BatCaveMonitor",
+        "release_identity": {
+          "app_version": "development",
+          "source_commit_sha": null
+        }
+      },
+      "privileged_collection": {
+        "state": "unavailable",
+        "source": "none",
+        "preference": "standard_only",
+        "detail": null,
+        "last_success_at_ms": null,
+        "collector_service": null
+      },
+      "settings": {
+        "query": {
+          "filter_text": "",
+          "focus_mode": "all",
+          "sort_column": "attention",
+          "sort_direction": "desc",
+          "limit": 48
+        },
+        "metric_window_seconds": 60,
+        "effective_sample_interval_ms": 1000,
+        "collection_paused": false,
+        "ui_preferences": null
+      },
+      "health": {
+        "engine_state": null,
+        "collector_state": null,
+        "degraded": false,
+        "status_summary": "Collecting local telemetry.",
+        "evaluated_at_ms": 1700000000123,
+        "last_heartbeat_at_ms": null,
+        "heartbeat_age_ms": null,
+        "publication_age_ms": 0,
+        "sample_age_ms": 123,
+        "deadline_misses": null,
+        "deadline_lateness_p95_ms": null,
+        "collection_latency_ms": null,
+        "collection_p95_ms": null,
+        "publication_latency_ms": null,
+        "publication_p95_ms": null,
+        "collector_warning_count": 0,
+        "app_cpu_percent": 0.5,
+        "app_rss_bytes": 67108864,
+        "last_warning": null,
+        "fatal_error": null
+      },
+      "persistence": null,
+      "descriptors": [
+        {
+          "id": 0,
+          "semantic": "cpu_usage",
+          "scope": "system",
+          "unit": "percent_system",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 1,
+          "semantic": "kernel_cpu_usage",
+          "scope": "system",
+          "unit": "percent_system",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 2,
+          "semantic": "memory_used",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 3,
+          "semantic": "memory_capacity",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 4,
+          "semantic": "memory_available",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 5,
+          "semantic": "swap_used",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 6,
+          "semantic": "swap_capacity",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 7,
+          "semantic": "process_count",
+          "scope": "system",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "runtime"
+        },
+        {
+          "id": 8,
+          "semantic": "physical_disk_read_total",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "iokit"
+        },
+        {
+          "id": 9,
+          "semantic": "physical_disk_write_total",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "iokit"
+        },
+        {
+          "id": 10,
+          "semantic": "physical_disk_read_rate",
+          "scope": "system",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "iokit"
+        },
+        {
+          "id": 11,
+          "semantic": "physical_disk_write_rate",
+          "scope": "system",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "iokit"
+        },
+        {
+          "id": 12,
+          "semantic": "network_receive_total",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": "all_interface_aggregate",
+          "source": "sysinfo"
+        },
+        {
+          "id": 13,
+          "semantic": "network_transmit_total",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": "all_interface_aggregate",
+          "source": "sysinfo"
+        },
+        {
+          "id": 14,
+          "semantic": "network_receive_rate",
+          "scope": "system",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": "all_interface_aggregate",
+          "source": "sysinfo"
+        },
+        {
+          "id": 15,
+          "semantic": "network_transmit_rate",
+          "scope": "system",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": "all_interface_aggregate",
+          "source": "sysinfo"
+        },
+        {
+          "id": 16,
+          "semantic": "process_working_set_memory",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 17,
+          "semantic": "process_private_memory",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 18,
+          "semantic": "denied_process_count",
+          "scope": "system",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 19,
+          "semantic": "partial_process_count",
+          "scope": "system",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 20,
+          "semantic": "commit_used",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 21,
+          "semantic": "commit_limit",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 22,
+          "semantic": "system_cache",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 23,
+          "semantic": "kernel_memory",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 24,
+          "semantic": "kernel_paged_pool",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 25,
+          "semantic": "kernel_nonpaged_pool",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 26,
+          "semantic": "logical_cpu_usage",
+          "scope": "system",
+          "unit": "percent_system",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 27,
+          "semantic": "kernel_pool_bytes",
+          "scope": "system",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 28,
+          "semantic": "kernel_pool_allocations",
+          "scope": "system",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 29,
+          "semantic": "kernel_pool_frees",
+          "scope": "system",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 30,
+          "semantic": "cpu_usage",
+          "scope": "group",
+          "unit": "percent_one_core",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "process_aggregate"
+        },
+        {
+          "id": 31,
+          "semantic": "resident_memory",
+          "scope": "group",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "process_aggregate"
+        },
+        {
+          "id": 32,
+          "semantic": "read_write_io_rate",
+          "scope": "group",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "process_aggregate"
+        },
+        {
+          "id": 33,
+          "semantic": "other_io_rate",
+          "scope": "group",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "process_aggregate"
+        },
+        {
+          "id": 34,
+          "semantic": "network_rate",
+          "scope": "group",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": "ip_socket_payload",
+          "source": "process_aggregate"
+        },
+        {
+          "id": 35,
+          "semantic": "thread_count",
+          "scope": "group",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "process_aggregate"
+        },
+        {
+          "id": 36,
+          "semantic": "cpu_usage",
+          "scope": "process",
+          "unit": "percent_one_core",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 37,
+          "semantic": "kernel_cpu_usage",
+          "scope": "process",
+          "unit": "percent_one_core",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 38,
+          "semantic": "resident_memory",
+          "scope": "process",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 39,
+          "semantic": "private_memory",
+          "scope": "process",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 40,
+          "semantic": "virtual_memory",
+          "scope": "process",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "sysinfo"
+        },
+        {
+          "id": 41,
+          "semantic": "read_io_total",
+          "scope": "process",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "libproc"
+        },
+        {
+          "id": 42,
+          "semantic": "write_io_total",
+          "scope": "process",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "libproc"
+        },
+        {
+          "id": 43,
+          "semantic": "other_io_total",
+          "scope": "process",
+          "unit": "bytes",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "libproc"
+        },
+        {
+          "id": 44,
+          "semantic": "read_io_rate",
+          "scope": "process",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "libproc"
+        },
+        {
+          "id": 45,
+          "semantic": "write_io_rate",
+          "scope": "process",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "libproc"
+        },
+        {
+          "id": 46,
+          "semantic": "other_io_rate",
+          "scope": "process",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": null,
+          "source": "libproc"
+        },
+        {
+          "id": 47,
+          "semantic": "network_receive_rate",
+          "scope": "process",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": "ip_socket_payload",
+          "source": "libproc"
+        },
+        {
+          "id": 48,
+          "semantic": "network_transmit_rate",
+          "scope": "process",
+          "unit": "bytes_per_second",
+          "interval_ms": 1000,
+          "network_scope": "ip_socket_payload",
+          "source": "libproc"
+        },
+        {
+          "id": 49,
+          "semantic": "thread_count",
+          "scope": "process",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "libproc"
+        },
+        {
+          "id": 50,
+          "semantic": "handle_count",
+          "scope": "process",
+          "unit": "count",
+          "interval_ms": null,
+          "network_scope": null,
+          "source": "libproc"
+        }
+      ],
+      "quality_codes": [
+        "native",
+        "estimated",
+        "held",
+        "partial",
+        "unavailable"
+      ],
+      "limitations": [
+        {
+          "code": "unsupported_metric",
+          "message": "Kernel CPU is unavailable from the macOS system collector."
+        },
+        {
+          "code": "unsupported_metric",
+          "message": "Metric value was not reported by the collector."
+        },
+        {
+          "code": "pending_baseline",
+          "message": "Waiting for a stable IOKit physical-device baseline after storage topology changed."
+        },
+        {
+          "code": "group_partial_coverage",
+          "message": "0 of 2 processes contribute to this aggregate."
+        },
+        {
+          "code": "access_denied",
+          "message": "Resident memory uses the sysinfo fallback; physical footprint is unavailable."
+        },
+        {
+          "code": "unsupported_metric",
+          "message": "Other per-process I/O is unavailable on macOS."
+        },
+        {
+          "code": "unsupported_metric",
+          "message": "Per-process network attribution is unavailable on macOS."
+        }
+      ],
+      "system": {
+        "stable_id": "system:local",
+        "metrics": [
+          [
+            0,
+            12.5,
+            1,
+            1700000000000,
+            null
+          ],
+          [
+            1,
+            null,
+            4,
+            null,
+            0
+          ],
+          [
+            2,
+            8589934592.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            3,
+            17179869184.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            4,
+            8589934592.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            5,
+            null,
+            4,
+            null,
+            1
+          ],
+          [
+            6,
+            null,
+            4,
+            null,
+            1
+          ],
+          [
+            7,
+            48.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            8,
+            null,
+            2,
+            null,
+            2
+          ],
+          [
+            9,
+            null,
+            2,
+            null,
+            2
+          ],
+          [
+            10,
+            null,
+            2,
+            null,
+            2
+          ],
+          [
+            11,
+            null,
+            2,
+            null,
+            2
+          ],
+          [
+            12,
+            3000.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            13,
+            4000.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            14,
+            300.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            15,
+            400.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            16,
+            11021695872.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            17,
+            0.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            18,
+            0.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            19,
+            0.0,
+            0,
+            1700000000000,
+            null
+          ],
+          [
+            20,
+            null,
+            4,
+            null,
+            1
+          ],
+          [
+            21,
+            null,
+            4,
+            null,
+            1
+          ],
+          [
+            22,
+            null,
+            4,
+            null,
+            1
+          ],
+          [
+            23,
+            null,
+            4,
+            null,
+            1
+          ],
+          [
+            24,
+            null,
+            4,
+            null,
+            1
+          ],
+          [
+            25,
+            null,
+            4,
+            null,
+            1
+          ]
+        ],
+        "logical_cpus": [
+          {
+            "stable_id": "system:local:cpu:0",
+            "index": 0,
+            "metrics": [
+              [
+                26,
+                10.0,
+                1,
+                1700000000000,
+                null
+              ]
+            ]
+          },
+          {
+            "stable_id": "system:local:cpu:1",
+            "index": 1,
+            "metrics": [
+              [
+                26,
+                15.0,
+                1,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        ],
+        "kernel_pool_tags": [
+          {
+            "stable_id": "system:local:pool:none:paged",
+            "tag": "None",
+            "kind": "paged",
+            "driver_candidates": [],
+            "driver_candidates_pending": false,
+            "metrics": [
+              [
+                27,
+                0.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                28,
+                0.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                29,
+                0.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        ]
+      },
+      "workloads": [
+        {
+          "kind": "group",
+          "detail": {
+            "stable_id": "group:batcave.app.exe",
+            "group_key": "batcave.app.exe",
+            "label": "BatCave.App.exe",
+            "category": "BatCave",
+            "member_ids": [
+              "process:1234:1699999999000",
+              "process:1235:1699999999001"
+            ],
+            "icon_kind": "batcave",
+            "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "example_label": "BatCave.App",
+            "metrics": [
+              [
+                30,
+                12.5,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                31,
+                113536.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                32,
+                22.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                33,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                34,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                35,
+                18.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ],
+            "coverage": [
+              {
+                "descriptor_index": 30,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 31,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 32,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 33,
+                "available_contributors": 0,
+                "total_contributors": 2,
+                "limitation_index": 3
+              },
+              {
+                "descriptor_index": 34,
+                "available_contributors": 0,
+                "total_contributors": 2,
+                "limitation_index": 3
+              },
+              {
+                "descriptor_index": 35,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:1234:1699999999000",
+            "identity_stability": "stable",
+            "pid": "1234",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999999000,
+            "display_name": "BatCave.App",
+            "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "status": "run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "group_label": "BatCave.App.exe",
+              "group_category": "BatCave",
+              "group_count": 2,
+              "icon_kind": "batcave",
+              "is_child": false,
+              "is_grouped": true
+            },
+            "metrics": [
+              [
+                36,
+                8.25,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                65536.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                41,
+                123.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                456.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                7.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                8.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:1235:1699999999001",
+            "identity_stability": "stable",
+            "pid": "1235",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999999001,
+            "display_name": "BatCave.App",
+            "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "status": "run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "group_label": "BatCave.App.exe",
+              "group_category": "BatCave",
+              "group_count": 2,
+              "icon_kind": "batcave",
+              "is_child": true,
+              "is_grouped": true
+            },
+            "metrics": [
+              [
+                36,
+                4.25,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                48000.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                41,
+                100.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                200.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                3.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                4.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2046:1699999953000",
+            "identity_stability": "stable",
+            "pid": "2046",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999953000,
+            "display_name": "Fixture Worker 46",
+            "executable": "/Applications/Fixture Worker 46.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 46",
+              "group_label": "Fixture Worker 46",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.8800000000000003,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                404750336.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                809500672.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                14600000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7760000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                230000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                138000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                18.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                402.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2045:1699999954000",
+            "identity_stability": "stable",
+            "pid": "2045",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999954000,
+            "display_name": "Fixture Worker 45",
+            "executable": "/Applications/Fixture Worker 45.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 45",
+              "group_label": "Fixture Worker 45",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.8000000000000003,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                397410304.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                794820608.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                14500000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7700000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                225000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                135000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                17.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                395.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2044:1699999955000",
+            "identity_stability": "stable",
+            "pid": "2044",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999955000,
+            "display_name": "Fixture Worker 44",
+            "executable": "/Applications/Fixture Worker 44.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 44",
+              "group_label": "Fixture Worker 44",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.72,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                390070272.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                780140544.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                14400000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7640000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                220000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                132000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                16.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                388.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2043:1699999956000",
+            "identity_stability": "stable",
+            "pid": "2043",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999956000,
+            "display_name": "Fixture Worker 43",
+            "executable": "/Applications/Fixture Worker 43.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 43",
+              "group_label": "Fixture Worker 43",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.64,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                382730240.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                765460480.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                14300000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7580000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                215000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                129000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                15.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                381.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2042:1699999957000",
+            "identity_stability": "stable",
+            "pid": "2042",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999957000,
+            "display_name": "Fixture Worker 42",
+            "executable": "/Applications/Fixture Worker 42.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 42",
+              "group_label": "Fixture Worker 42",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.56,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                375390208.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                750780416.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                14200000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7520000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                210000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                126000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                14.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                374.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2041:1699999958000",
+            "identity_stability": "stable",
+            "pid": "2041",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999958000,
+            "display_name": "Fixture Worker 41",
+            "executable": "/Applications/Fixture Worker 41.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 41",
+              "group_label": "Fixture Worker 41",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.4800000000000004,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                368050176.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                736100352.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                14100000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7460000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                205000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                123000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                13.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                367.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2040:1699999959000",
+            "identity_stability": "stable",
+            "pid": "2040",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999959000,
+            "display_name": "Fixture Worker 40",
+            "executable": "/Applications/Fixture Worker 40.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 40",
+              "group_label": "Fixture Worker 40",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.4000000000000004,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                360710144.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                721420288.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                14000000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7400000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                200000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                120000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                12.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                360.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2039:1699999960000",
+            "identity_stability": "stable",
+            "pid": "2039",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999960000,
+            "display_name": "Fixture Worker 39",
+            "executable": "/Applications/Fixture Worker 39.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 39",
+              "group_label": "Fixture Worker 39",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.3200000000000003,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                353370112.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                706740224.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13900000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7340000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                195000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                117000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                11.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                353.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2038:1699999961000",
+            "identity_stability": "stable",
+            "pid": "2038",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999961000,
+            "display_name": "Fixture Worker 38",
+            "executable": "/Applications/Fixture Worker 38.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 38",
+              "group_label": "Fixture Worker 38",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.24,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                346030080.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                692060160.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13800000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7280000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                190000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                114000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                346.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2037:1699999962000",
+            "identity_stability": "stable",
+            "pid": "2037",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999962000,
+            "display_name": "Fixture Worker 37",
+            "executable": "/Applications/Fixture Worker 37.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 37",
+              "group_label": "Fixture Worker 37",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.16,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                338690048.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                677380096.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13700000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7220000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                185000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                111000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                339.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2036:1699999963000",
+            "identity_stability": "stable",
+            "pid": "2036",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999963000,
+            "display_name": "Fixture Worker 36",
+            "executable": "/Applications/Fixture Worker 36.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 36",
+              "group_label": "Fixture Worker 36",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.08,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                331350016.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                662700032.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13600000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7160000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                180000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                108000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                8.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                332.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2035:1699999964000",
+            "identity_stability": "stable",
+            "pid": "2035",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999964000,
+            "display_name": "Fixture Worker 35",
+            "executable": "/Applications/Fixture Worker 35.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 35",
+              "group_label": "Fixture Worker 35",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                3.0000000000000004,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                324009984.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                648019968.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13500000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7100000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                175000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                105000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                7.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                325.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2034:1699999965000",
+            "identity_stability": "stable",
+            "pid": "2034",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999965000,
+            "display_name": "Fixture Worker 34",
+            "executable": "/Applications/Fixture Worker 34.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 34",
+              "group_label": "Fixture Worker 34",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.9200000000000004,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                316669952.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                633339904.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13400000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                7040000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                170000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                102000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                6.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                318.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2033:1699999966000",
+            "identity_stability": "stable",
+            "pid": "2033",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999966000,
+            "display_name": "Fixture Worker 33",
+            "executable": "/Applications/Fixture Worker 33.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 33",
+              "group_label": "Fixture Worker 33",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.8400000000000003,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                309329920.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                618659840.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13300000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6980000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                165000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                99000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                5.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                311.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2032:1699999967000",
+            "identity_stability": "stable",
+            "pid": "2032",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999967000,
+            "display_name": "Fixture Worker 32",
+            "executable": "/Applications/Fixture Worker 32.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 32",
+              "group_label": "Fixture Worker 32",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.7600000000000002,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                301989888.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                603979776.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13200000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6920000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                160000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                96000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                4.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                304.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2031:1699999968000",
+            "identity_stability": "stable",
+            "pid": "2031",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999968000,
+            "display_name": "Fixture Worker 31",
+            "executable": "/Applications/Fixture Worker 31.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 31",
+              "group_label": "Fixture Worker 31",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.68,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                294649856.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                589299712.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13100000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6860000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                155000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                93000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                35.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                297.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2030:1699999969000",
+            "identity_stability": "stable",
+            "pid": "2030",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999969000,
+            "display_name": "Fixture Worker 30",
+            "executable": "/Applications/Fixture Worker 30.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 30",
+              "group_label": "Fixture Worker 30",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.6,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                287309824.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                574619648.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                13000000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6800000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                150000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                90000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                34.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                290.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2029:1699999970000",
+            "identity_stability": "stable",
+            "pid": "2029",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999970000,
+            "display_name": "Fixture Worker 29",
+            "executable": "/Applications/Fixture Worker 29.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 29",
+              "group_label": "Fixture Worker 29",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.52,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                279969792.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                559939584.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12900000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6740000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                145000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                87000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                33.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                283.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2028:1699999971000",
+            "identity_stability": "stable",
+            "pid": "2028",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999971000,
+            "display_name": "Fixture Worker 28",
+            "executable": "/Applications/Fixture Worker 28.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 28",
+              "group_label": "Fixture Worker 28",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.4400000000000004,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                272629760.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                545259520.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12800000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6680000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                140000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                84000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                32.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                276.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2027:1699999972000",
+            "identity_stability": "stable",
+            "pid": "2027",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999972000,
+            "display_name": "Fixture Worker 27",
+            "executable": "/Applications/Fixture Worker 27.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 27",
+              "group_label": "Fixture Worker 27",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.3600000000000003,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                265289728.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                530579456.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12700000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6620000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                135000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                81000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                31.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                269.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2026:1699999973000",
+            "identity_stability": "stable",
+            "pid": "2026",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999973000,
+            "display_name": "Fixture Worker 26",
+            "executable": "/Applications/Fixture Worker 26.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 26",
+              "group_label": "Fixture Worker 26",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.2800000000000002,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                257949696.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                515899392.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12600000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6560000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                130000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                78000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                30.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                262.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2025:1699999974000",
+            "identity_stability": "stable",
+            "pid": "2025",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999974000,
+            "display_name": "Fixture Worker 25",
+            "executable": "/Applications/Fixture Worker 25.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 25",
+              "group_label": "Fixture Worker 25",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.2,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                250609664.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                501219328.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12500000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6500000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                125000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                75000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                29.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                255.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2024:1699999975000",
+            "identity_stability": "stable",
+            "pid": "2024",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999975000,
+            "display_name": "Fixture Worker 24",
+            "executable": "/Applications/Fixture Worker 24.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 24",
+              "group_label": "Fixture Worker 24",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.12,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                243269632.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                486539264.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12400000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6440000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                120000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                72000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                28.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                248.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2023:1699999976000",
+            "identity_stability": "stable",
+            "pid": "2023",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999976000,
+            "display_name": "Fixture Worker 23",
+            "executable": "/Applications/Fixture Worker 23.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 23",
+              "group_label": "Fixture Worker 23",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                2.04,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                235929600.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                471859200.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12300000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6380000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                115000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                69000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                27.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                241.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2022:1699999977000",
+            "identity_stability": "stable",
+            "pid": "2022",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999977000,
+            "display_name": "Fixture Worker 22",
+            "executable": "/Applications/Fixture Worker 22.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 22",
+              "group_label": "Fixture Worker 22",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.96,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                228589568.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                457179136.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12200000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6320000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                110000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                66000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                26.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                234.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2021:1699999978000",
+            "identity_stability": "stable",
+            "pid": "2021",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999978000,
+            "display_name": "Fixture Worker 21",
+            "executable": "/Applications/Fixture Worker 21.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 21",
+              "group_label": "Fixture Worker 21",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.88,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                221249536.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                442499072.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12100000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6260000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                105000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                63000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                25.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                227.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2020:1699999979000",
+            "identity_stability": "stable",
+            "pid": "2020",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999979000,
+            "display_name": "Fixture Worker 20",
+            "executable": "/Applications/Fixture Worker 20.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 20",
+              "group_label": "Fixture Worker 20",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.8,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                213909504.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                427819008.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                12000000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6200000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                100000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                60000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                24.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                220.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2019:1699999980000",
+            "identity_stability": "stable",
+            "pid": "2019",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999980000,
+            "display_name": "Fixture Worker 19",
+            "executable": "/Applications/Fixture Worker 19.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 19",
+              "group_label": "Fixture Worker 19",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.72,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                206569472.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                413138944.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11900000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6140000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                95000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                57000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                23.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                213.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2018:1699999981000",
+            "identity_stability": "stable",
+            "pid": "2018",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999981000,
+            "display_name": "Fixture Worker 18",
+            "executable": "/Applications/Fixture Worker 18.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 18",
+              "group_label": "Fixture Worker 18",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.64,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                199229440.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                398458880.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11800000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6080000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                90000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                54000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                22.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                206.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2017:1699999982000",
+            "identity_stability": "stable",
+            "pid": "2017",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999982000,
+            "display_name": "Fixture Worker 17",
+            "executable": "/Applications/Fixture Worker 17.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 17",
+              "group_label": "Fixture Worker 17",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.56,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                191889408.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                383778816.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11700000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                6020000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                85000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                51000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                21.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                199.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2016:1699999983000",
+            "identity_stability": "stable",
+            "pid": "2016",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999983000,
+            "display_name": "Fixture Worker 16",
+            "executable": "/Applications/Fixture Worker 16.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 16",
+              "group_label": "Fixture Worker 16",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.48,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                184549376.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                369098752.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11600000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5960000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                80000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                48000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                20.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                192.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2015:1699999984000",
+            "identity_stability": "stable",
+            "pid": "2015",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999984000,
+            "display_name": "Fixture Worker 15",
+            "executable": "/Applications/Fixture Worker 15.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 15",
+              "group_label": "Fixture Worker 15",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.4,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                177209344.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                354418688.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11500000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5900000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                75000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                45000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                19.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                185.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2014:1699999985000",
+            "identity_stability": "stable",
+            "pid": "2014",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999985000,
+            "display_name": "Fixture Worker 14",
+            "executable": "/Applications/Fixture Worker 14.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 14",
+              "group_label": "Fixture Worker 14",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.32,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                169869312.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                339738624.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11400000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5840000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                70000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                42000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                18.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                178.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2013:1699999986000",
+            "identity_stability": "stable",
+            "pid": "2013",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999986000,
+            "display_name": "Fixture Worker 13",
+            "executable": "/Applications/Fixture Worker 13.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 13",
+              "group_label": "Fixture Worker 13",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.24,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                162529280.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                325058560.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11300000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5780000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                65000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                39000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                17.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                171.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2012:1699999987000",
+            "identity_stability": "stable",
+            "pid": "2012",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999987000,
+            "display_name": "Fixture Worker 12",
+            "executable": "/Applications/Fixture Worker 12.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 12",
+              "group_label": "Fixture Worker 12",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.16,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                155189248.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                310378496.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11200000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5720000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                60000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                36000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                16.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                164.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2011:1699999988000",
+            "identity_stability": "stable",
+            "pid": "2011",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999988000,
+            "display_name": "Fixture Worker 11",
+            "executable": "/Applications/Fixture Worker 11.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 11",
+              "group_label": "Fixture Worker 11",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.08,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                147849216.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                295698432.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11100000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5660000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                55000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                33000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                15.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                157.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2010:1699999989000",
+            "identity_stability": "stable",
+            "pid": "2010",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999989000,
+            "display_name": "Fixture Worker 10",
+            "executable": "/Applications/Fixture Worker 10.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 10",
+              "group_label": "Fixture Worker 10",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                1.0,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                140509184.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                281018368.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                11000000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5600000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                50000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                30000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                14.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                150.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2009:1699999990000",
+            "identity_stability": "stable",
+            "pid": "2009",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999990000,
+            "display_name": "Fixture Worker 09",
+            "executable": "/Applications/Fixture Worker 09.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 09",
+              "group_label": "Fixture Worker 09",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.9199999999999999,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                133169152.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                266338304.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10900000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5540000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                45000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                27000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                13.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                143.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2008:1699999991000",
+            "identity_stability": "stable",
+            "pid": "2008",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999991000,
+            "display_name": "Fixture Worker 08",
+            "executable": "/Applications/Fixture Worker 08.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 08",
+              "group_label": "Fixture Worker 08",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.8400000000000001,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                125829120.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                251658240.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10800000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5480000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                40000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                24000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                12.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                136.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2007:1699999992000",
+            "identity_stability": "stable",
+            "pid": "2007",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999992000,
+            "display_name": "Fixture Worker 07",
+            "executable": "/Applications/Fixture Worker 07.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 07",
+              "group_label": "Fixture Worker 07",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.76,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                118489088.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                236978176.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10700000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5420000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                35000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                21000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                11.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                129.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2006:1699999993000",
+            "identity_stability": "stable",
+            "pid": "2006",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999993000,
+            "display_name": "Fixture Worker 06",
+            "executable": "/Applications/Fixture Worker 06.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 06",
+              "group_label": "Fixture Worker 06",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.6799999999999999,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                111149056.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                222298112.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10600000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5360000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                30000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                18000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                122.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2005:1699999994000",
+            "identity_stability": "stable",
+            "pid": "2005",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999994000,
+            "display_name": "Fixture Worker 05",
+            "executable": "/Applications/Fixture Worker 05.app/Contents/MacOS/worker",
+            "status": "Idle",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 05",
+              "group_label": "Fixture Worker 05",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.6000000000000001,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                103809024.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                207618048.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10500000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5300000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                25000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                15000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                115.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2004:1699999995000",
+            "identity_stability": "stable",
+            "pid": "2004",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999995000,
+            "display_name": "Fixture Worker 04",
+            "executable": "/Applications/Fixture Worker 04.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 04",
+              "group_label": "Fixture Worker 04",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.52,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                96468992.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                192937984.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10400000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5240000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                20000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                12000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                8.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                108.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2003:1699999996000",
+            "identity_stability": "stable",
+            "pid": "2003",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999996000,
+            "display_name": "Fixture Worker 03",
+            "executable": "/Applications/Fixture Worker 03.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 03",
+              "group_label": "Fixture Worker 03",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.44,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                89128960.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                178257920.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10300000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5180000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                15000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                9000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                7.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                101.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2002:1699999997000",
+            "identity_stability": "stable",
+            "pid": "2002",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999997000,
+            "display_name": "Fixture Worker 02",
+            "executable": "/Applications/Fixture Worker 02.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 02",
+              "group_label": "Fixture Worker 02",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.36,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                81788928.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                163577856.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10200000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5120000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                10000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                6000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                6.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                94.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:2001:1699999998000",
+            "identity_stability": "stable",
+            "pid": "2001",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999998000,
+            "display_name": "Fixture Worker 01",
+            "executable": "/Applications/Fixture Worker 01.app/Contents/MacOS/worker",
+            "status": "Run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": null,
+              "group_key": "fixture worker 01",
+              "group_label": "Fixture Worker 01",
+              "group_category": "Processes",
+              "group_count": 1,
+              "icon_kind": "process",
+              "is_child": false,
+              "is_grouped": false
+            },
+            "metrics": [
+              [
+                36,
+                0.28,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                74448896.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                39,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                40,
+                148897792.0,
+                3,
+                1700000000000,
+                4
+              ],
+              [
+                41,
+                10100000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                5060000000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                44,
+                5000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                3000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                5
+              ],
+              [
+                47,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                48,
+                null,
+                4,
+                null,
+                6
+              ],
+              [
+                49,
+                5.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                87.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        }
+      ],
+      "contributors": [
+        {
+          "metric": "cpu",
+          "process_id": "process:1234:1699999999000",
+          "display_name": "BatCave.App",
+          "name_ambiguous": true,
+          "available_contributors": 48,
+          "total_contributors": 48,
+          "quality_code": 1,
+          "source": "sysinfo",
+          "limitation_index": null
+        },
+        {
+          "metric": "memory",
+          "process_id": "process:2046:1699999953000",
+          "display_name": "Fixture Worker 46",
+          "name_ambiguous": false,
+          "available_contributors": 48,
+          "total_contributors": 48,
+          "quality_code": 3,
+          "source": "sysinfo",
+          "limitation_index": 4
+        },
+        {
+          "metric": "io",
+          "process_id": "process:2046:1699999953000",
+          "display_name": "Fixture Worker 46",
+          "name_ambiguous": false,
+          "available_contributors": 48,
+          "total_contributors": 48,
+          "quality_code": 0,
+          "source": "libproc",
+          "limitation_index": null
+        },
+        {
+          "metric": "network",
+          "process_id": null,
+          "display_name": null,
+          "name_ambiguous": false,
+          "available_contributors": 0,
+          "total_contributors": 48,
+          "quality_code": 4,
+          "source": "libproc",
+          "limitation_index": 6
+        }
+      ],
+      "total_process_count": 48,
+      "visible_process_count": 48,
+      "warnings": []
+    }
+  }
+}

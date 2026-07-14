@@ -13,19 +13,11 @@ import {
   type WorkloadDetailV3,
 } from "../generated/runtime-protocol-v3.ts";
 import type { MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "../types.ts";
-import { adaptRuntimePayload } from "./runtimeAdapter.ts";
-import { decodeProtocolEnvelope } from "./runtimeProtocol.ts";
 
 const qualityCodes: MetricQualityV3[] = ["native", "estimated", "held", "partial", "unavailable"];
 
 export function canonicalKernelPoolStableId(tag: string, kind: "paged" | "nonpaged"): string {
   return `system:local:pool:${tag}:${kind}`.toLocaleLowerCase();
-}
-
-export function roundTripFixtureSnapshot(snapshot: RuntimeSnapshot): RuntimeSnapshot {
-  const decoded = decodeProtocolEnvelope(encodeFixtureSnapshot(snapshot));
-  if (decoded.kind !== "snapshot") throw new Error(decoded.mismatch.message);
-  return adaptRuntimePayload(decoded.payload);
 }
 
 export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelope {

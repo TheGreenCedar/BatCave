@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   hasSameProcessOrder,
-  processGroupKey,
   processViewRowKey,
   processViewRowMetrics,
   prepareProcessViewRows,
@@ -111,26 +110,15 @@ test("selection follows identity through reorder and clears on disappearance or 
   assert.equal(reconcileWorkloadSelection(replacement, selected), "");
 });
 
-test("group identity and selection survive executable-path enrichment", () => {
-  const processRow = row("42", 1);
-  if (processRow.kind !== "process") throw new Error("expected process row");
-  const beforeSample = {
-    ...processRow.detail.process,
-    name: "Visual Studio Code",
-    exe: "",
-  };
-  const afterSample = {
-    ...beforeSample,
-    exe: "C:\\Program Files\\Microsoft VS Code\\Code.exe",
-  };
-  const beforeKey = processGroupKey(beforeSample);
-  const afterKey = processGroupKey(afterSample);
-  const selected = `group:${beforeKey}`;
-  const enrichedRows = groupRows(afterKey, 2);
+test("selection follows a backend-owned group identity through presentation updates", () => {
+  const selected = "group:visual studio code";
+  const enrichedRows = groupRows("visual studio code", 2);
+  const group = enrichedRows[0];
+  if (group.kind !== "group") throw new Error("expected group row");
+  group.detail.label = "Visual Studio Code";
+  group.icon_source = "C:\\Program Files\\Microsoft VS Code\\Code.exe";
 
-  assert.equal(beforeKey, "visual studio code");
-  assert.equal(afterKey, beforeKey);
-  assert.equal(enrichedRows[0].detail.workload_id, selected);
+  assert.equal(group.detail.workload_id, selected);
   assert.equal(reconcileWorkloadSelection(enrichedRows, selected), selected);
 });
 

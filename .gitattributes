@@ -1,1 +1,2 @@
 *.sh text eol=lf
+src/BatCave.App/src-tauri/src/fixtures/runtime-protocol-v3/browser-*.json linguist-generated=true
