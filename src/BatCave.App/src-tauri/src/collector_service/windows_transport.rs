@@ -232,13 +232,13 @@ fn verify_pipe_peer(
         .map_err(|error| error.to_string())
 }
 
-struct TokenEvidence {
-    session_id: u32,
-    principal_identity: [u8; 32],
-    elevated: bool,
+pub(super) struct TokenEvidence {
+    pub(super) session_id: u32,
+    pub(super) principal_identity: [u8; 32],
+    pub(super) elevated: bool,
 }
 
-fn token_evidence(token: HANDLE) -> Result<TokenEvidence, String> {
+pub(super) fn token_evidence(token: HANDLE) -> Result<TokenEvidence, String> {
     let user = token_information(token, TokenUser)?;
     let token_user = unsafe { &*(user.as_ptr().cast::<TOKEN_USER>()) };
     if token_user.User.Sid.is_null() || unsafe { IsValidSid(token_user.User.Sid) } == 0 {
@@ -346,7 +346,7 @@ impl AlignedBuffer {
     }
 }
 
-fn process_started_at(process: HANDLE) -> Result<u64, String> {
+pub(super) fn process_started_at(process: HANDLE) -> Result<u64, String> {
     let mut created = Default::default();
     let mut exited = Default::default();
     let mut kernel = Default::default();
@@ -359,7 +359,7 @@ fn process_started_at(process: HANDLE) -> Result<u64, String> {
     Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 
-fn process_image_path(process: HANDLE) -> Result<String, String> {
+pub(super) fn process_image_path(process: HANDLE) -> Result<String, String> {
     let mut buffer = vec![0_u16; 32_768];
     let mut length = buffer.len() as u32;
     if unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) } == 0 {
@@ -372,7 +372,7 @@ fn process_image_path(process: HANDLE) -> Result<String, String> {
         .map_err(|_| "collector_service_peer_process_path_utf16_invalid".to_string())
 }
 
-fn file_identity(file: HANDLE) -> Result<[u8; 32], String> {
+pub(super) fn file_identity(file: HANDLE) -> Result<[u8; 32], String> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     if unsafe { GetFileInformationByHandle(file, &mut info) } == 0 {
         return Err(last_error_message(
@@ -387,7 +387,7 @@ fn file_identity(file: HANDLE) -> Result<[u8; 32], String> {
     Ok(digest.finalize().into())
 }
 
-fn executable_release(path: &[u16]) -> Result<ExecutableReleaseEvidence, String> {
+pub(super) fn executable_release(path: &[u16]) -> Result<ExecutableReleaseEvidence, String> {
     let mut ignored = 0_u32;
     let size = unsafe { GetFileVersionInfoSizeW(path.as_ptr(), &mut ignored) };
     if size == 0 {
@@ -642,14 +642,14 @@ impl Drop for PipeConnection {
     }
 }
 
-struct OwnedHandle(HANDLE);
+pub(super) struct OwnedHandle(HANDLE);
 
 impl OwnedHandle {
-    fn new(handle: HANDLE) -> Option<Self> {
+    pub(super) fn new(handle: HANDLE) -> Option<Self> {
         (!handle.is_null() && handle != INVALID_HANDLE_VALUE).then_some(Self(handle))
     }
 
-    fn raw(&self) -> HANDLE {
+    pub(super) fn raw(&self) -> HANDLE {
         self.0
     }
 }
@@ -713,11 +713,11 @@ fn last_error(context: &'static str) -> impl FnOnce() -> String {
     move || last_error_message(context)
 }
 
-fn last_error_message(context: &str) -> String {
+pub(super) fn last_error_message(context: &str) -> String {
     format!("{context}:{}", unsafe { GetLastError() })
 }
 
-fn wide(value: &str) -> Vec<u16> {
+pub(super) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 

@@ -678,6 +678,7 @@ mod tests {
             system: empty_system(1),
             processes: vec![process],
             warnings: Vec::new(),
+            collector_service: None,
         }
     }
 

@@ -506,6 +506,21 @@ test("reader rejects descriptor, value, and membership corruption", () => {
     );
   }
 
+  const resourceVersionOnlyService = structuredClone(matchingActiveService);
+  payload(resourceVersionOnlyService).environment.release_identity.source_commit_sha = "a".repeat(40);
+  const resourceVersionIdentity =
+    payload(resourceVersionOnlyService).privileged_collection.collector_service?.release_identity;
+  assert.ok(resourceVersionIdentity);
+  resourceVersionIdentity.source_commit_sha = null;
+  assert.equal(decodeProtocolEnvelope(resourceVersionOnlyService).kind, "snapshot");
+
+  const falselyClaimedCommit = structuredClone(resourceVersionOnlyService);
+  const falselyClaimedIdentity =
+    payload(falselyClaimedCommit).privileged_collection.collector_service?.release_identity;
+  assert.ok(falselyClaimedIdentity);
+  falselyClaimedIdentity.source_commit_sha = "b".repeat(40);
+  assertMismatch(falselyClaimedCommit, "release identity does not match");
+
   const mismatchedActiveService = structuredClone(matchingActiveService);
   const collectorIdentity =
     payload(mismatchedActiveService).privileged_collection.collector_service?.release_identity;

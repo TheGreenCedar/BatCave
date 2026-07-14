@@ -31,11 +31,11 @@ use crate::{
         MetricCoverage, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
         ProcessFocusMode, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
-        RuntimeAdminModeStatus, RuntimeCollectorState, RuntimeEngineState, RuntimeEnvironment,
-        RuntimeFatalError, RuntimeHealth, RuntimePersistence, RuntimePersistenceState,
-        RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
-        RuntimeUiPreferences, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
-        SystemMetricsSnapshot, WarmCache,
+        RuntimeAdminModeStatus, RuntimeCollectorServiceState, RuntimeCollectorState,
+        RuntimeEngineState, RuntimeEnvironment, RuntimeFatalError, RuntimeHealth,
+        RuntimePersistence, RuntimePersistenceState, RuntimePrivilegedSource, RuntimeQuery,
+        RuntimeSettings, RuntimeSnapshot, RuntimeUiPreferences, RuntimeWarning, SortColumn,
+        SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     persistence::{
         DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
@@ -1578,6 +1578,8 @@ impl RuntimeStore {
         sample_ts_ms: u64,
         collector: &dyn ProcessNetworkControl,
     ) -> Instant {
+        let service_active =
+            self.apply_collector_service_status(sample.collector_service.clone(), sample_ts_ms);
         let previous_process_baseline_live = self.live_process_snapshot;
         self.live_process_snapshot = false;
         let processing_started = Instant::now();
@@ -1597,14 +1599,19 @@ impl RuntimeStore {
         let mut system = sample.system;
         let mut sample_processes = sample.processes;
         let mut process_rows_fresh = true;
-        let elevated_transition = self.advance_elevated_helper(sample_ts_ms, collector);
-        self.apply_elevated_process_transition(
-            elevated_transition,
-            &mut sample_processes,
-            &mut process_rows_fresh,
-            &mut active_collector_warnings,
-        );
-        if !self.settings.admin_mode_requested {
+        if service_active {
+            self.stop_superseded_elevated_helper(&mut active_collector_warnings);
+            self.settings.admin_mode_enabled = true;
+        } else {
+            let elevated_transition = self.advance_elevated_helper(sample_ts_ms, collector);
+            self.apply_elevated_process_transition(
+                elevated_transition,
+                &mut sample_processes,
+                &mut process_rows_fresh,
+                &mut active_collector_warnings,
+            );
+        }
+        if !service_active && !self.settings.admin_mode_requested {
             self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
             if self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
                 && self.admin_mode.state == RuntimeAdminModeState::Active
@@ -1712,6 +1719,63 @@ impl RuntimeStore {
         );
 
         publication_started
+    }
+
+    fn apply_collector_service_status(
+        &mut self,
+        status: Option<crate::contracts::RuntimeCollectorServiceStatus>,
+        sample_ts_ms: u64,
+    ) -> bool {
+        let Some(status) = status else {
+            return false;
+        };
+        let previous_binding = self
+            .admin_mode
+            .collector_service
+            .as_ref()
+            .filter(|service| service.state == RuntimeCollectorServiceState::Active)
+            .and_then(|service| service.instance_id.clone());
+        let next_binding = (status.state == RuntimeCollectorServiceState::Active)
+            .then(|| status.instance_id.clone())
+            .flatten();
+        if previous_binding != next_binding {
+            self.previous_totals = None;
+            self.previous_processes.clear();
+            self.live_process_snapshot = false;
+            self.process_access_baseline_dirty = false;
+        }
+
+        let service_active = status.state == RuntimeCollectorServiceState::Active;
+        if service_active {
+            self.admin_mode.state = RuntimeAdminModeState::Active;
+            self.admin_mode.source = RuntimePrivilegedSource::CollectorService;
+            self.admin_mode.detail = None;
+            self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
+        } else if self.admin_mode.source == RuntimePrivilegedSource::CollectorService
+            || self.admin_mode.source == RuntimePrivilegedSource::None
+        {
+            let last_success_at_ms = self.admin_mode.last_success_at_ms;
+            self.settings.admin_mode_enabled = false;
+            self.admin_mode = self.provenance.admin_mode_status();
+            self.admin_mode.detail = status.detail.clone();
+            self.admin_mode.last_success_at_ms = last_success_at_ms;
+        }
+        self.admin_mode.collector_service = Some(status);
+        service_active
+    }
+
+    fn stop_superseded_elevated_helper(&mut self, warnings: &mut Vec<String>) {
+        if let Some(mut elevated) = self.elevated.take() {
+            if let Err(error) = elevated.stop() {
+                warnings.push(format!(
+                    "collector_service_helper_transition_cleanup_failed:{error}"
+                ));
+                self.elevated = Some(elevated);
+            }
+        }
+        self.elevated_helper_rows_published = false;
+        self.last_verified_elevated_frame = None;
+        self.process_access_baseline_dirty = false;
     }
 
     fn fail_admin_mode(&mut self, error: String, collector: &dyn ProcessNetworkControl) {
@@ -4009,6 +4073,7 @@ mod tests {
                     system: empty_system(),
                     processes: vec![sample("10", "Fake", count as f64)],
                     warnings: Vec::new(),
+                    collector_service: None,
                 }),
                 FakeOutcome::Unavailable(error) => {
                     Err(CollectionFailure::Unavailable(error.to_string()))
@@ -4089,6 +4154,7 @@ mod tests {
                     system,
                     processes: Vec::new(),
                     warnings: Vec::new(),
+                    collector_service: None,
                 })),
                 collection_latency_ms: 0.0,
                 cadence: CollectorCadence::default(),
@@ -6228,6 +6294,7 @@ mod tests {
             source: RuntimePrivilegedSource::ElevatedHelper,
             detail: None,
             last_success_at_ms: Some(7),
+            collector_service: None,
         };
 
         store.publish_snapshot_only(None);
@@ -6245,6 +6312,70 @@ mod tests {
             RuntimeAdminModeState::Active
         );
         let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn collector_service_transition_is_visible_and_resets_source_baselines() {
+        let base_dir = runtime_test_dir("collector-service-transition");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.previous_processes = vec![sample("10", "old-source", 1.0)];
+        store.live_process_snapshot = true;
+        store.previous_totals = Some(TelemetryTotals::from_system(&empty_system(), 1));
+
+        let active = crate::contracts::RuntimeCollectorServiceStatus {
+            state: RuntimeCollectorServiceState::Active,
+            release_identity: Some(crate::contracts::RuntimeReleaseIdentity {
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                source_commit_sha: None,
+            }),
+            service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            negotiated_protocol_version: Some(
+                crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            ),
+            minimum_desktop_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            instance_id: Some("service-instance-1".to_string()),
+            last_connected_at_ms: Some(7),
+            detail: None,
+        };
+        assert!(store.apply_collector_service_status(Some(active), 7));
+        assert!(store.previous_processes.is_empty());
+        assert!(store.previous_totals.is_none());
+        assert_eq!(
+            store.admin_mode.source,
+            RuntimePrivilegedSource::CollectorService
+        );
+        store.publish_snapshot_only(None);
+        let encoded = crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap();
+        let encoded = serde_json::to_value(encoded).unwrap();
+        assert_eq!(
+            encoded.pointer("/event/payload/privileged_collection/collector_service/state"),
+            Some(&serde_json::json!("active"))
+        );
+
+        let stopped = crate::contracts::RuntimeCollectorServiceStatus {
+            state: RuntimeCollectorServiceState::Stopped,
+            release_identity: None,
+            service_version: None,
+            negotiated_protocol_version: None,
+            minimum_desktop_version: None,
+            instance_id: None,
+            last_connected_at_ms: None,
+            detail: Some("collector_service_stopped".to_string()),
+        };
+        assert!(!store.apply_collector_service_status(Some(stopped), 8));
+        assert_eq!(store.admin_mode.source, RuntimePrivilegedSource::None);
+        assert_eq!(store.admin_mode.last_success_at_ms, Some(7));
+        assert_eq!(
+            store
+                .admin_mode
+                .collector_service
+                .as_ref()
+                .map(|service| service.state),
+            Some(RuntimeCollectorServiceState::Stopped)
+        );
+
+        let _ = fs::remove_dir_all(&base_dir);
     }
 
     #[test]

@@ -108,6 +108,10 @@ impl VerifiedServicePeer {
             executable_release,
         })
     }
+
+    pub(crate) fn executable_release(&self) -> &ReleaseIdentityV1 {
+        &self.executable_release
+    }
 }
 
 pub(crate) fn authorize_service_identity(

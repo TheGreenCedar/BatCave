@@ -783,7 +783,7 @@ function validateCollectorService(
     return "Active collector-service status lacks identity, version, or time.";
   if (
     service.state === "active" &&
-    !sameReleaseIdentity(service.release_identity, desktopReleaseIdentity)
+    !serviceReleaseMatchesDesktop(service.release_identity, desktopReleaseIdentity)
   )
     return "Active collector-service release identity does not match desktop.";
   if (
@@ -804,6 +804,18 @@ function validateCollectorService(
   return null;
 }
 
+function serviceReleaseMatchesDesktop(
+  service: unknown,
+  desktop: unknown,
+): boolean {
+  if (!validReleaseIdentity(service) || !validReleaseIdentity(desktop)) return false;
+  if (!isRecord(service) || !isRecord(desktop)) return false;
+  return (
+    service.app_version === desktop.app_version &&
+    (service.source_commit_sha === null || service.source_commit_sha === desktop.source_commit_sha)
+  );
+}
+
 function validReleaseIdentity(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (
@@ -816,17 +828,6 @@ function validReleaseIdentity(value: unknown): boolean {
     value.source_commit_sha === null ||
     (typeof value.source_commit_sha === "string" &&
       /^[0-9a-fA-F]{40}$/.test(value.source_commit_sha))
-  );
-}
-
-function sameReleaseIdentity(left: unknown, right: unknown): boolean {
-  return (
-    validReleaseIdentity(left) &&
-    validReleaseIdentity(right) &&
-    (left as Record<string, unknown>).app_version ===
-      (right as Record<string, unknown>).app_version &&
-    (left as Record<string, unknown>).source_commit_sha ===
-      (right as Record<string, unknown>).source_commit_sha
   );
 }
 

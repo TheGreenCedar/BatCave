@@ -52,6 +52,21 @@ impl RawCollector for TelemetryCollector {
     }
 }
 
+#[cfg(windows)]
+impl RawCollector for crate::collector_service::client::DesktopCollector {
+    fn collect(&mut self) -> Result<TelemetrySample, CollectionFailure> {
+        crate::collector_service::client::DesktopCollector::collect(self)
+    }
+
+    fn process_network_ready(&self) -> Result<bool, String> {
+        crate::collector_service::client::DesktopCollector::process_network_ready(self)
+    }
+
+    fn retry_process_network(&mut self) -> Result<(), String> {
+        crate::collector_service::client::DesktopCollector::retry_process_network(self)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CollectorCadence {
     pub deadline_misses: u64,
@@ -235,7 +250,11 @@ impl CollectorEngine {
         config: CollectorEngineConfig,
         notify: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, String> {
-        Self::start(Box::new(TelemetryCollector::new()), config, notify)
+        #[cfg(windows)]
+        let collector = Box::new(crate::collector_service::client::DesktopCollector::new());
+        #[cfg(not(windows))]
+        let collector = Box::new(TelemetryCollector::new());
+        Self::start(collector, config, notify)
     }
 
     pub fn start(
@@ -925,6 +944,7 @@ mod tests {
                     },
                     processes: Vec::new(),
                     warnings: Vec::new(),
+                    collector_service: None,
                 }),
                 FakeOutcome::Unavailable(error) => {
                     Err(CollectionFailure::Unavailable(error.to_string()))
