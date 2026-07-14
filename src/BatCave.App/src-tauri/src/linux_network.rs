@@ -14,13 +14,16 @@ use std::os::unix::process::CommandExt;
 
 use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
 
+#[cfg(test)]
 const IPV4_SOCKET_FAMILY: u16 = 2;
+#[cfg(test)]
 const IPV6_SOCKET_FAMILY: u16 = 10;
 const BPFTRACE_INTERVAL: Duration = Duration::from_secs(1);
 const STARTUP_LIVENESS_TIMEOUT: Duration = Duration::from_secs(10);
 const INTERVAL_LIVENESS_TIMEOUT: Duration = Duration::from_secs(3);
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_START_ATTEMPTS: u8 = 3;
+#[cfg(test)]
 const EPOCH_GRACE_INTERVALS: u64 = 1;
 const BPFTRACE_MAX_MAP_KEYS: usize = 16_384;
 const BPFTRACE_SOFT_MAP_KEYS: usize = 8_192;
