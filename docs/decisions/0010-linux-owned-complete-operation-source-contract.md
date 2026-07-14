@@ -22,7 +22,7 @@ The fixture capability rehashes its owned bytes before the transport authority e
 - the fixed transport's process authority; and
 - the private staging-root authority.
 
-A clean or runtime-failed operation releases those resources only after removal, process settlement, root cleanup, and user-state policy complete. Residue, an unsettled process, or cleanup failure returns a private retained owner rather than a terminal result. That owner keeps all three authorities live and exposes only a fixed, argument-free cleanup retry. The retry settles removal/process/root state before the owner can disappear; dropping a retained result takes the same fixed fail-safe settlement path before releasing its tokens.
+A clean, skipped, or failed operation releases those resources only after removal, process settlement, root cleanup, and user-state policy complete. A post-authority transport failure still runs removal and cleanup. A transport timeout with unconfirmed settlement, removal residue, or cleanup failure returns a private retained owner rather than a terminal result. That owner keeps all three authorities live and exposes only a fixed, argument-free cleanup retry. The retry settles removal/process/root state before the owner can disappear; dropping a retained result takes the same fixed fail-safe settlement path before releasing its tokens.
 
 The typed sequence is:
 
@@ -36,7 +36,7 @@ The typed sequence is:
 8. owned process cleanup and settlement
 9. user-state policy
 
-Runtime failure blocks later runtime observations but cannot skip removal or cleanup. Capability rehash failure occurs before transport construction and blocks every gate.
+Transport or runtime failure blocks later runtime observations but cannot skip removal or cleanup. A skipped launch remains a distinct `skipped` status and disposition while still requiring removal and cleanup. Capability rehash failure occurs before transport construction and blocks every gate.
 
 ## Proof boundary
 
@@ -51,7 +51,7 @@ The deb result retains `deb_checksum_attestation_only`. The AppImage result reta
 
 ## Verification
 
-[`linux_owned_complete_operation.rs`](../../src/BatCave.App/src-tauri/tests/linux_owned_complete_operation.rs) covers both closed profiles, exact gate order, capability rehash failure, runtime failure with mandatory cleanup, retained process/root/artifact ownership, residue recovery, cleanup-failure recovery, sanitized output, and production-entry absence.
+[`linux_owned_complete_operation.rs`](../../src/BatCave.App/src-tauri/tests/linux_owned_complete_operation.rs) covers both closed profiles, exact gate order, capability rehash failure, post-authority transport failure, timeout with retained process/root/artifact ownership, skipped launch, runtime failure with mandatory cleanup, residue recovery, cleanup-failure recovery, sanitized output, and production-entry absence.
 
 ```sh
 cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml \

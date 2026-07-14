@@ -118,6 +118,7 @@ mod operation {
     pub(super) enum GateStatus {
         Passed,
         Failed,
+        Skipped,
         Partial,
         Blocked,
     }
@@ -127,6 +128,9 @@ mod operation {
     enum OutcomeCode {
         InertOwnedBytesBound,
         InertGateObserved,
+        TransportFailed,
+        TransportTimedOut,
+        FixedFixtureSkipped,
         FixedFixtureFailed,
         BlockedByEarlierGate,
         ResidueRetained,
@@ -148,6 +152,7 @@ mod operation {
     #[serde(rename_all = "snake_case")]
     pub(super) enum Disposition {
         SourceContractComplete,
+        Skipped,
         Failed,
     }
 
@@ -162,6 +167,9 @@ mod operation {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(super) enum HostileFixture {
         DigestMismatch,
+        TransportFailure,
+        TransportTimeoutUnsettled,
+        SkipLaunch,
         FailReleaseIdentity,
         ResidueAfterRemoval,
         CleanupFailure,
@@ -458,6 +466,7 @@ mod operation {
         root: OwnedRootAuthority,
         gates: Vec<GateResult>,
         runtime_failed: bool,
+        runtime_skipped: bool,
         residue_detected: bool,
         retained_reason: Option<RetainedReason>,
     }
@@ -480,6 +489,7 @@ mod operation {
                 },
                 gates: Vec::with_capacity(ORDERED_GATES.len()),
                 runtime_failed: false,
+                runtime_skipped: false,
                 residue_detected: false,
                 retained_reason: None,
             }
@@ -612,11 +622,30 @@ mod operation {
         }
 
         fn package_operation(mut self) -> Pipeline<Launch> {
-            self.authority.push(
-                GateId::PackageInstall,
-                GateStatus::Passed,
-                OutcomeCode::InertOwnedBytesBound,
-            );
+            match self.authority.scenario() {
+                Scenario::Hostile(HostileFixture::TransportFailure) => {
+                    self.authority.runtime_failed = true;
+                    self.authority.push(
+                        GateId::PackageInstall,
+                        GateStatus::Failed,
+                        OutcomeCode::TransportFailed,
+                    );
+                }
+                Scenario::Hostile(HostileFixture::TransportTimeoutUnsettled) => {
+                    self.authority.runtime_failed = true;
+                    self.authority.retained_reason = Some(RetainedReason::ProcessUnsettled);
+                    self.authority.push(
+                        GateId::PackageInstall,
+                        GateStatus::Failed,
+                        OutcomeCode::TransportTimedOut,
+                    );
+                }
+                _ => self.authority.push(
+                    GateId::PackageInstall,
+                    GateStatus::Passed,
+                    OutcomeCode::InertOwnedBytesBound,
+                ),
+            }
             Pipeline {
                 authority: self.authority,
                 state: PhantomData,
@@ -626,7 +655,20 @@ mod operation {
 
     impl Pipeline<Launch> {
         fn launch(mut self) -> Pipeline<ReleaseIdentity> {
-            self.authority.runtime_gate(GateId::Launch, None);
+            if matches!(
+                self.authority.scenario(),
+                Scenario::Hostile(HostileFixture::SkipLaunch)
+            ) {
+                self.authority.runtime_failed = true;
+                self.authority.runtime_skipped = true;
+                self.authority.push(
+                    GateId::Launch,
+                    GateStatus::Skipped,
+                    OutcomeCode::FixedFixtureSkipped,
+                );
+            } else {
+                self.authority.runtime_gate(GateId::Launch, None);
+            }
             Pipeline {
                 authority: self.authority,
                 state: PhantomData,
@@ -707,7 +749,9 @@ mod operation {
     impl Pipeline<RuntimeCleanup> {
         fn process_cleanup(mut self) -> Pipeline<UserState> {
             match self.authority.scenario() {
-                Scenario::Hostile(HostileFixture::UnsettledProcess) => {
+                Scenario::Hostile(
+                    HostileFixture::UnsettledProcess | HostileFixture::TransportTimeoutUnsettled,
+                ) => {
                     self.authority.retained_reason = Some(RetainedReason::ProcessUnsettled);
                     self.authority.push(
                         GateId::OwnedRuntimeCleanup,
@@ -850,6 +894,8 @@ mod operation {
                 self.authority.mark_authority_settled();
                 CompleteOperationResult::Settled(self.authority.outcome(if clean_contract {
                     Disposition::SourceContractComplete
+                } else if self.authority.runtime_skipped {
+                    Disposition::Skipped
                 } else {
                     Disposition::Failed
                 }))
@@ -946,6 +992,94 @@ fn capability_rehash_failure_stops_before_transport_or_gate_execution() {
     assert!(ORDERED_GATES
         .iter()
         .all(|gate| outcome.status(*gate) == GateStatus::Blocked));
+    assert!(!outcome.claims_native_proof());
+    assert!(witness.all_released());
+    assert!(witness.all_settled_before_release());
+}
+
+#[test]
+fn post_authority_transport_failure_still_runs_mandatory_cleanup() {
+    let (capability, witness) =
+        hostile_fixture_capability(LinuxProfile::Deb, HostileFixture::TransportFailure);
+    let outcome = run_complete_operation(capability).settled();
+    assert!(outcome.consumed_process_local_capability());
+    assert_eq!(outcome.disposition(), Disposition::Failed);
+    assert_eq!(outcome.status(GateId::PackageInstall), GateStatus::Failed);
+    for gate in [
+        GateId::Launch,
+        GateId::ReleaseIdentity,
+        GateId::Settings,
+        GateId::Degradation,
+        GateId::Telemetry,
+    ] {
+        assert_eq!(outcome.status(gate), GateStatus::Blocked);
+    }
+    for gate in [
+        GateId::ApplicationRemoved,
+        GateId::OwnedRuntimeCleanup,
+        GateId::UserStatePolicy,
+    ] {
+        assert_eq!(outcome.status(gate), GateStatus::Passed);
+    }
+    assert!(!outcome.claims_native_proof());
+    assert!(witness.all_released());
+    assert!(witness.all_settled_before_release());
+}
+
+#[test]
+fn transport_timeout_retains_artifact_process_and_root_until_recovery() {
+    let (capability, witness) = hostile_fixture_capability(
+        LinuxProfile::AppImage,
+        HostileFixture::TransportTimeoutUnsettled,
+    );
+    let retained = run_complete_operation(capability).retained();
+    let pending = retained.outcome();
+    assert!(pending.consumed_process_local_capability());
+    assert_eq!(pending.disposition(), Disposition::Failed);
+    assert_eq!(pending.status(GateId::PackageInstall), GateStatus::Failed);
+    assert_eq!(
+        pending.retained_reason(),
+        Some(RetainedReason::ProcessUnsettled)
+    );
+    assert_eq!(
+        pending.status(GateId::OwnedRuntimeCleanup),
+        GateStatus::Partial
+    );
+    assert_eq!(pending.status(GateId::UserStatePolicy), GateStatus::Blocked);
+    assert_eq!(witness.live_kinds(), ["artifact", "process", "root"]);
+    assert!(!witness.all_settled_before_release());
+    assert!(!pending.claims_native_proof());
+
+    let recovered = retained.retry_cleanup();
+    assert!(recovered.process_tree_settled());
+    assert!(recovered.private_root_removed());
+    assert!(!recovered.claims_native_proof());
+    assert!(witness.all_released());
+    assert!(witness.all_settled_before_release());
+}
+
+#[test]
+fn skipped_launch_is_distinct_and_still_runs_removal_and_cleanup() {
+    let (capability, witness) =
+        hostile_fixture_capability(LinuxProfile::AppImage, HostileFixture::SkipLaunch);
+    let outcome = run_complete_operation(capability).settled();
+    assert_eq!(outcome.disposition(), Disposition::Skipped);
+    assert_eq!(outcome.status(GateId::Launch), GateStatus::Skipped);
+    for gate in [
+        GateId::ReleaseIdentity,
+        GateId::Settings,
+        GateId::Degradation,
+        GateId::Telemetry,
+    ] {
+        assert_eq!(outcome.status(gate), GateStatus::Blocked);
+    }
+    for gate in [
+        GateId::ApplicationRemoved,
+        GateId::OwnedRuntimeCleanup,
+        GateId::UserStatePolicy,
+    ] {
+        assert_eq!(outcome.status(gate), GateStatus::Passed);
+    }
     assert!(!outcome.claims_native_proof());
     assert!(witness.all_released());
     assert!(witness.all_settled_before_release());
