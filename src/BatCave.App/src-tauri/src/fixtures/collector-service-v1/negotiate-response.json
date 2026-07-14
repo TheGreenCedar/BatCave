@@ -1,0 +1,27 @@
+{
+  "protocol_version": 1,
+  "request_id": 1,
+  "outcome": {
+    "kind": "negotiated",
+    "payload": {
+      "negotiated_protocol_version": 1,
+      "service": {
+        "service_name": "BatCaveCollector",
+        "service_version": "0.2.0-rc.2",
+        "release": {
+          "app_version": "0.2.0-rc.2",
+          "source_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "instance_id": "instance-1",
+        "protocol_version": 1,
+        "minimum_desktop_version": "0.2.0-rc.2",
+        "limits": {
+          "maximum_frame_bytes": 8388608,
+          "maximum_process_count": 5000,
+          "maximum_string_bytes": 32768,
+          "maximum_clients": 8
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,8 @@
 mod atomic_json;
 mod benchmark;
 mod cli_args;
+#[cfg_attr(not(test), allow(dead_code))]
+mod collector_service;
 mod contracts;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod elevation;

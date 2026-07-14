@@ -1,0 +1,64 @@
+{
+  "protocol_version": 1,
+  "request_id": 2,
+  "outcome": {
+    "kind": "latest_snapshot",
+    "payload": {
+      "kind": "snapshot",
+      "payload": {
+        "snapshot_schema_version": 1,
+        "service_instance_id": "instance-1",
+        "sample_seq": 1,
+        "sampled_at_ms": 1700000000000,
+        "collection_latency_ms": 10,
+        "collector_state": "healthy",
+        "system": {
+          "cpu_percent": 10.0,
+          "kernel_cpu_percent": 2.0,
+          "logical_cpu_percent": [10.0, 11.0],
+          "memory_used_bytes": 1000,
+          "memory_total_bytes": 2000,
+          "memory_available_bytes": 1000,
+          "swap_used_bytes": 0,
+          "swap_total_bytes": 0,
+          "process_count": 1,
+          "disk_read_total_bytes": 10,
+          "disk_write_total_bytes": 20,
+          "disk_read_bps": 1,
+          "disk_write_bps": 2,
+          "network_received_total_bytes": 30,
+          "network_transmitted_total_bytes": 40,
+          "network_received_bps": 3,
+          "network_transmitted_bps": 4
+        },
+        "processes": [
+          {
+            "pid": "1234",
+            "parent_pid": "1",
+            "start_time_ms": 1700000000000,
+            "name": "batcave-monitor",
+            "exe": "C:\\Program Files\\BatCave Monitor\\batcave-monitor.exe",
+            "status": "Run",
+            "cpu_percent": 1.0,
+            "kernel_cpu_percent": 0.2,
+            "memory_bytes": 100,
+            "private_bytes": 90,
+            "virtual_memory_bytes": 200,
+            "io_read_total_bytes": 10,
+            "io_write_total_bytes": 20,
+            "other_io_total_bytes": 5,
+            "io_read_bps": 1,
+            "io_write_bps": 2,
+            "other_io_bps": 1,
+            "network_received_bps": 3,
+            "network_transmitted_bps": 4,
+            "threads": 5,
+            "handles": 6,
+            "access_state": "full"
+          }
+        ],
+        "warnings": []
+      }
+    }
+  }
+}
