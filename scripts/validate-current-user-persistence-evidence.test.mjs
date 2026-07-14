@@ -183,6 +183,28 @@ test("requires visible degraded persistence and preserves the fixed restart muta
     () => validateCurrentUserPersistencePacket(changedSettings),
     /must equal the fixed probe value ember/u,
   );
+
+  const hiddenHealth = packet();
+  hiddenHealth.receipts.degraded.health_degraded = false;
+  assert.throws(
+    () => validateCurrentUserPersistencePacket(hiddenHealth),
+    /result: must equal failed/u,
+  );
+  hiddenHealth.result = "failed";
+  assert.equal(validateCurrentUserPersistencePacket(hiddenHealth), hiddenHealth);
+
+  for (const rootFailure of [
+    { field: "directory_reported", value: false },
+    { field: "permission_state", value: "invalid" },
+  ]) {
+    const unverified = packet();
+    unverified.receipts.restart.persistence.current_user_root[rootFailure.field] =
+      rootFailure.value;
+    assert.throws(
+      () => validateCurrentUserPersistencePacket(unverified),
+      /result: must equal failed/u,
+    );
+  }
 });
 
 test("validates the checked-in pending index without treating pending as blocked", () => {
@@ -255,7 +277,20 @@ test("rehashes and cross-checks indexed native packets", () => {
     () => validateCurrentUserPersistenceIndex(index, { repositoryRoot }),
     /does not match packet bytes/u,
   );
+  index.profiles[2].packet_sha256 = digest;
+
+  const linkedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-persistence-linked-"));
+  fs.writeFileSync(path.join(linkedRoot, "macos-dmg.json"), fs.readFileSync(packetFile));
+  const evidenceDirectory = path.dirname(packetFile);
+  fs.rmSync(evidenceDirectory, { recursive: true, force: true });
+  fs.symlinkSync(linkedRoot, evidenceDirectory, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(
+    () => validateCurrentUserPersistenceIndex(index, { repositoryRoot }),
+    /must not traverse a linked repository path/u,
+  );
+
   fs.rmSync(repositoryRoot, { recursive: true, force: true });
+  fs.rmSync(linkedRoot, { recursive: true, force: true });
 });
 
 test("validation and release workflows execute this contract", () => {

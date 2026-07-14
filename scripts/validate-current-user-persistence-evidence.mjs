@@ -382,9 +382,18 @@ export function validateCurrentUserPersistencePacket(packet, field = "packet") {
   const permissionsPassed =
     packet.root.owner_verified &&
     packet.root.private_permissions_verified &&
-    packet.root.files.every((file) => file.private_permissions_verified);
+    packet.root.files.every((file) => file.private_permissions_verified) &&
+    Object.values(packet.receipts).every(
+      (receipt) =>
+        receipt.persistence.current_user_root.directory_reported === true &&
+        receipt.persistence.current_user_root.permission_state === "verified",
+    );
   const expectedResult =
-    checkKeys.every((key) => packet.checks[key]) && permissionsPassed ? "passed" : "failed";
+    checkKeys.every((key) => packet.checks[key]) &&
+    permissionsPassed &&
+    packet.receipts.degraded.health_degraded === true
+      ? "passed"
+      : "failed";
   if (packet.result !== expectedResult) fail(`${field}.result`, `must equal ${expectedResult}`);
 
   sortedUnique(packet.limitations, `${field}.limitations`);
@@ -400,16 +409,65 @@ export function validateCurrentUserPersistencePacket(packet, field = "packet") {
 
 function safePacketPath(value, field) {
   string(value, field, { max: 240 });
-  if (path.isAbsolute(value) || value.includes("\\") || value.split("/").includes("..")) {
-    fail(field, "must be a safe repository-relative POSIX path");
-  }
-  if (!value.startsWith("docs/evidence/persistence/") || !value.endsWith(".json")) {
-    fail(field, "must stay under docs/evidence/persistence and end in .json");
+  const components = value.split("/");
+  if (
+    path.posix.isAbsolute(value) ||
+    path.win32.isAbsolute(value) ||
+    value.includes("\\") ||
+    path.posix.normalize(value) !== value ||
+    components.some((component) => component === "" || component === "." || component === "..") ||
+    !value.startsWith("docs/evidence/persistence/") ||
+    path.posix.extname(value) !== ".json"
+  ) {
+    fail(field, "must be a canonical repository-relative persistence-evidence JSON path");
   }
 }
 
-function digestFile(file) {
-  return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
+function readStablePacket(relative, repositoryRoot, field) {
+  const components = relative.split("/");
+  const absolute = path.resolve(repositoryRoot, ...components);
+  let metadata;
+  let realRoot;
+  let realFile;
+  try {
+    metadata = fs.lstatSync(absolute);
+    realRoot = fs.realpathSync(repositoryRoot);
+    realFile = fs.realpathSync(absolute);
+  } catch (error) {
+    fail(field, `cannot read referenced packet: ${error.message}`);
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    fail(field, "must reference a regular non-link file");
+  }
+  if (realFile !== path.resolve(realRoot, ...components)) {
+    fail(field, "must not traverse a linked repository path");
+  }
+
+  let descriptor;
+  let opened;
+  let bytes;
+  try {
+    descriptor = fs.openSync(absolute, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    opened = fs.fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
+      fail(field, "changed identity while being opened");
+    }
+    bytes = fs.readFileSync(descriptor);
+    const after = fs.lstatSync(absolute);
+    if (
+      !after.isFile() ||
+      after.isSymbolicLink() ||
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino
+    ) {
+      fail(field, "changed identity while being read");
+    }
+  } catch (error) {
+    fail(field, `cannot read stable packet bytes: ${error.message}`);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+  return bytes;
 }
 
 export function validateCurrentUserPersistenceIndex(index, { repositoryRoot } = {}) {
@@ -450,12 +508,12 @@ export function validateCurrentUserPersistenceIndex(index, { repositoryRoot } = 
     safePacketPath(profile.packet_path, `${field}.packet_path`);
     string(profile.packet_sha256, `${field}.packet_sha256`, { pattern: SHA256 });
     if (repositoryRoot) {
-      const packetFile = path.join(repositoryRoot, ...profile.packet_path.split("/"));
-      if (!fs.existsSync(packetFile)) fail(`${field}.packet_path`, "does not exist");
-      if (digestFile(packetFile) !== profile.packet_sha256) {
+      const bytes = readStablePacket(profile.packet_path, repositoryRoot, `${field}.packet_path`);
+      const digest = `sha256:${crypto.createHash("sha256").update(bytes).digest("hex")}`;
+      if (digest !== profile.packet_sha256) {
         fail(`${field}.packet_sha256`, "does not match packet bytes");
       }
-      const packet = JSON.parse(fs.readFileSync(packetFile, "utf8"));
+      const packet = JSON.parse(bytes.toString("utf8"));
       validateCurrentUserPersistencePacket(packet, `packet.${profile.id}`);
       if (packet.host.platform !== platform || packet.artifact.kind !== packageKind) {
         fail(field, "packet platform and artifact kind must match the indexed profile");
@@ -507,5 +565,4 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 export const currentUserPersistenceInternals = {
   PACKET_LIMITATION,
   PROFILE_SHAPE,
-  digestFile,
 };

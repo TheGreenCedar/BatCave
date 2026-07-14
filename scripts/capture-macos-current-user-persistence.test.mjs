@@ -6,7 +6,8 @@ import test from "node:test";
 
 import { macosPersistenceCaptureInternals } from "./capture-macos-current-user-persistence.mjs";
 
-const { hashBundleTree, inspectRoot, parseArgs } = macosPersistenceCaptureInternals;
+const { hashBundleTree, inspectRoot, parseArgs, regularFileInside } =
+  macosPersistenceCaptureInternals;
 
 test("requires a fixed app and exact source identity", () => {
   assert.deepEqual(parseArgs(["--app", "BatCave Monitor.app", "--source-sha", "a".repeat(40)]), {
@@ -43,6 +44,51 @@ test("canonical app-bundle digest binds relative names and bytes", () => {
   assert.notEqual(hashBundleTree(root), first);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("canonical app-bundle digest separates hostile record-shaped file bytes", () => {
+  const first = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-bundle-collision-a-"));
+  const second = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-bundle-collision-b-"));
+  fs.writeFileSync(path.join(first, "a"), Buffer.from("X\0file\0b\0Y"));
+  fs.writeFileSync(path.join(second, "a"), "X");
+  fs.writeFileSync(path.join(second, "b"), "Y");
+
+  assert.notEqual(hashBundleTree(first), hashBundleTree(second));
+
+  fs.rmSync(first, { recursive: true, force: true });
+  fs.rmSync(second, { recursive: true, force: true });
+});
+
+test(
+  "executable authority rejects file and parent-directory links",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-executable-root-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-executable-outside-"));
+    const outsideExecutable = path.join(outside, "batcave-monitor");
+    fs.writeFileSync(outsideExecutable, "external", { mode: 0o700 });
+    const linkedFile = path.join(root, "linked-file");
+    fs.symlinkSync(outsideExecutable, linkedFile, "file");
+    assert.throws(
+      () => regularFileInside(root, linkedFile, "app bundle GUI executable"),
+      /regular non-link file/u,
+    );
+
+    const linkedDirectory = path.join(root, "linked-directory");
+    fs.symlinkSync(outside, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+    assert.throws(
+      () =>
+        regularFileInside(
+          root,
+          path.join(linkedDirectory, "batcave-monitor"),
+          "app bundle GUI executable",
+        ),
+      /must not traverse a linked app-bundle path/u,
+    );
+
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  },
+);
 
 test(
   "root inspection emits modes and ownership without local paths",

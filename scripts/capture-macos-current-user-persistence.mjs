@@ -52,23 +52,52 @@ function mode(stat) {
   return (stat.mode & 0o777).toString(8).padStart(4, "0");
 }
 
+function bytewiseNameOrder(left, right) {
+  return Buffer.compare(Buffer.from(left.name, "utf8"), Buffer.from(right.name, "utf8"));
+}
+
+function updateLengthPrefixed(digest, value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8");
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64BE(BigInt(bytes.length));
+  digest.update(length);
+  digest.update(bytes);
+}
+
+function updateTreeRecord(digest, type, relative, entryMode, payload = Buffer.alloc(0)) {
+  for (const field of [type, relative, entryMode, payload]) {
+    updateLengthPrefixed(digest, field);
+  }
+}
+
 function hashBundleTree(root) {
   const digest = crypto.createHash("sha256");
+  updateLengthPrefixed(digest, "batcave_canonical_app_bundle_tree_v1");
   function visit(directory, prefix = "") {
     for (const entry of fs
       .readdirSync(directory, { withFileTypes: true })
-      .sort((a, b) => a.name.localeCompare(b.name))) {
+      .sort(bytewiseNameOrder)) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        digest.update(`directory\0${relative}\0`);
+        updateTreeRecord(digest, "directory", relative, mode(fs.lstatSync(absolute)));
         visit(absolute, relative);
       } else if (entry.isSymbolicLink()) {
-        digest.update(`symlink\0${relative}\0${fs.readlinkSync(absolute)}\0`);
+        updateTreeRecord(
+          digest,
+          "symlink",
+          relative,
+          "",
+          Buffer.from(fs.readlinkSync(absolute), "utf8"),
+        );
       } else if (entry.isFile()) {
-        digest.update(`file\0${relative}\0`);
-        digest.update(fs.readFileSync(absolute));
-        digest.update("\0");
+        updateTreeRecord(
+          digest,
+          "file",
+          relative,
+          mode(fs.lstatSync(absolute)),
+          fs.readFileSync(absolute),
+        );
       } else {
         fail(`unsupported app bundle entry type at ${relative}`);
       }
@@ -78,20 +107,50 @@ function hashBundleTree(root) {
   return `sha256:${digest.digest("hex")}`;
 }
 
+function realDirectory(directory, label) {
+  const metadata = fs.lstatSync(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    fail(`${label} must be a real non-link directory`);
+  }
+  return fs.realpathSync(directory);
+}
+
+function regularFileInside(root, file, label) {
+  const realRoot = realDirectory(root, "app bundle");
+  const relative = path.relative(root, file);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    fail(`${label} must stay inside the app bundle`);
+  }
+  const metadata = fs.lstatSync(file);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    fail(`${label} must be a regular non-link file`);
+  }
+  const realFile = fs.realpathSync(file);
+  if (realFile !== path.resolve(realRoot, relative)) {
+    fail(`${label} must not traverse a linked app-bundle path`);
+  }
+  return realFile;
+}
+
 function packagedExecutable(app) {
   const directory = path.join(app, "Contents", "MacOS");
-  if (!fs.statSync(directory).isDirectory()) fail("app bundle has no Contents/MacOS directory");
+  const realApp = realDirectory(app, "app bundle");
+  const realDirectoryPath = realDirectory(directory, "app bundle Contents/MacOS");
+  if (realDirectoryPath !== path.join(realApp, "Contents", "MacOS")) {
+    fail("app bundle Contents/MacOS must not traverse a linked path");
+  }
+  const infoPlist = path.join(app, "Contents", "Info.plist");
+  regularFileInside(app, infoPlist, "app bundle Info.plist");
   const executableName = execFileSync(
     "/usr/bin/plutil",
-    ["-extract", "CFBundleExecutable", "raw", path.join(app, "Contents", "Info.plist")],
+    ["-extract", "CFBundleExecutable", "raw", infoPlist],
     { encoding: "utf8" },
   ).trim();
   if (!executableName || path.basename(executableName) !== executableName) {
     fail("app bundle has an invalid CFBundleExecutable");
   }
   const executable = path.join(directory, executableName);
-  if (!fs.statSync(executable).isFile()) fail("app bundle GUI executable is missing");
-  return executable;
+  return regularFileInside(app, executable, "app bundle GUI executable");
 }
 
 function proofEnvironment(home) {
@@ -154,9 +213,11 @@ function isoSeconds(date = new Date()) {
 
 function capture({ app, sourceSha }) {
   if (process.platform !== "darwin") fail("this capture helper requires macOS");
-  if (!fs.statSync(app).isDirectory() || !app.endsWith(".app")) {
+  if (!app.endsWith(".app")) {
     fail("--app must name a local .app bundle");
   }
+  realDirectory(app, "source app bundle");
+  const sourceDigest = hashBundleTree(app);
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-persistence-proof-"));
   const installedApp = path.join(workspace, "Applications", "BatCave Monitor.app");
   const home = path.join(workspace, "home");
@@ -169,12 +230,14 @@ function capture({ app, sourceSha }) {
     fs.mkdirSync(path.dirname(installedApp), { recursive: true });
     fs.mkdirSync(home, { recursive: true });
     fs.cpSync(app, installedApp, { recursive: true, preserveTimestamps: true });
+    realDirectory(installedApp, "installed app bundle");
+    const installedDigest = hashBundleTree(installedApp);
+    if (installedDigest !== sourceDigest) fail("installed app copy does not match source bundle");
     fs.writeFileSync(outsideSentinel, sentinelBytes, { mode: 0o600 });
     const executable = packagedExecutable(installedApp);
     const environment = proofEnvironment(home);
 
     const initialize = runProof(executable, "initialize", environment);
-    const rootEvidence = inspectRoot(root);
     const restart = runProof(executable, "restart", environment);
     const restartSettingsPreserved =
       JSON.stringify(initialize.settings) === JSON.stringify(restart.settings);
@@ -183,6 +246,10 @@ function capture({ app, sourceSha }) {
     fs.writeFileSync(settingsFile, corruptSettings, { mode: 0o600 });
     const degraded = runProof(executable, "degraded", environment);
     const corruptSourcePreserved = fs.readFileSync(settingsFile).equals(corruptSettings);
+    const rootEvidence = inspectRoot(root);
+    if (hashBundleTree(installedApp) !== installedDigest) {
+      fail("installed app changed while persistence proof was running");
+    }
 
     fs.rmSync(installedApp, { recursive: true, force: true });
     const checks = {
@@ -198,8 +265,16 @@ function capture({ app, sourceSha }) {
     const permissionsPassed =
       rootEvidence.owner_verified &&
       rootEvidence.private_permissions_verified &&
-      rootEvidence.files.every((file) => file.private_permissions_verified);
-    const result = Object.values(checks).every(Boolean) && permissionsPassed ? "passed" : "failed";
+      rootEvidence.files.every((file) => file.private_permissions_verified) &&
+      [initialize, restart, degraded].every(
+        (receipt) =>
+          receipt.persistence?.current_user_root?.directory_reported === true &&
+          receipt.persistence.current_user_root.permission_state === "verified",
+      );
+    const result =
+      Object.values(checks).every(Boolean) && permissionsPassed && degraded.health_degraded === true
+        ? "passed"
+        : "failed";
     const osVersion = execFileSync("/usr/bin/sw_vers", ["-productVersion"], {
       encoding: "utf8",
     }).trim();
@@ -220,7 +295,7 @@ function capture({ app, sourceSha }) {
       },
       artifact: {
         kind: "app_bundle",
-        sha256: hashBundleTree(app),
+        sha256: installedDigest,
         digest_scope: "canonical_app_bundle_tree_v1",
         install_kind: "app_bundle",
       },
@@ -263,4 +338,5 @@ export const macosPersistenceCaptureInternals = {
   hashBundleTree,
   inspectRoot,
   parseArgs,
+  regularFileInside,
 };

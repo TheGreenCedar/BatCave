@@ -43,7 +43,7 @@ BATCAVE_SOURCE_COMMIT_SHA="$(git rev-parse HEAD)" \
   npm run tauri -- build --target universal-apple-darwin
 ```
 
-Run the build command from `src/BatCave.App`. The capture helper refuses to overwrite an existing output file. Its app-bundle digest uses a documented repository-local canonical tree algorithm; it is not a DMG digest. The resulting packet therefore retains the `staged_application_bundle_only` limitation and cannot fill the `macos-dmg` index profile.
+Run the build command from `src/BatCave.App`. The capture helper refuses to overwrite an existing output file. It rejects linked app roots, linked executable paths, and source-to-copy drift before execution. Its app-bundle digest is a bytewise-sorted sequence of length-prefixed type, relative-path, mode, and payload fields. The helper records the copied tree that it executes and rehashes that tree before removal. This repository-local digest is not a DMG digest. The resulting packet therefore retains the `staged_application_bundle_only` limitation and cannot fill the `macos-dmg` index profile.
 
 ## Packet and index rules
 
@@ -52,9 +52,9 @@ Run the build command from `src/BatCave.App`. The capture helper refuses to over
 - exact keys and closed platform, architecture, artifact, install-kind, permission, phase, component, and failure-code shapes;
 - exact source SHA and app-version agreement across all three packaged receipts;
 - Unix `0700` root and `0600` owned-file modes, or a Windows ACL evidence model with no invented Unix modes;
-- recomputed pass/fail from the seven lifecycle checks;
+- recomputed pass/fail from the seven lifecycle checks, external root/file permissions, every phase's runtime-reported root permission state, and degraded runtime health;
 - sorted limitations including `candidate_not_release_evidence`;
-- rejection of local paths, raw logs, environment material, credentials, extra fields, digest drift, and packet/profile mismatches.
+- rejection of local paths, raw logs, environment material, credentials, extra fields, digest drift, linked index paths, unstable packet files, and packet/profile mismatches.
 
 The checked-in [evidence index](evidence/persistence/current-user-persistence-index.v1.json) covers Windows NSIS, Linux deb, Linux AppImage, and macOS DMG. `pending` means that native package evidence has not been attached. It is work remaining for #153, not a source-development blocker and not a failure disposition. `native_candidate` means a packet exists and validates internally; it still grants no release status.
 
