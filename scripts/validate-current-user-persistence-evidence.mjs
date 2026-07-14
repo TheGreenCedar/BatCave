@@ -95,6 +95,14 @@ function string(value, field, { max = 160, pattern } = {}) {
   return value;
 }
 
+function utcTimestamp(value, field) {
+  string(value, field, { pattern: UTC_TIMESTAMP });
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().replace(/\.\d{3}Z$/u, "Z") !== value) {
+    fail(field, "must be a real UTC timestamp at whole-second precision");
+  }
+}
+
 function member(value, field, values) {
   if (!values.has(value)) fail(field, `must be one of ${[...values].join(", ")}`);
   return value;
@@ -293,7 +301,7 @@ export function validateCurrentUserPersistencePacket(packet, field = "packet") {
     fail(`${field}.packet_kind`, "must equal native_candidate");
   }
   string(packet.packet_id, `${field}.packet_id`, { pattern: SLUG });
-  string(packet.observed_at_utc, `${field}.observed_at_utc`, { pattern: UTC_TIMESTAMP });
+  utcTimestamp(packet.observed_at_utc, `${field}.observed_at_utc`);
 
   exactKeys(packet.source, `${field}.source`, ["repository", "source_sha", "app_version"]);
   if (packet.source.repository !== "TheGreenCedar/BatCave") {
@@ -371,7 +379,12 @@ export function validateCurrentUserPersistencePacket(packet, field = "packet") {
   ];
   exactKeys(packet.checks, `${field}.checks`, checkKeys);
   for (const key of checkKeys) boolean(packet.checks[key], `${field}.checks.${key}`);
-  const expectedResult = checkKeys.every((key) => packet.checks[key]) ? "passed" : "failed";
+  const permissionsPassed =
+    packet.root.owner_verified &&
+    packet.root.private_permissions_verified &&
+    packet.root.files.every((file) => file.private_permissions_verified);
+  const expectedResult =
+    checkKeys.every((key) => packet.checks[key]) && permissionsPassed ? "passed" : "failed";
   if (packet.result !== expectedResult) fail(`${field}.result`, `must equal ${expectedResult}`);
 
   sortedUnique(packet.limitations, `${field}.limitations`);

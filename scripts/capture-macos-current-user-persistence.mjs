@@ -195,7 +195,11 @@ function capture({ app, sourceSha }) {
       restart_settings_preserved: restartSettingsPreserved,
       state_root_preserved: fs.existsSync(root),
     };
-    const result = Object.values(checks).every(Boolean) ? "passed" : "failed";
+    const permissionsPassed =
+      rootEvidence.owner_verified &&
+      rootEvidence.private_permissions_verified &&
+      rootEvidence.files.every((file) => file.private_permissions_verified);
+    const result = Object.values(checks).every(Boolean) && permissionsPassed ? "passed" : "failed";
     const osVersion = execFileSync("/usr/bin/sw_vers", ["-productVersion"], {
       encoding: "utf8",
     }).trim();

@@ -151,6 +151,22 @@ test("rejects source drift, hidden fields, raw paths, and false passing results"
     () => validateCurrentUserPersistencePacket(falsePass),
     /result: must equal failed/u,
   );
+
+  const permissionFailure = packet();
+  permissionFailure.root.owner_verified = false;
+  assert.throws(
+    () => validateCurrentUserPersistencePacket(permissionFailure),
+    /result: must equal failed/u,
+  );
+  permissionFailure.result = "failed";
+  assert.equal(validateCurrentUserPersistencePacket(permissionFailure), permissionFailure);
+
+  const impossibleTime = packet();
+  impossibleTime.observed_at_utc = "2026-02-30T12:00:00Z";
+  assert.throws(
+    () => validateCurrentUserPersistencePacket(impossibleTime),
+    /must be a real UTC timestamp/u,
+  );
 });
 
 test("requires visible degraded persistence and preserves the fixed restart mutation", () => {
