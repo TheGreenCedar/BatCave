@@ -26,6 +26,18 @@ The native executor therefore keeps `preflight.package_trust` unsupported and ev
 | macOS DMG             | mount, copy, and install an isolated app | `owned_dmg_mount_copy_required`                  | none                         |
 | macOS updater archive | safely extract and stage an isolated app | `rust_owned_updater_archive_stream_required`     | `macos_updater_staging_only` |
 
+Both profiles carry the same consumed-destination revalidation contract. The future closed adapter must derive all of these again from the copied or staged app:
+
+- compiled Tauri bundle identifier;
+- verified release version;
+- both `arm64` and `x86_64` slices;
+- code-signature integrity;
+- Developer ID application authority;
+- notarization acceptance; and
+- a valid staple.
+
+The contract maps the final three trust observations to the #98 `contained_app_developer_id`, `contained_app_notarization`, and `contained_app_staple` roles. The source descriptor cannot mark any observation passed or create evidence. [ADR 0008](decisions/0008-macos-dmg-destination-revalidation.md) exercises the fixed DMG destination hooks with an inert ad-hoc-signed fixture; it retains the ADR 0006 exact-transport non-claim.
+
 The updater profile can never reinterpret staging as installation or a public A-to-B update. Both profiles remain blocked until a reviewed private process boundary consumes the still-live #111 capability and derives observations from settled native execution.
 
 The transport decisions are now distinct. [ADR 0006](decisions/0006-macos-dmg-owned-byte-transport.md) records that `hdiutil` cannot consume the Rust-owned `/dev/fd/N` input and forbids a path fallback. [ADR 0007](decisions/0007-macos-updater-owned-stream-transport.md) records that updater archives can be preflighted and staged from Rust-owned immutable compressed bytes without a package path. ADR 0007 is a test-only transport proof; it does not create the production composition root that ADR 0004 still requires.
@@ -46,4 +58,4 @@ The release extractor retains its separate traversal, link, collision, size-budg
 
 ## What closes #114
 
-#114 still requires a Rust-owned public-release verifier and complete-operation entry, exact signed public universal DMG and updater artifacts, destination trust and identity rechecks, bounded termination with settled cleanup, launch and runtime gates, removal and residue proof, sanitized #98 evidence, and the explicit updater staging-only non-claim. The DMG transport also needs a safe primitive other than the rejected descriptor or path fallback. Hosted source tests cannot supply that evidence.
+#114 still requires a Rust-owned public-release verifier and complete-operation entry, exact signed public universal DMG and updater artifacts, all seven destination gates against those consumed artifacts, bounded termination with settled cleanup, launch and runtime gates, removal and residue proof, sanitized #98 evidence, and the explicit updater staging-only non-claim. The DMG transport also needs a safe primitive other than the rejected descriptor or path fallback. Hosted source tests cannot supply that evidence.

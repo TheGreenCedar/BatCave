@@ -603,6 +603,27 @@ test("closed macOS source binding is verified-identity-bound and cannot mint pro
       ),
       false,
     );
+    assert.deepEqual(sourceReceipt.profile.destination_revalidation, {
+      boundary: "consumed_destination_only",
+      bundle_id_source: "compiled_tauri_identifier",
+      version_source: "verified_release_version",
+      required_architectures: ["arm64", "x86_64"],
+      required_gate_ids: [
+        "bundle_id",
+        "version",
+        "architectures",
+        "signature_integrity",
+        "developer_id_authority",
+        "notarization",
+        "staple",
+      ],
+      release_evidence_signature_role_ids: [
+        "contained_app_developer_id",
+        "contained_app_notarization",
+        "contained_app_staple",
+      ],
+      source_fixture_can_mint_proof: false,
+    });
     assert.deepEqual(sourceReceipt.claims, {
       verified_asset_identity_bound: true,
       live_capability_held: false,
