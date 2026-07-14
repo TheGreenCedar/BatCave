@@ -22,7 +22,8 @@ There is no temporary-file fallback. If `memfd_create`, sealing, read-only reope
 5. The fixed child receives the read-only object at a fixed inherited descriptor. No caller supplies a descriptor, path, executable, arguments, environment, callback, command runner, status, or completion.
 6. Rust owns a new process group, acts as a child subreaper, enforces the deadline, detects surviving descendants, terminates the group, reaps adopted children, and checks that the group has disappeared.
 7. A supervisor error before spawn is a consumption failure with no process ownership. Any error after spawn carries the child and process-group state back into the authority as unresolved ownership.
-8. Rust closes the descriptor only after settlement. An unresolved group retains the child handle, process-group identity, subreaper guard, and descriptor until settlement succeeds; a simulated cleanup failure retains the descriptor until an explicit retry.
+8. While the authority is live, an unresolved group retains the child handle, process-group identity, subreaper guard, and descriptor until settlement succeeds. Explicit recovery terminates, reaps, and only then closes. `Drop` is a bounded fail-safe that attempts the same containment before fields are released; the production composition root must keep the authority alive for observable retry rather than use `Drop` as its normal recovery path.
+9. A simulated cleanup failure after proven settlement retains the descriptor until an explicit retry.
 
 The sanitized outcome contains the selected internal transport, failure boundaries, observed synthetic size and digest, settlement, cleanup, and residue state. It contains no descriptor, private path, generic command surface, native receipt, or evidence packet.
 
@@ -48,6 +49,7 @@ The integration test covers the failure boundary that can be established without
 - timeout terminates and reaps the owned group before cleanup;
 - a parent that exits while a descendant survives is classified as settlement failure, then terminated and reaped;
 - a supervisor failure after spawn retains group and descriptor ownership, rejects early close, and requires a successful terminate/reap retry;
+- dropping that unresolved authority takes the bounded containment path and leaves the retained process group absent;
 - cleanup failure retains the descriptor until retry;
 - linked roots and mismatched source bytes fail acquisition; and
 - non-Linux hosts report the transport as unsupported without a weaker fallback.

@@ -496,6 +496,35 @@ mod linux {
         pub(super) fn retains_process_group(&self) -> bool {
             self.unsettled.is_some() && self.retained_subreaper.is_some()
         }
+
+        pub(super) fn retained_process_group_for_test(&self) -> Option<libc::pid_t> {
+            self.unsettled
+                .as_ref()
+                .map(|unsettled| unsettled.process_group)
+        }
+    }
+
+    impl Drop for Authority {
+        fn drop(&mut self) {
+            if self.phase != Phase::RetainedUnsettled {
+                return;
+            }
+            let Some(unsettled) = self.unsettled.as_mut() else {
+                return;
+            };
+            if terminate_process_group(unsettled.process_group, &mut unsettled.child).is_err() {
+                return;
+            }
+            if !settle_process_group(unsettled.process_group, &mut unsettled.child).unwrap_or(false)
+            {
+                return;
+            }
+
+            self.unsettled.take();
+            self.retained_subreaper.take();
+            self.owned.take();
+            self.phase = Phase::Closed;
+        }
     }
 
     struct LaunchResult {
@@ -709,6 +738,10 @@ mod linux {
             return true;
         }
         std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    pub(super) fn process_group_exists_for_test(process_group: libc::pid_t) -> bool {
+        process_group_exists(process_group)
     }
 
     fn reap_process_group(process_group: libc::pid_t) -> std::io::Result<()> {
@@ -1144,6 +1177,30 @@ mod linux_tests {
             .expect("terminate, reap, and close retained ownership");
         assert!(!authority.retains_descriptor());
         assert!(!authority.retains_process_group());
+        remove_root(&root);
+    }
+
+    #[test]
+    fn dropping_unsettled_authority_terminates_and_reaps_its_retained_group() {
+        let _guard = serial_test_guard();
+        let root = scratch_root("drop-unsettled", FIXED_PAYLOAD);
+        let mut authority = acquire(supervisor_failure_plan(), &root).expect("acquire transport");
+        let completion = authority
+            .consume()
+            .expect("derive unresolved supervisor outcome");
+        assert_eq!(
+            completion.outcome().failures(),
+            &[FailureBoundary::Settlement]
+        );
+        let process_group = authority
+            .retained_process_group_for_test()
+            .expect("unresolved authority retains the spawned group");
+        assert!(process_group_exists_for_test(process_group));
+
+        drop(completion);
+        drop(authority);
+
+        assert!(!process_group_exists_for_test(process_group));
         remove_root(&root);
     }
 
