@@ -1385,7 +1385,6 @@ mod tests {
         assert_eq!(current.network_transmitted_bps, None);
     }
 
-    #[cfg(windows)]
     fn sample_process(pid: &str) -> ProcessSample {
         ProcessSample {
             pid: pid.to_string(),
