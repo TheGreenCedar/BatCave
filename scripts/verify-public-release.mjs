@@ -6,6 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
+  BUILD_PROVENANCE_ROLE,
   canonicalReleaseAssetName,
   requireSafeReleaseAssetName,
   verifyReleaseAssetInventory,
@@ -264,7 +265,16 @@ export function parseChecksumManifest(contents) {
 
 export function verifyChecksumManifest(candidate, directory) {
   const assets = validatedAssets(candidate.assets, "release candidate");
-  verifyReleaseAssetInventory(candidate.tag, candidate.prerelease, assets, "release candidate");
+  const contract = verifyReleaseAssetInventory(
+    candidate.tag,
+    candidate.prerelease,
+    assets,
+    "release candidate",
+  );
+  const provenance = contract.roles.find(({ role }) => role === BUILD_PROVENANCE_ROLE);
+  if (!provenance) {
+    throw new Error(`release contract is missing the declared ${BUILD_PROVENANCE_ROLE}`);
+  }
   const byName = new Map(assets.map((asset) => [asset.name, asset]));
   if (!byName.has(CHECKSUM_MANIFEST)) {
     throw new Error(`release candidate is missing ${CHECKSUM_MANIFEST}`);
@@ -295,10 +305,15 @@ export function verifyChecksumManifest(candidate, directory) {
       `checksum manifest must cover every candidate subject except one public attestation bundle; found ${unchecksummed.length} exceptions`,
     );
   }
+  if (unchecksummed[0] !== provenance.name) {
+    throw new Error(
+      `checksum manifest must leave only the declared ${BUILD_PROVENANCE_ROLE} unchecksummed; found ${unchecksummed[0]}`,
+    );
+  }
 
   return {
     subjects: [...manifest.keys()].sort((left, right) => left.localeCompare(right)),
-    bundleName: unchecksummed[0],
+    bundleName: provenance.name,
   };
 }
 

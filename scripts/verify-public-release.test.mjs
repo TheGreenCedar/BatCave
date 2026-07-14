@@ -332,6 +332,28 @@ test("parses a strict checksum manifest and requires exact subject coverage", as
   });
 });
 
+test("rejects swapping the declared provenance exception with another release role", async () => {
+  await withTempDirectory((root) => {
+    const { candidate, checksumManifest } = releaseFixture();
+    const provenanceDigest = candidate.assets
+      .find(({ name }) => name === provenanceName)
+      .digest.slice("sha256:".length);
+    const swappedManifest = [
+      ...checksumManifest
+        .trimEnd()
+        .split("\n")
+        .filter((line) => !line.endsWith(`./${testSubject}`)),
+      `${provenanceDigest}  ./${provenanceName}`,
+    ].join("\n");
+    fs.writeFileSync(path.join(root, CHECKSUM_MANIFEST), `${swappedManifest}\n`);
+
+    assert.throws(
+      () => verifyChecksumManifest(candidate, root),
+      /must leave only the declared build provenance bundle unchecksummed; found batcave-monitor\.exe/,
+    );
+  });
+});
+
 test("binds release and subject verification to the exact GitHub trust context", () => {
   assert.deepEqual(releaseVerificationArguments(tag), [
     "release",

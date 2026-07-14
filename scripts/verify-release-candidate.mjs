@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  RELEASE_ASSET_PHASE,
   canonicalReleaseAssetName,
   requireSafeReleaseAssetName,
   verifyReleaseAssetInventory,
@@ -94,16 +95,12 @@ export function stageReleaseAssets(inputRoot, outputRoot) {
   return staged;
 }
 
-export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
-  parseReleaseTag(tag);
-  requireCommitSha("source SHA", sourceSha);
-  if (typeof prerelease !== "boolean") throw new Error("prerelease must be a boolean");
-
+function releaseDirectoryAssets(directory) {
   const entries = fs.readdirSync(directory, { withFileTypes: true });
   if (entries.some((entry) => !entry.isFile())) {
     throw new Error("staged release directory must contain files only");
   }
-  const assets = entries
+  return entries
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((entry) => {
       const file = path.join(directory, entry.name);
@@ -113,8 +110,26 @@ export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
         digest: `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`,
       };
     });
+}
+
+export function verifyReleaseDirectory(
+  tag,
+  prerelease,
+  directory,
+  phase = RELEASE_ASSET_PHASE.Complete,
+) {
+  parseReleaseTag(tag);
+  if (typeof prerelease !== "boolean") throw new Error("prerelease must be a boolean");
+  const assets = releaseDirectoryAssets(directory);
   if (assets.length === 0) throw new Error("release candidate contains no assets");
-  verifyReleaseAssetInventory(tag, prerelease, assets, "release candidate");
+  verifyReleaseAssetInventory(tag, prerelease, assets, `release ${phase} inventory`, phase);
+  return assets;
+}
+
+export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
+  parseReleaseTag(tag);
+  requireCommitSha("source SHA", sourceSha);
+  const assets = verifyReleaseDirectory(tag, prerelease, directory);
   return { tag, source_sha: sourceSha, prerelease, assets };
 }
 
@@ -206,6 +221,7 @@ function usage() {
     "usage:",
     "  node scripts/verify-release-candidate.mjs identity <tag> <channel> <source-sha> <main-sha> <approved-source-sha>",
     "  node scripts/verify-release-candidate.mjs stage <input-directory> <output-directory>",
+    "  node scripts/verify-release-candidate.mjs verify-inventory <tag> <prerelease> <phase> <directory>",
     "  node scripts/verify-release-candidate.mjs inventory <tag> <source-sha> <prerelease> <directory> <output-json>",
     "  node scripts/verify-release-candidate.mjs verify-readback <expected-json> <actual-json> <draft>",
     "  node scripts/verify-release-candidate.mjs verify-latest <expected-json> <latest-json>",
@@ -231,6 +247,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     } else if (command === "stage" && args.length === 2) {
       const assets = stageReleaseAssets(...args);
       console.log(`staged ${assets.length} release assets`);
+    } else if (command === "verify-inventory" && args.length === 4) {
+      const [tag, prerelease, phase, directory] = args;
+      verifyWorkspaceReleaseVersion(tag);
+      const assets = verifyReleaseDirectory(
+        tag,
+        booleanArgument(prerelease, "prerelease"),
+        directory,
+        phase,
+      );
+      console.log(`verified ${phase} release inventory for ${assets.length} assets`);
     } else if (command === "inventory" && args.length === 5) {
       const [tag, sourceSha, prerelease, directory, output] = args;
       verifyWorkspaceReleaseVersion(tag);

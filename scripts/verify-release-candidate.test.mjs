@@ -7,6 +7,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  BUILD_PROVENANCE_ROLE,
+  RELEASE_ASSET_PHASE,
   expectedReleaseAssetRoles,
   verifyReleaseAssetInventory,
 } from "./release-asset-contract.mjs";
@@ -14,6 +16,7 @@ import {
   buildReleaseInventory,
   stageReleaseAssets,
   verifyReleaseCandidateIdentity,
+  verifyReleaseDirectory,
   verifyLatestRelease,
   verifyReleaseReadback,
 } from "./verify-release-candidate.mjs";
@@ -105,6 +108,7 @@ test("executable candidate commands bind their tag to Cargo before artifact work
     fs.writeFileSync(expectedFile, `${JSON.stringify({ tag: "v9.9.9" })}\n`);
     const commands = [
       ["identity", "v9.9.9", "stable", sourceSha, sourceSha, sourceSha],
+      ["verify-inventory", "v9.9.9", "false", "pre-attestation", path.join(root, "missing")],
       ["inventory", "v9.9.9", sourceSha, "false", path.join(root, "missing"), "output.json"],
       ["verify-readback", expectedFile, path.join(root, "missing-readback.json"), "true"],
       ["verify-latest", expectedFile, path.join(root, "missing-latest.json")],
@@ -194,6 +198,50 @@ test("rejects inventory channel state that disagrees with stable and prerelease 
     () =>
       verifyReleaseAssetInventory("v0.3.0-rc.1", false, contractAssets("v0.3.0-rc.1"), "candidate"),
     /expected prerelease/,
+  );
+});
+
+test("validates the exact pre-attestation phase without weakening the 13-role contract", () => {
+  const contract = expectedReleaseAssetRoles(stableTag);
+  const provenance = contract.roles.find(({ role }) => role === BUILD_PROVENANCE_ROLE);
+  const preAttestationAssets = contractAssets().filter(({ name }) => name !== provenance.name);
+
+  assert.equal(contract.roles.length, 13);
+  assert.equal(
+    verifyReleaseAssetInventory(
+      stableTag,
+      false,
+      preAttestationAssets,
+      "pre-attestation candidate",
+      RELEASE_ASSET_PHASE.PreAttestation,
+    ).roles.length,
+    13,
+  );
+  assert.throws(
+    () => verifyReleaseAssetInventory(stableTag, false, preAttestationAssets, "complete candidate"),
+    /missing required build provenance bundle/,
+  );
+  assert.throws(
+    () =>
+      verifyReleaseAssetInventory(
+        stableTag,
+        false,
+        contractAssets(),
+        "pre-attestation candidate",
+        RELEASE_ASSET_PHASE.PreAttestation,
+      ),
+    /unexpected asset BatCave-v0\.3\.0-provenance\.json/,
+  );
+  assert.throws(
+    () =>
+      verifyReleaseAssetInventory(
+        stableTag,
+        false,
+        preAttestationAssets.filter(({ name }) => name !== "SHA256SUMS.txt"),
+        "pre-attestation candidate",
+        RELEASE_ASSET_PHASE.PreAttestation,
+      ),
+    /missing required checksum manifest/,
   );
 });
 
@@ -290,9 +338,18 @@ for (const signature of expectedReleaseAssetRoles(stableTag).roles.filter(
 test("builds a deterministic exact name, size, and digest inventory", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-release-inventory-"));
   try {
-    for (const { name } of contractAssets()) {
+    const contract = expectedReleaseAssetRoles(stableTag);
+    const provenance = contract.roles.find(({ role }) => role === BUILD_PROVENANCE_ROLE);
+    const preAttestation = contractAssets().filter(({ name }) => name !== provenance.name);
+    for (const { name } of preAttestation) {
       fs.writeFileSync(path.join(root, name), assetContents(name));
     }
+    assert.equal(
+      verifyReleaseDirectory(stableTag, false, root, RELEASE_ASSET_PHASE.PreAttestation).length,
+      12,
+    );
+
+    fs.writeFileSync(path.join(root, provenance.name), assetContents(provenance.name));
     assert.deepEqual(buildReleaseInventory(stableTag, sourceSha, false, root), candidateFixture());
 
     fs.writeFileSync(path.join(root, "unexpected.bin"), "unexpected");

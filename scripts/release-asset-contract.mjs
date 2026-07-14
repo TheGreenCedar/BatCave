@@ -1,6 +1,12 @@
 import path from "node:path";
 import { parseReleaseTag } from "./verify-release-version.mjs";
 
+export const BUILD_PROVENANCE_ROLE = "build provenance bundle";
+export const RELEASE_ASSET_PHASE = Object.freeze({
+  PreAttestation: "pre-attestation",
+  Complete: "complete",
+});
+
 const declarations = [
   {
     role: "Windows GUI executable",
@@ -69,7 +75,7 @@ const declarations = [
     family: /^SHA256SUMS\.txt$/u,
   },
   {
-    role: "build provenance bundle",
+    role: BUILD_PROVENANCE_ROLE,
     name: ({ tag }) => `BatCave-${tag}-provenance.json`,
     family: /^BatCave-v.+-provenance\.json$/u,
   },
@@ -129,8 +135,21 @@ function assetName(asset, owner) {
   }
 }
 
-export function verifyReleaseAssetInventory(tag, prerelease, assets, owner = "release inventory") {
+export function verifyReleaseAssetInventory(
+  tag,
+  prerelease,
+  assets,
+  owner = "release inventory",
+  phase = RELEASE_ASSET_PHASE.Complete,
+) {
   const contract = expectedReleaseAssetRoles(tag);
+  if (!Object.values(RELEASE_ASSET_PHASE).includes(phase)) {
+    throw new Error(`${owner} has an unknown release inventory phase: ${phase}`);
+  }
+  const expectedRoles =
+    phase === RELEASE_ASSET_PHASE.PreAttestation
+      ? contract.roles.filter(({ role }) => role !== BUILD_PROVENANCE_ROLE)
+      : contract.roles;
   if (typeof prerelease !== "boolean") {
     throw new Error(`${owner} prerelease state must be a boolean`);
   }
@@ -155,10 +174,10 @@ export function verifyReleaseAssetInventory(tag, prerelease, assets, owner = "re
   }
 
   const actualNames = new Set(names);
-  const expectedNames = new Set(contract.roles.map((role) => role.name));
+  const expectedNames = new Set(expectedRoles.map((role) => role.name));
 
-  for (const signature of contract.roles.filter((role) => role.signatureFor)) {
-    const payload = contract.roles.find((role) => role.role === signature.signatureFor);
+  for (const signature of expectedRoles.filter((role) => role.signatureFor)) {
+    const payload = expectedRoles.find((role) => role.role === signature.signatureFor);
     if (actualNames.has(signature.name) && !actualNames.has(payload.name)) {
       throw new Error(
         `${owner} contains orphan signature ${signature.name}; missing ${payload.name}`,
@@ -166,7 +185,7 @@ export function verifyReleaseAssetInventory(tag, prerelease, assets, owner = "re
     }
   }
 
-  for (const role of contract.roles) {
+  for (const role of expectedRoles) {
     const matches = names.filter((name) => role.family.test(name));
     if (matches.length > 1) {
       throw new Error(`${owner} contains duplicate ${role.role} assets: ${matches.join(", ")}`);
@@ -178,7 +197,7 @@ export function verifyReleaseAssetInventory(tag, prerelease, assets, owner = "re
     }
   }
 
-  for (const role of contract.roles) {
+  for (const role of expectedRoles) {
     if (!actualNames.has(role.name)) {
       throw new Error(`${owner} is missing required ${role.role} asset ${role.name}`);
     }

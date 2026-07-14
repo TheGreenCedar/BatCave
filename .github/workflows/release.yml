@@ -436,6 +436,9 @@ jobs:
           mv "${checksums}" SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
 
+      - name: Verify pre-attestation release inventory
+        run: node scripts/verify-release-candidate.mjs verify-inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.prerelease }}" pre-attestation dist
+
       - name: Generate build provenance
         id: attest
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
@@ -444,6 +447,9 @@ jobs:
 
       - name: Retain provenance with release files
         run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/BatCave-${{ needs.prepare.outputs.tag }}-provenance.json"
+
+      - name: Verify complete release inventory
+        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
