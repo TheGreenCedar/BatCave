@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "packet_kind": "schema_fixture",
+  "packet_id": "macos-updater-schema-fixture",
+  "observed_at_utc": "2000-01-01T00:00:00Z",
+  "release": {
+    "repository": "TheGreenCedar/BatCave",
+    "tag": "v0.0.0-evidence.1",
+    "channel": "prerelease",
+    "source_sha": "5555555555555555555555555555555555555555",
+    "main_sha": "5555555555555555555555555555555555555555",
+    "release_target_sha": "5555555555555555555555555555555555555555",
+    "release_url": "https://github.com/TheGreenCedar/BatCave/releases/tag/v0.0.0-evidence.1",
+    "workflow_run": {
+      "workflow_file": ".github/workflows/release.yml",
+      "run_id": 900000005,
+      "run_attempt": 1,
+      "url": "https://github.com/TheGreenCedar/BatCave/actions/runs/900000005/attempts/1"
+    }
+  },
+  "platform": {
+    "os": "macos",
+    "os_version": "synthetic-macos-fixture",
+    "architecture": "x86_64",
+    "package": {
+      "kind": "macos_updater",
+      "architecture": "universal",
+      "asset_name": "BatCave.Monitor.app.tar.gz"
+    }
+  },
+  "assets": [
+    {
+      "name": "BatCave.Monitor.app.tar.gz",
+      "size_bytes": 1000005,
+      "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "api_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor.app.tar.gz",
+      "attestation": {
+        "verified": true,
+        "repository": "TheGreenCedar/BatCave",
+        "source_sha": "5555555555555555555555555555555555555555",
+        "source_ref": "refs/heads/main",
+        "signer_workflow": "TheGreenCedar/BatCave/.github/workflows/release.yml"
+      },
+      "signatures": {
+        "contained_app_developer_id": {
+          "identity": "synthetic Developer ID signer fixture",
+          "verified": true
+        },
+        "contained_app_notarization": {
+          "identity": "synthetic contained-app notarization fixture",
+          "verified": true
+        },
+        "contained_app_staple": {
+          "identity": "synthetic contained-app stapled ticket fixture",
+          "verified": true
+        },
+        "tauri_updater": {
+          "identity": "synthetic updater key fingerprint fixture",
+          "verified": true
+        }
+      }
+    }
+  ],
+  "checks": {
+    "install": {
+      "anonymous_download": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "checksum": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "package_install": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      }
+    },
+    "runtime": {
+      "degradation": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "launch": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "release_identity": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "settings": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "telemetry": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      }
+    },
+    "cleanup": {
+      "application_removed": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "owned_runtime_cleanup": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      },
+      "user_state_policy": {
+        "status": "not_applicable",
+        "outcome": "Synthetic schema fixture only."
+      }
+    }
+  },
+  "limitations": {
+    "synthetic_fixture_no_release_claim": {
+      "disposition": "not_applicable",
+      "summary": "Schema exercise only; this packet is not release evidence."
+    }
+  }
+}
