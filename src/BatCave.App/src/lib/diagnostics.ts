@@ -1,4 +1,4 @@
-import type { RuntimeAdminModeStatus, RuntimeWarning } from "./types";
+import type { RuntimeAdminModeStatus, RuntimePersistence, RuntimeWarning } from "./types";
 
 export type DiagnosticAction = "enable" | "retry";
 
@@ -10,6 +10,10 @@ export interface DiagnosticIssue {
   actionLabel: string | null;
   raw: string;
   occurredAtMs: number;
+}
+
+export function suppressedDiagnosticsLabel(persistence: RuntimePersistence | null): string {
+  return persistence ? String(persistence.suppressed_diagnostic_events) : "Not reported";
 }
 
 export function currentDiagnosticIssues(

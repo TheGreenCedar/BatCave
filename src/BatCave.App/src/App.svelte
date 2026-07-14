@@ -115,6 +115,7 @@
     TrendState,
     WorkloadDetail,
   } from "./lib/types";
+  import { UiPreferencePersistenceSequence } from "./lib/uiPreferencePersistence";
   import type { ProtocolMismatchView } from "./lib/protocol/runtimeProtocol";
 
   interface ProcessTrendState {
@@ -130,6 +131,7 @@
 
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
+  const uiPreferencePersistence = new UiPreferencePersistenceSequence();
   const browserFixturePlatform = "macos" as const;
   const accessibilityFixtureState = resolveAccessibilityFixtureState(
     typeof window === "undefined" ? "" : window.location.search,
@@ -643,21 +645,40 @@
   ): void {
     window.localStorage.setItem(themeStorageKey, preference);
     window.localStorage.setItem(historyStorageKey, String(limit));
+    const save = uiPreferencePersistence.begin({
+      theme: preference,
+      history_point_limit: limit,
+    });
     void (async () => {
       try {
         const next = await setRuntimeUiPreferences(invoke, {
           theme: preference,
           history_point_limit: limit,
         });
+        if (!uiPreferencePersistence.isLatest(save)) return;
         applyNativeSnapshot(next);
-        clearMigratedUiPreferences(next);
+        if (uiPreferencePersistence.isLatestDurable(save, next)) {
+          clearMigratedUiPreferences(next, save.preferences);
+        }
       } catch (error) {
-        commandError = runtimeCommandError(error, "Unable to save interface preferences.");
+        if (uiPreferencePersistence.isLatest(save)) {
+          commandError = runtimeCommandError(error, "Unable to save interface preferences.");
+        }
       }
     })();
   }
 
-  function clearMigratedUiPreferences(next: RuntimeSnapshot): void {
+  function clearMigratedUiPreferences(
+    next: RuntimeSnapshot,
+    expected = next.settings.ui_preferences,
+  ): void {
+    if (
+      !expected ||
+      window.localStorage.getItem(themeStorageKey) !== expected.theme ||
+      Number(window.localStorage.getItem(historyStorageKey)) !== expected.history_point_limit
+    ) {
+      return;
+    }
     const settingsPersistence = next.persistence?.components.find(
       (component) => component.owner === "current_user" && component.kind === "settings",
     );

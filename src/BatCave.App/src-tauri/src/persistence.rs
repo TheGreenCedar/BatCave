@@ -977,6 +977,10 @@ pub(crate) struct RuntimePersistenceCoordinator {
     root: RuntimePersistenceRoot,
     components: HashMap<UserStorageComponent, RuntimePersistenceComponent>,
     root_failure: Option<PersistenceFailure>,
+    // Root failures temporarily mask component truth; restore it after a verified recovery.
+    components_before_root_failure:
+        Option<HashMap<UserStorageComponent, RuntimePersistenceComponent>>,
+    root_revalidation_enabled: bool,
     root_failure_reported_to_diagnostics: bool,
     root_failure_suppressed_diagnostics: u64,
 }
@@ -997,27 +1001,10 @@ impl RuntimePersistenceCoordinator {
     }
 
     fn new(storage: UserStorageCoordinator, now_ms: u64) -> Self {
-        let (permission_state, root_failure) = match storage.ensure_root() {
-            Ok(PermissionVerification::VerifiedPrivate) => {
-                (RuntimePersistencePermissionState::Verified, None)
-            }
-            Ok(PermissionVerification::Unverified) => unreachable!("unverified roots fail closed"),
-            Ok(PermissionVerification::Invalid) => unreachable!("invalid roots fail closed"),
-            Err(failure) => {
-                let permission_state =
-                    if failure.code == PersistenceFailureCode::VerificationUnavailable {
-                        RuntimePersistencePermissionState::Unavailable
-                    } else {
-                        RuntimePersistencePermissionState::Invalid
-                    };
-                (permission_state, Some(failure))
-            }
-        };
         let root = RuntimePersistenceRoot {
             owner: RuntimePersistenceOwner::CurrentUser,
-            directory: (permission_state != RuntimePersistencePermissionState::Unavailable)
-                .then(|| storage.root().directory.display().to_string()),
-            permission_state,
+            directory: Some(storage.root().directory.display().to_string()),
+            permission_state: RuntimePersistencePermissionState::Verified,
         };
         let components = [
             UserStorageComponent::Settings,
@@ -1026,41 +1013,33 @@ impl RuntimePersistenceCoordinator {
         ]
         .into_iter()
         .map(|component| {
-            let state = if permission_state == RuntimePersistencePermissionState::Verified {
-                RuntimePersistenceState::Healthy
-            } else if permission_state == RuntimePersistencePermissionState::Unavailable {
-                RuntimePersistenceState::Unavailable
-            } else {
-                RuntimePersistenceState::Degraded
-            };
-            let active_failure = root_failure
-                .as_ref()
-                .map(|failure| runtime_failure(failure, now_ms));
             (
                 component,
                 RuntimePersistenceComponent {
                     owner: RuntimePersistenceOwner::CurrentUser,
                     kind: component.runtime_kind(),
-                    state,
-                    durability: if active_failure.is_some() {
-                        RuntimePersistenceDurability::SessionOnly
-                    } else {
-                        RuntimePersistenceDurability::NotApplicable
-                    },
+                    state: RuntimePersistenceState::Healthy,
+                    durability: RuntimePersistenceDurability::NotApplicable,
                     last_success_at_ms: None,
-                    active_failure,
+                    active_failure: None,
                 },
             )
         })
         .collect();
-        Self {
+        let mut coordinator = Self {
             storage,
             root,
             components,
-            root_failure,
+            root_failure: None,
+            components_before_root_failure: None,
+            root_revalidation_enabled: true,
             root_failure_reported_to_diagnostics: false,
             root_failure_suppressed_diagnostics: 0,
+        };
+        if let Err(failure) = coordinator.storage.ensure_root() {
+            coordinator.record_root_failure(&failure, now_ms);
         }
+        coordinator
     }
 
     fn unavailable(failure: PersistenceFailure, now_ms: u64) -> Self {
@@ -1096,6 +1075,8 @@ impl RuntimePersistenceCoordinator {
             },
             components,
             root_failure: Some(failure),
+            components_before_root_failure: None,
+            root_revalidation_enabled: false,
             root_failure_reported_to_diagnostics: false,
             root_failure_suppressed_diagnostics: 0,
         }
@@ -1110,10 +1091,7 @@ impl RuntimePersistenceCoordinator {
         component: UserStorageComponent,
         now_ms: u64,
     ) -> Result<Option<T>, PersistenceFailure> {
-        if let Some(failure) = self.root_failure.clone() {
-            self.record_failure(component, &failure, now_ms);
-            return Err(failure);
-        }
+        self.revalidate_root(now_ms)?;
         match self.storage.load_json(component) {
             Ok(value) => {
                 let durability = if value.is_some() {
@@ -1125,7 +1103,7 @@ impl RuntimePersistenceCoordinator {
                 Ok(value)
             }
             Err(failure) => {
-                self.record_failure(component, &failure, now_ms);
+                self.record_operation_failure(component, &failure, now_ms);
                 Err(failure)
             }
         }
@@ -1137,10 +1115,7 @@ impl RuntimePersistenceCoordinator {
         now_ms: u64,
         migrate: impl FnOnce(serde_json::Value) -> Result<JsonMigration<T>, String>,
     ) -> Result<Option<MigrationLoad<T>>, PersistenceFailure> {
-        if let Some(failure) = self.root_failure.clone() {
-            self.record_failure(component, &failure, now_ms);
-            return Err(failure);
-        }
+        self.revalidate_root(now_ms)?;
         match self.storage.load_json_migrating(component, migrate) {
             Ok(value) => {
                 let durability = if value.is_some() {
@@ -1152,7 +1127,7 @@ impl RuntimePersistenceCoordinator {
                 Ok(value)
             }
             Err(failure) => {
-                self.record_failure(component, &failure, now_ms);
+                self.record_operation_failure(component, &failure, now_ms);
                 Err(failure)
             }
         }
@@ -1164,10 +1139,7 @@ impl RuntimePersistenceCoordinator {
         value: &T,
         now_ms: u64,
     ) -> Result<(), PersistenceFailure> {
-        if let Some(failure) = self.root_failure.clone() {
-            self.record_failure(component, &failure, now_ms);
-            return Err(failure);
-        }
+        self.revalidate_root(now_ms)?;
         match self.storage.write_json(component, value) {
             Ok(()) => {
                 self.record_success(
@@ -1178,7 +1150,7 @@ impl RuntimePersistenceCoordinator {
                 Ok(())
             }
             Err(failure) => {
-                self.record_failure(component, &failure, now_ms);
+                self.record_operation_failure(component, &failure, now_ms);
                 Err(failure)
             }
         }
@@ -1189,17 +1161,14 @@ impl RuntimePersistenceCoordinator {
         component: UserStorageComponent,
         now_ms: u64,
     ) -> Result<(), PersistenceFailure> {
-        if let Some(failure) = self.root_failure.clone() {
-            self.record_failure(component, &failure, now_ms);
-            return Err(failure);
-        }
+        self.revalidate_root(now_ms)?;
         match self.storage.remove(component) {
             Ok(_) => {
                 self.record_success(component, RuntimePersistenceDurability::NotApplicable, None);
                 Ok(())
             }
             Err(failure) => {
-                self.record_failure(component, &failure, now_ms);
+                self.record_operation_failure(component, &failure, now_ms);
                 Err(failure)
             }
         }
@@ -1210,14 +1179,13 @@ impl RuntimePersistenceCoordinator {
         event: &T,
         now_ms: u64,
     ) -> DiagnosticWriteOutcome {
-        if let Some(failure) = self.root_failure.clone() {
+        if let Err(failure) = self.revalidate_root(now_ms) {
             if self.root_failure_reported_to_diagnostics {
                 self.root_failure_suppressed_diagnostics =
                     self.root_failure_suppressed_diagnostics.saturating_add(1);
                 return DiagnosticWriteOutcome::Suppressed;
             }
             self.root_failure_reported_to_diagnostics = true;
-            self.record_failure(UserStorageComponent::Diagnostics, &failure, now_ms);
             return DiagnosticWriteOutcome::Failed(failure);
         }
         let outcome = self.storage.record_diagnostic(event);
@@ -1229,7 +1197,7 @@ impl RuntimePersistenceCoordinator {
             ),
             DiagnosticWriteOutcome::Suppressed => {}
             DiagnosticWriteOutcome::Failed(failure) => {
-                self.record_failure(UserStorageComponent::Diagnostics, failure, now_ms);
+                self.record_operation_failure(UserStorageComponent::Diagnostics, failure, now_ms);
             }
         }
         outcome
@@ -1238,6 +1206,87 @@ impl RuntimePersistenceCoordinator {
     pub(crate) fn retry_diagnostics(&mut self) {
         if self.root_failure.is_none() {
             self.storage.retry_diagnostics();
+        }
+    }
+
+    fn revalidate_root(&mut self, now_ms: u64) -> Result<(), PersistenceFailure> {
+        if !self.root_revalidation_enabled {
+            return Err(self
+                .root_failure
+                .clone()
+                .expect("unresolved roots retain their failure"));
+        }
+        match self.storage.ensure_root() {
+            Ok(PermissionVerification::VerifiedPrivate) => {
+                if self.root_failure.is_some() {
+                    self.root.permission_state = RuntimePersistencePermissionState::Verified;
+                    self.root.directory = Some(self.storage.root().directory.display().to_string());
+                    self.root_failure = None;
+                    self.root_failure_reported_to_diagnostics = false;
+                    if let Some(components) = self.components_before_root_failure.take() {
+                        self.components = components;
+                    }
+                }
+                Ok(())
+            }
+            Ok(PermissionVerification::Unverified) => {
+                unreachable!("unverified roots fail closed")
+            }
+            Ok(PermissionVerification::Invalid) => unreachable!("invalid roots fail closed"),
+            Err(failure) => {
+                self.record_root_failure(&failure, now_ms);
+                Err(failure)
+            }
+        }
+    }
+
+    fn record_operation_failure(
+        &mut self,
+        component: UserStorageComponent,
+        failure: &PersistenceFailure,
+        now_ms: u64,
+    ) {
+        if failure.path.as_deref() == Some(self.storage.root().directory.as_path())
+            && matches!(
+                failure.operation,
+                PersistenceOperation::Create | PersistenceOperation::Permissions
+            )
+        {
+            self.record_root_failure(failure, now_ms);
+            return;
+        }
+        if self.root_revalidation_enabled {
+            if let Err(root_failure) = self.storage.ensure_root() {
+                self.record_root_failure(&root_failure, now_ms);
+                return;
+            }
+        }
+        self.record_failure(component, failure, now_ms);
+    }
+
+    fn record_root_failure(&mut self, failure: &PersistenceFailure, now_ms: u64) {
+        if self.root_failure.is_none() {
+            self.components_before_root_failure = Some(self.components.clone());
+            self.root_failure_reported_to_diagnostics = false;
+        }
+        let permission_state = if failure.code == PersistenceFailureCode::VerificationUnavailable {
+            RuntimePersistencePermissionState::Unavailable
+        } else {
+            RuntimePersistencePermissionState::Invalid
+        };
+        self.root.permission_state = permission_state;
+        self.root.directory = (permission_state != RuntimePersistencePermissionState::Unavailable)
+            .then(|| self.storage.root().directory.display().to_string());
+        self.root_failure = Some(failure.clone());
+        for component in self.components.values_mut() {
+            component.state = if permission_state == RuntimePersistencePermissionState::Unavailable
+            {
+                RuntimePersistenceState::Unavailable
+            } else {
+                RuntimePersistenceState::Degraded
+            };
+            component.durability = RuntimePersistenceDurability::SessionOnly;
+            component.active_failure = Some(runtime_failure(failure, now_ms));
         }
     }
 
@@ -1884,6 +1933,76 @@ mod tests {
         );
         assert!(health.components.iter().all(|component| {
             component.state == RuntimePersistenceState::Unavailable
+                && component.durability == RuntimePersistenceDurability::SessionOnly
+                && component.active_failure.is_some()
+        }));
+    }
+
+    #[test]
+    fn runtime_root_health_recovers_after_a_transient_verification_failure() {
+        let backend = FakeBackend::default();
+        backend.fail_next(
+            PersistenceOperation::Permissions,
+            io::ErrorKind::PermissionDenied,
+        );
+        let mut runtime = runtime_coordinator(backend.clone(), 10);
+
+        let degraded = runtime.health();
+        assert_eq!(degraded.state, RuntimePersistenceState::Degraded);
+        assert_eq!(
+            degraded.roots[0].permission_state,
+            RuntimePersistencePermissionState::Invalid
+        );
+
+        runtime
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"recovered": true}),
+                20,
+            )
+            .expect("the next operation revalidates the recovered root");
+
+        let recovered = runtime.health();
+        assert_eq!(recovered.state, RuntimePersistenceState::Healthy);
+        assert_eq!(
+            recovered.roots[0].permission_state,
+            RuntimePersistencePermissionState::Verified
+        );
+        let settings = recovered
+            .components
+            .iter()
+            .find(|component| component.kind == RuntimePersistenceKind::Settings)
+            .expect("settings health is published");
+        assert_eq!(settings.state, RuntimePersistenceState::Healthy);
+        assert_eq!(settings.durability, RuntimePersistenceDurability::Durable);
+        assert!(settings.active_failure.is_none());
+    }
+
+    #[test]
+    fn runtime_root_health_detects_later_permission_invalidation() {
+        let backend = FakeBackend::default();
+        let mut runtime = runtime_coordinator(backend.clone(), 10);
+        assert_eq!(runtime.health().state, RuntimePersistenceState::Healthy);
+        backend.state.lock().unwrap().permission = Some(PermissionVerification::Invalid);
+
+        let failure = runtime
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"unsafe": false}),
+                20,
+            )
+            .expect_err("an invalidated root fails before component I/O");
+
+        assert_eq!(failure.operation, PersistenceOperation::Permissions);
+        assert_eq!(backend.call_count(PersistenceOperation::Write), 0);
+        let invalid = runtime.health();
+        assert_eq!(invalid.state, RuntimePersistenceState::Degraded);
+        assert_eq!(
+            invalid.roots[0].permission_state,
+            RuntimePersistencePermissionState::Invalid
+        );
+        assert!(invalid.components.iter().all(|component| {
+            component.state == RuntimePersistenceState::Degraded
                 && component.durability == RuntimePersistenceDurability::SessionOnly
                 && component.active_failure.is_some()
         }));
