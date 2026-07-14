@@ -101,16 +101,21 @@ impl<T: ClientTransport> ServiceClientSession<T> {
                 desktop_release: desktop_release.clone(),
             }),
         };
-        let response = transport.exchange(&request)?;
-        let outcome = response_outcome(response, request.request_id)?;
+        let response = transport
+            .exchange(&request)
+            .map_err(|failure| connect_failure(failure, &transport_release))?;
+        let outcome = response_outcome(response, request.request_id)
+            .map_err(|failure| connect_failure(failure, &transport_release))?;
         let ServiceOutcomeV1::Negotiated(negotiated) = outcome else {
             return Err(ClientFailure::new(
                 ClientFailureKind::Incompatible,
                 "collector_service_negotiation_response_invalid",
-            ));
+            )
+            .with_service_release(transport_release));
         };
         authorize_service_identity(Some(transport.verified_peer()), &negotiated.service)
-            .map_err(contract_failure)?;
+            .map_err(contract_failure)
+            .map_err(|failure| connect_failure(failure, &transport_release))?;
         if negotiated.negotiated_protocol_version != COLLECTOR_SERVICE_PROTOCOL_VERSION
             || negotiated.service.release != desktop_release
         {
@@ -204,6 +209,14 @@ impl<T: ClientTransport> ServiceClientSession<T> {
             )
         })?;
         Ok(request_id)
+    }
+}
+
+fn connect_failure(failure: ClientFailure, transport_release: &ReleaseIdentityV1) -> ClientFailure {
+    if failure.kind == ClientFailureKind::Incompatible {
+        failure.with_service_release(transport_release.clone())
+    } else {
+        failure
     }
 }
 

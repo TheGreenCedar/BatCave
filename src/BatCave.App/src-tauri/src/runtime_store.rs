@@ -6443,6 +6443,139 @@ mod tests {
     }
 
     #[test]
+    fn negotiation_failures_preserve_verified_release_for_incompatible_fallback() {
+        use crate::collector_service::{
+            authorization::VerifiedServicePeer,
+            client::{
+                status_from_failure, ClientFailure, ClientFailureKind, ClientTransport,
+                ServiceClientSession,
+            },
+            host::current_release_identity,
+            protocol::{
+                ClientRequestV1, ServiceFailureCodeV1, ServiceFailureV1, ServiceOutcomeV1,
+                ServiceResponseV1, COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            },
+        };
+
+        struct NegotiationTransport {
+            peer: VerifiedServicePeer,
+            response: Option<Result<ServiceResponseV1, ClientFailure>>,
+        }
+
+        impl ClientTransport for NegotiationTransport {
+            fn verified_peer(&self) -> &VerifiedServicePeer {
+                &self.peer
+            }
+
+            fn exchange(
+                &mut self,
+                _request: &ClientRequestV1,
+            ) -> Result<ServiceResponseV1, ClientFailure> {
+                self.response.take().unwrap_or_else(|| {
+                    Err(ClientFailure::new(
+                        ClientFailureKind::Failed,
+                        "negotiation_response_missing",
+                    ))
+                })
+            }
+        }
+
+        for (label, response) in [
+            (
+                "exchange-error",
+                Err(ClientFailure::new(
+                    ClientFailureKind::Incompatible,
+                    "collector_service_response_protocol_incompatible",
+                )),
+            ),
+            (
+                "negotiate-error",
+                Ok(ServiceResponseV1 {
+                    protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                    request_id: 1,
+                    outcome: ServiceOutcomeV1::Error(ServiceFailureV1 {
+                        code: ServiceFailureCodeV1::Incompatible,
+                        detail: "collector_service_protocol_incompatible".to_string(),
+                    }),
+                }),
+            ),
+            (
+                "invalid-outcome",
+                Ok(ServiceResponseV1 {
+                    protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                    request_id: 1,
+                    outcome: ServiceOutcomeV1::Disconnected,
+                }),
+            ),
+        ] {
+            let release = current_release_identity();
+            let transport = NegotiationTransport {
+                peer: VerifiedServicePeer::from_transport_verification(
+                    20,
+                    30,
+                    [1; 32],
+                    [2; 32],
+                    release.clone(),
+                )
+                .expect("verified service peer"),
+                response: Some(response),
+            };
+            let failure = ServiceClientSession::connect(transport)
+                .err()
+                .expect("negotiation must fail");
+            assert_eq!(failure.kind, ClientFailureKind::Incompatible);
+            assert_eq!(failure.service_release.as_ref(), Some(&release));
+
+            let status = status_from_failure(&failure, false);
+            let base_dir = runtime_test_dir(&format!("collector-service-negotiation-{label}"));
+            let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+            store.provenance =
+                RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+            let sampled_at_ms = crate::telemetry::now_ms();
+            store.apply_raw_sample(
+                crate::telemetry::TelemetrySample {
+                    latency_ms: 1,
+                    collector_state: RuntimeCollectorState::Healthy,
+                    system: empty_system(),
+                    processes: Vec::new(),
+                    warnings: vec![format!(
+                        "{}; standard-access collector fallback is active",
+                        failure.detail
+                    )],
+                    collector_service: Some(status),
+                },
+                1.0,
+                sampled_at_ms,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
+
+            let encoded = crate::protocol::encode_snapshot(store.snapshot.clone())
+                .expect("incompatible fallback status validates and encodes");
+            let bytes = serde_json::to_vec(&encoded).expect("encode runtime protocol JSON");
+            let decoded: crate::protocol::ProtocolEnvelope =
+                serde_json::from_slice(&bytes).expect("decode runtime protocol JSON");
+            let decoded = serde_json::to_value(decoded).expect("inspect decoded runtime protocol");
+            assert_eq!(
+                decoded.pointer("/event/payload/privileged_collection/collector_service/state"),
+                Some(&serde_json::json!("incompatible"))
+            );
+            assert_eq!(
+                decoded.pointer(
+                    "/event/payload/privileged_collection/collector_service/release_identity/app_version"
+                ),
+                Some(&serde_json::json!(env!("CARGO_PKG_VERSION")))
+            );
+            assert_eq!(
+                decoded.pointer(
+                    "/event/payload/privileged_collection/collector_service/minimum_desktop_version"
+                ),
+                Some(&serde_json::json!(env!("CARGO_PKG_VERSION")))
+            );
+            let _ = fs::remove_dir_all(base_dir);
+        }
+    }
+
+    #[test]
     fn elevated_parent_uses_current_process_without_starting_helper() {
         let base_dir = runtime_test_dir("admin-current-process-source");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
