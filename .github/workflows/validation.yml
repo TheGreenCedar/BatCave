@@ -151,6 +151,11 @@ jobs:
       - name: Reject Rust warnings on the MSRV
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
 
+      - name: Probe closed Linux package transports
+        run: |
+          bash scripts/validate-tauri.sh --bundle-only
+          cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --test linux_package_owned_transport -- --ignored --nocapture
+
   macos:
     name: macOS universal validation
     runs-on: macos-15

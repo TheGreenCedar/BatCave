@@ -37,7 +37,7 @@ The sanitized outcome contains the selected internal transport, failure boundari
 | `fexecve` or `execveat` | Rejected for package-byte transport | These execute an executable image. They do not make a deb payload consumable by `dpkg`, and they do not establish AppImage runtime, mount, or cleanup behavior. |
 | Caller-visible descriptor or path | Rejected | It lets the caller disclose, close, replay, or pair authority from different operations. |
 
-Real AppImage testing may still determine that `execveat` is useful inside a fixed native adapter, but that is a separate empirical decision in #115. It is not part of this spike and cannot be inferred from synthetic bytes.
+The follow-up [real-package transport gate](0006-linux-package-owned-transport.md) tests the child-private descriptor path, `execveat`, and `fexecve` against the AppImage built from the checkout, and fixed `dpkg-deb` extraction against the deb. That result remains a hosted, locally built transport check rather than public or native release proof.
 
 ## Failure behavior
 
@@ -74,4 +74,4 @@ cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --test linux_own
 
 On Linux, the test launches only its own fixed synthetic consumers. On other hosts, it checks the explicit unsupported result. The normal Rust validation suite discovers the test without a workflow-specific test hook.
 
-No `dpkg` command or AppImage is run. No package is installed, mounted, staged, launched, removed, or accepted. The spike does not mint a native execution receipt or public evidence and does not satisfy #115 by itself.
+This synthetic spike itself runs no `dpkg` command or AppImage. Its real-package follow-up executes only `dpkg-deb` extraction and AppImage runtime metadata probes from owned descriptors. Neither test installs, mounts, launches, removes, or accepts a public package, and neither can mint a native execution receipt or public evidence. They do not satisfy #115 by themselves.
