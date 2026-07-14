@@ -42,6 +42,7 @@ mod linux {
     const HOSTILE_PROBE_MODE: &str = "BATCAVE_LINUX_PACKAGE_HOSTILE_PROBE";
     const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
     const MAX_OUTPUT_BYTES: usize = 4096;
+    const MAX_DRAIN_BYTES_PER_POLL: usize = 64 * 1024;
     const STEP_TIMEOUT: Duration = Duration::from_secs(120);
     const TERMINATION_GRACE: Duration = Duration::from_millis(500);
     const SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -260,6 +261,7 @@ mod linux {
                 return Ok(());
             }
             let mut buffer = [0_u8; 1024];
+            let mut drained = 0_usize;
             loop {
                 match self.reader.read(&mut buffer) {
                     Ok(0) => {
@@ -267,10 +269,14 @@ mod linux {
                         return Ok(());
                     }
                     Ok(read) => {
+                        drained = drained.saturating_add(read);
                         let remaining = MAX_OUTPUT_BYTES.saturating_sub(self.output.bytes.len());
                         let retained = remaining.min(read);
                         self.output.bytes.extend_from_slice(&buffer[..retained]);
                         self.output.overflowed |= retained < read;
+                        if drained >= MAX_DRAIN_BYTES_PER_POLL {
+                            return Ok(());
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
                     Err(error) => return Err(format!("package output read failed: {error}")),
@@ -1154,6 +1160,22 @@ mod linux {
         spawn_hostile_descendant(true);
     }
 
+    #[test]
+    fn hostile_infinite_output_entry() {
+        if std::env::var(HOSTILE_PROBE_MODE).as_deref() != Ok("infinite-output") {
+            return;
+        }
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        }
+        let output = [b'x'; 4096];
+        loop {
+            std::io::stdout()
+                .write_all(&output)
+                .expect("hostile output pipe remains open");
+        }
+    }
+
     fn assert_hostile_descendant_fails_closed(test_name: &str, mode: &str) {
         let _lock = lock_probes();
         let _subreaper = SubreaperGuard::enable().expect("enable hostile-probe subreaper");
@@ -1190,6 +1212,32 @@ mod linux {
         assert_hostile_descendant_fails_closed(
             "linux::hostile_escaped_pipe_descendant_entry",
             "escaped-pipe",
+        );
+    }
+
+    #[test]
+    fn continuously_writing_child_cannot_starve_the_probe_deadline() {
+        let _lock = lock_probes();
+        let _subreaper = SubreaperGuard::enable().expect("enable hostile-probe subreaper");
+        let baseline = direct_children().expect("capture direct-child baseline");
+        let process =
+            spawn_hostile_probe("linux::hostile_infinite_output_entry", "infinite-output")
+                .expect("spawn infinite-output probe");
+        let started = Instant::now();
+        let error = supervise_process(process, Duration::from_millis(100))
+            .expect_err("continuous output cannot bypass the deadline");
+        assert!(
+            error.contains("fixed package probe timed out"),
+            "unexpected failure: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "continuous output exceeded bounded cleanup"
+        );
+        assert_eq!(
+            direct_children().expect("inventory children after output cleanup"),
+            baseline,
+            "continuous-output child must be killed and reaped"
         );
     }
 
