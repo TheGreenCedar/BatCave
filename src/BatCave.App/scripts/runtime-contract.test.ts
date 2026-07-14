@@ -30,6 +30,7 @@ import {
   shouldApplyRuntimePublication,
   shouldPollRuntime,
 } from "../src/lib/runtimeSnapshot.ts";
+import { dispatchAutomaticRuntimeHydration } from "../src/lib/runtimeHydration.ts";
 import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
 import { UiPreferencePersistenceSequence } from "../src/lib/uiPreferencePersistence.ts";
 import type {
@@ -169,6 +170,54 @@ test("rapid UI preference saves keep the newest fallback through out-of-order re
     true,
     "only the newest matching durable pair can clear the fallback",
   );
+});
+
+test("degraded first-snapshot hydration dispatches no native settings mutation", () => {
+  const degraded = durablePreferenceSnapshot("system", 72);
+  degraded.settings.ui_preferences = null;
+  degraded.persistence = {
+    state: "degraded",
+    roots: [],
+    components: [
+      {
+        owner: "current_user",
+        kind: "settings",
+        state: "degraded",
+        durability: "session_only",
+        last_success_at_ms: null,
+        active_failure: {
+          code: "corrupt_data",
+          operation: "parse",
+          occurred_at_ms: 10,
+          retryable: false,
+          summary: "settings JSON is corrupt",
+        },
+      },
+    ],
+    suppressed_diagnostic_events: 0,
+  };
+  const nativeInvocations: string[] = [];
+
+  dispatchAutomaticRuntimeHydration(
+    degraded,
+    { persistUiPreferences: true, syncRuntimeQuery: true },
+    {
+      persistUiPreferences: () => nativeInvocations.push("set_ui_preferences"),
+      syncRuntimeQuery: () => nativeInvocations.push("set_process_query"),
+    },
+  );
+
+  assert.deepEqual(nativeInvocations, []);
+
+  dispatchAutomaticRuntimeHydration(
+    durablePreferenceSnapshot("system", 72),
+    { persistUiPreferences: true, syncRuntimeQuery: true },
+    {
+      persistUiPreferences: () => nativeInvocations.push("set_ui_preferences"),
+      syncRuntimeQuery: () => nativeInvocations.push("set_process_query"),
+    },
+  );
+  assert.deepEqual(nativeInvocations, ["set_ui_preferences", "set_process_query"]);
 });
 
 test("paused native lifecycle publications stay visible without advancing history", () => {

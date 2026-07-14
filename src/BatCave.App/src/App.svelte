@@ -81,6 +81,7 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
+  import { dispatchAutomaticRuntimeHydration } from "./lib/runtimeHydration";
   import { runtimeSurfaceMode } from "./lib/runtimeMode";
   import {
     chartPalettes,
@@ -1072,13 +1073,11 @@
     const pendingHistory = Number(window.localStorage.getItem(historyStorageKey));
     const hasPendingUiMigration =
       pendingTheme !== null || isHistoryPointLimit(pendingHistory);
+    let shouldPersistUiPreferences = false;
     if (hasPendingUiMigration) {
       if (pendingTheme !== null) themePreference = pendingTheme;
       if (isHistoryPointLimit(pendingHistory)) historyPointLimit = pendingHistory;
-      window.setTimeout(
-        () => persistUiPreferences(themePreference, historyPointLimit),
-        0,
-      );
+      shouldPersistUiPreferences = true;
     } else if (
       next.settings.ui_preferences &&
       parseThemePreference(next.settings.ui_preferences.theme) &&
@@ -1088,16 +1087,21 @@
       historyPointLimit = next.settings.ui_preferences.history_point_limit;
       clearMigratedUiPreferences(next);
     } else {
-      window.setTimeout(
-        () => persistUiPreferences(themePreference, historyPointLimit),
-        0,
-      );
+      shouldPersistUiPreferences = true;
     }
     hasHydratedRuntimeSettings = true;
-
-    if (useAttentionByDefault) {
-      window.setTimeout(() => void syncRuntimeQuery(), 0);
-    }
+    dispatchAutomaticRuntimeHydration(
+      next,
+      {
+        persistUiPreferences: shouldPersistUiPreferences,
+        syncRuntimeQuery: useAttentionByDefault,
+      },
+      {
+        persistUiPreferences: () =>
+          window.setTimeout(() => persistUiPreferences(themePreference, historyPointLimit), 0),
+        syncRuntimeQuery: () => window.setTimeout(() => void syncRuntimeQuery(), 0),
+      },
+    );
   }
 
   function isSystemPressured(next: RuntimeSnapshot): boolean {
