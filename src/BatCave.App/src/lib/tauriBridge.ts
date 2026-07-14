@@ -1,4 +1,4 @@
-import type { RuntimeQueryInputV3 } from "./generated/runtime-protocol-v3";
+import type { RuntimeQueryInputV3, RuntimeUiPreferencesV3 } from "./generated/runtime-protocol-v3";
 import type { RuntimeSnapshot } from "./types";
 import { adaptRuntimePayload } from "./protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope, type ProtocolMismatchView } from "./protocol/runtimeProtocol.ts";
@@ -78,6 +78,13 @@ export function setRuntimeAdminMode(
   enabled: boolean,
 ): Promise<RuntimeSnapshot> {
   return invokeRuntimeSnapshot(invoke, "set_admin_mode", { enabled });
+}
+
+export function setRuntimeUiPreferences(
+  invoke: RuntimeInvoke,
+  preferences: RuntimeUiPreferencesV3,
+): Promise<RuntimeSnapshot> {
+  return invokeRuntimeSnapshot(invoke, "set_ui_preferences", { preferences });
 }
 
 export class ProtocolMismatchError extends Error {

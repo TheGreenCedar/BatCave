@@ -5,5 +5,8 @@ fn main() {
         std::process::exit(exit_code);
     }
 
-    batcave_monitor_lib::run();
+    if let Err(error) = batcave_monitor_lib::run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
 }

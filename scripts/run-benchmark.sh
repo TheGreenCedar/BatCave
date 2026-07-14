@@ -148,15 +148,23 @@ with open(artifact_path, "r", encoding="utf-8") as handle:
     artifact = json.load(handle)
 
 expected = {
-    "format_version": 3,
+    "format_version": 4,
     "host": host,
+    "measurement_origin": "owned_sampling_engine_refresh_and_protocol_serialization",
+    "evidence_scope": "core_runtime_host_only",
+    "whole_app_measured": False,
+    "live_command": "refresh_now",
+    "command_transport": "in_process_bounded_channel",
+    "serialization_scope": "runtime_protocol_v3_encode_and_json",
+    "latency_gate_metric": "median_live_command_p95_ms",
+    "baseline_selection": "median-by-live-command-p95",
     "platform": platform,
     "architecture": architecture,
     "machine_class": machine_class,
     "workload_profile": workload_profile,
     "warmup_ticks": int(warmup_ticks),
     "measured_ticks": int(measured_ticks),
-    "sleep_ms": int(sleep_ms),
+    "inter_command_delay_ms": int(sleep_ms),
     "repeat_count": int(repeat_count),
 }
 for key, expected_value in expected.items():

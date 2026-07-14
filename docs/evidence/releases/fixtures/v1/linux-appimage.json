@@ -7,15 +7,15 @@
     "repository": "TheGreenCedar/BatCave",
     "tag": "v0.0.0-evidence.1",
     "channel": "prerelease",
-    "source_sha": "4444444444444444444444444444444444444444",
-    "main_sha": "4444444444444444444444444444444444444444",
-    "release_target_sha": "4444444444444444444444444444444444444444",
+    "source_sha": "1111111111111111111111111111111111111111",
+    "main_sha": "1111111111111111111111111111111111111111",
+    "release_target_sha": "1111111111111111111111111111111111111111",
     "release_url": "https://github.com/TheGreenCedar/BatCave/releases/tag/v0.0.0-evidence.1",
     "workflow_run": {
       "workflow_file": ".github/workflows/release.yml",
-      "run_id": 900000004,
+      "run_id": 900000001,
       "run_attempt": 1,
-      "url": "https://github.com/TheGreenCedar/BatCave/actions/runs/900000004/attempts/1"
+      "url": "https://github.com/TheGreenCedar/BatCave/actions/runs/900000001/attempts/1"
     }
   },
   "platform": {
@@ -48,7 +48,7 @@
       "attestation": {
         "verified": true,
         "repository": "TheGreenCedar/BatCave",
-        "source_sha": "4444444444444444444444444444444444444444",
+        "source_sha": "1111111111111111111111111111111111111111",
         "source_ref": "refs/heads/main",
         "signer_workflow": "TheGreenCedar/BatCave/.github/workflows/release.yml"
       },

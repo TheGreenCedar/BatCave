@@ -5,6 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(test)]
 use serde::Serialize;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -90,6 +91,7 @@ impl AtomicWriteError {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 pub(crate) struct AtomicJsonErrorLabels {
     pub write_failed: &'static str,
     pub serialize_failed: &'static str,
@@ -98,6 +100,7 @@ pub(crate) struct AtomicJsonErrorLabels {
     pub serialize_error_includes_path: bool,
 }
 
+#[cfg(test)]
 pub(crate) fn write_json_atomic<T: Serialize>(
     path: &Path,
     value: &T,

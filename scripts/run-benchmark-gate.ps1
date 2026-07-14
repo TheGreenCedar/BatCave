@@ -129,11 +129,18 @@ if ((& git -C $repoRoot status --porcelain | Out-String).Trim()) {
     $candidateSha = "$candidateSha-dirty"
 }
 $report = [ordered]@{
-    format_version = 3
+    format_version = 4
     captured_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     candidate_sha = $candidateSha
     binary_sha256 = $binarySha256
     host = $BenchmarkHost
+    measurement_origin = "owned_sampling_engine_refresh_and_protocol_serialization"
+    evidence_scope = "core_runtime_host_only"
+    whole_app_measured = $false
+    live_command = "refresh_now"
+    command_transport = "in_process_bounded_channel"
+    serialization_scope = "runtime_protocol_v3_encode_and_json"
+    latency_gate_metric = "median_live_command_p95_ms"
     platform = "windows"
     architecture = switch ($Platform.ToLowerInvariant()) {
         "x64" { "x86_64" }
@@ -144,7 +151,7 @@ $report = [ordered]@{
     workload_profile = $WorkloadProfile
     warmup_ticks = $WarmupTicks
     measured_ticks = $Ticks
-    sleep_ms = $SleepMs
+    inter_command_delay_ms = $SleepMs
     repeat_count = $Repeats
     strict = $true
     baseline_json_path = $BaselineJsonPath
@@ -154,6 +161,10 @@ $report = [ordered]@{
     exit_code = $exitCode
     strict_passed = if ($null -ne $summary) { [bool]$summary.strict_passed } else { $false }
     speed_ratio = if ($null -ne $summary) { $summary.speed_ratio } else { $null }
+    median_collection_p95_ms = if ($null -ne $summary) { $summary.median_collection_p95_ms } else { $null }
+    median_publication_p95_ms = if ($null -ne $summary) { $summary.median_publication_p95_ms } else { $null }
+    median_serialization_p95_ms = if ($null -ne $summary) { $summary.median_serialization_p95_ms } else { $null }
+    median_live_command_p95_ms = if ($null -ne $summary) { $summary.median_live_command_p95_ms } else { $null }
     benchmark_summary = $summary
 }
 Write-JsonUtf8NoBom -Value $report -Path $reportPath
