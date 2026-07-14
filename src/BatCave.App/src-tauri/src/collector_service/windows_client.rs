@@ -206,7 +206,8 @@ fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailur
     let first_probe = service_probe()?;
     first_probe.verify_running_process(process_id)?;
 
-    let peer_failure = |detail| classify_peer_verification_failure(pipe, process_id, detail);
+    let peer_failure =
+        |detail: String| classify_peer_verification_failure(pipe, process_id, detail);
 
     let process =
         OwnedHandle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) })
@@ -252,13 +253,13 @@ fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailur
         )));
     }
     let token = OwnedHandle::new(token)
-        .ok_or_else(|| peer_failure("collector_service_server_token_invalid"))?;
+        .ok_or_else(|| peer_failure("collector_service_server_token_invalid".to_string()))?;
     let token = token_evidence(token.raw()).map_err(peer_failure)?;
     let local_system_identity =
         local_system_principal_identity().map_err(|failure| peer_failure(failure.detail))?;
-    if token.principal_identity != local_system_identity || token.elevated == false {
+    if token.principal_identity != local_system_identity || !token.elevated {
         return Err(peer_failure(
-            "collector_service_server_principal_not_local_system",
+            "collector_service_server_principal_not_local_system".to_string(),
         ));
     }
 
