@@ -120,24 +120,24 @@ For faster app-level checks from `src/BatCave.App`:
 
 ```powershell
 npm run verify
-npm run tauri:dev:windows
-npm run tauri:build:windows
+npm run tauri -- dev
+npm run tauri -- build
 ```
 
 On Linux, use:
 
 ```bash
 npm run verify
-npm run tauri:dev:linux
-npm run tauri:build:linux
+npm run tauri -- dev
+npm run tauri -- build
 ```
 
 On macOS, use:
 
 ```bash
 npm run verify
-npm run tauri:dev:macos
-npm run tauri:build:macos:universal
+npm run tauri -- dev
+npm run tauri -- build --target universal-apple-darwin
 ```
 
 Windows release builds emit the release executable and unsigned, offline-capable NSIS installer under `src/BatCave.App/src-tauri/target/release`. The installer embeds Microsoft's WebView2 Evergreen Standalone Installer. This adds roughly 127 MB to the artifact, avoids install-time network access, and leaves runtime security servicing with the Evergreen updater rather than pinning a fixed WebView2 version. BatCave does not publish a separate online-bootstrapper variant. Building the bundle can still download the Microsoft redistributable into Tauri's build cache; shipping and installation do not require that build-time connection. Distribution remains subject to the [Microsoft Edge WebView2 Runtime license](https://www.microsoft.com/software-download/webview2). Linux builds emit `.deb` and AppImage bundles under `src/BatCave.App/src-tauri/target/release/bundle`. Universal macOS output lands under `src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle`, including the `.app`, DMG, and release-only updater archive.

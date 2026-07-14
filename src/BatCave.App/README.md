@@ -13,10 +13,9 @@ Product screenshots and verification screenshots must come from the native Tauri
 
 - Node.js 24
 - A current stable Rust toolchain
-- Windows for `tauri:dev:windows` and `tauri:build:windows`
-- Microsoft Edge WebView2 Evergreen Runtime for Windows installs. The NSIS bundle embeds Microsoft's Evergreen Standalone Installer and does not need network access during installation.
-- Ubuntu/Debian plus the native Tauri packages for `tauri:dev:linux` and `tauri:build:linux`
-- macOS 12 or newer plus Xcode Command Line Tools for `tauri:dev:macos`; universal builds require both Apple Rust targets
+- Windows with Microsoft Edge WebView2 Evergreen Runtime. The NSIS bundle embeds Microsoft's Evergreen Standalone Installer and does not need network access during installation.
+- Ubuntu/Debian plus the native Tauri packages
+- macOS 12 or newer plus Xcode Command Line Tools; universal builds require both Apple Rust targets
 
 Install Linux native prerequisites from the repository root:
 
@@ -65,12 +64,10 @@ From this app directory, the lower-level commands are:
 
 ```powershell
 npm run dev
-npm run tauri:dev:windows
-npm run tauri:dev:linux
-npm run tauri:dev:macos
+npm run tauri -- dev
 ```
 
-`npm run dev` starts Vite at `http://127.0.0.1:1420`. The platform-specific Tauri commands launch the native shell around that UI.
+`npm run dev` starts Vite at `http://127.0.0.1:1420`. `npm run tauri -- dev` launches the native shell and automatically merges the conventional `tauri.windows.conf.json`, `tauri.linux.conf.json`, or `tauri.macos.conf.json` overlay for the current host.
 
 ## Verify And Build
 
@@ -119,9 +116,8 @@ The validation scripts run frontend checks, Rust formatting, Rust check, Rust te
 Build platform bundles from this app directory:
 
 ```powershell
-npm run tauri:build:windows
-npm run tauri:build:linux
-npm run tauri:build:macos:universal
+npm run tauri -- build
+npm run tauri -- build --target universal-apple-darwin  # macOS universal
 ```
 
 Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. `tauri.windows.conf.json` selects `offlineInstaller`, so the NSIS artifact embeds Microsoft's WebView2 Evergreen Standalone Installer. The trade-off is roughly 127 MB of additional package size in exchange for installation without network access and continued Evergreen runtime servicing. There is no online-bootstrapper artifact. Build hosts can still need network access to populate Tauri's WebView2 download cache. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts. The Mac universal `.app` and DMG land under `src-tauri/target/universal-apple-darwin/release/bundle`; local builds are not notarized and main-branch CI artifacts are ad-hoc signed.

@@ -75,12 +75,7 @@ app_root="$repo_root/src/BatCave.App"
 cargo_manifest="$app_root/src-tauri/Cargo.toml"
 
 case "$(uname -s)" in
-  Darwin)
-    tauri_build_script="tauri:build:macos:universal"
-    ;;
-  Linux)
-    tauri_build_script="tauri:build:linux"
-    ;;
+  Darwin | Linux) ;;
   *)
     echo "validate-tauri.sh supports Linux and macOS. Use scripts/validate-tauri.ps1 on Windows." >&2
     exit 2
@@ -136,7 +131,7 @@ if [[ "$skip_bundle" -eq 0 ]]; then
     npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json
     bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc
   else
-    npm run "$tauri_build_script"
+    npm run tauri -- build
     bash "$repo_root/scripts/verify-linux-bundle.sh"
   fi
 fi
