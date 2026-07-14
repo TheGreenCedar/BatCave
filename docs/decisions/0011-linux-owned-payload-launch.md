@@ -32,11 +32,13 @@ The parser accepts at most 4 KiB and exactly one JSON object. Summary, release-i
 - one repeat with advancing samples and a matching passing sample-quality summary; and
 - the expected no-baseline, no-speed-ratio result.
 
-Extra caller-like status, missing or duplicate objects, oversized output, wrong release or platform identity, malformed metrics, non-advancing samples, and contradictory summary state fail closed. The parsed observation is process-local and is not a native execution receipt.
+Extra caller-like status, missing objects, duplicate object keys rejected during deserialization, oversized output, wrong release or platform identity, malformed metrics, non-advancing samples, and contradictory summary state fail closed. The parsed observation is process-local and is not a native execution receipt.
 
 ## Ownership and proof boundary
 
 The existing supervisor retains the artifact descriptor, process group, adopted descendants, output pipes, and private root until the payload settles. Output remains nonblocking and bounded. Timeout, output overflow, a surviving descendant, or unsettled pipes fail after bounded termination and reaping. The exact owned bytes are rehashed after each package or payload consumer, and the private root is removed only after process settlement.
+
+An unconfirmed cleanup result is not flattened into a string error. It returns one typed retained operation that still owns the artifact, process supervisor, subreaper state, and private root. Its only recovery entry is fixed and argument-free: retry process termination and settlement, then remove the root, then release the artifact and subreaper. Dropping the retained result takes the same bounded recovery path. If repeated recovery still cannot confirm settlement, the test authority deliberately leaks those process-local owners instead of invoking their ordinary destructors and removing resources that may still be live.
 
 Every outcome remains:
 

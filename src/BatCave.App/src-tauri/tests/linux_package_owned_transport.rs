@@ -1,5 +1,8 @@
+use serde::de::{Error as _, MapAccess, SeqAccess, Visitor};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
+use std::fmt;
 
 const MAX_PACKAGED_BENCHMARK_BYTES: usize = 4096;
 const PACKAGED_BENCHMARK_MACHINE_CLASS: &str = "owned-package-payload";
@@ -32,6 +35,113 @@ fn package_transport_probe_is_explicitly_linux_only() {
 struct PackagedBenchmarkObservation {
     app_version: String,
     source_commit_sha: Option<String>,
+}
+
+struct DuplicateRejectingValue(Value);
+
+impl<'de> Deserialize<'de> for DuplicateRejectingValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DuplicateRejectingValueVisitor)
+    }
+}
+
+struct DuplicateRejectingValueVisitor;
+
+impl<'de> Visitor<'de> for DuplicateRejectingValueVisitor {
+    type Value = DuplicateRejectingValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("one JSON value without duplicate object keys")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(DuplicateRejectingValue(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(DuplicateRejectingValue(Value::Number(value.into())))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(DuplicateRejectingValue(Value::Number(value.into())))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .map(DuplicateRejectingValue)
+            .ok_or_else(|| E::custom("non-finite JSON number"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(DuplicateRejectingValue(Value::String(value.to_string())))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(DuplicateRejectingValue(Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(DuplicateRejectingValue(Value::Null))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(DuplicateRejectingValue(Value::Null))
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        DuplicateRejectingValue::deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(DuplicateRejectingValue(value)) = sequence.next_element()? {
+            values.push(value);
+        }
+        Ok(DuplicateRejectingValue(Value::Array(values)))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut values = Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if values.contains_key(&key) {
+                return Err(A::Error::custom(format!("duplicate object key {key}")));
+            }
+            let DuplicateRejectingValue(value) = map.next_value()?;
+            values.insert(key, value);
+        }
+        Ok(DuplicateRejectingValue(Value::Object(values)))
+    }
+}
+
+fn parse_json_without_duplicate_keys(bytes: &[u8]) -> Result<Value, String> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let DuplicateRejectingValue(value) = DuplicateRejectingValue::deserialize(&mut deserializer)
+        .map_err(|error| {
+            format!("packaged benchmark output was not one closed JSON value: {error}")
+        })?;
+    deserializer
+        .end()
+        .map_err(|_| "packaged benchmark output was not one JSON value".to_string())?;
+    Ok(value)
 }
 
 fn expected_architecture() -> &'static str {
@@ -146,8 +256,7 @@ fn parse_packaged_benchmark(
     if !output_bounded || stdout.len() > MAX_PACKAGED_BENCHMARK_BYTES {
         return Err("packaged benchmark output exceeded the fixed bound".to_string());
     }
-    let value = serde_json::from_slice::<Value>(stdout)
-        .map_err(|_| "packaged benchmark output was not one JSON value".to_string())?;
+    let value = parse_json_without_duplicate_keys(stdout)?;
     let summary = value
         .as_object()
         .ok_or_else(|| "packaged benchmark output was not an object".to_string())?;
@@ -367,6 +476,22 @@ fn packaged_benchmark_parser_rejects_hostile_or_contradictory_output() {
         let error = parse_packaged_benchmark(&serde_json::to_vec(&hostile).unwrap(), true)
             .expect_err(label);
         assert!(error.contains("packaged benchmark"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn packaged_benchmark_parser_rejects_duplicate_required_and_extra_keys() {
+    let canonical = serde_json::to_string(&packaged_benchmark_fixture()).unwrap();
+    for (label, prefix) in [
+        ("duplicate required key", r#"{"format_version":4,"#),
+        (
+            "duplicate extra key",
+            r#"{"caller_status":"passed","caller_status":"passed","#,
+        ),
+    ] {
+        let hostile = format!("{prefix}{}", &canonical[1..]);
+        let error = parse_packaged_benchmark(hostile.as_bytes(), true).expect_err(label);
+        assert!(error.contains("duplicate object key"), "{label}: {error}");
     }
 }
 
@@ -662,6 +787,7 @@ mod linux {
         stderr: OutputPipe<ChildStderr>,
         baseline_children: BTreeSet<libc::pid_t>,
         settled: bool,
+        fail_cleanup_unsettled_once: bool,
     }
 
     impl ProbeProcess {
@@ -676,6 +802,12 @@ mod linux {
         }
 
         fn cleanup(&mut self) -> Result<(), String> {
+            if self.fail_cleanup_unsettled_once {
+                self.fail_cleanup_unsettled_once = false;
+                return Err(
+                    "package process cleanup retained injected unsettled ownership".to_string(),
+                );
+            }
             let deadline = Instant::now() + TERMINATION_GRACE + SETTLEMENT_TIMEOUT;
             let original_child = self.child.id() as libc::pid_t;
             let mut failures = Vec::new();
@@ -772,6 +904,195 @@ mod linux {
         }
     }
 
+    enum ProbeFailure {
+        Settled(String),
+        Unsettled {
+            diagnostic: String,
+            process: ProbeProcess,
+            subreaper: SubreaperGuard,
+        },
+    }
+
+    impl ProbeFailure {
+        fn after_cleanup(
+            operation: String,
+            mut process: ProbeProcess,
+            subreaper: SubreaperGuard,
+        ) -> Self {
+            match process.cleanup() {
+                Ok(()) => Self::Settled(operation),
+                Err(cleanup) => {
+                    let diagnostic = combine_operation_cleanup(operation, Err(cleanup));
+                    if process.settled {
+                        Self::Settled(diagnostic)
+                    } else {
+                        Self::Unsettled {
+                            diagnostic,
+                            process,
+                            subreaper,
+                        }
+                    }
+                }
+            }
+        }
+
+        fn diagnostic(&self) -> &str {
+            match self {
+                Self::Settled(diagnostic) | Self::Unsettled { diagnostic, .. } => diagnostic,
+            }
+        }
+
+        fn contains(&self, pattern: &str) -> bool {
+            self.diagnostic().contains(pattern)
+        }
+    }
+
+    impl From<String> for ProbeFailure {
+        fn from(error: String) -> Self {
+            Self::Settled(error)
+        }
+    }
+
+    impl std::fmt::Debug for ProbeFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("ProbeFailure")
+                .field("diagnostic", &self.diagnostic())
+                .field(
+                    "ownership_retained",
+                    &matches!(self, Self::Unsettled { .. }),
+                )
+                .finish()
+        }
+    }
+
+    impl std::fmt::Display for ProbeFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.diagnostic())
+        }
+    }
+
+    struct RetainedOperation {
+        artifact: Option<OwnedArtifact>,
+        root: Option<PrivateRoot>,
+        process: Option<ProbeProcess>,
+        subreaper: Option<SubreaperGuard>,
+        diagnostic: String,
+    }
+
+    impl RetainedOperation {
+        fn owns_all_authority(&self) -> bool {
+            self.artifact.is_some()
+                && self.root.is_some()
+                && self.process.is_some()
+                && self.subreaper.is_some()
+        }
+
+        fn artifact_valid(&self) -> bool {
+            self.artifact
+                .as_ref()
+                .is_some_and(|artifact| artifact.validate().is_ok())
+        }
+
+        fn root_path(&self) -> Option<&Path> {
+            self.root.as_ref().map(|root| root.path.as_path())
+        }
+
+        fn process_unsettled(&self) -> bool {
+            self.process
+                .as_ref()
+                .is_some_and(|process| !process.settled)
+        }
+
+        fn recover(&mut self) -> Result<(), String> {
+            if !self.owns_all_authority() {
+                return if self.artifact.is_none()
+                    && self.root.is_none()
+                    && self.process.is_none()
+                    && self.subreaper.is_none()
+                {
+                    Ok(())
+                } else {
+                    Err("retained package authority was internally incomplete".to_string())
+                };
+            }
+
+            let process = self
+                .process
+                .as_mut()
+                .expect("complete retained authority owns its process");
+            let process_cleanup = process.cleanup();
+            if !process.settled {
+                return Err(match process_cleanup {
+                    Ok(()) => "retained package process remained unsettled".to_string(),
+                    Err(error) => error,
+                });
+            }
+
+            let root = self
+                .root
+                .as_mut()
+                .expect("complete retained authority owns its root");
+            root.cleanup()?;
+
+            drop(self.process.take());
+            drop(self.root.take());
+            drop(self.artifact.take());
+            drop(self.subreaper.take());
+            Ok(())
+        }
+
+        fn leak_unconfirmed_authority(&mut self) {
+            if let Some(process) = self.process.take() {
+                std::mem::forget(process);
+            }
+            if let Some(root) = self.root.take() {
+                std::mem::forget(root);
+            }
+            if let Some(artifact) = self.artifact.take() {
+                std::mem::forget(artifact);
+            }
+            if let Some(subreaper) = self.subreaper.take() {
+                std::mem::forget(subreaper);
+            }
+        }
+    }
+
+    impl Drop for RetainedOperation {
+        fn drop(&mut self) {
+            for _ in 0..2 {
+                if self.recover().is_ok() {
+                    return;
+                }
+            }
+            self.leak_unconfirmed_authority();
+        }
+    }
+
+    enum OwnedOperationError {
+        Settled(String),
+        Retained(RetainedOperation),
+    }
+
+    impl OwnedOperationError {
+        fn diagnostic(&self) -> &str {
+            match self {
+                Self::Settled(diagnostic) => diagnostic,
+                Self::Retained(operation) => &operation.diagnostic,
+            }
+        }
+    }
+
+    impl std::fmt::Debug for OwnedOperationError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("OwnedOperationError")
+                .field("diagnostic", &self.diagnostic())
+                .field("ownership_retained", &matches!(self, Self::Retained(_)))
+                .finish()
+        }
+    }
+
     fn lock_probes() -> MutexGuard<'static, ()> {
         PROBE_LOCK
             .lock()
@@ -842,8 +1163,15 @@ mod linux {
         if bytes.len() as u64 != opened.len() {
             return Err("bundle length changed while reading".to_string());
         }
-        let sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        seal_owned_artifact(kind, &bytes, Some((opened.dev(), opened.ino())))
+    }
 
+    fn seal_owned_artifact(
+        kind: PackageKind,
+        bytes: &[u8],
+        source_identity: Option<(u64, u64)>,
+    ) -> Result<OwnedArtifact, String> {
+        let sha256: [u8; 32] = Sha256::digest(bytes).into();
         let name = CString::new(kind.memfd_name()).expect("fixed memfd name contains no NUL");
         let raw_fd = unsafe {
             libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
@@ -890,7 +1218,9 @@ mod linux {
         let descriptor_metadata = descriptor
             .metadata()
             .map_err(|error| format!("owned descriptor metadata failed: {error}"))?;
-        if descriptor_metadata.dev() == opened.dev() && descriptor_metadata.ino() == opened.ino() {
+        if source_identity.is_some_and(|(device, inode)| {
+            descriptor_metadata.dev() == device && descriptor_metadata.ino() == inode
+        }) {
             return Err("owned artifact unexpectedly aliases the source".to_string());
         }
         let owned = OwnedArtifact {
@@ -1097,6 +1427,7 @@ mod linux {
             stderr,
             baseline_children,
             settled: false,
+            fail_cleanup_unsettled_once: false,
         })
     }
 
@@ -1146,6 +1477,7 @@ mod linux {
             stderr,
             baseline_children,
             settled: false,
+            fail_cleanup_unsettled_once: false,
         })
     }
 
@@ -1153,11 +1485,11 @@ mod linux {
         artifact: &OwnedArtifact,
         probe: FixedProbe,
         private_root: &Path,
-    ) -> Result<TransportOutcome, String> {
-        let _subreaper = SubreaperGuard::enable()?;
-        let process = spawn_probe(artifact, probe, private_root)?;
-        let supervised = supervise_process(process, STEP_TIMEOUT)?;
-        artifact.validate()?;
+    ) -> Result<TransportOutcome, ProbeFailure> {
+        let subreaper = SubreaperGuard::enable().map_err(ProbeFailure::from)?;
+        let process = spawn_probe(artifact, probe, private_root).map_err(ProbeFailure::from)?;
+        let supervised = supervise_process(process, STEP_TIMEOUT, subreaper)?;
+        artifact.validate().map_err(ProbeFailure::from)?;
         Ok(TransportOutcome {
             status: supervised.status,
             stdout: supervised.stdout.bytes,
@@ -1181,20 +1513,20 @@ mod linux {
     fn supervise_process(
         mut process: ProbeProcess,
         timeout: Duration,
-    ) -> Result<SupervisedOutput, String> {
+        subreaper: SubreaperGuard,
+    ) -> Result<SupervisedOutput, ProbeFailure> {
         let deadline = Instant::now() + timeout;
         let status = match wait_for_child(&mut process, deadline) {
             Ok(Some(status)) => status,
             Ok(None) => {
-                let cleanup = process.cleanup();
-                return Err(combine_operation_cleanup(
+                return Err(ProbeFailure::after_cleanup(
                     "fixed package probe timed out".to_string(),
-                    cleanup,
+                    process,
+                    subreaper,
                 ));
             }
             Err(error) => {
-                let cleanup = process.cleanup();
-                return Err(combine_operation_cleanup(error, cleanup));
+                return Err(ProbeFailure::after_cleanup(error, process, subreaper));
             }
         };
 
@@ -1204,15 +1536,14 @@ mod linux {
         ) {
             Ok(adopted) => adopted,
             Err(error) => {
-                let cleanup = process.cleanup();
-                return Err(combine_operation_cleanup(error, cleanup));
+                return Err(ProbeFailure::after_cleanup(error, process, subreaper));
             }
         };
         if process_group_exists(process.process_group) || !adopted.is_empty() {
-            let cleanup = process.cleanup();
-            return Err(combine_operation_cleanup(
+            return Err(ProbeFailure::after_cleanup(
                 "unexpected package descendant required forced settlement".to_string(),
-                cleanup,
+                process,
+                subreaper,
             ));
         }
 
@@ -1225,8 +1556,7 @@ mod linux {
         ) {
             Ok(settled) => settled,
             Err(error) => {
-                let cleanup = process.cleanup();
-                return Err(combine_operation_cleanup(error, cleanup));
+                return Err(ProbeFailure::after_cleanup(error, process, subreaper));
             }
         };
         let descendants_settled = match settle_adopted_descendants(
@@ -1236,23 +1566,21 @@ mod linux {
         ) {
             Ok(settled) => settled,
             Err(error) => {
-                let cleanup = process.cleanup();
-                return Err(combine_operation_cleanup(error, cleanup));
+                return Err(ProbeFailure::after_cleanup(error, process, subreaper));
             }
         };
         let output_settled = match drain_output_until(&mut process, deadline) {
             Ok(settled) => settled,
             Err(error) => {
-                let cleanup = process.cleanup();
-                return Err(combine_operation_cleanup(error, cleanup));
+                return Err(ProbeFailure::after_cleanup(error, process, subreaper));
             }
         };
         if !group_settled || !descendants_settled || !output_settled {
-            let cleanup = process.cleanup();
-            return Err(combine_operation_cleanup(
+            return Err(ProbeFailure::after_cleanup(
                 "package output or process ownership did not settle before the probe deadline"
                     .to_string(),
-                cleanup,
+                process,
+                subreaper,
             ));
         }
 
@@ -1621,11 +1949,11 @@ mod linux {
 
     fn assert_hostile_descendant_fails_closed(test_name: &str, mode: &str) {
         let _lock = lock_probes();
-        let _subreaper = SubreaperGuard::enable().expect("enable hostile-probe subreaper");
+        let subreaper = SubreaperGuard::enable().expect("enable hostile-probe subreaper");
         let baseline = direct_children().expect("capture direct-child baseline");
         let process = spawn_hostile_probe(test_name, mode).expect("spawn hostile probe");
         let started = Instant::now();
-        let error = supervise_process(process, Duration::from_secs(2))
+        let error = supervise_process(process, Duration::from_secs(2), subreaper)
             .expect_err("unexpected descendant cannot produce transport success");
         assert!(
             error.contains("unexpected package descendant required forced settlement"),
@@ -1661,13 +1989,13 @@ mod linux {
     #[test]
     fn continuously_writing_child_cannot_starve_the_probe_deadline() {
         let _lock = lock_probes();
-        let _subreaper = SubreaperGuard::enable().expect("enable hostile-probe subreaper");
+        let subreaper = SubreaperGuard::enable().expect("enable hostile-probe subreaper");
         let baseline = direct_children().expect("capture direct-child baseline");
         let process =
             spawn_hostile_probe("linux::hostile_infinite_output_entry", "infinite-output")
                 .expect("spawn infinite-output probe");
         let started = Instant::now();
-        let error = supervise_process(process, Duration::from_millis(100))
+        let error = supervise_process(process, Duration::from_millis(100), subreaper)
             .expect_err("continuous output cannot bypass the deadline");
         assert!(
             error.contains("fixed package probe timed out"),
@@ -1681,6 +2009,93 @@ mod linux {
             direct_children().expect("inventory children after output cleanup"),
             baseline,
             "continuous-output child must be killed and reaped"
+        );
+    }
+
+    #[test]
+    fn unconfirmed_settlement_retains_artifact_process_and_root_until_recovery() {
+        let _lock = lock_probes();
+        let subreaper = SubreaperGuard::enable().expect("enable retained-probe subreaper");
+        let baseline = direct_children().expect("capture retained-probe child baseline");
+        let artifact = seal_owned_artifact(
+            PackageKind::Deb,
+            b"inert retained Linux package authority fixture\n",
+            None,
+        )
+        .expect("create inert retained artifact");
+        let root = PrivateRoot::create("retained-settlement").expect("create retained root");
+        let root_path = root.path.clone();
+        let mut process =
+            spawn_hostile_probe("linux::hostile_infinite_output_entry", "infinite-output")
+                .expect("spawn retained hostile probe");
+        process.fail_cleanup_unsettled_once = true;
+
+        let failure = supervise_process(process, Duration::from_millis(100), subreaper)
+            .expect_err("injected unconfirmed settlement must retain process authority");
+        let error = finish_owned_operation(artifact, root, Err::<(), _>(failure))
+            .expect_err("unconfirmed settlement cannot become an ordinary error");
+        let OwnedOperationError::Retained(mut retained) = error else {
+            panic!("unconfirmed settlement did not retain the complete operation");
+        };
+
+        assert!(retained.owns_all_authority());
+        assert!(retained.artifact_valid());
+        assert_eq!(retained.root_path(), Some(root_path.as_path()));
+        assert!(root_path.exists());
+        assert!(retained.process_unsettled());
+        assert!(retained
+            .diagnostic
+            .contains("fixed package probe timed out"));
+        assert!(retained
+            .diagnostic
+            .contains("retained injected unsettled ownership"));
+
+        retained
+            .recover()
+            .expect("fixed retained recovery must settle and release all authority");
+        assert!(!retained.owns_all_authority());
+        assert!(!root_path.exists());
+        assert_eq!(
+            direct_children().expect("inventory children after retained recovery"),
+            baseline,
+            "retained recovery must kill and reap the hostile process"
+        );
+    }
+
+    #[test]
+    fn dropping_retained_settlement_uses_the_same_fixed_recovery_path() {
+        let _lock = lock_probes();
+        let subreaper = SubreaperGuard::enable().expect("enable drop-recovery subreaper");
+        let baseline = direct_children().expect("capture drop-recovery child baseline");
+        let artifact = seal_owned_artifact(
+            PackageKind::AppImage,
+            b"inert retained AppImage drop fixture\n",
+            None,
+        )
+        .expect("create retained drop artifact");
+        let root = PrivateRoot::create("retained-drop").expect("create retained drop root");
+        let root_path = root.path.clone();
+        let mut process =
+            spawn_hostile_probe("linux::hostile_infinite_output_entry", "infinite-output")
+                .expect("spawn retained drop probe");
+        process.fail_cleanup_unsettled_once = true;
+
+        let failure = supervise_process(process, Duration::from_millis(100), subreaper)
+            .expect_err("drop fixture must first retain unsettled ownership");
+        let error = finish_owned_operation(artifact, root, Err::<(), _>(failure))
+            .expect_err("drop fixture cannot collapse retained ownership");
+        let OwnedOperationError::Retained(retained) = error else {
+            panic!("drop fixture did not retain the complete operation");
+        };
+        assert!(retained.owns_all_authority());
+        assert!(root_path.exists());
+
+        drop(retained);
+        assert!(!root_path.exists());
+        assert_eq!(
+            direct_children().expect("inventory children after drop recovery"),
+            baseline,
+            "drop recovery must kill and reap the hostile process"
         );
     }
 
@@ -1767,13 +2182,39 @@ mod linux {
         )
     }
 
-    fn with_private_root<T>(
+    fn finish_owned_operation<T>(
+        artifact: OwnedArtifact,
+        root: PrivateRoot,
+        operation: Result<T, ProbeFailure>,
+    ) -> Result<T, OwnedOperationError> {
+        match operation {
+            Ok(value) => root.finish(Ok(value)).map_err(OwnedOperationError::Settled),
+            Err(ProbeFailure::Settled(error)) => root
+                .finish::<T>(Err(error))
+                .map_err(OwnedOperationError::Settled),
+            Err(ProbeFailure::Unsettled {
+                diagnostic,
+                process,
+                subreaper,
+            }) => Err(OwnedOperationError::Retained(RetainedOperation {
+                artifact: Some(artifact),
+                root: Some(root),
+                process: Some(process),
+                subreaper: Some(subreaper),
+                diagnostic,
+            })),
+        }
+    }
+
+    fn with_owned_operation<T>(
+        kind: PackageKind,
         label: &str,
-        operation: impl FnOnce(&Path) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let root = PrivateRoot::create(label)?;
-        let result = operation(&root.path);
-        root.finish(result)
+        operation: impl FnOnce(&OwnedArtifact, &Path) -> Result<T, ProbeFailure>,
+    ) -> Result<T, OwnedOperationError> {
+        let artifact = acquire_owned_artifact(kind).map_err(OwnedOperationError::Settled)?;
+        let root = PrivateRoot::create(label).map_err(OwnedOperationError::Settled)?;
+        let result = operation(&artifact, &root.path);
+        finish_owned_operation(artifact, root, result)
     }
 
     #[test]
@@ -1871,15 +2312,14 @@ mod linux {
     #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
     fn built_deb_extracts_from_the_owned_descriptor_without_installing() {
         let _lock = lock_probes();
-        let artifact = acquire_owned_artifact(PackageKind::Deb).expect("acquire built deb");
-        let outcome = with_private_root("deb", |root| {
-            let outcome = run_probe(&artifact, FixedProbe::DebExtract, root)?;
+        let outcome = with_owned_operation(PackageKind::Deb, "deb", |artifact, root| {
+            let outcome = run_probe(artifact, FixedProbe::DebExtract, root)?;
             for binary in ["batcave-monitor", "batcave-monitor-cli"] {
                 let path = root.join("deb-payload/usr/bin").join(binary);
                 let metadata = fs::symlink_metadata(&path)
                     .map_err(|error| format!("staged binary metadata failed: {error}"))?;
                 if !metadata.is_file() || metadata.file_type().is_symlink() {
-                    return Err("staged deb binary identity was invalid".to_string());
+                    return Err("staged deb binary identity was invalid".to_string().into());
                 }
             }
             Ok(outcome)
@@ -1893,14 +2333,15 @@ mod linux {
     #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
     fn built_deb_payload_launches_from_the_owned_extraction_without_installing() {
         let _lock = lock_probes();
-        let artifact = acquire_owned_artifact(PackageKind::Deb).expect("acquire built deb");
-        let outcome = with_private_root("deb-payload", |root| {
-            let extraction = run_probe(&artifact, FixedProbe::DebExtract, root)?;
+        let outcome = with_owned_operation(PackageKind::Deb, "deb-payload", |artifact, root| {
+            let extraction = run_probe(artifact, FixedProbe::DebExtract, root)?;
             assert_non_proof(&extraction);
             if !extraction.stdout.is_empty() {
-                return Err("fixed deb extraction emitted unexpected output".to_string());
+                return Err("fixed deb extraction emitted unexpected output"
+                    .to_string()
+                    .into());
             }
-            run_probe(&artifact, FixedProbe::DebPayloadBenchmark, root)
+            run_probe(artifact, FixedProbe::DebPayloadBenchmark, root)
         })
         .expect("launch the fixed deb payload benchmark and clean its private root");
         assert_non_proof(&outcome);
@@ -1915,17 +2356,19 @@ mod linux {
     #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
     fn built_appimage_runtime_accepts_all_closed_owned_descriptor_modes() {
         let _lock = lock_probes();
-        let artifact = acquire_owned_artifact(PackageKind::AppImage).expect("acquire AppImage");
         let mut expected_offset = None;
         for probe in [
             FixedProbe::AppImageDescriptorPath,
             FixedProbe::AppImageExecveat,
             FixedProbe::AppImageFexecve,
         ] {
-            let outcome = with_private_root("appimage", |root| run_probe(&artifact, probe, root))
+            let (outcome, artifact_size) =
+                with_owned_operation(PackageKind::AppImage, "appimage", |artifact, root| {
+                    Ok((run_probe(artifact, probe, root)?, artifact.size))
+                })
                 .expect("run AppImage probe and clean private root");
             assert_non_proof(&outcome);
-            let offset = parse_appimage_offset(probe, &outcome.stdout, artifact.size)
+            let offset = parse_appimage_offset(probe, &outcome.stdout, artifact_size)
                 .unwrap_or_else(|error| panic!("{error}"));
             if let Some(expected) = expected_offset {
                 assert_eq!(offset, expected, "owned descriptor modes disagree");
@@ -1939,10 +2382,11 @@ mod linux {
     #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
     fn built_appimage_payload_launches_from_the_owned_descriptor() {
         let _lock = lock_probes();
-        let artifact = acquire_owned_artifact(PackageKind::AppImage).expect("acquire AppImage");
-        let outcome = with_private_root("appimage-payload", |root| {
-            run_probe(&artifact, FixedProbe::AppImagePayloadBenchmark, root)
-        })
+        let outcome = with_owned_operation(
+            PackageKind::AppImage,
+            "appimage-payload",
+            |artifact, root| run_probe(artifact, FixedProbe::AppImagePayloadBenchmark, root),
+        )
         .expect("launch the fixed AppImage payload benchmark and clean its private root");
         assert_non_proof(&outcome);
         let observation = super::parse_packaged_benchmark(&outcome.stdout, outcome.output_bounded)
