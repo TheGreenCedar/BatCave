@@ -1,8 +1,9 @@
 //! Current-user storage primitives for issue #73.
 //!
-//! The runtime-store integration lands after the lifecycle work in #68. Windows access remains
-//! fail-closed until the later service/ACL slice can verify the current-user SID, DACL, and reparse
-//! boundary instead of inferring safety from a profile path.
+//! The runtime-store integration lands after the lifecycle work in #68. Windows current-user
+//! storage accepts only a real directory rooted through the current-user policy. The later #69
+//! service slice still owns service SID and DACL enforcement, ancestor reparse defense, ProgramData
+//! ownership, and installed-machine proof.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -278,27 +279,22 @@ impl PersistenceFailure {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermissionVerification {
+    // Accepted for the coordinator's CurrentUser contract. On Windows this does not assert an
+    // owner SID, private DACL, ancestor-reparse boundary, or installed-service policy.
+    VerifiedCurrentUser,
     #[cfg_attr(
-        windows,
+        any(unix, windows),
         allow(
             dead_code,
-            reason = "Unix ownership and mode checks can prove a private root"
-        )
-    )]
-    VerifiedPrivate,
-    #[cfg_attr(
-        not(windows),
-        allow(
-            dead_code,
-            reason = "Windows remains fail-closed until #69 can verify its DACL"
+            reason = "Unsupported and future service-owned policies remain fail-closed"
         )
     )]
     Unverified,
     #[cfg_attr(
-        windows,
+        not(any(unix, windows)),
         allow(
             dead_code,
-            reason = "Unix ownership and mode checks can reject an unsafe root"
+            reason = "Unsupported platforms do not classify filesystem roots"
         )
     )]
     Invalid,
@@ -366,8 +362,7 @@ impl StorageBackend for RealStorageBackend {
     ) -> Result<PermissionVerification, BackendError> {
         #[cfg(windows)]
         {
-            let _ = path;
-            Ok(PermissionVerification::Unverified)
+            prepare_windows_current_user_directory(path)
         }
 
         #[cfg(unix)]
@@ -580,10 +575,55 @@ fn verify_unix_private_directory(path: &Path) -> Result<PermissionVerification, 
         .map_err(|error| BackendError::new(PersistenceOperation::Permissions, path, error))?;
     verify_unix_root_metadata(path, &metadata)?;
     Ok(if metadata.mode() & 0o077 == 0 {
-        PermissionVerification::VerifiedPrivate
+        PermissionVerification::VerifiedCurrentUser
     } else {
         PermissionVerification::Invalid
     })
+}
+
+#[cfg(windows)]
+fn prepare_windows_current_user_directory(
+    path: &Path,
+) -> Result<PermissionVerification, BackendError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(path)
+                .map_err(|error| BackendError::new(PersistenceOperation::Create, path, error))?;
+            fs::symlink_metadata(path).map_err(|error| {
+                BackendError::new(PersistenceOperation::Permissions, path, error)
+            })?
+        }
+        Err(error) => {
+            return Err(BackendError::new(
+                PersistenceOperation::Permissions,
+                path,
+                error,
+            ));
+        }
+    };
+
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    // This is deliberately the current-user runtime policy, not #69's installed-service proof.
+    // It rejects an unsafe leaf but does not claim service SID/DACL or ancestor-reparse coverage.
+    Ok(windows_current_user_root_policy(
+        metadata.is_dir(),
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+    ))
+}
+
+#[cfg(any(windows, test))]
+fn windows_current_user_root_policy(
+    is_directory: bool,
+    is_reparse_point: bool,
+) -> PermissionVerification {
+    if is_directory && !is_reparse_point {
+        PermissionVerification::VerifiedCurrentUser
+    } else {
+        PermissionVerification::Invalid
+    }
 }
 
 fn verify_regular_file_or_missing(path: &Path) -> Result<(), BackendError> {
@@ -784,7 +824,7 @@ impl UserStorageCoordinator {
             .prepare_private_directory(&self.root.directory)
             .map_err(BackendError::into_failure)?;
         match verification {
-            PermissionVerification::VerifiedPrivate => Ok(verification),
+            PermissionVerification::VerifiedCurrentUser => Ok(verification),
             PermissionVerification::Invalid => Err(PersistenceFailure {
                 code: PersistenceFailureCode::PermissionDenied,
                 operation: PersistenceOperation::Permissions,
@@ -1226,7 +1266,7 @@ impl RuntimePersistenceCoordinator {
                 .expect("unresolved roots retain their failure"));
         }
         match self.storage.ensure_root() {
-            Ok(PermissionVerification::VerifiedPrivate) => {
+            Ok(PermissionVerification::VerifiedCurrentUser) => {
                 if let Some(failure) = self.root_failure.take() {
                     self.root.permission_state = RuntimePersistencePermissionState::Verified;
                     self.root.directory = Some(self.storage.root().directory.display().to_string());
@@ -1627,7 +1667,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .permission
-                .unwrap_or(PermissionVerification::VerifiedPrivate))
+                .unwrap_or(PermissionVerification::VerifiedCurrentUser))
         }
 
         fn verify_component_file(&self, path: &Path) -> Result<(), BackendError> {
@@ -1817,6 +1857,22 @@ mod tests {
         assert_eq!(
             linux.directory,
             PathBuf::from("/var/user-data/BatCaveMonitor")
+        );
+    }
+
+    #[test]
+    fn windows_current_user_root_policy_accepts_only_a_real_non_reparse_leaf() {
+        assert_eq!(
+            windows_current_user_root_policy(true, false),
+            PermissionVerification::VerifiedCurrentUser
+        );
+        assert_eq!(
+            windows_current_user_root_policy(true, true),
+            PermissionVerification::Invalid
+        );
+        assert_eq!(
+            windows_current_user_root_policy(false, false),
+            PermissionVerification::Invalid
         );
     }
 
@@ -2057,7 +2113,8 @@ mod tests {
             serde_json::json!({"value": "A"})
         );
 
-        backend.state.lock().unwrap().permission = Some(PermissionVerification::VerifiedPrivate);
+        backend.state.lock().unwrap().permission =
+            Some(PermissionVerification::VerifiedCurrentUser);
         runtime
             .write_json(
                 UserStorageComponent::WarmCache,
@@ -2651,7 +2708,7 @@ mod tests {
 
         assert_eq!(
             coordinator.ensure_root().unwrap(),
-            PermissionVerification::VerifiedPrivate
+            PermissionVerification::VerifiedCurrentUser
         );
         coordinator
             .write_json(

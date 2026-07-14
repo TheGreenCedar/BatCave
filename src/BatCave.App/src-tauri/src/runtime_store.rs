@@ -6869,26 +6869,34 @@ mod tests {
     }
 
     #[test]
-    fn collector_warning_marks_health_degraded() {
-        let mut store = RuntimeStore::new();
-        let base_dir = std::env::temp_dir().join(format!(
-            "batcave-runtime-health-warning-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&base_dir);
-        store.base_dir = base_dir.clone();
-        store.settings = RuntimeSettings::default();
+    fn current_user_persistence_keeps_collector_warning_health_protocol_valid() {
+        let base_dir = runtime_test_dir("health-warning");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.warnings.clear();
-        store.add_warning(
-            "collector",
-            "network_attribution_failed:access_denied".to_string(),
+        let (collector, _) = FakeCollector::new([FakeOutcome::Sample]);
+        store.collector = Box::new(collector);
+        store
+            .tick()
+            .expect("current-user runtime publishes a sampled snapshot");
+
+        let persistence = store.persistence.health();
+        assert_eq!(persistence.state, RuntimePersistenceState::Healthy);
+        assert_eq!(
+            persistence.roots[0].permission_state,
+            RuntimePersistencePermissionState::Verified
         );
 
-        let health = store.build_health(3, 0.2, 64 * 1024 * 1024);
+        store.publish_snapshot_only(Some((
+            "collector",
+            "network_attribution_failed:access_denied".to_string(),
+        )));
 
+        let health = &store.snapshot.health;
         assert!(health.degraded);
         assert_eq!(health.collector_warnings, 1);
         assert!(health.status_summary.contains("1 telemetry limitation"));
+        crate::protocol::encode_snapshot(store.snapshot.clone())
+            .expect("collector warning snapshot remains protocol-valid");
 
         let _ = fs::remove_dir_all(&base_dir);
     }
