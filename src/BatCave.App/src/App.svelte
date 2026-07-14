@@ -459,8 +459,9 @@
         fixtureTick = 8;
         const next = makeFixtureSnapshot(
           fixtureTick,
-          { ...currentRuntimeQuery(), limit: accessibilityFixtureState === "group" ? 48 : 24 },
+          currentRuntimeQuery(),
           accessibilityFixtureState === "group" ? "windows" : browserFixturePlatform,
+          "compact",
         );
         prepareAccessibilityFixture(next, accessibilityFixtureState);
         ingest(next);

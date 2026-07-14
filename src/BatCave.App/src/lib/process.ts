@@ -6,7 +6,6 @@ import type {
   ProcessSample,
   ProcessViewRow,
   WorkloadDetail,
-  RuntimeQuery,
   SortColumn,
   SortDirection,
 } from "./types";
@@ -197,15 +196,6 @@ export function processSelectionKey(process: Pick<ProcessSample, "pid" | "start_
   return `process:${process.pid}:${process.start_time_ms}`;
 }
 
-export function normalizedProcessName(name: string): string {
-  return name.replace(/-\d+(?=\.exe$)/i, "");
-}
-
-export function processGroupKey(process: Pick<ProcessSample, "pid" | "name">): string {
-  const processName = normalizedProcessName(process.name).trim();
-  return (processName || `pid:${process.pid}`).toLocaleLowerCase();
-}
-
 const attentionCpuPercent = 10;
 const attentionMemoryBytes = 900 * 1024 * 1024;
 const attentionIoBps = 500 * 1024;
@@ -221,52 +211,12 @@ export function processNeedsAttention(process: ProcessSample): boolean {
   );
 }
 
-export function compareProcessSamples(
-  left: ProcessSample,
-  right: ProcessSample,
-  query: RuntimeQuery,
-): number {
-  const comparison =
-    query.sort_column === "name"
-      ? left.name.localeCompare(right.name)
-      : query.sort_column === "pid"
-        ? Number(left.pid) - Number(right.pid)
-        : query.sort_column === "cpu_pct"
-          ? left.cpu_percent - right.cpu_percent
-          : query.sort_column === "memory_bytes"
-            ? left.memory_bytes - right.memory_bytes
-            : query.sort_column === "io_bps"
-              ? rawProcessIoRate(left) - rawProcessIoRate(right)
-              : query.sort_column === "network_bps"
-                ? rawProcessNetworkRate(left) - rawProcessNetworkRate(right)
-                : query.sort_column === "threads"
-                  ? left.threads - right.threads
-                  : query.sort_column === "handles"
-                    ? left.handles - right.handles
-                    : query.sort_column === "start_time_ms"
-                      ? left.start_time_ms - right.start_time_ms
-                      : processAttentionScore(left) - processAttentionScore(right);
-
-  const directed = query.sort_direction === "asc" ? comparison : -comparison;
-  return directed || left.name.localeCompare(right.name);
-}
-
 function rawProcessIoRate(process: ProcessSample): number {
   return process.io_read_bps + process.io_write_bps;
 }
 
 function rawProcessNetworkRate(process: ProcessSample): number {
   return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
-}
-
-export function processAttentionScore(process: ProcessSample): number {
-  return (
-    process.cpu_percent * 3 +
-    Math.min(process.memory_bytes / (128 * 1024 * 1024), 20) +
-    Math.min(rawProcessIoRate(process) / (512 * 1024), 20) +
-    Math.min(rawProcessNetworkRate(process) / (1024 * 1024), 20) +
-    (process.access_state === "full" ? 0 : 12)
-  );
 }
 
 type ProcessAttentionMetricState =
@@ -351,82 +301,6 @@ export function processAttentionLabel(process: ProcessSample): string {
   if (process.access_state !== "full") return "access limited";
   if (states.includes("estimated")) return "steady · estimated";
   return "steady";
-}
-
-export interface ProcessGroupSortView {
-  key: string;
-  label: string;
-  processes: ProcessSample[];
-  cpuPercent: number;
-  memoryBytes: number;
-  ioBps: number;
-  networkBps: number;
-  threads: number;
-}
-
-export function compareProcessGroups(
-  left: ProcessGroupSortView,
-  right: ProcessGroupSortView,
-  query: RuntimeQuery,
-): number {
-  const comparison =
-    query.sort_column === "name"
-      ? left.label.localeCompare(right.label)
-      : query.sort_column === "pid"
-        ? left.key.localeCompare(right.key)
-        : query.sort_column === "cpu_pct"
-          ? groupCpuSortValue(left) - groupCpuSortValue(right)
-          : query.sort_column === "memory_bytes"
-            ? groupMemorySortValue(left) - groupMemorySortValue(right)
-            : query.sort_column === "io_bps"
-              ? groupIoSortValue(left) - groupIoSortValue(right)
-              : query.sort_column === "network_bps"
-                ? groupNetworkSortValue(left) - groupNetworkSortValue(right)
-                : query.sort_column === "threads"
-                  ? groupThreadsSortValue(left) - groupThreadsSortValue(right)
-                  : query.sort_column === "handles" || query.sort_column === "start_time_ms"
-                    ? left.key.localeCompare(right.key)
-                    : groupAttentionScore(left) - groupAttentionScore(right);
-
-  const directed = query.sort_direction === "asc" ? comparison : -comparison;
-  return directed || left.label.localeCompare(right.label);
-}
-
-function singletonProcess(group: ProcessGroupSortView): ProcessSample | undefined {
-  return group.processes.length === 1 ? group.processes[0] : undefined;
-}
-
-function groupCpuSortValue(group: ProcessGroupSortView): number {
-  return singletonProcess(group)?.cpu_percent ?? group.cpuPercent;
-}
-
-function groupMemorySortValue(group: ProcessGroupSortView): number {
-  return singletonProcess(group)?.memory_bytes ?? group.memoryBytes;
-}
-
-function groupIoSortValue(group: ProcessGroupSortView): number {
-  const process = singletonProcess(group);
-  return process ? rawProcessIoRate(process) : group.ioBps;
-}
-
-function groupNetworkSortValue(group: ProcessGroupSortView): number {
-  const process = singletonProcess(group);
-  return process ? rawProcessNetworkRate(process) : group.networkBps;
-}
-
-function groupThreadsSortValue(group: ProcessGroupSortView): number {
-  return singletonProcess(group)?.threads ?? group.threads;
-}
-
-function groupAttentionScore(group: ProcessGroupSortView): number {
-  if (group.processes.length === 1) return processAttentionScore(group.processes[0]);
-  return (
-    group.cpuPercent * 3 +
-    Math.min(group.memoryBytes / (128 * 1024 * 1024), 20) +
-    Math.min(group.ioBps / (512 * 1024), 20) +
-    Math.min(group.networkBps / (1024 * 1024), 20) +
-    (group.processes.some((process) => process.access_state !== "full") ? 12 : 0)
-  );
 }
 
 function groupMetricCanDisplayForAttention(

@@ -2987,6 +2987,26 @@ fn summarize_process_contributors(processes: &[ProcessSample]) -> ProcessContrib
     }
 }
 
+#[cfg(test)]
+pub(crate) fn shape_protocol_fixture_snapshot(snapshot: &mut RuntimeSnapshot) {
+    snapshot.process_view_rows = shape_process_view(&snapshot.processes, &snapshot.settings.query);
+    snapshot.process_contributors = summarize_process_contributors(&snapshot.processes);
+    snapshot.total_process_count = snapshot.processes.len();
+    snapshot.system.process_count = snapshot.processes.len();
+    if let Some(accounting) = &mut snapshot.system.memory_accounting {
+        accounting.process_working_set_bytes = snapshot
+            .processes
+            .iter()
+            .map(|process| process.memory_bytes)
+            .sum();
+        accounting.process_private_bytes = snapshot
+            .processes
+            .iter()
+            .map(|process| process.private_bytes)
+            .sum();
+    }
+}
+
 struct ProcessContributor {
     name: Option<String>,
     identity: Option<ProcessContributorIdentity>,

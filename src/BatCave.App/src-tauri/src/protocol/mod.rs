@@ -32,8 +32,8 @@ mod tests {
         GroupDetail, GroupDetailKind, GroupMetricCoverage, GroupMetricQuality, MetricCoverage,
         MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
-        ProcessMetricQuality, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
-        RuntimeInstallKind, RuntimePersistence as ContractPersistence,
+        ProcessFocusMode, ProcessMetricQuality, ProcessSample, ProcessViewRow,
+        RuntimeAdminModeState, RuntimeInstallKind, RuntimePersistence as ContractPersistence,
         RuntimePersistenceComponent as ContractPersistenceComponent,
         RuntimePersistenceDurability as ContractPersistenceDurability,
         RuntimePersistenceKind as ContractPersistenceKind,
@@ -498,6 +498,74 @@ mod tests {
         snapshot
     }
 
+    fn browser_fixture_for(
+        platform: RuntimePlatform,
+        synthetic_process_count: u64,
+    ) -> RuntimeSnapshot {
+        let mut snapshot = fixture_for(platform);
+        let canonical_rows = snapshot.process_view_rows.clone();
+        snapshot.settings.query.filter_text.clear();
+        snapshot.settings.query.focus_mode = ProcessFocusMode::All;
+        snapshot.settings.query.limit = synthetic_process_count as usize + 2;
+        snapshot.warnings.clear();
+        snapshot.health.collector_warnings = 0;
+        snapshot.health.last_warning = None;
+
+        let template = snapshot.processes[0].clone();
+        for index in 0..synthetic_process_count {
+            let ordinal = index + 1;
+            let mut process = template.clone();
+            process.pid = (2_000 + ordinal).to_string();
+            process.parent_pid = None;
+            process.start_time_ms = template.start_time_ms.saturating_sub(ordinal * 1_000);
+            process.name = format!("Fixture Worker {ordinal:02}");
+            process.exe = match platform {
+                RuntimePlatform::Windows => {
+                    format!(r"C:\Program Files\Fixture Worker {ordinal:02}\worker.exe")
+                }
+                RuntimePlatform::Linux => format!("/usr/bin/fixture-worker-{ordinal:02}"),
+                RuntimePlatform::Macos => {
+                    format!("/Applications/Fixture Worker {ordinal:02}.app/Contents/MacOS/worker")
+                }
+                RuntimePlatform::Fixture => unreachable!("goldens model real platforms"),
+            };
+            process.status = if ordinal % 5 == 0 {
+                "Idle".to_string()
+            } else {
+                "Run".to_string()
+            };
+            process.cpu_percent = 0.2 + ordinal as f64 * 0.08;
+            process.memory_bytes = (64 + ordinal * 7) * 1024 * 1024;
+            if platform != RuntimePlatform::Macos {
+                process.private_bytes = process.memory_bytes * 3 / 4;
+            }
+            process.virtual_memory_bytes = Some(process.memory_bytes * 2);
+            process.io_read_bps = ordinal * 5_000;
+            process.io_write_bps = ordinal * 3_000;
+            process.io_read_total_bytes = 10_000_000_000 + ordinal * 100_000_000;
+            process.io_write_total_bytes = 5_000_000_000 + ordinal * 60_000_000;
+            process.threads = (4 + ordinal % 32) as u32;
+            process.handles = (80 + ordinal * 7) as u32;
+            if platform != RuntimePlatform::Macos {
+                process.network_received_bps = Some(ordinal * 3_000);
+                process.network_transmitted_bps = Some(ordinal * 1_500);
+            }
+            snapshot.processes.push(process);
+        }
+
+        crate::runtime_store::shape_protocol_fixture_snapshot(&mut snapshot);
+        let singleton_rows = std::mem::take(&mut snapshot.process_view_rows)
+            .into_iter()
+            .filter(|row| match row {
+                ProcessViewRow::Process { detail, .. } => {
+                    detail.process.pid != "1234" && detail.process.pid != "1235"
+                }
+                ProcessViewRow::Group { .. } => false,
+            });
+        snapshot.process_view_rows = canonical_rows.into_iter().chain(singleton_rows).collect();
+        snapshot
+    }
+
     fn encode_fixture(
         snapshot: RuntimeSnapshot,
         architecture: RuntimeArchitectureV3,
@@ -615,6 +683,38 @@ mod tests {
                 RuntimeArchitectureV3::Aarch64,
             )),
             include_str!("../fixtures/runtime-protocol-v3/macos-limited.json"),
+        );
+        update_or_assert(
+            &fixture_dir.join("browser-windows.json"),
+            json_with_newline(&encode_fixture(
+                browser_fixture_for(RuntimePlatform::Windows, 46),
+                RuntimeArchitectureV3::X86_64,
+            )),
+            include_str!("../fixtures/runtime-protocol-v3/browser-windows.json"),
+        );
+        update_or_assert(
+            &fixture_dir.join("browser-linux.json"),
+            json_with_newline(&encode_fixture(
+                browser_fixture_for(RuntimePlatform::Linux, 46),
+                RuntimeArchitectureV3::Aarch64,
+            )),
+            include_str!("../fixtures/runtime-protocol-v3/browser-linux.json"),
+        );
+        update_or_assert(
+            &fixture_dir.join("browser-macos.json"),
+            json_with_newline(&encode_fixture(
+                browser_fixture_for(RuntimePlatform::Macos, 46),
+                RuntimeArchitectureV3::Aarch64,
+            )),
+            include_str!("../fixtures/runtime-protocol-v3/browser-macos.json"),
+        );
+        update_or_assert(
+            &fixture_dir.join("browser-macos-dense.json"),
+            json_with_newline(&encode_fixture(
+                browser_fixture_for(RuntimePlatform::Macos, 180),
+                RuntimeArchitectureV3::Aarch64,
+            )),
+            include_str!("../fixtures/runtime-protocol-v3/browser-macos-dense.json"),
         );
 
         let transitions = [

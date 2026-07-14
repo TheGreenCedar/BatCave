@@ -2,12 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  compareProcessGroups,
-  compareProcessSamples,
   groupAttentionLabel,
   isProcessViewRow,
   processAttentionLabel,
-  processIoRate,
   processNeedsAttention,
   processOtherIoRate,
 } from "../src/lib/process.ts";
@@ -26,7 +23,6 @@ import {
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
 import {
   hasNewRuntimeSample,
-  makeDefaultRuntimeQuery,
   shouldApplyRuntimePublication,
   shouldPollRuntime,
 } from "../src/lib/runtimeSnapshot.ts";
@@ -35,7 +31,6 @@ import {
   planAutomaticRuntimeFocusHydration,
 } from "../src/lib/runtimeHydration.ts";
 import { RuntimeMutationQueue } from "../src/lib/tauriBridge.ts";
-import { summarizeProcessContributors } from "../src/lib/systemPressure.ts";
 import { UiPreferencePersistenceSequence } from "../src/lib/uiPreferencePersistence.ts";
 import type {
   ProcessSample,
@@ -519,70 +514,6 @@ test("attention includes each scored resource and limited access", () => {
   assert.equal(processNeedsAttention(process({ other_io_bps: 8 * 1024 * 1024 })), false);
 });
 
-test("fixture comparator honors network sorting", () => {
-  const query = {
-    ...makeDefaultRuntimeQuery(),
-    sort_column: "network_bps" as const,
-    sort_direction: "desc" as const,
-  };
-  const rows = [
-    process({ name: "low", network_received_bps: 1 }),
-    process({ name: "high", network_received_bps: 100 }),
-  ].sort((left, right) => compareProcessSamples(left, right, query));
-
-  assert.deepEqual(
-    rows.map((row) => row.name),
-    ["high", "low"],
-  );
-});
-
-test("fixture singleton CPU and attention sorts use raw process values regardless of quality", () => {
-  const nativeLow = process({
-    name: "NativeLow.exe",
-    exe: "C:\\NativeLow.exe",
-    cpu_percent: 10,
-  });
-  const unavailableHigh = process({
-    name: "UnavailableHigh.exe",
-    exe: "C:\\UnavailableHigh.exe",
-    cpu_percent: 90,
-    quality: { cpu: { quality: "unavailable", source: "runtime" } },
-  });
-  const missingHigh = process({
-    name: "MissingHigh.exe",
-    exe: "C:\\MissingHigh.exe",
-    cpu_percent: 80,
-    quality: undefined,
-  });
-  const group = (sample: ProcessSample) => ({
-    key: sample.exe,
-    label: sample.name,
-    processes: [sample],
-    cpuPercent: 0,
-    memoryBytes: 0,
-    ioBps: 0,
-    networkBps: 0,
-    threads: 0,
-  });
-
-  for (const sort_column of ["cpu_pct", "attention"] as const) {
-    const query = {
-      ...makeDefaultRuntimeQuery(),
-      sort_column,
-      sort_direction: "desc" as const,
-    };
-    for (const [high, expected] of [
-      [unavailableHigh, "UnavailableHigh.exe"],
-      [missingHigh, "MissingHigh.exe"],
-    ] as const) {
-      const first = [group(nativeLow), group(high)].sort((left, right) =>
-        compareProcessGroups(left, right, query),
-      )[0];
-      assert.equal(first.processes[0].name, expected);
-    }
-  }
-});
-
 test("singleton attention labels publish only quality-backed activity", () => {
   const quality = (value: "native" | "estimated" | "partial" | "held" | "unavailable") => {
     const metric = { quality: value, source: "direct_api" as const };
@@ -668,103 +599,6 @@ test("fixture group attention exposes nonpublishable and mixed coverage states",
   assert.equal(groupAttentionLabel(mixed, false), "CPU activity · 1/2 · limited");
 });
 
-test("process contributor semantics keep read/write I/O distinct from physical disk", () => {
-  const processes = [
-    process({ name: "CPU first", io_read_bps: 1 }),
-    process({ name: "I/O winner", io_read_bps: 60 * 1024 * 1024 }),
-    process({ name: "Other-only", other_io_bps: 120 * 1024 * 1024 }),
-  ];
-  const contributors = summarizeProcessContributors(processes);
-
-  assert.equal(contributors.io, "I/O winner");
-  assert.equal("disk" in contributors, false);
-  assert.equal(processIoRate(processes[2], {}), 0);
-  assert.equal(processes[2].other_io_bps, 120 * 1024 * 1024);
-});
-
-test("process contributor selection excludes unavailable metrics and preserves quality", () => {
-  const contributors = summarizeProcessContributors([
-    process({
-      name: "Unavailable high",
-      cpu_percent: 90,
-      quality: { cpu: { quality: "unavailable", source: "runtime" } },
-    }),
-    process({
-      name: "Estimated lower",
-      cpu_percent: 20,
-      quality: { cpu: { quality: "estimated", source: "sysinfo" } },
-    }),
-  ]);
-
-  assert.equal(contributors.cpu, null);
-  assert.equal(contributors.cpu_quality?.quality, "unavailable");
-
-  const blockedPositive = summarizeProcessContributors([
-    process({
-      name: "Native visible",
-      cpu_percent: 25,
-      quality: { cpu: { quality: "native", source: "direct_api" } },
-    }),
-    process({
-      name: "Held placeholder",
-      cpu_percent: 0,
-      quality: { cpu: { quality: "held", source: "runtime" } },
-    }),
-  ]);
-  assert.equal(blockedPositive.cpu, null);
-  assert.equal(blockedPositive.cpu_quality?.quality, "held");
-
-  const unavailable = summarizeProcessContributors([
-    process({
-      cpu_percent: 90,
-      quality: { cpu: { quality: "unavailable", source: "runtime" } },
-    }),
-  ]);
-  assert.equal(unavailable.cpu, null);
-  assert.equal(unavailable.cpu_quality?.quality, "unavailable");
-
-  const quiet = summarizeProcessContributors([
-    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
-    process({
-      cpu_percent: 80,
-      quality: { cpu: { quality: "unavailable", source: "runtime" } },
-    }),
-  ]);
-  assert.equal(quiet.cpu, null);
-  assert.equal(quiet.cpu_quality?.quality, "unavailable");
-
-  const pendingZero = summarizeProcessContributors([
-    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
-    process({ cpu_percent: 0, quality: { cpu: { quality: "held", source: "runtime" } } }),
-  ]);
-  assert.equal(pendingZero.cpu, null);
-  assert.equal(pendingZero.cpu_quality?.quality, "held");
-
-  const limitedZero = summarizeProcessContributors([
-    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
-    process({ cpu_percent: 0, quality: { cpu: { quality: "partial", source: "sysinfo" } } }),
-  ]);
-  assert.equal(limitedZero.cpu, null);
-  assert.equal(limitedZero.cpu_quality?.quality, "partial");
-
-  const unknownZero = summarizeProcessContributors([
-    process({ cpu_percent: 0, quality: { cpu: { quality: "native", source: "direct_api" } } }),
-    process({ cpu_percent: 0, quality: undefined }),
-  ]);
-  assert.equal(unknownZero.cpu, null);
-  assert.equal(unknownZero.cpu_quality, undefined);
-});
-
-test("contributor ambiguity is summarized from the full process set", () => {
-  const contributors = summarizeProcessContributors([
-    process({ pid: "1", name: "worker", cpu_percent: 80 }),
-    process({ pid: "2", name: "worker", cpu_percent: 40 }),
-  ]);
-
-  assert.equal(contributors.cpu, "worker");
-  assert.equal(contributors.cpu_name_ambiguous, true);
-});
-
 test("typed groups keep Other I/O separate and unavailable", () => {
   const group = (workloadDetails as ProcessViewRow[]).find((row) => row.kind === "group");
   assert.ok(group?.kind === "group");
@@ -773,27 +607,6 @@ test("typed groups keep Other I/O separate and unavailable", () => {
   assert.deepEqual(group.detail.coverage.other_io, { available: 0, total: 2 });
   assert.equal(formatOptionalRate(group.detail.other_io_bps), "Unavailable");
   assert.equal(formatOptionalRate(processOtherIoRate(process({ other_io_bps: 0 }), {})), "0 B/s");
-});
-
-test("search and focus cannot change the headline contributor", () => {
-  const cpuWinner = process({ name: "CPU winner", cpu_percent: 80 });
-  const visibleIo = process({ name: "Visible I/O", io_read_bps: 1024 });
-  const allProcesses = [cpuWinner, visibleIo];
-  const searchedRows = allProcesses.filter((candidate) => candidate.name.includes("Visible"));
-  const focusedRows = allProcesses.filter(
-    (candidate) => candidate.io_read_bps + candidate.io_write_bps > 0,
-  );
-  const contributors = summarizeProcessContributors(allProcesses);
-
-  assert.deepEqual(
-    searchedRows.map((candidate) => candidate.name),
-    ["Visible I/O"],
-  );
-  assert.deepEqual(
-    focusedRows.map((candidate) => candidate.name),
-    ["Visible I/O"],
-  );
-  assert.equal(contributors.cpu, "CPU winner");
 });
 
 test("all theme text and focus colors meet contrast floors", () => {
