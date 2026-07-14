@@ -2,6 +2,8 @@
 
 Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. The Linux source descriptor from #116 and the macOS source descriptor from #117 are registered, but no package command or private byte-consumption handshake can consume the capability yet. This slice cannot produce native proof or release evidence.
 
+Issue #130 accepts the architecture for that missing handshake in [the private native artifact consumption authority decision](decisions/0003-private-native-artifact-consumption-authority.md). A statically composed, module-private authority will retain the exact bytes and one-shot adapter lease through fixed native consumption, complete process settlement, cleanup, and residue classification. The decision includes a non-installing hostile prototype; it does not make the current production receipt reachable or claim platform proof.
+
 The implementation is split deliberately:
 
 - `scripts/native-artifact-capability.mjs` acquires and owns the selected bytes;
