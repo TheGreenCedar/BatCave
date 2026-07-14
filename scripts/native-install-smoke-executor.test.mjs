@@ -622,6 +622,7 @@ test("closed macOS source binding is verified-identity-bound and cannot mint pro
         "contained_app_notarization",
         "contained_app_staple",
       ],
+      source_fixture_can_prove_destination_binding: false,
       source_fixture_can_mint_proof: false,
     });
     assert.deepEqual(sourceReceipt.claims, {

@@ -36,7 +36,7 @@ Both profiles carry the same consumed-destination revalidation contract. The fut
 - notarization acceptance; and
 - a valid staple.
 
-The contract maps the final three trust observations to the #98 `contained_app_developer_id`, `contained_app_notarization`, and `contained_app_staple` roles. The source descriptor cannot mark any observation passed or create evidence. [ADR 0008](decisions/0008-macos-dmg-destination-revalidation.md) exercises the fixed DMG destination hooks with an inert ad-hoc-signed fixture; it retains the ADR 0006 exact-transport non-claim.
+The contract maps the final three trust observations to the #98 `contained_app_developer_id`, `contained_app_notarization`, and `contained_app_staple` roles. The source descriptor cannot mark any observation passed, prove that sequential tool observations came from one immutable destination tree, or create evidence. [ADR 0008](decisions/0008-macos-dmg-destination-revalidation.md) exercises the fixed DMG destination hooks with an inert ad-hoc-signed fixture, including mid-revalidation substitution and post-spawn settlement retention. It retains both the ADR 0006 exact-transport non-claim and the destination-binding non-claim.
 
 The updater profile can never reinterpret staging as installation or a public A-to-B update. Both profiles remain blocked until a reviewed private process boundary consumes the still-live #111 capability and derives observations from settled native execution.
 

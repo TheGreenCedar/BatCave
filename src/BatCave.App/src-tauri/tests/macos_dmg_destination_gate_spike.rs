@@ -12,6 +12,8 @@ enum Disposition {
     #[cfg(target_os = "macos")]
     Rejected,
     #[cfg(target_os = "macos")]
+    RetainedProcessUnsettled,
+    #[cfg(target_os = "macos")]
     RetainedCleanupFailed,
 }
 
@@ -37,6 +39,8 @@ enum FailureBoundary {
     #[cfg(target_os = "macos")]
     Timeout,
     #[cfg(target_os = "macos")]
+    Supervision,
+    #[cfg(target_os = "macos")]
     Cleanup,
 }
 
@@ -52,6 +56,7 @@ struct DestinationGates {
 }
 
 impl DestinationGates {
+    #[cfg(target_os = "macos")]
     fn all_required(&self) -> bool {
         self.bundle_id
             && self.version
@@ -75,6 +80,7 @@ struct ProbeOutcome {
     image_binding_checks_passed: bool,
     copied_tree_digest_matched: bool,
     destination_revalidation_completed: bool,
+    destination_binding_proven: bool,
     gates: DestinationGates,
     mount_residue: bool,
     temporary_residue: bool,
@@ -100,6 +106,7 @@ impl ProbeOutcome {
             image_binding_checks_passed: false,
             copied_tree_digest_matched: false,
             destination_revalidation_completed: false,
+            destination_binding_proven: false,
             gates: DestinationGates::default(),
             mount_residue: false,
             temporary_residue: false,
@@ -116,6 +123,7 @@ impl ProbeOutcome {
 
 fn assert_non_claims(outcome: &ProbeOutcome) {
     assert!(!outcome.exact_transport_proven);
+    assert!(!outcome.destination_binding_proven);
     assert!(!outcome.public_artifact_verified);
     assert!(!outcome.app_installed);
     assert!(!outcome.app_launched);
@@ -160,7 +168,6 @@ fn probe_has_no_production_or_javascript_entrypoint() {
 mod macos {
     use super::{assert_non_claims, DestinationGates, Disposition, FailureBoundary, ProbeOutcome};
     use sha2::{Digest, Sha256};
-    use std::ffi::OsStr;
     use std::fs::{self, DirBuilder, File, OpenOptions};
     use std::io::{self, Read, Seek, SeekFrom, Write};
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -191,6 +198,7 @@ mod macos {
     static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     static FIXTURE: OnceLock<FixtureTemplate> = OnceLock::new();
+    static RETAINED_RECOVERIES: Mutex<Vec<RetainedRecovery>> = Mutex::new(Vec::new());
 
     #[derive(Clone)]
     struct FixtureTemplate {
@@ -206,8 +214,10 @@ mod macos {
         ReplaceDestinationWithSymlink,
         DriftBundleIdentity,
         DriftExecutableTrust,
+        ReplaceDestinationDuringRevalidation,
         MountTimeout,
         CopyTimeout,
+        SupervisionSettlementFailure,
         CleanupFailure,
     }
 
@@ -216,6 +226,18 @@ mod macos {
         timed_out: bool,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
+    }
+
+    struct UnsettledProcess {
+        child: Child,
+        process_group: i32,
+        fail_settlement_once: bool,
+    }
+
+    enum SupervisionFailure {
+        BeforeSpawn(io::Error),
+        Settled(io::Error),
+        AfterSpawn(UnsettledProcess),
     }
 
     struct DestinationAuthority {
@@ -228,6 +250,14 @@ mod macos {
         replacement_image_bytes: Vec<u8>,
         mounted: bool,
         force_cleanup_failure: bool,
+        unsettled_process: Option<UnsettledProcess>,
+    }
+
+    struct RetainedRecovery {
+        process: Option<UnsettledProcess>,
+        source: Option<File>,
+        root: PathBuf,
+        mount_point: PathBuf,
     }
 
     impl DestinationAuthority {
@@ -268,6 +298,7 @@ mod macos {
                 replacement_image_bytes,
                 mounted: false,
                 force_cleanup_failure: false,
+                unsettled_process: None,
             })
         }
 
@@ -288,6 +319,7 @@ mod macos {
                     false,
                     false,
                     DestinationGates::default(),
+                    false,
                 );
             }
 
@@ -300,24 +332,33 @@ mod macos {
             } else {
                 NORMAL_TIMEOUT
             };
-            let root = self.root.as_ref().expect("authority root retained").clone();
             let mut mount = Command::new(HDIUTIL);
             mount
                 .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
                 .arg(&self.mount_point)
                 .arg(&self.image_path);
-            let mount_result = run_process(&mut mount, &root, "attach", mount_timeout);
+            let mount_result = self.run_owned_process(
+                &mut mount,
+                "attach",
+                mount_timeout,
+                fault == Fault::SupervisionSettlementFailure,
+            );
             let mount_result = match mount_result {
                 Ok(result) => result,
                 Err(_) => {
                     return self.finish(
                         Disposition::Rejected,
-                        FailureBoundary::Mount,
-                        false,
+                        if self.unsettled_process.is_some() {
+                            FailureBoundary::Supervision
+                        } else {
+                            FailureBoundary::Mount
+                        },
+                        self.unsettled_process.is_some(),
                         false,
                         false,
                         false,
                         DestinationGates::default(),
+                        false,
                     );
                 }
             };
@@ -331,6 +372,7 @@ mod macos {
                     false,
                     false,
                     DestinationGates::default(),
+                    false,
                 );
             }
             if !mount_result.status.success() || !self.mounted {
@@ -342,6 +384,7 @@ mod macos {
                     false,
                     false,
                     DestinationGates::default(),
+                    false,
                 );
             }
 
@@ -354,6 +397,7 @@ mod macos {
                     false,
                     false,
                     DestinationGates::default(),
+                    false,
                 );
             }
 
@@ -369,6 +413,7 @@ mod macos {
                         false,
                         false,
                         DestinationGates::default(),
+                        false,
                     );
                 }
             };
@@ -382,7 +427,7 @@ mod macos {
             copy.args(["--rsrc", "--extattr", "--acl"])
                 .arg(&mounted_app)
                 .arg(&self.destination);
-            let copy_result = run_process(&mut copy, &root, "copy", copy_timeout);
+            let copy_result = self.run_owned_process(&mut copy, "copy", copy_timeout, false);
             let copy_result = match copy_result {
                 Ok(result) => result,
                 Err(_) => {
@@ -394,6 +439,7 @@ mod macos {
                         false,
                         false,
                         DestinationGates::default(),
+                        false,
                     );
                 }
             };
@@ -406,6 +452,7 @@ mod macos {
                     false,
                     false,
                     DestinationGates::default(),
+                    false,
                 );
             }
             if !copy_result.status.success() {
@@ -417,12 +464,17 @@ mod macos {
                     false,
                     false,
                     DestinationGates::default(),
+                    false,
                 );
             }
 
             if fault == Fault::ReplaceDestinationWithSymlink {
                 let _ = fs::remove_dir_all(&self.destination);
-                let attacker = root.join("attacker.app");
+                let attacker = self
+                    .root
+                    .as_ref()
+                    .expect("authority root retained")
+                    .join("attacker.app");
                 let _ = DirBuilder::new().mode(0o700).create(&attacker);
                 let _ = std::os::unix::fs::symlink(&attacker, &self.destination);
             }
@@ -438,6 +490,7 @@ mod macos {
                     true,
                     false,
                     DestinationGates::default(),
+                    false,
                 );
             }
 
@@ -458,7 +511,8 @@ mod macos {
                 _ => {}
             }
 
-            let gates = revalidate_destination(&root, &self.destination);
+            let (gates, destination_revalidation_completed) =
+                self.revalidate_destination(fault == Fault::ReplaceDestinationDuringRevalidation);
             let primary_boundary = first_failed_gate(&gates).unwrap_or(FailureBoundary::Transport);
             self.finish(
                 Disposition::Rejected,
@@ -468,6 +522,7 @@ mod macos {
                 true,
                 copied_tree_digest_matched,
                 gates,
+                destination_revalidation_completed,
             )
         }
 
@@ -510,10 +565,39 @@ mod macos {
             fixture_app_copied: bool,
             copied_tree_digest_matched: bool,
             gates: DestinationGates,
+            destination_revalidation_completed: bool,
         ) -> ProbeOutcome {
             let image_binding_checks_passed = self.image_binding_matches();
             let mut retained_boundary = None;
-            let process_settled = true;
+            let process_settled = self.unsettled_process.is_none();
+
+            if !process_settled {
+                disposition = Disposition::RetainedProcessUnsettled;
+                retained_boundary = Some(FailureBoundary::Supervision);
+                return ProbeOutcome {
+                    disposition,
+                    primary_boundary,
+                    retained_boundary,
+                    process_started,
+                    process_settled,
+                    fixture_dmg_mounted,
+                    fixture_app_copied,
+                    image_binding_checks_passed,
+                    copied_tree_digest_matched,
+                    destination_revalidation_completed,
+                    destination_binding_proven: false,
+                    gates,
+                    mount_residue: mount_is_active(&self.mount_point),
+                    temporary_residue: self.root.as_ref().is_some_and(|root| root.exists()),
+                    exact_transport_proven: false,
+                    public_artifact_verified: false,
+                    app_installed: false,
+                    app_launched: false,
+                    native_proven: false,
+                    receipt_emitted: false,
+                    evidence_emitted: false,
+                };
+            }
 
             if self.mounted || mount_is_active(&self.mount_point) {
                 self.mounted = true;
@@ -538,8 +622,8 @@ mod macos {
                 fixture_app_copied,
                 image_binding_checks_passed,
                 copied_tree_digest_matched,
-                destination_revalidation_completed: fixture_app_copied
-                    && copied_tree_digest_matched,
+                destination_revalidation_completed,
+                destination_binding_proven: false,
                 gates,
                 mount_residue: mount_is_active(&self.mount_point),
                 temporary_residue: self.root.as_ref().is_some_and(|root| root.exists()),
@@ -554,13 +638,14 @@ mod macos {
         }
 
         fn detach(&mut self) -> io::Result<()> {
-            let root = self.root.as_ref().expect("authority root retained");
             let mut detach = Command::new(HDIUTIL);
             detach
                 .arg("detach")
                 .arg(&self.mount_point)
                 .args(["-force", "-quiet"]);
-            let result = run_process(&mut detach, root, "detach", NORMAL_TIMEOUT)?;
+            let result = self
+                .run_owned_process(&mut detach, "detach", NORMAL_TIMEOUT, false)
+                .map_err(|_| io::Error::other("owned fixture detach supervision failed"))?;
             if result.status.success() && !result.timed_out && !mount_is_active(&self.mount_point) {
                 self.mounted = false;
                 Ok(())
@@ -582,6 +667,15 @@ mod macos {
         }
 
         fn retry_cleanup(&mut self) -> io::Result<()> {
+            if let Some(mut process) = self.unsettled_process.take() {
+                match process.settle() {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => {
+                        self.unsettled_process = Some(process);
+                        return Err(io::Error::other("owned fixture process remains unsettled"));
+                    }
+                }
+            }
             if mount_is_active(&self.mount_point) {
                 self.detach()?;
             }
@@ -589,16 +683,252 @@ mod macos {
             self.source.take();
             self.cleanup_root()
         }
+
+        fn revalidate_destination(
+            &mut self,
+            replace_during_revalidation: bool,
+        ) -> (DestinationGates, bool) {
+            let app = self.destination.clone();
+            let Ok(app_metadata) = fs::symlink_metadata(&app) else {
+                return (DestinationGates::default(), false);
+            };
+            if app_metadata.file_type().is_symlink() || tree_digest_no_links(&app).is_err() {
+                return (DestinationGates::default(), false);
+            }
+
+            let mut gates = DestinationGates::default();
+            let info_plist = app.join("Contents/Info.plist");
+            let mut bundle = Command::new(PLIST_BUDDY);
+            bundle
+                .args(["-c", "Print :CFBundleIdentifier"])
+                .arg(&info_plist);
+            gates.bundle_id = self
+                .run_output_owned(&mut bundle, "bundle-id")
+                .is_some_and(|output| output == EXPECTED_BUNDLE_ID);
+            if self.unsettled_process.is_some() {
+                return (gates, false);
+            }
+
+            let mut version = Command::new(PLIST_BUDDY);
+            version
+                .args(["-c", "Print :CFBundleShortVersionString"])
+                .arg(&info_plist);
+            gates.version = self
+                .run_output_owned(&mut version, "version")
+                .is_some_and(|output| output == EXPECTED_VERSION);
+            if self.unsettled_process.is_some() {
+                return (gates, false);
+            }
+
+            let executable = app.join("Contents/MacOS").join(EXECUTABLE_NAME);
+            let mut architectures = Command::new(LIPO);
+            architectures.arg("-archs").arg(&executable);
+            gates.universal_architectures = self
+                .run_output_owned(&mut architectures, "architectures")
+                .is_some_and(|output| {
+                    let mut observed = output.split_whitespace().collect::<Vec<_>>();
+                    observed.sort_unstable();
+                    observed == ["arm64", "x86_64"]
+                });
+            if self.unsettled_process.is_some() {
+                return (gates, false);
+            }
+
+            if replace_during_revalidation {
+                if let Ok(mut file) = OpenOptions::new().append(true).open(&executable) {
+                    let _ = file.write_all(b"mid-revalidation substitution");
+                }
+            }
+
+            let mut verify = Command::new(CODESIGN);
+            verify
+                .args(["--verify", "--deep", "--strict", "--verbose=2"])
+                .arg(&app);
+            gates.signature_integrity = self
+                .run_owned_process(&mut verify, "signature", NORMAL_TIMEOUT, false)
+                .is_ok_and(|result| result.status.success() && !result.timed_out);
+            if self.unsettled_process.is_some() {
+                return (gates, false);
+            }
+
+            let mut authority = Command::new(CODESIGN);
+            authority.args(["-d", "--verbose=4"]).arg(&app);
+            gates.developer_id_authority = self
+                .run_owned_process(&mut authority, "developer-id", NORMAL_TIMEOUT, false)
+                .is_ok_and(|result| {
+                    result.status.success()
+                        && contains_text(&result.stderr, "Authority=Developer ID Application:")
+                });
+            if self.unsettled_process.is_some() {
+                return (gates, false);
+            }
+
+            let mut assess = Command::new(SPCTL);
+            assess
+                .args(["--assess", "--type", "execute", "--verbose=4"])
+                .arg(&app);
+            gates.notarization = self
+                .run_owned_process(&mut assess, "notarization", NORMAL_TIMEOUT, false)
+                .is_ok_and(|result| {
+                    result.status.success()
+                        && contains_text(&result.stderr, "source=Notarized Developer ID")
+                });
+            if self.unsettled_process.is_some() {
+                return (gates, false);
+            }
+
+            let mut staple = Command::new(STAPLER);
+            staple.arg("validate").arg(&app);
+            gates.staple = self
+                .run_owned_process(&mut staple, "staple", NORMAL_TIMEOUT, false)
+                .is_ok_and(|result| result.status.success() && !result.timed_out);
+            (gates, self.unsettled_process.is_none())
+        }
+
+        fn run_output_owned(&mut self, command: &mut Command, label: &str) -> Option<String> {
+            self.run_owned_process(command, label, NORMAL_TIMEOUT, false)
+                .ok()
+                .filter(|result| result.status.success() && !result.timed_out)
+                .and_then(|result| String::from_utf8(result.stdout).ok())
+                .map(|value| value.trim().to_owned())
+        }
+
+        fn run_owned_process(
+            &mut self,
+            command: &mut Command,
+            label: &str,
+            timeout: Duration,
+            fail_after_spawn: bool,
+        ) -> Result<ProcessOutput, ()> {
+            let root = self.root.as_ref().ok_or(())?.clone();
+            match run_process(command, &root, label, timeout, fail_after_spawn) {
+                Ok(output) => Ok(output),
+                Err(SupervisionFailure::AfterSpawn(process)) => {
+                    self.unsettled_process = Some(process);
+                    Err(())
+                }
+                Err(
+                    SupervisionFailure::BeforeSpawn(error) | SupervisionFailure::Settled(error),
+                ) => {
+                    let _ = error.kind();
+                    Err(())
+                }
+            }
+        }
+
+        fn transfer_recovery(&mut self, process: Option<UnsettledProcess>) {
+            if let Some(root) = self.root.take() {
+                RETAINED_RECOVERIES
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(RetainedRecovery {
+                        process,
+                        source: self.source.take(),
+                        root,
+                        mount_point: self.mount_point.clone(),
+                    });
+            }
+        }
     }
 
     impl Drop for DestinationAuthority {
         fn drop(&mut self) {
             self.force_cleanup_failure = false;
-            if mount_is_active(&self.mount_point) {
-                let _ = self.detach();
+            if let Some(mut process) = self.unsettled_process.take() {
+                if !process.settle().unwrap_or(false) {
+                    self.transfer_recovery(Some(process));
+                    return;
+                }
+            }
+            if mount_is_active(&self.mount_point) && self.detach().is_err() {
+                let process = self.unsettled_process.take();
+                self.transfer_recovery(process);
+                return;
             }
             self.source.take();
-            let _ = self.cleanup_root();
+            if self.cleanup_root().is_err() {
+                self.transfer_recovery(None);
+            }
+        }
+    }
+
+    impl UnsettledProcess {
+        fn settle(&mut self) -> io::Result<bool> {
+            if self.fail_settlement_once {
+                self.fail_settlement_once = false;
+                return Err(io::Error::other("injected settlement failure"));
+            }
+            terminate_process_group(&mut self.child, self.process_group)?;
+            Ok(process_group_settled(self.process_group))
+        }
+    }
+
+    impl RetainedRecovery {
+        fn recover(&mut self) -> bool {
+            if let Some(mut process) = self.process.take() {
+                if !process.settle().unwrap_or(false) {
+                    self.process = Some(process);
+                    return false;
+                }
+            }
+            if mount_is_active(&self.mount_point) {
+                let mut detach = Command::new(HDIUTIL);
+                detach
+                    .arg("detach")
+                    .arg(&self.mount_point)
+                    .args(["-force", "-quiet"]);
+                match run_process(
+                    &mut detach,
+                    &self.root,
+                    "recovery-detach",
+                    NORMAL_TIMEOUT,
+                    false,
+                ) {
+                    Ok(result)
+                        if result.status.success()
+                            && !result.timed_out
+                            && !mount_is_active(&self.mount_point) => {}
+                    Err(SupervisionFailure::AfterSpawn(process)) => {
+                        self.process = Some(process);
+                        return false;
+                    }
+                    _ => return false,
+                }
+            }
+            self.source.take();
+            fs::remove_dir_all(&self.root).is_ok()
+        }
+    }
+
+    fn retained_recovery_count() -> usize {
+        RETAINED_RECOVERIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    fn recover_retained() -> io::Result<()> {
+        let recoveries = {
+            let mut retained = RETAINED_RECOVERIES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *retained)
+        };
+        let mut unresolved = Vec::new();
+        for mut recovery in recoveries {
+            if !recovery.recover() {
+                unresolved.push(recovery);
+            }
+        }
+        let count = unresolved.len();
+        RETAINED_RECOVERIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(unresolved);
+        if count == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::other("destination recovery remains unresolved"))
         }
     }
 
@@ -620,103 +950,6 @@ mod macos {
         }
     }
 
-    fn revalidate_destination(root: &Path, app: &Path) -> DestinationGates {
-        let Ok(app_metadata) = fs::symlink_metadata(app) else {
-            return DestinationGates::default();
-        };
-        if app_metadata.file_type().is_symlink() || tree_digest_no_links(app).is_err() {
-            return DestinationGates::default();
-        }
-
-        let bundle_id = run_output(
-            root,
-            "bundle-id",
-            PLIST_BUDDY,
-            [
-                OsStr::new("-c"),
-                OsStr::new("Print :CFBundleIdentifier"),
-                app.join("Contents/Info.plist").as_os_str(),
-            ],
-        )
-        .is_some_and(|output| output == EXPECTED_BUNDLE_ID);
-        let version = run_output(
-            root,
-            "version",
-            PLIST_BUDDY,
-            [
-                OsStr::new("-c"),
-                OsStr::new("Print :CFBundleShortVersionString"),
-                app.join("Contents/Info.plist").as_os_str(),
-            ],
-        )
-        .is_some_and(|output| output == EXPECTED_VERSION);
-        let executable = app.join("Contents/MacOS").join(EXECUTABLE_NAME);
-        let universal_architectures = run_output(
-            root,
-            "architectures",
-            LIPO,
-            [OsStr::new("-archs"), executable.as_os_str()],
-        )
-        .is_some_and(|output| {
-            let mut observed = output.split_whitespace().collect::<Vec<_>>();
-            observed.sort_unstable();
-            observed == ["arm64", "x86_64"]
-        });
-
-        let mut verify = Command::new(CODESIGN);
-        verify
-            .args(["--verify", "--deep", "--strict", "--verbose=2"])
-            .arg(app);
-        let signature_integrity = run_process(&mut verify, root, "signature", NORMAL_TIMEOUT)
-            .is_ok_and(|result| result.status.success() && !result.timed_out);
-
-        let mut authority = Command::new(CODESIGN);
-        authority.args(["-d", "--verbose=4"]).arg(app);
-        let developer_id_authority =
-            run_process(&mut authority, root, "developer-id", NORMAL_TIMEOUT).is_ok_and(|result| {
-                result.status.success()
-                    && contains_text(&result.stderr, "Authority=Developer ID Application:")
-            });
-
-        let mut assess = Command::new(SPCTL);
-        assess
-            .args(["--assess", "--type", "execute", "--verbose=4"])
-            .arg(app);
-        let notarization = run_process(&mut assess, root, "notarization", NORMAL_TIMEOUT)
-            .is_ok_and(|result| {
-                result.status.success()
-                    && contains_text(&result.stderr, "source=Notarized Developer ID")
-            });
-
-        let mut staple = Command::new(STAPLER);
-        staple.arg("validate").arg(app);
-        let staple = run_process(&mut staple, root, "staple", NORMAL_TIMEOUT)
-            .is_ok_and(|result| result.status.success() && !result.timed_out);
-
-        DestinationGates {
-            bundle_id,
-            version,
-            universal_architectures,
-            signature_integrity,
-            developer_id_authority,
-            notarization,
-            staple,
-        }
-    }
-
-    fn run_output<'a, I>(root: &Path, label: &str, program: &str, args: I) -> Option<String>
-    where
-        I: IntoIterator<Item = &'a OsStr>,
-    {
-        let mut command = Command::new(program);
-        command.args(args);
-        run_process(&mut command, root, label, NORMAL_TIMEOUT)
-            .ok()
-            .filter(|result| result.status.success() && !result.timed_out)
-            .and_then(|result| String::from_utf8(result.stdout).ok())
-            .map(|value| value.trim().to_owned())
-    }
-
     fn contains_text(bytes: &[u8], expected: &str) -> bool {
         String::from_utf8_lossy(bytes).contains(expected)
     }
@@ -728,7 +961,9 @@ mod macos {
     fn create_fixture() -> io::Result<FixtureTemplate> {
         let root = unique_private_root("template")?;
         let result = create_fixture_in(&root);
-        let _ = fs::remove_dir_all(&root);
+        if !retained_root(&root) {
+            let _ = fs::remove_dir_all(&root);
+        }
         result
     }
 
@@ -753,7 +988,7 @@ mod macos {
             .arg(&x86_64)
             .arg("-output")
             .arg(&executable);
-        require_success(run_process(
+        require_success(run_fixture_process(
             &mut lipo,
             root,
             "fixture-lipo",
@@ -761,7 +996,7 @@ mod macos {
         )?)?;
         let mut sign = Command::new(CODESIGN);
         sign.args(["--force", "--deep", "--sign", "-"]).arg(&app);
-        require_success(run_process(
+        require_success(run_fixture_process(
             &mut sign,
             root,
             "fixture-sign",
@@ -774,7 +1009,7 @@ mod macos {
             .args(["create", "-quiet", "-ov", "-format", "UDRO", "-srcfolder"])
             .arg(&image_source)
             .arg(&image);
-        require_success(run_process(
+        require_success(run_fixture_process(
             &mut create,
             root,
             "fixture-image",
@@ -793,7 +1028,7 @@ mod macos {
             .args(["create", "-quiet", "-ov", "-format", "UDRO", "-srcfolder"])
             .arg(&replacement_source)
             .arg(&replacement);
-        require_success(run_process(
+        require_success(run_fixture_process(
             &mut create_replacement,
             root,
             "replacement-image",
@@ -818,7 +1053,7 @@ mod macos {
             ])
             .arg("-o")
             .arg(output);
-        require_success(run_process(
+        require_success(run_fixture_process(
             &mut compile,
             root,
             &format!("fixture-{target}"),
@@ -832,6 +1067,45 @@ mod macos {
         } else {
             Err(io::Error::other("fixed fixture command failed"))
         }
+    }
+
+    fn run_fixture_process(
+        command: &mut Command,
+        root: &Path,
+        label: &str,
+        timeout: Duration,
+    ) -> io::Result<ProcessOutput> {
+        match run_process(command, root, label, timeout, false) {
+            Ok(output) => Ok(output),
+            Err(SupervisionFailure::BeforeSpawn(error) | SupervisionFailure::Settled(error)) => {
+                Err(error)
+            }
+            Err(SupervisionFailure::AfterSpawn(mut process)) => {
+                if process.settle().unwrap_or(false) {
+                    return Err(io::Error::other("fixture command supervision failed"));
+                }
+                RETAINED_RECOVERIES
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(RetainedRecovery {
+                        process: Some(process),
+                        source: None,
+                        root: root.to_path_buf(),
+                        mount_point: root.join("unused-fixture-mount"),
+                    });
+                Err(io::Error::other(
+                    "fixture command unresolved; private root retained",
+                ))
+            }
+        }
+    }
+
+    fn retained_root(root: &Path) -> bool {
+        RETAINED_RECOVERIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|recovery| recovery.root == root)
     }
 
     fn fixture_info_plist() -> &'static str {
@@ -960,7 +1234,8 @@ mod macos {
         root: &Path,
         label: &str,
         timeout: Duration,
-    ) -> io::Result<ProcessOutput> {
+        fail_after_spawn: bool,
+    ) -> Result<ProcessOutput, SupervisionFailure> {
         let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let stdout_path = root.join(format!("{label}-{sequence}.stdout"));
         let stderr_path = root.join(format!("{label}-{sequence}.stderr"));
@@ -968,12 +1243,14 @@ mod macos {
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&stdout_path)?;
+            .open(&stdout_path)
+            .map_err(SupervisionFailure::BeforeSpawn)?;
         let stderr = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&stderr_path)?;
+            .open(&stderr_path)
+            .map_err(SupervisionFailure::BeforeSpawn)?;
         command
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
@@ -987,32 +1264,74 @@ mod macos {
                 }
             });
         }
-        let mut child = command.spawn()?;
+        let mut child = command.spawn().map_err(SupervisionFailure::BeforeSpawn)?;
         let process_group = child.id() as i32;
+        if fail_after_spawn {
+            return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                child,
+                process_group,
+                fail_settlement_once: true,
+            }));
+        }
         let deadline = Instant::now() + timeout;
         let mut timed_out = timeout.is_zero();
         let status = loop {
             if timed_out || Instant::now() >= deadline {
                 timed_out = true;
-                terminate_process_group(&mut child, process_group)?;
-                break child.wait()?;
+                if terminate_process_group(&mut child, process_group).is_err() {
+                    return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                        child,
+                        process_group,
+                        fail_settlement_once: false,
+                    }));
+                }
+                break match child.wait() {
+                    Ok(status) => status,
+                    Err(_) => {
+                        return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                            child,
+                            process_group,
+                            fail_settlement_once: false,
+                        }));
+                    }
+                };
             }
-            if let Some(status) = child.try_wait()? {
-                if !process_group_settled(process_group) {
-                    terminate_process_group(&mut child, process_group)?;
+            let status = match child.try_wait() {
+                Ok(status) => status,
+                Err(_) => {
+                    return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                        child,
+                        process_group,
+                        fail_settlement_once: false,
+                    }));
+                }
+            };
+            if let Some(status) = status {
+                if !process_group_settled(process_group)
+                    && terminate_process_group(&mut child, process_group).is_err()
+                {
+                    return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                        child,
+                        process_group,
+                        fail_settlement_once: false,
+                    }));
                 }
                 break status;
             }
             thread::sleep(Duration::from_millis(10));
         };
         if !process_group_settled(process_group) {
-            return Err(io::Error::other("fixed child process group remains live"));
+            return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                child,
+                process_group,
+                fail_settlement_once: false,
+            }));
         }
         Ok(ProcessOutput {
             status,
             timed_out,
-            stdout: read_bounded(&stdout_path)?,
-            stderr: read_bounded(&stderr_path)?,
+            stdout: read_bounded(&stdout_path).map_err(SupervisionFailure::Settled)?,
+            stderr: read_bounded(&stderr_path).map_err(SupervisionFailure::Settled)?,
         })
     }
 
@@ -1207,6 +1526,27 @@ mod macos {
     }
 
     #[test]
+    fn mid_revalidation_substitution_exposes_unbound_destination_observations() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut authority = DestinationAuthority::valid().expect("acquire fixture authority");
+        let outcome = authority.execute(Fault::ReplaceDestinationDuringRevalidation);
+
+        assert_eq!(outcome.primary_boundary, FailureBoundary::Signature);
+        assert!(outcome.destination_revalidation_completed);
+        assert!(!outcome.destination_binding_proven);
+        assert!(outcome.gates.bundle_id);
+        assert!(outcome.gates.version);
+        assert!(outcome.gates.universal_architectures);
+        assert!(!outcome.gates.signature_integrity);
+        assert!(!outcome.gates.all_required());
+        assert!(!outcome.mount_residue);
+        assert!(!outcome.temporary_residue);
+        assert_non_claims(&outcome);
+    }
+
+    #[test]
     fn mount_and_copy_timeouts_settle_and_leave_zero_residue() {
         let _guard = TEST_LOCK
             .lock()
@@ -1239,6 +1579,60 @@ mod macos {
         authority.retry_cleanup().expect("retry retained cleanup");
         assert!(!authority.root.as_ref().is_some_and(|root| root.exists()));
         assert!(!mount_is_active(&authority.mount_point));
+    }
+
+    #[test]
+    fn post_spawn_settlement_failure_retains_authority_until_retry_succeeds() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut authority = DestinationAuthority::valid().expect("acquire fixture authority");
+        let outcome = authority.execute(Fault::SupervisionSettlementFailure);
+
+        assert_eq!(outcome.disposition, Disposition::RetainedProcessUnsettled);
+        assert_eq!(outcome.primary_boundary, FailureBoundary::Supervision);
+        assert_eq!(
+            outcome.retained_boundary,
+            Some(FailureBoundary::Supervision)
+        );
+        assert!(outcome.process_started);
+        assert!(!outcome.process_settled);
+        assert!(outcome.temporary_residue);
+        assert_non_claims(&outcome);
+
+        assert!(authority.retry_cleanup().is_err());
+        assert!(authority.unsettled_process.is_some());
+        assert!(authority.root.as_ref().is_some_and(|root| root.exists()));
+
+        authority
+            .retry_cleanup()
+            .expect("second retry settles and cleans retained authority");
+        assert!(authority.unsettled_process.is_none());
+        assert!(!authority.root.as_ref().is_some_and(|root| root.exists()));
+        assert!(!mount_is_active(&authority.mount_point));
+    }
+
+    #[test]
+    fn drop_transfers_unsettled_authority_to_recoverable_retention() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recover_retained().expect("start without retained fixture authority");
+        assert_eq!(retained_recovery_count(), 0);
+
+        let root = {
+            let mut authority = DestinationAuthority::valid().expect("acquire fixture authority");
+            let root = authority.root.clone().expect("authority root");
+            let outcome = authority.execute(Fault::SupervisionSettlementFailure);
+            assert_eq!(outcome.disposition, Disposition::RetainedProcessUnsettled);
+            root
+        };
+
+        assert_eq!(retained_recovery_count(), 1);
+        assert!(root.exists());
+        recover_retained().expect("recover transferred fixture authority");
+        assert_eq!(retained_recovery_count(), 0);
+        assert!(!root.exists());
     }
 
     #[test]

@@ -44,6 +44,7 @@ const CONSUMED_DESTINATION_REVALIDATION = deepFreeze({
     "contained_app_notarization",
     "contained_app_staple",
   ],
+  source_fixture_can_prove_destination_binding: false,
   source_fixture_can_mint_proof: false,
 });
 
