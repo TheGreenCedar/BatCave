@@ -595,8 +595,47 @@ test("closed macOS source binding is verified-identity-bound and cannot mint pro
       () => requireMacosNativeAdapterSourceReceipt({ ...sourceReceipt }, plan, artifactReceipt),
       /process-local closed macOS source adapter/u,
     );
+    const secondCapability = await acquireNativeArtifactCapability(plan, { verified_root: root });
+    const secondArtifactReceipt = await verifyOwnedNativeArtifactCapability(secondCapability);
+    assert.throws(
+      () => requireMacosNativeAdapterSourceReceipt(sourceReceipt, plan, secondArtifactReceipt),
+      /exact process-local plan and artifact verification receipt identities/u,
+    );
+    await closeNativeArtifactCapability(secondCapability);
     await closeNativeArtifactCapability(capability);
   }
+});
+
+test("macOS source receipts cannot replay across an equivalent process-local plan", async () => {
+  const firstPlan = createInstallSmokePlan(macosPlanInput("dmg"));
+  const secondPlan = createInstallSmokePlan(macosPlanInput("dmg"));
+  assert.equal(firstPlan.plan_id, secondPlan.plan_id);
+  assert.deepEqual(firstPlan.asset, secondPlan.asset);
+  assert.notEqual(firstPlan.identity_receipt, secondPlan.identity_receipt);
+
+  const firstRoot = await verifiedRootFor(firstPlan);
+  const secondRoot = await verifiedRootFor(secondPlan);
+  const firstCapability = await acquireNativeArtifactCapability(firstPlan, {
+    verified_root: firstRoot,
+  });
+  const secondCapability = await acquireNativeArtifactCapability(secondPlan, {
+    verified_root: secondRoot,
+  });
+  const firstArtifactReceipt = await verifyOwnedNativeArtifactCapability(firstCapability);
+  const secondArtifactReceipt = await verifyOwnedNativeArtifactCapability(secondCapability);
+  const sourceReceipt = bindMacosNativeAdapterSource(firstPlan, firstArtifactReceipt);
+
+  assert.throws(
+    () =>
+      requireMacosNativeAdapterSourceReceipt(
+        sourceReceipt,
+        secondPlan,
+        secondArtifactReceipt,
+      ),
+    /exact process-local plan and artifact verification receipt identities/u,
+  );
+  await closeNativeArtifactCapability(secondCapability);
+  await closeNativeArtifactCapability(firstCapability);
 });
 
 test("macOS source execution stays skipped and preserves updater staging-only", async () => {

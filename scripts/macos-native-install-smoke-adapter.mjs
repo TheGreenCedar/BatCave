@@ -7,7 +7,7 @@ import {
 export const MACOS_NATIVE_ADAPTER_SOURCE_SCHEMA_VERSION = 1;
 
 const { exactKeys, fail, platformContract } = installSmokeContractInternals;
-const sourceReceipts = new WeakSet();
+const sourceReceipts = new WeakMap();
 
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
@@ -149,7 +149,11 @@ export function bindMacosNativeAdapterSource(
       release_evidence_emitted: false,
     },
   });
-  sourceReceipts.add(receipt);
+  sourceReceipts.set(receipt, {
+    plan,
+    planIdentityReceipt: plan.identity_receipt,
+    artifactVerificationReceipt,
+  });
   return receipt;
 }
 
@@ -163,10 +167,24 @@ export function requireMacosNativeAdapterSourceReceipt(
     artifactVerificationReceipt,
     plan,
   );
-  if (!receipt || typeof receipt !== "object" || !sourceReceipts.has(receipt)) {
+  const state =
+    receipt && typeof receipt === "object"
+      ? sourceReceipts.get(receipt)
+      : undefined;
+  if (!state) {
     fail(
       "macos_adapter.source_receipt",
       "must come from the process-local closed macOS source adapter",
+    );
+  }
+  if (
+    state.plan !== plan ||
+    state.planIdentityReceipt !== plan.identity_receipt ||
+    state.artifactVerificationReceipt !== artifactVerificationReceipt
+  ) {
+    fail(
+      "macos_adapter.source_receipt",
+      "must retain the exact process-local plan and artifact verification receipt identities",
     );
   }
   exactKeys(receipt, "macos_adapter.source_receipt", [

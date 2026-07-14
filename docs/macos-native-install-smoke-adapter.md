@@ -2,7 +2,7 @@
 
 Issue #117 defines the source-only handoff between the #111 artifact capability and the exact native macOS work that remains in #114. It adds no package execution path.
 
-`scripts/macos-native-install-smoke-adapter.mjs` accepts only a process-local install-smoke plan and the historical `artifact_owned_bytes_verified` receipt produced by #111. It derives one frozen descriptor for `macos:dmg` or `macos:macos_updater`; callers cannot provide a command, path, status, trust observation, cleanup assertion, or evidence field.
+`scripts/macos-native-install-smoke-adapter.mjs` accepts only a process-local install-smoke plan and the historical `artifact_owned_bytes_verified` receipt produced by #111. It derives one frozen descriptor for `macos:dmg` or `macos:macos_updater`; callers cannot provide a command, path, status, trust observation, cleanup assertion, or evidence field. A private `WeakMap` binds that descriptor to the exact plan object, its exact identity receipt, and the exact #111 receipt object. An equivalent plan, a second valid receipt for the same asset, or a copied descriptor cannot replay it.
 
 The descriptor records the closed profile, fixed future tool identifiers, future resource ownership, plan timeouts, exact selected asset identity, and mandatory limitations. Tool identifiers are design constraints only. This slice does not invoke `hdiutil`, the archive extractor, `codesign`, `spctl`, `stapler`, `lipo`, `PlistBuddy`, `ditto`, or an application process.
 
@@ -36,7 +36,7 @@ Run the source contract with:
 node --test scripts/native-install-smoke-executor.test.mjs
 ```
 
-That suite creates process-local plans and #111 capabilities, rejects injected adapter arguments and forged receipts, checks the two distinct macOS profiles, and confirms every source result remains skipped with null native/evidence receipts. The existing validation and release workflows run the suite on Windows, Linux, and universal macOS.
+That suite creates process-local plans and #111 capabilities, rejects injected adapter arguments, copied descriptors, same-asset receipt substitution, and equivalent-plan replay, checks the two distinct macOS profiles, and confirms every source result remains skipped with null native/evidence receipts. The existing validation and release workflows run the suite on Windows, Linux, and universal macOS.
 
 Archive traversal, link, collision, size-budget, and replacement coverage remains in `scripts/test-macos-updater-archive.sh`. Those fixtures validate safe extraction code; they do not prove that the future native adapter consumed a selected public archive.
 
