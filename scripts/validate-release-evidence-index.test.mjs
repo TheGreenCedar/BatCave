@@ -27,6 +27,7 @@ const INDEX_FIXTURE = path.join(
   "fixtures",
   "release-evidence-index.v1.json",
 );
+const INDEX_TEST_SCRIPT = "scripts/validate-release-evidence-index.test.mjs";
 const REAL_HOSTS = {
   "debian-12-x86_64-glibc": "debian-12",
   "macos-12-universal": "macos-12.0",
@@ -58,6 +59,46 @@ function fileDigest(file) {
 
 function absolute(root, relative) {
   return path.join(root, ...relative.split("/"));
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function workflowJob(source, id) {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => line === `  ${id}:`);
+  assert.notEqual(start, -1, `workflow must define the ${id} job`);
+  let end = lines.findIndex((line, index) => index > start && /^  [a-z0-9_-]+:$/u.test(line));
+  if (end === -1) end = lines.length;
+  return lines.slice(start, end).join("\n");
+}
+
+function activeIndexTestPattern({ capture = false } = {}) {
+  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${escapeRegex(INDEX_TEST_SCRIPT)}[^#\\n]*`;
+  return new RegExp(capture ? `^([ \\t]*)(${command})$` : `^[ \\t]*${command}$`, "mu");
+}
+
+function assertActiveIndexTest(job, label) {
+  assert.match(
+    job,
+    activeIndexTestPattern(),
+    `${label} must actively run node --test ${INDEX_TEST_SCRIPT}`,
+  );
+}
+
+function assertWorkflowIndexCoverage(releaseWorkflow, validationWorkflow) {
+  assertActiveIndexTest(workflowJob(releaseWorkflow, "prepare"), "release prepare");
+  for (const lane of ["windows", "linux", "macos"]) {
+    assertActiveIndexTest(workflowJob(validationWorkflow, lane), `validation ${lane}`);
+  }
+}
+
+function commentActiveIndexTest(source, jobId) {
+  const job = workflowJob(source, jobId);
+  const commentedJob = job.replace(activeIndexTestPattern({ capture: true }), "$1# $2");
+  assert.notEqual(commentedJob, job, `${jobId} must contain an active index test command`);
+  return source.replace(job, commentedJob);
 }
 
 function copyFixtureRepository() {
@@ -468,24 +509,30 @@ test("release and every validation lane run the index contract tests", () => {
     path.join(ROOT, ".github", "workflows", "validation.yml"),
     "utf8",
   );
-  assert.equal(
-    releaseWorkflow.match(/scripts\/validate-release-evidence-index\.test\.mjs/gu)?.length,
-    1,
+  assertWorkflowIndexCoverage(releaseWorkflow, validationWorkflow);
+});
+
+test("workflow coverage rejects commented-out index test commands", () => {
+  const releaseWorkflow = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "release.yml"),
+    "utf8",
   );
-  assert.equal(
-    validationWorkflow.match(/scripts\/validate-release-evidence-index\.test\.mjs/gu)?.length,
-    3,
+  const validationWorkflow = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "validation.yml"),
+    "utf8",
   );
-  const validationLanes = [
-    ["windows", "linux"],
-    ["linux", "macos"],
-    ["macos", undefined],
+  const mutations = [
+    ["release prepare", commentActiveIndexTest(releaseWorkflow, "prepare"), validationWorkflow],
+    ...["windows", "linux", "macos"].map((lane) => [
+      `validation ${lane}`,
+      releaseWorkflow,
+      commentActiveIndexTest(validationWorkflow, lane),
+    ]),
   ];
-  for (const [lane, nextLane] of validationLanes) {
-    const start = validationWorkflow.indexOf(`\n  ${lane}:\n`);
-    assert.notEqual(start, -1, `${lane} validation lane is present`);
-    const end = nextLane ? validationWorkflow.indexOf(`\n  ${nextLane}:\n`, start) : undefined;
-    const job = validationWorkflow.slice(start, end);
-    assert.match(job, /scripts\/validate-release-evidence-index\.test\.mjs/u, `${lane} lane`);
+  for (const [label, mutatedRelease, mutatedValidation] of mutations) {
+    assert.throws(
+      () => assertWorkflowIndexCoverage(mutatedRelease, mutatedValidation),
+      new RegExp(`${escapeRegex(label)} must actively run`, "u"),
+    );
   }
 });
