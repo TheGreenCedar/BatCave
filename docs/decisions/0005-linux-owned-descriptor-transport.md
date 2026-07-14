@@ -21,7 +21,8 @@ There is no temporary-file fallback. If `memfd_create`, sealing, read-only reope
 4. Rust reopens the memory file through its private `/proc/self/fd/N` view as `O_RDONLY`, confirms device/inode identity, access mode, and seals, then drops the writable descriptor.
 5. The fixed child receives the read-only object at a fixed inherited descriptor. No caller supplies a descriptor, path, executable, arguments, environment, callback, command runner, status, or completion.
 6. Rust owns a new process group, acts as a child subreaper, enforces the deadline, detects surviving descendants, terminates the group, reaps adopted children, and checks that the group has disappeared.
-7. Rust closes the descriptor only after settlement. An unresolved group retains ownership; a simulated cleanup failure retains the descriptor until an explicit retry.
+7. A supervisor error before spawn is a consumption failure with no process ownership. Any error after spawn carries the child and process-group state back into the authority as unresolved ownership.
+8. Rust closes the descriptor only after settlement. An unresolved group retains the child handle, process-group identity, subreaper guard, and descriptor until settlement succeeds; a simulated cleanup failure retains the descriptor until an explicit retry.
 
 The sanitized outcome contains the selected internal transport, failure boundaries, observed synthetic size and digest, settlement, cleanup, and residue state. It contains no descriptor, private path, generic command surface, native receipt, or evidence packet.
 
@@ -46,6 +47,7 @@ The integration test covers the failure boundary that can be established without
 - replay and close-before-use fail before launch;
 - timeout terminates and reaps the owned group before cleanup;
 - a parent that exits while a descendant survives is classified as settlement failure, then terminated and reaped;
+- a supervisor failure after spawn retains group and descriptor ownership, rejects early close, and requires a successful terminate/reap retry;
 - cleanup failure retains the descriptor until retry;
 - linked roots and mismatched source bytes fail acquisition; and
 - non-Linux hosts report the transport as unsupported without a weaker fallback.

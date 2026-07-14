@@ -95,6 +95,7 @@ mod linux {
         None,
         SubstituteDescriptor,
         CleanupFailsOnce,
+        SupervisorFailsAfterSpawn,
     }
 
     pub(super) struct ClosedPlan {
@@ -145,6 +146,14 @@ mod linux {
     pub(super) fn cleanup_failure_plan() -> ClosedPlan {
         ClosedPlan {
             fault: TestFault::CleanupFailsOnce,
+            ..closed_plan(Transport::InheritedReadOnlyDescriptor)
+        }
+    }
+
+    pub(super) fn supervisor_failure_plan() -> ClosedPlan {
+        ClosedPlan {
+            behavior: ConsumerBehavior::SleepPastTimeout,
+            fault: TestFault::SupervisorFailsAfterSpawn,
             ..closed_plan(Transport::InheritedReadOnlyDescriptor)
         }
     }
@@ -248,6 +257,8 @@ mod linux {
         phase: Phase,
         seal: Arc<CompletionSeal>,
         cleanup_fails_once: bool,
+        unsettled: Option<UnsettledProcessGroup>,
+        retained_subreaper: Option<SubreaperGuard>,
     }
 
     pub(super) fn acquire(plan: ClosedPlan, verified_root: &Path) -> Result<Authority, SpikeError> {
@@ -292,6 +303,8 @@ mod linux {
             owned: Some(owned),
             phase: Phase::Acquired,
             seal: Arc::new(CompletionSeal),
+            unsettled: None,
+            retained_subreaper: None,
         })
     }
 
@@ -305,7 +318,7 @@ mod linux {
             }
             self.phase = Phase::Consuming;
 
-            let _subreaper = match SubreaperGuard::enable() {
+            let subreaper = match SubreaperGuard::enable() {
                 Ok(guard) => guard,
                 Err(error) => {
                     self.owned.take();
@@ -336,8 +349,12 @@ mod linux {
                 None
             };
             let launch_descriptor = decoy.as_ref().unwrap_or(descriptor).descriptor.as_raw_fd();
-            let launched =
-                launch_fixed_consumer(launch_descriptor, self.plan.behavior, self.plan.timeout);
+            let launched = launch_fixed_consumer(
+                launch_descriptor,
+                self.plan.behavior,
+                self.plan.timeout,
+                matches!(self.plan.fault, TestFault::SupervisorFailsAfterSpawn),
+            );
 
             let mut failures = Vec::new();
             let mut observed = None;
@@ -345,7 +362,7 @@ mod linux {
             let group_settled;
 
             match launched {
-                Ok(result) => {
+                Ok(mut result) => {
                     group_settled = result.group_settled;
                     if result.timed_out {
                         failures.push(FailureBoundary::Timeout);
@@ -364,14 +381,17 @@ mod linux {
                     if !result.group_settled && !failures.contains(&FailureBoundary::Settlement) {
                         failures.push(FailureBoundary::Settlement);
                     }
+                    self.unsettled = result.unsettled.take();
                 }
-                Err(_) => {
-                    failures.push(FailureBoundary::Consumption);
-                    group_settled = true;
+                Err(mut error) => {
+                    group_settled = error.unsettled.is_none();
+                    failures.append(&mut error.failures);
+                    self.unsettled = error.unsettled.take();
                 }
             }
 
             if !group_settled {
+                self.retained_subreaper = Some(subreaper);
                 self.phase = Phase::RetainedUnsettled;
             } else if self.cleanup_fails_once {
                 self.cleanup_fails_once = false;
@@ -429,12 +449,52 @@ mod linux {
             }
         }
 
+        pub(super) fn settle_retained(&mut self) -> Result<(), SpikeError> {
+            if self.phase != Phase::RetainedUnsettled {
+                return Err(SpikeError {
+                    boundary: FailureBoundary::Authority,
+                    message: "authority has no retained process ownership",
+                });
+            }
+            let unsettled = self
+                .unsettled
+                .as_mut()
+                .expect("retained phase owns the unresolved process group");
+            terminate_process_group(unsettled.process_group, &mut unsettled.child).map_err(
+                |_| SpikeError {
+                    boundary: FailureBoundary::Settlement,
+                    message: "retained process group termination failed",
+                },
+            )?;
+            let settled = settle_process_group(unsettled.process_group, &mut unsettled.child)
+                .map_err(|_| SpikeError {
+                    boundary: FailureBoundary::Settlement,
+                    message: "retained process group settlement failed",
+                })?;
+            if !settled {
+                return Err(SpikeError {
+                    boundary: FailureBoundary::Settlement,
+                    message: "retained process group remains unsettled",
+                });
+            }
+
+            self.unsettled.take();
+            self.retained_subreaper.take();
+            self.owned.take();
+            self.phase = Phase::Closed;
+            Ok(())
+        }
+
         pub(super) fn accepts_completion(&self, completion: &Completion) -> bool {
             Arc::ptr_eq(&self.seal, &completion.seal)
         }
 
         pub(super) fn retains_descriptor(&self) -> bool {
             self.owned.is_some()
+        }
+
+        pub(super) fn retains_process_group(&self) -> bool {
+            self.unsettled.is_some() && self.retained_subreaper.is_some()
         }
     }
 
@@ -443,20 +503,59 @@ mod linux {
         timed_out: bool,
         unexpected_descendant: bool,
         group_settled: bool,
+        unsettled: Option<UnsettledProcessGroup>,
+    }
+
+    struct LaunchFailure {
+        failures: Vec<FailureBoundary>,
+        unsettled: Option<UnsettledProcessGroup>,
+    }
+
+    struct UnsettledProcessGroup {
+        child: Child,
+        process_group: libc::pid_t,
+    }
+
+    impl LaunchFailure {
+        fn before_spawn() -> Self {
+            Self {
+                failures: vec![FailureBoundary::Consumption],
+                unsettled: None,
+            }
+        }
+
+        fn after_spawn(
+            mut failures: Vec<FailureBoundary>,
+            child: Child,
+            process_group: libc::pid_t,
+        ) -> Self {
+            if !failures.contains(&FailureBoundary::Settlement) {
+                failures.push(FailureBoundary::Settlement);
+            }
+            Self {
+                failures,
+                unsettled: Some(UnsettledProcessGroup {
+                    child,
+                    process_group,
+                }),
+            }
+        }
     }
 
     fn launch_fixed_consumer(
         descriptor: RawFd,
         behavior: ConsumerBehavior,
         timeout: Duration,
-    ) -> std::io::Result<LaunchResult> {
+        fail_supervisor_after_spawn: bool,
+    ) -> Result<LaunchResult, LaunchFailure> {
         let test_name = match behavior {
             ConsumerBehavior::ReadDirect => "linux::fixed_direct_consumer_entry",
             ConsumerBehavior::ReadThroughProcFd => "linux::fixed_proc_fd_consumer_entry",
             ConsumerBehavior::SleepPastTimeout => "linux::fixed_timeout_consumer_entry",
             ConsumerBehavior::SpawnSurvivingDescendant => "linux::fixed_descendant_spawner_entry",
         };
-        let mut command = Command::new(std::env::current_exe()?);
+        let executable = std::env::current_exe().map_err(|_| LaunchFailure::before_spawn())?;
+        let mut command = Command::new(executable);
         command
             .arg("--exact")
             .arg(test_name)
@@ -484,24 +583,62 @@ mod linux {
             });
         }
 
-        let mut child = command.spawn()?;
+        let mut child = command.spawn().map_err(|_| LaunchFailure::before_spawn())?;
         let process_group = child.id() as libc::pid_t;
-        let status = wait_for_child(&mut child, timeout)?;
+        if fail_supervisor_after_spawn {
+            return Err(LaunchFailure::after_spawn(Vec::new(), child, process_group));
+        }
+
+        let status = match wait_for_child(&mut child, timeout) {
+            Ok(status) => status,
+            Err(_) => {
+                return Err(LaunchFailure::after_spawn(Vec::new(), child, process_group));
+            }
+        };
         let timed_out = status.is_none();
         let unexpected_descendant = status.is_some() && process_group_exists(process_group);
-
-        if timed_out
-            || unexpected_descendant
-            || status.as_ref().is_some_and(|value| !value.success())
-        {
-            terminate_process_group(process_group, &mut child)?;
+        let mut observed_failures = Vec::new();
+        if timed_out {
+            observed_failures.push(FailureBoundary::Timeout);
+        } else if unexpected_descendant {
+            observed_failures.push(FailureBoundary::Settlement);
+        } else if status.as_ref().is_some_and(|value| !value.success()) {
+            observed_failures.push(FailureBoundary::Consumption);
         }
-        let group_settled = settle_process_group(process_group, &mut child)?;
+
+        if !observed_failures.is_empty() {
+            if terminate_process_group(process_group, &mut child).is_err() {
+                return Err(LaunchFailure::after_spawn(
+                    observed_failures,
+                    child,
+                    process_group,
+                ));
+            }
+        }
+        let group_settled = match settle_process_group(process_group, &mut child) {
+            Ok(settled) => settled,
+            Err(_) => {
+                return Err(LaunchFailure::after_spawn(
+                    observed_failures,
+                    child,
+                    process_group,
+                ));
+            }
+        };
+        let unsettled = if group_settled {
+            None
+        } else {
+            Some(UnsettledProcessGroup {
+                child,
+                process_group,
+            })
+        };
         Ok(LaunchResult {
             status,
             timed_out,
             unexpected_descendant,
             group_settled,
+            unsettled,
         })
     }
 
@@ -975,6 +1112,38 @@ mod linux_tests {
         assert!(authority.retains_descriptor());
         authority.close().expect("retry cleanup");
         assert!(!authority.retains_descriptor());
+        remove_root(&root);
+    }
+
+    #[test]
+    fn post_spawn_supervisor_failure_retains_group_and_descriptor_until_settlement_retry() {
+        let _guard = serial_test_guard();
+        let root = scratch_root("supervisor-failure", FIXED_PAYLOAD);
+        let mut authority = acquire(supervisor_failure_plan(), &root).expect("acquire transport");
+        let completion = authority
+            .consume()
+            .expect("derive unresolved supervisor outcome");
+        let outcome = completion.outcome();
+        assert_eq!(outcome.disposition(), Disposition::Failed);
+        assert_eq!(outcome.failures(), &[FailureBoundary::Settlement]);
+        assert!(!outcome.group_settled());
+        assert!(!outcome.cleanup_completed());
+        assert!(!outcome.residue_absent());
+        assert!(!outcome.fixed_consumer_completed());
+        assert!(!outcome.claims_proof());
+        assert!(authority.retains_descriptor());
+        assert!(authority.retains_process_group());
+
+        let close_error = authority.close().err().expect("early close fails");
+        assert_eq!(close_error.boundary(), FailureBoundary::Settlement);
+        assert!(authority.retains_descriptor());
+        assert!(authority.retains_process_group());
+
+        authority
+            .settle_retained()
+            .expect("terminate, reap, and close retained ownership");
+        assert!(!authority.retains_descriptor());
+        assert!(!authority.retains_process_group());
         remove_root(&root);
     }
 
