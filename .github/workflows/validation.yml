@@ -100,7 +100,7 @@ jobs:
 
   linux:
     name: Linux validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Preserve repository line endings
         run: git config --global core.autocrlf false

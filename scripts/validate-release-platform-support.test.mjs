@@ -93,6 +93,10 @@ function assertActiveLine(source, command, message) {
 
 function linuxSourceFiles() {
   return {
+    validationWorkflow: fs.readFileSync(
+      path.join(ROOT, ".github", "workflows", "validation.yml"),
+      "utf8",
+    ),
     bundlesWorkflow: fs.readFileSync(
       path.join(ROOT, ".github", "workflows", "bundles.yml"),
       "utf8",
@@ -114,9 +118,11 @@ function linuxSourceFiles() {
 
 function assertLinuxSourceEnforcementMatchesContract(sources) {
   const source = RELEASE_PLATFORM_SUPPORT_CONTRACT.linux_source_enforcement;
+  const validationJob = workflowJob(sources.validationWorkflow, "linux");
   const bundleJob = workflowJob(sources.bundlesWorkflow, "linux");
   const releaseJob = workflowJob(sources.releaseWorkflow, "linux");
   const runner = new RegExp(`^    runs-on: ${escapeRegex(source.hosted_runner)}$`, "mu");
+  assert.match(validationJob, runner, "validation Linux runner must match the machine contract");
   assert.match(bundleJob, runner, "bundle Linux runner must match the machine contract");
   assert.match(releaseJob, runner, "release Linux runner must match the machine contract");
   assertActiveLine(
@@ -424,6 +430,13 @@ test("rejects runner, ABI, package, and runtime drift from the integrated #123 s
   const sources = linuxSourceFiles();
   const source = RELEASE_PLATFORM_SUPPORT_CONTRACT.linux_source_enforcement;
   const mutations = [
+    {
+      ...sources,
+      validationWorkflow: sources.validationWorkflow.replace(
+        `runs-on: ${source.hosted_runner}`,
+        "runs-on: ubuntu-latest",
+      ),
+    },
     {
       ...sources,
       bundlesWorkflow: sources.bundlesWorkflow.replace(

@@ -24,21 +24,22 @@ fn package_transport_probe_is_explicitly_linux_only() {
 #[cfg(target_os = "linux")]
 mod linux {
     use sha2::{Digest, Sha256};
+    use std::collections::BTreeSet;
     use std::ffi::CString;
-    use std::fs::{self, File, OpenOptions};
+    use std::fs::{self, DirBuilder, File, OpenOptions};
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
     use std::os::unix::process::CommandExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, MutexGuard};
-    use std::thread;
     use std::time::{Duration, Instant};
 
     const CONSUMER_FD: RawFd = 198;
     const APPIMAGE_LAUNCHER_MODE: &str = "BATCAVE_APPIMAGE_TRANSPORT_LAUNCHER";
+    const HOSTILE_PROBE_MODE: &str = "BATCAVE_LINUX_PACKAGE_HOSTILE_PROBE";
     const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
     const MAX_OUTPUT_BYTES: usize = 4096;
     const STEP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -160,6 +161,7 @@ mod linux {
     struct PrivateRoot {
         path: PathBuf,
         removed: bool,
+        fail_cleanup_once: bool,
     }
 
     impl PrivateRoot {
@@ -169,21 +171,45 @@ mod linux {
                 "batcave-linux-package-transport-{}-{sequence}-{label}",
                 std::process::id()
             ));
-            fs::create_dir(&path)
+            let mut builder = DirBuilder::new();
+            builder.mode(0o700);
+            builder
+                .create(&path)
                 .map_err(|error| format!("private root creation failed: {error}"))?;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                .map_err(|error| format!("private root permissions failed: {error}"))?;
             Ok(Self {
                 path,
                 removed: false,
+                fail_cleanup_once: false,
             })
         }
 
-        fn remove(mut self) -> Result<PathBuf, String> {
+        fn cleanup(&mut self) -> Result<(), String> {
+            if self.fail_cleanup_once {
+                self.fail_cleanup_once = false;
+                return Err("private root cleanup failed: injected cleanup failure".to_string());
+            }
             fs::remove_dir_all(&self.path)
                 .map_err(|error| format!("private root cleanup failed: {error}"))?;
             self.removed = true;
-            Ok(self.path.clone())
+            Ok(())
+        }
+
+        fn finish<T>(mut self, operation: Result<T, String>) -> Result<T, String> {
+            let cleanup = match self.cleanup() {
+                Ok(()) => Ok(()),
+                Err(first) => match self.cleanup() {
+                    Ok(()) => Err(format!("{first}; explicit cleanup retry removed residue")),
+                    Err(retry) => Err(format!("{first}; cleanup retry also failed: {retry}")),
+                },
+            };
+            match (operation, cleanup) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Err(operation), Ok(())) => Err(operation),
+                (Ok(_), Err(cleanup)) => Err(format!("cleanup boundary: {cleanup}")),
+                (Err(operation), Err(cleanup)) => {
+                    Err(format!("{operation}; cleanup boundary: {cleanup}"))
+                }
+            }
         }
     }
 
@@ -195,17 +221,139 @@ mod linux {
         }
     }
 
+    #[derive(Debug)]
     struct BoundedOutput {
         bytes: Vec<u8>,
         overflowed: bool,
     }
 
+    struct OutputPipe<R> {
+        reader: R,
+        output: BoundedOutput,
+        eof: bool,
+    }
+
+    impl<R: Read + AsRawFd> OutputPipe<R> {
+        fn new(reader: R) -> Result<Self, String> {
+            let descriptor = reader.as_raw_fd();
+            let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+            if flags < 0
+                || unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(format!(
+                    "package output nonblocking setup failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            Ok(Self {
+                reader,
+                output: BoundedOutput {
+                    bytes: Vec::with_capacity(MAX_OUTPUT_BYTES),
+                    overflowed: false,
+                },
+                eof: false,
+            })
+        }
+
+        fn drain(&mut self) -> Result<(), String> {
+            if self.eof {
+                return Ok(());
+            }
+            let mut buffer = [0_u8; 1024];
+            loop {
+                match self.reader.read(&mut buffer) {
+                    Ok(0) => {
+                        self.eof = true;
+                        return Ok(());
+                    }
+                    Ok(read) => {
+                        let remaining = MAX_OUTPUT_BYTES.saturating_sub(self.output.bytes.len());
+                        let retained = remaining.min(read);
+                        self.output.bytes.extend_from_slice(&buffer[..retained]);
+                        self.output.overflowed |= retained < read;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                    Err(error) => return Err(format!("package output read failed: {error}")),
+                }
+            }
+        }
+    }
+
     struct ProbeProcess {
         child: Child,
         process_group: libc::pid_t,
-        stdout: Option<thread::JoinHandle<std::io::Result<BoundedOutput>>>,
-        stderr: Option<thread::JoinHandle<std::io::Result<BoundedOutput>>>,
+        stdout: OutputPipe<ChildStdout>,
+        stderr: OutputPipe<ChildStderr>,
+        baseline_children: BTreeSet<libc::pid_t>,
         settled: bool,
+    }
+
+    impl ProbeProcess {
+        fn drain_output(&mut self) -> Result<(), String> {
+            self.stdout.drain()?;
+            self.stderr.drain()?;
+            Ok(())
+        }
+
+        fn output_settled(&self) -> bool {
+            self.stdout.eof && self.stderr.eof
+        }
+
+        fn cleanup(&mut self) -> Result<(), String> {
+            let deadline = Instant::now() + TERMINATION_GRACE + SETTLEMENT_TIMEOUT;
+            let original_child = self.child.id() as libc::pid_t;
+            let mut failures = Vec::new();
+            if let Err(error) =
+                terminate_process_group(self.process_group, &mut self.child, deadline)
+            {
+                failures.push(error);
+            }
+            if let Err(error) =
+                terminate_adopted_descendants(&self.baseline_children, original_child, deadline)
+            {
+                failures.push(error);
+            }
+            let group_settled = match settle_process_group(
+                self.process_group,
+                &mut self.child,
+                &mut self.stdout,
+                &mut self.stderr,
+                deadline,
+            ) {
+                Ok(settled) => settled,
+                Err(error) => {
+                    failures.push(error);
+                    false
+                }
+            };
+            let descendants_settled =
+                match settle_adopted_descendants(&self.baseline_children, original_child, deadline)
+                {
+                    Ok(settled) => settled,
+                    Err(error) => {
+                        failures.push(error);
+                        false
+                    }
+                };
+            let output_settled = match drain_output_until(self, deadline) {
+                Ok(settled) => settled,
+                Err(error) => {
+                    failures.push(error);
+                    false
+                }
+            };
+            self.settled = group_settled && descendants_settled && output_settled;
+            if self.settled && failures.is_empty() {
+                Ok(())
+            } else {
+                if !self.settled {
+                    failures.push(
+                        "package process cleanup did not settle all owned resources".to_string(),
+                    );
+                }
+                Err(failures.join("; "))
+            }
+        }
     }
 
     impl Drop for ProbeProcess {
@@ -213,9 +361,7 @@ mod linux {
             if self.settled {
                 return;
             }
-            let _ = terminate_process_group(self.process_group, &mut self.child);
-            self.settled =
-                settle_process_group(self.process_group, &mut self.child).unwrap_or(false);
+            let _ = self.cleanup();
         }
     }
 
@@ -466,6 +612,7 @@ mod linux {
                 Ok(())
             });
         }
+        let baseline_children = direct_children()?;
         let mut child = command
             .spawn()
             .map_err(|error| format!("fixed package probe spawn failed: {error}"))?;
@@ -478,11 +625,77 @@ mod linux {
             .stderr
             .take()
             .expect("piped package probe stderr is present after spawn");
+        let stdout = match OutputPipe::new(stdout) {
+            Ok(stdout) => stdout,
+            Err(error) => {
+                let deadline = Instant::now() + TERMINATION_GRACE + SETTLEMENT_TIMEOUT;
+                let cleanup = terminate_process_group(process_group, &mut child, deadline);
+                return Err(combine_operation_cleanup(error, cleanup));
+            }
+        };
+        let stderr = match OutputPipe::new(stderr) {
+            Ok(stderr) => stderr,
+            Err(error) => {
+                let deadline = Instant::now() + TERMINATION_GRACE + SETTLEMENT_TIMEOUT;
+                let cleanup = terminate_process_group(process_group, &mut child, deadline);
+                return Err(combine_operation_cleanup(error, cleanup));
+            }
+        };
         Ok(ProbeProcess {
             child,
             process_group,
-            stdout: Some(thread::spawn(move || read_bounded(stdout))),
-            stderr: Some(thread::spawn(move || read_bounded(stderr))),
+            stdout,
+            stderr,
+            baseline_children,
+            settled: false,
+        })
+    }
+
+    fn spawn_hostile_probe(test_name: &str, mode: &str) -> Result<ProbeProcess, String> {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("test executable lookup failed: {error}"))?;
+        let mut command = Command::new(executable);
+        command
+            .arg("--exact")
+            .arg(test_name)
+            .arg("--nocapture")
+            .env_clear()
+            .env(HOSTILE_PROBE_MODE, mode)
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let baseline_children = direct_children()?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("hostile package probe spawn failed: {error}"))?;
+        let process_group = child.id() as libc::pid_t;
+        let stdout = child
+            .stdout
+            .take()
+            .expect("hostile package probe owns stdout");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("hostile package probe owns stderr");
+        let stdout = OutputPipe::new(stdout)?;
+        let stderr = OutputPipe::new(stderr)?;
+        Ok(ProbeProcess {
+            child,
+            process_group,
+            stdout,
+            stderr,
+            baseline_children,
             settled: false,
         })
     }
@@ -493,46 +706,15 @@ mod linux {
         private_root: &Path,
     ) -> Result<TransportOutcome, String> {
         let _subreaper = SubreaperGuard::enable()?;
-        let mut process = spawn_probe(artifact, probe, private_root)?;
-        let status = match wait_for_child(&mut process.child, STEP_TIMEOUT)? {
-            Some(status) => status,
-            None => {
-                terminate_process_group(process.process_group, &mut process.child)?;
-                process.settled = settle_process_group(process.process_group, &mut process.child)?;
-                if !process.settled {
-                    return Err("timed-out package process group did not settle".to_string());
-                }
-                return Err("fixed package probe timed out".to_string());
-            }
-        };
-
-        process.settled = settle_process_group(process.process_group, &mut process.child)?;
-        if !process.settled {
-            terminate_process_group(process.process_group, &mut process.child)?;
-            process.settled = settle_process_group(process.process_group, &mut process.child)?;
-        }
-
-        let stdout = process
-            .stdout
-            .take()
-            .expect("package probe owns its stdout reader")
-            .join()
-            .map_err(|_| "stdout reader panicked".to_string())?
-            .map_err(|error| format!("stdout read failed: {error}"))?;
-        let stderr = process
-            .stderr
-            .take()
-            .expect("package probe owns its stderr reader")
-            .join()
-            .map_err(|_| "stderr reader panicked".to_string())?
-            .map_err(|error| format!("stderr read failed: {error}"))?;
+        let process = spawn_probe(artifact, probe, private_root)?;
+        let supervised = supervise_process(process, STEP_TIMEOUT)?;
         artifact.validate()?;
         Ok(TransportOutcome {
-            status,
-            stdout: stdout.bytes,
-            stderr: stderr.bytes,
-            output_bounded: !stdout.overflowed && !stderr.overflowed,
-            process_group_settled: process.settled,
+            status: supervised.status,
+            stdout: supervised.stdout.bytes,
+            stderr: supervised.stderr.bytes,
+            output_bounded: !supervised.stdout.overflowed && !supervised.stderr.overflowed,
+            process_group_settled: true,
             source_kind: "locally_built_bundle",
             public_artifact_verified: false,
             native_proven: false,
@@ -540,27 +722,113 @@ mod linux {
         })
     }
 
-    fn read_bounded(mut reader: impl Read) -> std::io::Result<BoundedOutput> {
-        let mut bytes = Vec::with_capacity(MAX_OUTPUT_BYTES);
-        let mut overflowed = false;
-        let mut buffer = [0_u8; 1024];
-        loop {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            let remaining = MAX_OUTPUT_BYTES.saturating_sub(bytes.len());
-            let retained = remaining.min(read);
-            bytes.extend_from_slice(&buffer[..retained]);
-            overflowed |= retained < read;
-        }
-        Ok(BoundedOutput { bytes, overflowed })
+    #[derive(Debug)]
+    struct SupervisedOutput {
+        status: ExitStatus,
+        stdout: BoundedOutput,
+        stderr: BoundedOutput,
     }
 
-    fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<Option<ExitStatus>, String> {
+    fn supervise_process(
+        mut process: ProbeProcess,
+        timeout: Duration,
+    ) -> Result<SupervisedOutput, String> {
         let deadline = Instant::now() + timeout;
+        let status = match wait_for_child(&mut process, deadline) {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                let cleanup = process.cleanup();
+                return Err(combine_operation_cleanup(
+                    "fixed package probe timed out".to_string(),
+                    cleanup,
+                ));
+            }
+            Err(error) => {
+                let cleanup = process.cleanup();
+                return Err(combine_operation_cleanup(error, cleanup));
+            }
+        };
+
+        let adopted = match adopted_descendants(
+            &process.baseline_children,
+            process.child.id() as libc::pid_t,
+        ) {
+            Ok(adopted) => adopted,
+            Err(error) => {
+                let cleanup = process.cleanup();
+                return Err(combine_operation_cleanup(error, cleanup));
+            }
+        };
+        if process_group_exists(process.process_group) || !adopted.is_empty() {
+            let cleanup = process.cleanup();
+            return Err(combine_operation_cleanup(
+                "unexpected package descendant required forced settlement".to_string(),
+                cleanup,
+            ));
+        }
+
+        let group_settled = match settle_process_group(
+            process.process_group,
+            &mut process.child,
+            &mut process.stdout,
+            &mut process.stderr,
+            deadline,
+        ) {
+            Ok(settled) => settled,
+            Err(error) => {
+                let cleanup = process.cleanup();
+                return Err(combine_operation_cleanup(error, cleanup));
+            }
+        };
+        let descendants_settled = match settle_adopted_descendants(
+            &process.baseline_children,
+            process.child.id() as libc::pid_t,
+            deadline,
+        ) {
+            Ok(settled) => settled,
+            Err(error) => {
+                let cleanup = process.cleanup();
+                return Err(combine_operation_cleanup(error, cleanup));
+            }
+        };
+        let output_settled = match drain_output_until(&mut process, deadline) {
+            Ok(settled) => settled,
+            Err(error) => {
+                let cleanup = process.cleanup();
+                return Err(combine_operation_cleanup(error, cleanup));
+            }
+        };
+        if !group_settled || !descendants_settled || !output_settled {
+            let cleanup = process.cleanup();
+            return Err(combine_operation_cleanup(
+                "package output or process ownership did not settle before the probe deadline"
+                    .to_string(),
+                cleanup,
+            ));
+        }
+
+        process.settled = true;
+        Ok(SupervisedOutput {
+            status,
+            stdout: BoundedOutput {
+                bytes: std::mem::take(&mut process.stdout.output.bytes),
+                overflowed: process.stdout.output.overflowed,
+            },
+            stderr: BoundedOutput {
+                bytes: std::mem::take(&mut process.stderr.output.bytes),
+                overflowed: process.stderr.output.overflowed,
+            },
+        })
+    }
+
+    fn wait_for_child(
+        process: &mut ProbeProcess,
+        deadline: Instant,
+    ) -> Result<Option<ExitStatus>, String> {
         loop {
-            if let Some(status) = child
+            process.drain_output()?;
+            if let Some(status) = process
+                .child
                 .try_wait()
                 .map_err(|error| format!("package child wait failed: {error}"))?
             {
@@ -569,20 +837,41 @@ mod linux {
             if Instant::now() >= deadline {
                 return Ok(None);
             }
-            thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn drain_output_until(process: &mut ProbeProcess, deadline: Instant) -> Result<bool, String> {
+        loop {
+            process.drain_output()?;
+            if process.output_settled() {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn combine_operation_cleanup(operation: String, cleanup: Result<(), String>) -> String {
+        match cleanup {
+            Ok(()) => operation,
+            Err(cleanup) => format!("{operation}; cleanup boundary: {cleanup}"),
         }
     }
 
     fn terminate_process_group(
         process_group: libc::pid_t,
         child: &mut Child,
+        deadline: Instant,
     ) -> Result<(), String> {
         signal_process_group(process_group, libc::SIGTERM)?;
-        let deadline = Instant::now() + TERMINATION_GRACE;
-        while process_group_exists(process_group) && Instant::now() < deadline {
+        let term_deadline = (Instant::now() + TERMINATION_GRACE).min(deadline);
+        while process_group_exists(process_group) && Instant::now() < term_deadline {
             let _ = child.try_wait();
             reap_process_group(process_group)?;
-            thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         }
         if process_group_exists(process_group) {
             signal_process_group(process_group, libc::SIGKILL)?;
@@ -590,9 +879,16 @@ mod linux {
         Ok(())
     }
 
-    fn settle_process_group(process_group: libc::pid_t, child: &mut Child) -> Result<bool, String> {
-        let deadline = Instant::now() + SETTLEMENT_TIMEOUT;
+    fn settle_process_group(
+        process_group: libc::pid_t,
+        child: &mut Child,
+        stdout: &mut OutputPipe<ChildStdout>,
+        stderr: &mut OutputPipe<ChildStderr>,
+        deadline: Instant,
+    ) -> Result<bool, String> {
         loop {
+            stdout.drain()?;
+            stderr.drain()?;
             let _ = child
                 .try_wait()
                 .map_err(|error| format!("package child settlement failed: {error}"))?;
@@ -603,7 +899,7 @@ mod linux {
             if Instant::now() >= deadline {
                 return Ok(false);
             }
-            thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -643,6 +939,116 @@ mod linux {
                 return Ok(());
             }
             return Err(format!("process-group reap failed: {error}"));
+        }
+    }
+
+    fn direct_children() -> Result<BTreeSet<libc::pid_t>, String> {
+        let mut children = BTreeSet::new();
+        let task_root = Path::new("/proc/self/task");
+        let tasks = fs::read_dir(task_root)
+            .map_err(|error| format!("direct-child inventory failed: {error}"))?;
+        for task in tasks {
+            let task = task.map_err(|error| format!("direct-child inventory failed: {error}"))?;
+            let path = task.path().join("children");
+            let value = match fs::read_to_string(path) {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(format!("direct-child inventory failed: {error}"));
+                }
+            };
+            for value in value.split_whitespace() {
+                let pid = value
+                    .parse::<libc::pid_t>()
+                    .map_err(|_| "direct-child inventory was malformed".to_string())?;
+                children.insert(pid);
+            }
+        }
+        Ok(children)
+    }
+
+    fn adopted_descendants(
+        baseline: &BTreeSet<libc::pid_t>,
+        original_child: libc::pid_t,
+    ) -> Result<BTreeSet<libc::pid_t>, String> {
+        let mut children = direct_children()?;
+        children.remove(&original_child);
+        children.retain(|pid| !baseline.contains(pid));
+        Ok(children)
+    }
+
+    fn signal_process(process: libc::pid_t, signal: i32) -> Result<(), String> {
+        let result = unsafe { libc::kill(process, signal) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(format!("adopted-descendant signal failed: {error}"))
+        }
+    }
+
+    fn reap_adopted_descendants(
+        baseline: &BTreeSet<libc::pid_t>,
+        original_child: libc::pid_t,
+    ) -> Result<(), String> {
+        for pid in adopted_descendants(baseline, original_child)? {
+            let mut status = 0;
+            let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if result >= 0 {
+                continue;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ECHILD) {
+                return Err(format!("adopted-descendant reap failed: {error}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn terminate_adopted_descendants(
+        baseline: &BTreeSet<libc::pid_t>,
+        original_child: libc::pid_t,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let term_deadline = (Instant::now() + TERMINATION_GRACE).min(deadline);
+        loop {
+            reap_adopted_descendants(baseline, original_child)?;
+            let children = adopted_descendants(baseline, original_child)?;
+            if children.is_empty() {
+                return Ok(());
+            }
+            let signal = if Instant::now() < term_deadline {
+                libc::SIGTERM
+            } else {
+                libc::SIGKILL
+            };
+            for child in children {
+                signal_process(child, signal)?;
+            }
+            if Instant::now() >= deadline {
+                return Err("adopted package descendants did not settle".to_string());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn settle_adopted_descendants(
+        baseline: &BTreeSet<libc::pid_t>,
+        original_child: libc::pid_t,
+        deadline: Instant,
+    ) -> Result<bool, String> {
+        loop {
+            reap_adopted_descendants(baseline, original_child)?;
+            if adopted_descendants(baseline, original_child)?.is_empty() {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -715,6 +1121,78 @@ mod linux {
         );
     }
 
+    fn spawn_hostile_descendant(escape_group: bool) {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "hostile descendant fork failed");
+        if child == 0 {
+            unsafe {
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            }
+            if escape_group && unsafe { libc::setpgid(0, 0) } != 0 {
+                unsafe { libc::_exit(70) };
+            }
+            unsafe {
+                libc::sleep(60);
+                libc::_exit(0);
+            }
+        }
+    }
+
+    #[test]
+    fn hostile_same_group_descendant_entry() {
+        if std::env::var(HOSTILE_PROBE_MODE).as_deref() != Ok("same-group") {
+            return;
+        }
+        spawn_hostile_descendant(false);
+    }
+
+    #[test]
+    fn hostile_escaped_pipe_descendant_entry() {
+        if std::env::var(HOSTILE_PROBE_MODE).as_deref() != Ok("escaped-pipe") {
+            return;
+        }
+        spawn_hostile_descendant(true);
+    }
+
+    fn assert_hostile_descendant_fails_closed(test_name: &str, mode: &str) {
+        let _lock = lock_probes();
+        let _subreaper = SubreaperGuard::enable().expect("enable hostile-probe subreaper");
+        let baseline = direct_children().expect("capture direct-child baseline");
+        let process = spawn_hostile_probe(test_name, mode).expect("spawn hostile probe");
+        let started = Instant::now();
+        let error = supervise_process(process, Duration::from_secs(2))
+            .expect_err("unexpected descendant cannot produce transport success");
+        assert!(
+            error.contains("unexpected package descendant required forced settlement"),
+            "unexpected failure: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "hostile output ownership exceeded its deadline"
+        );
+        assert_eq!(
+            direct_children().expect("inventory children after settlement"),
+            baseline,
+            "hostile descendants must be killed and reaped"
+        );
+    }
+
+    #[test]
+    fn surviving_same_group_descendant_is_cleanup_not_transport_success() {
+        assert_hostile_descendant_fails_closed(
+            "linux::hostile_same_group_descendant_entry",
+            "same-group",
+        );
+    }
+
+    #[test]
+    fn escaped_descendant_with_inherited_pipes_fails_within_deadline() {
+        assert_hostile_descendant_fails_closed(
+            "linux::hostile_escaped_pipe_descendant_entry",
+            "escaped-pipe",
+        );
+    }
+
     fn assert_non_proof(outcome: &TransportOutcome) {
         assert_eq!(outcome.source_kind, "locally_built_bundle");
         assert!(!outcome.public_artifact_verified);
@@ -729,24 +1207,52 @@ mod linux {
         );
     }
 
+    fn with_private_root<T>(
+        label: &str,
+        operation: impl FnOnce(&Path) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let root = PrivateRoot::create(label)?;
+        let result = operation(&root.path);
+        root.finish(result)
+    }
+
+    #[test]
+    fn operation_and_cleanup_failures_are_both_reported_without_residue() {
+        let _lock = lock_probes();
+        let mut root = PrivateRoot::create("cleanup-failure").expect("create private root");
+        root.fail_cleanup_once = true;
+        let path = root.path.clone();
+        let error = root
+            .finish::<()>(Err("fixed package probe failed".to_string()))
+            .expect_err("operation and cleanup failure must be explicit");
+        assert!(error.contains("fixed package probe failed"));
+        assert!(error.contains("cleanup boundary: private root cleanup failed"));
+        assert!(
+            !path.exists(),
+            "explicit cleanup retry removes injected cleanup residue"
+        );
+    }
+
     #[test]
     #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
     fn built_deb_extracts_from_the_owned_descriptor_without_installing() {
         let _lock = lock_probes();
         let artifact = acquire_owned_artifact(PackageKind::Deb).expect("acquire built deb");
-        let root = PrivateRoot::create("deb").expect("create private deb root");
-        let outcome = run_probe(&artifact, FixedProbe::DebExtract, &root.path)
-            .expect("run fixed dpkg-deb extraction");
+        let outcome = with_private_root("deb", |root| {
+            let outcome = run_probe(&artifact, FixedProbe::DebExtract, root)?;
+            for binary in ["batcave-monitor", "batcave-monitor-cli"] {
+                let path = root.join("deb-payload/usr/bin").join(binary);
+                let metadata = fs::symlink_metadata(&path)
+                    .map_err(|error| format!("staged binary metadata failed: {error}"))?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err("staged deb binary identity was invalid".to_string());
+                }
+            }
+            Ok(outcome)
+        })
+        .expect("run fixed dpkg-deb extraction and clean private root");
         assert_non_proof(&outcome);
         assert!(outcome.stdout.is_empty());
-        for binary in ["batcave-monitor", "batcave-monitor-cli"] {
-            let path = root.path.join("deb-payload/usr/bin").join(binary);
-            let metadata = fs::symlink_metadata(&path).expect("staged binary metadata");
-            assert!(metadata.is_file());
-            assert!(!metadata.file_type().is_symlink());
-        }
-        let removed = root.remove().expect("remove private deb root");
-        assert!(!removed.exists());
     }
 
     #[test]
@@ -759,8 +1265,8 @@ mod linux {
             FixedProbe::AppImageExecveat,
             FixedProbe::AppImageFexecve,
         ] {
-            let root = PrivateRoot::create("appimage").expect("create private AppImage root");
-            let outcome = run_probe(&artifact, probe, &root.path).expect("run AppImage probe");
+            let outcome = with_private_root("appimage", |root| run_probe(&artifact, probe, root))
+                .expect("run AppImage probe and clean private root");
             assert_non_proof(&outcome);
             let offset = String::from_utf8(outcome.stdout)
                 .expect("AppImage offset is UTF-8")
@@ -768,8 +1274,6 @@ mod linux {
                 .parse::<u64>()
                 .expect("AppImage offset is numeric");
             assert!(offset > 0 && offset < artifact.size);
-            let removed = root.remove().expect("remove private AppImage root");
-            assert!(!removed.exists());
         }
     }
 }
