@@ -1,6 +1,18 @@
+use std::{
+    fs::{self, File},
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use serde::{Deserialize, Serialize};
 
+use crate::atomic_json;
+
 pub(crate) const ETW_LEASE_SCHEMA_VERSION: u16 = 1;
+pub(crate) const ETW_LEASE_FILE_NAME: &str = "etw-lease.v1.json";
+pub(crate) const ETW_OWNER_LOCK_FILE_NAME: &str = "etw-owner.v1.lock";
+const ETW_LEASE_MAX_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +49,365 @@ pub(crate) struct EtwLeaseV1 {
     pub boot_identity: [u8; 16],
     pub controller: EtwControllerIdentityV1,
     pub session: EtwSessionIdentityV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EtwLeasePersistenceError {
+    InvalidProtectedRoot,
+    AuthorityMismatch,
+    SnapshotMismatch,
+    ObservationChanged,
+    MutationNotPermitted,
+    PriorLeaseMismatch,
+    ReadFailed,
+    SerializeFailed,
+    InvalidLease,
+    PayloadTooLarge,
+    AtomicReplaceFailed,
+    RemoveFailed,
+}
+
+/// Capability for a service-owned storage directory whose platform verifier has
+/// already proven all of the invariants required below.
+///
+/// The native service-storage lane is the only code allowed to call
+/// `from_platform_verified`. Keeping the constructor unsafe prevents an
+/// arbitrary path from silently becoming trusted before that verifier is wired.
+#[derive(Debug, Clone)]
+pub(crate) struct ProtectedEtwLeaseRoot {
+    path: PathBuf,
+    brand: Arc<()>,
+}
+
+impl ProtectedEtwLeaseRoot {
+    /// # Safety
+    ///
+    /// The caller must have opened and verified every mutable path component,
+    /// rejected links and Windows reparse points, and proven a service-owned
+    /// directory whose inherited access control excludes unprivileged writers.
+    /// If the lease or owner-lock leaf already exists, the caller must also
+    /// prove that it is a service-owned regular file whose access control
+    /// excludes unprivileged writers. The directory must already exist. Its
+    /// security must remain held by the installer/service boundary for this
+    /// capability's lifetime.
+    pub(crate) unsafe fn from_platform_verified(
+        path: PathBuf,
+    ) -> Result<Self, EtwLeasePersistenceError> {
+        if !path.is_absolute() || path.file_name().is_none() || !path.is_dir() {
+            return Err(EtwLeasePersistenceError::InvalidProtectedRoot);
+        }
+        Ok(Self {
+            path,
+            brand: Arc::new(()),
+        })
+    }
+
+    fn lease_path(&self) -> PathBuf {
+        self.path.join(ETW_LEASE_FILE_NAME)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EtwLeaseStore {
+    path: PathBuf,
+    root_brand: Arc<()>,
+}
+
+#[derive(Debug)]
+pub(crate) struct EtwOwnershipAuthority {
+    root_brand: Arc<()>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EtwLeaseSnapshot {
+    observation: EtwLeaseObservation,
+    state: EtwLeaseSnapshotState,
+    root_brand: Arc<()>,
+}
+
+impl EtwLeaseSnapshot {
+    pub(crate) fn observation(&self) -> &EtwLeaseObservation {
+        &self.observation
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EtwLeaseSnapshotState {
+    Absent,
+    TrustedBytes(Vec<u8>),
+    CorruptBytes(Vec<u8>),
+    Untrusted,
+}
+
+impl EtwLeaseStore {
+    pub(crate) fn new(root: &ProtectedEtwLeaseRoot) -> Self {
+        Self {
+            path: root.lease_path(),
+            root_brand: Arc::clone(&root.brand),
+        }
+    }
+
+    pub(crate) fn observe(
+        &self,
+        authority: &EtwOwnershipAuthority,
+    ) -> Result<EtwLeaseSnapshot, EtwLeasePersistenceError> {
+        self.authorize(authority)?;
+        self.capture_snapshot()
+    }
+
+    fn capture_snapshot(&self) -> Result<EtwLeaseSnapshot, EtwLeasePersistenceError> {
+        let (observation, state) = match inspect_lease_leaf(&self.path)? {
+            EtwLeaseLeaf::Absent => (EtwLeaseObservation::Absent, EtwLeaseSnapshotState::Absent),
+            EtwLeaseLeaf::Untrusted => (
+                EtwLeaseObservation::Untrusted,
+                EtwLeaseSnapshotState::Untrusted,
+            ),
+            EtwLeaseLeaf::Trusted => {
+                let bytes = read_bounded(&self.path)?;
+                if bytes.len() > ETW_LEASE_MAX_BYTES {
+                    (
+                        EtwLeaseObservation::Corrupt,
+                        EtwLeaseSnapshotState::CorruptBytes(bytes),
+                    )
+                } else {
+                    match serde_json::from_slice::<EtwLeaseV1>(&bytes) {
+                        Ok(lease) => (
+                            EtwLeaseObservation::Trusted(lease),
+                            EtwLeaseSnapshotState::TrustedBytes(bytes),
+                        ),
+                        Err(_) => (
+                            EtwLeaseObservation::Corrupt,
+                            EtwLeaseSnapshotState::CorruptBytes(bytes),
+                        ),
+                    }
+                }
+            }
+        };
+        Ok(EtwLeaseSnapshot {
+            observation,
+            state,
+            root_brand: Arc::clone(&self.root_brand),
+        })
+    }
+
+    fn authorize(&self, authority: &EtwOwnershipAuthority) -> Result<(), EtwLeasePersistenceError> {
+        if Arc::ptr_eq(&self.root_brand, &authority.root_brand) {
+            Ok(())
+        } else {
+            Err(EtwLeasePersistenceError::AuthorityMismatch)
+        }
+    }
+
+    fn verify_snapshot(&self, snapshot: &EtwLeaseSnapshot) -> Result<(), EtwLeasePersistenceError> {
+        if !Arc::ptr_eq(&self.root_brand, &snapshot.root_brand) {
+            return Err(EtwLeasePersistenceError::SnapshotMismatch);
+        }
+        let current = self.capture_snapshot()?;
+        if current.state != snapshot.state {
+            return Err(EtwLeasePersistenceError::ObservationChanged);
+        }
+        Ok(())
+    }
+
+    fn verify_replacement_prior(
+        prior: &EtwLeaseObservation,
+        next: &EtwLeaseV1,
+    ) -> Result<(), EtwLeasePersistenceError> {
+        let EtwLeaseObservation::Trusted(prior) = prior else {
+            return match prior {
+                EtwLeaseObservation::Absent => Ok(()),
+                EtwLeaseObservation::Corrupt | EtwLeaseObservation::Untrusted => {
+                    Err(EtwLeasePersistenceError::MutationNotPermitted)
+                }
+                EtwLeaseObservation::Trusted(_) => unreachable!(),
+            };
+        };
+        if prior.schema_version != ETW_LEASE_SCHEMA_VERSION || !lease_is_well_formed(prior) {
+            return Err(EtwLeasePersistenceError::MutationNotPermitted);
+        }
+        if prior.install_id != next.install_id
+            || prior.service_generation != next.service_generation
+            || prior.boot_identity != next.boot_identity
+            || prior.session != next.session
+        {
+            return Err(EtwLeasePersistenceError::PriorLeaseMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replace(
+        &self,
+        authority: &EtwOwnershipAuthority,
+        prior: &EtwLeaseSnapshot,
+        lease: &EtwLeaseV1,
+    ) -> Result<(), EtwLeasePersistenceError> {
+        self.authorize(authority)?;
+        if !Arc::ptr_eq(&self.root_brand, &prior.root_brand) {
+            return Err(EtwLeasePersistenceError::SnapshotMismatch);
+        }
+        if lease.schema_version != ETW_LEASE_SCHEMA_VERSION || !lease_is_well_formed(lease) {
+            return Err(EtwLeasePersistenceError::InvalidLease);
+        }
+        Self::verify_replacement_prior(&prior.observation, lease)?;
+
+        let bytes =
+            serde_json::to_vec(lease).map_err(|_| EtwLeasePersistenceError::SerializeFailed)?;
+        if bytes.len() > ETW_LEASE_MAX_BYTES {
+            return Err(EtwLeasePersistenceError::PayloadTooLarge);
+        }
+        self.verify_snapshot(prior)?;
+        atomic_json::write_bytes_atomic(&self.path, &bytes)
+            .map_err(|_| EtwLeasePersistenceError::AtomicReplaceFailed)
+    }
+
+    pub(crate) fn remove_after_proven_absence(
+        &self,
+        authority: &EtwOwnershipAuthority,
+        prior: &EtwLeaseSnapshot,
+    ) -> Result<bool, EtwLeasePersistenceError> {
+        self.authorize(authority)?;
+        if !Arc::ptr_eq(&self.root_brand, &prior.root_brand) {
+            return Err(EtwLeasePersistenceError::SnapshotMismatch);
+        }
+        match prior.observation {
+            EtwLeaseObservation::Corrupt | EtwLeaseObservation::Untrusted => {
+                Err(EtwLeasePersistenceError::MutationNotPermitted)
+            }
+            EtwLeaseObservation::Absent => {
+                self.verify_snapshot(prior)?;
+                Ok(false)
+            }
+            EtwLeaseObservation::Trusted(_) => {
+                self.verify_snapshot(prior)?;
+                fs::remove_file(&self.path).map_err(|_| EtwLeasePersistenceError::RemoveFailed)?;
+                sync_parent(&self.path).map_err(|_| EtwLeasePersistenceError::RemoveFailed)?;
+                Ok(true)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EtwLeaseLeaf {
+    Absent,
+    Trusted,
+    Untrusted,
+}
+
+fn inspect_lease_leaf(path: &Path) -> Result<EtwLeaseLeaf, EtwLeasePersistenceError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(EtwLeaseLeaf::Absent)
+        }
+        Err(_) => return Err(EtwLeasePersistenceError::ReadFailed),
+    };
+    if !metadata.is_file() || is_link_or_reparse(&metadata) {
+        return Ok(EtwLeaseLeaf::Untrusted);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if metadata.mode() & 0o077 != 0 {
+            return Ok(EtwLeaseLeaf::Untrusted);
+        }
+    }
+    Ok(EtwLeaseLeaf::Trusted)
+}
+
+fn read_bounded(path: &Path) -> Result<Vec<u8>, EtwLeasePersistenceError> {
+    let file = File::open(path).map_err(|_| EtwLeasePersistenceError::ReadFailed)?;
+    let mut bytes = Vec::with_capacity(ETW_LEASE_MAX_BYTES.min(4096));
+    file.take((ETW_LEASE_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| EtwLeasePersistenceError::ReadFailed)?;
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    File::open(path.parent().expect("lease path has protected parent"))?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_parent(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) enum WindowsEtwOwnerAcquire {
+    Acquired(WindowsEtwOwnerGuard),
+    Contended,
+}
+
+#[cfg(windows)]
+pub(crate) struct WindowsEtwOwnerGuard {
+    _file: File,
+    authority: EtwOwnershipAuthority,
+}
+
+#[cfg(windows)]
+impl WindowsEtwOwnerGuard {
+    pub(crate) fn try_acquire(
+        root: &ProtectedEtwLeaseRoot,
+    ) -> Result<WindowsEtwOwnerAcquire, String> {
+        use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+        use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
+
+        let path = root.path.join(ETW_OWNER_LOCK_FILE_NAME);
+        match inspect_lease_leaf(&path)
+            .map_err(|error| format!("etw_owner_lock_inspect_failed:{error:?}"))?
+        {
+            EtwLeaseLeaf::Untrusted => return Err("etw_owner_lock_untrusted".to_string()),
+            EtwLeaseLeaf::Absent | EtwLeaseLeaf::Trusted => {}
+        }
+
+        let file = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .share_mode(0)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(code)
+                        if code == ERROR_SHARING_VIOLATION as i32
+                            || code == ERROR_LOCK_VIOLATION as i32
+                ) =>
+            {
+                return Ok(WindowsEtwOwnerAcquire::Contended);
+            }
+            Err(error) => return Err(format!("etw_owner_lock_open_failed:{error}")),
+        };
+
+        Ok(WindowsEtwOwnerAcquire::Acquired(Self {
+            _file: file,
+            authority: EtwOwnershipAuthority {
+                root_brand: Arc::clone(&root.brand),
+            },
+        }))
+    }
+
+    pub(crate) fn authority(&self) -> &EtwOwnershipAuthority {
+        &self.authority
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +595,310 @@ fn lease_is_well_formed(lease: &EtwLeaseV1) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_store_round_trips_atomic_phase_replacements_and_exact_removal() {
+        let (root_path, root, store) = test_store("round-trip");
+        let authority = test_authority(&root);
+        let absent = store.observe(&authority).expect("absence observes");
+        assert_eq!(absent.observation(), &EtwLeaseObservation::Absent);
+        assert_eq!(
+            store.path.file_name().and_then(|name| name.to_str()),
+            Some(ETW_LEASE_FILE_NAME)
+        );
+
+        let intent = lease(EtwLeasePhase::Intent);
+        store
+            .replace(&authority, &absent, &intent)
+            .expect("intent persists");
+        let intent_snapshot = store.observe(&authority).expect("intent observes");
+        assert_eq!(
+            intent_snapshot.observation(),
+            &EtwLeaseObservation::Trusted(intent.clone())
+        );
+
+        let mut active = intent;
+        active.phase = EtwLeasePhase::Active;
+        store
+            .replace(&authority, &intent_snapshot, &active)
+            .expect("active atomically replaces intent");
+        let active_snapshot = store.observe(&authority).expect("active observes");
+        assert_eq!(
+            active_snapshot.observation(),
+            &EtwLeaseObservation::Trusted(active)
+        );
+        assert!(store
+            .remove_after_proven_absence(&authority, &active_snapshot)
+            .expect("exact lease removes"));
+        let missing = store.observe(&authority).expect("absence re-observes");
+        assert!(!store
+            .remove_after_proven_absence(&authority, &missing)
+            .expect("missing lease is already removed"));
+        cleanup_store(&root_path);
+    }
+
+    #[test]
+    fn invalid_replacement_never_erases_the_last_valid_lease() {
+        let (root_path, root, store) = test_store("invalid-replace");
+        let authority = test_authority(&root);
+        let absent = store.observe(&authority).expect("absence observes");
+        let valid = lease(EtwLeasePhase::Active);
+        store
+            .replace(&authority, &absent, &valid)
+            .expect("valid lease persists");
+        let valid_snapshot = store.observe(&authority).expect("valid lease observes");
+
+        let mut invalid = valid.clone();
+        invalid.controller.process_started_at = 0;
+        assert_eq!(
+            store.replace(&authority, &valid_snapshot, &invalid),
+            Err(EtwLeasePersistenceError::InvalidLease)
+        );
+        assert_eq!(
+            observed(&store, &authority),
+            EtwLeaseObservation::Trusted(valid)
+        );
+        cleanup_store(&root_path);
+    }
+
+    #[test]
+    fn corrupt_existing_bytes_cannot_be_replaced_or_removed() {
+        let (root_path, root, store) = test_store("corrupt-mutation");
+        let authority = test_authority(&root);
+        write_private_fixture(&store.path, b"not-json");
+        let corrupt = store.observe(&authority).expect("corruption observes");
+
+        assert_eq!(corrupt.observation(), &EtwLeaseObservation::Corrupt);
+        assert_eq!(
+            store.replace(&authority, &corrupt, &lease(EtwLeasePhase::Intent)),
+            Err(EtwLeasePersistenceError::MutationNotPermitted)
+        );
+        assert_eq!(
+            store.remove_after_proven_absence(&authority, &corrupt),
+            Err(EtwLeasePersistenceError::MutationNotPermitted)
+        );
+        assert_eq!(
+            fs::read(&store.path).expect("corrupt bytes remain"),
+            b"not-json"
+        );
+        cleanup_store(&root_path);
+    }
+
+    #[test]
+    fn replacement_rejects_conflicting_install_generation_boot_and_session_identity() {
+        type LeaseMutation = fn(&mut EtwLeaseV1);
+        let cases: [LeaseMutation; 4] = [
+            |lease| lease.install_id[0] ^= 1,
+            |lease| lease.service_generation[0] ^= 1,
+            |lease| lease.boot_identity[0] ^= 1,
+            |lease| lease.session.configuration_digest[0] ^= 1,
+        ];
+
+        for (index, mutate) in cases.into_iter().enumerate() {
+            let (root_path, root, store) = test_store(&format!("identity-mismatch-{index}"));
+            let authority = test_authority(&root);
+            let absent = store.observe(&authority).expect("absence observes");
+            let prior = lease(EtwLeasePhase::Intent);
+            store
+                .replace(&authority, &absent, &prior)
+                .expect("prior lease persists");
+            let prior_snapshot = store.observe(&authority).expect("prior lease observes");
+            let mut conflicting = prior.clone();
+            mutate(&mut conflicting);
+
+            assert_eq!(
+                store.replace(&authority, &prior_snapshot, &conflicting),
+                Err(EtwLeasePersistenceError::PriorLeaseMismatch)
+            );
+            assert_eq!(
+                observed(&store, &authority),
+                EtwLeaseObservation::Trusted(prior)
+            );
+            cleanup_store(&root_path);
+        }
+    }
+
+    #[test]
+    fn stale_absence_snapshot_cannot_replace_a_newer_lease() {
+        let (root_path, root, store) = test_store("stale-absence");
+        let authority = test_authority(&root);
+        let stale_absence = store.observe(&authority).expect("absence observes");
+        let external = lease(EtwLeasePhase::Active);
+        write_private_fixture(
+            &store.path,
+            &serde_json::to_vec(&external).expect("external lease serializes"),
+        );
+
+        assert_eq!(
+            store.replace(&authority, &stale_absence, &lease(EtwLeasePhase::Intent)),
+            Err(EtwLeasePersistenceError::ObservationChanged)
+        );
+        assert_eq!(
+            observed(&store, &authority),
+            EtwLeaseObservation::Trusted(external)
+        );
+        cleanup_store(&root_path);
+    }
+
+    #[test]
+    fn ownership_authority_and_snapshots_are_bound_to_one_exact_root() {
+        let (path_a, root_a, store_a) = test_store("root-a");
+        let (path_b, root_b, store_b) = test_store("root-b");
+        let authority_a = test_authority(&root_a);
+        let authority_b = test_authority(&root_b);
+        let snapshot_a = store_a.observe(&authority_a).expect("root A observes");
+
+        assert_eq!(
+            store_b.observe(&authority_a).unwrap_err(),
+            EtwLeasePersistenceError::AuthorityMismatch
+        );
+        assert_eq!(
+            store_b.replace(&authority_a, &snapshot_a, &lease(EtwLeasePhase::Intent)),
+            Err(EtwLeasePersistenceError::AuthorityMismatch)
+        );
+        assert_eq!(
+            store_b.replace(&authority_b, &snapshot_a, &lease(EtwLeasePhase::Intent)),
+            Err(EtwLeasePersistenceError::SnapshotMismatch)
+        );
+        assert_eq!(
+            store_a.remove_after_proven_absence(&authority_b, &snapshot_a),
+            Err(EtwLeasePersistenceError::AuthorityMismatch)
+        );
+        assert_eq!(
+            observed(&store_a, &authority_a),
+            EtwLeaseObservation::Absent
+        );
+        assert_eq!(
+            observed(&store_b, &authority_b),
+            EtwLeaseObservation::Absent
+        );
+        cleanup_store(&path_a);
+        cleanup_store(&path_b);
+    }
+
+    #[test]
+    fn malformed_and_oversized_trusted_bytes_are_corrupt_not_absent() {
+        let (root_path, root, store) = test_store("corrupt");
+        let authority = test_authority(&root);
+        write_private_fixture(&store.path, b"not-json");
+        assert_eq!(observed(&store, &authority), EtwLeaseObservation::Corrupt);
+
+        write_private_fixture(&store.path, &vec![b'x'; ETW_LEASE_MAX_BYTES + 1]);
+        assert_eq!(observed(&store, &authority), EtwLeaseObservation::Corrupt);
+        cleanup_store(&root_path);
+    }
+
+    #[test]
+    fn unexpected_leaf_types_are_untrusted_and_never_replaced_or_removed() {
+        let (root_path, root, store) = test_store("untrusted-leaf");
+        let authority = test_authority(&root);
+        fs::create_dir(&store.path).expect("untrusted directory leaf fixture");
+        let untrusted = store.observe(&authority).expect("untrusted leaf observes");
+
+        assert_eq!(untrusted.observation(), &EtwLeaseObservation::Untrusted);
+        assert_eq!(
+            store.replace(&authority, &untrusted, &lease(EtwLeasePhase::Intent)),
+            Err(EtwLeasePersistenceError::MutationNotPermitted)
+        );
+        assert_eq!(
+            store.remove_after_proven_absence(&authority, &untrusted),
+            Err(EtwLeasePersistenceError::MutationNotPermitted)
+        );
+        assert!(store.path.is_dir());
+        cleanup_store(&root_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_or_other_readable_lease_bytes_are_untrusted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (root_path, root, store) = test_store("public-mode");
+        let authority = test_authority(&root);
+        fs::write(
+            &store.path,
+            serde_json::to_vec(&lease(EtwLeasePhase::Intent)).expect("serialize fixture"),
+        )
+        .expect("write public fixture");
+        fs::set_permissions(&store.path, fs::Permissions::from_mode(0o644))
+            .expect("set public fixture mode");
+
+        assert_eq!(observed(&store, &authority), EtwLeaseObservation::Untrusted);
+        cleanup_store(&root_path);
+    }
+
+    #[test]
+    fn protected_root_capability_rejects_relative_missing_and_file_paths() {
+        assert!(matches!(
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(PathBuf::from("relative")) },
+            Err(EtwLeasePersistenceError::InvalidProtectedRoot)
+        ));
+
+        let missing = std::env::temp_dir().join(format!(
+            "batcave-etw-lease-missing-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        assert!(matches!(
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(missing) },
+            Err(EtwLeasePersistenceError::InvalidProtectedRoot)
+        ));
+
+        let file = std::env::temp_dir().join(format!(
+            "batcave-etw-lease-file-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::write(&file, b"not a directory").expect("file fixture");
+        assert!(matches!(
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(file.clone()) },
+            Err(EtwLeasePersistenceError::InvalidProtectedRoot)
+        ));
+        fs::remove_file(file).expect("file fixture cleanup");
+    }
+
+    #[test]
+    fn ownership_names_are_versioned_and_machine_wide() {
+        assert_eq!(ETW_LEASE_FILE_NAME, "etw-lease.v1.json");
+        assert_eq!(ETW_OWNER_LOCK_FILE_NAME, "etw-owner.v1.lock");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn protected_lock_file_allows_exactly_one_machine_wide_owner() {
+        let (root_path, root) = test_root("owner-lock");
+        let first = match WindowsEtwOwnerGuard::try_acquire(&root).expect("first owner acquires") {
+            WindowsEtwOwnerAcquire::Acquired(guard) => guard,
+            WindowsEtwOwnerAcquire::Contended => panic!("first owner unexpectedly contended"),
+        };
+        let store = EtwLeaseStore::new(&root);
+        let absent = store
+            .observe(first.authority())
+            .expect("owner authority observes absence");
+        store
+            .replace(first.authority(), &absent, &lease(EtwLeasePhase::Intent))
+            .expect("owner authority permits lease write");
+
+        assert!(matches!(
+            WindowsEtwOwnerGuard::try_acquire(&root).expect("contention is explicit"),
+            WindowsEtwOwnerAcquire::Contended
+        ));
+
+        drop(first);
+        let recovered =
+            match WindowsEtwOwnerGuard::try_acquire(&root).expect("closed owner releases lock") {
+                WindowsEtwOwnerAcquire::Acquired(guard) => guard,
+                WindowsEtwOwnerAcquire::Contended => panic!("released owner remained contended"),
+            };
+        assert!(matches!(
+            store
+                .observe(recovered.authority())
+                .map(|snapshot| snapshot.observation),
+            Ok(EtwLeaseObservation::Trusted(_))
+        ));
+        drop(recovered);
+        cleanup_store(&root_path);
+    }
 
     #[test]
     fn fresh_start_requires_both_lease_and_session_to_be_absent() {
@@ -648,5 +1323,67 @@ mod tests {
             session_flags: 0x1000_0000,
             configuration_digest: [6; 32],
         }
+    }
+
+    fn test_store(name: &str) -> (PathBuf, ProtectedEtwLeaseRoot, EtwLeaseStore) {
+        let (path, root) = test_root(name);
+        let store = EtwLeaseStore::new(&root);
+        (path, root, store)
+    }
+
+    fn test_root(name: &str) -> (PathBuf, ProtectedEtwLeaseRoot) {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-etw-lease-{name}-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir(&path).expect("protected root fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+                .expect("protect root fixture");
+        }
+        // SAFETY: this process created the unique test directory, rejects public
+        // access on Unix, and retains exclusive ownership until cleanup.
+        let root = unsafe { ProtectedEtwLeaseRoot::from_platform_verified(path.clone()) }
+            .expect("test root accepted");
+        (path, root)
+    }
+
+    fn test_authority(root: &ProtectedEtwLeaseRoot) -> EtwOwnershipAuthority {
+        EtwOwnershipAuthority {
+            root_brand: Arc::clone(&root.brand),
+        }
+    }
+
+    fn observed(store: &EtwLeaseStore, authority: &EtwOwnershipAuthority) -> EtwLeaseObservation {
+        store
+            .observe(authority)
+            .expect("lease observation succeeds")
+            .observation
+    }
+
+    fn write_private_fixture(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).expect("fixture writes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("fixture private mode");
+        }
+    }
+
+    fn cleanup_store(path: &Path) {
+        fs::remove_dir_all(path).expect("store fixture cleanup");
+    }
+
+    fn unique_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos()
     }
 }
