@@ -94,6 +94,7 @@ pub(crate) enum EtwLeaseConflict {
 pub(crate) enum EtwRecoveryHold {
     SessionQueryUnavailable,
     ControllerQueryUnavailable,
+    ControllerObservationMismatch,
     StopFailed,
 }
 
@@ -166,10 +167,21 @@ pub(crate) fn decide_etw_recovery(
     if matches!(session_observation, EtwSessionObservation::QueryUnavailable) {
         return EtwRecoveryDecision::Retain(EtwRecoveryHold::SessionQueryUnavailable);
     }
+    if matches!(
+        session_observation,
+        EtwSessionObservation::Present(session) if session != &lease.session
+    ) {
+        return EtwRecoveryDecision::Conflict(EtwLeaseConflict::ObservedSessionMismatch);
+    }
 
     match controller_observation {
         EtwControllerObservation::QueryUnavailable => {
             return EtwRecoveryDecision::Retain(EtwRecoveryHold::ControllerQueryUnavailable);
+        }
+        EtwControllerObservation::Present(controller)
+            if controller.process_id != lease.controller.process_id =>
+        {
+            return EtwRecoveryDecision::Retain(EtwRecoveryHold::ControllerObservationMismatch);
         }
         EtwControllerObservation::Present(controller) if controller == &lease.controller => {
             return EtwRecoveryDecision::Conflict(EtwLeaseConflict::ControllerStillActive);
@@ -188,9 +200,7 @@ pub(crate) fn decide_etw_recovery(
         EtwSessionObservation::Present(session) if session == &lease.session => {
             EtwRecoveryDecision::ReclaimExact { phase: lease.phase }
         }
-        EtwSessionObservation::Present(_) => {
-            EtwRecoveryDecision::Conflict(EtwLeaseConflict::ObservedSessionMismatch)
-        }
+        EtwSessionObservation::Present(_) => unreachable!("mismatch handled above"),
         EtwSessionObservation::QueryUnavailable => unreachable!("handled above"),
     }
 }
@@ -310,6 +320,24 @@ mod tests {
             EtwRecoveryDecision::ReclaimExact {
                 phase: EtwLeasePhase::Active,
             }
+        );
+    }
+
+    #[test]
+    fn an_observation_for_another_pid_does_not_prove_the_recorded_controller_dead() {
+        let lease = lease(EtwLeasePhase::Active);
+        let unrelated = EtwControllerIdentityV1 {
+            process_id: lease.controller.process_id + 1,
+            process_started_at: lease.controller.process_started_at,
+        };
+        assert_eq!(
+            decide(
+                EtwLeaseObservation::Trusted(lease.clone()),
+                EtwSessionObservation::Present(lease.session),
+                EtwControllerObservation::Present(unrelated),
+                EtwReclaimAttempt::NotAttempted,
+            ),
+            EtwRecoveryDecision::Retain(EtwRecoveryHold::ControllerObservationMismatch)
         );
     }
 
@@ -455,6 +483,34 @@ mod tests {
             ),
             EtwRecoveryDecision::Conflict(EtwLeaseConflict::ObservedSessionMismatch)
         );
+    }
+
+    #[test]
+    fn known_session_mismatch_outranks_incomplete_controller_or_stop_state() {
+        let lease = lease(EtwLeasePhase::Stopping);
+        let mut mismatched = lease.session.clone();
+        mismatched.session_flags ^= 1;
+
+        for (controller, reclaim_attempt) in [
+            (
+                EtwControllerObservation::QueryUnavailable,
+                EtwReclaimAttempt::NotAttempted,
+            ),
+            (
+                EtwControllerObservation::Absent,
+                EtwReclaimAttempt::StopFailed,
+            ),
+        ] {
+            assert_eq!(
+                decide(
+                    EtwLeaseObservation::Trusted(lease.clone()),
+                    EtwSessionObservation::Present(mismatched.clone()),
+                    controller,
+                    reclaim_attempt,
+                ),
+                EtwRecoveryDecision::Conflict(EtwLeaseConflict::ObservedSessionMismatch)
+            );
+        }
     }
 
     #[test]

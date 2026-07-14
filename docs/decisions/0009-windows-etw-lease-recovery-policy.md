@@ -30,9 +30,9 @@ The future native owner must store the lease under service-owned protected stora
 | `StartFresh` | no lease and no session; an exact trusted stale lease whose controller and session are both proven absent; or a trusted prior-boot lease after current-boot session absence is proven | create and flush a new `intent` lease before `StartTrace` |
 | `ReclaimExact` | trusted, well-formed, version-matched lease; exact install, generation, boot, and session identity; old controller proven dead; exact session still present | advance to `stopping`, stop only that exact session, then prove absence |
 | `Conflict` | corrupt or untrusted lease, identity drift, live exact controller, session without a trusted lease, or observed-session mismatch | leave the lease and session untouched; keep attribution unavailable |
-| `Retain` | session/controller query unavailable or a stop attempt failed | retain the lease, do not start a replacement, and exit or retry only through a later bounded recovery pass |
+| `Retain` | session/controller query unavailable, controller evidence is for the wrong PID, or a stop attempt failed | retain the lease, do not start a replacement, and exit or retry only through a later bounded recovery pass |
 
-A PID match is insufficient. PID plus process creation time identifies the controller. A reused PID with a different creation time proves the recorded controller is gone; it does not authorize reclaim unless every lease and session field also matches.
+A PID match is insufficient. PID plus process creation time identifies the controller. The process observation must be for the recorded PID; an arbitrary process observation proves nothing. A reused recorded PID with a different creation time proves the old controller is gone, but it does not authorize reclaim unless every lease and session field also matches.
 
 ## Crash ordering
 
