@@ -28,10 +28,12 @@ The probe:
 - makes only the exact owned descriptor inheritable in the fixed child and passes only `/dev/fd/N` to `hdiutil attach`;
 - runs every fixed `hdiutil` child in an owned process group with a deadline, `SIGTERM`/`SIGKILL` settlement, bounded output, and no stdin;
 - owns the private fixture root and mount point, attempts bounded detach before deletion, and checks owned process-group, mount, and temporary-root residue;
-- distinguishes unsupported descriptor consumption, failed attachment with a known-invalid fixture, timeout, failed detach, early close, replay, cleanup failure, and cleanup retry; and
+- distinguishes unsupported descriptor consumption, failed attachment with a known-invalid fixture, timeout, post-spawn supervision failure, failed detach, early close, replay, cleanup failure, and cleanup retry; and
 - returns only a sanitized test outcome with no path, descriptor, command, raw output, receipt, or evidence.
 
-The cleanup-failure case deliberately retains its private fixture root and reports `retained_cleanup_failed`; a bounded retry then removes it. Every case that starts `hdiutil` settles the owned process group. Every case other than the deliberate retention leaves no mount or temporary residue.
+The probe never maps a post-spawn supervisor error to "not started" or "settled." It reports `retained_process_unsettled`, keeps the child, open descriptor, private root, and mount authority together, and suppresses cleanup until a bounded settlement retry succeeds. If the authority is dropped while settlement remains unproven, those resources move to an internal long-lived recovery owner; a deterministic hostile case proves later settlement and zero-residue cleanup. The sanitized outcome keeps the original failure boundary and any retained cleanup boundary distinct.
+
+The cleanup-failure case deliberately retains its private fixture root and reports `retained_cleanup_failed`; a bounded retry then removes it. Every case that starts `hdiutil` either settles the owned process group before releasing resources or explicitly retains ownership. Every case other than deliberate retention leaves no mount or temporary residue, and each retained case proves a zero-residue retry.
 
 On Windows and Linux, the integration test reports the host as unsupported without running a process or creating a file.
 

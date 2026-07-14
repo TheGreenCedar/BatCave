@@ -7,17 +7,28 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Disposition {
     Unsupported,
+    #[cfg(target_os = "macos")]
     Failed,
+    #[cfg(target_os = "macos")]
     AuthorityRejected,
+    #[cfg(target_os = "macos")]
+    RetainedProcessUnsettled,
+    #[cfg(target_os = "macos")]
     RetainedCleanupFailed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FailureBoundary {
+    #[cfg(target_os = "macos")]
     Authority,
     Consumption,
+    #[cfg(target_os = "macos")]
     Timeout,
+    #[cfg(target_os = "macos")]
+    Supervision,
+    #[cfg(target_os = "macos")]
     Detach,
+    #[cfg(target_os = "macos")]
     Cleanup,
 }
 
@@ -25,6 +36,7 @@ enum FailureBoundary {
 struct ProbeOutcome {
     disposition: Disposition,
     primary_boundary: FailureBoundary,
+    retained_boundary: Option<FailureBoundary>,
     hdiutil_started: bool,
     process_settled: bool,
     mount_created: bool,
@@ -45,6 +57,7 @@ impl ProbeOutcome {
         Self {
             disposition: Disposition::Unsupported,
             primary_boundary: FailureBoundary::Consumption,
+            retained_boundary: None,
             hdiutil_started: false,
             process_settled: true,
             mount_created: false,
@@ -77,10 +90,14 @@ fn assert_non_claims(outcome: &ProbeOutcome) {
 fn unsupported_hosts_report_the_boundary_without_mutation() {
     let outcome = ProbeOutcome::unsupported_host();
     assert_eq!(outcome.disposition, Disposition::Unsupported);
+    assert_eq!(outcome.primary_boundary, FailureBoundary::Consumption);
+    assert_eq!(outcome.retained_boundary, None);
     assert!(!outcome.hdiutil_started);
     assert!(outcome.process_settled);
+    assert!(!outcome.mount_created);
     assert!(!outcome.mount_residue);
     assert!(!outcome.temporary_residue);
+    assert!(!outcome.descriptor_bytes_unchanged);
     assert_non_claims(&outcome);
 }
 
@@ -128,12 +145,14 @@ mod macos {
     const TERMINATION_GRACE: Duration = Duration::from_secs(2);
     static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     static HDIUTIL_LOCK: Mutex<()> = Mutex::new(());
+    static RETAINED_RECOVERIES: Mutex<Vec<RetainedRecovery>> = Mutex::new(Vec::new());
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum AuthorityState {
         Acquired,
         Consumed,
         Closed,
+        RetainedProcessUnsettled,
         RetainedCleanupFailed,
     }
 
@@ -149,9 +168,27 @@ mod macos {
         settled: bool,
     }
 
+    struct UnsettledProcess {
+        child: Child,
+        process_group: i32,
+        fail_settlement_once: bool,
+    }
+
+    enum SupervisionFailure {
+        BeforeSpawn,
+        AfterSpawn(UnsettledProcess),
+    }
+
     struct DescriptorAttachResult {
         process: OwnedProcessResult,
         bad_descriptor: Option<bool>,
+    }
+
+    struct RetainedRecovery {
+        process: Option<UnsettledProcess>,
+        source: Option<File>,
+        root: PathBuf,
+        mount_point: PathBuf,
     }
 
     struct AcquisitionRoot(Option<PathBuf>);
@@ -187,6 +224,7 @@ mod macos {
         expected_digest: [u8; 32],
         mount_created: bool,
         force_cleanup_failure: bool,
+        unsettled_process: Option<UnsettledProcess>,
     }
 
     impl DmgTransportAuthority {
@@ -212,7 +250,26 @@ mod macos {
 
             let source_path = root.path().join("fixture.dmg");
             match kind {
-                FixtureKind::ValidDmg => create_fixture_dmg(&source_dir, &source_path)?,
+                FixtureKind::ValidDmg => match create_fixture_dmg(&source_dir, &source_path) {
+                    Ok(result) if result.status.success() && result.settled => {}
+                    Ok(_) | Err(SupervisionFailure::BeforeSpawn) => {
+                        return Err(io::Error::other("fixed fixture DMG creation failed"));
+                    }
+                    Err(SupervisionFailure::AfterSpawn(mut process)) => {
+                        if process.settle().unwrap_or(false) {
+                            return Err(io::Error::other("fixed fixture DMG creation failed"));
+                        }
+                        retain_recovery(RetainedRecovery {
+                            process: Some(process),
+                            source: None,
+                            root: root.transfer(),
+                            mount_point: mount_point.clone(),
+                        });
+                        return Err(io::Error::other(
+                            "fixture process unresolved; private root retained",
+                        ));
+                    }
+                },
                 FixtureKind::InvalidBytes => write_private(&source_path, b"not a disk image\n")?,
             }
 
@@ -230,6 +287,7 @@ mod macos {
                 expected_digest,
                 mount_created: false,
                 force_cleanup_failure,
+                unsettled_process: None,
             })
         }
 
@@ -243,6 +301,15 @@ mod macos {
         }
 
         fn consume_with_timeout(&mut self, timeout: Duration, valid_fixture: bool) -> ProbeOutcome {
+            self.consume_with_supervision(timeout, valid_fixture, false)
+        }
+
+        fn consume_with_supervision(
+            &mut self,
+            timeout: Duration,
+            valid_fixture: bool,
+            fail_after_spawn: bool,
+        ) -> ProbeOutcome {
             if self.state != AuthorityState::Acquired {
                 return self.rejected_outcome();
             }
@@ -265,6 +332,7 @@ mod macos {
                 &self.mount_point,
                 self.root.as_ref().expect("retained root"),
                 timeout,
+                fail_after_spawn,
             );
 
             let (disposition, primary_boundary, started, settled) = match process {
@@ -295,12 +363,21 @@ mod macos {
                     true,
                     result.process.settled,
                 ),
-                Err(_) => (
+                Err(SupervisionFailure::BeforeSpawn) => (
                     Disposition::Failed,
                     FailureBoundary::Consumption,
                     false,
                     true,
                 ),
+                Err(SupervisionFailure::AfterSpawn(process)) => {
+                    self.unsettled_process = Some(process);
+                    (
+                        Disposition::Failed,
+                        FailureBoundary::Supervision,
+                        true,
+                        false,
+                    )
+                }
             };
 
             self.finish_outcome(
@@ -318,12 +395,19 @@ mod macos {
             }
             self.state = AuthorityState::Consumed;
             let result = detach_mount(&self.mount_point, false, NORMAL_TIMEOUT);
-            let settled = result.as_ref().map_or(true, |value| value.settled);
+            let (primary_boundary, started, settled) = match result {
+                Ok(result) => (FailureBoundary::Detach, true, result.settled),
+                Err(SupervisionFailure::BeforeSpawn) => (FailureBoundary::Detach, false, true),
+                Err(SupervisionFailure::AfterSpawn(process)) => {
+                    self.unsettled_process = Some(process);
+                    (FailureBoundary::Supervision, true, false)
+                }
+            };
             let descriptor_bytes_unchanged = self.descriptor_digest_matches();
             self.finish_outcome(
                 Disposition::Failed,
-                FailureBoundary::Detach,
-                result.is_ok(),
+                primary_boundary,
+                started,
                 settled,
                 descriptor_bytes_unchanged,
             )
@@ -339,6 +423,7 @@ mod macos {
             ProbeOutcome {
                 disposition: Disposition::AuthorityRejected,
                 primary_boundary: FailureBoundary::Authority,
+                retained_boundary: None,
                 hdiutil_started: false,
                 process_settled: true,
                 mount_created: false,
@@ -356,6 +441,28 @@ mod macos {
         }
 
         fn retry_cleanup(&mut self) -> io::Result<()> {
+            if let Some(mut process) = self.unsettled_process.take() {
+                match process.settle() {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => {
+                        self.unsettled_process = Some(process);
+                        return Err(io::Error::other("owned hdiutil process remains unsettled"));
+                    }
+                }
+            }
+            if mount_is_active(&self.mount_point) {
+                match detach_mount(&self.mount_point, true, NORMAL_TIMEOUT) {
+                    Ok(result)
+                        if result.status.success()
+                            && result.settled
+                            && !mount_is_active(&self.mount_point) => {}
+                    Err(SupervisionFailure::AfterSpawn(process)) => {
+                        self.unsettled_process = Some(process);
+                        return Err(io::Error::other("detach supervision remains unsettled"));
+                    }
+                    _ => return Err(io::Error::other("owned mount remains attached")),
+                }
+            }
             self.force_cleanup_failure = false;
             self.source.take();
             self.cleanup_root()?;
@@ -382,19 +489,44 @@ mod macos {
         fn finish_outcome(
             &mut self,
             mut disposition: Disposition,
-            mut primary_boundary: FailureBoundary,
+            primary_boundary: FailureBoundary,
             hdiutil_started: bool,
             process_settled: bool,
             descriptor_bytes_unchanged: bool,
         ) -> ProbeOutcome {
+            let mut retained_boundary = None;
+            if !process_settled || self.unsettled_process.is_some() {
+                self.state = AuthorityState::RetainedProcessUnsettled;
+                disposition = Disposition::RetainedProcessUnsettled;
+                retained_boundary = Some(FailureBoundary::Supervision);
+                return self.outcome(
+                    disposition,
+                    primary_boundary,
+                    retained_boundary,
+                    hdiutil_started,
+                    false,
+                    descriptor_bytes_unchanged,
+                );
+            }
+
             if self.mount_created || mount_is_active(&self.mount_point) {
                 self.mount_created = true;
-                let detached = detach_mount(&self.mount_point, false, NORMAL_TIMEOUT)
-                    .is_ok_and(|result| result.status.success() && result.settled);
+                let detached = self.detach_owned(false);
                 if !detached {
-                    let _ = detach_mount(&self.mount_point, true, NORMAL_TIMEOUT);
+                    retained_boundary = Some(FailureBoundary::Detach);
                     disposition = Disposition::Failed;
-                    primary_boundary = FailureBoundary::Detach;
+                    if self.unsettled_process.is_some() || !self.detach_owned(true) {
+                        self.state = AuthorityState::RetainedCleanupFailed;
+                        disposition = Disposition::RetainedCleanupFailed;
+                        return self.outcome(
+                            disposition,
+                            primary_boundary,
+                            retained_boundary,
+                            hdiutil_started,
+                            self.unsettled_process.is_none(),
+                            descriptor_bytes_unchanged,
+                        );
+                    }
                 }
             }
 
@@ -403,12 +535,45 @@ mod macos {
             if cleanup_failed {
                 self.state = AuthorityState::RetainedCleanupFailed;
                 disposition = Disposition::RetainedCleanupFailed;
-                primary_boundary = FailureBoundary::Cleanup;
+                retained_boundary = Some(FailureBoundary::Cleanup);
             }
 
+            self.outcome(
+                disposition,
+                primary_boundary,
+                retained_boundary,
+                hdiutil_started,
+                process_settled,
+                descriptor_bytes_unchanged,
+            )
+        }
+
+        fn detach_owned(&mut self, force: bool) -> bool {
+            match detach_mount(&self.mount_point, force, NORMAL_TIMEOUT) {
+                Ok(result) => {
+                    result.status.success() && result.settled && !mount_is_active(&self.mount_point)
+                }
+                Err(SupervisionFailure::AfterSpawn(process)) => {
+                    self.unsettled_process = Some(process);
+                    false
+                }
+                Err(SupervisionFailure::BeforeSpawn) => false,
+            }
+        }
+
+        fn outcome(
+            &self,
+            disposition: Disposition,
+            primary_boundary: FailureBoundary,
+            retained_boundary: Option<FailureBoundary>,
+            hdiutil_started: bool,
+            process_settled: bool,
+            descriptor_bytes_unchanged: bool,
+        ) -> ProbeOutcome {
             ProbeOutcome {
                 disposition,
                 primary_boundary,
+                retained_boundary,
                 hdiutil_started,
                 process_settled,
                 mount_created: self.mount_created,
@@ -429,6 +594,7 @@ mod macos {
             ProbeOutcome {
                 disposition: Disposition::AuthorityRejected,
                 primary_boundary: FailureBoundary::Authority,
+                retained_boundary: None,
                 hdiutil_started: false,
                 process_settled: true,
                 mount_created: false,
@@ -457,16 +623,113 @@ mod macos {
             }
             Ok(())
         }
+
+        fn retain_for_recovery(&mut self, process: Option<UnsettledProcess>) {
+            if let Some(root) = self.root.take() {
+                retain_recovery(RetainedRecovery {
+                    process,
+                    source: self.source.take(),
+                    root,
+                    mount_point: self.mount_point.clone(),
+                });
+            }
+        }
     }
 
     impl Drop for DmgTransportAuthority {
         fn drop(&mut self) {
+            if let Some(mut process) = self.unsettled_process.take() {
+                if !process.settle().unwrap_or(false) {
+                    self.retain_for_recovery(Some(process));
+                    return;
+                }
+            }
             if mount_is_active(&self.mount_point) {
-                let _ = detach_mount(&self.mount_point, true, Duration::from_secs(5));
+                match detach_mount(&self.mount_point, true, Duration::from_secs(5)) {
+                    Ok(result)
+                        if result.status.success()
+                            && result.settled
+                            && !mount_is_active(&self.mount_point) => {}
+                    Err(SupervisionFailure::AfterSpawn(process)) => {
+                        self.retain_for_recovery(Some(process));
+                        return;
+                    }
+                    _ => {
+                        self.retain_for_recovery(None);
+                        return;
+                    }
+                }
             }
             self.force_cleanup_failure = false;
             self.source.take();
-            let _ = self.cleanup_root();
+            if self.cleanup_root().is_err() {
+                self.retain_for_recovery(None);
+            }
+        }
+    }
+
+    fn retain_recovery(recovery: RetainedRecovery) {
+        RETAINED_RECOVERIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(recovery);
+    }
+
+    fn retained_recovery_count() -> usize {
+        RETAINED_RECOVERIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    fn recover_retained() -> io::Result<()> {
+        let recoveries = {
+            let mut retained = RETAINED_RECOVERIES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *retained)
+        };
+        let mut unresolved = Vec::new();
+        for mut recovery in recoveries {
+            if !recovery.recover() {
+                unresolved.push(recovery);
+            }
+        }
+        let unresolved_count = unresolved.len();
+        RETAINED_RECOVERIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(unresolved);
+        if unresolved_count == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::other("retained DMG recovery remains unresolved"))
+        }
+    }
+
+    impl RetainedRecovery {
+        fn recover(&mut self) -> bool {
+            if let Some(mut process) = self.process.take() {
+                if !process.settle().unwrap_or(false) {
+                    self.process = Some(process);
+                    return false;
+                }
+            }
+            if mount_is_active(&self.mount_point) {
+                match detach_mount(&self.mount_point, true, Duration::from_secs(5)) {
+                    Ok(result)
+                        if result.status.success()
+                            && result.settled
+                            && !mount_is_active(&self.mount_point) => {}
+                    Err(SupervisionFailure::AfterSpawn(process)) => {
+                        self.process = Some(process);
+                        return false;
+                    }
+                    _ => return false,
+                }
+            }
+            self.source.take();
+            fs::remove_dir_all(&self.root).is_ok()
         }
     }
 
@@ -514,7 +777,10 @@ mod macos {
         Ok(hasher.finalize().into())
     }
 
-    fn create_fixture_dmg(source_dir: &Path, output: &Path) -> io::Result<()> {
+    fn create_fixture_dmg(
+        source_dir: &Path,
+        output: &Path,
+    ) -> Result<OwnedProcessResult, SupervisionFailure> {
         let mut command = Command::new(HDIUTIL);
         command
             .args(["create", "-quiet", "-ov", "-format", "UDRO", "-srcfolder"])
@@ -523,12 +789,7 @@ mod macos {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let result = supervise(command, None, NORMAL_TIMEOUT)?;
-        if result.status.success() && result.settled {
-            Ok(())
-        } else {
-            Err(io::Error::other("fixed fixture DMG creation failed"))
-        }
+        supervise(command, None, NORMAL_TIMEOUT, false)
     }
 
     fn attach_descriptor(
@@ -536,9 +797,12 @@ mod macos {
         mount_point: &Path,
         root: &Path,
         timeout: Duration,
-    ) -> io::Result<DescriptorAttachResult> {
-        let stdout = private_output(root.join("attach.stdout"))?;
-        let stderr = private_output(root.join("attach.stderr"))?;
+        fail_after_spawn: bool,
+    ) -> Result<DescriptorAttachResult, SupervisionFailure> {
+        let stdout = private_output(root.join("attach.stdout"))
+            .map_err(|_| SupervisionFailure::BeforeSpawn)?;
+        let stderr = private_output(root.join("attach.stderr"))
+            .map_err(|_| SupervisionFailure::BeforeSpawn)?;
         let mut command = Command::new(HDIUTIL);
         command
             .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
@@ -547,7 +811,7 @@ mod macos {
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
-        let result = supervise(command, Some(raw_fd), timeout)?;
+        let result = supervise(command, Some(raw_fd), timeout, fail_after_spawn)?;
         let stdout = read_bounded(&root.join("attach.stdout"));
         let stderr = read_bounded(&root.join("attach.stderr"));
         let bad_descriptor = match (stdout, stderr) {
@@ -570,7 +834,7 @@ mod macos {
         mount_point: &Path,
         force: bool,
         timeout: Duration,
-    ) -> io::Result<OwnedProcessResult> {
+    ) -> Result<OwnedProcessResult, SupervisionFailure> {
         let mut command = Command::new(HDIUTIL);
         command.arg("detach").arg(mount_point).arg("-quiet");
         if force {
@@ -580,7 +844,7 @@ mod macos {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        supervise(command, None, timeout)
+        supervise(command, None, timeout, false)
     }
 
     fn private_output(path: PathBuf) -> io::Result<File> {
@@ -606,7 +870,8 @@ mod macos {
         mut command: Command,
         inherited_fd: Option<RawFd>,
         timeout: Duration,
-    ) -> io::Result<OwnedProcessResult> {
+        fail_after_spawn: bool,
+    ) -> Result<OwnedProcessResult, SupervisionFailure> {
         let _hdiutil = HDIUTIL_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -627,31 +892,90 @@ mod macos {
             });
         }
 
-        let mut child = command.spawn()?;
+        let mut child = command
+            .spawn()
+            .map_err(|_| SupervisionFailure::BeforeSpawn)?;
         let process_group = child.id() as i32;
+        if fail_after_spawn {
+            return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                child,
+                process_group,
+                fail_settlement_once: false,
+            }));
+        }
         let deadline = Instant::now() + timeout;
         let mut timed_out = timeout.is_zero();
 
         let status = loop {
             if timed_out || Instant::now() >= deadline {
                 timed_out = true;
-                terminate_process_group(&mut child, process_group)?;
-                break child.wait()?;
+                if terminate_process_group(&mut child, process_group).is_err() {
+                    return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                        child,
+                        process_group,
+                        fail_settlement_once: false,
+                    }));
+                }
+                match child.wait() {
+                    Ok(status) => break status,
+                    Err(_) => {
+                        return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                            child,
+                            process_group,
+                            fail_settlement_once: false,
+                        }));
+                    }
+                }
             }
-            if let Some(status) = child.try_wait()? {
-                if !process_group_settled(process_group) {
-                    terminate_process_group(&mut child, process_group)?;
+            let status = match child.try_wait() {
+                Ok(status) => status,
+                Err(_) => {
+                    return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                        child,
+                        process_group,
+                        fail_settlement_once: false,
+                    }));
+                }
+            };
+            if let Some(status) = status {
+                if !process_group_settled(process_group)
+                    && terminate_process_group(&mut child, process_group).is_err()
+                {
+                    return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                        child,
+                        process_group,
+                        fail_settlement_once: false,
+                    }));
                 }
                 break status;
             }
             thread::sleep(Duration::from_millis(10));
         };
 
+        if !process_group_settled(process_group) {
+            return Err(SupervisionFailure::AfterSpawn(UnsettledProcess {
+                child,
+                process_group,
+                fail_settlement_once: false,
+            }));
+        }
+
         Ok(OwnedProcessResult {
             status,
             timed_out,
-            settled: process_group_settled(process_group),
+            settled: true,
         })
+    }
+
+    impl UnsettledProcess {
+        fn settle(&mut self) -> io::Result<bool> {
+            if self.fail_settlement_once {
+                self.fail_settlement_once = false;
+                return Err(io::Error::other("injected settlement failure"));
+            }
+            terminate_process_group(&mut self.child, self.process_group)?;
+            Ok(process_group_settled(self.process_group))
+        }
     }
 
     fn terminate_process_group(child: &mut Child, process_group: i32) -> io::Result<()> {
@@ -712,6 +1036,7 @@ mod macos {
         let outcome = authority.consume();
         assert_eq!(outcome.disposition, Disposition::Unsupported);
         assert_eq!(outcome.primary_boundary, FailureBoundary::Consumption);
+        assert_eq!(outcome.retained_boundary, None);
         assert!(outcome.hdiutil_started);
         assert!(outcome.process_settled);
         assert!(outcome.descriptor_bytes_unchanged);
@@ -747,6 +1072,7 @@ mod macos {
         let outcome = authority.consume_with_timeout(Duration::ZERO, true);
         assert_eq!(outcome.disposition, Disposition::Failed);
         assert_eq!(outcome.primary_boundary, FailureBoundary::Timeout);
+        assert_eq!(outcome.retained_boundary, None);
         assert!(outcome.hdiutil_started);
         assert!(outcome.process_settled);
         assert!(!outcome.mount_residue);
@@ -783,7 +1109,8 @@ mod macos {
             DmgTransportAuthority::cleanup_failure().expect("create cleanup authority");
         let outcome = authority.consume_with_timeout(NORMAL_TIMEOUT, false);
         assert_eq!(outcome.disposition, Disposition::RetainedCleanupFailed);
-        assert_eq!(outcome.primary_boundary, FailureBoundary::Cleanup);
+        assert_eq!(outcome.primary_boundary, FailureBoundary::Consumption);
+        assert_eq!(outcome.retained_boundary, Some(FailureBoundary::Cleanup));
         assert!(outcome.temporary_residue);
         assert!(!outcome.mount_residue);
         assert_non_claims(&outcome);
@@ -791,6 +1118,68 @@ mod macos {
         authority.retry_cleanup().expect("retry retained cleanup");
         assert!(!authority.has_temporary_residue());
         assert!(!authority.has_mount_residue());
+    }
+
+    #[test]
+    fn post_spawn_supervision_failure_retains_authority_until_settlement_retry() {
+        let mut authority = DmgTransportAuthority::invalid().expect("create retained authority");
+        let outcome = authority.consume_with_supervision(NORMAL_TIMEOUT, false, true);
+
+        assert_eq!(outcome.disposition, Disposition::RetainedProcessUnsettled);
+        assert_eq!(outcome.primary_boundary, FailureBoundary::Supervision);
+        assert_eq!(
+            outcome.retained_boundary,
+            Some(FailureBoundary::Supervision)
+        );
+        assert!(outcome.hdiutil_started);
+        assert!(!outcome.process_settled);
+        assert!(outcome.temporary_residue);
+        assert!(authority.source.is_some());
+        assert!(!outcome.mount_residue);
+        assert_non_claims(&outcome);
+
+        authority
+            .unsettled_process
+            .as_mut()
+            .expect("retain spawned process")
+            .fail_settlement_once = true;
+        assert!(authority.retry_cleanup().is_err());
+        assert!(authority.unsettled_process.is_some());
+        assert!(authority.source.is_some());
+        assert!(authority.has_temporary_residue());
+
+        authority
+            .retry_cleanup()
+            .expect("settle retained process and remove authority root");
+        assert!(!authority.has_temporary_residue());
+        assert!(!authority.has_mount_residue());
+    }
+
+    #[test]
+    fn drop_transfers_unsettled_authority_to_bounded_recovery_owner() {
+        assert_eq!(retained_recovery_count(), 0);
+        let retained_root = {
+            let mut authority =
+                DmgTransportAuthority::invalid().expect("create drop recovery authority");
+            let outcome = authority.consume_with_supervision(NORMAL_TIMEOUT, false, true);
+            assert_eq!(outcome.disposition, Disposition::RetainedProcessUnsettled);
+            authority
+                .unsettled_process
+                .as_mut()
+                .expect("retain spawned process")
+                .fail_settlement_once = true;
+            authority
+                .root
+                .as_ref()
+                .expect("retain private root")
+                .clone()
+        };
+
+        assert!(retained_root.exists());
+        assert_eq!(retained_recovery_count(), 1);
+        recover_retained().expect("settle and clean the retained drop recovery");
+        assert_eq!(retained_recovery_count(), 0);
+        assert!(!retained_root.exists());
     }
 
     #[test]
