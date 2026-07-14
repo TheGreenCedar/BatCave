@@ -3,6 +3,7 @@
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
   import { currentDiagnosticIssues, suppressedDiagnosticsLabel } from "../../diagnostics";
   import {
+    collectorServiceStateLabel,
     installKindLabel,
     privilegedSourceLabel,
     processElevationLabel,
@@ -42,6 +43,8 @@
   let dialog: HTMLDialogElement | null = null;
   let opener: HTMLElement | null = null;
   let copyStatus = "";
+
+  $: collectorService = snapshot.admin_mode.collector_service ?? null;
 
   $: if (dialog) syncDialog(dialog, open);
 
@@ -187,7 +190,17 @@
               <div><dt>Current process</dt><dd>{processElevationLabel(snapshot.environment)}</dd></div>
               <div><dt>Privileged collection</dt><dd>{adminStatus}</dd></div>
               <div><dt>Privileged source</dt><dd>{privilegedSourceLabel(snapshot.admin_mode.source)}</dd></div>
-              <div><dt>Last elevated sample</dt><dd>{snapshot.admin_mode.last_success_at_ms ? new Date(snapshot.admin_mode.last_success_at_ms).toLocaleString() : "None this session"}</dd></div>
+              <div><dt>Last privileged sample</dt><dd>{snapshot.admin_mode.last_success_at_ms ? new Date(snapshot.admin_mode.last_success_at_ms).toLocaleString() : "None this session"}</dd></div>
+              {#if collectorService}
+                <div><dt>Collector service</dt><dd>{collectorServiceStateLabel(collectorService)}</dd></div>
+                <div><dt>Service version</dt><dd>{collectorService.service_version ?? "Not reported"}</dd></div>
+                <div><dt>Service protocol</dt><dd>{collectorService.negotiated_protocol_version ?? "Not negotiated"}</dd></div>
+                <div><dt>Minimum desktop</dt><dd>{collectorService.minimum_desktop_version ?? "Not reported"}</dd></div>
+                <div><dt>Service release</dt><dd>{collectorService.release_identity?.app_version ?? "Not reported"}</dd></div>
+                <div><dt>Service instance</dt><dd>{collectorService.instance_id ?? "Not connected"}</dd></div>
+                <div><dt>Last service connection</dt><dd>{collectorService.last_connected_at_ms ? new Date(collectorService.last_connected_at_ms).toLocaleString() : "None this session"}</dd></div>
+                <div><dt>Service detail</dt><dd>{collectorService.detail ?? "None"}</dd></div>
+              {/if}
               <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
               <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>
               <div><dt>Collector p95</dt><dd>{snapshot.health.collection_p95_ms === null ? "Unavailable" : `${snapshot.health.collection_p95_ms.toFixed(1)} ms`}</dd></div>

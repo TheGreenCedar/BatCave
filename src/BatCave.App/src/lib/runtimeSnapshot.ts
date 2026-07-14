@@ -37,6 +37,7 @@ export function makeEmptySnapshot(
       source: "none",
       detail: null,
       last_success_at_ms: null,
+      collector_service: null,
     },
     settings: {
       query: makeDefaultRuntimeQuery(),

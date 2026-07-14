@@ -460,7 +460,9 @@
         const next = makeFixtureSnapshot(
           fixtureTick,
           currentRuntimeQuery(),
-          accessibilityFixtureState === "group" ? "windows" : browserFixturePlatform,
+          accessibilityFixtureState === "group" || accessibilityFixtureState === "diagnostics"
+            ? "windows"
+            : browserFixturePlatform,
           "compact",
         );
         prepareAccessibilityFixture(next, accessibilityFixtureState);
@@ -584,6 +586,26 @@
       next.health.degraded = true;
       next.health.app_cpu_percent = 3.2;
       next.health.status_summary = "Fixture app resource budget is exceeded.";
+    }
+
+    if (state === "diagnostics") {
+      next.environment.process_elevation = "standard";
+      next.admin_mode = {
+        state: "active",
+        source: "collector_service",
+        detail: null,
+        last_success_at_ms: next.sampled_at_ms,
+        collector_service: {
+          state: "active",
+          release_identity: { ...next.environment.release_identity },
+          service_version: next.environment.release_identity.app_version,
+          negotiated_protocol_version: 3,
+          minimum_desktop_version: null,
+          instance_id: "accessibility-fixture-service",
+          last_connected_at_ms: next.published_at_ms,
+          detail: null,
+        },
+      };
     }
   }
 

@@ -73,6 +73,14 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
       ),
       detail: payload.privileged_collection.detail,
       last_success_at_ms: payload.privileged_collection.last_success_at_ms,
+      collector_service: payload.privileged_collection.collector_service
+        ? {
+            ...payload.privileged_collection.collector_service,
+            release_identity: payload.privileged_collection.collector_service.release_identity
+              ? { ...payload.privileged_collection.collector_service.release_identity }
+              : null,
+          }
+        : null,
     },
     settings: {
       query: { ...payload.settings.query },
