@@ -1,6 +1,6 @@
 # Collector service IPC v1
 
-BatCave's future Windows collector service uses a separate local protocol from runtime protocol v3. This contract carries an immutable, unshaped collector snapshot to the standard-user desktop. The desktop remains responsible for query filtering, grouping, sorting, contributor selection, and presentation.
+BatCave's Windows collector service uses a separate local protocol from runtime protocol v3. This contract carries an immutable, unshaped collector snapshot to the standard-user desktop. The desktop remains responsible for query filtering, grouping, sorting, contributor selection, and presentation.
 
 ## Request surface
 
@@ -39,4 +39,4 @@ The response carries the fixed service name, service and release versions, servi
 
 The v1 error codes are `incompatible`, `unauthorized`, `malformed`, `oversized`, and `stale_sequence`. Error detail is bounded by the same string limit.
 
-This source slice does not create a named pipe, pipe access-control list, Windows service, Service Control Manager entry, installer hook, or running collector. Those layers must supply the verified peer context and consume this contract without expanding its operation surface.
+The Windows host and transport consume this contract in `windows_service.rs` and `windows_transport.rs`; [Windows collector service host](windows-collector-service-host.md) records their security and lifecycle boundaries. Desktop cutover and installer provisioning remain separate work.

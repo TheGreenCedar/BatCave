@@ -76,6 +76,13 @@ impl TelemetryCollector {
         Self::new_with_process_network(process_network)
     }
 
+    #[cfg(windows)]
+    pub(crate) fn for_collector_service() -> Self {
+        // #70 owns the leased, bounded service ETW lifecycle. Until then the
+        // service publishes explicit held process-network quality.
+        Self::new_with_process_network(false)
+    }
+
     pub(crate) fn process_network_ready(&self) -> Result<bool, String> {
         #[cfg(windows)]
         {
@@ -1225,6 +1232,15 @@ mod tests {
     #[test]
     fn elevated_helper_does_not_start_a_second_etw_monitor() {
         let collector = TelemetryCollector::for_elevated_helper(false);
+        let state = collector.network_attribution.lock().unwrap();
+
+        assert!(matches!(&*state, NetworkAttributionState::Disabled));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn collector_service_keeps_etw_disabled_until_lifecycle_hardening() {
+        let collector = TelemetryCollector::for_collector_service();
         let state = collector.network_attribution.lock().unwrap();
 
         assert!(matches!(&*state, NetworkAttributionState::Disabled));

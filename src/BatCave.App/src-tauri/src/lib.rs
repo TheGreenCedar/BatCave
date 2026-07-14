@@ -51,6 +51,11 @@ pub fn run_cli_from_env() -> Option<i32> {
     run_cli(&args)
 }
 
+#[cfg(windows)]
+pub fn run_collector_service() -> i32 {
+    collector_service::windows_service::run()
+}
+
 fn run_cli(args: &[String]) -> Option<i32> {
     elevation::run_cli(args)
         .or_else(|| persistence_proof::run_cli(args))
