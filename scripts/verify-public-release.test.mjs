@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { expectedReleaseAssetRoles } from "./release-asset-contract.mjs";
 import {
   CHECKSUM_MANIFEST,
   RELEASE_REPOSITORY,
@@ -24,23 +25,32 @@ import {
 
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
 const tag = "v0.3.0";
+const contract = expectedReleaseAssetRoles(tag);
+const provenanceName = contract.roles.find(({ role }) => role === "build provenance bundle").name;
+const subjectNames = contract.roles
+  .map(({ name }) => name)
+  .filter((name) => name !== CHECKSUM_MANIFEST && name !== provenanceName)
+  .sort((left, right) => left.localeCompare(right));
+const testSubject = "batcave-monitor.exe";
 
 function digest(contents) {
   return `sha256:${crypto.createHash("sha256").update(contents).digest("hex")}`;
 }
 
 function releaseFixture() {
-  const subjects = new Map([
-    ["app.bin", "app bytes"],
-    ["latest.json", '{"version":"0.3.0"}\n'],
-  ]);
+  const subjects = new Map(
+    subjectNames.map((name) => [
+      name,
+      name === "latest.json" ? '{"version":"0.3.0"}\n' : `fixture bytes for ${name}\n`,
+    ]),
+  );
   const checksumManifest = [...subjects]
     .map(([name, contents]) => `${digest(contents).slice("sha256:".length)}  ./${name}\n`)
     .join("");
   const payloads = new Map([
     ...subjects,
     [CHECKSUM_MANIFEST, checksumManifest],
-    ["provenance.json", '{"bundle":"fixture"}\n'],
+    [provenanceName, '{"bundle":"fixture"}\n'],
   ]);
   const assets = [...payloads]
     .map(([name, contents]) => ({
@@ -92,7 +102,7 @@ test("verifies anonymous public bytes, checksums, release state, and source-boun
       ghRunner: (arguments_) => commands.push(arguments_),
     });
 
-    assert.deepEqual(result, { assetCount: 4, subjectCount: 2 });
+    assert.deepEqual(result, { assetCount: 13, subjectCount: 11 });
     assert.equal(requests.length, candidate.assets.length);
     assert.ok(
       requests.every(
@@ -107,10 +117,10 @@ test("verifies anonymous public bytes, checksums, release state, and source-boun
     assert.deepEqual(commands[0], releaseVerificationArguments(tag));
     assert.deepEqual(
       commands.slice(1),
-      ["app.bin", "latest.json"].map((name) =>
+      subjectNames.map((name) =>
         attestationVerificationArguments(
           path.join(downloadDirectory, name),
-          path.join(downloadDirectory, "provenance.json"),
+          path.join(downloadDirectory, provenanceName),
           sourceSha,
         ),
       ),
@@ -121,8 +131,12 @@ test("verifies anonymous public bytes, checksums, release state, and source-boun
 test("rejects missing, unexpected, duplicate, unsafe, and mismatched release assets", () => {
   const { candidate, release } = releaseFixture();
   assert.throws(
+    () => buildPublicDownloadPlan({ ...candidate, assets: candidate.assets.slice(1) }, release),
+    /release candidate is missing required/,
+  );
+  assert.throws(
     () => buildPublicDownloadPlan(candidate, { ...release, assets: release.assets.slice(1) }),
-    /missing asset/,
+    /published release is missing required/,
   );
 
   const unexpected = {
@@ -254,7 +268,7 @@ test("rejects public size, digest, and asset-set drift after download", async ()
     const plan = buildPublicDownloadPlan(candidate, release);
 
     const wrongSize = new Map(payloads);
-    wrongSize.set("app.bin", "too many app bytes");
+    wrongSize.set(testSubject, "too many app bytes that exceed the declared fixture size");
     const sizeDirectory = path.join(root, "size");
     await assert.rejects(
       downloadPublicAssets(plan, sizeDirectory, publicFetch(wrongSize)),
@@ -262,7 +276,7 @@ test("rejects public size, digest, and asset-set drift after download", async ()
     );
 
     const wrongDigest = new Map(payloads);
-    wrongDigest.set("app.bin", "APP BYTES");
+    wrongDigest.set(testSubject, payloads.get(testSubject).toUpperCase());
     const digestDirectory = path.join(root, "digest");
     await downloadPublicAssets(plan, digestDirectory, publicFetch(wrongDigest));
     await assert.rejects(
@@ -282,8 +296,8 @@ test("parses a strict checksum manifest and requires exact subject coverage", as
     const { candidate, checksumManifest } = releaseFixture();
     fs.writeFileSync(path.join(root, CHECKSUM_MANIFEST), checksumManifest);
     assert.deepEqual(verifyChecksumManifest(candidate, root), {
-      subjects: ["app.bin", "latest.json"],
-      bundleName: "provenance.json",
+      subjects: subjectNames,
+      bundleName: provenanceName,
     });
 
     assert.throws(() => parseChecksumManifest(""), /non-empty/);
@@ -301,7 +315,7 @@ test("parses a strict checksum manifest and requires exact subject coverage", as
     };
     assert.throws(
       writeAndVerify(checksumManifest.split("\n").slice(0, 1).join("\n") + "\n"),
-      /found 2 exceptions/,
+      /found 11 exceptions/,
     );
     assert.throws(
       writeAndVerify(`${checksumManifest}${"0".repeat(64)}  ./unexpected.bin\n`),

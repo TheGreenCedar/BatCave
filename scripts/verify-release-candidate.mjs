@@ -2,6 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  canonicalReleaseAssetName,
+  requireSafeReleaseAssetName,
+  verifyReleaseAssetInventory,
+} from "./release-asset-contract.mjs";
 import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
@@ -69,20 +74,22 @@ export function stageReleaseAssets(inputRoot, outputRoot) {
   }
   const names = new Map();
   for (const source of releaseFiles(inputRoot)) {
-    const name = path.basename(source).replaceAll(" ", ".");
-    const prior = names.get(name);
+    const name = requireSafeReleaseAssetName(path.basename(source).replaceAll(" ", "."));
+    const canonicalName = canonicalReleaseAssetName(name);
+    const prior = names.get(canonicalName);
     if (prior) {
-      throw new Error(`release assets ${prior} and ${source} both normalize to ${name}`);
+      throw new Error(`release assets ${prior.source} and ${source} both normalize to ${name}`);
     }
-    names.set(name, source);
+    names.set(canonicalName, { name, source });
   }
 
-  const staged = [...names.keys()].sort((a, b) => a.localeCompare(b));
+  const staged = [...names.values()].map(({ name }) => name).sort((a, b) => a.localeCompare(b));
   if (staged.length === 0) throw new Error("release input contains no files");
 
   fs.mkdirSync(outputRoot, { recursive: true });
   for (const name of staged) {
-    fs.copyFileSync(names.get(name), path.join(outputRoot, name), fs.constants.COPYFILE_EXCL);
+    const source = names.get(canonicalReleaseAssetName(name)).source;
+    fs.copyFileSync(source, path.join(outputRoot, name), fs.constants.COPYFILE_EXCL);
   }
   return staged;
 }
@@ -107,10 +114,17 @@ export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
       };
     });
   if (assets.length === 0) throw new Error("release candidate contains no assets");
+  verifyReleaseAssetInventory(tag, prerelease, assets, "release candidate");
   return { tag, source_sha: sourceSha, prerelease, assets };
 }
 
 export function verifyReleaseReadback(expected, actual, expectedDraft) {
+  verifyReleaseAssetInventory(
+    expected.tag,
+    expected.prerelease,
+    expected.assets,
+    "release candidate",
+  );
   if (actual.tag_name !== expected.tag) {
     throw new Error(
       `release tag readback mismatch: expected ${expected.tag}, received ${actual.tag_name}`,
@@ -145,6 +159,7 @@ export function verifyReleaseReadback(expected, actual, expectedDraft) {
     (asset, index) => asset.name === actualAssets[index - 1]?.name,
   );
   if (duplicate) throw new Error(`release readback contains duplicate asset ${duplicate.name}`);
+  verifyReleaseAssetInventory(expected.tag, actual.prerelease, actualAssets, "release readback");
   if (JSON.stringify(actualAssets) !== JSON.stringify(expected.assets)) {
     throw new Error(
       `release asset readback mismatch\nexpected: ${JSON.stringify(

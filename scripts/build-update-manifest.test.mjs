@@ -16,6 +16,12 @@ const artifacts = {
   "BatCave.Monitor.app.tar.gz.sig": "macos-signature\n",
 };
 
+function artifactsForVersion(version) {
+  return Object.fromEntries(
+    Object.entries(artifacts).map(([name, contents]) => [name.replace("0.3.0", version), contents]),
+  );
+}
+
 test("builds stable signed update entries for Windows, Linux, and universal macOS", () => {
   assert.deepEqual(buildUpdateManifest("v0.3.0", "TheGreenCedar/BatCave", artifacts), {
     version: "0.3.0",
@@ -42,7 +48,13 @@ test("builds stable signed update entries for Windows, Linux, and universal macO
 });
 
 test("keeps prerelease versions explicit", () => {
-  assert.equal(buildUpdateManifest("v0.3.0-rc.1", "owner/repo", artifacts).version, "0.3.0-rc.1");
+  const manifest = buildUpdateManifest(
+    "v0.3.0-rc.1",
+    "owner/repo",
+    artifactsForVersion("0.3.0-rc.1"),
+  );
+  assert.equal(manifest.version, "0.3.0-rc.1");
+  assert.match(manifest.platforms["windows-x86_64"].url, /0\.3\.0-rc\.1_x64-setup/);
 });
 
 test("rejects missing signatures", () => {
@@ -64,7 +76,14 @@ test("requires exactly one universal macOS updater archive", () => {
         "another.app.tar.gz": "",
         "another.app.tar.gz.sig": "other-signature",
       }),
-    /darwin-aarch64 requires exactly one \.app\.tar\.gz asset/,
+    /macOS universal updater payload requires exactly one asset; found 2/,
+  );
+});
+
+test("binds updater payload and signature names to the exact tag version", () => {
+  assert.throws(
+    () => buildUpdateManifest("v0.3.0", "owner/repo", artifactsForVersion("9.9.9")),
+    /must be named BatCave\.Monitor_0\.3\.0_x64-setup\.exe/,
   );
 });
 
