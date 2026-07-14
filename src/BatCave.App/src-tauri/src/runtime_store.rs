@@ -1431,13 +1431,15 @@ impl RuntimeStore {
             }
         }
         self.sync_collector_warnings(active_collector_warnings);
-        if let Some(previous) = &self.previous_totals {
-            let disk_rates_are_native = system
-                .quality
-                .as_ref()
-                .and_then(|quality| quality.disk.as_ref())
-                .and_then(|quality| quality.source)
-                == Some(MetricSource::Procfs);
+        let disk_source = system
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.disk.as_ref())
+            .and_then(|quality| quality.source);
+        if disk_source == Some(MetricSource::Iokit) {
+            derive_iokit_disk_rates(&mut system, self.previous_totals.as_ref(), elapsed_seconds);
+        } else if let Some(previous) = &self.previous_totals {
+            let disk_rates_are_native = disk_source == Some(MetricSource::Procfs);
             if !disk_rates_are_native && system.disk_read_bps == 0 && system.disk_write_bps == 0 {
                 system.disk_read_bps = byte_rate(
                     system.disk_read_total_bytes,
@@ -1450,6 +1452,8 @@ impl RuntimeStore {
                     elapsed_seconds,
                 );
             }
+        }
+        if let Some(previous) = &self.previous_totals {
             let network_rates_are_native = system
                 .quality
                 .as_ref()
@@ -1930,6 +1934,7 @@ struct TelemetryTotals {
     ts_ms: u64,
     disk_read_total_bytes: u64,
     disk_write_total_bytes: u64,
+    disk_quality: Option<MetricQualityInfo>,
     network_received_total_bytes: u64,
     network_transmitted_total_bytes: u64,
 }
@@ -1940,6 +1945,10 @@ impl TelemetryTotals {
             ts_ms,
             disk_read_total_bytes: system.disk_read_total_bytes,
             disk_write_total_bytes: system.disk_write_total_bytes,
+            disk_quality: system
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.disk.clone()),
             network_received_total_bytes: system.network_received_total_bytes,
             network_transmitted_total_bytes: system.network_transmitted_total_bytes,
         }
@@ -2235,6 +2244,58 @@ fn cumulative_baseline_is_compatible(
     cumulative_sample_is_valid(Some(current))
         && (cumulative_sample_is_valid(Some(previous)) || metric_is_pending_baseline(previous))
         && sources_are_compatible
+}
+
+fn derive_iokit_disk_rates(
+    system: &mut SystemMetricsSnapshot,
+    previous: Option<&TelemetryTotals>,
+    elapsed_seconds: f64,
+) {
+    let current_quality = system
+        .quality
+        .as_ref()
+        .and_then(|quality| quality.disk.as_ref())
+        .cloned();
+    let baseline_is_valid = previous.is_some_and(|previous| {
+        cumulative_baseline_is_compatible(current_quality.as_ref(), previous.disk_quality.as_ref())
+            && system.disk_read_total_bytes >= previous.disk_read_total_bytes
+            && system.disk_write_total_bytes >= previous.disk_write_total_bytes
+    });
+
+    if let Some(previous) = previous.filter(|_| baseline_is_valid) {
+        system.disk_read_bps = byte_rate(
+            system.disk_read_total_bytes,
+            previous.disk_read_total_bytes,
+            elapsed_seconds,
+        );
+        system.disk_write_bps = byte_rate(
+            system.disk_write_total_bytes,
+            previous.disk_write_total_bytes,
+            elapsed_seconds,
+        );
+        return;
+    }
+
+    system.disk_read_bps = 0;
+    system.disk_write_bps = 0;
+    let Some(current) = current_quality.filter(|quality| {
+        matches!(
+            quality.quality,
+            MetricQuality::Native | MetricQuality::Estimated | MetricQuality::Partial
+        )
+    }) else {
+        return;
+    };
+    let mut pending = current;
+    pending.quality = MetricQuality::Held;
+    pending.limitation_code = Some(MetricLimitationCode::PendingBaseline);
+    pending.message = Some(
+        "Waiting for a stable IOKit physical-device counter baseline before deriving disk rates."
+            .to_string(),
+    );
+    if let Some(quality) = system.quality.as_mut() {
+        quality.disk = Some(pending);
+    }
 }
 
 fn merge_main_network_attribution(main: &[ProcessSample], elevated: &mut [ProcessSample]) {
@@ -4868,7 +4929,7 @@ mod tests {
     fn process_rate_quality_requires_a_fresh_live_baseline_across_collectors() {
         let collector_cases = [
             ("windows", MetricSource::DirectApi, MetricQuality::Native),
-            ("macos", MetricSource::DirectApi, MetricQuality::Native),
+            ("macos", MetricSource::Libproc, MetricQuality::Native),
             ("linux", MetricSource::Procfs, MetricQuality::Native),
             ("sysinfo", MetricSource::Sysinfo, MetricQuality::Estimated),
         ];
@@ -5020,6 +5081,7 @@ mod tests {
     fn process_rate_recovery_requires_a_valid_cumulative_baseline_across_sources() {
         let collector_cases = [
             ("direct_api", MetricSource::DirectApi, MetricQuality::Native),
+            ("libproc", MetricSource::Libproc, MetricQuality::Native),
             ("procfs", MetricSource::Procfs, MetricQuality::Native),
             ("sysinfo", MetricSource::Sysinfo, MetricQuality::Estimated),
         ];
@@ -5199,6 +5261,73 @@ mod tests {
                 .map(|quality| quality.quality),
             Some(MetricQuality::Native)
         );
+    }
+
+    #[test]
+    fn iokit_disk_topology_and_availability_transitions_cannot_create_spikes() {
+        let disk_quality = |quality, limitation_code| {
+            let mut value = MetricQualityInfo::new(quality, MetricSource::Iokit);
+            value.limitation_code = limitation_code;
+            value
+        };
+        let sample = |read, write, quality, limitation_code| {
+            let mut system = empty_system();
+            system.disk_read_total_bytes = read;
+            system.disk_write_total_bytes = write;
+            system.quality = Some(crate::contracts::SystemMetricQuality {
+                disk: Some(disk_quality(quality, limitation_code)),
+                ..crate::contracts::SystemMetricQuality::default()
+            });
+            system
+        };
+
+        let first = sample(
+            1_000,
+            500,
+            MetricQuality::Held,
+            Some(MetricLimitationCode::PendingBaseline),
+        );
+        let first_totals = TelemetryTotals::from_system(&first, 1_000);
+
+        let mut stable = sample(1_200, 600, MetricQuality::Native, None);
+        derive_iokit_disk_rates(&mut stable, Some(&first_totals), 1.0);
+        assert_eq!(stable.disk_read_bps, 200);
+        assert_eq!(stable.disk_write_bps, 100);
+        let stable_totals = TelemetryTotals::from_system(&stable, 2_000);
+
+        let unavailable = sample(
+            0,
+            0,
+            MetricQuality::Unavailable,
+            Some(MetricLimitationCode::CollectorFailure),
+        );
+        let unavailable_totals = TelemetryTotals::from_system(&unavailable, 3_000);
+
+        let mut recovered = sample(
+            9_000,
+            4_000,
+            MetricQuality::Held,
+            Some(MetricLimitationCode::PendingBaseline),
+        );
+        derive_iokit_disk_rates(&mut recovered, Some(&unavailable_totals), 1.0);
+        assert_eq!(recovered.disk_read_bps, 0);
+        assert_eq!(recovered.disk_write_bps, 0);
+        let recovered_totals = TelemetryTotals::from_system(&recovered, 4_000);
+
+        let mut after_recovery = sample(9_100, 4_050, MetricQuality::Native, None);
+        derive_iokit_disk_rates(&mut after_recovery, Some(&recovered_totals), 1.0);
+        assert_eq!(after_recovery.disk_read_bps, 100);
+        assert_eq!(after_recovery.disk_write_bps, 50);
+
+        let mut topology_change = sample(
+            40_000,
+            20_000,
+            MetricQuality::Held,
+            Some(MetricLimitationCode::PendingBaseline),
+        );
+        derive_iokit_disk_rates(&mut topology_change, Some(&stable_totals), 1.0);
+        assert_eq!(topology_change.disk_read_bps, 0);
+        assert_eq!(topology_change.disk_write_bps, 0);
     }
 
     #[test]

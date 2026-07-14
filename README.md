@@ -155,7 +155,7 @@ Theme preference is stored in browser `localStorage` under `batcave.monitor.them
 - Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
 - The Windows app starts with the invoking user's token. Privileged mode launches the existing local helper out of process through a Windows elevation request; cancellation or denial leaves standard monitoring running. The runtime and UI keep parent token truth separate from the helper's collection state and source. A copied release executable is reported as portable, development builds as development, and an NSIS install only when the executable directory matches Tauri's uninstall-registry location. Failed executable or registry probes are reported as unavailable instead of portable. The UI reports the Windows token state as unavailable when it cannot be read.
 - Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses `bpftrace`/eBPF when the host has the needed permissions or capabilities. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
-- macOS telemetry uses sysinfo plus local libproc data for process details. Per-process network attribution and privileged helper mode are intentionally unavailable in this release; the cockpit labels those gaps instead of reporting zero traffic.
+- macOS telemetry uses sysinfo plus local libproc process details and deduplicated IOKit physical block-driver counters. Disk images are excluded from host disk, host network includes loopback, and per-process network attribution and privileged helper mode are intentionally unavailable.
 - Browser fixture mode is for UI work. It is deterministic on purpose and is not proof of native collector behavior.
 
 ## Benchmarks
@@ -194,6 +194,7 @@ Pull requests and `codex/**` pushes run Windows, Linux, and dual-architecture ma
 
 - [App runbook](src/BatCave.App/README.md) covers native/browser run modes, app scripts, and platform troubleshooting.
 - [Runtime telemetry](docs/runtime-telemetry.md) covers the Rust runtime store, native collectors, quality states, admin helper behavior, and benchmark surfaces.
+- [Platform capabilities](docs/platform-capabilities.md) is the canonical telemetry, scope, privilege, package, and CPU-architecture matrix.
 - [Release channels and verification](docs/releases.md) covers version alignment, stable/prerelease policy, checksums, provenance, and publication.
 
 ## Contributing

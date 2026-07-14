@@ -1345,6 +1345,22 @@ mod tests {
     #[test]
     fn macos_collector_reports_native_process_and_honest_system_sources() {
         let collector = TelemetryCollector::new();
+        let first = collector
+            .collect()
+            .expect("macOS baseline telemetry sample");
+        let first_disk = first
+            .system
+            .quality
+            .as_ref()
+            .and_then(|quality| quality.disk.as_ref())
+            .expect("baseline disk quality");
+        assert_eq!(first_disk.source, Some(MetricSource::Iokit));
+        assert_eq!(first_disk.quality, MetricQuality::Held);
+        assert_eq!(
+            first_disk.limitation_code,
+            Some(MetricLimitationCode::PendingBaseline)
+        );
+
         let sample = collector.collect().expect("macOS telemetry sample");
 
         assert!(sample.system.memory_available_bytes.is_some());
@@ -1357,10 +1373,9 @@ mod tests {
             Some(MetricSource::Sysinfo)
         );
         let disk = system_quality.disk.as_ref().expect("disk quality");
-        assert_eq!(disk.source, Some(MetricSource::Runtime));
-        assert_eq!(disk.quality, MetricQuality::Unavailable);
-        assert_eq!(sample.system.disk_read_total_bytes, 0);
-        assert_eq!(sample.system.disk_write_total_bytes, 0);
+        assert_eq!(disk.source, Some(MetricSource::Iokit));
+        assert_eq!(disk.quality, MetricQuality::Native);
+        assert!(sample.system.disk_read_total_bytes > 0);
         assert_eq!(
             system_quality
                 .network
