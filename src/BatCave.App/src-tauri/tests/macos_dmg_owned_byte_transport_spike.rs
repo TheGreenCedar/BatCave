@@ -1067,6 +1067,31 @@ mod macos {
     }
 
     #[test]
+    fn substituted_descriptor_fails_before_hdiutil_and_cleans_without_residue() {
+        let mut authority =
+            DmgTransportAuthority::invalid().expect("create substitution authority");
+        let substitute_path = authority
+            .root
+            .as_ref()
+            .expect("retain private root")
+            .join("substitute.dmg");
+        write_private(&substitute_path, b"substituted descriptor bytes\n")
+            .expect("create substitute bytes");
+        authority.source = Some(File::open(substitute_path).expect("open substitute descriptor"));
+
+        let outcome = authority.consume();
+        assert_eq!(outcome.disposition, Disposition::Failed);
+        assert_eq!(outcome.primary_boundary, FailureBoundary::Authority);
+        assert_eq!(outcome.retained_boundary, None);
+        assert!(!outcome.hdiutil_started);
+        assert!(outcome.process_settled);
+        assert!(!outcome.descriptor_bytes_unchanged);
+        assert!(!outcome.mount_residue);
+        assert!(!outcome.temporary_residue);
+        assert_non_claims(&outcome);
+    }
+
+    #[test]
     fn timeout_terminates_and_settles_the_owned_hdiutil_group() {
         let mut authority = DmgTransportAuthority::valid().expect("create timeout authority");
         let outcome = authority.consume_with_timeout(Duration::ZERO, true);
