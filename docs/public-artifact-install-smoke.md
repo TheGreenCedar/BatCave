@@ -67,8 +67,8 @@ Local paths, raw output, environment dumps, and credentials are rejected from re
 
 Result validation rederives the disposition and the full packet. Packet ID, observation time, workflow and release identity, platform, selected asset, every check status and outcome, and the exact limitation set must match. Contradictory or extra evidence fails.
 
-## Future native executor
+## Native executor boundary
 
-Native proof requires a separately reviewed, process-local branded executor capability. Adding a caller-visible boolean, kind string, or injectable function is insufficient. That executor must perform file identity, `lstat`/symlink and containment checks, real-path resolution, hashing, package trust validation, and consumption of the verified bytes as one capability-bound operation. Its tests must swap or replace the file between verification and consumption and demonstrate fail-closed behavior.
+The [native executor source slice](native-install-smoke-executor.md) adds process-local artifact ownership, hostile path and caller-seam tests, closed result validation, and the future #98 evidence derivation. Adding a caller-visible boolean, kind string, or injectable function remains insufficient. The current owned-byte verification receipt is artifact-only and cannot authorize a native disposition.
 
-Until that capability exists, this harness supplies a durable contract and fixture suite only. It does not publish releases, sign packages, run installers, prove accessibility, prove Windows service or ETW behavior, prove updater expiry or A-to-B updates, or satisfy the stable-release gate.
+No reviewed platform adapter is registered, so valid source-slice execution returns `skipped` and emits no evidence. Native proof still requires a closed adapter to make the installer or stager consume the owned bytes while it performs trust, runtime, timeout-settlement, removal, and residue gates. The harness does not publish releases, sign packages, run installers, prove accessibility, prove Windows service or ETW behavior, prove updater expiry or A-to-B updates, or satisfy the stable-release gate.
