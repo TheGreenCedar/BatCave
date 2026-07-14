@@ -70,6 +70,7 @@ pub(crate) enum CollectorEvent {
 #[derive(Clone, Debug)]
 pub(crate) struct CollectorPublication {
     pub revision: u64,
+    pub completed_at: Instant,
     pub event: CollectorEvent,
     pub collection_latency_ms: f64,
     pub cadence: CollectorCadence,
@@ -175,6 +176,7 @@ impl CollectorEngineHandle {
     }
 
     pub fn set_interval(&self, interval: Duration) -> Result<(), String> {
+        validate_interval(interval)?;
         self.request_unit(|reply| CollectorControl::SetInterval(interval, reply))
     }
 
@@ -241,6 +243,7 @@ impl CollectorEngine {
         config: CollectorEngineConfig,
         notify: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, String> {
+        validate_interval(config.interval)?;
         let (control, receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
         let published = Arc::new(RwLock::new(None));
         let refresh_gate = Arc::new(RefreshGate::default());
@@ -342,6 +345,14 @@ fn control_send_error(error: TrySendError<CollectorControl>) -> String {
     match error {
         TrySendError::Full(_) => "collector_control_busy".to_string(),
         TrySendError::Disconnected(_) => "collector_engine_unavailable".to_string(),
+    }
+}
+
+fn validate_interval(interval: Duration) -> Result<(), String> {
+    if interval.is_zero() {
+        Err("collector_interval_must_be_positive".to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -454,6 +465,7 @@ fn run_collector_engine(
                 &published,
                 &notify,
                 revision.saturating_add(1),
+                Instant::now(),
                 CollectorEvent::Fatal {
                     code: "sampling_engine_panicked".to_string(),
                     message: "raw collector engine panicked".to_string(),
@@ -497,6 +509,7 @@ fn collector_loop(
                     published,
                     notify,
                     revision.saturating_add(1),
+                    Instant::now(),
                     CollectorEvent::PausedHeartbeat,
                     0.0,
                     scheduler.cadence(Instant::now()),
@@ -556,8 +569,12 @@ fn collector_loop(
                 let _ = reply.send(Ok(publication));
             }
             Ok(CollectorControl::SetInterval(interval, reply)) => {
-                scheduler.reanchor(Instant::now(), interval, false);
-                let _ = reply.send(Ok(()));
+                if let Err(error) = validate_interval(interval) {
+                    let _ = reply.send(Err(error));
+                } else {
+                    scheduler.reanchor(Instant::now(), interval, false);
+                    let _ = reply.send(Ok(()));
+                }
             }
             Ok(CollectorControl::ProcessNetworkReady(reply)) => {
                 let _ = reply.send(collector.process_network_ready());
@@ -601,6 +618,7 @@ fn collect_and_publish(
         published,
         notify,
         revision.saturating_add(1),
+        completed,
         event,
         completed.saturating_duration_since(started).as_secs_f64() * 1_000.0,
         scheduler.cadence(completed),
@@ -613,12 +631,14 @@ fn publish(
     published: &Arc<RwLock<Option<Arc<CollectorPublication>>>>,
     notify: &Arc<dyn Fn() + Send + Sync>,
     revision: u64,
+    completed_at: Instant,
     event: CollectorEvent,
     collection_latency_ms: f64,
     cadence: CollectorCadence,
 ) -> Arc<CollectorPublication> {
     let publication = Arc::new(CollectorPublication {
         revision,
+        completed_at,
         event,
         collection_latency_ms,
         cadence,
@@ -943,6 +963,42 @@ mod tests {
             Arc::new(|| {}),
         )
         .expect("collector engine starts")
+    }
+
+    #[test]
+    fn zero_interval_is_rejected_at_start_and_update_without_stranding_shutdown() {
+        let (collector, start_collect_count) = FakeCollector::new([FakeOutcome::Sample]);
+        let start_error = CollectorEngine::start(
+            Box::new(collector),
+            CollectorEngineConfig {
+                interval: Duration::ZERO,
+                metric_window: Duration::from_secs(15),
+                paused: false,
+                automatic: true,
+            },
+            Arc::new(|| {}),
+        )
+        .err()
+        .expect("zero interval is rejected before the worker starts");
+        assert_eq!(start_error, "collector_interval_must_be_positive");
+        assert_eq!(start_collect_count.load(TestOrdering::SeqCst), 0);
+
+        let (collector, update_collect_count) = FakeCollector::new([FakeOutcome::Sample]);
+        let engine = manual_engine(collector);
+        assert_eq!(
+            engine.handle().set_interval(Duration::ZERO),
+            Err("collector_interval_must_be_positive".to_string())
+        );
+        engine
+            .handle()
+            .refresh_now()
+            .expect("rejected update leaves the engine usable");
+        assert_eq!(update_collect_count.load(TestOrdering::SeqCst), 1);
+        let shutdown_started = Instant::now();
+        engine
+            .shutdown()
+            .expect("rejected zero interval cannot strand shutdown");
+        assert!(shutdown_started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

@@ -83,14 +83,21 @@ impl MonotonicWireClock {
     }
 
     fn now_ms(&self) -> u64 {
-        self.wire_origin_ms.saturating_add(
-            self.origin
-                .elapsed()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX),
-        )
+        self.at_ms(Instant::now())
     }
+
+    fn at_ms(&self, instant: Instant) -> u64 {
+        if let Some(elapsed) = instant.checked_duration_since(self.origin) {
+            self.wire_origin_ms.saturating_add(duration_ms(elapsed))
+        } else {
+            self.wire_origin_ms
+                .saturating_sub(duration_ms(self.origin.duration_since(instant)))
+        }
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[derive(Clone)]
@@ -704,7 +711,8 @@ fn apply_collector_publication(
         return Ok(None);
     }
     *last_collector_revision = publication.revision;
-    store.note_heartbeat();
+    let completed_at_ms = store.clock.at_ms(publication.completed_at);
+    store.note_heartbeat_at(completed_at_ms);
     store.update_schedule_health(publication.cadence);
     if !store.settings.paused && !matches!(&publication.event, CollectorEvent::PausedHeartbeat) {
         store.set_engine_state(crate::contracts::RuntimeEngineState::Running);
@@ -721,6 +729,7 @@ fn apply_collector_publication(
         CollectorEvent::Sample(sample) => store.apply_raw_sample(
             (**sample).clone(),
             publication.collection_latency_ms,
+            completed_at_ms,
             collector,
         ),
         CollectorEvent::Unavailable(error) => {
@@ -1566,6 +1575,7 @@ impl RuntimeStore {
         &mut self,
         sample: crate::telemetry::TelemetrySample,
         raw_collection_latency_ms: f64,
+        sample_ts_ms: u64,
         collector: &dyn ProcessNetworkControl,
     ) -> Instant {
         let previous_process_baseline_live = self.live_process_snapshot;
@@ -1573,7 +1583,6 @@ impl RuntimeStore {
         let processing_started = Instant::now();
         self.collector_state = Some(sample.collector_state);
 
-        let sample_ts_ms = self.clock.now_ms();
         let mut active_collector_warnings = sample.warnings;
 
         let elapsed_seconds = self
@@ -1755,7 +1764,11 @@ impl RuntimeStore {
     }
 
     fn note_heartbeat(&mut self) {
-        self.last_heartbeat_at_ms = Some(self.clock.now_ms());
+        self.note_heartbeat_at(self.clock.now_ms());
+    }
+
+    fn note_heartbeat_at(&mut self, occurred_at_ms: u64) {
+        self.last_heartbeat_at_ms = Some(occurred_at_ms);
     }
 
     fn update_schedule_health(&mut self, cadence: CollectorCadence) {
@@ -4038,6 +4051,83 @@ mod tests {
             .expect("engine starts"),
             base_dir,
         )
+    }
+
+    #[test]
+    fn delayed_collector_consumption_preserves_sample_time_and_rate_interval() {
+        let base_dir = runtime_test_dir("delayed-collector-publication");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let (collector, _) = FakeCollector::new([]);
+        let collector_engine = CollectorEngine::start(
+            Box::new(collector),
+            CollectorEngineConfig {
+                interval: Duration::from_millis(500),
+                metric_window: Duration::from_secs(15),
+                paused: false,
+                automatic: false,
+            },
+            Arc::new(|| {}),
+        )
+        .expect("manual collector engine starts");
+        let collector = collector_engine.handle();
+        let published = Arc::new(RwLock::new(PublishedRuntime {
+            snapshot: Arc::new(store.snapshot.clone()),
+            process_exe_authoritative: false,
+        }));
+        let mut last_collector_revision = 0;
+        let first_completed = Instant::now() - Duration::from_secs(5);
+
+        let publication = |revision, completed_at, network_received_total_bytes| {
+            let mut system = empty_system();
+            system.network_received_total_bytes = network_received_total_bytes;
+            Arc::new(CollectorPublication {
+                revision,
+                completed_at,
+                event: CollectorEvent::Sample(Arc::new(crate::telemetry::TelemetrySample {
+                    latency_ms: 0,
+                    collector_state: RuntimeCollectorState::Healthy,
+                    system,
+                    processes: Vec::new(),
+                    warnings: Vec::new(),
+                })),
+                collection_latency_ms: 0.0,
+                cadence: CollectorCadence::default(),
+            })
+        };
+
+        apply_collector_publication(
+            &mut store,
+            &collector,
+            &published,
+            &mut last_collector_revision,
+            publication(1, first_completed, 1_000),
+        )
+        .expect("first delayed publication applies");
+        let first_sampled_at_ms = store.sampled_at_ms.expect("first sample time is retained");
+
+        let second_completed = first_completed + Duration::from_secs(1);
+        apply_collector_publication(
+            &mut store,
+            &collector,
+            &published,
+            &mut last_collector_revision,
+            publication(2, second_completed, 2_000),
+        )
+        .expect("second delayed publication applies");
+        let second_sampled_at_ms = store.sampled_at_ms.expect("second sample time is retained");
+
+        assert_eq!(second_sampled_at_ms - first_sampled_at_ms, 1_000);
+        assert_eq!(second_sampled_at_ms, store.clock.at_ms(second_completed));
+        assert!(store.clock.now_ms().saturating_sub(second_sampled_at_ms) >= 3_000);
+        assert_eq!(store.snapshot.system.network_received_bps, 1_000);
+        assert_eq!(store.last_heartbeat_at_ms, Some(second_sampled_at_ms));
+        let mut evaluated = store.snapshot.clone();
+        evaluate_snapshot_health(&mut evaluated, store.clock.now_ms());
+        assert!(evaluated.health.degraded);
+        assert_ne!(evaluated.health.status_summary, "Healthy.");
+
+        collector_engine.shutdown().expect("collector engine joins");
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -7205,7 +7295,8 @@ admin_mode_launcher_exit_failed:code=1";
         let sample = collector
             .collect()
             .expect("a valid raw sample is available");
-        store.apply_raw_sample(sample, 0.0, &NOOP_PROCESS_NETWORK_CONTROL);
+        let sample_ts_ms = store.clock.now_ms();
+        store.apply_raw_sample(sample, 0.0, sample_ts_ms, &NOOP_PROCESS_NETWORK_CONTROL);
         fs::remove_dir_all(&base_dir).expect("verified root is removed for invalidation");
         fs::write(&base_dir, "not a directory").expect("invalid root fixture writes");
 
@@ -7311,7 +7402,8 @@ admin_mode_launcher_exit_failed:code=1";
         let sample = collector
             .collect()
             .expect("a valid raw sample is available");
-        store.apply_raw_sample(sample, 0.0, &NOOP_PROCESS_NETWORK_CONTROL);
+        let sample_ts_ms = store.clock.now_ms();
+        store.apply_raw_sample(sample, 0.0, sample_ts_ms, &NOOP_PROCESS_NETWORK_CONTROL);
 
         let persistence = store.persistence.health();
         assert_eq!(persistence.state, RuntimePersistenceState::Healthy);
