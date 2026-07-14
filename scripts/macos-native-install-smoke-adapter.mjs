@@ -48,9 +48,9 @@ export const MACOS_NATIVE_ADAPTER_SOURCE_PROFILES = deepFreeze({
     prepare_action: "stage_updater_archive_app",
     trust_basis: "contained_app_trust_and_tauri_updater",
     required_limitations: ["macos_updater_staging_only"],
-    artifact_flow: "owned_updater_archive_safe_extract_required",
+    artifact_flow: "rust_owned_updater_archive_stream_required",
     source_descriptor_tool_ids: [
-      "python_archive_extractor",
+      "rust_owned_stream_extractor",
       ...SHARED_TOOL_IDS,
     ],
     future_owned_resources: [
