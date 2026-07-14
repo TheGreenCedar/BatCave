@@ -1171,7 +1171,12 @@
     }
     incoming = prepared.rows;
 
-    if (forceRankingRefresh || displayProcessRows.length === 0 || !shouldHoldRanking()) {
+    const rankingConfirmationPending = rankingUpdateAvailable;
+    if (
+      forceRankingRefresh ||
+      displayProcessRows.length === 0 ||
+      (!shouldHoldRanking() && !rankingConfirmationPending)
+    ) {
       displayProcessRows = incoming;
       pendingProcessRows = [];
       rankingUpdateAvailable = false;
@@ -1179,7 +1184,8 @@
       return;
     }
 
-    rankingUpdateAvailable = !hasSameProcessOrder(displayProcessRows, incoming);
+    rankingUpdateAvailable =
+      rankingConfirmationPending || !hasSameProcessOrder(displayProcessRows, incoming);
     pendingProcessRows = incoming;
     displayProcessRows = stabilizeProcessRows(displayProcessRows, incoming);
   }
@@ -1210,7 +1216,7 @@
   }
 
   function applyPendingRankingIfReleased(): void {
-    if (!shouldHoldRanking()) {
+    if (!shouldHoldRanking() && !rankingUpdateAvailable) {
       applyPendingRanking();
     }
   }
