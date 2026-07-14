@@ -27,6 +27,7 @@ const MAX_START_ATTEMPTS: u8 = 3;
 const EPOCH_GRACE_INTERVALS: u64 = 1;
 const BPFTRACE_MAX_MAP_KEYS: usize = 16_384;
 const BPFTRACE_SOFT_MAP_KEYS: usize = 8_192;
+const MIN_BPFTRACE_VERSION: (u64, u64, u64) = (0, 22, 0);
 const MAX_READER_ERROR_CHARS: usize = 2_048;
 const PROTOCOL_HEADER: &str = "BATCAVE_NETWORK_PROTOCOL";
 const PROTOCOL_VERSION: u64 = 2;
@@ -580,17 +581,56 @@ fn average_bytes_per_second(bytes: u64, interval_count: u64) -> u64 {
 }
 
 fn ensure_bpftrace_available() -> Result<(), String> {
-    match Command::new("bpftrace")
+    let output = Command::new("bpftrace")
         .arg("--version")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("linux_network_ebpf_bpftrace_unavailable:{status}")),
-        Err(error) => Err(format!("linux_network_ebpf_bpftrace_not_found:{error}")),
+        .output()
+        .map_err(|error| format!("linux_network_ebpf_bpftrace_not_found:{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "linux_network_ebpf_bpftrace_unavailable:{}",
+            output.status
+        ));
     }
+
+    let version_output = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let installed = parse_bpftrace_version(&version_output).ok_or_else(|| {
+        let excerpt = version_output.trim().chars().take(160).collect::<String>();
+        format!("linux_network_ebpf_bpftrace_version_unrecognized:{excerpt}")
+    })?;
+    if installed < MIN_BPFTRACE_VERSION {
+        return Err(format!(
+            "linux_network_ebpf_bpftrace_version_unsupported:installed={}.{}.{}:minimum={}.{}.{}",
+            installed.0,
+            installed.1,
+            installed.2,
+            MIN_BPFTRACE_VERSION.0,
+            MIN_BPFTRACE_VERSION.1,
+            MIN_BPFTRACE_VERSION.2
+        ));
+    }
+    Ok(())
+}
+
+fn parse_bpftrace_version(output: &str) -> Option<(u64, u64, u64)> {
+    output.split_whitespace().find_map(|token| {
+        let version = token.strip_prefix('v')?;
+        let mut components = version.split('.');
+        let major = components.next()?.parse().ok()?;
+        let minor = components.next()?.parse().ok()?;
+        let patch = components
+            .next()?
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .ok()?;
+        Some((major, minor, patch))
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -937,10 +977,44 @@ mod tests {
         assert_ne!(IPV6_SOCKET_FAMILY, 1, "AF_UNIX must stay excluded");
 
         let script = bpftrace_script();
+        assert!(script.contains("kprobe:__sock_sendmsg"));
+        assert!(script.contains("kretprobe:__sock_sendmsg"));
+        assert!(!script.contains("kprobe:sock_sendmsg"));
+        assert!(!script.contains("kretprobe:sock_sendmsg"));
+        assert!(script.contains("kprobe:sock_recvmsg"));
+        assert!(script.contains("kretprobe:sock_recvmsg"));
+        for (probe, family_map) in [
+            ("kprobe:__sock_sendmsg", "@batcave_tx_family"),
+            ("kprobe:sock_recvmsg", "@batcave_rx_family"),
+        ] {
+            let entry = script
+                .split_once(probe)
+                .unwrap_or_else(|| panic!("missing entry probe {probe}"))
+                .1
+                .split_once("kretprobe:")
+                .map_or_else(
+                    || panic!("missing return probe after {probe}"),
+                    |(entry, _)| entry,
+                );
+            let stale_guard = entry
+                .find(&format!("if (has_key({family_map}, tid))"))
+                .unwrap_or_else(|| panic!("{probe} must guard stale family state"));
+            let stale_delete = entry
+                .find(&format!("delete({family_map}[tid])"))
+                .unwrap_or_else(|| panic!("{probe} must clear stale family state"));
+            let family_read = entry
+                .find("$family = $socket->sk->__sk_common.skc_family")
+                .unwrap_or_else(|| panic!("{probe} must read the incoming family"));
+            assert!(
+                stale_guard < stale_delete && stale_delete < family_read,
+                "{probe} must clear stale state before reading the incoming family"
+            );
+        }
         assert!(script.contains("$family == 2 || $family == 10"));
         assert_eq!(script.matches("$family == 2 || $family == 10").count(), 2);
         assert_eq!(script.matches("(int64)retval > 0").count(), 2);
         assert_eq!(script.matches("sum((int64)retval)").count(), 2);
+        assert_eq!(script.matches("if ($family != 0)").count(), 2);
         assert!(!script.contains("$family == 1 ||"));
         assert!(!script.contains("|| $family == 1)"));
         assert!(script.contains("delete(@batcave_tx_family[tid])"));
@@ -1031,6 +1105,28 @@ mod tests {
         assert!(command.get_envs().any(|(name, value)| {
             name == "BPFTRACE_MAX_MAP_KEYS" && value.is_some_and(|value| value == "16384")
         }));
+    }
+
+    #[test]
+    fn bpftrace_version_floor_covers_required_protocol_primitives() {
+        assert_eq!(MIN_BPFTRACE_VERSION, (0, 22, 0));
+        assert_eq!(parse_bpftrace_version("bpftrace v0.22.0"), Some((0, 22, 0)));
+        assert_eq!(parse_bpftrace_version("bpftrace v0.23.5"), Some((0, 23, 5)));
+        assert_eq!(
+            parse_bpftrace_version("bpftrace v0.24.1-dev"),
+            Some((0, 24, 1))
+        );
+        assert_eq!(parse_bpftrace_version("bpftrace 0.23.5"), None);
+    }
+
+    #[test]
+    fn excluded_family_entry_clears_stale_admitted_state() {
+        let mut family_state = Some(IPV4_SOCKET_FAMILY);
+
+        model_family_entry(&mut family_state, 1);
+
+        assert_eq!(family_state, None, "AF_UNIX must clear stale IP state");
+        assert!(!model_family_return(&mut family_state, 4_096));
     }
 
     #[test]
@@ -1555,6 +1651,17 @@ mod tests {
         closing_epoch
             .checked_sub(EPOCH_GRACE_INTERVALS)
             .filter(|epoch| *epoch > 0)
+    }
+
+    fn model_family_entry(state: &mut Option<u16>, incoming_family: u16) {
+        *state = match incoming_family {
+            IPV4_SOCKET_FAMILY | IPV6_SOCKET_FAMILY => Some(incoming_family),
+            _ => None,
+        };
+    }
+
+    fn model_family_return(state: &mut Option<u16>, returned_bytes: u64) -> bool {
+        state.take().is_some() && returned_bytes > 0
     }
 
     #[cfg(unix)]

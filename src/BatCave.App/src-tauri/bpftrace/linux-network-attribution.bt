@@ -12,50 +12,70 @@ BEGIN {
   printf("BATCAVE_NETWORK_PROTOCOL 2\n");
 }
 
-kprobe:sock_sendmsg {
-  $socket = (struct socket *)arg0;
-  $epoch = @batcave_epoch;
-  if (has_key(@batcave_tx_family, tid) || (uint64)len(@batcave_tx_family) < $1) {
-    @batcave_tx_family[tid] = $socket->sk->__sk_common.skc_family;
-  } else {
-    @batcave_tx_overflow[$epoch] = (uint64)1;
+kprobe:__sock_sendmsg {
+  // A missed return probe must not let admitted state survive into a later
+  // excluded-family call on the same thread.
+  if (has_key(@batcave_tx_family, tid)) {
+    delete(@batcave_tx_family[tid]);
   }
-}
-
-kretprobe:sock_sendmsg {
-  $family = @batcave_tx_family[tid];
+  $socket = (struct socket *)arg0;
+  $family = $socket->sk->__sk_common.skc_family;
   $epoch = @batcave_epoch;
-  if ((int64)retval > 0 && ($family == 2 || $family == 10)) {
-    if (has_key(@batcave_tx, (pid, $epoch)) || (uint64)len(@batcave_tx) < $1) {
-      @batcave_tx[pid, $epoch] = sum((int64)retval);
+  if ($family == 2 || $family == 10) {
+    if (has_key(@batcave_tx_family, tid) || (uint64)len(@batcave_tx_family) < $1) {
+      @batcave_tx_family[tid] = $family;
     } else {
       @batcave_tx_overflow[$epoch] = (uint64)1;
     }
   }
-  delete(@batcave_tx_family[tid]);
+}
+
+kretprobe:__sock_sendmsg {
+  $family = @batcave_tx_family[tid];
+  $epoch = @batcave_epoch;
+  if ($family != 0) {
+    if ((int64)retval > 0) {
+      if (has_key(@batcave_tx, (pid, $epoch)) || (uint64)len(@batcave_tx) < $1) {
+        @batcave_tx[pid, $epoch] = sum((int64)retval);
+      } else {
+        @batcave_tx_overflow[$epoch] = (uint64)1;
+      }
+    }
+    delete(@batcave_tx_family[tid]);
+  }
 }
 
 kprobe:sock_recvmsg {
+  // A missed return probe must not let admitted state survive into a later
+  // excluded-family call on the same thread.
+  if (has_key(@batcave_rx_family, tid)) {
+    delete(@batcave_rx_family[tid]);
+  }
   $socket = (struct socket *)arg0;
+  $family = $socket->sk->__sk_common.skc_family;
   $epoch = @batcave_epoch;
-  if (has_key(@batcave_rx_family, tid) || (uint64)len(@batcave_rx_family) < $1) {
-    @batcave_rx_family[tid] = $socket->sk->__sk_common.skc_family;
-  } else {
-    @batcave_rx_overflow[$epoch] = (uint64)1;
+  if ($family == 2 || $family == 10) {
+    if (has_key(@batcave_rx_family, tid) || (uint64)len(@batcave_rx_family) < $1) {
+      @batcave_rx_family[tid] = $family;
+    } else {
+      @batcave_rx_overflow[$epoch] = (uint64)1;
+    }
   }
 }
 
 kretprobe:sock_recvmsg {
   $family = @batcave_rx_family[tid];
   $epoch = @batcave_epoch;
-  if ((int64)retval > 0 && ($family == 2 || $family == 10)) {
-    if (has_key(@batcave_rx, (pid, $epoch)) || (uint64)len(@batcave_rx) < $1) {
-      @batcave_rx[pid, $epoch] = sum((int64)retval);
-    } else {
-      @batcave_rx_overflow[$epoch] = (uint64)1;
+  if ($family != 0) {
+    if ((int64)retval > 0) {
+      if (has_key(@batcave_rx, (pid, $epoch)) || (uint64)len(@batcave_rx) < $1) {
+        @batcave_rx[pid, $epoch] = sum((int64)retval);
+      } else {
+        @batcave_rx_overflow[$epoch] = (uint64)1;
+      }
     }
+    delete(@batcave_rx_family[tid]);
   }
-  delete(@batcave_rx_family[tid]);
 }
 
 interval:s:1 {
