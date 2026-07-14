@@ -1,6 +1,6 @@
 # Native install-smoke executor boundary
 
-Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. No platform adapter or installer command is registered yet, so this slice cannot produce native proof or release evidence.
+Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. The macOS source descriptor is registered, but no platform command or private byte-consumption handshake is registered yet. This slice cannot produce native proof or release evidence.
 
 The implementation is split deliberately:
 
@@ -49,10 +49,12 @@ node --test scripts/native-install-smoke-executor.test.mjs
 | Windows NSIS | install and uninstall | none |
 | Linux deb | install and remove | none |
 | Linux AppImage | stage, launch, and remove | none |
-| macOS DMG | mount, copy, launch, and remove | none |
-| macOS updater archive | extract, stage, launch, and remove | none |
+| macOS DMG | mount, copy, launch, and remove | source descriptor only; no process execution |
+| macOS updater archive | extract, stage, launch, and remove | staging-only source descriptor; no process execution |
 
 There is no general command runner, shell-string surface, public handle accessor, or injected callback that can create a native execution receipt.
+
+The [macOS source boundary](macos-native-install-smoke-adapter.md) binds the exact verified asset identity to a frozen future profile. Its fixed tool IDs and owned-resource list are descriptors, not observations. The receipt explicitly records that no live capability is held and no package, process, trust, settlement, cleanup, or evidence action occurred.
 
 ## Remaining native adapter work
 

@@ -14,6 +14,10 @@ import {
   validateReleaseEvidencePacket,
   validateSanitizedReleaseEvidenceValue,
 } from "./validate-release-evidence-packet.mjs";
+import {
+  bindMacosNativeAdapterSource,
+  requireMacosNativeAdapterSourceReceipt,
+} from "./macos-native-install-smoke-adapter.mjs";
 
 export const NATIVE_INSTALL_SMOKE_DISPOSITIONS = Object.freeze([
   "skipped",
@@ -100,19 +104,29 @@ function prerequisiteSteps(plan) {
     );
 }
 
-function unavailableSteps(plan, capabilityFailed) {
+function unavailableSteps(plan, capabilityFailed, macosSourceReceipt = null) {
   const steps = prerequisiteSteps(plan);
   for (const step of plan.steps.slice(2)) {
     if (capabilityFailed && step.id === "preflight.asset_rehash") {
       steps.push(
         fixedStep(step, "failed", "Selected artifact capability acquisition failed closed."),
       );
+    } else if (macosSourceReceipt && step.id === "preflight.asset_rehash") {
+      steps.push(
+        fixedStep(
+          step,
+          "passed",
+          "Verified asset identity is bound to the macOS adapter source descriptor.",
+        ),
+      );
     } else if (!capabilityFailed && step.id === "preflight.package_trust") {
       steps.push(
         fixedStep(
           step,
           "unsupported",
-          "No reviewed native platform adapter is registered in this source slice.",
+          macosSourceReceipt
+            ? "Signed destination trust remains blocked on exact native macOS execution."
+            : "No reviewed native platform adapter is registered in this source slice.",
         ),
       );
     } else {
@@ -335,11 +349,16 @@ export async function runNativeInstallSmokeSourceSlice(plan, options) {
   exactKeys(options, "native_executor.options", ["verified_root"]);
   let capability;
   let artifactReceipt = null;
+  let macosSourceReceipt = null;
   let steps;
   try {
     capability = await acquireNativeArtifactCapability(plan, options);
     artifactReceipt = await verifyOwnedNativeArtifactCapability(capability);
-    steps = unavailableSteps(plan, false);
+    if (plan.platform.os === "macos") {
+      macosSourceReceipt = bindMacosNativeAdapterSource(plan, artifactReceipt);
+      requireMacosNativeAdapterSourceReceipt(macosSourceReceipt, plan, artifactReceipt);
+    }
+    steps = unavailableSteps(plan, false, macosSourceReceipt);
   } catch (error) {
     steps = unavailableSteps(plan, true);
     if (error instanceof NativeArtifactCapabilityCleanupError) {
