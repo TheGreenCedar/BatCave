@@ -326,13 +326,11 @@ fn observe_peer_continuity(
     expected_process_id: u32,
 ) -> Result<PeerContinuity, ClientFailure> {
     let probe = service_probe()?;
-    if !probe.running {
-        return Ok(PeerContinuity::Stopped);
+    let scm_continuity =
+        continuity_from_observations(probe, expected_process_id, expected_process_id);
+    if scm_continuity != PeerContinuity::Stable {
+        return Ok(scm_continuity);
     }
-    if !probe.own_process || probe.process_id == 0 || probe.process_id != expected_process_id {
-        return Ok(PeerContinuity::Restarted);
-    }
-
     let mut pipe_process_id = 0_u32;
     if unsafe { GetNamedPipeServerProcessId(pipe, &mut pipe_process_id) } == 0 {
         return if unsafe { GetLastError() } == ERROR_ACCESS_DENIED {
@@ -343,10 +341,29 @@ fn observe_peer_continuity(
             Ok(PeerContinuity::Restarted)
         };
     }
-    if pipe_process_id != expected_process_id {
-        return Ok(PeerContinuity::Restarted);
+    Ok(continuity_from_observations(
+        probe,
+        expected_process_id,
+        pipe_process_id,
+    ))
+}
+
+fn continuity_from_observations(
+    probe: ServiceProbe,
+    expected_process_id: u32,
+    pipe_process_id: u32,
+) -> PeerContinuity {
+    if !probe.running {
+        PeerContinuity::Stopped
+    } else if !probe.own_process
+        || probe.process_id == 0
+        || probe.process_id != expected_process_id
+        || pipe_process_id != expected_process_id
+    {
+        PeerContinuity::Restarted
+    } else {
+        PeerContinuity::Stable
     }
-    Ok(PeerContinuity::Stable)
 }
 
 fn verify_service_path(path: &std::path::Path) -> Result<(), ClientFailure> {
@@ -571,6 +588,45 @@ mod tests {
         assert_eq!(
             super::super::client::status_from_failure(&restarted, false).state,
             crate::contracts::RuntimeCollectorServiceState::Recovering
+        );
+    }
+
+    #[test]
+    fn scm_and_pipe_pid_reprobe_detects_stop_and_restart_races() {
+        let running = ServiceProbe {
+            running: true,
+            own_process: true,
+            process_id: 41,
+        };
+        assert_eq!(
+            continuity_from_observations(running, 41, 41),
+            PeerContinuity::Stable
+        );
+        assert_eq!(
+            continuity_from_observations(
+                ServiceProbe {
+                    running: false,
+                    ..running
+                },
+                41,
+                41,
+            ),
+            PeerContinuity::Stopped
+        );
+        assert_eq!(
+            continuity_from_observations(
+                ServiceProbe {
+                    process_id: 42,
+                    ..running
+                },
+                41,
+                41,
+            ),
+            PeerContinuity::Restarted
+        );
+        assert_eq!(
+            continuity_from_observations(running, 41, 42),
+            PeerContinuity::Restarted
         );
     }
 }
