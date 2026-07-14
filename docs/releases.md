@@ -18,6 +18,8 @@ After publication, the release workflow downloads every expected asset again thr
 
 The [public-artifact install smoke harness](public-artifact-install-smoke.md) consumes the process-local verifier receipt for planning and offers fixture-driven contract tests. The [native executor boundary](native-install-smoke-executor.md) now owns an exact private copy through a process-local capability, but its owned-byte verification receipt remains artifact-only. The [Linux adapter source boundary](linux-native-install-smoke-adapter.md) registers the closed deb/AppImage profiles and fixed process-settlement contract, but no platform command consumes package bytes. Source execution therefore returns `skipped` and cannot emit native or release proof. A later reviewed adapter must make the installer or stager consume that owned capability before any install lane can emit release evidence.
 
+After the platform lanes produce sanitized packets for one exact public release, assemble `docs/evidence/releases/<tag>/index.json` and run `node scripts/validate-release-evidence-index.mjs` against it. The index binds packet file digests, release/workflow identity, support profiles, package roles, and selected public assets; it deliberately has no passing or accepted disposition. Its successful validation proves only that the review input is internally consistent. The release still requires live public verification, native platform evidence, updater proof, and the independent #76 release decision.
+
 Windows artifacts remain unsigned until the code-signing issue is resolved. Do not promote an unsigned prerelease to the stable channel.
 
 ## macOS signing and notarization
