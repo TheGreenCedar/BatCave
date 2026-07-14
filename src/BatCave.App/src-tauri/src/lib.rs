@@ -19,6 +19,7 @@ mod macos_system;
 #[cfg(any(windows, target_os = "linux", test))]
 mod network_attribution;
 mod persistence;
+mod persistence_proof;
 mod process_icons;
 mod protocol;
 mod runtime_provenance;
@@ -50,7 +51,9 @@ pub fn run_cli_from_env() -> Option<i32> {
 }
 
 fn run_cli(args: &[String]) -> Option<i32> {
-    elevation::run_cli(args).or_else(|| benchmark::run_cli(args))
+    elevation::run_cli(args)
+        .or_else(|| persistence_proof::run_cli(args))
+        .or_else(|| benchmark::run_cli(args))
 }
 
 #[tauri::command(async)]
