@@ -12,6 +12,8 @@ Every release artifact contains the offline-capable Windows NSIS installer, Wind
 
 Verify a downloaded file with `Get-FileHash -Algorithm SHA256` on Windows, `sha256sum --check SHA256SUMS.txt` on Linux, or `shasum -a 256 -c SHA256SUMS.txt` on macOS. Verify provenance with `gh attestation verify <file> --repo TheGreenCedar/BatCave`. On Windows, confirm the installed version in Apps settings and the executable file properties matches the release tag without the leading `v`.
 
+After publication, the release workflow downloads every expected asset again through its unauthenticated public URL into a new directory. It rejects any name, size, or SHA-256 difference from the prepublication inventory, verifies that `SHA256SUMS.txt` covers every build subject, requires GitHub's immutable-release attestation, and verifies each subject against the exact `main` source SHA and `.github/workflows/release.yml` on a GitHub-hosted runner. Passing contract tests proves the verifier source; only a successful run against the published assets proves a release, and that live evidence remains part of the stable-release gate.
+
 Windows artifacts remain unsigned until the code-signing issue is resolved. Do not promote an unsigned prerelease to the stable channel.
 
 ## macOS signing and notarization

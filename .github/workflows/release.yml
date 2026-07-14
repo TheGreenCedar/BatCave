@@ -101,7 +101,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs
 
   windows:
     name: Build Windows release
@@ -527,3 +527,14 @@ jobs:
             exit 1
           fi
           node scripts/verify-release-candidate.mjs verify-latest "${candidate}" "${latest_readback}"
+
+      - name: Verify anonymous public release bytes and attestations
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          candidate="${RUNNER_TEMP}/release-candidate.json"
+          readback="${RUNNER_TEMP}/release-published-readback.json"
+          public_downloads="${RUNNER_TEMP}/release-public-downloads"
+          node scripts/verify-public-release.mjs "${candidate}" "${readback}" "${public_downloads}"
