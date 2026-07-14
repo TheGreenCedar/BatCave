@@ -1543,7 +1543,6 @@ fn diagnostic_backup_path(path: &Path, index: usize) -> PathBuf {
 mod tests {
     use std::{
         collections::{HashMap, HashSet, VecDeque},
-        env,
         sync::{Arc, Mutex},
     };
 
@@ -2695,7 +2694,7 @@ mod tests {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let directory =
-            env::temp_dir().join(format!("batcave-persistence-real-{}", std::process::id()));
+            std::env::temp_dir().join(format!("batcave-persistence-real-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let coordinator = UserStorageCoordinator::new(
             ResolvedStorageRoot {
@@ -2738,7 +2737,7 @@ mod tests {
     fn real_backend_rejects_symlinks_and_hardens_owned_component_permissions() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
-        let fixture = env::temp_dir().join(format!(
+        let fixture = std::env::temp_dir().join(format!(
             "batcave-persistence-symlink-{}",
             std::process::id()
         ));
