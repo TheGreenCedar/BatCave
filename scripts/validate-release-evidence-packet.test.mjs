@@ -27,6 +27,12 @@ const PACKAGE_ROLES = {
   macos_updater: "macOS universal updater payload",
   nsis: "Windows NSIS installer and updater payload",
 };
+const REAL_HOSTS = {
+  "debian-12-x86_64-glibc": "debian-12",
+  "macos-12-universal": "macos-12.0",
+  "ubuntu-22.04-x86_64-glibc": "ubuntu-22.04",
+  "windows-client-10-x86_64": "windows-client-10.0.16299",
+};
 const REAL_SIGNATURE_IDENTITIES = {
   apple_notarization: "submission-id:123e4567-e89b-42d3-a456-426614174000",
   apple_staple: `ticket-sha256:${"a".repeat(64)}`,
@@ -63,6 +69,9 @@ function releaseEvidence(name = FIXTURES[0][0], tag = "v9.9.9-rc.1") {
   packet.release.tag = tag;
   packet.release.channel = tag.includes("-") ? "prerelease" : "stable";
   packet.release.release_url = `https://github.com/TheGreenCedar/BatCave/releases/tag/${tag}`;
+  packet.platform.os_version = REAL_HOSTS[packet.platform.profile_id];
+  packet.platform.proof.source = "source_enforced";
+  packet.platform.proof.native = "observed";
   delete packet.limitations.synthetic_fixture_no_release_claim;
   if (packet.platform.package.kind === "deb") {
     packet.limitations.deb_checksum_attestation_only.disposition = "accepted";
@@ -126,7 +135,27 @@ test("publishes a closed version 1 structural schema", () => {
     schema.$defs.release.properties.tag.pattern,
     "^v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$",
   );
-  for (const definition of [schema, schema.$defs.release, schema.$defs.asset, schema.$defs.check]) {
+  assert.equal(schema.$defs.platform.properties.support_contract_version.const, 1);
+  assert.deepEqual(schema.$defs.platform.properties.profile_id.enum, Object.keys(REAL_HOSTS));
+  assert.deepEqual(schema.$defs.platform.properties.proof.required, [
+    "declaration",
+    "source",
+    "native",
+  ]);
+  assert.deepEqual(schema.$defs.platform.properties.proof.properties.source.enum, [
+    "pending",
+    "source_enforced",
+  ]);
+  assert.deepEqual(schema.$defs.platform.properties.runtime.required, ["libc_family"]);
+  for (const definition of [
+    schema,
+    schema.$defs.release,
+    schema.$defs.platform,
+    schema.$defs.platform.properties.proof,
+    schema.$defs.platform.properties.runtime,
+    schema.$defs.asset,
+    schema.$defs.check,
+  ]) {
     assert.equal(definition.additionalProperties, false);
   }
 });
@@ -239,6 +268,49 @@ test("records failed and blocked outcomes without declaring a release pass", () 
   };
   assert.equal(validateReleaseEvidencePacket(packet), packet);
 });
+
+const SEMANTIC_PLATFORM_FAILURES = [
+  [
+    "a reserved synthetic host on real evidence",
+    (packet) => (packet.platform.os_version = "synthetic-windows-fixture"),
+    /schema_fixture only/u,
+  ],
+  [
+    "Windows Server evidence",
+    (packet) => (packet.platform.os_version = "windows-server-10.0.20348"),
+    /windows_client_build host/u,
+  ],
+  [
+    "a below-floor Windows build",
+    (packet) => (packet.platform.os_version = "windows-client-10.0.15063"),
+    /below supported floor/u,
+  ],
+  [
+    "source-only proof relabeled as native evidence",
+    (packet) => (packet.platform.proof.native = "pending"),
+    /proof.native: must equal observed/u,
+  ],
+  [
+    "a musl Linux runtime",
+    (packet) => (packet.platform.runtime.libc_family = "musl"),
+    /libc_family: must equal glibc/u,
+    "linux-appimage.json",
+  ],
+  [
+    "an unknown Linux distribution",
+    (packet) => (packet.platform.os_version = "fedora-41"),
+    /ubuntu_release host/u,
+    "linux-appimage.json",
+  ],
+];
+
+for (const [name, mutate, expected, file] of SEMANTIC_PLATFORM_FAILURES) {
+  test(`rejects ${name}`, () => {
+    const packet = releaseEvidence(file);
+    mutate(packet);
+    assert.throws(() => validateReleaseEvidencePacket(packet), expected);
+  });
+}
 
 test("pure packet validation accepts a parser-aligned tag without reading Cargo version", () => {
   const packet = releaseEvidence("windows-nsis.json", "9.9.9-rc.1");

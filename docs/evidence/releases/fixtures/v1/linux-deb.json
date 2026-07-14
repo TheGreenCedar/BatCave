@@ -19,9 +19,19 @@
     }
   },
   "platform": {
+    "support_contract_version": 1,
+    "profile_id": "debian-12-x86_64-glibc",
+    "proof": {
+      "declaration": "declared",
+      "source": "pending",
+      "native": "pending"
+    },
     "os": "linux",
     "os_version": "synthetic-linux-fixture",
     "architecture": "x86_64",
+    "runtime": {
+      "libc_family": "glibc"
+    },
     "package": {
       "kind": "deb",
       "architecture": "x86_64",

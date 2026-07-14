@@ -24,7 +24,7 @@ import {
   requireMacosNativeAdapterSourceReceipt,
 } from "./macos-native-install-smoke-adapter.mjs";
 import { expectedReleaseAssetRoles } from "./release-asset-contract.mjs";
-import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
+import { validateReleaseEvidenceTemplatePacket } from "./validate-release-evidence-packet.mjs";
 import {
   CHECKSUM_MANIFEST,
   RELEASE_REPOSITORY,
@@ -114,6 +114,9 @@ function releaseTemplate() {
     run_attempt: 1,
     url: `https://github.com/${RELEASE_REPOSITORY}/actions/runs/123456789/attempts/1`,
   };
+  packet.platform.os_version = "ubuntu-22.04";
+  packet.platform.proof.source = "source_enforced";
+  packet.platform.proof.native = "pending";
   delete packet.limitations.synthetic_fixture_no_release_claim;
   const assetName = expectedReleaseAssetRoles(TAG).roles.find(
     ({ role }) => role === "Linux AppImage package and updater payload",
@@ -141,7 +144,7 @@ function releaseTemplate() {
       check.outcome = "Awaiting the reviewed native adapter.";
     }
   }
-  validateReleaseEvidencePacket(packet);
+  validateReleaseEvidenceTemplatePacket(packet);
   return packet;
 }
 
@@ -176,9 +179,17 @@ function macosReleaseTemplate(packageKind) {
   const verified = contractReceipt.assets.find(({ name }) => name === assetName);
   packet.packet_id = `macos-${packageKind}-native-source-slice`;
   packet.platform = {
+    support_contract_version: 1,
+    profile_id: "macos-12-universal",
+    proof: {
+      declaration: "declared",
+      source: "source_enforced",
+      native: "pending",
+    },
     os: "macos",
-    os_version: "15.0",
+    os_version: "macos-15.0",
     architecture: "arm64",
+    runtime: { libc_family: "not_applicable" },
     package: { kind: packageKind, architecture: "universal", asset_name: assetName },
   };
   packet.assets[0] = {
@@ -220,7 +231,7 @@ function macosReleaseTemplate(packageKind) {
           },
         }
       : {};
-  validateReleaseEvidencePacket(packet);
+  validateReleaseEvidenceTemplatePacket(packet);
   return packet;
 }
 

@@ -20,7 +20,7 @@ import {
   validateNativeInstallSmokeResult,
 } from "./native-install-smoke-executor.mjs";
 import { expectedReleaseAssetRoles } from "./release-asset-contract.mjs";
-import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
+import { validateReleaseEvidenceTemplatePacket } from "./validate-release-evidence-packet.mjs";
 import {
   CHECKSUM_MANIFEST,
   RELEASE_REPOSITORY,
@@ -102,6 +102,9 @@ function releaseTemplate(kind) {
     run_attempt: 1,
     url: `https://github.com/${RELEASE_REPOSITORY}/actions/runs/123456789/attempts/1`,
   };
+  packet.platform.os_version = kind === "deb" ? "debian-12" : "ubuntu-22.04";
+  packet.platform.proof.source = "source_enforced";
+  packet.platform.proof.native = "pending";
   delete packet.limitations.synthetic_fixture_no_release_claim;
   if (kind === "deb") {
     packet.limitations.deb_checksum_attestation_only.disposition = "accepted";
@@ -133,7 +136,7 @@ function releaseTemplate(kind) {
       check.outcome = "Awaiting exact public-artifact Linux execution.";
     }
   }
-  validateReleaseEvidencePacket(packet);
+  validateReleaseEvidenceTemplatePacket(packet);
   return packet;
 }
 
