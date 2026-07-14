@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
 
 #[cfg(any(windows, test))]
+const ETW_CONSUMER_STALL_MS: u64 = 5_000;
+
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct EtwSessionStatistics {
     events_lost: u64,
@@ -31,6 +34,7 @@ impl EtwSessionStatistics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EtwHealthSnapshot {
     consumer_started: bool,
+    consumer_heartbeat_age_ms: Option<u64>,
     consumer_error: Option<String>,
     decoded_events: u64,
     decoder_errors: u64,
@@ -95,6 +99,16 @@ impl EtwQualityTracker {
 
         if !snapshot.consumer_started {
             return EtwQualityDecision::PendingBaseline;
+        }
+        let Some(heartbeat_age_ms) = snapshot.consumer_heartbeat_age_ms else {
+            return EtwQualityDecision::Unavailable(
+                "network_attribution_consumer_heartbeat_missing".to_string(),
+            );
+        };
+        if heartbeat_age_ms > ETW_CONSUMER_STALL_MS {
+            return EtwQualityDecision::Unavailable(format!(
+                "network_attribution_consumer_stalled:{heartbeat_age_ms}ms"
+            ));
         }
 
         if snapshot.decoded_events == 0 {
@@ -368,6 +382,10 @@ mod windows_impl {
             let session_statistics = query_trace_statistics(self.trace_handle, &self.session_name);
             let snapshot = EtwHealthSnapshot {
                 consumer_started: self.shared.consumer_started(),
+                consumer_heartbeat_age_ms: match self.shared.consumer_heartbeat_age_ms() {
+                    Ok(age) => age,
+                    Err(error) => return NetworkAttributionSample::Failed(error),
+                },
                 consumer_error: self.shared.last_error(),
                 decoded_events: self.shared.decoded_events(),
                 decoder_errors: self.shared.decoder_errors(),
@@ -423,6 +441,8 @@ mod windows_impl {
         decoded_events: AtomicU64,
         decoder_errors: AtomicU64,
         consumer_started: AtomicBool,
+        consumer_started_at: Instant,
+        consumer_heartbeat_at: Mutex<Option<Instant>>,
     }
 
     impl NetworkEtwShared {
@@ -433,6 +453,8 @@ mod windows_impl {
                 decoded_events: AtomicU64::new(0),
                 decoder_errors: AtomicU64::new(0),
                 consumer_started: AtomicBool::new(false),
+                consumer_started_at: Instant::now(),
+                consumer_heartbeat_at: Mutex::new(None),
             }
         }
 
@@ -445,6 +467,12 @@ mod windows_impl {
 
         fn record_decoder_error(&self) {
             self.decoder_errors.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn record_consumer_heartbeat(&self) {
+            if let Ok(mut heartbeat) = self.consumer_heartbeat_at.lock() {
+                *heartbeat = Some(Instant::now());
+            }
         }
 
         fn drain_counters(&self) -> HashMap<u32, NetworkByteCounters> {
@@ -466,10 +494,26 @@ mod windows_impl {
 
         fn mark_consumer_started(&self) {
             self.consumer_started.store(true, Ordering::Release);
+            self.record_consumer_heartbeat();
         }
 
         fn consumer_started(&self) -> bool {
             self.consumer_started.load(Ordering::Acquire)
+        }
+
+        fn consumer_heartbeat_age_ms(&self) -> Result<Option<u64>, String> {
+            let heartbeat = self
+                .consumer_heartbeat_at
+                .lock()
+                .map_err(|_| "network_attribution_consumer_heartbeat_lock_poisoned".to_string())?;
+            let observed_at = if self.consumer_started() {
+                heartbeat.unwrap_or(self.consumer_started_at)
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(
+                u64::try_from(observed_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ))
         }
 
         fn decoded_events(&self) -> u64 {
@@ -496,6 +540,7 @@ mod windows_impl {
         if shared.is_null() {
             return;
         }
+        (*shared).record_consumer_heartbeat();
         if !same_guid(&(*event_record).EventHeader.ProviderId, &TcpIpGuid) {
             return;
         }
@@ -531,6 +576,7 @@ mod windows_impl {
         logfile.Anonymous1.ProcessTraceMode =
             PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
         logfile.Anonymous2.EventRecordCallback = Some(event_record_callback);
+        logfile.BufferCallback = Some(buffer_callback);
 
         let handle = unsafe { OpenTraceW(&mut logfile) };
         if handle.Value == INVALID_PROCESSTRACE_HANDLE {
@@ -538,6 +584,18 @@ mod windows_impl {
         } else {
             Ok(handle)
         }
+    }
+
+    unsafe extern "system" fn buffer_callback(logfile: *mut EVENT_TRACE_LOGFILEW) -> u32 {
+        if logfile.is_null() {
+            return 0;
+        }
+        let shared = (*logfile).Context as *const NetworkEtwShared;
+        if shared.is_null() {
+            return 0;
+        }
+        (*shared).record_consumer_heartbeat();
+        1
     }
 
     fn stop_trace(trace_handle: u64, session_name: &[u16]) {
@@ -846,6 +904,7 @@ mod tests {
     ) -> EtwHealthSnapshot {
         EtwHealthSnapshot {
             consumer_started,
+            consumer_heartbeat_age_ms: consumer_started.then_some(0),
             consumer_error: None,
             decoded_events,
             decoder_errors,
@@ -938,6 +997,32 @@ mod tests {
                 Err("network_attribution_query_trace_failed:5".to_string())
             )),
             EtwQualityDecision::Unavailable("network_attribution_query_trace_failed:5".to_string())
+        );
+    }
+
+    #[test]
+    fn etw_quality_rejects_a_stalled_consumer_and_restarts_unproven() {
+        let mut quality = EtwQualityTracker::default();
+        assert_eq!(
+            quality.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::Native
+        );
+
+        let mut stalled = health(true, 1, 0, Ok(EtwSessionStatistics::default()));
+        stalled.consumer_heartbeat_age_ms = Some(ETW_CONSUMER_STALL_MS + 1);
+        assert!(matches!(
+            quality.evaluate(stalled),
+            EtwQualityDecision::Unavailable(message) if message.contains("consumer_stalled")
+        ));
+
+        let mut restarted = EtwQualityTracker::default();
+        assert_eq!(
+            restarted.evaluate(health(true, 0, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::PendingBaseline
+        );
+        assert_eq!(
+            restarted.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::Native
         );
     }
 
