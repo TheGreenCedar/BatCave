@@ -1,3 +1,10 @@
+use serde_json::{Map, Value};
+use std::collections::BTreeSet;
+
+const MAX_PACKAGED_BENCHMARK_BYTES: usize = 4096;
+const PACKAGED_BENCHMARK_MACHINE_CLASS: &str = "owned-package-payload";
+const PACKAGED_BENCHMARK_WORKLOAD_PROFILE: &str = "fixed-owned-package-launch";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HostSupport {
     LinuxPackageTransport,
@@ -18,6 +25,348 @@ fn package_transport_probe_is_explicitly_linux_only() {
         assert_eq!(host_support(), HostSupport::LinuxPackageTransport);
     } else {
         assert_eq!(host_support(), HostSupport::UnsupportedHost);
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct PackagedBenchmarkObservation {
+    app_version: String,
+    source_commit_sha: Option<String>,
+}
+
+fn expected_architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" | "amd64" | "x64" => "x86_64",
+        "aarch64" | "arm64" => "aarch64",
+        "x86" | "i686" | "i586" => "x86",
+        _ => "unknown",
+    }
+}
+
+fn expected_source_commit_sha() -> Option<&'static str> {
+    option_env!("BATCAVE_SOURCE_COMMIT_SHA").filter(|value| !value.is_empty())
+}
+
+fn exact_keys(object: &Map<String, Value>, expected: &[&str], label: &str) -> Result<(), String> {
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("packaged benchmark {label} keys were not exact"))
+    }
+}
+
+fn exact_string(object: &Map<String, Value>, field: &str, expected: &str) -> Result<(), String> {
+    if object.get(field).and_then(Value::as_str) == Some(expected) {
+        Ok(())
+    } else {
+        Err(format!("packaged benchmark field {field} did not match"))
+    }
+}
+
+fn exact_u64(object: &Map<String, Value>, field: &str, expected: u64) -> Result<(), String> {
+    if object.get(field).and_then(Value::as_u64) == Some(expected) {
+        Ok(())
+    } else {
+        Err(format!("packaged benchmark field {field} did not match"))
+    }
+}
+
+fn exact_bool(object: &Map<String, Value>, field: &str, expected: bool) -> Result<(), String> {
+    if object.get(field).and_then(Value::as_bool) == Some(expected) {
+        Ok(())
+    } else {
+        Err(format!("packaged benchmark field {field} did not match"))
+    }
+}
+
+fn require_nonnegative_number(object: &Map<String, Value>, field: &str) -> Result<(), String> {
+    if object
+        .get(field)
+        .and_then(Value::as_f64)
+        .is_some_and(|value| value.is_finite() && value >= 0.0)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "packaged benchmark field {field} was not a nonnegative number"
+        ))
+    }
+}
+
+fn parse_packaged_benchmark(
+    stdout: &[u8],
+    output_bounded: bool,
+) -> Result<PackagedBenchmarkObservation, String> {
+    const SUMMARY_KEYS: [&str; 32] = [
+        "format_version",
+        "release_identity",
+        "host",
+        "measurement_origin",
+        "evidence_scope",
+        "whole_app_measured",
+        "live_command",
+        "command_transport",
+        "serialization_scope",
+        "latency_gate_metric",
+        "platform",
+        "architecture",
+        "machine_class",
+        "workload_profile",
+        "warmup_ticks",
+        "measured_ticks",
+        "inter_command_delay_ms",
+        "repeat_count",
+        "repeats",
+        "median_collection_p95_ms",
+        "median_publication_p95_ms",
+        "median_serialization_p95_ms",
+        "median_live_command_p95_ms",
+        "peak_app_cpu_percent",
+        "peak_app_rss_bytes",
+        "max_p95_passed",
+        "baseline_metadata_matched",
+        "speed_ratio",
+        "speed_ratio_passed",
+        "resource_budget_passed",
+        "sample_quality_passed",
+        "strict_passed",
+    ];
+    const REPEAT_KEYS: [&str; 7] = [
+        "collection_p95_ms",
+        "publication_p95_ms",
+        "serialization_p95_ms",
+        "live_command_p95_ms",
+        "peak_app_cpu_percent",
+        "peak_app_rss_bytes",
+        "samples_advanced",
+    ];
+
+    if !output_bounded || stdout.len() > MAX_PACKAGED_BENCHMARK_BYTES {
+        return Err("packaged benchmark output exceeded the fixed bound".to_string());
+    }
+    let value = serde_json::from_slice::<Value>(stdout)
+        .map_err(|_| "packaged benchmark output was not one JSON value".to_string())?;
+    let summary = value
+        .as_object()
+        .ok_or_else(|| "packaged benchmark output was not an object".to_string())?;
+    exact_keys(summary, &SUMMARY_KEYS, "summary")?;
+    exact_u64(summary, "format_version", 4)?;
+    exact_string(summary, "host", "core")?;
+    exact_string(
+        summary,
+        "measurement_origin",
+        "owned_sampling_engine_refresh_and_protocol_serialization",
+    )?;
+    exact_string(summary, "evidence_scope", "core_runtime_host_only")?;
+    exact_bool(summary, "whole_app_measured", false)?;
+    exact_string(summary, "live_command", "refresh_now")?;
+    exact_string(summary, "command_transport", "in_process_bounded_channel")?;
+    exact_string(
+        summary,
+        "serialization_scope",
+        "runtime_protocol_v3_encode_and_json",
+    )?;
+    exact_string(summary, "latency_gate_metric", "median_live_command_p95_ms")?;
+    exact_string(summary, "platform", "linux")?;
+    exact_string(summary, "architecture", expected_architecture())?;
+    exact_string(summary, "machine_class", PACKAGED_BENCHMARK_MACHINE_CLASS)?;
+    exact_string(
+        summary,
+        "workload_profile",
+        PACKAGED_BENCHMARK_WORKLOAD_PROFILE,
+    )?;
+    exact_u64(summary, "warmup_ticks", 0)?;
+    exact_u64(summary, "measured_ticks", 1)?;
+    exact_u64(summary, "inter_command_delay_ms", 0)?;
+    exact_u64(summary, "repeat_count", 1)?;
+
+    for field in [
+        "median_collection_p95_ms",
+        "median_publication_p95_ms",
+        "median_serialization_p95_ms",
+        "median_live_command_p95_ms",
+        "peak_app_cpu_percent",
+        "peak_app_rss_bytes",
+    ] {
+        require_nonnegative_number(summary, field)?;
+    }
+    exact_bool(summary, "max_p95_passed", true)?;
+    exact_bool(summary, "baseline_metadata_matched", false)?;
+    if !summary.get("speed_ratio").is_some_and(Value::is_null) {
+        return Err("packaged benchmark field speed_ratio did not match".to_string());
+    }
+    exact_bool(summary, "speed_ratio_passed", true)?;
+    if !summary
+        .get("resource_budget_passed")
+        .is_some_and(Value::is_boolean)
+    {
+        return Err("packaged benchmark field resource_budget_passed was not boolean".to_string());
+    }
+    exact_bool(summary, "sample_quality_passed", true)?;
+    exact_bool(summary, "strict_passed", true)?;
+
+    let repeats = summary
+        .get("repeats")
+        .and_then(Value::as_array)
+        .filter(|repeats| repeats.len() == 1)
+        .ok_or_else(|| "packaged benchmark repeats were not exact".to_string())?;
+    let repeat = repeats[0]
+        .as_object()
+        .ok_or_else(|| "packaged benchmark repeat was not an object".to_string())?;
+    exact_keys(repeat, &REPEAT_KEYS, "repeat")?;
+    for field in [
+        "collection_p95_ms",
+        "publication_p95_ms",
+        "serialization_p95_ms",
+        "live_command_p95_ms",
+        "peak_app_cpu_percent",
+        "peak_app_rss_bytes",
+    ] {
+        require_nonnegative_number(repeat, field)?;
+    }
+    exact_bool(repeat, "samples_advanced", true)?;
+
+    let identity = summary
+        .get("release_identity")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "packaged benchmark release identity was not an object".to_string())?;
+    exact_keys(
+        identity,
+        &["app_version", "source_commit_sha"],
+        "release identity",
+    )?;
+    exact_string(identity, "app_version", env!("CARGO_PKG_VERSION"))?;
+    let source_commit_sha = match (
+        identity.get("source_commit_sha"),
+        expected_source_commit_sha(),
+    ) {
+        (Some(Value::Null), None) => None,
+        (Some(Value::String(actual)), Some(expected)) if actual == expected => Some(actual.clone()),
+        _ => return Err("packaged benchmark source identity did not match".to_string()),
+    };
+
+    Ok(PackagedBenchmarkObservation {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        source_commit_sha,
+    })
+}
+
+fn packaged_benchmark_fixture() -> Value {
+    serde_json::json!({
+        "format_version": 4,
+        "release_identity": {
+            "app_version": env!("CARGO_PKG_VERSION"),
+            "source_commit_sha": expected_source_commit_sha(),
+        },
+        "host": "core",
+        "measurement_origin": "owned_sampling_engine_refresh_and_protocol_serialization",
+        "evidence_scope": "core_runtime_host_only",
+        "whole_app_measured": false,
+        "live_command": "refresh_now",
+        "command_transport": "in_process_bounded_channel",
+        "serialization_scope": "runtime_protocol_v3_encode_and_json",
+        "latency_gate_metric": "median_live_command_p95_ms",
+        "platform": "linux",
+        "architecture": expected_architecture(),
+        "machine_class": PACKAGED_BENCHMARK_MACHINE_CLASS,
+        "workload_profile": PACKAGED_BENCHMARK_WORKLOAD_PROFILE,
+        "warmup_ticks": 0,
+        "measured_ticks": 1,
+        "inter_command_delay_ms": 0,
+        "repeat_count": 1,
+        "repeats": [{
+            "collection_p95_ms": 1.0,
+            "publication_p95_ms": 1.0,
+            "serialization_p95_ms": 1.0,
+            "live_command_p95_ms": 1.0,
+            "peak_app_cpu_percent": 1.0,
+            "peak_app_rss_bytes": 1,
+            "samples_advanced": true,
+        }],
+        "median_collection_p95_ms": 1.0,
+        "median_publication_p95_ms": 1.0,
+        "median_serialization_p95_ms": 1.0,
+        "median_live_command_p95_ms": 1.0,
+        "peak_app_cpu_percent": 1.0,
+        "peak_app_rss_bytes": 1,
+        "max_p95_passed": true,
+        "baseline_metadata_matched": false,
+        "speed_ratio": null,
+        "speed_ratio_passed": true,
+        "resource_budget_passed": true,
+        "sample_quality_passed": true,
+        "strict_passed": true,
+    })
+}
+
+#[test]
+fn packaged_benchmark_parser_accepts_only_the_closed_source_observation() {
+    let fixture = serde_json::to_vec_pretty(&packaged_benchmark_fixture()).unwrap();
+    assert_eq!(
+        parse_packaged_benchmark(&fixture, true).unwrap(),
+        PackagedBenchmarkObservation {
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            source_commit_sha: expected_source_commit_sha().map(str::to_string),
+        }
+    );
+}
+
+#[test]
+fn packaged_benchmark_parser_rejects_hostile_or_contradictory_output() {
+    let canonical = packaged_benchmark_fixture();
+    let canonical_bytes = serde_json::to_vec(&canonical).unwrap();
+    assert!(parse_packaged_benchmark(&canonical_bytes, false)
+        .unwrap_err()
+        .contains("exceeded the fixed bound"));
+    assert!(
+        parse_packaged_benchmark(&vec![b' '; MAX_PACKAGED_BENCHMARK_BYTES + 1], true)
+            .unwrap_err()
+            .contains("exceeded the fixed bound")
+    );
+
+    let mut multiple = canonical_bytes.clone();
+    multiple.extend_from_slice(&canonical_bytes);
+    assert!(parse_packaged_benchmark(&multiple, true)
+        .unwrap_err()
+        .contains("not one JSON value"));
+
+    for (label, hostile) in [
+        ("extra key", {
+            let mut value = canonical.clone();
+            value["caller_status"] = Value::String("passed".to_string());
+            value
+        }),
+        ("wrong version", {
+            let mut value = canonical.clone();
+            value["release_identity"]["app_version"] = Value::String("9.9.9".to_string());
+            value
+        }),
+        ("wrong platform", {
+            let mut value = canonical.clone();
+            value["platform"] = Value::String("fixture".to_string());
+            value
+        }),
+        ("negative metric", {
+            let mut value = canonical.clone();
+            value["median_live_command_p95_ms"] = serde_json::json!(-1.0);
+            value
+        }),
+        ("non-advancing repeat", {
+            let mut value = canonical.clone();
+            value["repeats"][0]["samples_advanced"] = Value::Bool(false);
+            value
+        }),
+        ("contradictory summary", {
+            let mut value = canonical.clone();
+            value["sample_quality_passed"] = Value::Bool(false);
+            value
+        }),
+    ] {
+        let error = parse_packaged_benchmark(&serde_json::to_vec(&hostile).unwrap(), true)
+            .expect_err(label);
+        assert!(error.contains("packaged benchmark"), "{label}: {error}");
     }
 }
 
@@ -81,28 +430,40 @@ mod linux {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum FixedProbe {
         DebExtract,
+        DebPayloadBenchmark,
         AppImageDescriptorPath,
         AppImageExecveat,
         AppImageFexecve,
+        AppImagePayloadBenchmark,
     }
 
     impl FixedProbe {
         fn package_kind(self) -> PackageKind {
             match self {
-                Self::DebExtract => PackageKind::Deb,
-                Self::AppImageDescriptorPath | Self::AppImageExecveat | Self::AppImageFexecve => {
-                    PackageKind::AppImage
-                }
+                Self::DebExtract | Self::DebPayloadBenchmark => PackageKind::Deb,
+                Self::AppImageDescriptorPath
+                | Self::AppImageExecveat
+                | Self::AppImageFexecve
+                | Self::AppImagePayloadBenchmark => PackageKind::AppImage,
             }
         }
 
         fn label(self) -> &'static str {
             match self {
                 Self::DebExtract => "deb_extract",
+                Self::DebPayloadBenchmark => "deb_payload_benchmark",
                 Self::AppImageDescriptorPath => "appimage_descriptor_path",
                 Self::AppImageExecveat => "appimage_execveat",
                 Self::AppImageFexecve => "appimage_fexecve",
+                Self::AppImagePayloadBenchmark => "appimage_payload_benchmark",
             }
+        }
+
+        fn launches_payload(self) -> bool {
+            matches!(
+                self,
+                Self::DebPayloadBenchmark | Self::AppImagePayloadBenchmark
+            )
         }
     }
 
@@ -545,17 +906,72 @@ mod linux {
         Ok(owned)
     }
 
+    fn create_private_directory(path: &Path, label: &str) -> Result<(), String> {
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder
+            .create(path)
+            .map_err(|error| format!("{label} creation failed: {error}"))
+    }
+
+    fn deb_payload_executable(private_root: &Path) -> Result<PathBuf, String> {
+        let payload_root = private_root.join("deb-payload");
+        let canonical_root = fs::canonicalize(&payload_root)
+            .map_err(|error| format!("deb payload root validation failed: {error}"))?;
+        if canonical_root != payload_root {
+            return Err("deb payload root traversed a link".to_string());
+        }
+        let executable = payload_root.join("usr/bin/batcave-monitor");
+        let metadata = fs::symlink_metadata(&executable)
+            .map_err(|error| format!("deb payload executable metadata failed: {error}"))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("deb payload executable was not a regular non-link file".to_string());
+        }
+        let canonical_executable = fs::canonicalize(&executable)
+            .map_err(|error| format!("deb payload executable validation failed: {error}"))?;
+        if canonical_executable != canonical_root.join("usr/bin/batcave-monitor") {
+            return Err("deb payload executable traversed a link".to_string());
+        }
+        Ok(canonical_executable)
+    }
+
+    fn add_fixed_benchmark_args(command: &mut Command) {
+        command.args([
+            "--benchmark",
+            "--platform",
+            "linux",
+            "--architecture",
+            super::expected_architecture(),
+            "--machine-class",
+            super::PACKAGED_BENCHMARK_MACHINE_CLASS,
+            "--workload-profile",
+            super::PACKAGED_BENCHMARK_WORKLOAD_PROFILE,
+            "--warmup-ticks",
+            "0",
+            "--ticks",
+            "1",
+            "--sleep-ms",
+            "0",
+            "--repeats",
+            "1",
+        ]);
+    }
+
     fn fixed_command(probe: FixedProbe, private_root: &Path) -> Result<Command, String> {
         let mut command = match probe {
             FixedProbe::DebExtract => {
                 let payload_root = private_root.join("deb-payload");
-                fs::create_dir(&payload_root)
-                    .map_err(|error| format!("deb payload root creation failed: {error}"))?;
+                create_private_directory(&payload_root, "deb payload root")?;
                 let mut command = Command::new("/usr/bin/dpkg-deb");
                 command
                     .arg("--extract")
                     .arg(format!("/proc/self/fd/{CONSUMER_FD}"))
                     .arg(payload_root);
+                command
+            }
+            FixedProbe::DebPayloadBenchmark => {
+                let mut command = Command::new(deb_payload_executable(private_root)?);
+                add_fixed_benchmark_args(&mut command);
                 command
             }
             FixedProbe::AppImageDescriptorPath => {
@@ -575,6 +991,12 @@ mod linux {
                 command.arg("--exact").arg(test_name).arg("--nocapture");
                 command
             }
+            FixedProbe::AppImagePayloadBenchmark => {
+                let mut command = Command::new(format!("/proc/self/fd/{CONSUMER_FD}"));
+                command.arg("--appimage-extract-and-run");
+                add_fixed_benchmark_args(&mut command);
+                command
+            }
         };
         command
             .env_clear()
@@ -584,6 +1006,18 @@ mod linux {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if probe.launches_payload() {
+            let home = private_root.join("home");
+            let data = private_root.join("xdg-data");
+            let temporary = private_root.join("tmp");
+            create_private_directory(&home, "payload home")?;
+            create_private_directory(&data, "payload data root")?;
+            create_private_directory(&temporary, "payload temporary root")?;
+            command
+                .env("HOME", home)
+                .env("XDG_DATA_HOME", data)
+                .env("TMPDIR", temporary);
+        }
         if matches!(
             probe,
             FixedProbe::AppImageExecveat | FixedProbe::AppImageFexecve
@@ -1283,7 +1717,9 @@ mod linux {
                         "transcript shape did not match the fixed mode",
                     )
                 })?,
-            FixedProbe::DebExtract => {
+            FixedProbe::DebExtract
+            | FixedProbe::DebPayloadBenchmark
+            | FixedProbe::AppImagePayloadBenchmark => {
                 return Err(invalid_appimage_offset(
                     probe,
                     stdout,
@@ -1455,6 +1891,28 @@ mod linux {
 
     #[test]
     #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
+    fn built_deb_payload_launches_from_the_owned_extraction_without_installing() {
+        let _lock = lock_probes();
+        let artifact = acquire_owned_artifact(PackageKind::Deb).expect("acquire built deb");
+        let outcome = with_private_root("deb-payload", |root| {
+            let extraction = run_probe(&artifact, FixedProbe::DebExtract, root)?;
+            assert_non_proof(&extraction);
+            if !extraction.stdout.is_empty() {
+                return Err("fixed deb extraction emitted unexpected output".to_string());
+            }
+            run_probe(&artifact, FixedProbe::DebPayloadBenchmark, root)
+        })
+        .expect("launch the fixed deb payload benchmark and clean its private root");
+        assert_non_proof(&outcome);
+        let observation = super::parse_packaged_benchmark(&outcome.stdout, outcome.output_bounded)
+            .unwrap_or_else(|error| {
+                panic!("{error}: {}", String::from_utf8_lossy(&outcome.stdout))
+            });
+        assert_eq!(observation.app_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
     fn built_appimage_runtime_accepts_all_closed_owned_descriptor_modes() {
         let _lock = lock_probes();
         let artifact = acquire_owned_artifact(PackageKind::AppImage).expect("acquire AppImage");
@@ -1475,5 +1933,22 @@ mod linux {
                 expected_offset = Some(offset);
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires Linux deb/AppImage bundles built from this checkout"]
+    fn built_appimage_payload_launches_from_the_owned_descriptor() {
+        let _lock = lock_probes();
+        let artifact = acquire_owned_artifact(PackageKind::AppImage).expect("acquire AppImage");
+        let outcome = with_private_root("appimage-payload", |root| {
+            run_probe(&artifact, FixedProbe::AppImagePayloadBenchmark, root)
+        })
+        .expect("launch the fixed AppImage payload benchmark and clean its private root");
+        assert_non_proof(&outcome);
+        let observation = super::parse_packaged_benchmark(&outcome.stdout, outcome.output_bounded)
+            .unwrap_or_else(|error| {
+                panic!("{error}: {}", String::from_utf8_lossy(&outcome.stdout))
+            });
+        assert_eq!(observation.app_version, env!("CARGO_PKG_VERSION"));
     }
 }

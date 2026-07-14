@@ -40,7 +40,9 @@ On non-Linux hosts the fixed process probes return `unsupported` without spawnin
 
 ## Remaining work in #115
 
-The [real-package owned-transport gate](decisions/0008-linux-package-owned-transport.md) now checks locally built deb extraction and AppImage runtime execution through sealed inherited descriptors on hosted Linux. It proves the package-facing transport choice without installing a deb, launching the AppImage payload, or treating pull-request bundles as public artifacts.
+The [real-package owned-transport gate](decisions/0008-linux-package-owned-transport.md) checks locally built deb extraction and AppImage runtime execution through sealed inherited descriptors on hosted Linux. Its [owned-package payload-launch successor](decisions/0011-linux-owned-payload-launch.md) now carries those bytes into the packaged BatCave benchmark entry, validates the embedded version and optional source SHA, requires one advancing core-runtime sample, and settles every owned process and private root.
+
+That successor still uses pull-request bundles. The deb payload runs from a private extraction rather than a package installation. The AppImage payload uses fixed extract-and-run staging rather than canonical staging or updater trust. Its benchmark scope is the core runtime host, not a desktop-window observation, and it keeps public/native/evidence claims false.
 
 Parent issue #115 remains open. A later exact-public-artifact lane must independently re-establish the public release inside the future Rust-owned complete operation, make the fixed deb installer or AppImage stager consume those exact owned bytes, and complete package trust, launch, release identity, settings restart, degradation, telemetry, removal, process cleanup, and user-state gates.
 
