@@ -1,23 +1,30 @@
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const VERSION_PATTERN = /^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-export function verifyReleaseVersion(tag, versions) {
+// Pure tag parsing is for table-driven contracts and tests with synthetic versions.
+// Executable release boundaries must call verifyWorkspaceReleaseVersion instead.
+export function parseReleaseTag(tag) {
   const match = VERSION_PATTERN.exec(tag);
   if (!match) throw new Error(`release tag must be v<semver>; received ${tag}`);
   const expected = match[1];
-  const mismatches = Object.entries(versions).filter(([, version]) => version !== expected);
-  if (mismatches.length > 0) {
+  return { version: expected, prerelease: expected.includes("-") };
+}
+
+export function verifyReleaseVersion(tag, cargoVersion) {
+  const result = parseReleaseTag(tag);
+  if (typeof cargoVersion !== "string" || cargoVersion.length === 0) {
+    throw new Error("Cargo package version is required for release verification");
+  }
+  if (cargoVersion !== result.version) {
     throw new Error(
-      [
-        `release tag ${tag} expects version ${expected}`,
-        ...mismatches.map(([file, version]) => `${file}: ${version}`),
-      ].join("\n"),
+      `release tag ${tag} expects version ${result.version}\nCargo.toml: ${cargoVersion}`,
     );
   }
-  return { version: expected, prerelease: expected.includes("-") };
+  return result;
 }
 
 function tomlPackageVersion(contents, file) {
@@ -26,30 +33,28 @@ function tomlPackageVersion(contents, file) {
   return match[1];
 }
 
-export function readWorkspaceVersions(repoRoot) {
+export function readCargoVersion(repoRoot) {
   const appRoot = path.join(repoRoot, "src", "BatCave.App");
-  const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
-  const packageJson = readJson(path.join(appRoot, "package.json"));
-  const packageLock = readJson(path.join(appRoot, "package-lock.json"));
-  const tauriConfig = readJson(path.join(appRoot, "src-tauri", "tauri.conf.json"));
   const cargoFile = path.join(appRoot, "src-tauri", "Cargo.toml");
-  return {
-    "package.json": packageJson.version,
-    "package-lock.json": packageLock.version,
-    "package-lock.json workspace": packageLock.packages?.[""]?.version,
-    "Cargo.toml": tomlPackageVersion(fs.readFileSync(cargoFile, "utf8"), cargoFile),
-    "tauri.conf.json": tauriConfig.version,
-  };
+  return tomlPackageVersion(fs.readFileSync(cargoFile, "utf8"), cargoFile);
+}
+
+export function verifyWorkspaceReleaseVersion(tag, repoRoot = REPOSITORY_ROOT) {
+  return verifyReleaseVersion(tag, readCargoVersion(repoRoot));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const tag = process.argv[2];
   if (!tag) {
-    console.error("usage: node scripts/verify-release-version.mjs <vX.Y.Z[-prerelease]>");
+    console.error("usage: node scripts/verify-release-version.mjs <vX.Y.Z[-prerelease]|--print>");
     process.exit(2);
   }
   try {
-    const result = verifyReleaseVersion(tag, readWorkspaceVersions(process.cwd()));
+    if (tag === "--print") {
+      console.log(readCargoVersion(REPOSITORY_ROOT));
+      process.exit(0);
+    }
+    const result = verifyWorkspaceReleaseVersion(tag);
     console.log(
       `release version aligned: ${result.version} (${result.prerelease ? "prerelease" : "stable"})`,
     );

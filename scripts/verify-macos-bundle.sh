@@ -32,6 +32,7 @@ fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
+cargo_version="$(node "$repo_root/scripts/verify-release-version.mjs" --print)"
 if [[ -z "$bundle_root" ]]; then
   bundle_root="$repo_root/src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle"
 fi
@@ -56,12 +57,25 @@ verify_app() {
   local executable_name
   local executable
   local minimum_version
+  local bundle_short_version
+  local bundle_version
   local signature_details
 
   [[ -f "$plist" ]] || { echo "Missing app Info.plist: $plist" >&2; return 1; }
   executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
   executable="$candidate/Contents/MacOS/$executable_name"
   [[ -f "$executable" ]] || { echo "Missing app executable: $executable" >&2; return 1; }
+
+  bundle_short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+  bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+  [[ "$bundle_short_version" == "$cargo_version" ]] || {
+    echo "Expected CFBundleShortVersionString $cargo_version, found $bundle_short_version." >&2
+    return 1
+  }
+  [[ "$bundle_version" == "$cargo_version" ]] || {
+    echo "Expected CFBundleVersion $cargo_version, found $bundle_version." >&2
+    return 1
+  }
 
   lipo "$executable" -verify_arch arm64 x86_64
   minimum_version="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")"

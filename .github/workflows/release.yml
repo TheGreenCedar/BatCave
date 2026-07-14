@@ -6,7 +6,6 @@ on:
       tag:
         description: Version tag matching the app version
         required: true
-        default: v0.2.0-rc.2
       source_sha:
         description: Exact 40-character commit SHA approved for release from the tip of main
         required: true
@@ -101,7 +100,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs
 
   windows:
     name: Build Windows release
@@ -219,6 +218,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
+
+      - name: Verify Linux package version
+        run: bash scripts/verify-linux-bundle.sh
 
       - name: Collect Linux distributables
         run: |

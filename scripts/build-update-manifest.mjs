@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyReleaseVersion } from "./verify-release-version.mjs";
+import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
 
 const TARGETS = [
   ["windows-x86_64", "_x64-setup.exe"],
@@ -14,7 +14,7 @@ export function buildUpdateManifest(tag, repository, artifacts) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) {
     throw new Error(`invalid GitHub repository: ${repository}`);
   }
-  const { version } = verifyReleaseVersion(tag, {});
+  const { version } = parseReleaseTag(tag);
   const names = Object.keys(artifacts);
   const platforms = Object.fromEntries(
     TARGETS.map(([target, suffix]) => {
@@ -38,6 +38,7 @@ export function buildUpdateManifest(tag, repository, artifacts) {
 }
 
 export function writeUpdateManifest(tag, repository, distDirectory) {
+  verifyWorkspaceReleaseVersion(tag);
   const artifacts = Object.fromEntries(
     fs
       .readdirSync(distDirectory)
