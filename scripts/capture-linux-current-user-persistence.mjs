@@ -12,6 +12,7 @@ import {
 } from "./validate-current-user-persistence-evidence.mjs";
 
 const PROOF_ENV = "BATCAVE_CURRENT_USER_PERSISTENCE_PROOF";
+const DEB_PACKAGE_NAME = "bat-cave-monitor";
 const SOURCE_SHA = /^[0-9a-f]{40}$/u;
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const MAX_ARTIFACT_BYTES = 512 * 1024 * 1024;
@@ -541,7 +542,9 @@ function debMetadata(deb) {
   const packageName = field("Package");
   const version = field("Version");
   const architecture = field("Architecture");
-  if (packageName !== "batcave-monitor") fail("deb package name must equal batcave-monitor");
+  if (packageName !== DEB_PACKAGE_NAME) {
+    fail(`deb package name must equal ${DEB_PACKAGE_NAME}`);
+  }
   if (!VERSION.test(version)) fail("deb package version is malformed");
   if (architecture !== currentArchitecture().deb) {
     fail(`deb architecture must equal ${currentArchitecture().deb}`);
@@ -792,6 +795,7 @@ export const linuxPersistenceCaptureInternals = {
   buildPacket,
   copyOwnedArtifact,
   createOutputDirectory,
+  debPackageName: DEB_PACKAGE_NAME,
   inspectRoot,
   parseArgs,
   privateRootPermissionsVerified,

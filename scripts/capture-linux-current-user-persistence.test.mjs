@@ -15,6 +15,7 @@ const {
   buildPacket,
   copyOwnedArtifact,
   createOutputDirectory,
+  debPackageName,
   inspectRoot,
   parseArgs,
   privateRootPermissionsVerified,
@@ -127,6 +128,7 @@ function packet(kind = "deb") {
 }
 
 test("requires the exact closed Linux capture arguments", () => {
+  assert.equal(debPackageName, "bat-cave-monitor");
   const values = parseArgs([
     "--deb",
     "candidate.deb",
