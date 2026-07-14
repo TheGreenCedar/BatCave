@@ -5,6 +5,12 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import {
+  BUILD_PROVENANCE_ROLE,
+  canonicalReleaseAssetName,
+  requireSafeReleaseAssetName,
+  verifyReleaseAssetInventory,
+} from "./release-asset-contract.mjs";
 import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
 
 export const RELEASE_REPOSITORY = "TheGreenCedar/BatCave";
@@ -15,24 +21,8 @@ export const CHECKSUM_MANIFEST = "SHA256SUMS.txt";
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_DIGEST = /^sha256:([0-9a-f]{64})$/;
 
-function canonicalAssetName(name) {
-  return name.normalize("NFC").toLowerCase();
-}
-
 export function requireSafeAssetName(name) {
-  if (
-    typeof name !== "string" ||
-    name.length === 0 ||
-    name === "." ||
-    name === ".." ||
-    name !== name.normalize("NFC") ||
-    path.posix.basename(name) !== name ||
-    path.win32.basename(name) !== name ||
-    /[\u0000-\u001f\u007f]/u.test(name)
-  ) {
-    throw new Error(`unsafe release asset name: ${String(name)}`);
-  }
-  return name;
+  return requireSafeReleaseAssetName(name);
 }
 
 function validatedAssets(assets, owner) {
@@ -47,7 +37,7 @@ function validatedAssets(assets, owner) {
         throw new Error(`${owner} contains an invalid release asset`);
       }
       const name = requireSafeAssetName(asset.name);
-      const canonicalName = canonicalAssetName(name);
+      const canonicalName = canonicalReleaseAssetName(name);
       if (names.has(canonicalName)) {
         throw new Error(`${owner} contains duplicate release asset ${name}`);
       }
@@ -92,6 +82,13 @@ export function buildPublicDownloadPlan(candidate, release) {
 
   const expectedAssets = validatedAssets(candidate.assets, "release candidate");
   const publicAssets = validatedAssets(release.assets, "published release");
+  verifyReleaseAssetInventory(
+    candidate.tag,
+    candidate.prerelease,
+    expectedAssets,
+    "release candidate",
+  );
+  verifyReleaseAssetInventory(candidate.tag, release.prerelease, publicAssets, "published release");
 
   if (release.tag_name !== candidate.tag) {
     throw new Error(
@@ -209,6 +206,7 @@ async function sha256File(file) {
 
 export async function verifyDownloadedAssets(candidate, directory) {
   const expected = validatedAssets(candidate.assets, "release candidate");
+  verifyReleaseAssetInventory(candidate.tag, candidate.prerelease, expected, "release candidate");
   const entries = fs.readdirSync(directory, { withFileTypes: true });
   const actual = validatedAssets(
     entries.map((entry) => ({ name: entry.name, size: 0, digest: `sha256:${"0".repeat(64)}` })),
@@ -254,7 +252,7 @@ export function parseChecksumManifest(contents) {
       throw new Error(`invalid checksum manifest line ${index + 1}`);
     }
     const name = requireSafeAssetName(match[3]);
-    const canonicalName = canonicalAssetName(name);
+    const canonicalName = canonicalReleaseAssetName(name);
     if (canonicalNames.has(canonicalName)) {
       throw new Error(`checksum manifest contains duplicate asset ${name}`);
     }
@@ -267,6 +265,16 @@ export function parseChecksumManifest(contents) {
 
 export function verifyChecksumManifest(candidate, directory) {
   const assets = validatedAssets(candidate.assets, "release candidate");
+  const contract = verifyReleaseAssetInventory(
+    candidate.tag,
+    candidate.prerelease,
+    assets,
+    "release candidate",
+  );
+  const provenance = contract.roles.find(({ role }) => role === BUILD_PROVENANCE_ROLE);
+  if (!provenance) {
+    throw new Error(`release contract is missing the declared ${BUILD_PROVENANCE_ROLE}`);
+  }
   const byName = new Map(assets.map((asset) => [asset.name, asset]));
   if (!byName.has(CHECKSUM_MANIFEST)) {
     throw new Error(`release candidate is missing ${CHECKSUM_MANIFEST}`);
@@ -297,10 +305,15 @@ export function verifyChecksumManifest(candidate, directory) {
       `checksum manifest must cover every candidate subject except one public attestation bundle; found ${unchecksummed.length} exceptions`,
     );
   }
+  if (unchecksummed[0] !== provenance.name) {
+    throw new Error(
+      `checksum manifest must leave only the declared ${BUILD_PROVENANCE_ROLE} unchecksummed; found ${unchecksummed[0]}`,
+    );
+  }
 
   return {
     subjects: [...manifest.keys()].sort((left, right) => left.localeCompare(right)),
-    bundleName: unchecksummed[0],
+    bundleName: provenance.name,
   };
 }
 

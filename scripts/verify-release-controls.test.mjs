@@ -130,8 +130,7 @@ test("rejects review settings that allow stale or unreviewed changes", () => {
   assert.throws(() => verifyReleaseControls(staleReviews), /dismiss stale approving reviews/);
 
   const unreviewedLastPush = validControls();
-  unreviewedLastPush.branchProtection.required_pull_request_reviews.require_last_push_approval =
-    false;
+  unreviewedLastPush.branchProtection.required_pull_request_reviews.require_last_push_approval = false;
   assert.throws(() => verifyReleaseControls(unreviewedLastPush), /approval of the last push/);
 
   const unresolvedConversations = validControls();
@@ -320,4 +319,43 @@ test("runs release controls first with only the protected environment credential
     releaseWorkflow.match(/GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/g)?.length,
     4,
   );
+});
+
+test("gates pre-attestation and complete release inventories before unconditional upload", () => {
+  const steps = workflowSteps(workflowJob("finalize"));
+  const stepIndex = (label) => steps.findIndex((step) => step.includes(`name: ${label}`));
+  const checksums = stepIndex("Generate checksums");
+  const preAttestation = stepIndex("Verify pre-attestation release inventory");
+  const attest = stepIndex("Generate build provenance");
+  const retain = stepIndex("Retain provenance with release files");
+  const complete = stepIndex("Verify complete release inventory");
+  const upload = steps.findIndex(
+    (step) =>
+      step.includes("actions/upload-artifact@") &&
+      step.includes("name: batcave-release-${{ needs.prepare.outputs.tag }}"),
+  );
+  const create = stepIndex("Create and verify draft GitHub Release");
+
+  for (const [label, index] of [
+    ["checksums", checksums],
+    ["pre-attestation inventory", preAttestation],
+    ["attestation", attest],
+    ["retained provenance", retain],
+    ["complete inventory", complete],
+    ["final artifact upload", upload],
+    ["draft release", create],
+  ]) {
+    assert.ok(index >= 0, `finalize must contain ${label}`);
+  }
+  assert.ok(checksums < preAttestation && preAttestation < attest);
+  assert.ok(attest < retain && retain < complete && complete < upload && upload < create);
+
+  assert.match(
+    steps[preAttestation],
+    /verify-release-candidate\.mjs verify-inventory .* pre-attestation dist/u,
+  );
+  assert.match(steps[complete], /verify-release-candidate\.mjs inventory .* dist /u);
+  assert.doesNotMatch(steps[preAttestation], /^\s*if:/mu);
+  assert.doesNotMatch(steps[complete], /^\s*if:/mu);
+  assert.doesNotMatch(steps[upload], /^\s*if:/mu);
 });

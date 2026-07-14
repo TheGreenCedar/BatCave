@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  RELEASE_ASSET_PHASE,
+  canonicalReleaseAssetName,
+  requireSafeReleaseAssetName,
+  verifyReleaseAssetInventory,
+} from "./release-asset-contract.mjs";
 import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
@@ -69,34 +75,32 @@ export function stageReleaseAssets(inputRoot, outputRoot) {
   }
   const names = new Map();
   for (const source of releaseFiles(inputRoot)) {
-    const name = path.basename(source).replaceAll(" ", ".");
-    const prior = names.get(name);
+    const name = requireSafeReleaseAssetName(path.basename(source).replaceAll(" ", "."));
+    const canonicalName = canonicalReleaseAssetName(name);
+    const prior = names.get(canonicalName);
     if (prior) {
-      throw new Error(`release assets ${prior} and ${source} both normalize to ${name}`);
+      throw new Error(`release assets ${prior.source} and ${source} both normalize to ${name}`);
     }
-    names.set(name, source);
+    names.set(canonicalName, { name, source });
   }
 
-  const staged = [...names.keys()].sort((a, b) => a.localeCompare(b));
+  const staged = [...names.values()].map(({ name }) => name).sort((a, b) => a.localeCompare(b));
   if (staged.length === 0) throw new Error("release input contains no files");
 
   fs.mkdirSync(outputRoot, { recursive: true });
   for (const name of staged) {
-    fs.copyFileSync(names.get(name), path.join(outputRoot, name), fs.constants.COPYFILE_EXCL);
+    const source = names.get(canonicalReleaseAssetName(name)).source;
+    fs.copyFileSync(source, path.join(outputRoot, name), fs.constants.COPYFILE_EXCL);
   }
   return staged;
 }
 
-export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
-  parseReleaseTag(tag);
-  requireCommitSha("source SHA", sourceSha);
-  if (typeof prerelease !== "boolean") throw new Error("prerelease must be a boolean");
-
+function releaseDirectoryAssets(directory) {
   const entries = fs.readdirSync(directory, { withFileTypes: true });
   if (entries.some((entry) => !entry.isFile())) {
     throw new Error("staged release directory must contain files only");
   }
-  const assets = entries
+  return entries
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((entry) => {
       const file = path.join(directory, entry.name);
@@ -106,11 +110,36 @@ export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
         digest: `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`,
       };
     });
+}
+
+export function verifyReleaseDirectory(
+  tag,
+  prerelease,
+  directory,
+  phase = RELEASE_ASSET_PHASE.Complete,
+) {
+  parseReleaseTag(tag);
+  if (typeof prerelease !== "boolean") throw new Error("prerelease must be a boolean");
+  const assets = releaseDirectoryAssets(directory);
   if (assets.length === 0) throw new Error("release candidate contains no assets");
+  verifyReleaseAssetInventory(tag, prerelease, assets, `release ${phase} inventory`, phase);
+  return assets;
+}
+
+export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
+  parseReleaseTag(tag);
+  requireCommitSha("source SHA", sourceSha);
+  const assets = verifyReleaseDirectory(tag, prerelease, directory);
   return { tag, source_sha: sourceSha, prerelease, assets };
 }
 
 export function verifyReleaseReadback(expected, actual, expectedDraft) {
+  verifyReleaseAssetInventory(
+    expected.tag,
+    expected.prerelease,
+    expected.assets,
+    "release candidate",
+  );
   if (actual.tag_name !== expected.tag) {
     throw new Error(
       `release tag readback mismatch: expected ${expected.tag}, received ${actual.tag_name}`,
@@ -145,6 +174,7 @@ export function verifyReleaseReadback(expected, actual, expectedDraft) {
     (asset, index) => asset.name === actualAssets[index - 1]?.name,
   );
   if (duplicate) throw new Error(`release readback contains duplicate asset ${duplicate.name}`);
+  verifyReleaseAssetInventory(expected.tag, actual.prerelease, actualAssets, "release readback");
   if (JSON.stringify(actualAssets) !== JSON.stringify(expected.assets)) {
     throw new Error(
       `release asset readback mismatch\nexpected: ${JSON.stringify(
@@ -191,6 +221,7 @@ function usage() {
     "usage:",
     "  node scripts/verify-release-candidate.mjs identity <tag> <channel> <source-sha> <main-sha> <approved-source-sha>",
     "  node scripts/verify-release-candidate.mjs stage <input-directory> <output-directory>",
+    "  node scripts/verify-release-candidate.mjs verify-inventory <tag> <prerelease> <phase> <directory>",
     "  node scripts/verify-release-candidate.mjs inventory <tag> <source-sha> <prerelease> <directory> <output-json>",
     "  node scripts/verify-release-candidate.mjs verify-readback <expected-json> <actual-json> <draft>",
     "  node scripts/verify-release-candidate.mjs verify-latest <expected-json> <latest-json>",
@@ -216,6 +247,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     } else if (command === "stage" && args.length === 2) {
       const assets = stageReleaseAssets(...args);
       console.log(`staged ${assets.length} release assets`);
+    } else if (command === "verify-inventory" && args.length === 4) {
+      const [tag, prerelease, phase, directory] = args;
+      verifyWorkspaceReleaseVersion(tag);
+      const assets = verifyReleaseDirectory(
+        tag,
+        booleanArgument(prerelease, "prerelease"),
+        directory,
+        phase,
+      );
+      console.log(`verified ${phase} release inventory for ${assets.length} assets`);
     } else if (command === "inventory" && args.length === 5) {
       const [tag, sourceSha, prerelease, directory, output] = args;
       verifyWorkspaceReleaseVersion(tag);
