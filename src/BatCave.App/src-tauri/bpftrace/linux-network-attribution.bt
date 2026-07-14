@@ -86,8 +86,11 @@ interval:s:1 {
         }
       }
     }
-    $rx_overflow = (uint64)@batcave_rx_overflow[$completed_epoch];
-    delete(@batcave_rx_overflow, $completed_epoch);
+    $rx_overflow = (uint64)0;
+    if (has_key(@batcave_rx_overflow, $completed_epoch)) {
+      $rx_overflow = (uint64)@batcave_rx_overflow[$completed_epoch];
+      delete(@batcave_rx_overflow, $completed_epoch);
+    }
     printf("BATCAVE_NETWORK_RX_END %llu %llu %llu %llu %llu\n", $completed_epoch, $rx_count, $rx_total, $rx_stale, $rx_overflow);
 
     printf("BATCAVE_NETWORK_TX_BEGIN %llu\n", $completed_epoch);
@@ -107,8 +110,11 @@ interval:s:1 {
         }
       }
     }
-    $tx_overflow = (uint64)@batcave_tx_overflow[$completed_epoch];
-    delete(@batcave_tx_overflow, $completed_epoch);
+    $tx_overflow = (uint64)0;
+    if (has_key(@batcave_tx_overflow, $completed_epoch)) {
+      $tx_overflow = (uint64)@batcave_tx_overflow[$completed_epoch];
+      delete(@batcave_tx_overflow, $completed_epoch);
+    }
     printf("BATCAVE_NETWORK_TX_END %llu %llu %llu %llu %llu\n", $completed_epoch, $tx_count, $tx_total, $tx_stale, $tx_overflow);
     printf("BATCAVE_NETWORK_INTERVAL %llu\n", $completed_epoch);
   }

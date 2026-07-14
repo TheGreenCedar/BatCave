@@ -962,8 +962,19 @@ mod tests {
         }
         assert!(script.contains("@batcave_tx_overflow[$epoch] = (uint64)1"));
         assert!(script.contains("@batcave_rx_overflow[$epoch] = (uint64)1"));
-        assert!(script.contains("delete(@batcave_tx_overflow, $completed_epoch)"));
-        assert!(script.contains("delete(@batcave_rx_overflow, $completed_epoch)"));
+        for direction in ["rx", "tx"] {
+            let guard = script
+                .find(&format!(
+                    "if (has_key(@batcave_{direction}_overflow, $completed_epoch))"
+                ))
+                .unwrap();
+            let guarded_delete = script
+                .find(&format!(
+                    "delete(@batcave_{direction}_overflow, $completed_epoch)"
+                ))
+                .unwrap();
+            assert!(guard < guarded_delete);
+        }
         assert!(script.contains("@batcave_epoch = $closing_epoch + 1"));
         assert!(script.contains("$completed_epoch = $closing_epoch - 1"));
         assert!(script.contains("$kv.0.1 < $completed_epoch"));
