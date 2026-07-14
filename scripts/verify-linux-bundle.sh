@@ -48,7 +48,7 @@ deb_version="$(dpkg-deb --field "$deb" Version)"
 }
 for artifact in "$deb" "$appimage"; do
   [[ "$(basename -- "$artifact")" == *"_${cargo_version}_"* ]] || {
-    echo "Expected $(basename -- "$artifact") to contain version _$cargo_version_." >&2
+    echo "Expected $(basename -- "$artifact") to contain version _${cargo_version}_." >&2
     exit 1
   }
 done

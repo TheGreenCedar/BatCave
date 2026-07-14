@@ -5,7 +5,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { verifyReleaseVersion } from "./verify-release-version.mjs";
+import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
 
 export const RELEASE_REPOSITORY = "TheGreenCedar/BatCave";
 export const RELEASE_SOURCE_REF = "refs/heads/main";
@@ -80,7 +80,7 @@ export function buildPublicDownloadPlan(candidate, release) {
   if (typeof candidate.tag !== "string" || candidate.tag.length === 0) {
     throw new Error("release candidate tag is missing");
   }
-  verifyReleaseVersion(candidate.tag);
+  parseReleaseTag(candidate.tag);
   if (!COMMIT_SHA.test(candidate.source_sha)) {
     throw new Error(
       "release candidate source SHA must be an exact lowercase 40-character commit SHA",
@@ -305,7 +305,7 @@ export function verifyChecksumManifest(candidate, directory) {
 }
 
 export function releaseVerificationArguments(tag) {
-  verifyReleaseVersion(tag);
+  parseReleaseTag(tag);
   return ["release", "verify", tag, "--repo", RELEASE_REPOSITORY, "--format", "json"];
 }
 
@@ -381,8 +381,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
 
   try {
+    const candidate = readJson(candidateFile, "release candidate");
+    verifyWorkspaceReleaseVersion(candidate.tag);
     const result = await verifyPublicRelease(
-      readJson(candidateFile, "release candidate"),
+      candidate,
       readJson(releaseFile, "published release readback"),
       downloadDirectory,
     );

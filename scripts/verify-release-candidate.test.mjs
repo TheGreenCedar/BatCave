@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   buildReleaseInventory,
   stageReleaseAssets,
@@ -65,6 +67,29 @@ test("rejects a release channel that disagrees with the tag", () => {
       }),
     /expected prerelease/,
   );
+});
+
+test("executable candidate commands bind their tag to Cargo before artifact work", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-candidate-version-"));
+  try {
+    const script = fileURLToPath(new URL("./verify-release-candidate.mjs", import.meta.url));
+    const expectedFile = path.join(root, "candidate.json");
+    fs.writeFileSync(expectedFile, `${JSON.stringify({ tag: "v9.9.9" })}\n`);
+    const commands = [
+      ["identity", "v9.9.9", "stable", sourceSha, sourceSha, sourceSha],
+      ["inventory", "v9.9.9", sourceSha, "false", path.join(root, "missing"), "output.json"],
+      ["verify-readback", expectedFile, path.join(root, "missing-readback.json"), "true"],
+      ["verify-latest", expectedFile, path.join(root, "missing-latest.json")],
+    ];
+    for (const command of commands) {
+      const result = spawnSync(process.execPath, [script, ...command], { encoding: "utf8" });
+      assert.equal(result.status, 1, command[0]);
+      assert.match(result.stderr, /release tag v9\.9\.9 expects version 9\.9\.9/u);
+      assert.match(result.stderr, /Cargo\.toml:/u);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("stages nested artifact downloads without silent basename collisions", () => {

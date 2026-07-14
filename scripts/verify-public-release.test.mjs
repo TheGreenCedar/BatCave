@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   CHECKSUM_MANIFEST,
   RELEASE_REPOSITORY,
@@ -219,6 +221,31 @@ test("requires a new download directory and fails closed on anonymous HTTP error
       /anonymous download failed.*HTTP 404/,
     );
   });
+});
+
+test("executable public verification binds the candidate tag to Cargo before downloads", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-public-version-"));
+  try {
+    const candidateFile = path.join(root, "candidate.json");
+    fs.writeFileSync(candidateFile, `${JSON.stringify({ tag: "v9.9.9" })}\n`);
+    const downloadDirectory = path.join(root, "downloads");
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./verify-public-release.mjs", import.meta.url)),
+        candidateFile,
+        path.join(root, "missing-release.json"),
+        downloadDirectory,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /release tag v9\.9\.9 expects version 9\.9\.9/u);
+    assert.match(result.stderr, /Cargo\.toml:/u);
+    assert.equal(fs.existsSync(downloadDirectory), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("rejects public size, digest, and asset-set drift after download", async () => {

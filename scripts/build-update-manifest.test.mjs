@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { buildUpdateManifest } from "./build-update-manifest.mjs";
 
 const artifacts = {
@@ -68,4 +73,26 @@ test("rejects invalid repository names", () => {
     () => buildUpdateManifest("v0.3.0", "not-a-repository", artifacts),
     /invalid GitHub repository/,
   );
+});
+
+test("executable manifest generation binds the tag to Cargo before writing", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-update-version-"));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./build-update-manifest.mjs", import.meta.url)),
+        "v9.9.9",
+        "owner/repo",
+        root,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /release tag v9\.9\.9 expects version 9\.9\.9/u);
+    assert.match(result.stderr, /Cargo\.toml:/u);
+    assert.equal(fs.existsSync(path.join(root, "latest.json")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

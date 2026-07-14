@@ -2,6 +2,8 @@
 
 BatCave publishes immutable GitHub Releases from commits already on protected `main`. The package version in `src/BatCave.App/src-tauri/Cargo.toml` is the only authored app SemVer. Tauri inherits that value for the runtime and platform bundles; the private npm package and lockfile do not carry a second app version. `node scripts/verify-release-version.mjs <tag>` requires the release tag to match Cargo before any platform build starts.
 
+Release tooling keeps syntax parsing separate from repository verification. `parseReleaseTag` is the pure API for table-driven contracts and tests that use synthetic tags. Every executable release boundary must call `verifyWorkspaceReleaseVersion` before it generates or verifies artifacts; that API reads the Cargo package version and rejects drift. New release scripts must preserve that split rather than passing a placeholder version into the bound verifier.
+
 Stable tags use `vMAJOR.MINOR.PATCH`. Prerelease tags add a SemVer suffix such as `v0.2.0-rc.1` and are always marked as GitHub prereleases. Stable and prerelease artifacts never share a tag or installed version.
 
 The `Versioned release` workflow runs only through a manual dispatch from `main`. Enter the tag explicitly, select its stable or prerelease channel, and supply the exact 40-character source commit SHA approved for release. The workflow has no reusable tag default. It requires that SHA to be both the checked-out commit and the current tip of protected `main`; it does not publish from a pushed tag. `publish: false` is the default dry run and retains the complete workflow artifact without creating a tag or GitHub Release. Set `publish: true` only for an approved release.

@@ -2,13 +2,15 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyReleaseVersion } from "./verify-release-version.mjs";
+import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
 function requireCommitSha(name, value) {
   if (!COMMIT_SHA.test(value)) {
-    throw new Error(`${name} must be an exact lowercase 40-character commit SHA; received ${value}`);
+    throw new Error(
+      `${name} must be an exact lowercase 40-character commit SHA; received ${value}`,
+    );
   }
 }
 
@@ -19,7 +21,7 @@ export function verifyReleaseCandidateIdentity({
   mainSha,
   approvedSourceSha,
 }) {
-  const { prerelease } = verifyReleaseVersion(tag);
+  const { prerelease } = parseReleaseTag(tag);
   requireCommitSha("source SHA", sourceSha);
   requireCommitSha("origin/main SHA", mainSha);
   requireCommitSha("approved source SHA", approvedSourceSha);
@@ -47,7 +49,8 @@ function releaseFiles(root) {
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       const entryPath = path.join(directory, entry.name);
-      if (entry.isSymbolicLink()) throw new Error(`release input cannot contain symlinks: ${entryPath}`);
+      if (entry.isSymbolicLink())
+        throw new Error(`release input cannot contain symlinks: ${entryPath}`);
       if (entry.isDirectory()) visit(entryPath);
       else if (entry.isFile()) files.push(entryPath);
       else throw new Error(`release input must contain regular files only: ${entryPath}`);
@@ -85,7 +88,7 @@ export function stageReleaseAssets(inputRoot, outputRoot) {
 }
 
 export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
-  verifyReleaseVersion(tag);
+  parseReleaseTag(tag);
   requireCommitSha("source SHA", sourceSha);
   if (typeof prerelease !== "boolean") throw new Error("prerelease must be a boolean");
 
@@ -109,7 +112,9 @@ export function buildReleaseInventory(tag, sourceSha, prerelease, directory) {
 
 export function verifyReleaseReadback(expected, actual, expectedDraft) {
   if (actual.tag_name !== expected.tag) {
-    throw new Error(`release tag readback mismatch: expected ${expected.tag}, received ${actual.tag_name}`);
+    throw new Error(
+      `release tag readback mismatch: expected ${expected.tag}, received ${actual.tag_name}`,
+    );
   }
   if (actual.target_commitish !== expected.source_sha) {
     throw new Error(
@@ -117,7 +122,9 @@ export function verifyReleaseReadback(expected, actual, expectedDraft) {
     );
   }
   if (actual.draft !== expectedDraft) {
-    throw new Error(`release draft readback mismatch: expected ${expectedDraft}, received ${actual.draft}`);
+    throw new Error(
+      `release draft readback mismatch: expected ${expectedDraft}, received ${actual.draft}`,
+    );
   }
   if (actual.prerelease !== expected.prerelease) {
     throw new Error(
@@ -195,6 +202,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     if (command === "identity" && args.length === 5) {
       const [tag, channel, sourceSha, mainSha, approvedSourceSha] = args;
+      verifyWorkspaceReleaseVersion(tag);
       const candidate = verifyReleaseCandidateIdentity({
         tag,
         channel,
@@ -202,12 +210,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         mainSha,
         approvedSourceSha,
       });
-      console.log(`release candidate identity verified: ${candidate.tag} at ${candidate.sourceSha}`);
+      console.log(
+        `release candidate identity verified: ${candidate.tag} at ${candidate.sourceSha}`,
+      );
     } else if (command === "stage" && args.length === 2) {
       const assets = stageReleaseAssets(...args);
       console.log(`staged ${assets.length} release assets`);
     } else if (command === "inventory" && args.length === 5) {
       const [tag, sourceSha, prerelease, directory, output] = args;
+      verifyWorkspaceReleaseVersion(tag);
       const inventory = buildReleaseInventory(
         tag,
         sourceSha,
@@ -218,18 +229,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.log(`wrote release inventory for ${inventory.assets.length} assets`);
     } else if (command === "verify-readback" && args.length === 3) {
       const [expectedFile, actualFile, draft] = args;
+      const expected = JSON.parse(fs.readFileSync(expectedFile, "utf8"));
+      verifyWorkspaceReleaseVersion(expected.tag);
       verifyReleaseReadback(
-        JSON.parse(fs.readFileSync(expectedFile, "utf8")),
+        expected,
         JSON.parse(fs.readFileSync(actualFile, "utf8")),
         booleanArgument(draft, "draft"),
       );
       console.log("GitHub Release readback matches the local candidate");
     } else if (command === "verify-latest" && args.length === 2) {
       const [expectedFile, latestFile] = args;
-      verifyLatestRelease(
-        JSON.parse(fs.readFileSync(expectedFile, "utf8")),
-        JSON.parse(fs.readFileSync(latestFile, "utf8")),
-      );
+      const expected = JSON.parse(fs.readFileSync(expectedFile, "utf8"));
+      verifyWorkspaceReleaseVersion(expected.tag);
+      verifyLatestRelease(expected, JSON.parse(fs.readFileSync(latestFile, "utf8")));
       console.log("GitHub latest-release semantics match the release channel");
     } else {
       console.error(usage());

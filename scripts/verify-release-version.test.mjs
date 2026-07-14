@@ -2,36 +2,49 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { readCargoVersion, verifyReleaseVersion } from "./verify-release-version.mjs";
+import {
+  parseReleaseTag,
+  readCargoVersion,
+  verifyReleaseVersion,
+  verifyWorkspaceReleaseVersion,
+} from "./verify-release-version.mjs";
 
-test("accepts an aligned stable tag", () => {
-  assert.deepEqual(verifyReleaseVersion("v0.2.0", "0.2.0"), {
+test("parses stable and prerelease tags without repository state", () => {
+  assert.deepEqual(parseReleaseTag("v0.2.0"), {
     version: "0.2.0",
     prerelease: false,
   });
-});
-
-test("accepts an aligned prerelease tag", () => {
-  assert.deepEqual(verifyReleaseVersion("v0.2.0-rc.1", "0.2.0-rc.1"), {
+  assert.deepEqual(parseReleaseTag("v0.2.0-rc.1"), {
     version: "0.2.0-rc.1",
     prerelease: true,
   });
 });
 
-test("rejects version drift", () => {
-  assert.throws(
-    () => verifyReleaseVersion("v0.2.0", "0.1.0"),
-    /Cargo.toml: 0.1.0/,
-  );
+test("requires Cargo metadata and rejects version drift", () => {
+  assert.deepEqual(verifyReleaseVersion("v0.2.0", "0.2.0"), {
+    version: "0.2.0",
+    prerelease: false,
+  });
+  assert.deepEqual(verifyReleaseVersion("v0.2.0-rc.1", "0.2.0-rc.1"), {
+    version: "0.2.0-rc.1",
+    prerelease: true,
+  });
+  assert.throws(() => verifyReleaseVersion("v0.2.0"), /Cargo package version is required/);
+  assert.throws(() => verifyReleaseVersion("v0.2.0", "0.1.0"), /Cargo.toml: 0.1.0/);
 });
 
 test("rejects a non-version tag", () => {
-  assert.throws(() => verifyReleaseVersion("latest", "0.2.0"), /must be v<semver>/);
+  assert.throws(() => parseReleaseTag("latest"), /must be v<semver>/);
 });
 
 test("workspace authors the app version only in Cargo metadata", () => {
   const repoRoot = fileURLToPath(new URL("../", import.meta.url));
-  assert.match(readCargoVersion(repoRoot), /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  const cargoVersion = readCargoVersion(repoRoot);
+  assert.match(cargoVersion, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  assert.deepEqual(verifyWorkspaceReleaseVersion(`v${cargoVersion}`, repoRoot), {
+    version: cargoVersion,
+    prerelease: cargoVersion.includes("-"),
+  });
 
   const appRoot = new URL("../src/BatCave.App/", import.meta.url);
   const packageJson = JSON.parse(fs.readFileSync(new URL("package.json", appRoot), "utf8"));
