@@ -15,13 +15,13 @@ For the current stable updater, the supported contract is:
 3. Tauri offers an update only when its SemVer is greater than the installed app version. BatCave does not enable downgrades.
 4. Tauri downloads the selected payload and verifies the exact bytes against the manifest-provided Minisign signature and the public key embedded in the app before installation.
 5. Manifest routing and publication integrity rely on GitHub HTTPS, release access controls, and immutable publication. BatCave makes no end-to-end cryptographic claim for manifest freshness, stable-channel binding, or replay resistance to an older release that is still newer than the installed app.
-6. BatCave stores no manifest, trusted clock, highest-seen release, or update authorization. A failed check or verification changes no installed files and leaves monitoring available.
+6. BatCave retains the selected manifest data only ephemerally while an update is pending. The frontend `Update` holds `rawJson` and a resource ID; Tauri's in-memory resource holds the selected URL, signature, and `raw_json`. BatCave persists no manifest, update authorization, trusted clock, highest-seen version, or anti-rollback state. A failed check or verification changes no installed files and leaves monitoring available.
 
 This is a scope correction, not a claim that signed freshness metadata has no value. A future requirement for freeze-attack or cryptographic channel protection must use a renewable metadata design with explicit trusted-time, anti-rollback state, rotation, availability, and recovery semantics. A signed timestamp added to an immutable file is not that design.
 
 ## Current verification path
 
-BatCave pins `@tauri-apps/plugin-updater` and `tauri-plugin-updater` to 2.10.1. The repository generates this static manifest shape:
+BatCave's `package.json` pins `@tauri-apps/plugin-updater` to 2.10.1. Rust's `Cargo.toml` uses the compatible-version requirement `2.10.1`, and `Cargo.lock` resolves `tauri-plugin-updater` 2.10.1. The repository generates the following static manifest shape, abridged to one platform target:
 
 ```json
 {
@@ -40,9 +40,9 @@ The source path is:
 
 1. [`tauri.conf.json`](../../src/BatCave.App/src-tauri/tauri.conf.json) embeds the updater public key and the stable GitHub endpoint.
 2. [`build-update-manifest.mjs`](../../scripts/build-update-manifest.mjs) binds the release version to exact platform asset names, URLs, and payload signatures. It emits no channel, issuance time, expiry, metadata version, or manifest signature.
-3. [`App.svelte`](../../src/BatCave.App/src/App.svelte) calls `check({ timeout: 15_000 })` only on explicit user action, then calls `downloadAndInstall()` on the returned opaque update.
-4. The pinned Tauri source fetches and parses JSON before applying the default `remote version > installed version` comparison. It retains unknown fields in `raw_json`, but interprets no channel or expiry policy.
-5. On download, Tauri verifies the received payload bytes with the signature selected from the manifest and the embedded public key, then permits installation.
+3. [`App.svelte`](../../src/BatCave.App/src/App.svelte) calls `check({ timeout: 15_000 })` only on explicit user action. Before each check it sets `pendingUpdate` to `null`; a successful check stores the returned JavaScript `Update` in that variable.
+4. The pinned Tauri source fetches and parses JSON before applying the default `remote version > installed version` comparison. On success, [`commands.rs` stores the Rust `Update` in the webview resource table](https://github.com/tauri-apps/plugins-workspace/blob/d6a3898001a4bcc659e045f9501498751b77dbe6/plugins/updater/src/commands.rs#L71-L94) and returns its resource ID plus a clone of `raw_json` to JavaScript. The resource retains the selected URL and signature, but interprets no channel or expiry policy.
+5. `downloadAndInstall()` looks up that in-memory resource, clones it for the operation, downloads the selected URL, verifies the payload bytes, and installs only after verification. It does not close the stored `Update` resource. BatCave does not explicitly call `Update.close()`; replacing `pendingUpdate` drops the app's frontend reference and leaves cleanup to the JavaScript/Tauri resource lifecycle. Neither side writes this update selection to disk.
 
 Tauri's [official updater documentation](https://v2.tauri.app/plugin/updater/) describes the public key as validating updater artifacts before installation, the GitHub static-JSON endpoint, the required manifest fields, the default forward-only comparator, and runtime public-key replacement for rotation. The exact pinned upstream source shows [manifest parsing and the default comparator](https://github.com/tauri-apps/plugins-workspace/blob/d6a3898001a4bcc659e045f9501498751b77dbe6/plugins/updater/src/updater.rs#L474-L552), the [`raw_json` handoff](https://github.com/tauri-apps/plugins-workspace/blob/d6a3898001a4bcc659e045f9501498751b77dbe6/plugins/updater/src/updater.rs#L601-L624), and [payload-byte signature verification before installation](https://github.com/tauri-apps/plugins-workspace/blob/d6a3898001a4bcc659e045f9501498751b77dbe6/plugins/updater/src/updater.rs#L648-L728).
 
@@ -52,8 +52,9 @@ The Minisign signature's trusted comment commonly contains a timestamp, but the 
 
 | Scenario | Required result |
 | --- | --- |
-| No stable GitHub release exists and the endpoint returns 404 | State that no stable release is published; do not treat a prerelease as the fallback. |
-| Manifest is missing, malformed, or lacks the current target | Report that the check failed; do not download or install; monitoring continues. |
+| No valid metadata can be fetched, including a non-success response or missing `latest.json` | Report a generic update-check failure; do not download or install; monitoring continues. Pinned Tauri does not expose the HTTP status here, so BatCave cannot distinguish “no stable release” from “manifest missing.” |
+| Manifest is malformed or lacks the current target | Report the same generic update-check failure; do not download or install; monitoring continues. |
+| Endpoint returns 204 No Content | Report that BatCave is up to date; no update resource is created. |
 | Endpoint is unreachable, TLS fails, or the device is offline | Report that the update service could not be reached; startup and monitoring continue. |
 | Remote SemVer equals or is lower than the installed version | Report no update. Never opt into Tauri's downgrade comparator. |
 | Downloaded bytes do not match the updater signature | Reject before installation and state that verification or installation failed. Leave the installed app unchanged. |
@@ -61,7 +62,7 @@ The Minisign signature's trusted comment commonly contains a timestamp, but the 
 | A previous valid release is replayed and remains above the installed version | It may be offered and installed if its payload signature is valid. This is a documented unsupported freshness case, not an expiry failure. |
 | A prerelease signed by the same updater key is substituted by a compromised metadata channel | The payload signature can validate it. Stable-channel separation is an operational GitHub endpoint/release-control guarantee, not a cryptographic payload-signature guarantee. |
 | The system clock is early or late | BatCave applies no manifest-time rule. Clock-related HTTPS failures are ordinary check failures and do not affect monitoring. |
-| The user retries after a network or verification failure | Fetch metadata and payload again; do not reuse an unverified cached authorization. |
+| The user retries installation after payload verification or installation fails | Reuse the same ephemeral pending `Update` selection and download the payload again. A new **Check now** clears the frontend selection before fetching metadata again. No update authorization survives process exit. |
 
 GitHub documents that prereleases and drafts cannot be selected as the latest release and that immutable release assets cannot be modified or deleted after publication. Those controls fit BatCave's stable routing and artifact-integrity model, but remain service-side controls rather than a client-verified manifest signature.
 
@@ -104,11 +105,11 @@ with:
 
 > Reject malformed update metadata and any updater payload whose Tauri signature is invalid or does not match the exact downloaded bytes. Use only the configured stable GitHub latest-release endpoint, never enable downgrades, and document that Tauri payload signatures do not expire or cryptographically bind a release channel.
 
-The corresponding hostile-case proof should cover malformed metadata, equal/lower SemVer, a tampered payload, a signature from the wrong key, offline check behavior, and unchanged startup/monitoring. It should not claim expiry or cryptographic channel rejection without a later renewable-metadata implementation.
+The corresponding hostile-case proof should cover unavailable, missing, and malformed metadata through the current generic fail-closed check UX; equal/lower SemVer; a tampered payload; a signature from the wrong key; offline check behavior; and unchanged startup/monitoring. It should not claim status-aware 404 handling, expiry, or cryptographic channel rejection without later implementation.
 
 ## Follow-up scope
 
-Issue #47 can implement and test the corrected boundary without publishing a release. A local fixture endpoint and disposable signed payloads can prove malformed-manifest rejection, equal/lower-version suppression, wrong-key and byte-tamper rejection, request failure, and offline monitoring. The fixture must exercise Tauri's native updater path rather than substitute a mock for the signature boundary.
+Issue #47 can implement and test the corrected boundary without publishing a release. A local fixture endpoint and disposable signed payloads can prove generic fail-closed behavior for unavailable, missing, and malformed metadata; equal/lower-version suppression; wrong-key and byte-tamper rejection; request failure; and offline monitoring. The fixture must exercise Tauri's native updater path rather than substitute a mock for the signature boundary.
 
 The real public A-to-B install remains a later #47/#76 gate after signed stable-quality artifacts exist. That proof should add public endpoint routing, exact downloaded bytes, installed-version transition, preserved settings, and failure recovery. It should cite this decision so the evidence does not imply manifest expiry or cryptographic channel binding.
 
