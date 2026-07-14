@@ -27,12 +27,7 @@ repo_root="$(cd -- "$script_dir/.." && pwd)"
 app_root="$repo_root/src/BatCave.App"
 
 case "$(uname -s)" in
-  Darwin)
-    tauri_dev_script="tauri:dev:macos"
-    ;;
-  Linux)
-    tauri_dev_script="tauri:dev:linux"
-    ;;
+  Darwin | Linux) ;;
   *)
     echo "run-dev.sh supports Linux and macOS. Use scripts/run-dev.ps1 on Windows." >&2
     exit 2
@@ -45,7 +40,7 @@ if [[ "$web_only" -eq 1 ]]; then
   echo "Browser fixture mode is layout-only. Do not use it for product screenshots or verification; capture the native Tauri window with Computer Use." >&2
   npm run dev
 elif [[ "${#app_args[@]}" -gt 0 ]]; then
-  npm run "$tauri_dev_script" -- "${app_args[@]}"
+  npm run tauri -- dev "${app_args[@]}"
 else
-  npm run "$tauri_dev_script"
+  npm run tauri -- dev
 fi

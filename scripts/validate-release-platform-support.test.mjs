@@ -546,6 +546,144 @@ test("keeps package and macOS floor declarations aligned with Tauri configuratio
   assert.equal(macos.bundle.macOS.minimumSystemVersion, "12.0");
 });
 
+function assertActiveLineCount(source, command, expected, message) {
+  const matches = source.match(new RegExp(`^\\s*${escapeRegex(command)}\\s*$`, "gmu")) ?? [];
+  assert.equal(
+    matches.length,
+    expected,
+    message ?? `source must actively run ${command} ${expected} times`,
+  );
+}
+
+function withoutActiveLine(source, command) {
+  return source.replace(new RegExp(`^\\s*${escapeRegex(command)}\\s*\\n?`, "mu"), "");
+}
+
+function assertCanonicalTauriSources(sources) {
+  assert.equal(sources.packageJson.scripts.tauri, "tauri");
+  assert.deepEqual(
+    Object.keys(sources.packageJson.scripts).filter(
+      (name) => name === "tauri" || name.startsWith("tauri:"),
+    ),
+    ["tauri"],
+  );
+  for (const [name, source] of Object.entries(sources)) {
+    if (name !== "packageJson") assert.doesNotMatch(source, /tauri:(?:dev|build):/u);
+  }
+
+  assertActiveLine(sources.runPowerShell, "npm run tauri -- dev @AppArgs");
+  assertActiveLine(sources.runPowerShell, "npm run tauri -- dev");
+  assertActiveLine(sources.runShell, 'npm run tauri -- dev "${app_args[@]}"');
+  assertActiveLine(sources.runShell, "npm run tauri -- dev");
+  assertActiveLine(sources.validatePowerShell, "npm run tauri -- build");
+  assertActiveLine(sources.validateShell, "npm run tauri -- build");
+  assertActiveLine(sources.validateShell, 'bash "$repo_root/scripts/verify-linux-bundle.sh"');
+
+  const macBuild =
+    "npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json";
+  assertActiveLine(sources.validateShell, `${macBuild} --no-bundle`);
+  assertActiveLine(
+    sources.validateShell,
+    'bash "$repo_root/scripts/build-macos-universal-cli.sh" --lipo-only',
+  );
+  assertActiveLine(sources.validateShell, macBuild);
+  assertActiveLine(
+    sources.validateShell,
+    'bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc',
+  );
+
+  assertActiveLineCount(sources.readme, "npm run tauri -- dev", 3);
+  assertActiveLineCount(sources.readme, "npm run tauri -- build", 2);
+  assertActiveLineCount(
+    sources.readme,
+    "npm run tauri -- build --target universal-apple-darwin",
+    1,
+  );
+  assertActiveLineCount(sources.appReadme, "npm run tauri -- dev", 1);
+  assertActiveLineCount(sources.appReadme, "npm run tauri -- build", 1);
+  assertActiveLineCount(
+    sources.appReadme,
+    "npm run tauri -- build --target universal-apple-darwin  # macOS universal",
+    1,
+  );
+  assertActiveLineCount(
+    sources.runtimeDocs,
+    "npm run tauri -- build --target universal-apple-darwin",
+    1,
+  );
+}
+
+test("uses one canonical Tauri npm entry while preserving platform config resolution", () => {
+  const appRoot = path.join(ROOT, "src", "BatCave.App");
+  const sources = {
+    packageJson: JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8")),
+    readme: fs.readFileSync(path.join(ROOT, "README.md"), "utf8"),
+    appReadme: fs.readFileSync(path.join(appRoot, "README.md"), "utf8"),
+    runtimeDocs: fs.readFileSync(path.join(ROOT, "docs", "runtime-telemetry.md"), "utf8"),
+    runPowerShell: fs.readFileSync(path.join(ROOT, "scripts", "run-dev.ps1"), "utf8"),
+    runShell: fs.readFileSync(path.join(ROOT, "scripts", "run-dev.sh"), "utf8"),
+    validatePowerShell: fs.readFileSync(path.join(ROOT, "scripts", "validate-tauri.ps1"), "utf8"),
+    validateShell: fs.readFileSync(path.join(ROOT, "scripts", "validate-tauri.sh"), "utf8"),
+  };
+  assertCanonicalTauriSources(sources);
+
+  const packageMutations = [
+    {
+      ...sources,
+      packageJson: {
+        ...sources.packageJson,
+        scripts: { ...sources.packageJson.scripts, tauri: "tauri dev" },
+      },
+    },
+    {
+      ...sources,
+      packageJson: {
+        ...sources.packageJson,
+        scripts: {
+          ...sources.packageJson.scripts,
+          [["tauri", "build", "windows"].join(":")]:
+            "tauri build --config src-tauri/tauri.windows.conf.json",
+        },
+      },
+    },
+  ];
+  for (const mutation of packageMutations) {
+    assert.throws(() => assertCanonicalTauriSources(mutation));
+  }
+
+  const criticalLines = [
+    ["runPowerShell", "npm run tauri -- dev @AppArgs"],
+    ["runPowerShell", "npm run tauri -- dev"],
+    ["runShell", 'npm run tauri -- dev "${app_args[@]}"'],
+    ["runShell", "npm run tauri -- dev"],
+    ["validatePowerShell", "npm run tauri -- build"],
+    ["validateShell", "npm run tauri -- build"],
+    ["validateShell", 'bash "$repo_root/scripts/verify-linux-bundle.sh"'],
+    [
+      "validateShell",
+      "npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json --no-bundle",
+    ],
+    ["validateShell", 'bash "$repo_root/scripts/build-macos-universal-cli.sh" --lipo-only'],
+    [
+      "validateShell",
+      "npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json",
+    ],
+    ["validateShell", 'bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc'],
+    ["readme", "npm run tauri -- dev"],
+    ["readme", "npm run tauri -- build"],
+    ["readme", "npm run tauri -- build --target universal-apple-darwin"],
+    ["appReadme", "npm run tauri -- dev"],
+    ["appReadme", "npm run tauri -- build"],
+    ["appReadme", "npm run tauri -- build --target universal-apple-darwin  # macOS universal"],
+    ["runtimeDocs", "npm run tauri -- build --target universal-apple-darwin"],
+  ];
+  for (const [name, command] of criticalLines) {
+    const mutated = { ...sources, [name]: withoutActiveLine(sources[name], command) };
+    assert.notEqual(mutated[name], sources[name], `${name} mutation must change the fixture`);
+    assert.throws(() => assertCanonicalTauriSources(mutated));
+  }
+});
+
 const VALID_REAL_PLATFORMS = [
   ["Windows floor", "windows-client-10-x86_64", "windows-client-10.0.16299", "nsis"],
   ["Windows newer build", "windows-client-10-x86_64", "windows-client-10.0.26100", "nsis"],

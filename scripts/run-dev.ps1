@@ -8,7 +8,6 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $appRoot = Join-Path $repoRoot "src/BatCave.App"
-$tauriDevScript = "tauri:dev:windows"
 
 Push-Location $appRoot
 try {
@@ -17,10 +16,10 @@ try {
         npm run dev
     }
     elseif ($AppArgs.Count -gt 0) {
-        npm run $tauriDevScript -- @AppArgs
+        npm run tauri -- dev @AppArgs
     }
     else {
-        npm run $tauriDevScript
+        npm run tauri -- dev
     }
 
     exit $LASTEXITCODE

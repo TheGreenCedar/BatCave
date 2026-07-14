@@ -17,7 +17,6 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $appRoot = Join-Path $repoRoot "src/BatCave.App"
 $cargoManifest = Join-Path $appRoot "src-tauri/Cargo.toml"
-$tauriBuildScript = "tauri:build:windows"
 
 if ($SkipBundle.IsPresent -and $BundleOnly.IsPresent) {
     throw "-SkipBundle and -BundleOnly cannot be used together."
@@ -139,7 +138,7 @@ try {
     }
 
     if (-not $SkipBundle) {
-        npm run $tauriBuildScript
+        npm run tauri -- build
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }

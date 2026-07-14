@@ -184,7 +184,7 @@ The macOS bundle path requires both Rust targets and produces one universal DMG:
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 cd src/BatCave.App
-npm run tauri:build:macos:universal
+npm run tauri -- build --target universal-apple-darwin
 ```
 
 Run a headless benchmark:
