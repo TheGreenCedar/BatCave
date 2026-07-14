@@ -1,109 +1,72 @@
 # Public-artifact install smoke harness
 
-The install smoke harness turns one already-verified public package into an ordered native test plan and a sanitized result. It does not provide platform commands. A native lane supplies an explicit adapter that owns local paths and performs the package-specific work.
+The install-smoke harness defines the closed platform profiles, gate order, isolation contract, and sanitized result shape for testing a public package. Its current executable surface supports planning and synthetic fixtures only. It cannot execute an installer in repository tests, produce native proof, or emit `release_evidence`.
 
-The harness has three source boundaries:
+The boundaries are:
 
-- `scripts/install-smoke-contract.mjs` validates the closed input and produces the versioned plan;
-- `scripts/public-artifact-install-smoke.mjs` runs injected adapter actions in order; and
-- `scripts/install-smoke-evidence.mjs` derives the result state and maps actual runs into the release-evidence packet contract.
+- `scripts/install-smoke-contract.mjs` validates input and creates a versioned plan;
+- `scripts/public-artifact-install-smoke.mjs` runs fixture actions in order; and
+- `scripts/install-smoke-evidence.mjs` derives the result and builds a normalized `schema_fixture` packet.
 
-## Public verification boundary
+## Proof boundary
 
-Native and plan modes accept only the frozen in-memory receipt returned by a successful `verifyPublicRelease` call. Copying, serializing, reconstructing, or editing that receipt removes its process-local identity and the harness rejects it before calling any adapter action.
+Plan mode accepts only the frozen in-process receipt returned by `verifyPublicRelease`. The receipt is marked `proof_scope: contract_only`: it proves that the public-verification prerequisite ran, but it is never native-install authorization. Copying, reconstructing, or editing the receipt removes its process-local identity and fails before any action.
 
-This forces a native smoke driver to compose the two operations in one process:
+Fixture mode uses an explicit `fixture_only` receipt. Injected actions, executor booleans, adapter-authored observations, and caller-authored `execution_kind: native` values cannot mint native eligibility. The only accepted execution kinds are `plan` and `fixture`; `native_proven` and `release_evidence` are unreachable.
 
-```js
-import { verifyPublicRelease } from "./scripts/verify-public-release.mjs";
-import { runInstallSmoke } from "./scripts/public-artifact-install-smoke.mjs";
-
-const verification = await verifyPublicRelease(candidate, publishedRelease, publicDownloadRoot);
-const input = {
-  schema_version: 1,
-  execution_kind: "native",
-  app_version: "0.3.0",
-  evidence_template: blockedEvidenceTemplate,
-  public_verification: verification.receipt,
-  isolation,
-};
-const adapter = createNativeAdapter({ publicDownloadRoot, isolatedRoots });
-const result = await runInstallSmoke(input, adapter);
-```
-
-`verifyPublicRelease` has already checked the immutable release state, anonymous URLs, exact asset inventory, byte sizes, SHA-256 digests, checksum manifest, and source-bound attestations. The native adapter must still rehash the selected local file immediately before mutation and verify its package-specific trust identities. A caller-authored `disposition: passed` object is never sufficient.
+Plans bind the evidence template's observation time and exact workflow file, run ID, run attempt, and run URL. They retain only the selected receipt-bound package asset. Other template assets and signature claims are not copied into action context.
 
 ## Closed package profiles
 
-| Platform path | Preparation action | Runtime install identity | Required trust basis |
-| --- | --- | --- | --- |
-| Windows NSIS | `install_nsis` | `nsis` | Authenticode and Tauri updater signatures |
-| Linux deb | `install_deb` | `deb` | Public checksum and source-bound attestation |
-| Linux AppImage | `stage_appimage` | `appimage` | Tauri updater signature |
-| macOS DMG | `install_dmg_app` | `app_bundle` | Developer ID, notarization, and staple evidence for the DMG and contained app |
-| macOS updater archive | `stage_updater_archive_app` | `app_bundle` | Contained-app Developer ID, notarization, staple, and Tauri updater evidence |
+| Platform path | Package operation | Fixture action | Runtime identity | Required limitation |
+| --- | --- | --- | --- | --- |
+| Windows NSIS | install | `install_nsis` | `nsis` | service and ETW behavior out of scope |
+| Linux deb | install | `install_deb` | `deb` | checksum and source attestation are the trust basis |
+| Linux AppImage | stage | `stage_appimage` | `appimage` | none beyond fixture-only status |
+| macOS DMG | install | `install_dmg_app` | `app_bundle` | none beyond fixture-only status |
+| macOS updater archive | stage | `stage_updater_archive_app` | `app_bundle` | staging only; no normal package install or A-to-B update claim |
 
-The updater archive path stages the app extracted from the exact verified archive. It is evidence for the archive contents and staged app; it is not a normal installer run and does not prove an A-to-B in-app update.
+Every fixture packet also carries `synthetic_fixture_no_release_claim`. The Windows limitation explicitly keeps service and Event Tracing for Windows behavior outside the contract.
 
 ## Ordered gates
 
-Every plan contains all of these gates in this order:
+Every plan contains these gates in order:
 
-1. prior anonymous download and checksum verification;
-2. package-specific trust verification;
-3. an immediate local rehash, regular-file check, symlink rejection, and adapter-root containment;
-4. install or preparation in an isolated install root;
+1. anonymous public download and checksum prerequisite;
+2. package-trust contract;
+3. selected-asset rehash, regular-file, symlink, and containment contract;
+4. package installation or staging;
 5. launch;
-6. exact app version, source commit, and install-kind identity;
-7. same-version restart with settings preserved;
-8. a platform-supported degradation observation;
-9. telemetry with an explicit native or limited quality state; unavailable telemetry must block the gate;
+6. exact app version, source commit, and package identity;
+7. restart with settings preserved;
+8. supported degradation observation;
+9. telemetry with a native or limited quality state;
 10. application removal;
-11. owned runtime residue check; and
-12. the declared user-state preservation or removal policy.
+11. owned-runtime residue check; and
+12. the declared user-state policy.
 
-Missing adapter actions, extra actions, unsafe executor settings, duplicate or reordered results, partial observations, identity drift, timeout, unsupported capability, unsafe output, and unexpected residue fail closed. Runtime gates stop after a failure, while bounded cleanup still runs after package mutation was attempted.
+Fixture observations at the trust and rehash gates are self-attestations. They exercise validation and ordering but prove neither the file inspected nor the bytes later consumed. They always map to `not_applicable` fixture checks.
 
-## Adapter contract
+## Fixture executor and timeout settlement
 
-An adapter supplies one function for every action in its plan and declares the executor properties before the first action can run:
+A fixture adapter supplies one explicit own data function for every action and declares tokenized arguments, `shell: false`, a minimal environment, bounded output, process-tree cleanup, and a termination-confirmation function. Actions receive an abort signal and immutable context containing the workflow identity, observation time, selected asset, profile, opaque isolation identifiers, and constraints.
 
-- tokenized argument vectors rather than command strings;
-- `shell: false`;
-- a minimal environment;
-- bounded captured output;
-- timeout cancellation that terminates the process tree; and
-- adapter-owned mappings from the plan's opaque root IDs to isolated local paths.
+When an action times out, abort is only the first step. The harness waits for a separate bounded termination handshake confirming both that the action settled and that its process tree settled. Confirmed termination records `timeout` and permits bounded cleanup. Missing, invalid, or late confirmation records `partial`, blocks every later action including cleanup, and emits no evidence packet.
 
-Actions receive an `AbortSignal`, immutable release/platform/asset identity, the opaque isolation IDs, and the safety constraints. They return only a short sanitized outcome and the closed observations required by that gate. Local paths, raw output, environment dumps, and credentials are rejected from results and evidence.
+Local paths, raw output, environment dumps, and credentials are rejected from results.
 
-The Windows profile always records `windows_service_behavior: not_assumed`. This harness does not assume the unfinished collector service, prove Event Tracing for Windows (ETW), or turn standard-access observations into elevated-service evidence.
+## Result states
 
-Windows cannot produce `native_proven` evidence until the exact public NSIS bytes carry the Authenticode identity required by the release evidence template and the native trust adapter observes that same identity. The current unsigned prerelease path therefore remains blocked by #42.
-
-## Result and evidence states
-
-The version 1 result keeps lifecycle detail outside the fixed #98 packet statuses:
-
-| Result disposition | Meaning | Evidence output |
+| Disposition | Meaning | Evidence output |
 | --- | --- | --- |
-| `planned` | Adapter actions were not invoked | `null` |
-| `fixture` | Synthetic adapter exercise only | `schema_fixture`; every check remains `not_applicable` |
-| `skipped` | A required native action was unsupported, skipped, or blocked | `release_evidence` with affected checks `blocked` |
-| `failed` | A required native action failed or timed out | `release_evidence` with affected checks `failed` or `blocked` |
-| `native_proven` | Every required native gate passed | `release_evidence` with mapped checks `passed` |
+| `planned` | The ordered native contract was produced; no actions ran | `null` |
+| `fixture` | Synthetic actions ran or failed within the fixture contract | normalized `schema_fixture`; every mapped check is `not_applicable` |
+| `partial` | A timeout did not produce a settled termination handshake | `null` |
 
-The mapper never adds planned, fixture, timeout, unsupported, or skipped to the #98 status vocabulary. Fixtures cannot become release evidence, and plans emit no packet. A schema-valid packet can still record a failed or blocked run; schema validity is not release approval.
+Result validation rederives the disposition and the full packet. Packet ID, observation time, workflow and release identity, platform, selected asset, every check status and outcome, and the exact limitation set must match. Contradictory or extra evidence fails.
 
-## Native-lane handoff
+## Future native executor
 
-A later native lane should:
+Native proof requires a separately reviewed, process-local branded executor capability. Adding a caller-visible boolean, kind string, or injectable function is insufficient. That executor must perform file identity, `lstat`/symlink and containment checks, real-path resolution, hashing, package trust validation, and consumption of the verified bytes as one capability-bound operation. Its tests must swap or replace the file between verification and consumption and demonstrate fail-closed behavior.
 
-1. allocate fresh install and user-state roots and keep their real paths inside the adapter;
-2. run `verifyPublicRelease` anonymously and retain its downloaded directory for the adapter closure;
-3. build a blocked `release_evidence` template with the exact workflow, release, asset, attestation, and signature identities;
-4. create the plan and review every required action before execution;
-5. run the native adapter, validate the returned result, and attach only its sanitized evidence packet; and
-6. retain raw logs and screenshots as access-controlled workflow artifacts, not packet fields.
-
-The harness does not publish a release, sign packages, create platform adapters, execute installers in repository tests, prove accessibility, prove updater expiry or A-to-B behavior, or satisfy the final stable-release gate by itself.
+Until that capability exists, this harness supplies a durable contract and fixture suite only. It does not publish releases, sign packages, run installers, prove accessibility, prove Windows service or ETW behavior, prove updater expiry or A-to-B updates, or satisfy the stable-release gate.

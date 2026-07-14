@@ -56,7 +56,7 @@ Real evidence packets use `packet_kind: release_evidence` and belong under `docs
 
 Publishing a packet does not replace native execution or public-release verification. The packet records that evidence after it exists; it cannot manufacture it.
 
-The parameterized install smoke harness is documented in [Public-artifact install smoke harness](public-artifact-install-smoke.md). Its plan and result state machine remains separate from this packet schema: only actual native runs map to `release_evidence`, fixture runs remain `schema_fixture`, and unexecuted plans emit no packet.
+The parameterized install smoke harness is documented in [Public-artifact install smoke harness](public-artifact-install-smoke.md). Its current public surface cannot create native proof: fixture runs emit only a normalized `schema_fixture`, plans emit no packet, and an unsettled timeout emits no packet. `release_evidence` remains reserved for a future reviewed branded native executor.
 
 ## Synthetic fixtures
 

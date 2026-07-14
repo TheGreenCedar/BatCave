@@ -36,6 +36,7 @@ function createVerifiedPublicReleaseReceipt(candidate, plan) {
     schema_version: 1,
     verifier: "scripts/verify-public-release.mjs",
     disposition: "passed",
+    proof_scope: "contract_only",
     repository: RELEASE_REPOSITORY,
     tag: candidate.tag,
     source_sha: candidate.source_sha,

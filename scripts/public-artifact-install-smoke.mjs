@@ -17,23 +17,22 @@ export {
   validateInstallSmokeResult,
 } from "./install-smoke-evidence.mjs";
 
-const {
-  ADAPTER_STATUSES,
-  QUALITY_STATES,
-  deepFreeze,
-  exactKeys,
-  fail,
-  object,
-  platformContract,
-  string,
-  validateInput,
-} = installSmokeContractInternals;
+const { ADAPTER_STATUSES, QUALITY_STATES, deepFreeze, exactKeys, fail, object, string } =
+  installSmokeContractInternals;
+const HARNESS_TIMEOUT_RESPONSE = Symbol("harness-timeout-response");
+
+function ownFunction(owner, key, field) {
+  const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+  if (!descriptor || typeof descriptor.value !== "function") {
+    fail(field, "must be an explicit data function before execution starts");
+  }
+  return descriptor.value;
+}
 
 function validateAdapter(adapter, plan) {
   exactKeys(adapter, "adapter", ["kind", "executor", "actions"]);
-  const expectedKind = plan.execution_kind;
-  if (adapter.kind !== expectedKind || !new Set(["fixture", "native"]).has(adapter.kind)) {
-    fail("adapter.kind", `must equal ${expectedKind}`);
+  if (plan.execution_kind !== "fixture" || adapter.kind !== "fixture") {
+    fail("adapter.kind", "must be fixture; injected adapters cannot produce native evidence");
   }
   object(adapter.actions, "adapter.actions");
   exactKeys(adapter.executor, "adapter.executor", [
@@ -42,6 +41,7 @@ function validateAdapter(adapter, plan) {
     "minimal_environment",
     "bounded_output",
     "timeout_tree_cleanup",
+    "confirm_terminated",
   ]);
   if (
     adapter.executor.tokenized_argv !== true ||
@@ -50,33 +50,34 @@ function validateAdapter(adapter, plan) {
     adapter.executor.bounded_output !== true ||
     adapter.executor.timeout_tree_cleanup !== true
   ) {
-    fail("adapter.executor", "must enforce the bounded non-shell executor contract");
+    fail("adapter.executor", "must enforce the bounded non-shell fixture executor contract");
   }
+  const confirmTerminated = ownFunction(
+    adapter.executor,
+    "confirm_terminated",
+    "adapter.executor.confirm_terminated",
+  );
   const requiredActions = new Set(
     plan.steps.filter(({ source }) => source === "adapter").map(({ action }) => action),
   );
   const validatedActions = Object.create(null);
   for (const action of requiredActions) {
-    const descriptor = Object.getOwnPropertyDescriptor(adapter.actions, action);
-    if (!descriptor || typeof descriptor.value !== "function") {
-      fail(
-        `adapter.actions.${action}`,
-        "must be an explicit action function before execution starts",
-      );
-    }
-    validatedActions[action] = descriptor.value;
+    validatedActions[action] = ownFunction(adapter.actions, action, `adapter.actions.${action}`);
   }
   const unexpected = Object.keys(adapter.actions).filter((action) => !requiredActions.has(action));
   if (unexpected.length) fail(`adapter.actions.${unexpected[0]}`, "is not used by this plan");
-  return Object.freeze(validatedActions);
+  return { actions: Object.freeze(validatedActions), confirmTerminated };
 }
 
 function adapterContext(plan) {
   return deepFreeze({
+    observed_at_utc: plan.observed_at_utc,
     release: structuredClone(plan.release),
     platform: structuredClone(plan.platform),
     asset: structuredClone(plan.asset),
+    public_verification: structuredClone(plan.public_verification),
     isolation: structuredClone(plan.isolation),
+    profile: structuredClone(plan.profile),
     constraints: structuredClone(plan.constraints),
   });
 }
@@ -102,60 +103,63 @@ function validatePassedObservations(step, observations, plan) {
         observations.symlink !== false ||
         observations.contained !== true
       ) {
-        fail(field, "must prove the exact regular asset bytes remain inside the adapter root");
+        fail(field, "must match the fixture contract for the selected regular asset");
       }
       break;
     case "preflight.package_trust":
-      exactKeys(observations, field, ["signatures", "trust_basis"]);
+      exactKeys(observations, field, ["trust_basis", "fixture_only"]);
       if (
-        JSON.stringify(observations.signatures) !== JSON.stringify(plan.asset.expected_signatures)
+        observations.trust_basis !== plan.profile.trust_basis ||
+        observations.fixture_only !== true
       ) {
-        fail(
-          `${field}.signatures`,
-          "must match the package trust identities in the evidence template",
-        );
-      }
-      if (observations.trust_basis !== plan.asset.expected_trust_basis) {
-        fail(`${field}.trust_basis`, "must match the closed package trust path");
+        fail(field, "must match the closed fixture-only package trust path");
       }
       break;
     case "install.package_install":
-      exactKeys(observations, field, ["package_ready"]);
-      if (observations.package_ready !== true) fail(`${field}.package_ready`, "must be true");
+      exactKeys(observations, field, ["package_ready", "package_operation"]);
+      if (
+        observations.package_ready !== true ||
+        observations.package_operation !== plan.profile.package_operation
+      ) {
+        fail(field, "must match the package preparation operation");
+      }
       break;
     case "runtime.launch":
       exactKeys(observations, field, ["launched"]);
       if (observations.launched !== true) fail(`${field}.launched`, "must be true");
       break;
-    case "runtime.release_identity": {
+    case "runtime.release_identity":
       exactKeys(observations, field, ["app_version", "source_commit_sha", "install_kind"]);
-      const contract = platformContract(plan.platform);
       if (
         observations.app_version !== plan.release.app_version ||
         observations.source_commit_sha !== plan.release.source_sha ||
-        observations.install_kind !== contract.installKind
+        observations.install_kind !== plan.profile.install_kind
       ) {
-        fail(field, "must match the exact verified release and installed package kind");
+        fail(field, "must match the exact fixture release and package kind");
       }
       break;
-    }
     case "runtime.settings":
       exactKeys(observations, field, ["restarted", "preserved"]);
-      if (observations.restarted !== true) fail(`${field}.restarted`, "must be true");
-      if (observations.preserved !== true) fail(`${field}.preserved`, "must be true");
+      if (observations.restarted !== true || observations.preserved !== true) {
+        fail(field, "must show a restart with settings preserved");
+      }
       break;
     case "runtime.degradation":
       exactKeys(observations, field, ["reported", "windows_service_behavior"]);
-      if (observations.reported !== true) fail(`${field}.reported`, "must be true");
-      if (observations.windows_service_behavior !== "not_assumed") {
-        fail(`${field}.windows_service_behavior`, "must be not_assumed");
+      if (
+        observations.reported !== true ||
+        observations.windows_service_behavior !== "not_assumed"
+      ) {
+        fail(field, "must report degradation without assuming Windows service behavior");
       }
       break;
     case "runtime.telemetry":
       exactKeys(observations, field, ["sample_observed", "quality_state"]);
-      if (observations.sample_observed !== true) fail(`${field}.sample_observed`, "must be true");
-      if (!QUALITY_STATES.has(observations.quality_state)) {
-        fail(`${field}.quality_state`, "must be native or limited; unavailable cannot pass");
+      if (
+        observations.sample_observed !== true ||
+        !QUALITY_STATES.has(observations.quality_state)
+      ) {
+        fail(field, "must observe a fixture sample with native or limited quality");
       }
       break;
     case "cleanup.application_removed":
@@ -180,7 +184,7 @@ function validatePassedObservations(step, observations, plan) {
 function validateAdapterResponse(response, step, plan) {
   exactKeys(response, `adapter.${step.action}`, ["status", "outcome", "observations"]);
   if (!ADAPTER_STATUSES.has(response.status)) {
-    fail(`adapter.${step.action}.status`, "is not supported");
+    fail(`adapter.${step.action}.status`, "is not supported; timeout is owned by the harness");
   }
   const outcome = responseSummary(response.outcome, `adapter.${step.action}.outcome`);
   if (response.status === "passed") {
@@ -191,26 +195,63 @@ function validateAdapterResponse(response, step, plan) {
   return { status: response.status, outcome };
 }
 
-async function executeWithTimeout(action, step, context) {
-  const controller = new AbortController();
+function timeoutAfter(milliseconds, value) {
   let timer;
+  const promise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(value), milliseconds);
+  });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
+
+async function confirmTimeoutTermination(confirmTerminated, step, context) {
+  const bounded = timeoutAfter(context.isolation.termination_timeout_ms, null);
   try {
-    const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        resolve({
-          status: "timeout",
-          outcome: "Adapter action exceeded its bounded timeout.",
-          observations: {},
-        });
-      }, step.timeout_ms);
-    });
+    const response = await Promise.race([
+      Promise.resolve().then(() => confirmTerminated({ step, context })),
+      bounded.promise,
+    ]);
+    if (!response) return false;
+    exactKeys(response, "adapter.executor.confirm_terminated", [
+      "action_settled",
+      "process_tree_settled",
+      "outcome",
+    ]);
+    responseSummary(response.outcome, "adapter.executor.confirm_terminated.outcome");
+    return response.action_settled === true && response.process_tree_settled === true;
+  } catch {
+    return false;
+  } finally {
+    bounded.cancel();
+  }
+}
+
+async function executeWithTimeout(action, confirmTerminated, step, context) {
+  const controller = new AbortController();
+  const timeoutMarker = Symbol("timeout");
+  const bounded = timeoutAfter(step.timeout_ms, timeoutMarker);
+  try {
     const execution = Promise.resolve().then(() =>
       action({ step, context, signal: controller.signal }),
     );
-    return await Promise.race([execution, timeout]);
+    const response = await Promise.race([execution, bounded.promise]);
+    if (response !== timeoutMarker) return response;
+    controller.abort();
+    const settled = await confirmTimeoutTermination(confirmTerminated, step, context);
+    return settled
+      ? {
+          [HARNESS_TIMEOUT_RESPONSE]: true,
+          status: "timeout",
+          outcome: "Fixture action timed out and its termination handshake settled.",
+          observations: {},
+        }
+      : {
+          [HARNESS_TIMEOUT_RESPONSE]: true,
+          status: "partial",
+          outcome: "Fixture action timed out without a settled termination handshake.",
+          observations: {},
+        };
   } finally {
-    clearTimeout(timer);
+    bounded.cancel();
   }
 }
 
@@ -226,6 +267,8 @@ function fixedStep(step, status, outcome) {
 }
 
 function shouldExecuteStep(step, priorResults, packageAttempted) {
+  const unsettled = priorResults.some(({ status }) => status === "partial");
+  if (unsettled) return false;
   if (step.group === "cleanup") return packageAttempted;
   return !priorResults.some(
     ({ group, status }) =>
@@ -235,7 +278,6 @@ function shouldExecuteStep(step, priorResults, packageAttempted) {
 }
 
 export async function runInstallSmoke(input, adapter) {
-  const { template } = validateInput(input);
   const plan = createInstallSmokePlan(input);
   const publicSteps = plan.steps
     .filter(({ source }) => source === "public_verifier")
@@ -245,9 +287,7 @@ export async function runInstallSmoke(input, adapter) {
         plan.execution_kind === "fixture" ? "not_applicable" : "passed",
         plan.execution_kind === "fixture"
           ? "Synthetic fixture; no public release verification is claimed."
-          : step.check_id === "anonymous_download"
-            ? "Anonymous public asset verification passed before install planning."
-            : "Public asset checksum matched the exact release inventory.",
+          : "The contract-only public verification prerequisite passed for planning.",
       ),
     );
 
@@ -255,34 +295,48 @@ export async function runInstallSmoke(input, adapter) {
     const planned = plan.steps
       .filter(({ source }) => source === "adapter")
       .map((step) =>
-        fixedStep(step, "planned", "Required adapter action is planned but not executed."),
+        fixedStep(step, "planned", "Required native action is planned but unavailable."),
       );
-    return buildInstallSmokeResult(plan, template, [...publicSteps, ...planned]);
+    return buildInstallSmokeResult(plan, [...publicSteps, ...planned]);
   }
 
-  const actions = validateAdapter(adapter, plan);
+  const { actions, confirmTerminated } = validateAdapter(adapter, plan);
   const context = adapterContext(plan);
   const results = [...publicSteps];
   let packageAttempted = false;
   for (const step of plan.steps.filter(({ source }) => source === "adapter")) {
     if (!shouldExecuteStep(step, results, packageAttempted)) {
+      const partial = results.some(({ status }) => status === "partial");
       results.push(
-        fixedStep(step, "blocked", "Required action was blocked by an earlier smoke-step result."),
+        fixedStep(
+          step,
+          "blocked",
+          partial
+            ? "Action blocked because prior process-tree settlement is unconfirmed."
+            : "Required action was blocked by an earlier fixture-step result.",
+        ),
       );
       continue;
     }
     if (step.id === "install.package_install") packageAttempted = true;
     let response;
     try {
-      response = await executeWithTimeout(actions[step.action], step, context);
-      response = validateAdapterResponse(response, step, plan);
+      response = await executeWithTimeout(actions[step.action], confirmTerminated, step, context);
+      if (response?.[HARNESS_TIMEOUT_RESPONSE] !== true) {
+        response = new Set(["timeout", "partial"]).has(response?.status)
+          ? {
+              status: "partial",
+              outcome: "Adapter-authored timeout state is untrusted and has no settlement proof.",
+            }
+          : validateAdapterResponse(response, step, plan);
+      }
     } catch {
       response = {
         status: "failed",
-        outcome: "Adapter response failed the bounded smoke contract.",
+        outcome: "Fixture adapter response failed the bounded smoke contract.",
       };
     }
     results.push(fixedStep(step, response.status, response.outcome));
   }
-  return buildInstallSmokeResult(plan, template, results);
+  return buildInstallSmokeResult(plan, results);
 }

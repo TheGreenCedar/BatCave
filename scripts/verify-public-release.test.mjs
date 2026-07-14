@@ -119,6 +119,7 @@ test("verifies anonymous public bytes, checksums, release state, and source-boun
         schema_version: 1,
         verifier: "scripts/verify-public-release.mjs",
         disposition: "passed",
+        proof_scope: "contract_only",
         repository: RELEASE_REPOSITORY,
         tag,
         source_sha: sourceSha,

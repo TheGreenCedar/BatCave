@@ -16,7 +16,7 @@ Verify a downloaded file with `Get-FileHash -Algorithm SHA256` on Windows, `sha2
 
 After publication, the release workflow downloads every expected asset again through its unauthenticated public URL into a new directory. It rejects any name, size, or SHA-256 difference from the prepublication inventory, verifies that `SHA256SUMS.txt` covers every build subject, requires GitHub's immutable-release attestation, and verifies each subject against the exact `main` source SHA and `.github/workflows/release.yml` on a GitHub-hosted runner. Passing contract tests proves the verifier source; only a successful run against the published assets proves a release, and that live evidence remains part of the stable-release gate.
 
-Native install lanes compose that verifier with the [public-artifact install smoke harness](public-artifact-install-smoke.md). The process-local verifier receipt gates the adapter before package mutation, while the adapter rehashes the selected file and verifies package trust immediately before installation or staging. Harness fixtures and plans are contract proof only; they are not native or release proof.
+The [public-artifact install smoke harness](public-artifact-install-smoke.md) consumes the process-local verifier receipt for planning and offers fixture-driven contract tests. Its public receipt is contract-only, and its injected fixture actions cannot produce native or release proof. A future reviewed native executor must bind verification and consumption of the selected bytes in one capability before any install lane can emit release evidence.
 
 Windows artifacts remain unsigned until the code-signing issue is resolved. Do not promote an unsigned prerelease to the stable channel.
 

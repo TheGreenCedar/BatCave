@@ -10,6 +10,7 @@ import { expectedReleaseAssetRoles } from "./release-asset-contract.mjs";
 import {
   createInstallSmokePlan,
   runInstallSmoke,
+  shapeInstallSmokeEvidence,
   validateInstallSmokeResult,
 } from "./public-artifact-install-smoke.mjs";
 import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
@@ -47,15 +48,8 @@ const REAL_SIGNATURE_IDENTITIES = {
   developer_id: "Developer ID Application: BatCave Monitor (ABCDEFGHIJ)",
   tauri_updater: "sha256:0dad0009cf5cc87a778f2e951cefaa0faaba637b95a22f6f3064f12cd4136545",
 };
-const EXECUTOR = Object.freeze({
-  tokenized_argv: true,
-  shell: false,
-  minimal_environment: true,
-  bounded_output: true,
-  timeout_tree_cleanup: true,
-});
 
-let nativeReceipt;
+let contractReceipt;
 let publicRoot;
 
 function readJson(file) {
@@ -119,7 +113,7 @@ before(async () => {
     },
     ghRunner: () => {},
   });
-  nativeReceipt = result.receipt;
+  contractReceipt = result.receipt;
 });
 
 after(() => {
@@ -130,26 +124,31 @@ function schemaFixture(name) {
   return readJson(path.join(FIXTURE_DIR, name));
 }
 
-function nativeTemplate(name) {
+function releaseTemplate(name) {
   const packet = schemaFixture(name);
   packet.packet_kind = "release_evidence";
-  packet.packet_id = packet.packet_id.replace("schema-fixture", "install-smoke");
+  packet.packet_id = packet.packet_id.replace("schema-fixture", "install-smoke-plan");
   packet.release.tag = TAG;
   packet.release.channel = "prerelease";
   packet.release.source_sha = SOURCE_SHA;
   packet.release.main_sha = SOURCE_SHA;
   packet.release.release_target_sha = SOURCE_SHA;
   packet.release.release_url = `https://github.com/${RELEASE_REPOSITORY}/releases/tag/${TAG}`;
+  packet.release.workflow_run = {
+    workflow_file: ".github/workflows/release.yml",
+    run_id: 123456789,
+    run_attempt: 2,
+    url: `https://github.com/${RELEASE_REPOSITORY}/actions/runs/123456789/attempts/2`,
+  };
   delete packet.limitations.synthetic_fixture_no_release_claim;
   if (packet.platform.package.kind === "deb") {
     packet.limitations.deb_checksum_attestation_only.disposition = "accepted";
   }
-
   const role = PACKAGE_ROLES[packet.platform.package.kind];
   const assetName = expectedReleaseAssetRoles(TAG).roles.find(
     (candidate) => candidate.role === role,
   ).name;
-  const verified = nativeReceipt.assets.find(({ name: candidate }) => candidate === assetName);
+  const verified = contractReceipt.assets.find(({ name: candidate }) => candidate === assetName);
   packet.platform.package.asset_name = assetName;
   packet.assets[0].name = assetName;
   packet.assets[0].size_bytes = verified.size_bytes;
@@ -163,7 +162,7 @@ function nativeTemplate(name) {
   for (const checks of Object.values(packet.checks)) {
     for (const check of Object.values(checks)) {
       check.status = "blocked";
-      check.outcome = "Awaiting bounded native install smoke execution.";
+      check.outcome = "Awaiting a future reviewed native install-smoke executor.";
     }
   }
   validateReleaseEvidencePacket(packet);
@@ -176,6 +175,7 @@ function fixtureReceipt(packet) {
     schema_version: 1,
     verifier: "scripts/verify-public-release.mjs",
     disposition: "fixture",
+    proof_scope: "fixture_only",
     repository: RELEASE_REPOSITORY,
     tag: packet.release.tag,
     source_sha: packet.release.source_sha,
@@ -192,7 +192,7 @@ function fixtureReceipt(packet) {
 }
 
 function inputFor(name, executionKind = "fixture") {
-  const packet = executionKind === "fixture" ? schemaFixture(name) : nativeTemplate(name);
+  const packet = executionKind === "fixture" ? schemaFixture(name) : releaseTemplate(name);
   const scenario =
     packet.platform.os === "windows"
       ? "standard-access-visibility"
@@ -202,13 +202,14 @@ function inputFor(name, executionKind = "fixture") {
     execution_kind: executionKind,
     app_version: executionKind === "fixture" ? "0.0.0-evidence.1" : "9.9.9-rc.1",
     evidence_template: packet,
-    public_verification: executionKind === "fixture" ? fixtureReceipt(packet) : nativeReceipt,
+    public_verification: executionKind === "fixture" ? fixtureReceipt(packet) : contractReceipt,
     isolation: {
       scope_id: `${packet.platform.os}-${packet.platform.package.kind}-smoke`,
       install_root_id: "isolated-install-root",
       user_state_root_id: "isolated-user-state-root",
       user_state_policy: "preserve",
       step_timeout_ms: 1_000,
+      termination_timeout_ms: 100,
       settings_probe: { theme: "cave", sample_interval_ms: 1_500 },
       degradation_scenario: scenario,
     },
@@ -224,18 +225,18 @@ function passedResponse(step, plan) {
       contained: true,
     },
     "preflight.package_trust": {
-      signatures: structuredClone(plan.asset.expected_signatures),
-      trust_basis: plan.asset.expected_trust_basis,
+      trust_basis: plan.profile.trust_basis,
+      fixture_only: true,
     },
-    "install.package_install": { package_ready: true },
+    "install.package_install": {
+      package_ready: true,
+      package_operation: plan.profile.package_operation,
+    },
     "runtime.launch": { launched: true },
     "runtime.release_identity": {
       app_version: plan.release.app_version,
       source_commit_sha: plan.release.source_sha,
-      install_kind:
-        plan.platform.package.kind === "macos_updater" || plan.platform.package.kind === "dmg"
-          ? "app_bundle"
-          : plan.platform.package.kind,
+      install_kind: plan.profile.install_kind,
     },
     "runtime.settings": { restarted: true, preserved: true },
     "runtime.degradation": { reported: true, windows_service_behavior: "not_assumed" },
@@ -247,7 +248,15 @@ function passedResponse(step, plan) {
   return { status: "passed", outcome: `Bounded ${step.id} fixture completed.`, observations };
 }
 
-function adapterFor(input, overrides = {}) {
+function adapterFor(
+  input,
+  overrides = {},
+  confirmTerminated = async () => ({
+    action_settled: true,
+    process_tree_settled: true,
+    outcome: "Fixture process tree settled.",
+  }),
+) {
   const plan = createInstallSmokePlan(input);
   const calls = [];
   const actions = {};
@@ -262,124 +271,148 @@ function adapterFor(input, overrides = {}) {
   return {
     plan,
     calls,
-    adapter: { kind: input.execution_kind, executor: structuredClone(EXECUTOR), actions },
+    adapter: {
+      kind: "fixture",
+      executor: {
+        tokenized_argv: true,
+        shell: false,
+        minimal_environment: true,
+        bounded_output: true,
+        timeout_tree_cleanup: true,
+        confirm_terminated: confirmTerminated,
+      },
+      actions,
+    },
   };
 }
 
 for (const [file, os, packageKind] of FIXTURES) {
-  test(`plans and runs a non-claiming ${os} ${packageKind} fixture`, async () => {
+  test(`runs a non-claiming ${os} ${packageKind} fixture`, async () => {
     const input = inputFor(file);
     const { plan, calls, adapter } = adapterFor(input);
     const result = await runInstallSmoke(input, adapter);
     assert.equal(result.disposition, "fixture");
-    assert.equal(result.execution_kind, "fixture");
     assert.equal(result.evidence_packet.packet_kind, "schema_fixture");
     assert.ok(
       Object.values(result.evidence_packet.checks).every((checks) =>
-        Object.values(checks).every(({ status }) => status === "not_applicable"),
+        Object.values(checks).every(
+          ({ status, outcome }) =>
+            status === "not_applicable" && outcome === "Synthetic install-smoke fixture only.",
+        ),
       ),
     );
     assert.deepEqual(
       calls,
       plan.steps.filter(({ source }) => source === "adapter").map(({ id }) => id),
     );
+    assert.deepEqual(
+      result.evidence_packet.assets.map(({ name }) => name),
+      [plan.asset.name],
+    );
     assert.doesNotMatch(JSON.stringify(result), /(?:\/private\/|[A-Za-z]:\\)/u);
     if (packageKind === "macos_updater") {
+      assert.equal(plan.profile.package_operation, "stage");
       assert.equal(
-        plan.steps.find(({ id }) => id === "install.package_install").action,
-        "stage_updater_archive_app",
+        result.evidence_packet.limitations.macos_updater_staging_only.disposition,
+        "not_applicable",
+      );
+    }
+    if (packageKind === "nsis") {
+      assert.equal(
+        result.evidence_packet.limitations.windows_service_etw_out_of_scope.disposition,
+        "not_applicable",
       );
     }
   });
 }
 
-test("a failing synthetic adapter remains fixture-only evidence", async () => {
-  const input = inputFor("windows-nsis.json");
-  const { adapter } = adapterFor(input, {
-    "runtime.launch": () => ({
-      status: "failed",
-      outcome: "Synthetic launch failure.",
-      observations: {},
-    }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "fixture");
-  assert.equal(result.evidence_packet.packet_kind, "schema_fixture");
-  assert.ok(
-    Object.values(result.evidence_packet.checks).every((checks) =>
-      Object.values(checks).every(({ status }) => status === "not_applicable"),
-    ),
-  );
-});
-
-test("returns a pure plan with no evidence packet and invokes no adapter", async () => {
+test("returns a workflow-bound plan with one receipt-bound asset and no packet", async () => {
   const input = inputFor("linux-appimage.json", "plan");
   const result = await runInstallSmoke(input);
+  const plan = createInstallSmokePlan(input);
   assert.equal(result.disposition, "planned");
   assert.equal(result.evidence_packet, null);
-  assert.equal(result.steps[0].status, "passed");
+  assert.equal(result.release.workflow_run.run_id, 123456789);
+  assert.equal(result.observed_at_utc, input.evidence_template.observed_at_utc);
+  assert.deepEqual(Object.keys(plan.public_verification).sort(), [
+    "app_version",
+    "asset",
+    "disposition",
+    "proof_scope",
+    "repository",
+    "schema_version",
+    "source_sha",
+    "tag",
+    "verifier",
+  ]);
+  assert.deepEqual(Object.keys(plan.asset).sort(), ["name", "public_url", "sha256", "size_bytes"]);
   assert.ok(result.steps.slice(2).every(({ status }) => status === "planned"));
 });
 
-test("maps a complete native adapter run to schema-valid release evidence", async () => {
-  const input = inputFor("linux-appimage.json", "native");
-  const { plan, calls, adapter } = adapterFor(input);
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "native_proven");
-  assert.equal(result.evidence_packet.packet_kind, "release_evidence");
-  assert.equal(validateReleaseEvidencePacket(result.evidence_packet), result.evidence_packet);
-  assert.ok(
-    Object.values(result.evidence_packet.checks).every((checks) =>
-      Object.values(checks).every(({ status }) => status === "passed"),
-    ),
-  );
-  assert.ok(
-    calls.indexOf("preflight.asset_rehash") < calls.indexOf("install.package_install") &&
-      calls.indexOf("preflight.package_trust") < calls.indexOf("install.package_install"),
-  );
-  assert.equal(plan.constraints.windows_service_behavior_assumed, false);
-});
-
-test("rejects a caller-authored public-verifier pass before any adapter action", async () => {
-  const input = inputFor("linux-appimage.json", "native");
-  input.public_verification = structuredClone(nativeReceipt);
+test("caller-authored native flags and injected functions cannot mint proof", async () => {
+  const input = inputFor("linux-appimage.json", "plan");
+  input.execution_kind = "native";
   let calls = 0;
+  const attacker = {
+    kind: "native",
+    native_proven: true,
+    executor: {
+      tokenized_argv: true,
+      shell: false,
+      minimal_environment: true,
+      bounded_output: true,
+      timeout_tree_cleanup: true,
+      confirm_terminated: async () => {
+        calls += 1;
+        return { action_settled: true, process_tree_settled: true, outcome: "forged" };
+      },
+    },
+    actions: new Proxy(
+      {},
+      {
+        get: () => async () => {
+          calls += 1;
+        },
+      },
+    ),
+  };
   await assert.rejects(
-    () =>
-      runInstallSmoke(input, {
-        kind: "native",
-        executor: structuredClone(EXECUTOR),
-        actions: new Proxy(
-          {},
-          {
-            get: () => async () => {
-              calls += 1;
-            },
-          },
-        ),
-      }),
-    /must come from a successful in-process verifyPublicRelease call/u,
+    () => runInstallSmoke(input, attacker),
+    /native proof is unavailable without a reviewed branded executor/u,
   );
   assert.equal(calls, 0);
+  assert.throws(
+    () => shapeInstallSmokeEvidence({ execution_kind: "native" }, "native_proven"),
+    /release evidence is unreachable/u,
+  );
 });
 
-test("rejects a missing adapter action before package mutation", async () => {
-  const input = inputFor("linux-deb.json", "native");
-  const { adapter, calls } = adapterFor(input);
-  delete adapter.actions.install_deb;
-  await assert.rejects(() => runInstallSmoke(input, adapter), /install_deb.*explicit action/u);
-  assert.deepEqual(calls, []);
+test("a copied contract receipt is rejected before any adapter action", async () => {
+  const input = inputFor("linux-appimage.json", "plan");
+  input.public_verification = structuredClone(contractReceipt);
+  await assert.rejects(
+    () => runInstallSmoke(input),
+    /must come from a successful in-process verifyPublicRelease call/u,
+  );
 });
 
-test("rejects inherited or accessor adapter actions before package mutation", async () => {
-  const input = inputFor("linux-deb.json", "native");
+test("rejects missing, inherited, accessor, and unsafe fixture executor capabilities", async () => {
+  const input = inputFor("linux-deb.json");
+  const missing = adapterFor(input);
+  delete missing.adapter.actions.install_deb;
+  await assert.rejects(
+    () => runInstallSmoke(input, missing.adapter),
+    /install_deb.*explicit data function/u,
+  );
+  assert.deepEqual(missing.calls, []);
+
   const inherited = adapterFor(input);
   const install = inherited.adapter.actions.install_deb;
   delete inherited.adapter.actions.install_deb;
   Object.setPrototypeOf(inherited.adapter.actions, { install_deb: install });
   await assert.rejects(
     () => runInstallSmoke(input, inherited.adapter),
-    /install_deb.*explicit action/u,
+    /install_deb.*explicit data function/u,
   );
   assert.deepEqual(inherited.calls, []);
 
@@ -391,25 +424,25 @@ test("rejects inherited or accessor adapter actions before package mutation", as
   });
   await assert.rejects(
     () => runInstallSmoke(input, accessor.adapter),
-    /install_deb.*explicit action/u,
+    /install_deb.*explicit data function/u,
   );
   assert.deepEqual(accessor.calls, []);
+
+  const unsafe = adapterFor(input);
+  unsafe.adapter.executor.shell = true;
+  await assert.rejects(
+    () => runInstallSmoke(input, unsafe.adapter),
+    /bounded non-shell fixture executor/u,
+  );
+  assert.deepEqual(unsafe.calls, []);
 });
 
-test("rejects an unsafe executor contract before package mutation", async () => {
-  const input = inputFor("linux-deb.json", "native");
-  const { adapter, calls } = adapterFor(input);
-  adapter.executor.shell = true;
-  await assert.rejects(() => runInstallSmoke(input, adapter), /bounded non-shell executor/u);
-  assert.deepEqual(calls, []);
-});
-
-test("fails closed on rehash mismatch or a symlink before install", async () => {
-  const input = inputFor("linux-appimage.json", "native");
+test("adapter hash and trust self-attestations remain fixture-only", async () => {
+  const input = inputFor("linux-appimage.json");
   const { adapter, calls } = adapterFor(input, {
     "preflight.asset_rehash": (_request, plan) => ({
       status: "passed",
-      outcome: "Asset rehash attempted.",
+      outcome: "Synthetic file probe returned.",
       observations: {
         sha256: plan.asset.sha256,
         regular_file: true,
@@ -419,207 +452,196 @@ test("fails closed on rehash mismatch or a symlink before install", async () => 
     }),
   });
   const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "failed");
+  assert.equal(result.disposition, "fixture");
   assert.equal(result.steps.find(({ id }) => id === "preflight.asset_rehash").status, "failed");
   assert.ok(!calls.includes("install.package_install"));
-  assert.equal(result.evidence_packet.checks.install.package_install.status, "blocked");
+  assert.equal(result.evidence_packet.checks.install.package_install.status, "not_applicable");
+  assert.doesNotMatch(JSON.stringify(result), /native_proven|release_evidence/u);
 });
 
-test("fails closed on digest drift or adapter-root escape before install", async () => {
-  for (const observations of [
+test("confirmed timeout waits for settlement before bounded cleanup", async () => {
+  const input = inputFor("linux-deb.json");
+  input.isolation.step_timeout_ms = 5;
+  let aborted = false;
+  let handshake = 0;
+  const { adapter, calls } = adapterFor(
+    input,
     {
-      sha256: `sha256:${"f".repeat(64)}`,
-      regular_file: true,
-      symlink: false,
-      contained: true,
+      "install.package_install": ({ signal }) =>
+        new Promise(() => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+          });
+        }),
     },
-    {
-      sha256: nativeReceipt.assets.find(({ name }) => name.endsWith(".AppImage")).sha256,
-      regular_file: true,
-      symlink: false,
-      contained: false,
+    async () => {
+      handshake += 1;
+      return {
+        action_settled: true,
+        process_tree_settled: true,
+        outcome: "Timed-out fixture tree settled.",
+      };
     },
-  ]) {
-    const input = inputFor("linux-appimage.json", "native");
-    const { adapter, calls } = adapterFor(input, {
-      "preflight.asset_rehash": () => ({
-        status: "passed",
-        outcome: "Asset containment probe completed.",
-        observations,
-      }),
-    });
+  );
+  const result = await runInstallSmoke(input, adapter);
+  assert.equal(result.disposition, "fixture");
+  assert.equal(result.steps.find(({ id }) => id === "install.package_install").status, "timeout");
+  assert.equal(aborted, true);
+  assert.equal(handshake, 1);
+  assert.ok(calls.includes("cleanup.application_removed"));
+  assert.equal(result.evidence_packet.packet_kind, "schema_fixture");
+});
+
+test("unconfirmed timeout is partial, emits no packet, and runs no later action", async () => {
+  const input = inputFor("linux-deb.json");
+  input.isolation.step_timeout_ms = 5;
+  input.isolation.termination_timeout_ms = 5;
+  const { adapter, calls } = adapterFor(
+    input,
+    { "install.package_install": () => new Promise(() => {}) },
+    () => new Promise(() => {}),
+  );
+  const result = await runInstallSmoke(input, adapter);
+  assert.equal(result.disposition, "partial");
+  assert.equal(result.steps.find(({ id }) => id === "install.package_install").status, "partial");
+  assert.equal(result.evidence_packet, null);
+  assert.ok(!calls.includes("runtime.launch"));
+  assert.ok(!calls.includes("cleanup.application_removed"));
+});
+
+test("adapter-authored timeout states cannot bypass settlement or trigger cleanup", async () => {
+  for (const forgedStatus of ["timeout", "partial"]) {
+    const input = inputFor("linux-deb.json");
+    let handshakes = 0;
+    const { adapter, calls } = adapterFor(
+      input,
+      {
+        "install.package_install": () => ({
+          status: forgedStatus,
+          outcome: "Caller-authored timeout state.",
+          observations: {},
+        }),
+      },
+      async () => {
+        handshakes += 1;
+        return {
+          action_settled: true,
+          process_tree_settled: true,
+          outcome: "Unexpected handshake.",
+        };
+      },
+    );
     const result = await runInstallSmoke(input, adapter);
-    assert.equal(result.disposition, "failed");
-    assert.ok(!calls.includes("install.package_install"));
+    assert.equal(result.disposition, "partial");
+    assert.equal(result.steps.find(({ id }) => id === "install.package_install").status, "partial");
+    assert.equal(result.evidence_packet, null);
+    assert.equal(handshakes, 0);
+    assert.ok(!calls.includes("runtime.launch"));
+    assert.ok(!calls.includes("cleanup.application_removed"));
   }
 });
 
-test("fails closed when observed package trust differs from the evidence template", async () => {
-  const input = inputFor("windows-nsis.json", "native");
-  const { adapter, calls } = adapterFor(input, {
-    "preflight.package_trust": (_request, plan) => ({
-      status: "passed",
-      outcome: "Package trust probe completed.",
-      observations: {
-        signatures: {},
-        trust_basis: plan.asset.expected_trust_basis,
-      },
-    }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "failed");
-  assert.ok(!calls.includes("install.package_install"));
-  assert.equal(result.evidence_packet.checks.install.package_install.status, "blocked");
-});
-
-test("keeps timeout distinct, aborts the action, and still runs bounded cleanup", async () => {
-  const input = inputFor("linux-deb.json", "native");
-  input.isolation.step_timeout_ms = 5;
-  let aborted = false;
-  const { adapter, calls } = adapterFor(input, {
-    "install.package_install": ({ signal }) =>
-      new Promise(() => {
-        signal.addEventListener("abort", () => {
-          aborted = true;
-        });
+test("fixture failures, unsupported states, identity drift, and unsafe output fail closed", async () => {
+  const cases = [
+    [
+      "runtime.launch",
+      () => ({ status: "failed", outcome: "Synthetic launch failure.", observations: {} }),
+      "failed",
+    ],
+    [
+      "install.package_install",
+      () => ({
+        status: "unsupported",
+        outcome: "Fixture capability unavailable.",
+        observations: {},
       }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "failed");
-  assert.equal(result.steps.find(({ id }) => id === "install.package_install").status, "timeout");
-  assert.equal(aborted, true);
-  assert.ok(calls.includes("cleanup.application_removed"));
-  assert.equal(result.evidence_packet.checks.install.package_install.status, "failed");
+      "unsupported",
+    ],
+    [
+      "runtime.release_identity",
+      (_request, plan) => ({
+        status: "passed",
+        outcome: "Synthetic identity returned.",
+        observations: {
+          app_version: "9.9.8",
+          source_commit_sha: plan.release.source_sha,
+          install_kind: plan.profile.install_kind,
+        },
+      }),
+      "failed",
+    ],
+    [
+      "runtime.telemetry",
+      () => ({
+        status: "passed",
+        outcome: "Telemetry unavailable.",
+        observations: { sample_observed: true, quality_state: "unavailable" },
+      }),
+      "failed",
+    ],
+    [
+      "preflight.asset_rehash",
+      (_request, plan) => ({
+        status: "passed",
+        outcome: "Evidence saved at /private/tmp/release.log",
+        observations: {
+          sha256: plan.asset.sha256,
+          regular_file: true,
+          symlink: false,
+          contained: true,
+        },
+      }),
+      "failed",
+    ],
+  ];
+  for (const [stepId, override, expectedStatus] of cases) {
+    const input = inputFor("linux-appimage.json");
+    const { adapter } = adapterFor(input, { [stepId]: override });
+    const result = await runInstallSmoke(input, adapter);
+    assert.equal(result.disposition, "fixture");
+    assert.equal(result.steps.find(({ id }) => id === stepId).status, expectedStatus);
+    assert.equal(result.evidence_packet.packet_kind, "schema_fixture");
+    assert.doesNotMatch(JSON.stringify(result), /\/private\/tmp/u);
+  }
 });
 
-test("keeps unsupported and downstream blocked states distinct", async () => {
-  const input = inputFor("macos-dmg.json", "native");
-  const { adapter } = adapterFor(input, {
-    "install.package_install": () => ({
-      status: "unsupported",
-      outcome: "Native package preparation capability is unavailable.",
-      observations: {},
-    }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "skipped");
-  assert.equal(
-    result.steps.find(({ id }) => id === "install.package_install").status,
-    "unsupported",
-  );
-  assert.equal(result.steps.find(({ id }) => id === "runtime.launch").status, "blocked");
-  assert.equal(result.evidence_packet.checks.install.package_install.status, "blocked");
-});
-
-test("keeps an explicit adapter skip distinct from a failure", async () => {
-  const input = inputFor("macos-dmg.json", "native");
-  const { adapter } = adapterFor(input, {
-    "install.package_install": () => ({
-      status: "skipped",
-      outcome: "Required native package preparation was explicitly skipped.",
-      observations: {},
-    }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "skipped");
-  assert.equal(result.steps.find(({ id }) => id === "install.package_install").status, "skipped");
-  assert.equal(result.evidence_packet.checks.install.package_install.status, "blocked");
-});
-
-test("fails exact runtime identity mismatch without trusting adapter prose", async () => {
-  const input = inputFor("linux-appimage.json", "native");
-  const { adapter } = adapterFor(input, {
-    "runtime.release_identity": (_request, plan) => ({
-      status: "passed",
-      outcome: "Runtime reported an identity.",
-      observations: {
-        app_version: "9.9.8",
-        source_commit_sha: plan.release.source_sha,
-        install_kind: "appimage",
-      },
-    }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "failed");
-  assert.equal(result.evidence_packet.checks.runtime.release_identity.status, "failed");
-  assert.equal(result.evidence_packet.checks.runtime.settings.status, "blocked");
-});
-
-test("does not let unavailable telemetry satisfy native proof", async () => {
-  const input = inputFor("linux-appimage.json", "native");
-  const { adapter } = adapterFor(input, {
-    "runtime.telemetry": () => ({
-      status: "passed",
-      outcome: "Telemetry was unavailable.",
-      observations: { sample_observed: true, quality_state: "unavailable" },
-    }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "failed");
-  assert.equal(result.evidence_packet.checks.runtime.telemetry.status, "failed");
-});
-
-test("fails a partial adapter response and rejects unsafe output from evidence", async () => {
-  const partialInput = inputFor("linux-appimage.json", "native");
-  const partial = adapterFor(partialInput, {
-    "runtime.launch": () => ({ status: "passed", outcome: "Launch returned." }),
-  });
-  const partialResult = await runInstallSmoke(partialInput, partial.adapter);
-  assert.equal(partialResult.disposition, "failed");
-  assert.equal(partialResult.evidence_packet.checks.runtime.launch.status, "failed");
-
-  const unsafeInput = inputFor("linux-appimage.json", "native");
-  const unsafe = adapterFor(unsafeInput, {
-    "preflight.asset_rehash": (_request, plan) => ({
-      status: "passed",
-      outcome: "Evidence saved at /private/tmp/release.log",
-      observations: {
-        sha256: plan.asset.sha256,
-        regular_file: true,
-        symlink: false,
-        contained: true,
-      },
-    }),
-  });
-  const unsafeResult = await runInstallSmoke(unsafeInput, unsafe.adapter);
-  assert.equal(unsafeResult.disposition, "failed");
-  assert.doesNotMatch(JSON.stringify(unsafeResult), /\/private\/tmp/u);
-});
-
-test("fails unexpected owned residue and keeps user-state policy separately visible", async () => {
-  const input = inputFor("macos-updater.json", "native");
-  const { adapter } = adapterFor(input, {
-    "cleanup.owned_runtime_cleanup": () => ({
-      status: "passed",
-      outcome: "Cleanup probe found residue.",
-      observations: { residue_count: 1 },
-    }),
-  });
-  const result = await runInstallSmoke(input, adapter);
-  assert.equal(result.disposition, "failed");
-  assert.equal(result.evidence_packet.checks.cleanup.owned_runtime_cleanup.status, "failed");
-  assert.equal(result.evidence_packet.checks.cleanup.user_state_policy.status, "passed");
-});
-
-test("rejects duplicate, out-of-order, and contradictory result states", async () => {
-  const input = inputFor("linux-appimage.json");
+test("result validation rederives packet id, checks, limitations, and disposition", async () => {
+  const input = inputFor("windows-nsis.json");
   const { adapter } = adapterFor(input);
   const result = await runInstallSmoke(input, adapter);
 
-  const duplicate = structuredClone(result);
-  duplicate.steps[3] = structuredClone(duplicate.steps[2]);
-  assert.throws(() => validateInstallSmokeResult(duplicate), /duplicated|ordered gate/u);
+  const mutations = [
+    (candidate) => {
+      candidate.evidence_packet.packet_id = "contradictory-packet";
+    },
+    (candidate) => {
+      candidate.evidence_packet.checks.runtime.launch.status = "passed";
+    },
+    (candidate) => {
+      candidate.evidence_packet.checks.runtime.launch.outcome = "Contradictory.";
+    },
+    (candidate) => {
+      delete candidate.evidence_packet.limitations.windows_service_etw_out_of_scope;
+    },
+    (candidate) => {
+      candidate.evidence_packet.limitations.synthetic_fixture_no_release_claim.summary = "Changed.";
+    },
+    (candidate) => {
+      candidate.disposition = "partial";
+    },
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(result);
+    mutate(candidate);
+    assert.throws(
+      () => validateInstallSmokeResult(candidate),
+      /derived|exactly match|fixture|packet|limitation|disposition/u,
+    );
+  }
 
   const reordered = structuredClone(result);
   [reordered.steps[2], reordered.steps[3]] = [reordered.steps[3], reordered.steps[2]];
   assert.throws(() => validateInstallSmokeResult(reordered), /ordered gate/u);
-
-  const contradiction = structuredClone(result);
-  contradiction.disposition = "native_proven";
-  assert.throws(
-    () => validateInstallSmokeResult(contradiction),
-    /native_proven requires every gate to pass|derived state fixture/u,
-  );
 });
 
 test("hosted release-contract jobs run the install-smoke suite", () => {
