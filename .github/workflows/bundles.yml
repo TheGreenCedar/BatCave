@@ -142,6 +142,9 @@ jobs:
       - name: Verify universal app and DMG
         run: bash scripts/verify-macos-bundle.sh --mode adhoc
 
+      - name: Test updater archive guards
+        run: bash scripts/test-macos-updater-archive.sh
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: batcave-macos-universal-dmg-${{ github.run_id }}
