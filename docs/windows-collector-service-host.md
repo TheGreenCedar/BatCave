@@ -2,7 +2,7 @@
 
 BatCave now has a dedicated `batcave-collector-service.exe` source target. The binary enters the Windows Service Control Manager (SCM) dispatcher as the `BatCaveCollector` own-process service, starts the shared immutable collector engine, and serves the frozen collector-service IPC v1 contract over a local named pipe.
 
-This source boundary includes the standard-user desktop client and its local fallback. It does not install or start the service outside SCM, modify NSIS, or claim installed Windows behavior.
+The Windows NSIS bundle packages the service binary beside the desktop executable and uses installer hooks to own its SCM and `ProgramData` boundaries. The desktop remains `asInvoker`; the installer never starts the GUI as an elevated child. Installed behavior still requires exact-artifact native proof before it is treated as release evidence.
 
 ## Service and pipe identity
 
@@ -46,9 +46,16 @@ SCM stop and shutdown controls set the service stop signal. The nonblocking list
 
 This host starts the shared collector with process-network ETW disabled. Per-process network quality therefore remains explicitly held. The dormant ETW monitor fails closed until a supported event decodes, tracks `ProcessTrace` progress through buffer and event heartbeats, queries the exact session for loss and configuration drift, and requires a clean decoded interval after loss before returning to native quality. A consumer with no progress beyond the bounded heartbeat window is unavailable even when the session query still succeeds. #70 still owns enabling it only after the service has leased session ownership and bounded shutdown.
 
+## Installer ownership
+
+The per-machine NSIS installer is the only entry point allowed to create, reconfigure, stop, or remove `BatCaveCollector`. Its hooks first open the fixed SCM registry key read-only so an inaccessible or malformed registration cannot be mistaken for an absent service, then refuse a same-name service unless a private installer marker, exact quoted Program Files image path, LocalSystem account, and own-process type all match. Before any service mutation, the hooks also use Tauri's app-running guard and require the fixed per-machine install directory. The hooks then invoke only the namespaced fixed service-binary commands `--provision prepare-upgrade`, `--provision install`, and `--provision uninstall`. They do not run `sc.exe`, change ACLs, or recursively remove paths themselves.
+
+The native service installer boundary owns `%ProgramData%\BatCaveMonitor\Service`. It opens path components without following reparse points, creates directories with their final security descriptors, verifies LocalSystem ownership and protected DACLs, and grants write access only to LocalSystem, Administrators, and the `NT SERVICE\BatCaveCollector` SID. The same native boundary owns rollback, SCM query-back and settlement, and bounded uninstall cleanup. Only after verification can the service convert the fixed path into a protected ETW lease capability; a missing or invalid root keeps the service unavailable and leaves the desktop on its visible standard-access fallback.
+
+Upgrade denial occurs before the elevated installer runs and therefore leaves the prior installed desktop/service untouched. A fresh per-machine install denied at UAC installs neither component; proving a fresh denied install with a per-user desktop would require a different installer product decision.
+
 ## Remaining #69 work
 
-- Add NSIS provisioning, service ownership, account, start mode, and permissions.
 - Prove installed happy-path, denied-install/upgrade, missing-service, stopped-service, unauthorized-client, and incompatible-version behavior on Windows.
 - Capture fresh native Tauri evidence for the access and diagnostic states.
 
