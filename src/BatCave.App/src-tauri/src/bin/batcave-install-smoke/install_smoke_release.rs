@@ -75,6 +75,50 @@ impl Profile {
 pub(super) struct SanitizedOutcome {
     disposition: &'static str,
     reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: Option<MacOsUpdaterObservation>,
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+struct MacOsUpdaterObservation {
+    schema_version: u8,
+    result_kind: &'static str,
+    proof_scope: &'static str,
+    release_evidence_eligible: bool,
+    repository: &'static str,
+    release: MacOsUpdaterReleaseIdentity,
+    artifact: MacOsUpdaterArtifactObservation,
+    observed_checks: MacOsUpdaterObservedChecks,
+    limitations: [&'static str; 7],
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+struct MacOsUpdaterReleaseIdentity {
+    tag: String,
+    source_sha: String,
+    app_version: String,
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+struct MacOsUpdaterArtifactObservation {
+    name: String,
+    size_bytes: u64,
+    sha256: String,
+    updater_signature_name: String,
+    updater_signature_sha256: String,
+    staged_member_count: usize,
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+struct MacOsUpdaterObservedChecks {
+    anonymous_public_bytes: &'static str,
+    checksum_manifest: &'static str,
+    source_bound_attestations: &'static str,
+    updater_signature: &'static str,
+    exact_owned_stream: &'static str,
+    archive_preflight: &'static str,
+    staged_tree_reverification: &'static str,
+    private_root_cleanup: &'static str,
 }
 
 impl SanitizedOutcome {
@@ -82,6 +126,7 @@ impl SanitizedOutcome {
         Self {
             disposition: "failed",
             reason,
+            observation: None,
         }
     }
 
@@ -89,6 +134,57 @@ impl SanitizedOutcome {
         Self {
             disposition: "skipped",
             reason: "native_platform_not_implemented",
+            observation: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn macos_updater_observed(
+        identity: &MacOsUpdaterArtifactIdentity,
+        staged_member_count: usize,
+    ) -> Self {
+        Self {
+            disposition: "observation_complete",
+            reason: "exact_updater_archive_staged_and_cleaned",
+            observation: Some(MacOsUpdaterObservation {
+                schema_version: 1,
+                result_kind: "macos_updater_post_public_observation",
+                proof_scope: "post_public_macos_updater_staging_observation_only",
+                release_evidence_eligible: false,
+                repository: REPOSITORY,
+                release: MacOsUpdaterReleaseIdentity {
+                    tag: identity.tag.clone(),
+                    source_sha: identity.source_sha.clone(),
+                    app_version: identity.version.clone(),
+                },
+                artifact: MacOsUpdaterArtifactObservation {
+                    name: identity.asset_name.clone(),
+                    size_bytes: identity.size,
+                    sha256: identity.digest.clone(),
+                    updater_signature_name: identity.signature_name.clone(),
+                    updater_signature_sha256: identity.signature_digest.clone(),
+                    staged_member_count,
+                },
+                observed_checks: MacOsUpdaterObservedChecks {
+                    anonymous_public_bytes: "passed",
+                    checksum_manifest: "passed",
+                    source_bound_attestations: "passed",
+                    updater_signature: "passed",
+                    exact_owned_stream: "passed",
+                    archive_preflight: "passed",
+                    staged_tree_reverification: "passed",
+                    private_root_cleanup: "passed",
+                },
+                limitations: [
+                    "github_hosted_macos_15",
+                    "universal_updater_archive_staging_only",
+                    "application_not_installed_or_launched",
+                    "developer_id_notarization_and_staple_not_rechecked",
+                    "runtime_settings_telemetry_and_degradation_not_exercised",
+                    "updater_a_to_b_not_exercised",
+                    "not_release_evidence",
+                ],
+            }),
         }
     }
 }
@@ -126,6 +222,10 @@ pub(super) enum Failure {
     AttestationRejected,
     ReadbackDrift,
     CleanupFailed,
+    #[cfg(any(target_os = "macos", test))]
+    MaterializationAndCleanupFailed,
+    #[cfg(any(target_os = "macos", test))]
+    VerificationAndCleanupFailed,
     AuthorityRejected,
 }
 
@@ -177,9 +277,13 @@ fn dispatch_verified(verified: VerifiedArtifact) -> Result<SanitizedOutcome, Fai
         Profile::LinuxDeb | Profile::LinuxAppImage => {
             super::install_smoke_linux::run(verified.into_linux()?)
         }
-        Profile::WindowsNsis | Profile::MacOsDmg | Profile::MacOsUpdater => {
-            verified.finish_without_native()
+        #[cfg(target_os = "macos")]
+        Profile::MacOsUpdater => {
+            super::install_smoke_macos_updater::run(verified.into_macos_updater()?)
         }
+        Profile::WindowsNsis | Profile::MacOsDmg => verified.finish_without_native(),
+        #[cfg(not(target_os = "macos"))]
+        Profile::MacOsUpdater => verified.finish_without_native(),
         #[cfg(not(target_os = "linux"))]
         Profile::LinuxDeb | Profile::LinuxAppImage => verified.finish_without_native(),
     }
@@ -191,6 +295,10 @@ fn public_failure(failure: Failure) -> (SanitizedOutcome, i32) {
         Failure::Offline => "offline",
         Failure::Timeout => "timeout",
         Failure::CleanupFailed => "cleanup_failed",
+        #[cfg(any(target_os = "macos", test))]
+        Failure::MaterializationAndCleanupFailed => "materialization_and_cleanup_failed",
+        #[cfg(any(target_os = "macos", test))]
+        Failure::VerificationAndCleanupFailed => "verification_and_cleanup_failed",
         _ => "public_release_verification_failed",
     };
     (SanitizedOutcome::failed(reason), 1)
@@ -220,21 +328,20 @@ struct VerifiedArtifact {
     release: ReleaseReadback,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     selected: ReleaseAsset,
+    #[cfg(target_os = "macos")]
+    updater_signature: Option<BoundUpdaterSignature>,
     artifact: BoundArtifact,
+}
+
+#[cfg(target_os = "macos")]
+struct BoundUpdaterSignature {
+    asset: ReleaseAsset,
+    bytes: Vec<u8>,
 }
 
 impl VerifiedArtifact {
     pub(super) fn finish_without_native(self) -> Result<SanitizedOutcome, Failure> {
-        let Self {
-            profile: _,
-            tag: _,
-            version: _,
-            source_sha: _,
-            release: _,
-            selected: _,
-            artifact,
-        } = self;
-        artifact.finish_without_native()
+        self.artifact.finish_without_native()
     }
 
     #[cfg(target_os = "linux")]
@@ -271,6 +378,105 @@ impl VerifiedArtifact {
             digest: self.selected.digest,
         };
         VerifiedLinuxArtifact::seal(profile, identity, bytes)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn into_macos_updater(mut self) -> Result<VerifiedMacOsUpdaterArtifact, Failure> {
+        if self.profile != Profile::MacOsUpdater {
+            return Err(Failure::AuthorityRejected);
+        }
+        let signature = self
+            .updater_signature
+            .take()
+            .ok_or(Failure::AuthorityRejected)?;
+        let expected_name = self.profile.selected_name(&self.version);
+        let expected_signature_name = format!("{expected_name}.sig");
+        if self.release.id == 0
+            || self.selected.id == 0
+            || signature.asset.id == 0
+            || self.release.tag_name != self.tag
+            || self.release.target_commitish != self.source_sha
+            || self.selected.name != expected_name
+            || signature.asset.name != expected_signature_name
+            || self.selected.size == 0
+            || signature.asset.size == 0
+            || self.selected.digest != format!("sha256:{}", digest_value(&self.selected.digest)?)
+            || signature.asset.digest
+                != format!("sha256:{}", digest_value(&signature.asset.digest)?)
+            || signature.bytes.len() as u64 != signature.asset.size
+            || digest_hex(&signature.bytes) != digest_value(&signature.asset.digest)?
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        let seal = Arc::clone(&self.artifact.seal);
+        let bytes = self.artifact.take(&seal)?;
+        if bytes.len() as u64 != self.selected.size
+            || digest_hex(bytes.as_ref()) != digest_value(&self.selected.digest)?
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        Ok(VerifiedMacOsUpdaterArtifact {
+            identity: MacOsUpdaterArtifactIdentity {
+                tag: self.tag,
+                version: self.version,
+                source_sha: self.source_sha,
+                release_id: self.release.id,
+                asset_id: self.selected.id,
+                asset_name: self.selected.name,
+                size: self.selected.size,
+                digest: self.selected.digest,
+                signature_asset_id: signature.asset.id,
+                signature_name: signature.asset.name,
+                signature_size: signature.asset.size,
+                signature_digest: signature.asset.digest,
+            },
+            bytes,
+            signature: signature.bytes,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) struct MacOsUpdaterArtifactIdentity {
+    tag: String,
+    version: String,
+    source_sha: String,
+    release_id: u64,
+    asset_id: u64,
+    asset_name: String,
+    size: u64,
+    digest: String,
+    signature_asset_id: u64,
+    signature_name: String,
+    signature_size: u64,
+    signature_digest: String,
+}
+
+#[cfg(target_os = "macos")]
+pub(super) struct VerifiedMacOsUpdaterArtifact {
+    pub(super) identity: MacOsUpdaterArtifactIdentity,
+    pub(super) bytes: Arc<[u8]>,
+    pub(super) signature: Vec<u8>,
+}
+
+#[cfg(target_os = "macos")]
+impl VerifiedMacOsUpdaterArtifact {
+    pub(super) fn revalidate(&self) -> Result<(), Failure> {
+        if self.identity.release_id == 0
+            || self.identity.asset_id == 0
+            || self.identity.signature_asset_id == 0
+            || self.identity.asset_name != "BatCave.Monitor.app.tar.gz"
+            || self.identity.signature_name != "BatCave.Monitor.app.tar.gz.sig"
+            || self.identity.tag != format!("v{}", self.identity.version)
+            || !is_sha(&self.identity.source_sha)
+            || self.identity.size != self.bytes.len() as u64
+            || self.identity.signature_size != self.signature.len() as u64
+            || self.identity.digest != format!("sha256:{}", digest_hex(self.bytes.as_ref()))
+            || self.identity.signature_digest != format!("sha256:{}", digest_hex(&self.signature))
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        Ok(())
     }
 }
 
@@ -490,6 +696,27 @@ fn verify_and_bind(
         if digest_hex(&selected_bytes) != digest_value(&selected.digest)? {
             return Err(Failure::AuthorityRejected);
         }
+        #[cfg(target_os = "macos")]
+        let updater_signature = if profile == Profile::MacOsUpdater {
+            let signature_name = format!("{}.sig", selected.name);
+            let asset = before
+                .assets
+                .iter()
+                .find(|asset| asset.name == signature_name)
+                .cloned()
+                .ok_or(Failure::InventoryRejected)?;
+            let bytes =
+                fs::read(root.path().join(&asset.name)).map_err(|_| Failure::AuthorityRejected)?;
+            if bytes.is_empty()
+                || bytes.len() as u64 != asset.size
+                || digest_hex(&bytes) != digest_value(&asset.digest)?
+            {
+                return Err(Failure::AuthorityRejected);
+            }
+            Some(BoundUpdaterSignature { asset, bytes })
+        } else {
+            None
+        };
 
         let release_bundles = source.release_attestations(&commit)?;
         trust.verify_release(&release_bundles, tag, &commit, &before, &selected.digest)?;
@@ -506,6 +733,8 @@ fn verify_and_bind(
             source_sha: commit,
             release: before,
             selected,
+            #[cfg(target_os = "macos")]
+            updater_signature,
             artifact: BoundArtifact::new(selected_bytes),
         })
     })();
@@ -1908,6 +2137,14 @@ mod tests {
         assert_eq!(
             public_failure(Failure::Redirect).0,
             SanitizedOutcome::failed("public_release_verification_failed")
+        );
+        assert_eq!(
+            public_failure(Failure::MaterializationAndCleanupFailed).0,
+            SanitizedOutcome::failed("materialization_and_cleanup_failed")
+        );
+        assert_eq!(
+            public_failure(Failure::VerificationAndCleanupFailed).0,
+            SanitizedOutcome::failed("verification_and_cleanup_failed")
         );
 
         let (source, trust) = fixture();
