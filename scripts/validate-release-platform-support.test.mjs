@@ -15,6 +15,8 @@ import {
 } from "./validate-release-platform-support.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const LINUX_CLI_DESTINATION = "/usr/bin/batcave-monitor-cli";
+const LINUX_CLI_SOURCE = "target/release/batcave-monitor-cli";
 const PROFILES = new Map(
   RELEASE_PLATFORM_SUPPORT_CONTRACT.profiles.map((profile) => [profile.id, profile]),
 );
@@ -52,6 +54,12 @@ function fixturePlatform(profileId, packageKind, architecture) {
 
 function cloneContract() {
   return structuredClone(RELEASE_PLATFORM_SUPPORT_CONTRACT);
+}
+
+function withMutatedTauri(sources, mutate) {
+  const tauri = structuredClone(sources.tauri);
+  mutate(tauri);
+  return { ...sources, tauri };
 }
 
 function escapeRegex(value) {
@@ -277,6 +285,13 @@ function assertLinuxSourceEnforcementMatchesContract(sources) {
     for (const package_ of profile.packages) packages.set(package_.kind, package_);
   }
   assert.deepEqual([...packages.keys()].sort(), [...sources.tauri.bundle.targets].sort());
+  for (const packageKind of ["deb", "appimage"]) {
+    assert.deepEqual(
+      sources.tauri.bundle.linux?.[packageKind]?.files,
+      { [LINUX_CLI_DESTINATION]: LINUX_CLI_SOURCE },
+      `Tauri ${packageKind} config must package the release CLI at its installed path`,
+    );
+  }
 
   const assetRoles = new Map(
     expectedReleaseAssetRoles("v9.9.9").roles.map((role) => [role.role, role]),
@@ -716,6 +731,18 @@ test("rejects runner, ABI, package, and runtime drift from the integrated #123 s
       ...sources,
       tauri: { bundle: { targets: ["deb"] } },
     },
+    withMutatedTauri(sources, (tauri) => {
+      tauri.bundle.linux.deb.files[LINUX_CLI_DESTINATION] =
+        "target/debug/batcave-monitor-cli";
+    }),
+    withMutatedTauri(sources, (tauri) => {
+      delete tauri.bundle.linux.appimage.files[LINUX_CLI_DESTINATION];
+    }),
+    withMutatedTauri(sources, (tauri) => {
+      tauri.bundle.linux.appimage.files["/usr/lib/batcave-monitor-cli"] =
+        tauri.bundle.linux.appimage.files[LINUX_CLI_DESTINATION];
+      delete tauri.bundle.linux.appimage.files[LINUX_CLI_DESTINATION];
+    }),
   ];
   for (const mutation of mutations) {
     assert.throws(() => assertLinuxSourceEnforcementMatchesContract(mutation));
