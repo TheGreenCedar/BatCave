@@ -9,8 +9,15 @@ use sigstore_verify::trust_root::{
 use sigstore_verify::types::{Bundle, Sha256Hash, SignatureContent};
 use sigstore_verify::{verify, VerificationPolicy};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::{
+    fd::{AsRawFd, FromRawFd},
+    unix::{fs::OpenOptionsExt, prelude::FileExt, prelude::MetadataExt},
+};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -78,7 +85,7 @@ impl SanitizedOutcome {
         }
     }
 
-    fn skipped() -> Self {
+    pub(super) fn skipped() -> Self {
         Self {
             disposition: "skipped",
             reason: "native_platform_not_implemented",
@@ -107,7 +114,7 @@ struct ReleaseReadback {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum Failure {
+pub(super) enum Failure {
     InvalidRequest,
     Offline,
     Timeout,
@@ -156,9 +163,25 @@ pub(super) fn run(selectors: &[String]) -> (SanitizedOutcome, i32) {
         Err(failure) => return public_failure(failure),
     };
     let trust = SigstoreTrust;
-    match execute(&selectors[0], &selectors[1], &source, &trust, false) {
+    match verify_and_bind(&selectors[0], &selectors[1], &source, &trust, false)
+        .and_then(dispatch_verified)
+    {
         Ok(outcome) => (outcome, 0),
         Err(failure) => public_failure(failure),
+    }
+}
+
+fn dispatch_verified(verified: VerifiedArtifact) -> Result<SanitizedOutcome, Failure> {
+    match verified.profile {
+        #[cfg(target_os = "linux")]
+        Profile::LinuxDeb | Profile::LinuxAppImage => {
+            super::install_smoke_linux::run(verified.into_linux()?)
+        }
+        Profile::WindowsNsis | Profile::MacOsDmg | Profile::MacOsUpdater => {
+            verified.finish_without_native()
+        }
+        #[cfg(not(target_os = "linux"))]
+        Profile::LinuxDeb | Profile::LinuxAppImage => verified.finish_without_native(),
     }
 }
 
@@ -173,6 +196,7 @@ fn public_failure(failure: Failure) -> (SanitizedOutcome, i32) {
     (SanitizedOutcome::failed(reason), 1)
 }
 
+#[cfg(test)]
 fn execute(
     tag: &str,
     profile: &str,
@@ -180,6 +204,258 @@ fn execute(
     trust: &dyn AttestationTrust,
     force_cleanup_failure: bool,
 ) -> Result<SanitizedOutcome, Failure> {
+    verify_and_bind(tag, profile, source, trust, force_cleanup_failure)
+        .and_then(VerifiedArtifact::finish_without_native)
+}
+
+struct VerifiedArtifact {
+    profile: Profile,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    tag: String,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    version: String,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    source_sha: String,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    release: ReleaseReadback,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    selected: ReleaseAsset,
+    artifact: BoundArtifact,
+}
+
+impl VerifiedArtifact {
+    pub(super) fn finish_without_native(self) -> Result<SanitizedOutcome, Failure> {
+        let Self {
+            profile: _,
+            tag: _,
+            version: _,
+            source_sha: _,
+            release: _,
+            selected: _,
+            artifact,
+        } = self;
+        artifact.finish_without_native()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn into_linux(mut self) -> Result<VerifiedLinuxArtifact, Failure> {
+        let profile = match self.profile {
+            Profile::LinuxDeb => LinuxProfile::Deb,
+            Profile::LinuxAppImage => LinuxProfile::AppImage,
+            _ => return Err(Failure::AuthorityRejected),
+        };
+        let expected_name = self.profile.selected_name(&self.version);
+        if self.release.tag_name != self.tag
+            || self.release.target_commitish != self.source_sha
+            || self.selected.name != expected_name
+            || self.selected.size == 0
+            || self.selected.digest != format!("sha256:{}", digest_value(&self.selected.digest)?)
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        let seal = Arc::clone(&self.artifact.seal);
+        let bytes = self.artifact.take(&seal)?;
+        if bytes.len() as u64 != self.selected.size
+            || digest_hex(bytes.as_ref()) != digest_value(&self.selected.digest)?
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        let identity = LinuxArtifactIdentity {
+            tag: self.tag,
+            version: self.version,
+            source_sha: self.source_sha,
+            release_id: self.release.id,
+            asset_id: self.selected.id,
+            asset_name: self.selected.name,
+            size: self.selected.size,
+            digest: self.selected.digest,
+        };
+        VerifiedLinuxArtifact::seal(profile, identity, bytes)
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinuxProfile {
+    Deb,
+    AppImage,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxProfile {
+    fn expected_name(self, version: &str) -> String {
+        match self {
+            Self::Deb => format!("BatCave.Monitor_{version}_amd64.deb"),
+            Self::AppImage => format!("BatCave.Monitor_{version}_amd64.AppImage"),
+        }
+    }
+
+    fn mode(self) -> libc::mode_t {
+        match self {
+            Self::Deb => 0o400,
+            Self::AppImage => 0o500,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxArtifactIdentity {
+    tag: String,
+    version: String,
+    source_sha: String,
+    release_id: u64,
+    asset_id: u64,
+    asset_name: String,
+    size: u64,
+    digest: String,
+}
+
+#[cfg(target_os = "linux")]
+pub(super) struct VerifiedLinuxArtifact {
+    profile: LinuxProfile,
+    identity: LinuxArtifactIdentity,
+    descriptor: File,
+    bytes: Arc<[u8]>,
+    sha256: [u8; 32],
+    device: u64,
+    inode: u64,
+    required_seals: libc::c_int,
+}
+
+#[cfg(target_os = "linux")]
+impl VerifiedLinuxArtifact {
+    fn seal(
+        profile: LinuxProfile,
+        identity: LinuxArtifactIdentity,
+        bytes: Arc<[u8]>,
+    ) -> Result<Self, Failure> {
+        if bytes.is_empty() || bytes.len() as u64 != identity.size {
+            return Err(Failure::AuthorityRejected);
+        }
+        let name = CString::new("batcave-install-smoke-artifact")
+            .expect("fixed memfd name contains no NUL");
+        let raw_fd = unsafe {
+            libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+        };
+        if raw_fd < 0 {
+            return Err(Failure::AuthorityRejected);
+        }
+        let mut writable = unsafe { File::from_raw_fd(raw_fd) };
+        writable
+            .write_all(&bytes)
+            .map_err(|_| Failure::AuthorityRejected)?;
+        writable.flush().map_err(|_| Failure::AuthorityRejected)?;
+        if unsafe { libc::fchmod(raw_fd, profile.mode()) } != 0 {
+            return Err(Failure::AuthorityRejected);
+        }
+        let required_seals =
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        if unsafe { libc::fcntl(raw_fd, libc::F_ADD_SEALS, required_seals) } != 0 {
+            return Err(Failure::AuthorityRejected);
+        }
+        let writable_metadata = writable
+            .metadata()
+            .map_err(|_| Failure::AuthorityRejected)?;
+        let descriptor = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open(format!("/proc/self/fd/{raw_fd}"))
+            .map_err(|_| Failure::AuthorityRejected)?;
+        let descriptor_metadata = descriptor
+            .metadata()
+            .map_err(|_| Failure::AuthorityRejected)?;
+        if descriptor_metadata.dev() != writable_metadata.dev()
+            || descriptor_metadata.ino() != writable_metadata.ino()
+            || descriptor_metadata.len() != identity.size
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        verify_linux_descriptor(&descriptor, required_seals)?;
+        drop(writable);
+        let artifact = Self {
+            profile,
+            identity,
+            descriptor,
+            sha256: Sha256::digest(bytes.as_ref()).into(),
+            bytes,
+            device: descriptor_metadata.dev(),
+            inode: descriptor_metadata.ino(),
+            required_seals,
+        };
+        artifact.revalidate()?;
+        Ok(artifact)
+    }
+
+    pub(super) fn revalidate(&self) -> Result<(), Failure> {
+        if self.identity.release_id == 0
+            || self.identity.asset_id == 0
+            || self.identity.asset_name != self.profile.expected_name(&self.identity.version)
+            || self.identity.tag != format!("v{}", self.identity.version)
+            || !is_sha(&self.identity.source_sha)
+            || self.identity.size != self.bytes.len() as u64
+            || self.identity.digest != format!("sha256:{}", digest_hex(self.bytes.as_ref()))
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        let metadata = self
+            .descriptor
+            .metadata()
+            .map_err(|_| Failure::AuthorityRejected)?;
+        if metadata.dev() != self.device
+            || metadata.ino() != self.inode
+            || metadata.len() != self.identity.size
+            || !metadata.is_file()
+            || metadata.mode() & 0o777 != self.profile.mode()
+        {
+            return Err(Failure::AuthorityRejected);
+        }
+        verify_linux_descriptor(&self.descriptor, self.required_seals)?;
+        let before = unsafe { libc::lseek(self.descriptor.as_raw_fd(), 0, libc::SEEK_CUR) };
+        if before < 0 {
+            return Err(Failure::AuthorityRejected);
+        }
+        let mut hash = Sha256::new();
+        let mut offset = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        while offset < self.identity.size {
+            let read = self
+                .descriptor
+                .read_at(&mut buffer, offset)
+                .map_err(|_| Failure::AuthorityRejected)?;
+            if read == 0 {
+                return Err(Failure::AuthorityRejected);
+            }
+            offset = offset
+                .checked_add(read as u64)
+                .ok_or(Failure::AuthorityRejected)?;
+            hash.update(&buffer[..read]);
+        }
+        let after = unsafe { libc::lseek(self.descriptor.as_raw_fd(), 0, libc::SEEK_CUR) };
+        let observed: [u8; 32] = hash.finalize().into();
+        if offset != self.identity.size || observed != self.sha256 || before != after {
+            return Err(Failure::AuthorityRejected);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn verify_linux_descriptor(descriptor: &File, required_seals: libc::c_int) -> Result<(), Failure> {
+    let flags = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_GETFL) };
+    let seals = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_GET_SEALS) };
+    if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY || seals != required_seals {
+        return Err(Failure::AuthorityRejected);
+    }
+    Ok(())
+}
+
+fn verify_and_bind(
+    tag: &str,
+    profile: &str,
+    source: &dyn PublicSource,
+    trust: &dyn AttestationTrust,
+    force_cleanup_failure: bool,
+) -> Result<VerifiedArtifact, Failure> {
     let (version, prerelease) = parse_tag(tag)?;
     let profile = Profile::parse(profile).ok_or(Failure::InvalidRequest)?;
     let selected_name = profile.selected_name(&version);
@@ -207,6 +483,7 @@ fn execute(
             .assets
             .iter()
             .find(|asset| asset.name == selected_name)
+            .cloned()
             .ok_or(Failure::InventoryRejected)?;
         let selected_bytes =
             fs::read(root.path().join(&selected.name)).map_err(|_| Failure::AuthorityRejected)?;
@@ -222,7 +499,15 @@ fn execute(
             return Err(Failure::ReadbackDrift);
         }
 
-        Ok(BoundArtifact::new(selected_bytes))
+        Ok(VerifiedArtifact {
+            profile,
+            tag: tag.to_string(),
+            version,
+            source_sha: commit,
+            release: before,
+            selected,
+            artifact: BoundArtifact::new(selected_bytes),
+        })
     })();
 
     let cleanup = if force_cleanup_failure {
@@ -233,7 +518,7 @@ fn execute(
     match (operation, cleanup) {
         (_, Err(failure)) => Err(failure),
         (Err(failure), Ok(())) => Err(failure),
-        (Ok(artifact), Ok(())) => artifact.finish_without_native(),
+        (Ok(verified), Ok(())) => Ok(verified),
     }
 }
 
@@ -1630,6 +1915,81 @@ mod tests {
             execute(TAG, "macos-dmg", &source, &trust, true),
             Err(Failure::CleanupFailed)
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_artifact(selector: &str) -> VerifiedLinuxArtifact {
+        let (source, trust) = fixture();
+        verify_and_bind(TAG, selector, &source, &trust, false)
+            .unwrap()
+            .into_linux()
+            .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_dispatch_is_closed_and_non_linux_profiles_cannot_convert() {
+        for (selector, expected) in [
+            ("linux-deb", LinuxProfile::Deb),
+            ("linux-appimage", LinuxProfile::AppImage),
+        ] {
+            let artifact = linux_artifact(selector);
+            assert_eq!(artifact.profile, expected);
+            assert_eq!(
+                artifact.identity.asset_name,
+                expected.expected_name(&artifact.identity.version)
+            );
+
+            let (source, trust) = fixture();
+            let verified = verify_and_bind(TAG, selector, &source, &trust, false).unwrap();
+            assert_eq!(dispatch_verified(verified), Ok(SanitizedOutcome::skipped()));
+        }
+
+        let (source, trust) = fixture();
+        let macos = verify_and_bind(TAG, "macos-dmg", &source, &trust, false).unwrap();
+        assert!(matches!(
+            macos.into_linux(),
+            Err(Failure::AuthorityRejected)
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_descriptor_is_exactly_sealed_read_only_and_offset_stable() {
+        use std::io::{Seek, SeekFrom};
+
+        let mut artifact = linux_artifact("linux-appimage");
+        let flags = unsafe { libc::fcntl(artifact.descriptor.as_raw_fd(), libc::F_GETFL) };
+        let seals = unsafe { libc::fcntl(artifact.descriptor.as_raw_fd(), libc::F_GET_SEALS) };
+        assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
+        assert_eq!(seals, artifact.required_seals);
+        let metadata = artifact.descriptor.metadata().unwrap();
+        assert!(metadata.is_file());
+        assert_eq!(metadata.mode() & 0o777, LinuxProfile::AppImage.mode());
+
+        artifact.descriptor.seek(SeekFrom::Start(3)).unwrap();
+        let before = artifact.descriptor.stream_position().unwrap();
+        artifact.revalidate().unwrap();
+        assert_eq!(artifact.descriptor.stream_position().unwrap(), before);
+        assert!(artifact.descriptor.write_at(b"x", 0).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_owner_rejects_identity_size_and_digest_drift() {
+        let mut artifact = linux_artifact("linux-deb");
+        assert_eq!(artifact.identity.tag, TAG);
+        assert_eq!(artifact.identity.source_sha, SHA);
+        assert_eq!(
+            artifact.descriptor.metadata().unwrap().mode() & 0o777,
+            LinuxProfile::Deb.mode()
+        );
+
+        artifact.identity.size += 1;
+        assert_eq!(artifact.revalidate(), Err(Failure::AuthorityRejected));
+        artifact.identity.size -= 1;
+        artifact.identity.digest = format!("sha256:{}", "0".repeat(64));
+        assert_eq!(artifact.revalidate(), Err(Failure::AuthorityRejected));
     }
 
     #[test]
