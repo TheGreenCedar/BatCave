@@ -7,9 +7,23 @@ edition = "2021"
 rust-version = "1.88.0"
 default-run = "batcave-monitor"
 
+[features]
+default = []
+private-release-verifier = [
+    "dep:reqwest",
+    "dep:sigstore-verify",
+    "dep:snap",
+    "dep:tempfile",
+]
+
 [lib]
 name = "batcave_monitor_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "batcave-install-smoke"
+path = "src/bin/batcave-install-smoke.rs"
+required-features = ["private-release-verifier"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
@@ -20,10 +34,14 @@ minisign-verify = "0.2.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10.9"
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"], optional = true }
+sigstore-verify = { version = "0.11.0", default-features = false, features = ["rustls"], optional = true }
+snap = { version = "1.1.1", optional = true }
 sysinfo = "0.38.4"
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-single-instance = "2.3.6"
 tauri-plugin-updater = "2.10.1"
+tempfile = { version = "3.23.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60.2", features = [

@@ -151,6 +151,11 @@ jobs:
       - name: Reject Rust warnings on the MSRV
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
 
+      - name: Verify private public-release verifier
+        run: |
+          cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --features private-release-verifier
+          cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --tests --features private-release-verifier -- -D warnings
+
       - name: Probe closed Linux package transports
         run: |
           bash scripts/validate-tauri.sh --bundle-only
