@@ -4,7 +4,8 @@
     "icon": ["icons/icon.ico"],
     "windows": {
       "nsis": {
-        "installMode": "perMachine"
+        "installMode": "perMachine",
+        "installerHooks": "windows/nsis-hooks.nsh"
       },
       "webviewInstallMode": {
         "type": "offlineInstaller"

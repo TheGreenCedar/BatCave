@@ -22,6 +22,7 @@ use crate::{
 use super::{
     host::{new_instance_id, service_identity, CollectorSnapshotSource, SnapshotProvider},
     protocol::COLLECTOR_SERVICE_NAME,
+    windows_provisioner,
     windows_transport::run_pipe_server,
 };
 
@@ -71,6 +72,15 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
         return;
     }
 
+    let _lifecycle_marker = match windows_provisioner::acquire_service_lifecycle_marker() {
+        Ok(marker) => marker,
+        Err(error) => {
+            eprintln!("{error}");
+            let _ = report_stopped(status_handle, ERROR_SERVICE_SPECIFIC_ERROR, 1);
+            return;
+        }
+    };
+
     let result = run_service_body(status_handle, Arc::clone(&stop));
     stop.store(true, Ordering::Release);
     let (exit_code, service_specific) = if result.is_ok() {
@@ -88,6 +98,10 @@ fn run_service_body(
     status_handle: SERVICE_STATUS_HANDLE,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    // Keep the no-delete handles returned by the verifier alive for the full
+    // service body so the protected ETW storage cannot be replaced after the
+    // ACL/reparse checks and before a future ETW host uses it.
+    let _protected_etw_root = windows_provisioner::open_protected_etw_lease_root()?;
     let instance_id = new_instance_id();
     let identity = service_identity(instance_id.clone());
     let engine = CollectorEngine::start(

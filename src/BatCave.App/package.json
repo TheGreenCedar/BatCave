@@ -20,9 +20,10 @@
     "test:runtime-protocol": "node --test scripts/runtime-protocol.test.ts",
     "test:protocol-payload": "node --test scripts/protocol-payload-guardrail.test.ts",
     "test:update-lifecycle": "node --test scripts/update-lifecycle.test.ts",
+    "test:windows-service-installer": "node --test scripts/windows-service-installer-contract.test.mjs",
     "benchmark:protocol-payload": "node scripts/protocol-payload-guardrail.ts",
     "verify": "npm run check && npm run format:check",
-    "check": "npm run test:process-order && npm run test:presentation && npm run test:runtime-contract && npm run test:browser-fixture && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:update-lifecycle && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
+    "check": "npm run test:process-order && npm run test:presentation && npm run test:runtime-contract && npm run test:browser-fixture && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:update-lifecycle && npm run test:windows-service-installer && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
     "tauri": "tauri"
   },
   "dependencies": {
