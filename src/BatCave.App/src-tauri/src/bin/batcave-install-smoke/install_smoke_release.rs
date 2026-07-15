@@ -217,10 +217,9 @@ fn execute(
         let release_bundles = source.release_attestations(&commit)?;
         trust.verify_release(&release_bundles, tag, &commit, &before, &selected.digest)?;
 
-        if let Ok(after) = source.release(tag) {
-            if canonical_release(&before) != canonical_release(&after) {
-                return Err(Failure::ReadbackDrift);
-            }
+        let after = source.release(tag)?;
+        if canonical_release(&before) != canonical_release(&after) {
+            return Err(Failure::ReadbackDrift);
         }
 
         Ok(BoundArtifact::new(selected_bytes))
@@ -1405,12 +1404,16 @@ mod tests {
     }
 
     #[test]
-    fn release_reread_failure_is_nonblocking_defense_in_depth() {
+    fn release_reread_failure_fails_closed() {
         let (mut source, trust) = fixture();
         source.reread_failure = Some(Failure::Timeout);
         assert_eq!(
             execute(TAG, "linux-appimage", &source, &trust, false),
-            Ok(SanitizedOutcome::skipped())
+            Err(Failure::Timeout)
+        );
+        assert_eq!(
+            public_failure(Failure::Timeout).0,
+            SanitizedOutcome::failed("timeout")
         );
     }
 
