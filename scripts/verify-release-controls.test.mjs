@@ -355,7 +355,10 @@ test("runs the AppImage smoke from the same independent public candidate invento
   assert.match(job, /^    if: needs\.prepare\.outputs\.publish == 'true'$/m);
   assert.match(job, /^    runs-on: ubuntu-22\.04$/m);
   assert.match(job, /ref: \$\{\{ needs\.prepare\.outputs\.source_sha \}\}/u);
-  assert.match(job, /cargo build --quiet --locked[\s\S]*--bin batcave-verify-updater-signature/u);
+  assert.match(
+    job,
+    /dtolnay\/rust-toolchain@[0-9a-f]{40}[\s\S]*bash scripts\/install-linux-deps\.sh[\s\S]*cargo build --quiet --locked[\s\S]*--bin batcave-verify-updater-signature/u,
+  );
   assert.match(
     job,
     /node scripts\/linux-appimage-post-public-smoke\.mjs "\$\{RELEASE_TAG\}" "\$\{RELEASE_SOURCE_SHA\}"/u,
