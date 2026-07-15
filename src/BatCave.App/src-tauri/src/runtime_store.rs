@@ -6506,6 +6506,7 @@ mod tests {
         let base_dir = runtime_test_dir("collector-service-not-ready");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.admin_mode = store.provenance.admin_mode_status();
         let identity = crate::collector_service::protocol::ServiceIdentityV1 {
             service_name: crate::collector_service::protocol::COLLECTOR_SERVICE_NAME.to_string(),
             service_version: env!("CARGO_PKG_VERSION").to_string(),
