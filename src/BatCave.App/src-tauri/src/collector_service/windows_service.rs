@@ -1,8 +1,13 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    fs,
+    mem::{size_of, zeroed},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
+use sha2::{Digest, Sha256};
 use windows_sys::Win32::{
     Foundation::{GetLastError, ERROR_CALL_NOT_IMPLEMENTED, ERROR_SERVICE_SPECIFIC_ERROR},
     System::Services::{
@@ -12,7 +17,9 @@ use windows_sys::Win32::{
         SERVICE_STATUS, SERVICE_STATUS_HANDLE, SERVICE_STOPPED, SERVICE_STOP_PENDING,
         SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS,
     },
+    System::Threading::{GetCurrentProcess, GetCurrentProcessId},
 };
+use windows_sys::{core::GUID, Wdk::System::SystemInformation::NtQuerySystemInformation};
 
 use crate::{
     collector_engine::{CollectorEngine, CollectorEngineConfig},
@@ -20,11 +27,18 @@ use crate::{
 };
 
 use super::{
+    etw_lease::{
+        decide_etw_recovery, EtwControllerIdentityV1, EtwControllerObservation, EtwExpectedOwnerV1,
+        EtwLeaseObservation, EtwLeasePhase, EtwLeaseSnapshot, EtwLeaseStore, EtwLeaseV1,
+        EtwReclaimAttempt, EtwRecoveryDecision, EtwSessionObservation, ProtectedEtwLeaseRoot,
+        WindowsEtwOwnerAcquire, WindowsEtwOwnerGuard, ETW_LEASE_SCHEMA_VERSION,
+    },
     host::{new_instance_id, service_identity, CollectorSnapshotSource, SnapshotProvider},
     protocol::COLLECTOR_SERVICE_NAME,
     windows_provisioner,
-    windows_transport::run_pipe_server,
+    windows_transport::{process_started_at, run_pipe_server},
 };
+use crate::windows_network::{NetworkAttributionMonitor, NetworkAttributionSettlement};
 
 const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const METRIC_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
@@ -98,14 +112,15 @@ fn run_service_body(
     status_handle: SERVICE_STATUS_HANDLE,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    // Keep the no-delete handles returned by the verifier alive for the full
-    // service body so the protected ETW storage cannot be replaced after the
-    // ACL/reparse checks and before a future ETW host uses it.
-    let _protected_etw_root = windows_provisioner::open_protected_etw_lease_root()?;
+    // The root capability retains the verifier's no-delete handles for the
+    // complete service/ETW lifetime.
+    let protected_etw_root = windows_provisioner::open_protected_etw_lease_root()?;
     let instance_id = new_instance_id();
     let identity = service_identity(instance_id.clone());
-    let engine = CollectorEngine::start(
-        Box::new(TelemetryCollector::for_collector_service()),
+    let (mut etw_lifecycle, network_monitor) =
+        ServiceEtwLifecycle::start(&protected_etw_root, &instance_id)?;
+    let engine = match CollectorEngine::start(
+        Box::new(TelemetryCollector::for_collector_service(network_monitor)),
         CollectorEngineConfig {
             interval: SAMPLE_INTERVAL,
             metric_window: METRIC_WINDOW,
@@ -113,12 +128,22 @@ fn run_service_body(
             automatic: true,
         },
         Arc::new(|| {}),
-    )?;
+    ) {
+        Ok(engine) => engine,
+        Err(error) => {
+            return Err(combine_results(
+                Err(error),
+                etw_lifecycle.finish_after_monitor_drop(),
+            ))
+        }
+    };
     let collector = engine.handle();
     let initial = collector.refresh_now().map(|_| ());
     if initial.is_err() {
-        let _ = engine.shutdown();
-        return initial;
+        return Err(combine_results(
+            initial,
+            etw_lifecycle.shutdown_engine(&engine),
+        ));
     }
     let snapshots: Arc<dyn SnapshotProvider> =
         Arc::new(CollectorSnapshotSource::new(collector, instance_id));
@@ -127,11 +152,271 @@ fn run_service_body(
     let transport = run_pipe_server(Arc::clone(&stop), identity, snapshots);
     stop.store(true, Ordering::Release);
     let _ = report_status(status_handle, SERVICE_STOP_PENDING, 2, 0);
-    let shutdown = engine.shutdown();
+    let shutdown = etw_lifecycle.shutdown_engine(&engine);
     match (transport, shutdown) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(transport), Err(shutdown)) => Err(format!("{transport};{shutdown}")),
+    }
+}
+
+struct ServiceEtwLifecycle {
+    _owner: WindowsEtwOwnerGuard,
+    store: EtwLeaseStore,
+    snapshot: EtwLeaseSnapshot,
+    lease: EtwLeaseV1,
+    settlement: NetworkAttributionSettlement,
+}
+
+impl ServiceEtwLifecycle {
+    fn start(
+        root: &ProtectedEtwLeaseRoot,
+        service_instance: &str,
+    ) -> Result<(Self, NetworkAttributionMonitor), String> {
+        let owner = match WindowsEtwOwnerGuard::try_acquire(root)? {
+            WindowsEtwOwnerAcquire::Acquired(owner) => owner,
+            WindowsEtwOwnerAcquire::Contended => {
+                return Err("collector_service_etw_owner_contended".to_string())
+            }
+        };
+        let store = EtwLeaseStore::new(root);
+        let expected = expected_etw_owner(root)?;
+        let snapshot = store
+            .observe(owner.authority())
+            .map_err(|error| format!("collector_service_etw_lease_observe_failed:{error:?}"))?;
+        require_fresh_etw_start(
+            &expected,
+            snapshot.observation(),
+            &NetworkAttributionMonitor::observe_session(),
+        )?;
+
+        let mut lease = EtwLeaseV1 {
+            schema_version: ETW_LEASE_SCHEMA_VERSION,
+            phase: EtwLeasePhase::Intent,
+            install_id: expected.install_id,
+            service_generation: expected.service_generation,
+            service_instance_id: digest16(service_instance.as_bytes()),
+            boot_identity: expected.boot_identity,
+            controller: current_controller_identity()?,
+            session: expected.session,
+        };
+        store
+            .replace(owner.authority(), &snapshot, &lease)
+            .map_err(|error| format!("collector_service_etw_intent_write_failed:{error:?}"))?;
+        let intent_snapshot = store
+            .observe(owner.authority())
+            .map_err(|error| format!("collector_service_etw_intent_observe_failed:{error:?}"))?;
+
+        let (mut monitor, settlement) = match NetworkAttributionMonitor::new_for_collector_service()
+        {
+            Ok(started) => started,
+            Err(error) => {
+                let cleanup =
+                    remove_exact_lease_if_session_absent(&store, &owner, &intent_snapshot);
+                return Err(combine_results(Err(error), cleanup));
+            }
+        };
+
+        lease.phase = EtwLeasePhase::Active;
+        if let Err(error) = store.replace(owner.authority(), &intent_snapshot, &lease) {
+            let shutdown = monitor.shutdown();
+            let cleanup = remove_exact_lease_after_clean_settlement(
+                &store,
+                &owner,
+                &intent_snapshot,
+                &settlement,
+            );
+            return Err(combine_results(
+                Err(format!(
+                    "collector_service_etw_active_write_failed:{error:?}"
+                )),
+                combine_unit_results(shutdown, cleanup),
+            ));
+        }
+        let active_snapshot = store
+            .observe(owner.authority())
+            .map_err(|error| format!("collector_service_etw_active_observe_failed:{error:?}"))?;
+
+        Ok((
+            Self {
+                _owner: owner,
+                store,
+                snapshot: active_snapshot,
+                lease,
+                settlement,
+            },
+            monitor,
+        ))
+    }
+
+    fn mark_stopping(&mut self) -> Result<(), String> {
+        self.lease.phase = EtwLeasePhase::Stopping;
+        self.store
+            .replace(self._owner.authority(), &self.snapshot, &self.lease)
+            .map_err(|error| format!("collector_service_etw_stopping_write_failed:{error:?}"))?;
+        self.snapshot = self
+            .store
+            .observe(self._owner.authority())
+            .map_err(|error| format!("collector_service_etw_stopping_observe_failed:{error:?}"))?;
+        Ok(())
+    }
+
+    fn shutdown_engine(&mut self, engine: &CollectorEngine) -> Result<(), String> {
+        let stopping = self.mark_stopping();
+        let shutdown = engine.shutdown();
+        if stopping.is_err() || shutdown.is_err() {
+            return Err(combine_results(stopping, shutdown));
+        }
+        self.remove_after_absence()
+    }
+
+    fn finish_after_monitor_drop(&mut self) -> Result<(), String> {
+        self.mark_stopping()?;
+        self.remove_after_absence()
+    }
+
+    fn remove_after_absence(&self) -> Result<(), String> {
+        self.settlement.require_clean()?;
+        if NetworkAttributionMonitor::observe_session() != EtwSessionObservation::Absent {
+            return Err("collector_service_etw_session_not_absent".to_string());
+        }
+        self.store
+            .remove_after_proven_absence(self._owner.authority(), &self.snapshot)
+            .map(|_| ())
+            .map_err(|error| format!("collector_service_etw_lease_remove_failed:{error:?}"))
+    }
+}
+
+fn remove_exact_lease_after_clean_settlement(
+    store: &EtwLeaseStore,
+    owner: &WindowsEtwOwnerGuard,
+    snapshot: &EtwLeaseSnapshot,
+    settlement: &NetworkAttributionSettlement,
+) -> Result<(), String> {
+    settlement.require_clean()?;
+    remove_exact_lease_if_session_absent(store, owner, snapshot)
+}
+
+fn require_fresh_etw_start(
+    expected: &EtwExpectedOwnerV1,
+    lease: &EtwLeaseObservation,
+    session: &EtwSessionObservation,
+) -> Result<(), String> {
+    let decision = decide_etw_recovery(
+        expected,
+        lease,
+        session,
+        &EtwControllerObservation::QueryUnavailable,
+        EtwReclaimAttempt::NotAttempted,
+    );
+    if decision
+        == (EtwRecoveryDecision::StartFresh {
+            discard_stale_lease: false,
+        })
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "collector_service_etw_recovery_deferred:{decision:?}"
+        ))
+    }
+}
+
+fn remove_exact_lease_if_session_absent(
+    store: &EtwLeaseStore,
+    owner: &WindowsEtwOwnerGuard,
+    snapshot: &EtwLeaseSnapshot,
+) -> Result<(), String> {
+    if NetworkAttributionMonitor::observe_session() != EtwSessionObservation::Absent {
+        return Err("collector_service_etw_failed_start_retained".to_string());
+    }
+    store
+        .remove_after_proven_absence(owner.authority(), snapshot)
+        .map(|_| ())
+        .map_err(|error| format!("collector_service_etw_failed_start_cleanup_failed:{error:?}"))
+}
+
+fn expected_etw_owner(root: &ProtectedEtwLeaseRoot) -> Result<EtwExpectedOwnerV1, String> {
+    Ok(EtwExpectedOwnerV1 {
+        install_id: root.install_id(),
+        service_generation: service_generation()?,
+        boot_identity: boot_identity()?,
+        session: NetworkAttributionMonitor::session_identity(),
+    })
+}
+
+fn service_generation() -> Result<[u8; 16], String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("collector_service_executable_path_failed:{error}"))?;
+    let bytes = fs::read(executable)
+        .map_err(|error| format!("collector_service_executable_read_failed:{error}"))?;
+    Ok(digest16(&bytes))
+}
+
+fn current_controller_identity() -> Result<EtwControllerIdentityV1, String> {
+    let process_started_at = process_started_at(unsafe { GetCurrentProcess() })?;
+    Ok(EtwControllerIdentityV1 {
+        process_id: unsafe { GetCurrentProcessId() },
+        process_started_at,
+    })
+}
+
+#[repr(C)]
+struct SystemBootEnvironmentInformation {
+    boot_identifier: GUID,
+    firmware_type: u32,
+    boot_flags: u64,
+}
+
+fn boot_identity() -> Result<[u8; 16], String> {
+    let mut information: SystemBootEnvironmentInformation = unsafe { zeroed() };
+    let status = unsafe {
+        NtQuerySystemInformation(
+            90,
+            (&mut information as *mut SystemBootEnvironmentInformation).cast(),
+            size_of::<SystemBootEnvironmentInformation>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    if status < 0 {
+        return Err(format!("collector_service_boot_identity_failed:{status}"));
+    }
+    let guid = information.boot_identifier;
+    let mut identity = [0_u8; 16];
+    identity[..4].copy_from_slice(&guid.data1.to_le_bytes());
+    identity[4..6].copy_from_slice(&guid.data2.to_le_bytes());
+    identity[6..8].copy_from_slice(&guid.data3.to_le_bytes());
+    identity[8..].copy_from_slice(&guid.data4);
+    if identity == [0; 16] {
+        Err("collector_service_boot_identity_zero".to_string())
+    } else {
+        Ok(identity)
+    }
+}
+
+fn digest16(bytes: &[u8]) -> [u8; 16] {
+    let digest = Sha256::digest(bytes);
+    let mut value = [0_u8; 16];
+    value.copy_from_slice(&digest[..16]);
+    value
+}
+
+fn combine_results(first: Result<(), String>, second: Result<(), String>) -> String {
+    match (first, second) {
+        (Err(first), Err(second)) => format!("{first};{second}"),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => error,
+        (Ok(()), Ok(())) => String::new(),
+    }
+}
+
+fn combine_unit_results(
+    first: Result<(), String>,
+    second: Result<(), String>,
+) -> Result<(), String> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(first), Err(second)) => Err(format!("{first};{second}")),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
     }
 }
 
@@ -236,6 +521,48 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collector_service::etw_lease::EtwSessionIdentityV1;
+
+    fn expected_owner() -> EtwExpectedOwnerV1 {
+        EtwExpectedOwnerV1 {
+            install_id: [1; 16],
+            service_generation: [2; 16],
+            boot_identity: [3; 16],
+            session: EtwSessionIdentityV1 {
+                name: "BatCave Collector Process Network v1".to_string(),
+                provider_id: [4; 16],
+                session_flags: 1,
+                configuration_digest: [5; 32],
+            },
+        }
+    }
+
+    #[test]
+    fn service_etw_start_is_fresh_only_and_never_reclaims() {
+        let expected = expected_owner();
+        assert_eq!(
+            require_fresh_etw_start(
+                &expected,
+                &EtwLeaseObservation::Absent,
+                &EtwSessionObservation::Absent,
+            ),
+            Ok(())
+        );
+        assert!(require_fresh_etw_start(
+            &expected,
+            &EtwLeaseObservation::Absent,
+            &EtwSessionObservation::Present(expected.session.clone()),
+        )
+        .unwrap_err()
+        .contains("SessionWithoutTrustedLease"));
+        assert!(require_fresh_etw_start(
+            &expected,
+            &EtwLeaseObservation::Corrupt,
+            &EtwSessionObservation::Absent,
+        )
+        .unwrap_err()
+        .contains("CorruptLease"));
+    }
 
     #[test]
     fn scm_status_accepts_controls_only_while_running() {

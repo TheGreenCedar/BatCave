@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+#[cfg(windows)]
+use crate::collector_service::etw_lease::{EtwSessionIdentityV1, EtwSessionObservation};
 use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
 
 #[cfg(any(windows, test))]
@@ -132,6 +134,40 @@ impl EtwQualityTracker {
 #[cfg(windows)]
 pub struct NetworkAttributionMonitor {
     inner: WindowsNetworkAttributionMonitor,
+    settlement: Option<NetworkAttributionSettlement>,
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+pub(crate) struct NetworkAttributionSettlement {
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+#[cfg(windows)]
+impl NetworkAttributionSettlement {
+    fn new() -> Self {
+        Self {
+            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    fn record(&self, result: Result<(), String>) {
+        let mut recorded = self
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if recorded.is_none() {
+            *recorded = Some(result);
+        }
+    }
+
+    pub(crate) fn require_clean(&self) -> Result<(), String> {
+        self.result
+            .lock()
+            .map_err(|_| "network_attribution_settlement_lock_poisoned".to_string())?
+            .clone()
+            .unwrap_or_else(|| Err("network_attribution_settlement_unproven".to_string()))
+    }
 }
 
 #[cfg(not(windows))]
@@ -140,7 +176,35 @@ pub struct NetworkAttributionMonitor;
 impl NetworkAttributionMonitor {
     #[cfg(windows)]
     pub fn new() -> Result<Self, String> {
-        WindowsNetworkAttributionMonitor::start().map(|inner| Self { inner })
+        WindowsNetworkAttributionMonitor::start_legacy().map(|inner| Self {
+            inner,
+            settlement: None,
+        })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn new_for_collector_service() -> Result<(Self, NetworkAttributionSettlement), String>
+    {
+        let settlement = NetworkAttributionSettlement::new();
+        WindowsNetworkAttributionMonitor::start_for_collector_service().map(|inner| {
+            (
+                Self {
+                    inner,
+                    settlement: Some(settlement.clone()),
+                },
+                settlement,
+            )
+        })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn session_identity() -> EtwSessionIdentityV1 {
+        WindowsNetworkAttributionMonitor::session_identity()
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn observe_session() -> EtwSessionObservation {
+        WindowsNetworkAttributionMonitor::observe_session()
     }
 
     #[cfg(not(windows))]
@@ -153,9 +217,25 @@ impl NetworkAttributionMonitor {
         self.inner.sample()
     }
 
+    #[cfg(windows)]
+    pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        let result = self.inner.shutdown();
+        if let Some(settlement) = &self.settlement {
+            settlement.record(result.clone());
+        }
+        result
+    }
+
     #[cfg(not(windows))]
     pub fn sample(&self) -> NetworkAttributionSample {
         NetworkAttributionSample::Failed("network_attribution_requires_windows".to_string())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NetworkAttributionMonitor {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
@@ -270,13 +350,17 @@ mod windows_impl {
             Arc, Mutex,
         },
         thread::{self, JoinHandle},
-        time::Instant,
+        time::{Duration, Instant},
     };
 
+    use sha2::{Digest, Sha256};
     use windows_sys::{
         core::GUID,
         Win32::{
-            Foundation::{ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS},
+            Foundation::{
+                ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
+                ERROR_WMI_INSTANCE_NOT_FOUND,
+            },
             System::Diagnostics::Etw::{
                 CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW, TcpIpGuid,
                 TdhGetEventInformation, TdhGetProperty, TdhGetPropertySize, EVENT_RECORD,
@@ -294,14 +378,33 @@ mod windows_impl {
         EtwHealthSnapshot, EtwQualityDecision, EtwQualityTracker, EtwSessionStatistics,
         NetworkAttributionSample, NetworkByteCounters, NetworkDirection,
     };
+    use crate::collector_service::etw_lease::{EtwSessionIdentityV1, EtwSessionObservation};
 
     const INVALID_PROCESSTRACE_HANDLE: u64 = u64::MAX;
-    const LOGGER_NAME: &str = "BatCave Process Network";
-    const LOGGER_GUID: GUID = GUID {
-        data1: 0x4cbda9c4,
-        data2: 0x64aa,
-        data3: 0x4c39,
-        data4: [0x91, 0xd3, 0x45, 0x1d, 0xb1, 0x87, 0x54, 0xe7],
+    const ETW_CONSUMER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+    #[derive(Clone, Copy)]
+    struct EtwSessionConfig {
+        name: &'static str,
+        logger_guid: GUID,
+    }
+
+    const LEGACY_SESSION: EtwSessionConfig = EtwSessionConfig {
+        name: "BatCave Process Network",
+        logger_guid: GUID {
+            data1: 0x4cbda9c4,
+            data2: 0x64aa,
+            data3: 0x4c39,
+            data4: [0x91, 0xd3, 0x45, 0x1d, 0xb1, 0x87, 0x54, 0xe7],
+        },
+    };
+    const COLLECTOR_SERVICE_SESSION: EtwSessionConfig = EtwSessionConfig {
+        name: "BatCave Collector Process Network v1",
+        logger_guid: GUID {
+            data1: 0xc4a1c15d,
+            data2: 0x0fa8,
+            data3: 0x4ad9,
+            data4: [0xa1, 0xdd, 0x6b, 0x31, 0x8f, 0x71, 0x2f, 0x58],
+        },
     };
     const PROPERTY_SIZE_NAMES: [&str; 6] = [
         "size",
@@ -316,16 +419,28 @@ mod windows_impl {
     pub struct WindowsNetworkAttributionMonitor {
         shared: Arc<NetworkEtwShared>,
         trace_handle: u64,
+        process_handle: Option<PROCESSTRACE_HANDLE>,
         process_thread: Option<JoinHandle<()>>,
         session_name: Vec<u16>,
+        logger_guid: GUID,
+        session_identity: EtwSessionIdentityV1,
         previous_sample_at: Mutex<Instant>,
         quality: Mutex<EtwQualityTracker>,
     }
 
     impl WindowsNetworkAttributionMonitor {
-        pub fn start() -> Result<Self, String> {
-            let session_name = wide(LOGGER_NAME);
-            let mut properties = trace_properties(&session_name);
+        pub fn start_legacy() -> Result<Self, String> {
+            Self::start(LEGACY_SESSION)
+        }
+
+        pub fn start_for_collector_service() -> Result<Self, String> {
+            Self::start(COLLECTOR_SERVICE_SESSION)
+        }
+
+        fn start(config: EtwSessionConfig) -> Result<Self, String> {
+            let session_name = wide(config.name);
+            let mut properties = trace_properties(&session_name, config.logger_guid);
+            let session_identity = session_identity_from_properties(config.name, &properties);
             let mut trace_handle = Default::default();
             let start_result = unsafe {
                 StartTraceW(
@@ -341,7 +456,7 @@ mod windows_impl {
             let process_handle = match open_trace(&session_name, &shared) {
                 Ok(handle) => handle,
                 Err(error) => {
-                    stop_trace(trace_handle, &session_name);
+                    let _ = stop_trace(trace_handle, &session_name, config.logger_guid);
                     return Err(error);
                 }
             };
@@ -350,18 +465,52 @@ mod windows_impl {
                 .name("batcave-network-etw".to_string())
                 .spawn(move || process_trace_loop(process_handle, thread_shared))
                 .map_err(|error| {
-                    stop_trace(trace_handle, &session_name);
+                    let _ = stop_trace(trace_handle, &session_name, config.logger_guid);
+                    unsafe {
+                        CloseTrace(process_handle);
+                    }
                     format!("network_attribution_thread_start_failed:{error}")
                 })?;
 
             Ok(Self {
                 shared,
                 trace_handle,
+                process_handle: Some(process_handle),
                 process_thread: Some(process_thread),
                 session_name,
+                logger_guid: config.logger_guid,
+                session_identity,
                 previous_sample_at: Mutex::new(Instant::now()),
                 quality: Mutex::new(EtwQualityTracker::default()),
             })
+        }
+
+        pub fn session_identity() -> EtwSessionIdentityV1 {
+            let session_name = wide(COLLECTOR_SERVICE_SESSION.name);
+            let properties = trace_properties(&session_name, COLLECTOR_SERVICE_SESSION.logger_guid);
+            session_identity_from_properties(COLLECTOR_SERVICE_SESSION.name, &properties)
+        }
+
+        pub fn observe_session() -> EtwSessionObservation {
+            let session_name = wide(COLLECTOR_SERVICE_SESSION.name);
+            let mut properties =
+                trace_properties(&session_name, COLLECTOR_SERVICE_SESSION.logger_guid);
+            let result = unsafe {
+                ControlTraceW(
+                    windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE { Value: 0 },
+                    session_name.as_ptr(),
+                    properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+                    EVENT_TRACE_CONTROL_QUERY,
+                )
+            };
+            match result {
+                ERROR_SUCCESS => EtwSessionObservation::Present(session_identity_from_properties(
+                    COLLECTOR_SERVICE_SESSION.name,
+                    &properties,
+                )),
+                ERROR_WMI_INSTANCE_NOT_FOUND => EtwSessionObservation::Absent,
+                _ => EtwSessionObservation::QueryUnavailable,
+            }
         }
 
         pub fn sample(&self) -> NetworkAttributionSample {
@@ -379,7 +528,12 @@ mod windows_impl {
             *previous_sample_at = now;
 
             let rates_by_pid = rate_map_from_deltas(&current, &HashMap::new(), elapsed_seconds);
-            let session_statistics = query_trace_statistics(self.trace_handle, &self.session_name);
+            let session_statistics = query_trace_statistics(
+                self.trace_handle,
+                &self.session_name,
+                self.logger_guid,
+                &self.session_identity,
+            );
             let snapshot = EtwHealthSnapshot {
                 consumer_started: self.shared.consumer_started(),
                 consumer_heartbeat_age_ms: match self.shared.consumer_heartbeat_age_ms() {
@@ -414,6 +568,55 @@ mod windows_impl {
                 }
             }
         }
+
+        pub fn shutdown(&mut self) -> Result<(), String> {
+            let mut errors = Vec::new();
+            if self.trace_handle != 0 {
+                if let Err(error) =
+                    stop_trace(self.trace_handle, &self.session_name, self.logger_guid)
+                {
+                    errors.push(error);
+                }
+                self.trace_handle = 0;
+            }
+            if let Some(process_handle) = self.process_handle.take() {
+                let close_result = unsafe { CloseTrace(process_handle) };
+                if close_result != ERROR_SUCCESS {
+                    errors.push(format!(
+                        "network_attribution_close_trace_failed:{close_result}"
+                    ));
+                }
+            }
+            if let Some(thread) = self.process_thread.as_ref() {
+                let deadline = Instant::now() + ETW_CONSUMER_JOIN_TIMEOUT;
+                while !thread.is_finished() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            if self
+                .process_thread
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+            {
+                if self
+                    .process_thread
+                    .take()
+                    .expect("finished ETW consumer handle exists")
+                    .join()
+                    .is_err()
+                {
+                    errors.push("network_attribution_consumer_join_failed".to_string());
+                }
+            } else if self.process_thread.is_some() {
+                errors.push("network_attribution_consumer_join_timeout".to_string());
+            }
+
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join(";"))
+            }
+        }
     }
 
     fn trace_handle_from_start_result(start_result: u32, trace_handle: u64) -> Result<u64, String> {
@@ -428,10 +631,7 @@ mod windows_impl {
 
     impl Drop for WindowsNetworkAttributionMonitor {
         fn drop(&mut self) {
-            stop_trace(self.trace_handle, &self.session_name);
-            if let Some(thread) = self.process_thread.take() {
-                let _ = thread.join();
-            }
+            let _ = self.shutdown();
         }
     }
 
@@ -557,9 +757,6 @@ mod windows_impl {
         let handles = [process_handle];
         let result = unsafe { ProcessTrace(handles.as_ptr(), 1, null(), null()) };
         shared.set_error(format!("network_attribution_process_trace_ended:{result}"));
-        unsafe {
-            CloseTrace(process_handle);
-        }
     }
 
     fn open_trace(
@@ -598,12 +795,16 @@ mod windows_impl {
         1
     }
 
-    fn stop_trace(trace_handle: u64, session_name: &[u16]) {
+    fn stop_trace(
+        trace_handle: u64,
+        session_name: &[u16],
+        logger_guid: GUID,
+    ) -> Result<(), String> {
         if trace_handle == 0 {
-            return;
+            return Ok(());
         }
-        let mut properties = trace_properties(session_name);
-        unsafe {
+        let mut properties = trace_properties(session_name, logger_guid);
+        let result = unsafe {
             ControlTraceW(
                 windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE {
                     Value: trace_handle,
@@ -611,15 +812,22 @@ mod windows_impl {
                 session_name.as_ptr(),
                 properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
                 EVENT_TRACE_CONTROL_STOP,
-            );
+            )
+        };
+        if result == ERROR_SUCCESS || result == ERROR_WMI_INSTANCE_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(format!("network_attribution_stop_trace_failed:{result}"))
         }
     }
 
     fn query_trace_statistics(
         trace_handle: u64,
         session_name: &[u16],
+        logger_guid: GUID,
+        expected_identity: &EtwSessionIdentityV1,
     ) -> Result<EtwSessionStatistics, String> {
-        let mut properties = trace_properties(session_name);
+        let mut properties = trace_properties(session_name, logger_guid);
         let result = unsafe {
             ControlTraceW(
                 windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE {
@@ -634,12 +842,11 @@ mod windows_impl {
             return Err(format!("network_attribution_query_trace_failed:{result}"));
         }
 
+        let observed_identity =
+            session_identity_from_properties(&expected_identity.name, &properties);
         let properties = unsafe { &*(properties.as_ptr() as *const EVENT_TRACE_PROPERTIES) };
-        if !same_guid(&properties.Wnode.Guid, &LOGGER_GUID)
-            || properties.EnableFlags & EVENT_TRACE_FLAG_NETWORK_TCPIP
-                != EVENT_TRACE_FLAG_NETWORK_TCPIP
-            || properties.LogFileMode & EVENT_TRACE_REAL_TIME_MODE == 0
-            || properties.LogFileMode & EVENT_TRACE_SYSTEM_LOGGER_MODE == 0
+        if !same_guid(&properties.Wnode.Guid, &logger_guid)
+            || observed_identity != *expected_identity
         {
             return Err("network_attribution_session_configuration_changed".to_string());
         }
@@ -651,7 +858,7 @@ mod windows_impl {
         })
     }
 
-    fn trace_properties(session_name: &[u16]) -> Vec<u64> {
+    fn trace_properties(session_name: &[u16], logger_guid: GUID) -> Vec<u64> {
         let properties_size = size_of::<EVENT_TRACE_PROPERTIES>();
         let name_bytes = std::mem::size_of_val(session_name);
         let buffer_bytes = properties_size + name_bytes;
@@ -659,7 +866,7 @@ mod windows_impl {
         unsafe {
             let properties = &mut *(buffer.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES);
             properties.Wnode.BufferSize = buffer_bytes as u32;
-            properties.Wnode.Guid = LOGGER_GUID;
+            properties.Wnode.Guid = logger_guid;
             properties.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
             properties.BufferSize = 64;
             properties.MinimumBuffers = 4;
@@ -674,6 +881,41 @@ mod windows_impl {
         }
 
         buffer
+    }
+
+    fn session_identity_from_properties(name: &str, properties: &[u64]) -> EtwSessionIdentityV1 {
+        let properties = unsafe { &*(properties.as_ptr() as *const EVENT_TRACE_PROPERTIES) };
+        let logger_id = guid_bytes(properties.Wnode.Guid);
+        let provider_id = guid_bytes(TcpIpGuid);
+
+        let mut digest = Sha256::new();
+        digest.update(logger_id);
+        digest.update(provider_id);
+        for value in [
+            properties.BufferSize,
+            properties.LogFileMode,
+            properties.FlushTimer,
+            properties.EnableFlags,
+        ] {
+            digest.update(value.to_le_bytes());
+        }
+
+        EtwSessionIdentityV1 {
+            name: name.to_string(),
+            provider_id,
+            session_flags: (u64::from(properties.LogFileMode) << 32)
+                | u64::from(properties.EnableFlags),
+            configuration_digest: digest.finalize().into(),
+        }
+    }
+
+    fn guid_bytes(guid: GUID) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        bytes[..4].copy_from_slice(&guid.data1.to_le_bytes());
+        bytes[4..6].copy_from_slice(&guid.data2.to_le_bytes());
+        bytes[6..8].copy_from_slice(&guid.data3.to_le_bytes());
+        bytes[8..].copy_from_slice(&guid.data4);
+        bytes
     }
 
     enum NetworkEtwDecode {
@@ -886,6 +1128,26 @@ mod windows_impl {
             assert_eq!(numeric_le_bytes_to_u64(&[1, 0, 0, 0, 0, 0, 0, 0]), Some(1));
             assert_eq!(numeric_le_bytes_to_u64(&[1, 2, 3]), None);
         }
+
+        #[test]
+        fn leased_session_identity_covers_exact_native_configuration() {
+            let name = wide(COLLECTOR_SERVICE_SESSION.name);
+            let properties = trace_properties(&name, COLLECTOR_SERVICE_SESSION.logger_guid);
+            let expected =
+                session_identity_from_properties(COLLECTOR_SERVICE_SESSION.name, &properties);
+            assert_ne!(expected.provider_id, [0; 16]);
+            assert_ne!(expected.session_flags, 0);
+            assert_ne!(expected.configuration_digest, [0; 32]);
+
+            let mut changed = properties;
+            unsafe {
+                (*(changed.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES)).FlushTimer += 1;
+            }
+            let changed =
+                session_identity_from_properties(COLLECTOR_SERVICE_SESSION.name, &changed);
+            assert_eq!(changed.provider_id, expected.provider_id);
+            assert_ne!(changed.configuration_digest, expected.configuration_digest);
+        }
     }
 }
 
@@ -1092,5 +1354,25 @@ mod tests {
 
         assert_eq!(first_matching_property(&properties, &["pid"]), Some(42));
         assert_eq!(first_matching_property(&properties, &["Size"]), Some(128));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_settlement_requires_one_clean_result_and_retains_failure() {
+        let failed = NetworkAttributionSettlement::new();
+        assert_eq!(
+            failed.require_clean(),
+            Err("network_attribution_settlement_unproven".to_string())
+        );
+        failed.record(Err("network_attribution_consumer_join_timeout".to_string()));
+        failed.record(Ok(()));
+        assert_eq!(
+            failed.require_clean(),
+            Err("network_attribution_consumer_join_timeout".to_string())
+        );
+
+        let clean = NetworkAttributionSettlement::new();
+        clean.record(Ok(()));
+        assert_eq!(clean.require_clean(), Ok(()));
     }
 }

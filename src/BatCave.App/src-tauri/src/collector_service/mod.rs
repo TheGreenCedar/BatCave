@@ -1,8 +1,7 @@
 pub(crate) mod authorization;
 pub(crate) mod client;
-// The lease policy is intentionally present before native ETW wiring. #70 keeps
-// the collector service ETW-disabled until persistence and session ownership use
-// this decision boundary.
+// The collector service starts ETW only through this fail-closed lease policy;
+// crash reclaim remains deferred until the complete recovery path is proven.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod etw_lease;
 pub(crate) mod framing;

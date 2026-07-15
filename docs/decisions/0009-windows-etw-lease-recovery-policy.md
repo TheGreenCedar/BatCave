@@ -1,6 +1,6 @@
 # Windows ETW lease recovery policy
 
-- Status: accepted as a source contract; durable storage and kernel ownership are dormant
+- Status: accepted; fresh-start service ownership is wired, crash reclaim remains deferred
 - Date: 2026-07-14
 - Issue: [#70](https://github.com/TheGreenCedar/BatCave/issues/70)
 - Service boundary: [#69](https://github.com/TheGreenCedar/BatCave/issues/69)
@@ -9,7 +9,7 @@
 
 Recover a BatCave Event Tracing for Windows (ETW) process-network session only from one protected `EtwLeaseV1` whose complete identity agrees with the installed service and the observed native session. Never reclaim by a BatCave-looking name or provider alone.
 
-The recovery decision is now paired with a dormant durable-store boundary and an exact Windows ownership guard. The collector service still constructs `TelemetryCollector::for_collector_service()` with process-network ETW disabled. No host code constructs the protected-root capability, opens the mutex, writes a lease, starts or stops a session, or changes runtime quality.
+The recovery decision is paired with the durable-store boundary and exact Windows ownership guard. The collector service now accepts only the narrow fresh-start decision: both the protected lease and exact native session must be absent. It writes `intent` before starting ETW, advances to `active` only after the consumer starts, writes `stopping` before collector-engine shutdown, and removes the exact lease only after the consumer joins cleanly and native session absence is observed. Stop, close, join-timeout, or consumer-panic failure propagates through collector-engine shutdown and retains the lease. Every stale, corrupt, conflicting, or unqueryable state remains fail-closed; this slice deliberately does not reclaim a crashed owner.
 
 ## Lease identity
 
@@ -21,13 +21,13 @@ The versioned lease records:
 - controller PID plus process creation time; and
 - exact session name, provider identity, session flags, and configuration digest.
 
-The dormant store uses the fixed `etw-lease.v1.json` leaf below a platform-verified service root. Its protected-root capability can be constructed only through an unsafe boundary whose caller must prove every mutable path component, reject links and reparse points, prove a service-owned directory, and exclude unprivileged writers through inherited access control. Any existing lease or owner-lock leaf must pass the same ownership, type, reparse, and write-access proof. The #69 installer/service-storage lane still owns that native verifier and root provisioning.
+The store uses the fixed `etw-lease.v1.json` leaf below the platform-verified service root. Its protected-root capability can be constructed only through an unsafe boundary whose caller must prove every mutable path component, reject links and reparse points, prove a service-owned directory, and exclude unprivileged writers through inherited access control. Any existing lease or owner-lock leaf must pass the same ownership, type, reparse, and write-access proof. The install ID is derived from the verified root's volume and file identity, so recreating that root changes ownership identity while service restarts retain it.
 
 Reads are bounded to 16 KiB and classify missing, corrupt, and untrusted bytes separately. Unknown JSON fields remain rejected. Each read returns a root-bound snapshot containing the observed classification and the exact trusted bytes. A write or removal must present that snapshot with ownership authority from the same protected-root capability. Authority from root A cannot observe or mutate root B, and a snapshot from root A cannot authorize a mutation under root B.
 
 Mutation is compare-before-write within the protected single-owner boundary. The store re-reads the leaf and rejects the operation if its state or exact trusted bytes changed after observation. Corrupt and untrusted observations never authorize replacement or removal. A trusted replacement must preserve the prior install ID, service generation, boot identity, and complete session identity. Replacements serialize only a well-formed schema-v1 lease, write a unique same-directory temporary file, flush it, and atomically replace the leaf. Windows uses `MoveFileExW` with replace and write-through flags; Unix source tests retain the existing rename plus parent-directory synchronization contract. Exact trusted removal synchronizes the parent on Unix; an exact still-absent snapshot is a no-op.
 
-The dormant Windows guard opens the fixed `etw-owner.v1.lock` leaf in that protected root with file sharing disabled. Windows applies sharing checks machine-wide, across logon sessions. Exactly one service process can retain the handle; a second reports contention, and crash or orderly close releases ownership in the kernel while leaving the harmless protected leaf for reuse. The handle also denies delete sharing, so the lock cannot be replaced while held. This root-bound primitive avoids the first-creator squatting risk of a public fixed-name `Global\` mutex.
+The Windows guard opens the fixed `etw-owner.v1.lock` leaf in that protected root with file sharing disabled. Windows applies sharing checks machine-wide, across logon sessions. Exactly one service process can retain the handle; a second reports contention, and crash or orderly close releases ownership in the kernel while leaving the harmless protected leaf for reuse. The handle also denies delete sharing, so the lock cannot be replaced while held. This root-bound primitive avoids the first-creator squatting risk of a public fixed-name `Global\` mutex.
 
 ## Recovery decisions
 
@@ -59,7 +59,7 @@ ETW sessions and controller processes do not survive a Windows reboot. A trusted
 
 ## Relationship to ETW quality
 
-Lease ownership and sample quality are separate contracts. The parallel #70 quality slice owns supported-event decode proof, loss/error counters, consumer health, and the rule that idle zero is native only while the session and decoder are healthy. Neither slice enables service ETW by itself.
+Lease ownership and sample quality remain separate contracts. Service wiring composes them: lease state controls whether the monitor may exist, while supported-event decode proof, loss/error counters, and consumer health control whether an owned session may publish native quality.
 
 ## Verification
 
@@ -71,15 +71,14 @@ Focused command:
 cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml collector_service::etw_lease::tests
 ```
 
-All-target Clippy and the repository validation workflow must also pass. Repository search must continue to show that `TelemetryCollector::for_collector_service()` disables process-network ETW.
+All-target Clippy and the repository validation workflow must also pass. Repository search must show that only the collector-service lifecycle can construct the service-specific ETW session.
 
 ## Non-claims and follow-up
 
-- No installed service-storage root, native root verifier, or installer ACL is claimed by this slice; the file store cannot be constructed by the service until #69 supplies that proof.
-- The atomic store and Windows ownership guard exist as dormant source boundaries only. The SCM host does not call them.
-- No ETW query, start, stop, or consumer path is connected to lease ownership.
+- This is source and hosted-test proof, not installed/native Windows lifecycle evidence.
+- A pre-existing lease or session is retained and blocks startup. Exact crashed-owner reclaim remains a later bounded slice.
 - No Windows crash, restart, reboot, upgrade, uninstall, second-instance, or multi-user behavior is proven.
-- No helper path is deleted, and #69 desktop cutover and installer provisioning remain open.
-- No runtime snapshot or release evidence may describe process-network attribution as service-native from this decision alone.
+- No helper path is deleted; installed crash/restart/upgrade/uninstall and multi-user proof remain open.
+- No release evidence may describe process-network attribution as installed-service-native from this decision alone.
 
-#70 remains open for native wiring, bounded settlement, lifecycle proof, multi-user behavior, upgrade/uninstall cleanup, and legacy-helper removal.
+#70 remains open for crashed-owner reclaim, installed lifecycle proof, multi-user behavior, upgrade/uninstall cleanup, and legacy-helper removal.
