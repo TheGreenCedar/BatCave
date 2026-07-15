@@ -134,6 +134,40 @@ impl EtwQualityTracker {
 #[cfg(windows)]
 pub struct NetworkAttributionMonitor {
     inner: WindowsNetworkAttributionMonitor,
+    settlement: Option<NetworkAttributionSettlement>,
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+pub(crate) struct NetworkAttributionSettlement {
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+#[cfg(windows)]
+impl NetworkAttributionSettlement {
+    fn new() -> Self {
+        Self {
+            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    fn record(&self, result: Result<(), String>) {
+        let mut recorded = self
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if recorded.is_none() {
+            *recorded = Some(result);
+        }
+    }
+
+    pub(crate) fn require_clean(&self) -> Result<(), String> {
+        self.result
+            .lock()
+            .map_err(|_| "network_attribution_settlement_lock_poisoned".to_string())?
+            .clone()
+            .unwrap_or_else(|| Err("network_attribution_settlement_unproven".to_string()))
+    }
 }
 
 #[cfg(not(windows))]
@@ -142,12 +176,25 @@ pub struct NetworkAttributionMonitor;
 impl NetworkAttributionMonitor {
     #[cfg(windows)]
     pub fn new() -> Result<Self, String> {
-        WindowsNetworkAttributionMonitor::start_legacy().map(|inner| Self { inner })
+        WindowsNetworkAttributionMonitor::start_legacy().map(|inner| Self {
+            inner,
+            settlement: None,
+        })
     }
 
     #[cfg(windows)]
-    pub(crate) fn new_for_collector_service() -> Result<Self, String> {
-        WindowsNetworkAttributionMonitor::start_for_collector_service().map(|inner| Self { inner })
+    pub(crate) fn new_for_collector_service() -> Result<(Self, NetworkAttributionSettlement), String>
+    {
+        let settlement = NetworkAttributionSettlement::new();
+        WindowsNetworkAttributionMonitor::start_for_collector_service().map(|inner| {
+            (
+                Self {
+                    inner,
+                    settlement: Some(settlement.clone()),
+                },
+                settlement,
+            )
+        })
     }
 
     #[cfg(windows)]
@@ -170,9 +217,25 @@ impl NetworkAttributionMonitor {
         self.inner.sample()
     }
 
+    #[cfg(windows)]
+    pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        let result = self.inner.shutdown();
+        if let Some(settlement) = &self.settlement {
+            settlement.record(result.clone());
+        }
+        result
+    }
+
     #[cfg(not(windows))]
     pub fn sample(&self) -> NetworkAttributionSample {
         NetworkAttributionSample::Failed("network_attribution_requires_windows".to_string())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NetworkAttributionMonitor {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
@@ -356,7 +419,7 @@ mod windows_impl {
     pub struct WindowsNetworkAttributionMonitor {
         shared: Arc<NetworkEtwShared>,
         trace_handle: u64,
-        process_handle: PROCESSTRACE_HANDLE,
+        process_handle: Option<PROCESSTRACE_HANDLE>,
         process_thread: Option<JoinHandle<()>>,
         session_name: Vec<u16>,
         logger_guid: GUID,
@@ -412,7 +475,7 @@ mod windows_impl {
             Ok(Self {
                 shared,
                 trace_handle,
-                process_handle,
+                process_handle: Some(process_handle),
                 process_thread: Some(process_thread),
                 session_name,
                 logger_guid: config.logger_guid,
@@ -505,6 +568,55 @@ mod windows_impl {
                 }
             }
         }
+
+        pub fn shutdown(&mut self) -> Result<(), String> {
+            let mut errors = Vec::new();
+            if self.trace_handle != 0 {
+                if let Err(error) =
+                    stop_trace(self.trace_handle, &self.session_name, self.logger_guid)
+                {
+                    errors.push(error);
+                }
+                self.trace_handle = 0;
+            }
+            if let Some(process_handle) = self.process_handle.take() {
+                let close_result = unsafe { CloseTrace(process_handle) };
+                if close_result != ERROR_SUCCESS {
+                    errors.push(format!(
+                        "network_attribution_close_trace_failed:{close_result}"
+                    ));
+                }
+            }
+            if let Some(thread) = self.process_thread.as_ref() {
+                let deadline = Instant::now() + ETW_CONSUMER_JOIN_TIMEOUT;
+                while !thread.is_finished() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            if self
+                .process_thread
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+            {
+                if self
+                    .process_thread
+                    .take()
+                    .expect("finished ETW consumer handle exists")
+                    .join()
+                    .is_err()
+                {
+                    errors.push("network_attribution_consumer_join_failed".to_string());
+                }
+            } else if self.process_thread.is_some() {
+                errors.push("network_attribution_consumer_join_timeout".to_string());
+            }
+
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join(";"))
+            }
+        }
     }
 
     fn trace_handle_from_start_result(start_result: u32, trace_handle: u64) -> Result<u64, String> {
@@ -519,19 +631,7 @@ mod windows_impl {
 
     impl Drop for WindowsNetworkAttributionMonitor {
         fn drop(&mut self) {
-            let _ = stop_trace(self.trace_handle, &self.session_name, self.logger_guid);
-            unsafe {
-                CloseTrace(self.process_handle);
-            }
-            if let Some(thread) = self.process_thread.take() {
-                let deadline = Instant::now() + ETW_CONSUMER_JOIN_TIMEOUT;
-                while !thread.is_finished() && Instant::now() < deadline {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                if thread.is_finished() {
-                    let _ = thread.join();
-                }
-            }
+            let _ = self.shutdown();
         }
     }
 
@@ -1254,5 +1354,25 @@ mod tests {
 
         assert_eq!(first_matching_property(&properties, &["pid"]), Some(42));
         assert_eq!(first_matching_property(&properties, &["Size"]), Some(128));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_settlement_requires_one_clean_result_and_retains_failure() {
+        let failed = NetworkAttributionSettlement::new();
+        assert_eq!(
+            failed.require_clean(),
+            Err("network_attribution_settlement_unproven".to_string())
+        );
+        failed.record(Err("network_attribution_consumer_join_timeout".to_string()));
+        failed.record(Ok(()));
+        assert_eq!(
+            failed.require_clean(),
+            Err("network_attribution_consumer_join_timeout".to_string())
+        );
+
+        let clean = NetworkAttributionSettlement::new();
+        clean.record(Ok(()));
+        assert_eq!(clean.require_clean(), Ok(()));
     }
 }

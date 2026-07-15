@@ -30,6 +30,9 @@ pub(crate) trait RawCollector: Send {
     fn collect(&mut self) -> Result<TelemetrySample, CollectionFailure>;
     fn process_network_ready(&self) -> Result<bool, String>;
     fn retry_process_network(&mut self) -> Result<(), String>;
+    fn shutdown(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl RawCollector for TelemetryCollector {
@@ -49,6 +52,11 @@ impl RawCollector for TelemetryCollector {
 
     fn retry_process_network(&mut self) -> Result<(), String> {
         TelemetryCollector::retry_process_network(self)
+    }
+
+    #[cfg(windows)]
+    fn shutdown(&mut self) -> Result<(), String> {
+        TelemetryCollector::shutdown(self)
     }
 }
 
@@ -501,7 +509,7 @@ fn run_collector_engine(
         fatal_control_loop(&receiver, &shutdown_started);
     }
     let _ = revision;
-    Ok(())
+    collector.shutdown()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -897,6 +905,7 @@ mod tests {
         first_started: Option<mpsc::Sender<()>>,
         first_release: Option<Arc<(Mutex<bool>, Condvar)>>,
         dropped: Option<mpsc::Sender<()>>,
+        shutdown_error: Option<&'static str>,
     }
 
     impl FakeCollector {
@@ -909,6 +918,7 @@ mod tests {
                     first_started: None,
                     first_release: None,
                     dropped: None,
+                    shutdown_error: None,
                 },
                 collect_count,
             )
@@ -961,6 +971,12 @@ mod tests {
 
         fn retry_process_network(&mut self) -> Result<(), String> {
             Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<(), String> {
+            self.shutdown_error
+                .take()
+                .map_or(Ok(()), |error| Err(error.to_string()))
         }
     }
 
@@ -1020,6 +1036,18 @@ mod tests {
             .shutdown()
             .expect("rejected zero interval cannot strand shutdown");
         assert!(shutdown_started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn collector_shutdown_failure_is_propagated_after_the_worker_settles() {
+        let (mut collector, _) = FakeCollector::new([FakeOutcome::Sample]);
+        collector.shutdown_error = Some("scripted_collector_shutdown_failed");
+        let engine = manual_engine(collector);
+
+        assert_eq!(
+            engine.shutdown(),
+            Err("scripted_collector_shutdown_failed".to_string())
+        );
     }
 
     #[test]

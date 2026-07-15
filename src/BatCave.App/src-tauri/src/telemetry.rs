@@ -93,7 +93,7 @@ impl TelemetryCollector {
             .network_attribution
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            NetworkAttributionState::Ready(monitor);
+            NetworkAttributionState::ServiceReady(Box::new(monitor));
         collector
     }
 
@@ -111,7 +111,10 @@ impl TelemetryCollector {
                 .network_attribution
                 .lock()
                 .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
-            Ok(matches!(&*state, NetworkAttributionState::Ready(_)))
+            Ok(matches!(
+                &*state,
+                NetworkAttributionState::Ready(_) | NetworkAttributionState::ServiceReady(_)
+            ))
         }
         #[cfg(not(windows))]
         {
@@ -126,10 +129,29 @@ impl TelemetryCollector {
                 .network_attribution
                 .lock()
                 .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
+            if matches!(&*state, NetworkAttributionState::ServiceReady(_)) {
+                return Err(
+                    "collector_service_network_restart_requires_service_restart".to_string()
+                );
+            }
             *state = NetworkAttributionState::Disabled;
             *state = NetworkAttributionState::new();
         }
         Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        let state = self
+            .network_attribution
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prior = std::mem::replace(state, NetworkAttributionState::Disabled);
+        match prior {
+            NetworkAttributionState::Ready(mut monitor)
+            | NetworkAttributionState::ServiceReady(mut monitor) => monitor.shutdown(),
+            NetworkAttributionState::Disabled | NetworkAttributionState::Failed { .. } => Ok(()),
+        }
     }
 
     fn new_with_process_network(process_network: bool) -> Self {
@@ -613,6 +635,13 @@ impl TelemetryCollector {
                 }
                 Ok(sample)
             }
+            NetworkAttributionState::ServiceReady(monitor) => {
+                let sample = monitor.sample();
+                if let NetworkAttributionSample::Failed(message) = &sample {
+                    warnings.push(format!("network_attribution_failed:{message}"));
+                }
+                Ok(sample)
+            }
             NetworkAttributionState::Failed { message, failed_at } => {
                 if failed_at.elapsed() >= std::time::Duration::from_secs(30) {
                     *state = NetworkAttributionState::new();
@@ -1003,7 +1032,8 @@ enum DiskQualityState {
 #[cfg(windows)]
 enum NetworkAttributionState {
     Disabled,
-    Ready(NetworkAttributionMonitor),
+    Ready(Box<NetworkAttributionMonitor>),
+    ServiceReady(Box<NetworkAttributionMonitor>),
     Failed { message: String, failed_at: Instant },
 }
 
@@ -1011,7 +1041,7 @@ enum NetworkAttributionState {
 impl NetworkAttributionState {
     fn new() -> Self {
         match NetworkAttributionMonitor::new() {
-            Ok(monitor) => Self::Ready(monitor),
+            Ok(monitor) => Self::Ready(Box::new(monitor)),
             Err(message) => Self::Failed {
                 message,
                 failed_at: Instant::now(),

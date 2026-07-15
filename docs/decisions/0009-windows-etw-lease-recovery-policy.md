@@ -9,7 +9,7 @@
 
 Recover a BatCave Event Tracing for Windows (ETW) process-network session only from one protected `EtwLeaseV1` whose complete identity agrees with the installed service and the observed native session. Never reclaim by a BatCave-looking name or provider alone.
 
-The recovery decision is paired with the durable-store boundary and exact Windows ownership guard. The collector service now accepts only the narrow fresh-start decision: both the protected lease and exact native session must be absent. It writes `intent` before starting ETW, advances to `active` only after the consumer starts, writes `stopping` before collector-engine shutdown, and removes the exact lease only after native session absence is observed. Every stale, corrupt, conflicting, or unqueryable state remains fail-closed; this slice deliberately does not reclaim a crashed owner.
+The recovery decision is paired with the durable-store boundary and exact Windows ownership guard. The collector service now accepts only the narrow fresh-start decision: both the protected lease and exact native session must be absent. It writes `intent` before starting ETW, advances to `active` only after the consumer starts, writes `stopping` before collector-engine shutdown, and removes the exact lease only after the consumer joins cleanly and native session absence is observed. Stop, close, join-timeout, or consumer-panic failure propagates through collector-engine shutdown and retains the lease. Every stale, corrupt, conflicting, or unqueryable state remains fail-closed; this slice deliberately does not reclaim a crashed owner.
 
 ## Lease identity
 

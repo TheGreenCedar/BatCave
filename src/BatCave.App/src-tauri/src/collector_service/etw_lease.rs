@@ -80,6 +80,7 @@ impl<T> PlatformLeaseRootGuard for T where T: std::fmt::Debug + Send + Sync {}
 #[derive(Debug, Clone)]
 pub(crate) struct ProtectedEtwLeaseRoot {
     path: PathBuf,
+    #[cfg(windows)]
     install_id: [u8; 16],
     brand: Arc<()>,
     _platform_guard: Arc<dyn PlatformLeaseRootGuard>,
@@ -113,6 +114,7 @@ impl ProtectedEtwLeaseRoot {
         }
         Ok(Self {
             path,
+            #[cfg(windows)]
             install_id,
             brand: Arc::new(()),
             _platform_guard: Arc::new(platform_guard),
@@ -123,6 +125,7 @@ impl ProtectedEtwLeaseRoot {
         self.path.join(ETW_LEASE_FILE_NAME)
     }
 
+    #[cfg(windows)]
     pub(crate) fn install_id(&self) -> [u8; 16] {
         self.install_id
     }

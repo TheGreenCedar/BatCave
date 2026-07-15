@@ -38,7 +38,7 @@ use super::{
     windows_provisioner,
     windows_transport::{process_started_at, run_pipe_server},
 };
-use crate::windows_network::NetworkAttributionMonitor;
+use crate::windows_network::{NetworkAttributionMonitor, NetworkAttributionSettlement};
 
 const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const METRIC_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
@@ -165,6 +165,7 @@ struct ServiceEtwLifecycle {
     store: EtwLeaseStore,
     snapshot: EtwLeaseSnapshot,
     lease: EtwLeaseV1,
+    settlement: NetworkAttributionSettlement,
 }
 
 impl ServiceEtwLifecycle {
@@ -206,8 +207,9 @@ impl ServiceEtwLifecycle {
             .observe(owner.authority())
             .map_err(|error| format!("collector_service_etw_intent_observe_failed:{error:?}"))?;
 
-        let monitor = match NetworkAttributionMonitor::new_for_collector_service() {
-            Ok(monitor) => monitor,
+        let (mut monitor, settlement) = match NetworkAttributionMonitor::new_for_collector_service()
+        {
+            Ok(started) => started,
             Err(error) => {
                 let cleanup =
                     remove_exact_lease_if_session_absent(&store, &owner, &intent_snapshot);
@@ -217,13 +219,18 @@ impl ServiceEtwLifecycle {
 
         lease.phase = EtwLeasePhase::Active;
         if let Err(error) = store.replace(owner.authority(), &intent_snapshot, &lease) {
-            drop(monitor);
-            let cleanup = remove_exact_lease_if_session_absent(&store, &owner, &intent_snapshot);
+            let shutdown = monitor.shutdown();
+            let cleanup = remove_exact_lease_after_clean_settlement(
+                &store,
+                &owner,
+                &intent_snapshot,
+                &settlement,
+            );
             return Err(combine_results(
                 Err(format!(
                     "collector_service_etw_active_write_failed:{error:?}"
                 )),
-                cleanup,
+                combine_unit_results(shutdown, cleanup),
             ));
         }
         let active_snapshot = store
@@ -236,6 +243,7 @@ impl ServiceEtwLifecycle {
                 store,
                 snapshot: active_snapshot,
                 lease,
+                settlement,
             },
             monitor,
         ))
@@ -268,6 +276,7 @@ impl ServiceEtwLifecycle {
     }
 
     fn remove_after_absence(&self) -> Result<(), String> {
+        self.settlement.require_clean()?;
         if NetworkAttributionMonitor::observe_session() != EtwSessionObservation::Absent {
             return Err("collector_service_etw_session_not_absent".to_string());
         }
@@ -276,6 +285,16 @@ impl ServiceEtwLifecycle {
             .map(|_| ())
             .map_err(|error| format!("collector_service_etw_lease_remove_failed:{error:?}"))
     }
+}
+
+fn remove_exact_lease_after_clean_settlement(
+    store: &EtwLeaseStore,
+    owner: &WindowsEtwOwnerGuard,
+    snapshot: &EtwLeaseSnapshot,
+    settlement: &NetworkAttributionSettlement,
+) -> Result<(), String> {
+    settlement.require_clean()?;
+    remove_exact_lease_if_session_absent(store, owner, snapshot)
 }
 
 fn require_fresh_etw_start(
@@ -387,6 +406,17 @@ fn combine_results(first: Result<(), String>, second: Result<(), String>) -> Str
         (Err(first), Err(second)) => format!("{first};{second}"),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => error,
         (Ok(()), Ok(())) => String::new(),
+    }
+}
+
+fn combine_unit_results(
+    first: Result<(), String>,
+    second: Result<(), String>,
+) -> Result<(), String> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(first), Err(second)) => Err(format!("{first};{second}")),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
     }
 }
 
