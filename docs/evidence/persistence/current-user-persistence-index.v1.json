@@ -6,17 +6,17 @@
       "id": "linux-appimage",
       "platform": "linux",
       "package_kind": "appimage",
-      "status": "pending",
-      "packet_path": null,
-      "packet_sha256": null
+      "status": "native_candidate",
+      "packet_path": "docs/evidence/persistence/package-candidates/linux-appimage-270e50ebaa3a.json",
+      "packet_sha256": "sha256:bb17f55542849764933b24e1760fd5eea7322fbfc3addd6e9e52f38f8be90548"
     },
     {
       "id": "linux-deb",
       "platform": "linux",
       "package_kind": "deb",
-      "status": "pending",
-      "packet_path": null,
-      "packet_sha256": null
+      "status": "native_candidate",
+      "packet_path": "docs/evidence/persistence/package-candidates/linux-deb-270e50ebaa3a.json",
+      "packet_sha256": "sha256:05c0612bd7aa0b684907bbbe4a67665102066367927b2fd5e1835525d8661de5"
     },
     {
       "id": "macos-dmg",

@@ -74,6 +74,14 @@ Native package execution is restricted to the repository owner's manual `Platfor
 
 A locally built package packet is still candidate evidence. It must retain `candidate_not_release_evidence` and `local_bundle_without_public_provenance`; the AppImage packet also retains `appimage_extract_and_run`. These packets can populate the matching `linux-deb` and `linux-appimage` index profiles because the observed artifact kinds are the actual packages, but they do not prove a public checksum, source attestation, package-repository signature, Tauri updater signature, public download, update flow, or release readiness. Those claims remain with #76 and #115.
 
+### Retained Linux package candidates
+
+The indexed [`deb`](evidence/persistence/package-candidates/linux-deb-270e50ebaa3a.json) and [`AppImage`](evidence/persistence/package-candidates/linux-appimage-270e50ebaa3a.json) packets retain the exact sanitized bytes uploaded by trusted owner dispatch [29365844562](https://github.com/TheGreenCedar/BatCave/actions/runs/29365844562). The Ubuntu 22.04 x86_64 job built and exercised both packages from exact source `270e50ebaa3a5716224a84f04c0b8ef730e55ab1`. Every lifecycle receipt reports that same source identity.
+
+The separately uploaded package bytes independently match the packet claims: the deb is `sha256:ae82d2a342d9dfca716818ca2028c17e5498e8c9a17f7e61e407a00ff2d3a720`, and the AppImage is `sha256:cbed1bd6b56bb0fc90bdc3ba3cc26f15f5eefc2c0f953318514a911b3a9046aa`. Both candidates record a private `0700` current-user root and `0600` owned files, settings retained across restart, a successful visibly degraded launch with corrupt settings bytes preserved, package removal with state retained, and an untouched outside sentinel. The retained packet-byte digests are `sha256:05c0612bd7aa0b684907bbbe4a67665102066367927b2fd5e1835525d8661de5` for deb and `sha256:bb17f55542849764933b24e1760fd5eea7322fbfc3addd6e9e52f38f8be90548` for AppImage.
+
+These remain local-build native candidates. The AppImage used its extract-and-run runtime on the hosted runner. Neither packet proves public provenance, signing, updater transport, another Linux distribution or architecture, or release readiness.
+
 ## Packet and index rules
 
 [`validate-current-user-persistence-evidence.mjs`](../scripts/validate-current-user-persistence-evidence.mjs) is the executable version-1 packet and index contract. It enforces:
