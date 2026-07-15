@@ -1,0 +1,557 @@
+#![cfg(target_os = "windows")]
+
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::windows::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_CANCELLED, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+use windows_sys::Win32::System::Threading::{
+    CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+};
+
+const OWNED_IMAGE_NAME: &str = "batcave-owned-nsis-probe.exe";
+const CHILD_TIMEOUT: Duration = Duration::from_millis(750);
+const WORKER_SLEEP: Duration = Duration::from_secs(30);
+static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy)]
+enum Scenario {
+    Clean,
+    Denied,
+    Timeout,
+    ChildFailure,
+    Residue,
+    ProcessTreeTimeout,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Disposition {
+    SourceContractComplete,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FailureKind {
+    DeniedBeforeChild,
+    TimedOut,
+    ChildFailed,
+    Residue,
+    OwnershipFailed,
+    CleanupFailed,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct SourceEvidence {
+    proof_scope: &'static str,
+    profile: &'static str,
+    owned_image_consumed: bool,
+    process_tree_settled: bool,
+    windows_service_etw_out_of_scope: bool,
+    public_artifact_verified: bool,
+    native_proven: bool,
+    release_evidence: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct Outcome {
+    disposition: Disposition,
+    failure: Option<FailureKind>,
+    child_started: bool,
+    owned_image_consumed: bool,
+    process_tree_settled: bool,
+    private_root_removed: bool,
+    source_evidence: Option<SourceEvidence>,
+}
+
+struct OwnedImage {
+    root: PathBuf,
+    path: PathBuf,
+    handle: File,
+    size: u64,
+    sha256: [u8; 32],
+}
+
+impl OwnedImage {
+    fn acquire() -> Result<Self, FailureKind> {
+        let source = std::env::current_exe().map_err(|_| FailureKind::OwnershipFailed)?;
+        let bytes = fs::read(source).map_err(|_| FailureKind::OwnershipFailed)?;
+        let root = std::env::temp_dir().join(format!(
+            "batcave-windows-nsis-{}-{}",
+            std::process::id(),
+            ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).map_err(|_| FailureKind::OwnershipFailed)?;
+        let path = root.join(OWNED_IMAGE_NAME);
+        let mut writer = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .map_err(|_| FailureKind::OwnershipFailed)?;
+        writer
+            .write_all(&bytes)
+            .and_then(|_| writer.sync_all())
+            .map_err(|_| FailureKind::OwnershipFailed)?;
+        drop(writer);
+
+        let mut handle = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .map_err(|_| FailureKind::OwnershipFailed)?;
+        let observed = digest_handle(&mut handle).map_err(|_| FailureKind::OwnershipFailed)?;
+        let sha256 = Sha256::digest(&bytes).into();
+        if observed != sha256 {
+            return Err(FailureKind::OwnershipFailed);
+        }
+        Ok(Self {
+            root,
+            path,
+            handle,
+            size: bytes.len() as u64,
+            sha256,
+        })
+    }
+
+    fn revalidate(&mut self) -> Result<(), FailureKind> {
+        let metadata = self
+            .handle
+            .metadata()
+            .map_err(|_| FailureKind::OwnershipFailed)?;
+        if !metadata.is_file()
+            || metadata.len() != self.size
+            || digest_handle(&mut self.handle).map_err(|_| FailureKind::OwnershipFailed)?
+                != self.sha256
+        {
+            return Err(FailureKind::OwnershipFailed);
+        }
+        Ok(())
+    }
+
+    fn cleanup(self) -> Result<(), FailureKind> {
+        drop(self.handle);
+        fs::remove_dir_all(&self.root).map_err(|_| FailureKind::CleanupFailed)
+    }
+}
+
+fn digest_handle(file: &mut File) -> std::io::Result<[u8; 32]> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok(hash.finalize().into())
+}
+
+struct Job(HANDLE);
+
+impl Job {
+    fn new() -> Result<Self, FailureKind> {
+        let handle = unsafe { CreateJobObjectW(null(), null()) };
+        if handle.is_null() {
+            return Err(FailureKind::OwnershipFailed);
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as _,
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        if configured == 0 {
+            unsafe { CloseHandle(handle) };
+            return Err(FailureKind::OwnershipFailed);
+        }
+        Ok(Self(handle))
+    }
+
+    fn active_processes(&self) -> Result<u32, FailureKind> {
+        let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                &mut accounting as *mut _ as _,
+                std::mem::size_of_val(&accounting) as u32,
+                null_mut(),
+            )
+        };
+        (ok != 0)
+            .then_some(accounting.ActiveProcesses)
+            .ok_or(FailureKind::OwnershipFailed)
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+struct Child {
+    process: HANDLE,
+    thread: HANDLE,
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.thread);
+            CloseHandle(self.process);
+        }
+    }
+}
+
+fn fixed_worker(scenario: Scenario) -> &'static str {
+    match scenario {
+        Scenario::Clean | Scenario::Residue => "worker_clean",
+        Scenario::ChildFailure => "worker_failure",
+        Scenario::Timeout => "worker_slow",
+        Scenario::ProcessTreeTimeout => "worker_process_tree",
+        Scenario::Denied => unreachable!("denial occurs before child creation"),
+    }
+}
+
+fn spawn_suspended(path: &Path, worker: &str) -> Result<Child, FailureKind> {
+    let application = wide(path.as_os_str());
+    let mut command = wide(std::ffi::OsStr::new(&format!(
+        "\"{}\" --exact {worker} --nocapture",
+        path.display()
+    )));
+    let environment = [0u16, 0u16];
+    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut information: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let created = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command.as_mut_ptr(),
+            null(),
+            null(),
+            0,
+            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+            environment.as_ptr().cast(),
+            null(),
+            &startup,
+            &mut information,
+        )
+    };
+    if created == 0 {
+        return Err(
+            if std::io::Error::last_os_error().raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                FailureKind::DeniedBeforeChild
+            } else {
+                FailureKind::OwnershipFailed
+            },
+        );
+    }
+    Ok(Child {
+        process: information.hProcess,
+        thread: information.hThread,
+    })
+}
+
+fn wide(value: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    value.encode_wide().chain(Some(0)).collect()
+}
+
+fn execute_fixed_child(
+    image: &mut OwnedImage,
+    scenario: Scenario,
+) -> Result<(bool, bool), FailureKind> {
+    image.revalidate()?;
+    let job = Job::new()?;
+    let child = spawn_suspended(&image.path, fixed_worker(scenario))?;
+    if unsafe { AssignProcessToJobObject(job.0, child.process) } == 0 {
+        settle_after_error(&job, &child);
+        return Err(FailureKind::OwnershipFailed);
+    }
+    if unsafe { ResumeThread(child.thread) } == u32::MAX {
+        settle_after_error(&job, &child);
+        return Err(FailureKind::OwnershipFailed);
+    }
+
+    let wait = unsafe { WaitForSingleObject(child.process, CHILD_TIMEOUT.as_millis() as u32) };
+    if wait == WAIT_TIMEOUT {
+        let expected_processes = if matches!(scenario, Scenario::ProcessTreeTimeout) {
+            2
+        } else {
+            1
+        };
+        let active = match job.active_processes() {
+            Ok(active) => active,
+            Err(_) => {
+                settle_after_error(&job, &child);
+                return Err(FailureKind::OwnershipFailed);
+            }
+        };
+        if active < expected_processes {
+            settle_after_error(&job, &child);
+            return Err(FailureKind::OwnershipFailed);
+        }
+        if unsafe { TerminateJobObject(job.0, 124) } == 0
+            || unsafe { WaitForSingleObject(child.process, 5_000) } != WAIT_OBJECT_0
+        {
+            return Err(FailureKind::OwnershipFailed);
+        }
+        for _ in 0..100 {
+            match job.active_processes() {
+                Ok(0) => {
+                    image.revalidate()?;
+                    return Ok((true, true));
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    settle_after_error(&job, &child);
+                    return Err(FailureKind::OwnershipFailed);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        return Err(FailureKind::OwnershipFailed);
+    }
+    if wait != WAIT_OBJECT_0 {
+        settle_after_error(&job, &child);
+        return Err(FailureKind::OwnershipFailed);
+    }
+    let mut exit_code = 0;
+    if unsafe { GetExitCodeProcess(child.process, &mut exit_code) } == 0 {
+        settle_after_error(&job, &child);
+        return Err(FailureKind::OwnershipFailed);
+    }
+    for _ in 0..100 {
+        match job.active_processes() {
+            Ok(0) => {
+                image.revalidate()?;
+                return Ok((false, exit_code == 0));
+            }
+            Ok(_) => {}
+            Err(_) => {
+                settle_after_error(&job, &child);
+                return Err(FailureKind::OwnershipFailed);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    settle_after_error(&job, &child);
+    Err(FailureKind::OwnershipFailed)
+}
+
+fn settle_after_error(job: &Job, child: &Child) {
+    unsafe {
+        TerminateJobObject(job.0, 1);
+        TerminateProcess(child.process, 1);
+        WaitForSingleObject(child.process, 5_000);
+    }
+    for _ in 0..100 {
+        if matches!(job.active_processes(), Ok(0)) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn run(scenario: Scenario) -> Outcome {
+    let mut image = match OwnedImage::acquire() {
+        Ok(image) => image,
+        Err(failure) => return failed(failure, false, false, false),
+    };
+
+    let (failure, child_started, consumed, settled) = if matches!(scenario, Scenario::Denied) {
+        (Some(FailureKind::DeniedBeforeChild), false, false, true)
+    } else {
+        match execute_fixed_child(&mut image, scenario) {
+            Ok((timed_out, _)) if timed_out => (Some(FailureKind::TimedOut), true, true, true),
+            Ok((_, false)) => (Some(FailureKind::ChildFailed), true, true, true),
+            Ok((_, true)) if matches!(scenario, Scenario::Residue) => {
+                let residue = image.root.join("unexpected.residue");
+                let _ = fs::write(residue, b"owned hostile residue");
+                (Some(FailureKind::Residue), true, true, true)
+            }
+            Ok((_, true)) => (None, true, true, true),
+            Err(failure) => (Some(failure), true, false, false),
+        }
+    };
+
+    let cleanup = image.cleanup();
+    if let Err(failure) = cleanup {
+        return failed(failure, child_started, consumed, settled);
+    }
+    let source_evidence = failure.is_none().then_some(SourceEvidence {
+        proof_scope: "windows_nsis_owned_adapter_source_contract",
+        profile: "windows:nsis",
+        owned_image_consumed: true,
+        process_tree_settled: true,
+        windows_service_etw_out_of_scope: true,
+        public_artifact_verified: false,
+        native_proven: false,
+        release_evidence: None,
+    });
+    Outcome {
+        disposition: if failure.is_none() {
+            Disposition::SourceContractComplete
+        } else {
+            Disposition::Failed
+        },
+        failure,
+        child_started,
+        owned_image_consumed: consumed,
+        process_tree_settled: settled,
+        private_root_removed: true,
+        source_evidence,
+    }
+}
+
+fn failed(failure: FailureKind, child_started: bool, consumed: bool, settled: bool) -> Outcome {
+    Outcome {
+        disposition: Disposition::Failed,
+        failure: Some(failure),
+        child_started,
+        owned_image_consumed: consumed,
+        process_tree_settled: settled,
+        private_root_removed: false,
+        source_evidence: None,
+    }
+}
+
+fn running_from_owned_image() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name == OWNED_IMAGE_NAME))
+        .unwrap_or(false)
+}
+
+#[test]
+fn worker_clean() {
+    if running_from_owned_image() {}
+}
+
+#[test]
+fn worker_failure() {
+    if running_from_owned_image() {
+        panic!("fixed worker failure");
+    }
+}
+
+#[test]
+fn worker_slow() {
+    if running_from_owned_image() {
+        std::thread::sleep(WORKER_SLEEP);
+    }
+}
+
+#[test]
+fn worker_process_tree() {
+    if running_from_owned_image() {
+        let executable = std::env::current_exe().expect("owned worker image");
+        let mut child = Command::new(executable)
+            .env_clear()
+            .args(["--exact", "worker_grandchild", "--nocapture"])
+            .spawn()
+            .expect("fixed grandchild starts");
+        let _ = child.wait();
+    }
+}
+
+#[test]
+fn worker_grandchild() {
+    if running_from_owned_image() {
+        std::thread::sleep(WORKER_SLEEP);
+    }
+}
+
+#[test]
+fn exact_owned_image_runs_and_evidence_is_derived_after_settlement() {
+    let outcome = run(Scenario::Clean);
+    assert_eq!(outcome.disposition, Disposition::SourceContractComplete);
+    assert!(outcome.child_started);
+    assert!(outcome.owned_image_consumed);
+    assert!(outcome.process_tree_settled);
+    assert!(outcome.private_root_removed);
+    let evidence = outcome.source_evidence.expect("settled source evidence");
+    assert!(evidence.windows_service_etw_out_of_scope);
+    assert!(!evidence.public_artifact_verified);
+    assert!(!evidence.native_proven);
+    assert!(evidence.release_evidence.is_none());
+}
+
+#[test]
+fn denial_timeout_failure_and_residue_remain_distinct_and_emit_no_evidence() {
+    for (scenario, expected, started, consumed) in [
+        (
+            Scenario::Denied,
+            FailureKind::DeniedBeforeChild,
+            false,
+            false,
+        ),
+        (Scenario::Timeout, FailureKind::TimedOut, true, true),
+        (Scenario::ChildFailure, FailureKind::ChildFailed, true, true),
+        (Scenario::Residue, FailureKind::Residue, true, true),
+    ] {
+        let outcome = run(scenario);
+        assert_eq!(outcome.disposition, Disposition::Failed);
+        assert_eq!(outcome.failure, Some(expected));
+        assert_eq!(outcome.child_started, started);
+        assert_eq!(outcome.owned_image_consumed, consumed);
+        assert!(outcome.process_tree_settled);
+        assert!(outcome.private_root_removed);
+        assert!(outcome.source_evidence.is_none());
+    }
+}
+
+#[test]
+fn timeout_settles_the_entire_owned_process_tree() {
+    let outcome = run(Scenario::ProcessTreeTimeout);
+    assert_eq!(outcome.failure, Some(FailureKind::TimedOut));
+    assert!(outcome.owned_image_consumed);
+    assert!(outcome.process_tree_settled);
+    assert!(outcome.private_root_removed);
+    assert!(outcome.source_evidence.is_none());
+}
+
+#[test]
+fn owned_handle_blocks_replacement_and_deletion_until_settlement() {
+    let image = OwnedImage::acquire().expect("owned image");
+    assert!(OpenOptions::new().write(true).open(&image.path).is_err());
+    assert!(fs::remove_file(&image.path).is_err());
+    image.cleanup().expect("owned cleanup");
+}
+
+#[test]
+fn entry_has_no_caller_command_path_argument_environment_or_evidence_input() {
+    let entry: fn(Scenario) -> Outcome = run;
+    let rendered = serde_json::to_string(&entry(Scenario::Clean)).expect("serialize outcome");
+    assert!(!rendered.contains("C:\\"));
+    assert!(!rendered.contains("command"));
+    assert!(!rendered.contains("environment"));
+    assert!(!rendered.contains("native_proven\":true"));
+    assert!(!rendered.contains("release_evidence\":{"));
+}
