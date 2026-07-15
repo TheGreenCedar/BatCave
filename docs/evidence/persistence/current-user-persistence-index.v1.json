@@ -22,9 +22,9 @@
       "id": "macos-dmg",
       "platform": "macos",
       "package_kind": "dmg",
-      "status": "pending",
-      "packet_path": null,
-      "packet_sha256": null
+      "status": "native_candidate",
+      "packet_path": "docs/evidence/persistence/package-candidates/macos-dmg-5ced31017975.json",
+      "packet_sha256": "sha256:e44d40b7d8176407ecbb98ff6df4009d282203a8bc155bc647901e4a417de85f"
     },
     {
       "id": "windows-nsis",

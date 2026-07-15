@@ -217,7 +217,7 @@ test("validates checked-in native candidates without treating pending profiles a
   assert.equal(validateCurrentUserPersistenceIndex(index, { repositoryRoot: ROOT }), index);
   assert.deepEqual(
     index.profiles.map(({ status }) => status),
-    ["native_candidate", "native_candidate", "pending", "pending"],
+    ["native_candidate", "native_candidate", "native_candidate", "pending"],
   );
 });
 
@@ -324,6 +324,7 @@ test("rehashes and cross-checks indexed native packets", () => {
 test("validation and release workflows execute this contract", () => {
   for (const workflow of [".github/workflows/validation.yml", ".github/workflows/release.yml"]) {
     const source = fs.readFileSync(path.join(ROOT, workflow), "utf8");
+    assert.match(source, /scripts\/capture-macos-dmg-current-user-persistence\.test\.mjs/u);
     assert.match(source, /scripts\/validate-current-user-persistence-evidence\.test\.mjs/u);
   }
 });
