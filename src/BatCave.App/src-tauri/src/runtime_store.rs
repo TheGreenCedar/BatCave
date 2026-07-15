@@ -1582,13 +1582,20 @@ impl RuntimeStore {
     ) -> Instant {
         let processing_started = Instant::now();
         let source_provenance = sample.source_provenance.clone();
-        let sample_ts_ms = source_provenance
+        // Service and desktop clocks have independent wall-time anchors. Keep the service time for
+        // source deltas, but publish freshness only in the desktop clock domain.
+        let source_sample_ts_ms = source_provenance
             .as_ref()
             .map_or(completed_at_ms, |provenance| provenance.sampled_at_ms);
         let source_unchanged = source_provenance.is_some()
             && source_provenance.as_ref() == self.last_sample_provenance.as_ref();
-        let service_active =
-            self.apply_collector_service_status(sample.collector_service.clone(), sample_ts_ms);
+        let service_status_ts_ms = if source_unchanged {
+            self.sampled_at_ms.unwrap_or(completed_at_ms)
+        } else {
+            completed_at_ms
+        };
+        let service_active = self
+            .apply_collector_service_status(sample.collector_service.clone(), service_status_ts_ms);
         if source_unchanged {
             self.sync_collector_warnings(sample.warnings);
             self.record_collection_latency_ms(
@@ -1609,7 +1616,7 @@ impl RuntimeStore {
             .previous_totals
             .as_ref()
             .and_then(|previous| {
-                let delta_ms = sample_ts_ms.saturating_sub(previous.ts_ms);
+                let delta_ms = source_sample_ts_ms.saturating_sub(previous.ts_ms);
                 (delta_ms > 0).then_some(delta_ms as f64 / 1000.0)
             })
             .unwrap_or(1.0)
@@ -1621,7 +1628,7 @@ impl RuntimeStore {
             self.stop_superseded_elevated_helper(&mut active_collector_warnings);
             self.settings.admin_mode_enabled = true;
         } else {
-            let elevated_transition = self.advance_elevated_helper(sample_ts_ms, collector);
+            let elevated_transition = self.advance_elevated_helper(completed_at_ms, collector);
             self.apply_elevated_process_transition(
                 elevated_transition,
                 &mut sample_processes,
@@ -1634,7 +1641,7 @@ impl RuntimeStore {
             if self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
                 && self.admin_mode.state == RuntimeAdminModeState::Active
             {
-                self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
+                self.admin_mode.last_success_at_ms = Some(completed_at_ms);
             }
         }
         self.sync_collector_warnings(active_collector_warnings);
@@ -1694,10 +1701,10 @@ impl RuntimeStore {
         add_process_memory_accounting(&mut system, &processes);
         self.previous_processes = processes;
         self.live_process_snapshot = process_rows_fresh;
-        self.previous_totals = Some(TelemetryTotals::from_system(&system, sample_ts_ms));
+        self.previous_totals = Some(TelemetryTotals::from_system(&system, source_sample_ts_ms));
         self.publication_seq = self.publication_seq.saturating_add(1);
         self.sample_seq = self.sample_seq.saturating_add(1);
-        self.sampled_at_ms = Some(sample_ts_ms);
+        self.sampled_at_ms = Some(completed_at_ms);
 
         let sort_started = Instant::now();
         let rows = shape_rows(&self.previous_processes, &self.settings.query);
@@ -6399,11 +6406,7 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_service_snapshot_publishes_heartbeat_without_reapplying_counters() {
-        let base_dir = runtime_test_dir("collector-service-unchanged-snapshot");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-
+    fn service_clock_skew_preserves_source_rates_and_desktop_freshness() {
         let service_sample = |source_sample_seq, sampled_at_ms, received_total_bytes| {
             let mut system = empty_system();
             system.network_received_total_bytes = received_total_bytes;
@@ -6436,53 +6439,66 @@ mod tests {
             }
         };
 
-        store.note_heartbeat_at(10_000);
-        store.apply_raw_sample(
-            service_sample(1, 1_000, 10_000),
-            1.0,
-            10_000,
-            &NOOP_PROCESS_NETWORK_CONTROL,
-        );
-        let first_publication_seq = store.publication_seq;
-        let first_sample_seq = store.sample_seq;
+        for (label, first_source_sampled_at_ms) in
+            [("service-behind", 1_000), ("service-ahead", 100_000)]
+        {
+            let base_dir = runtime_test_dir(&format!("collector-service-clock-{label}"));
+            let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+            store.provenance =
+                RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
 
-        store.note_heartbeat_at(10_500);
-        store.apply_raw_sample(
-            service_sample(1, 1_000, 10_000),
-            1.0,
-            10_500,
-            &NOOP_PROCESS_NETWORK_CONTROL,
-        );
+            store.note_heartbeat_at(10_000);
+            store.apply_raw_sample(
+                service_sample(1, first_source_sampled_at_ms, 10_000),
+                1.0,
+                10_000,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
+            let first_publication_seq = store.publication_seq;
+            let first_sample_seq = store.sample_seq;
 
-        assert_eq!(store.publication_seq, first_publication_seq + 1);
-        assert_eq!(store.sample_seq, first_sample_seq);
-        assert_eq!(store.sampled_at_ms, Some(1_000));
-        assert_eq!(store.last_heartbeat_at_ms, Some(10_500));
-        assert_eq!(store.snapshot.system.network_received_total_bytes, 10_000);
-        assert_eq!(store.snapshot.system.network_received_bps, 0);
-        assert_eq!(
-            store.previous_totals.as_ref().map(|totals| totals.ts_ms),
-            Some(1_000)
-        );
+            store.note_heartbeat_at(10_500);
+            store.apply_raw_sample(
+                service_sample(1, first_source_sampled_at_ms, 10_000),
+                1.0,
+                10_500,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
 
-        store.note_heartbeat_at(11_000);
-        store.apply_raw_sample(
-            service_sample(2, 2_000, 11_000),
-            1.0,
-            11_000,
-            &NOOP_PROCESS_NETWORK_CONTROL,
-        );
+            assert_eq!(store.publication_seq, first_publication_seq + 1);
+            assert_eq!(store.sample_seq, first_sample_seq);
+            assert_eq!(store.sampled_at_ms, Some(10_000));
+            assert_eq!(store.last_heartbeat_at_ms, Some(10_500));
+            assert_eq!(store.snapshot.system.network_received_total_bytes, 10_000);
+            assert_eq!(store.snapshot.system.network_received_bps, 0);
+            assert_eq!(
+                store.previous_totals.as_ref().map(|totals| totals.ts_ms),
+                Some(first_source_sampled_at_ms)
+            );
+            crate::protocol::encode_snapshot(store.snapshot.clone())
+                .expect("unchanged service publication remains protocol-valid");
 
-        assert_eq!(store.sample_seq, first_sample_seq + 1);
-        assert_eq!(store.sampled_at_ms, Some(2_000));
-        assert_eq!(store.snapshot.system.network_received_total_bytes, 11_000);
-        assert_eq!(store.snapshot.system.network_received_bps, 1_000);
-        assert_eq!(
-            store.previous_totals.as_ref().map(|totals| totals.ts_ms),
-            Some(2_000)
-        );
+            store.note_heartbeat_at(11_000);
+            store.apply_raw_sample(
+                service_sample(2, first_source_sampled_at_ms + 1_000, 11_000),
+                1.0,
+                11_000,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
 
-        let _ = fs::remove_dir_all(&base_dir);
+            assert_eq!(store.sample_seq, first_sample_seq + 1);
+            assert_eq!(store.sampled_at_ms, Some(11_000));
+            assert_eq!(store.snapshot.system.network_received_total_bytes, 11_000);
+            assert_eq!(store.snapshot.system.network_received_bps, 1_000);
+            assert_eq!(
+                store.previous_totals.as_ref().map(|totals| totals.ts_ms),
+                Some(first_source_sampled_at_ms + 1_000)
+            );
+            crate::protocol::encode_snapshot(store.snapshot.clone())
+                .expect("fresh service publication remains protocol-valid");
+
+            let _ = fs::remove_dir_all(&base_dir);
+        }
     }
 
     #[test]
