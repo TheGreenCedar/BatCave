@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+#[path = "batcave-install-smoke/install_smoke_linux.rs"]
+mod install_smoke_linux;
 #[path = "batcave-install-smoke/install_smoke_release.rs"]
 mod install_smoke_release;
 
