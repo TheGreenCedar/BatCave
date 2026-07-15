@@ -1,6 +1,6 @@
 # Windows ETW lease recovery policy
 
-- Status: accepted as a source contract; native ownership is not wired
+- Status: accepted as a source contract; durable storage and kernel ownership are dormant
 - Date: 2026-07-14
 - Issue: [#70](https://github.com/TheGreenCedar/BatCave/issues/70)
 - Service boundary: [#69](https://github.com/TheGreenCedar/BatCave/issues/69)
@@ -9,7 +9,7 @@
 
 Recover a BatCave Event Tracing for Windows (ETW) process-network session only from one protected `EtwLeaseV1` whose complete identity agrees with the installed service and the observed native session. Never reclaim by a BatCave-looking name or provider alone.
 
-This change adds the pure recovery decision before native storage and session control. The collector service still constructs `TelemetryCollector::for_collector_service()` with process-network ETW disabled. No code in this slice writes a lease, acquires a mutex, starts or stops a session, or changes runtime quality.
+The recovery decision is now paired with a dormant durable-store boundary and an exact Windows ownership guard. The collector service still constructs `TelemetryCollector::for_collector_service()` with process-network ETW disabled. No host code constructs the protected-root capability, opens the mutex, writes a lease, starts or stops a session, or changes runtime quality.
 
 ## Lease identity
 
@@ -21,7 +21,13 @@ The versioned lease records:
 - controller PID plus process creation time; and
 - exact session name, provider identity, session flags, and configuration digest.
 
-The future native owner must store the lease under service-owned protected storage with atomic replace and flush semantics. It must hold a machine-wide mutex restricted to the service SID and administrators before reading the lease or observing ETW state. Storage trust and atomic persistence are inputs to this policy, not claims made by the source-only model.
+The dormant store uses the fixed `etw-lease.v1.json` leaf below a platform-verified service root. Its protected-root capability can be constructed only through an unsafe boundary whose caller must prove every mutable path component, reject links and reparse points, prove a service-owned directory, and exclude unprivileged writers through inherited access control. Any existing lease or owner-lock leaf must pass the same ownership, type, reparse, and write-access proof. The #69 installer/service-storage lane still owns that native verifier and root provisioning.
+
+Reads are bounded to 16 KiB and classify missing, corrupt, and untrusted bytes separately. Unknown JSON fields remain rejected. Each read returns a root-bound snapshot containing the observed classification and the exact trusted bytes. A write or removal must present that snapshot with ownership authority from the same protected-root capability. Authority from root A cannot observe or mutate root B, and a snapshot from root A cannot authorize a mutation under root B.
+
+Mutation is compare-before-write within the protected single-owner boundary. The store re-reads the leaf and rejects the operation if its state or exact trusted bytes changed after observation. Corrupt and untrusted observations never authorize replacement or removal. A trusted replacement must preserve the prior install ID, service generation, boot identity, and complete session identity. Replacements serialize only a well-formed schema-v1 lease, write a unique same-directory temporary file, flush it, and atomically replace the leaf. Windows uses `MoveFileExW` with replace and write-through flags; Unix source tests retain the existing rename plus parent-directory synchronization contract. Exact trusted removal synchronizes the parent on Unix; an exact still-absent snapshot is a no-op.
+
+The dormant Windows guard opens the fixed `etw-owner.v1.lock` leaf in that protected root with file sharing disabled. Windows applies sharing checks machine-wide, across logon sessions. Exactly one service process can retain the handle; a second reports contention, and crash or orderly close releases ownership in the kernel while leaving the harmless protected leaf for reuse. The handle also denies delete sharing, so the lock cannot be replaced while held. This root-bound primitive avoids the first-creator squatting risk of a public fixed-name `Global\` mutex.
 
 ## Recovery decisions
 
@@ -38,7 +44,7 @@ A PID match is insufficient. PID plus a nonzero process creation time identifies
 
 The native implementation must use this order:
 
-1. acquire the protected machine-wide mutex;
+1. acquire the protected machine-wide ownership guard and retain it;
 2. write and flush `intent`;
 3. start the exact configured session;
 4. open the consumer and prove it is running;
@@ -57,7 +63,7 @@ Lease ownership and sample quality are separate contracts. The parallel #70 qual
 
 ## Verification
 
-The cross-platform unit matrix covers fresh start, every crash phase, exact reclaim, live controller, PID reuse, stale lease, corrupt and untrusted storage, schema and identity drift, session-query ambiguity, exact-session mismatch, prefix/provider-only matches, and stop failure retention.
+The cross-platform unit matrix covers fresh start, every crash phase, exact reclaim, live controller, PID reuse, stale lease, corrupt and untrusted storage, schema and identity drift, session-query ambiguity, exact-session mismatch, prefix/provider-only matches, stop failure retention, atomic phase replacement, invalid-write preservation, bounded corrupt input, untrusted leaf refusal, exact removal, cross-root authority and snapshot rejection, corrupt-state mutation refusal, identity-conflicting replacement refusal, and stale-observation refusal. Hosted Windows additionally proves first-owner acquisition, simultaneous second-owner rejection, kernel release, reacquisition, and lease access only through the retained root-bound guard.
 
 Focused command:
 
@@ -69,7 +75,9 @@ All-target Clippy and the repository validation workflow must also pass. Reposit
 
 ## Non-claims and follow-up
 
-- No native lease file, ACL, atomic write, mutex, ETW query, start, stop, or consumer path exists in this slice.
+- No installed service-storage root, native root verifier, or installer ACL is claimed by this slice; the file store cannot be constructed by the service until #69 supplies that proof.
+- The atomic store and Windows ownership guard exist as dormant source boundaries only. The SCM host does not call them.
+- No ETW query, start, stop, or consumer path is connected to lease ownership.
 - No Windows crash, restart, reboot, upgrade, uninstall, second-instance, or multi-user behavior is proven.
 - No helper path is deleted, and #69 desktop cutover and installer provisioning remain open.
 - No runtime snapshot or release evidence may describe process-network attribution as service-native from this decision alone.
