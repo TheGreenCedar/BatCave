@@ -23,11 +23,11 @@ const {
 function copyFixture(label) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `batcave-dmg-${label}-`));
   fs.chmodSync(root, 0o700);
-  const privateDmg = path.join(root, "valid.dmg");
+  const privateDmg = path.join(root, "injected-verifier-input.dmg");
   const mountPoint = path.join(root, "mount");
   const installedApp = path.join(root, "Applications", "BatCave Monitor.app");
   const lockPath = path.join(root, "proof.lock");
-  const bytes = Buffer.from("fixture accepted by the injected fixed verifier", "utf8");
+  const bytes = Buffer.from("opaque test-only verifier input", "utf8");
   fs.mkdirSync(mountPoint, { mode: 0o700 });
   fs.mkdirSync(path.dirname(installedApp), { recursive: true, mode: 0o700 });
   writePrivateArtifact(privateDmg, bytes);
