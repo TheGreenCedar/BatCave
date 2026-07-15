@@ -6525,7 +6525,7 @@ mod tests {
             .with_service_identity(&identity),
             false,
         );
-        let sampled_at_ms = crate::telemetry::now_ms();
+        let sampled_at_ms = store.clock.now_ms();
         store.apply_raw_sample(
             crate::telemetry::TelemetrySample {
                 latency_ms: 1,
@@ -6656,7 +6656,7 @@ mod tests {
             let mut store = RuntimeStore::from_base_dir(base_dir.clone());
             store.provenance =
                 RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-            let sampled_at_ms = crate::telemetry::now_ms();
+            let sampled_at_ms = store.clock.now_ms();
             store.apply_raw_sample(
                 crate::telemetry::TelemetrySample {
                     latency_ms: 1,
