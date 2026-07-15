@@ -1,0 +1,7 @@
+# Windows native install-smoke adapter source boundary
+
+Issue #113 now has a Windows-only owned-image and process-tree settlement source contract. It copies an inert executable image into an internally created root, retains a handle that blocks replacement/deletion, creates the child suspended with a fixed command line and empty environment, assigns it to a kill-on-close job, and revalidates the owned bytes only after the whole job settles. Cleanup compares stable file identity, marks the exact leaf delete-pending, proves the same handle reports zero remaining links, keeps the exact root pinned against rename throughout cleanup, and deletes that root by handle instead of recursively following a released pathname.
+
+The contract distinguishes denial before child creation, timeout, child failure, residue, ownership failure, and cleanup failure. Only the clean settled path derives sanitized source evidence, which always retains `windows_service_etw_out_of_scope`, keeps `public_artifact_verified` and `native_proven` false, and emits no release-evidence packet.
+
+This is not installed-package proof. It launches no NSIS installer, requests no elevation, mutates no install or SCM state, and proves no Authenticode publisher, installed identity, runtime telemetry, uninstall, helper retirement, or final residue state. Final signed public-artifact proof remains blocked by #42; service/ETW parity remains with #70.
