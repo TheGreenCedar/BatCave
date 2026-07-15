@@ -211,6 +211,9 @@ jobs:
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle
 
+      - name: Build Linux release CLI
+        run: bash scripts/build-linux-cli.sh
+
       - name: Bundle signed Linux updater
         working-directory: src/BatCave.App
         env:
