@@ -1,6 +1,6 @@
 # macOS native adapter source boundary
 
-Issue #117 defines the source-only handoff between the #111 artifact capability and the exact native macOS work that remains in #114. It adds no package execution path.
+Issue #117 defines the source-only handoff between the #111 artifact capability and the macOS adapter boundary reviewed under #114. Issue #114 is closed with the DMG exact-byte transport limitation accepted; this document records that boundary and the non-claims still relevant to #76. It adds no package execution path.
 
 `scripts/macos-native-install-smoke-adapter.mjs` accepts only a process-local install-smoke plan and the historical `artifact_owned_bytes_verified` receipt produced by #111. It derives one frozen descriptor for `macos:dmg` or `macos:macos_updater`; callers cannot provide a command, path, status, trust observation, cleanup assertion, or evidence field. A private `WeakMap` binds that descriptor to the exact plan object, its exact identity receipt, and the exact #111 receipt object. An equivalent plan, a second valid receipt for the same asset, or a copied descriptor cannot replay it.
 
@@ -38,9 +38,9 @@ Both profiles carry the same consumed-destination revalidation contract. The fut
 
 The contract maps the final three trust observations to the #98 `contained_app_developer_id`, `contained_app_notarization`, and `contained_app_staple` roles. The source descriptor cannot mark any observation passed, prove that sequential tool observations came from one immutable destination tree, or create evidence. [ADR 0008](decisions/0008-macos-dmg-destination-revalidation.md) exercises the fixed DMG destination hooks with an inert ad-hoc-signed fixture, including mid-revalidation substitution and post-spawn settlement retention. It retains both the ADR 0006 exact-transport non-claim and the destination-binding non-claim.
 
-The updater profile can never reinterpret staging as installation or a public A-to-B update. Both profiles remain blocked until a reviewed private process boundary consumes the still-live #111 capability and derives observations from settled native execution.
+The updater profile can never reinterpret staging as installation or a public A-to-B update. Both profiles remain blocked until the existing Rust entry dispatches its owned selected bytes into a reviewed private macOS process boundary that derives observations from settled native execution.
 
-The transport decisions are now distinct. [ADR 0006](decisions/0006-macos-dmg-owned-byte-transport.md) records that `hdiutil` cannot consume the Rust-owned `/dev/fd/N` input and forbids a path fallback. [ADR 0007](decisions/0007-macos-updater-owned-stream-transport.md) records that updater archives can be preflighted and staged from Rust-owned immutable compressed bytes without a package path. ADR 0007 is a test-only transport proof; it does not create the production composition root that ADR 0004 still requires.
+The transport decisions are now distinct. [ADR 0006](decisions/0006-macos-dmg-owned-byte-transport.md) records that `hdiutil` cannot consume the Rust-owned `/dev/fd/N` input and forbids a path fallback. [ADR 0007](decisions/0007-macos-updater-owned-stream-transport.md) records that updater archives can be preflighted and staged from Rust-owned immutable compressed bytes without a package path. ADR 0007 remains a test-only transport proof. A production Rust public-release verifier and composition root now exist, but the macOS profiles stop after verification and owned cleanup; they do not dispatch into this transport or a native adapter.
 
 ## Verification
 
@@ -56,6 +56,6 @@ The JavaScript suite creates process-local plans and #111 capabilities, rejects 
 
 The release extractor retains its separate traversal, link, collision, size-budget, and replacement coverage in `scripts/test-macos-updater-archive.sh`. Those fixtures and the Rust transport probe use local archives. Neither proves that a production adapter consumed the selected public updater archive.
 
-## What closes #114
+## Current #76 proof boundary
 
-#114 still requires a Rust-owned public-release verifier and complete-operation entry, exact signed public universal DMG and updater artifacts, all seven destination gates against those consumed artifacts, bounded termination with settled cleanup, launch and runtime gates, removal and residue proof, sanitized #98 evidence, and the explicit updater staging-only non-claim. The DMG transport also needs a safe primitive other than the rejected descriptor or path fallback. Hosted source tests cannot supply that evidence.
+The accepted #114 boundary does not claim a closed macOS dispatch or exact public-artifact execution. For #76 to treat this path as stable-release proof, it would still need the existing Rust-owned public-release entry to dispatch exact signed public universal DMG and updater bytes through a reviewed transport, complete all seven destination gates, settle bounded execution and cleanup, exercise launch and runtime behavior, prove removal and residue state, produce sanitized #98 evidence, and retain the updater staging-only non-claim. The accepted DMG limitation remains: no safe primitive currently replaces the rejected descriptor or path fallback. Hosted source tests cannot supply that evidence.

@@ -1,6 +1,6 @@
 # Linux deb post-public smoke
 
-Published releases get a fresh, protected `ubuntu-22.04` job after the release has been made public. The job is deb-only; AppImage behavior is unchanged.
+Published releases get separate fresh, protected `ubuntu-22.04` deb and AppImage jobs after the release has been made public. This document covers the deb job. The companion AppImage job uses `scripts/linux-appimage-post-public-smoke.mjs` and retains its own sanitized observation.
 
 ## Identity and byte boundary
 

@@ -1,8 +1,8 @@
 # Native install-smoke executor boundary
 
-Issue #111's native executor source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary before parent issue #110 can add a platform adapter. The Linux source descriptor from #116 and the macOS source descriptor from #117 are registered, but no package command or private byte-consumption handshake can consume the capability yet. This slice cannot produce native proof or release evidence.
+Issue #111's JavaScript source slice owns the selected public artifact through an opaque, process-local capability. It closes the file-identity and path-replacement boundary for that process, and the Linux source descriptor from #116 and macOS source descriptor from #117 remain contract-only. This source slice cannot produce native proof or release evidence.
 
-Issue #130 accepts the architecture for that missing handshake in [the Rust-owned native artifact consumption authority decision](decisions/0003-private-native-artifact-consumption-authority.md). Issue #138 then audited the complete-operation entry. [That decision](decisions/0004-rust-install-smoke-complete-operation-entry.md) found no current boundary that can transfer the process-local JavaScript verifier and plan brands into Rust without trusting caller data or exposing a prohibited authority protocol. No production Rust composition root is registered. The #130 Rust-only hostile prototype remains non-installing and test-only.
+Issue #130 accepted the architecture for the missing handshake in [the Rust-owned native artifact consumption authority decision](decisions/0003-private-native-artifact-consumption-authority.md). Issue #138 then recorded why the JavaScript brands could not be transferred into Rust in [the complete-operation entry decision](decisions/0004-rust-install-smoke-complete-operation-entry.md). That remains the historical decision for the rejected bridge. The production `batcave-install-smoke` binary now avoids that bridge: it independently reads and verifies the public release in Rust, owns the selected bytes, and dispatches a sealed Linux artifact to a Linux-only handler. The current handler revalidates the authority and returns `skipped`; it does not execute the package or create evidence.
 
 The implementation is split deliberately:
 
@@ -10,7 +10,9 @@ The implementation is split deliberately:
 - `scripts/native-install-smoke-executor.mjs` validates the closed result states and the future `release_evidence` derivation;
 - `scripts/linux-native-install-smoke-adapter.mjs` registers the built-in deb/AppImage source profiles and proves fixed process-group settlement without executing package bytes;
 - `scripts/macos-native-install-smoke-adapter.mjs` registers the DMG/updater source descriptors without executing a process; and
-- `scripts/native-install-smoke-executor.test.mjs` exercises hostile path, receipt, caller-seam, and cleanup boundaries.
+- `scripts/native-install-smoke-executor.test.mjs` exercises hostile path, receipt, caller-seam, and cleanup boundaries;
+- `src/BatCave.App/src-tauri/src/bin/batcave-install-smoke/install_smoke_release.rs` independently verifies the public release and binds the selected bytes; and
+- `src/BatCave.App/src-tauri/src/bin/batcave-install-smoke/install_smoke_linux.rs` is the closed Linux dispatch target.
 
 ## Artifact ownership
 
@@ -30,7 +32,7 @@ Cleanup always attempts every available source/owned handle closure and private-
 
 ## Current invocation and result
 
-The only executable entry point is the source-slice API:
+The JavaScript source-slice entry point remains:
 
 ```js
 const result = await runNativeInstallSmokeSourceSlice(plan, {
@@ -40,7 +42,9 @@ const result = await runNativeInstallSmokeSourceSlice(plan, {
 
 With valid selected bytes it returns `skipped`, marks `preflight.package_trust` unsupported, blocks native actions, and returns `evidence_packet: null`. Artifact acquisition or cleanup failure returns a derived `failed` disposition and still returns no packet. Callers cannot provide an adapter, command, disposition, or native receipt.
 
-A structured clone, JSON document, separate Node process, or Rust process cannot preserve the verifier or plan brand. A future Rust entry must independently verify the immutable public release, complete asset inventory, checksums, source attestations, and selected bytes; accepting the visible plan fields or this API's `verified_root` would not preserve the current proof boundary.
+A structured clone, JSON document, separate Node process, or Rust process cannot preserve the JavaScript verifier or plan brand. The Rust `batcave-install-smoke` entry therefore accepts only a release tag and one closed package profile. It independently verifies the immutable public release, complete asset inventory, checksums, build and release attestations, exact protected source identity, and selected bytes. On Linux it moves the selected bytes into a sealed private descriptor, binds the release and asset identity, and revalidates both immediately before dispatch. Accepting the visible JavaScript plan fields or its `verified_root` would still violate the proof boundary.
+
+All current Rust profiles return a sanitized `skipped` result after verification and owned cleanup. Linux reaches the closed Linux handler first; Windows and macOS stop before a platform adapter. No current profile produces a native execution receipt or release-evidence packet.
 
 Run the capability and executor contract suite with:
 
@@ -50,21 +54,21 @@ node --test scripts/native-install-smoke-executor.test.mjs
 
 ## Closed platform command registry
 
-| Package profile | Native operation required later | Registered command now |
+| Package profile | Native operation required later | Current production path |
 | --- | --- | --- |
-| Windows NSIS | install and uninstall | none |
-| Linux deb | install and remove | source descriptor only; no package command |
-| Linux AppImage | stage, launch, and remove | source descriptor only; no package command |
-| macOS DMG | mount, copy, launch, and remove | source descriptor only; no process execution |
-| macOS updater archive | extract, stage, launch, and remove | staging-only source descriptor; no process execution |
+| Windows NSIS | install and uninstall | Rust public verification and owned cleanup; no platform dispatch |
+| Linux deb | install and remove | Rust public verification, sealed-byte handoff, and Linux revalidation; no package command |
+| Linux AppImage | stage, launch, and remove | Rust public verification, sealed-byte handoff, and Linux revalidation; no package command |
+| macOS DMG | mount, copy, launch, and remove | Rust public verification and owned cleanup; no native dispatch; JavaScript descriptor remains contract-only |
+| macOS updater archive | extract, stage, launch, and remove | Rust public verification and owned cleanup; no native dispatch; JavaScript staging descriptor remains contract-only |
 
-There is no general command runner, shell-string surface, public handle accessor, or injected callback that can create a native execution receipt. The [Linux source boundary](linux-native-install-smoke-adapter.md) runs fixed internal settlement probes only; it never executes the selected package.
+There is no general command runner, shell-string surface, public handle accessor, or injected callback that can create a native execution receipt. The JavaScript [Linux source boundary](linux-native-install-smoke-adapter.md) runs fixed internal settlement probes only. The production Rust Linux handler receives and revalidates exact sealed bytes but never executes the selected package.
 
 The [macOS source boundary](macos-native-install-smoke-adapter.md) binds the exact verified asset identity to a frozen future profile. Its fixed tool IDs and owned-resource list are descriptors, not observations. The receipt explicitly records that no live capability is held and no package, process, trust, settlement, cleanup, or evidence action occurred.
 
 ## Remaining native adapter work
 
-A later Rust-owned complete operation must first satisfy ADR 0004, then consume its private owned capability as the install or staging input itself. Draining or rehashing the capability and then executing an unrelated path is insufficient. The closed adapter must also own package trust, exact argument arrays, minimal environment, timeouts and settled process-tree termination, runtime identity and settings probes, degradation and telemetry observations, application removal, residue checks, and user-state policy.
+The Rust-owned public verifier, production entry, and sealed Linux handoff now exist. The remaining adapter must make that private owned artifact the install or staging input itself; draining or rehashing it and then executing an unrelated path is insufficient. The closed adapter must also own package trust, exact argument arrays, minimal environment, timeouts and settled process-tree termination, runtime identity and settings probes, degradation and telemetry observations, application removal, residue checks, and user-state policy.
 
 Only that internal adapter may mint the still-unreachable native execution receipt. After every ordered gate passes, the executor can derive `native_proven` and construct the sanitized #98 packet from its own receipt and observations. Timeout, partial settlement, unsupported operation, command failure, cleanup failure, and residue must remain explicit gate outcomes; all prevent a release-proof claim.
 
