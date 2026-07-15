@@ -142,7 +142,10 @@ impl OwnedImage {
         if observed != sha256 {
             return Err(FailureKind::OwnershipFailed);
         }
-        let identity = file_identity(&handle).map_err(|_| FailureKind::OwnershipFailed)?;
+        let information = file_information(&handle).map_err(|_| FailureKind::OwnershipFailed)?;
+        if information.number_of_links != 1 {
+            return Err(FailureKind::OwnershipFailed);
+        }
         Ok(Self {
             root,
             root_handle,
@@ -150,7 +153,7 @@ impl OwnedImage {
             handle,
             size: bytes.len() as u64,
             sha256,
-            identity,
+            identity: information.identity,
             cleanup_leaves: Vec::new(),
         })
     }
@@ -188,9 +191,14 @@ impl OwnedImage {
             .share_mode(FILE_SHARE_READ)
             .open(&path)
             .map_err(|_| FailureKind::OwnershipFailed)?;
-        let identity = file_identity(&handle).map_err(|_| FailureKind::OwnershipFailed)?;
-        self.cleanup_leaves
-            .push(OwnedCleanupLeaf { path, identity });
+        let information = file_information(&handle).map_err(|_| FailureKind::OwnershipFailed)?;
+        if information.number_of_links != 1 {
+            return Err(FailureKind::OwnershipFailed);
+        }
+        self.cleanup_leaves.push(OwnedCleanupLeaf {
+            path,
+            identity: information.identity,
+        });
         Ok(())
     }
 
@@ -279,17 +287,25 @@ fn digest_handle(file: &mut File) -> std::io::Result<[u8; 32]> {
     Ok(hash.finalize().into())
 }
 
-fn file_identity(file: &File) -> std::io::Result<FileIdentity> {
+struct FileInformation {
+    identity: FileIdentity,
+    number_of_links: u32,
+}
+
+fn file_information(file: &File) -> std::io::Result<FileInformation> {
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     let ok =
         unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(FileIdentity {
-        volume_serial: information.dwVolumeSerialNumber,
-        file_index: (u64::from(information.nFileIndexHigh) << 32)
-            | u64::from(information.nFileIndexLow),
+    Ok(FileInformation {
+        identity: FileIdentity {
+            volume_serial: information.dwVolumeSerialNumber,
+            file_index: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+        },
+        number_of_links: information.nNumberOfLinks,
     })
 }
 
@@ -303,7 +319,11 @@ fn delete_exact_leaf(
         .share_mode(FILE_SHARE_READ)
         .open(path)
         .map_err(|_| FailureKind::CleanupFailed)?;
-    if file_identity(&handle).map_err(|_| FailureKind::CleanupFailed)? != expected_identity {
+    if file_information(&handle)
+        .map_err(|_| FailureKind::CleanupFailed)?
+        .identity
+        != expected_identity
+    {
         return Err(FailureKind::CleanupFailed);
     }
     if let Some((size, sha256)) = expected_content {
@@ -315,6 +335,15 @@ fn delete_exact_leaf(
         }
     }
     mark_delete(handle.as_raw_handle() as HANDLE)?;
+    // Windows removes the pending name from the link count immediately. Zero
+    // therefore proves this was the sole link while delete-pending blocks new ones.
+    let delete_pending_information =
+        file_information(&handle).map_err(|_| FailureKind::CleanupFailed)?;
+    if delete_pending_information.identity != expected_identity
+        || delete_pending_information.number_of_links != 0
+    {
+        return Err(FailureKind::CleanupFailed);
+    }
     drop(handle);
     Ok(())
 }
@@ -761,6 +790,25 @@ fn handle_authorized_cleanup_blocks_root_swap_at_the_deletion_seam() {
         .expect("handle-authorized cleanup");
     assert!(!root.exists());
     assert!(!moved.exists());
+}
+
+#[test]
+fn delete_pending_cleanup_rejects_an_external_hard_link_without_emitting_evidence() {
+    let image = OwnedImage::acquire().expect("owned image");
+    let root = image.root.clone();
+    let external_link = std::env::temp_dir().join(format!(
+        "batcave-windows-nsis-hardlink-{}-{}",
+        std::process::id(),
+        ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::hard_link(&image.path, &external_link).expect("external hard link");
+
+    assert_eq!(image.cleanup(), Err(FailureKind::CleanupFailed));
+    assert!(external_link.exists());
+    assert!(root.exists());
+
+    fs::remove_file(&external_link).expect("remove known hostile link");
+    fs::remove_dir(&root).expect("remove now-empty owned root");
 }
 
 #[test]
