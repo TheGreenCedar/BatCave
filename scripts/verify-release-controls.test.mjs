@@ -281,7 +281,14 @@ test("runs release controls first with only the protected environment credential
   const prepare = workflowJob("prepare");
   assert.doesNotMatch(prepare, /verify-release-controls\.mjs/);
 
-  const sensitiveJobs = ["windows", "linux", "macos", "finalize", "linux_deb_post_public_smoke"];
+  const sensitiveJobs = [
+    "windows",
+    "linux",
+    "macos",
+    "finalize",
+    "linux_deb_post_public_smoke",
+    "linux_appimage_post_public_smoke",
+  ];
   for (const name of sensitiveJobs) {
     const job = workflowJob(name);
     assert.match(job, /^    environment: release$/m, `${name} must use the release environment`);
@@ -314,10 +321,10 @@ test("runs release controls first with only the protected environment credential
     );
   }
 
-  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 5);
+  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 6);
   assert.equal(
     releaseWorkflow.match(/GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/g)?.length,
-    5,
+    6,
   );
 });
 
@@ -340,6 +347,31 @@ test("runs the deb smoke on a fresh pinned Ubuntu host after public release publ
     /name: Retain sanitized Linux deb post-public observation[\s\S]*name: batcave-linux-deb-post-public-\$\{\{ needs\.prepare\.outputs\.tag \}\}[\s\S]*path: post-public-output\/linux-deb-observation\.json/u,
   );
   assert.doesNotMatch(job, /(?:--deb|--output-dir|RUNNER_TEMP|github\.event|workflow_dispatch)/u);
+});
+
+test("runs the AppImage smoke from the same independent public candidate inventory", () => {
+  const job = workflowJob("linux_appimage_post_public_smoke");
+  assert.match(job, /^    needs: \[prepare, finalize\]$/m);
+  assert.match(job, /^    if: needs\.prepare\.outputs\.publish == 'true'$/m);
+  assert.match(job, /^    runs-on: ubuntu-22\.04$/m);
+  assert.match(job, /ref: \$\{\{ needs\.prepare\.outputs\.source_sha \}\}/u);
+  assert.match(job, /cargo build --quiet --locked[\s\S]*--bin batcave-verify-updater-signature/u);
+  assert.match(
+    job,
+    /node scripts\/linux-appimage-post-public-smoke\.mjs "\$\{RELEASE_TAG\}" "\$\{RELEASE_SOURCE_SHA\}"/u,
+  );
+  assert.match(
+    job,
+    /name: batcave-release-candidate-\$\{\{ needs\.prepare\.outputs\.tag \}\}[\s\S]*path: post-public-input/u,
+  );
+  assert.match(
+    job,
+    /name: Retain sanitized Linux AppImage post-public observation[\s\S]*path: post-public-output\/linux-appimage-observation\.json/u,
+  );
+  assert.doesNotMatch(
+    job,
+    /(?:--appimage|--output-dir|RUNNER_TEMP|github\.event|workflow_dispatch)/u,
+  );
 });
 
 test("gates pre-attestation and complete release inventories before unconditional upload", () => {
