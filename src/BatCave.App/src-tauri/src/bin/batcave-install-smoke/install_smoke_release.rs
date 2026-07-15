@@ -1,4 +1,5 @@
 use reqwest::blocking::{Client, Response};
+use reqwest::header::HeaderMap;
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,7 +13,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const REPOSITORY: &str = "TheGreenCedar/BatCave";
 const REPOSITORY_ID: &str = "1196390305";
@@ -25,8 +26,11 @@ const ACTIONS_ISSUER: &str = "https://token.actions.githubusercontent.com";
 const RELEASE_IDENTITY: &str = "https://dotcom.releases.github.com";
 const CHECKSUMS: &str = "SHA256SUMS.txt";
 const MAX_RELEASE_BYTES: u64 = 1_073_741_824;
+const MAX_API_JSON_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_ATTESTATION_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_ATTESTATION_ENTRIES: usize = 100;
 const MAX_REDIRECTS: usize = 5;
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Profile {
@@ -213,9 +217,10 @@ fn execute(
         let release_bundles = source.release_attestations(&commit)?;
         trust.verify_release(&release_bundles, tag, &commit, &before, &selected.digest)?;
 
-        let after = source.release(tag)?;
-        if canonical_release(&before) != canonical_release(&after) {
-            return Err(Failure::ReadbackDrift);
+        if let Ok(after) = source.release(tag) {
+            if canonical_release(&before) != canonical_release(&after) {
+                return Err(Failure::ReadbackDrift);
+            }
         }
 
         Ok(BoundArtifact::new(selected_bytes))
@@ -508,27 +513,53 @@ impl BoundArtifact {
 
 struct GitHubSource {
     client: Client,
+    deadline: OperationDeadline,
+}
+
+#[derive(Clone, Copy)]
+struct OperationDeadline {
+    expires_at: Instant,
+}
+
+impl OperationDeadline {
+    fn starting_at(now: Instant, timeout: Duration) -> Result<Self, Failure> {
+        let expires_at = now.checked_add(timeout).ok_or(Failure::Timeout)?;
+        Ok(Self { expires_at })
+    }
+
+    fn remaining_at(self, now: Instant) -> Result<Duration, Failure> {
+        self.expires_at
+            .checked_duration_since(now)
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(Failure::Timeout)
+    }
+
+    fn remaining(self) -> Result<Duration, Failure> {
+        self.remaining_at(Instant::now())
+    }
 }
 
 impl GitHubSource {
     fn new() -> Result<Self, Failure> {
+        let deadline = OperationDeadline::starting_at(Instant::now(), OPERATION_TIMEOUT)?;
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(300))
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| Failure::Offline)?;
-        Ok(Self { client })
+        Ok(Self { client, deadline })
     }
 
     fn get(&self, url: &str, api: bool) -> Result<Response, Failure> {
         let mut current = Url::parse(url).map_err(|_| Failure::Redirect)?;
         for _ in 0..=MAX_REDIRECTS {
             validate_url(&current, api)?;
+            let remaining = self.deadline.remaining()?;
             let mut request = self
                 .client
                 .get(current.clone())
+                .timeout(remaining)
                 .header("User-Agent", "batcave-rust-release-verifier/1")
                 .header("Accept", "application/vnd.github+json");
             if api {
@@ -547,15 +578,52 @@ impl GitHubSource {
             if response.status() != StatusCode::OK {
                 return Err(Failure::Offline);
             }
+            self.deadline.remaining()?;
             return Ok(response);
         }
         Err(Failure::Redirect)
     }
 
     fn json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T, Failure> {
-        self.get(url, true)?
-            .json()
-            .map_err(|_| Failure::ReleaseRejected)
+        self.json_response(url, Failure::ReleaseRejected)
+            .map(|(value, _)| value)
+    }
+
+    fn json_response<T: for<'de> Deserialize<'de>>(
+        &self,
+        url: &str,
+        failure: Failure,
+    ) -> Result<(T, HeaderMap), Failure> {
+        let response = self.get(url, true)?;
+        let headers = response.headers().clone();
+        let bytes = self.read_response(response, MAX_API_JSON_BYTES, failure.clone())?;
+        let value = parse_api_json(&bytes, failure)?;
+        Ok((value, headers))
+    }
+
+    fn read_response(
+        &self,
+        mut response: Response,
+        limit: u64,
+        failure: Failure,
+    ) -> Result<Vec<u8>, Failure> {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            self.deadline.remaining()?;
+            let read = response
+                .read(&mut buffer)
+                .map_err(|_| self.deadline.remaining().err().unwrap_or(failure.clone()))?;
+            if read == 0 {
+                break;
+            }
+            if bytes.len() as u64 + read as u64 > limit {
+                return Err(failure);
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        self.deadline.remaining()?;
+        Ok(bytes)
     }
 }
 
@@ -609,41 +677,29 @@ impl PublicSource for GitHubSource {
             bundle: Option<serde_json::Value>,
             bundle_url: Option<String>,
         }
-        let response: Attestations = self.json(&format!(
-            "https://api.github.com/repos/{REPOSITORY}/attestations/sha1:{commit}?predicate_type=release&limit=100"
-        ))?;
+        let (response, headers): (Attestations, _) =
+            self.json_response(&attestation_api_url(commit), Failure::AttestationRejected)?;
+        if link_has_next_page(&headers)? {
+            return Err(Failure::AttestationRejected);
+        }
+        validate_attestation_count(response.attestations.len())?;
         let mut bundles = Vec::new();
         for attestation in response.attestations {
-            if let Some(bundle) = attestation.bundle {
-                bundles
-                    .push(serde_json::to_vec(&bundle).map_err(|_| Failure::AttestationRejected)?);
-            } else if let Some(url) = attestation.bundle_url {
+            if let (Some(bundle), None) = (attestation.bundle.as_ref(), &attestation.bundle_url) {
+                bundles.push(serialize_inline_bundle(bundle)?);
+            } else if let (None, Some(url)) = (attestation.bundle, attestation.bundle_url) {
                 let response = self.get(&url, true)?;
-                let snappy = response
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    == Some("application/x-snappy");
-                let mut bytes = Vec::new();
-                if snappy {
-                    snap::read::FrameDecoder::new(response)
-                        .take(MAX_ATTESTATION_BYTES + 1)
-                        .read_to_end(&mut bytes)
-                        .map_err(|_| Failure::AttestationRejected)?;
-                } else {
-                    response
-                        .take(MAX_ATTESTATION_BYTES + 1)
-                        .read_to_end(&mut bytes)
-                        .map_err(|_| Failure::AttestationRejected)?;
-                }
-                if bytes.len() as u64 > MAX_ATTESTATION_BYTES {
-                    return Err(Failure::AttestationRejected);
-                }
-                bundles.push(bytes);
+                let compressed = self.read_response(
+                    response,
+                    MAX_ATTESTATION_BYTES,
+                    Failure::AttestationRejected,
+                )?;
+                bundles.push(decode_release_bundle_blob(&compressed)?);
             } else {
                 return Err(Failure::AttestationRejected);
             }
         }
+        validate_attestation_count(bundles.len())?;
         Ok(bundles)
     }
 
@@ -652,9 +708,13 @@ impl PublicSource for GitHubSource {
         let mut total = 0u64;
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let read = response
-                .read(&mut buffer)
-                .map_err(|_| Failure::DownloadRejected)?;
+            self.deadline.remaining()?;
+            let read = response.read(&mut buffer).map_err(|_| {
+                self.deadline
+                    .remaining()
+                    .err()
+                    .unwrap_or(Failure::DownloadRejected)
+            })?;
             if read == 0 {
                 break;
             }
@@ -668,8 +728,91 @@ impl PublicSource for GitHubSource {
                 .write_all(&buffer[..read])
                 .map_err(|_| Failure::DownloadRejected)?;
         }
+        self.deadline.remaining()?;
         Ok(total)
     }
+}
+
+fn decode_release_bundle_blob(compressed: &[u8]) -> Result<Vec<u8>, Failure> {
+    if compressed.len() as u64 > MAX_ATTESTATION_BYTES {
+        return Err(Failure::AttestationRejected);
+    }
+
+    let decoded_len =
+        snap::raw::decompress_len(compressed).map_err(|_| Failure::AttestationRejected)?;
+    if decoded_len > MAX_ATTESTATION_BYTES as usize {
+        return Err(Failure::AttestationRejected);
+    }
+    let decoded = snap::raw::Decoder::new()
+        .decompress_vec(compressed)
+        .map_err(|_| Failure::AttestationRejected)?;
+    if decoded.len() != decoded_len || decoded.len() as u64 > MAX_ATTESTATION_BYTES {
+        return Err(Failure::AttestationRejected);
+    }
+    Ok(decoded)
+}
+
+fn attestation_api_url(commit: &str) -> String {
+    format!(
+        "https://api.github.com/repos/{REPOSITORY}/attestations/sha1:{commit}?predicate_type=release&per_page={MAX_ATTESTATION_ENTRIES}"
+    )
+}
+
+fn validate_attestation_count(count: usize) -> Result<(), Failure> {
+    (count <= MAX_ATTESTATION_ENTRIES)
+        .then_some(())
+        .ok_or(Failure::AttestationRejected)
+}
+
+fn parse_api_json<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    failure: Failure,
+) -> Result<T, Failure> {
+    if bytes.len() as u64 > MAX_API_JSON_BYTES {
+        return Err(failure);
+    }
+    serde_json::from_slice(bytes).map_err(|_| failure)
+}
+
+fn serialize_inline_bundle(bundle: &serde_json::Value) -> Result<Vec<u8>, Failure> {
+    let bytes = serde_json::to_vec(bundle).map_err(|_| Failure::AttestationRejected)?;
+    if bytes.len() as u64 > MAX_ATTESTATION_BYTES {
+        return Err(Failure::AttestationRejected);
+    }
+    Ok(bytes)
+}
+
+fn link_has_next_page(headers: &HeaderMap) -> Result<bool, Failure> {
+    for raw in headers.get_all(reqwest::header::LINK) {
+        let value = raw.to_str().map_err(|_| Failure::AttestationRejected)?;
+        for entry in value.split(',') {
+            let mut parts = entry.split(';');
+            let target = parts
+                .next()
+                .map(str::trim)
+                .filter(|target| target.starts_with('<') && target.ends_with('>'))
+                .ok_or(Failure::AttestationRejected)?;
+            if target.len() <= 2 {
+                return Err(Failure::AttestationRejected);
+            }
+            for parameter in parts {
+                let (name, value) = parameter
+                    .split_once('=')
+                    .ok_or(Failure::AttestationRejected)?;
+                if name.trim() == "rel" {
+                    let relations = value
+                        .trim()
+                        .strip_prefix('"')
+                        .and_then(|value| value.strip_suffix('"'))
+                        .ok_or(Failure::AttestationRejected)?;
+                    if relations.split_ascii_whitespace().any(|rel| rel == "next") {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn map_reqwest(error: reqwest::Error) -> Failure {
@@ -1027,12 +1170,21 @@ mod tests {
 
     struct FixtureSource {
         releases: RefCell<Vec<ReleaseReadback>>,
+        release_calls: Cell<usize>,
+        reread_failure: Option<Failure>,
         payloads: BTreeMap<String, Vec<u8>>,
         failure: Option<Failure>,
     }
 
     impl PublicSource for FixtureSource {
         fn release(&self, _tag: &str) -> Result<ReleaseReadback, Failure> {
+            let call = self.release_calls.get();
+            self.release_calls.set(call + 1);
+            if call > 0 {
+                if let Some(failure) = &self.reread_failure {
+                    return Err(failure.clone());
+                }
+            }
             let mut releases = self.releases.borrow_mut();
             if releases.len() > 1 {
                 Ok(releases.remove(0))
@@ -1140,6 +1292,8 @@ mod tests {
         (
             FixtureSource {
                 releases: RefCell::new(vec![release]),
+                release_calls: Cell::new(0),
+                reread_failure: None,
                 payloads,
                 failure: None,
             },
@@ -1251,6 +1405,16 @@ mod tests {
     }
 
     #[test]
+    fn release_reread_failure_is_nonblocking_defense_in_depth() {
+        let (mut source, trust) = fixture();
+        source.reread_failure = Some(Failure::Timeout);
+        assert_eq!(
+            execute(TAG, "linux-appimage", &source, &trust, false),
+            Ok(SanitizedOutcome::skipped())
+        );
+    }
+
+    #[test]
     fn asset_checksum_and_attestation_drift_fail_closed() {
         let (mut source, trust) = fixture();
         let selected = "BatCave.Monitor_0.3.0_amd64.deb";
@@ -1325,6 +1489,119 @@ mod tests {
         assert_eq!(
             validate_release_statement(&multi, TAG, SHA, &release),
             Err(Failure::AttestationRejected)
+        );
+    }
+
+    #[test]
+    fn github_release_bundle_blob_uses_bounded_raw_snappy_without_content_type() {
+        let bundle = serde_json::to_vec(&serde_json::json!({
+            "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+            "verificationMaterial": {
+                "certificate": { "rawBytes": "fixture-certificate" },
+                "tlogEntries": [],
+                "timestampVerificationData": { "rfc3161Timestamps": [] },
+            },
+            "dsseEnvelope": {
+                "payload": "fixture-release-statement",
+                "payloadType": "application/vnd.in-toto+json",
+                "signatures": [{ "keyid": "", "sig": "fixture-signature" }],
+            },
+        }))
+        .unwrap();
+        let compressed = snap::raw::Encoder::new().compress_vec(&bundle).unwrap();
+        assert_eq!(decode_release_bundle_blob(&compressed), Ok(bundle));
+
+        assert_eq!(
+            decode_release_bundle_blob(&vec![0_u8; MAX_ATTESTATION_BYTES as usize + 1]),
+            Err(Failure::AttestationRejected)
+        );
+        let decoded_too_large = snap::raw::Encoder::new()
+            .compress_vec(&vec![0_u8; MAX_ATTESTATION_BYTES as usize + 1])
+            .unwrap();
+        assert_eq!(
+            decode_release_bundle_blob(&decoded_too_large),
+            Err(Failure::AttestationRejected)
+        );
+        assert_eq!(
+            public_failure(Failure::AttestationRejected).0,
+            SanitizedOutcome::failed("public_release_verification_failed")
+        );
+    }
+
+    #[test]
+    fn attestation_query_and_pagination_are_closed_to_one_hundred_entries() {
+        let url = Url::parse(&attestation_api_url(SHA)).unwrap();
+        let query = url.query_pairs().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            query.get("predicate_type").map(|value| value.as_ref()),
+            Some("release")
+        );
+        assert_eq!(
+            query.get("per_page").map(|value| value.as_ref()),
+            Some("100")
+        );
+        assert!(!query.contains_key("limit"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::LINK,
+            reqwest::header::HeaderValue::from_static(
+                "<https://api.github.com/example?page=2>; rel=\"next\", <https://api.github.com/example?page=2>; rel=\"last\"",
+            ),
+        );
+        assert_eq!(link_has_next_page(&headers), Ok(true));
+
+        headers.insert(
+            reqwest::header::LINK,
+            reqwest::header::HeaderValue::from_static(
+                "<https://api.github.com/example?page=1>; rel=\"last\"",
+            ),
+        );
+        assert_eq!(link_has_next_page(&headers), Ok(false));
+        assert_eq!(validate_attestation_count(100), Ok(()));
+        assert_eq!(
+            validate_attestation_count(101),
+            Err(Failure::AttestationRejected)
+        );
+    }
+
+    #[test]
+    fn api_json_inline_bundle_and_attestation_count_are_bounded() {
+        assert_eq!(
+            parse_api_json::<serde_json::Value>(
+                &vec![b' '; MAX_API_JSON_BYTES as usize + 1],
+                Failure::AttestationRejected,
+            ),
+            Err(Failure::AttestationRejected)
+        );
+        let oversized_inline = serde_json::json!({
+            "bundle": "x".repeat(MAX_ATTESTATION_BYTES as usize + 1),
+        });
+        assert_eq!(
+            serialize_inline_bundle(&oversized_inline),
+            Err(Failure::AttestationRejected)
+        );
+        assert_eq!(
+            validate_attestation_count(MAX_ATTESTATION_ENTRIES + 1),
+            Err(Failure::AttestationRejected)
+        );
+    }
+
+    #[test]
+    fn operation_deadline_is_shared_and_timeout_remains_sanitized() {
+        let start = Instant::now();
+        let deadline = OperationDeadline::starting_at(start, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            deadline.remaining_at(start + Duration::from_secs(2)),
+            Ok(Duration::from_secs(3))
+        );
+        assert_eq!(
+            deadline.remaining_at(start + Duration::from_secs(5)),
+            Err(Failure::Timeout)
+        );
+        assert_eq!(
+            public_failure(Failure::Timeout).0,
+            SanitizedOutcome::failed("timeout")
         );
     }
 
