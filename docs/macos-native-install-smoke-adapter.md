@@ -1,6 +1,6 @@
 # macOS native adapter source boundary
 
-Issue #117 defines the source-only handoff between the #111 artifact capability and the exact native macOS work that remains in #114. It adds no package execution path.
+Issue #117 defines the source-only handoff between the #111 artifact capability and the macOS adapter boundary reviewed under #114. Issue #114 is closed with the DMG exact-byte transport limitation accepted; this document records that boundary and the non-claims still relevant to #76. It adds no package execution path.
 
 `scripts/macos-native-install-smoke-adapter.mjs` accepts only a process-local install-smoke plan and the historical `artifact_owned_bytes_verified` receipt produced by #111. It derives one frozen descriptor for `macos:dmg` or `macos:macos_updater`; callers cannot provide a command, path, status, trust observation, cleanup assertion, or evidence field. A private `WeakMap` binds that descriptor to the exact plan object, its exact identity receipt, and the exact #111 receipt object. An equivalent plan, a second valid receipt for the same asset, or a copied descriptor cannot replay it.
 
@@ -56,6 +56,6 @@ The JavaScript suite creates process-local plans and #111 capabilities, rejects 
 
 The release extractor retains its separate traversal, link, collision, size-budget, and replacement coverage in `scripts/test-macos-updater-archive.sh`. Those fixtures and the Rust transport probe use local archives. Neither proves that a production adapter consumed the selected public updater archive.
 
-## What closes #114
+## Current #76 proof boundary
 
-#114 still requires extending the existing Rust-owned public-release entry with a closed macOS dispatch, exact signed public universal DMG and updater artifacts, all seven destination gates against those consumed artifacts, bounded termination with settled cleanup, launch and runtime gates, removal and residue proof, sanitized #98 evidence, and the explicit updater staging-only non-claim. The DMG transport also needs a safe primitive other than the rejected descriptor or path fallback. Hosted source tests cannot supply that evidence.
+The accepted #114 boundary does not claim a closed macOS dispatch or exact public-artifact execution. For #76 to treat this path as stable-release proof, it would still need the existing Rust-owned public-release entry to dispatch exact signed public universal DMG and updater bytes through a reviewed transport, complete all seven destination gates, settle bounded execution and cleanup, exercise launch and runtime behavior, prove removal and residue state, produce sanitized #98 evidence, and retain the updater staging-only non-claim. The accepted DMG limitation remains: no safe primitive currently replaces the rejected descriptor or path fallback. Hosted source tests cannot supply that evidence.
