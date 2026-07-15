@@ -10,6 +10,12 @@ const SERVICE_EXECUTABLE_NAME: &str = "batcave-collector-service.exe";
 const SERVICE_ACCOUNT: &str = "LocalSystem";
 const SERVICE_OWNER_MARKER: &str = "dev.batcave.monitor/service-v1";
 const SERVICE_TYPE_OWN_PROCESS: u32 = 0x10;
+const ERROR_FILE_NOT_FOUND_CODE: u32 = 2;
+const ERROR_PATH_NOT_FOUND_CODE: u32 = 3;
+
+fn is_missing_path_error(error: u32) -> bool {
+    matches!(error, ERROR_FILE_NOT_FOUND_CODE | ERROR_PATH_NOT_FOUND_CODE)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProvisionVerb {
@@ -212,9 +218,9 @@ mod native {
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, GetLastError, LocalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
-            ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_SERVICE_ALREADY_RUNNING,
-            ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_MARKED_FOR_DELETE,
-            ERROR_SERVICE_NOT_ACTIVE, ERROR_SHARING_VIOLATION, HANDLE, WAIT_OBJECT_0,
+            ERROR_INSUFFICIENT_BUFFER, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
+            ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SERVICE_NOT_ACTIVE, ERROR_SHARING_VIOLATION,
+            HANDLE, WAIT_OBJECT_0,
         },
         Security::{
             AclSizeInformation,
@@ -235,8 +241,9 @@ mod native {
             GetFinalPathNameByHandleW, RemoveDirectoryW, BY_HANDLE_FILE_INFORMATION, DELETE,
             FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
             FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            FILE_WRITE_DATA, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_WRITE_DATA, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+            WRITE_OWNER,
         },
         System::{
             Registry::{
@@ -622,11 +629,36 @@ mod native {
         }
         let error = unsafe { GetLastError() };
         match error {
-            ERROR_FILE_NOT_FOUND => Ok(LifecycleFileProbe::Missing),
+            error if is_missing_path_error(error) => Ok(LifecycleFileProbe::Missing),
             ERROR_SHARING_VIOLATION => Ok(LifecycleFileProbe::Locked),
             _ => Err(format!(
                 "collector_service_lifecycle_file_probe_failed:{error}"
             )),
+        }
+    }
+
+    pub(super) fn path_exists_no_follow(path: &Path) -> Result<bool, String> {
+        let path = wide_path(path);
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if !handle.is_null() && handle != (-1_isize as HANDLE) {
+            drop(OwnedHandle(handle));
+            return Ok(true);
+        }
+        let error = unsafe { GetLastError() };
+        if is_missing_path_error(error) {
+            Ok(false)
+        } else {
+            Err(format!("collector_service_residue_probe_failed:{error}"))
         }
     }
 
@@ -684,7 +716,7 @@ mod native {
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? else {
             let roots = fixed_roots()?;
-            if roots.product.exists() || roots.service.exists() {
+            if path_exists_no_follow(&roots.product)? || path_exists_no_follow(&roots.service)? {
                 return Err("collector_service_orphaned_root_rejected".to_string());
             }
             return Ok(());
@@ -693,26 +725,23 @@ mod native {
         let was_running = query_service_status(&service)?.dwCurrentState == SERVICE_RUNNING;
         let _protected_root = open_protected_etw_lease_root()?;
         stop_service_and_wait(&service, true)?;
-        drop(_protected_root);
-        if let Err(cleanup) = cleanup_roots_if_owned(true) {
-            let restore = restore_roots_and_state(&service, was_running);
-            return Err(match restore {
-                Ok(()) => cleanup,
-                Err(restore) => format!("{cleanup};collector_service_restore_failed:{restore}"),
-            });
-        }
+        let principals = SecurityPrincipals::load_with_service()?;
         if unsafe { DeleteService(service.raw()) } == 0 {
             let delete_error = last_error("collector_service_delete_failed");
-            let restore = restore_roots_and_state(&service, was_running);
-            return Err(match restore {
-                Ok(()) => delete_error,
-                Err(restore) => {
-                    format!("{delete_error};collector_service_restore_failed:{restore}")
-                }
-            });
+            if was_running {
+                return match start_service_and_wait(&service) {
+                    Ok(()) => Err(delete_error),
+                    Err(restart) => Err(format!(
+                        "{delete_error};collector_service_restart_failed:{restart}"
+                    )),
+                };
+            }
+            return Err(delete_error);
         }
         drop(service);
-        wait_service_deleted(&manager)
+        wait_service_deleted(&manager)?;
+        drop(_protected_root);
+        cleanup_roots_if_owned(true, &principals)
     }
 
     fn open_manager(access: u32) -> Result<OwnedScHandle, String> {
@@ -838,25 +867,18 @@ mod native {
         service_root_created: bool,
     ) -> Result<(), String> {
         stop_service_and_wait(&service, false)?;
-        cleanup_created_roots(product_root_created, service_root_created)?;
+        let principals = if product_root_created || service_root_created {
+            Some(SecurityPrincipals::load_with_service()?)
+        } else {
+            None
+        };
         if unsafe { DeleteService(service.raw()) } == 0 {
-            let delete = last_error("collector_service_rollback_delete_failed");
-            let restore = restore_roots_and_state(&service, false);
-            return Err(match restore {
-                Ok(()) => delete,
-                Err(restore) => format!("{delete};collector_service_restore_failed:{restore}"),
-            });
+            return Err(last_error("collector_service_rollback_delete_failed"));
         }
         drop(service);
-        wait_service_deleted(manager)
-    }
-
-    fn restore_roots_and_state(service: &OwnedScHandle, restart: bool) -> Result<(), String> {
-        let mut journal = RootCreationJournal::default();
-        provision_roots(&mut journal)?;
-        let _protected_root = open_protected_etw_lease_root()?;
-        if restart {
-            start_service_and_wait(service)?;
+        wait_service_deleted(manager)?;
+        if let Some(principals) = principals.as_ref() {
+            cleanup_created_roots(product_root_created, service_root_created, principals)?;
         }
         Ok(())
     }
@@ -1195,6 +1217,34 @@ mod native {
         wait_service_state(service, SERVICE_RUNNING, SERVICE_OPERATION_TIMEOUT)
     }
 
+    fn open_service_process(status: &SERVICE_STATUS_PROCESS) -> Result<OwnedHandle, String> {
+        if status.dwProcessId == 0 {
+            return Err("collector_service_process_pid_invalid".to_string());
+        }
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
+                0,
+                status.dwProcessId,
+            )
+        };
+        if handle.is_null() {
+            return Err(last_error("collector_service_process_open_failed"));
+        }
+        Ok(OwnedHandle(handle))
+    }
+
+    fn wait_service_process_exit(process: &OwnedHandle) -> Result<(), String> {
+        let wait = unsafe {
+            WaitForSingleObject(process.raw(), SERVICE_OPERATION_TIMEOUT.as_millis() as u32)
+        };
+        if wait == WAIT_OBJECT_0 {
+            Ok(())
+        } else {
+            Err(format!("collector_service_process_exit_unproven:{wait}"))
+        }
+    }
+
     fn stop_service_and_wait(
         service: &OwnedScHandle,
         lifecycle_required_if_stopped: bool,
@@ -1210,8 +1260,14 @@ mod native {
         }
         if status.dwCurrentState == SERVICE_STOP_PENDING {
             require_service_lifecycle_active()?;
+            let process = open_service_process(&status)?;
             wait_service_state(service, SERVICE_STOPPED, SERVICE_OPERATION_TIMEOUT)?;
             prove_service_lifecycle_settled(true)?;
+            wait_service_process_exit(&process)?;
+            status = query_service_status(service)?;
+            if status.dwCurrentState != SERVICE_STOPPED {
+                return Err("collector_service_stop_settlement_unproven".to_string());
+            }
             return Ok(());
         }
         if status.dwCurrentState != SERVICE_RUNNING {
@@ -1221,28 +1277,7 @@ mod native {
             ));
         }
         require_service_lifecycle_active()?;
-        if status.dwProcessId == 0 {
-            return Err("collector_service_running_pid_invalid".to_string());
-        }
-        let process = {
-            let handle = unsafe {
-                OpenProcess(
-                    PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
-                    0,
-                    status.dwProcessId,
-                )
-            };
-            if handle.is_null() {
-                let error = unsafe { GetLastError() };
-                if error == ERROR_INVALID_PARAMETER {
-                    None
-                } else {
-                    return Err(format!("collector_service_process_open_failed:{error}"));
-                }
-            } else {
-                Some(OwnedHandle(handle))
-            }
-        };
+        let process = open_service_process(&status)?;
         let mut basic = SERVICE_STATUS::default();
         if unsafe { ControlService(service.raw(), SERVICE_CONTROL_STOP, &mut basic) } == 0 {
             let error = unsafe { GetLastError() };
@@ -1252,14 +1287,7 @@ mod native {
         }
         wait_service_state(service, SERVICE_STOPPED, SERVICE_OPERATION_TIMEOUT)?;
         prove_service_lifecycle_settled(true)?;
-        if let Some(process) = process {
-            let wait = unsafe {
-                WaitForSingleObject(process.raw(), SERVICE_OPERATION_TIMEOUT.as_millis() as u32)
-            };
-            if wait != WAIT_OBJECT_0 {
-                return Err(format!("collector_service_process_exit_unproven:{wait}"));
-            }
-        }
+        wait_service_process_exit(&process)?;
         status = query_service_status(service)?;
         if status.dwCurrentState != SERVICE_STOPPED {
             return Err("collector_service_stop_settlement_unproven".to_string());
@@ -1307,11 +1335,12 @@ mod native {
     fn cleanup_created_roots(
         product_root_created: bool,
         service_root_created: bool,
+        principals: &SecurityPrincipals,
     ) -> Result<(), String> {
         if service_root_created {
-            cleanup_roots_if_owned(product_root_created)
+            cleanup_roots_if_owned(product_root_created, principals)
         } else if product_root_created {
-            cleanup_product_root_if_owned()
+            cleanup_product_root_if_owned(principals)
         } else {
             Ok(())
         }
@@ -1323,34 +1352,35 @@ mod native {
         service: bool,
     }
 
-    fn cleanup_product_root_if_owned() -> Result<(), String> {
+    fn cleanup_product_root_if_owned(principals: &SecurityPrincipals) -> Result<(), String> {
         let roots = fixed_roots()?;
-        let principals = SecurityPrincipals::load_with_service()?;
         let _program_data = open_directory(
             &roots.program_data,
             "collector_service_programdata_open_failed",
         )?;
-        let product = open_and_verify_root(&roots.product, false, &principals)?;
+        let product = open_and_verify_root(&roots.product, false, principals)?;
         drop(product);
         remove_directory(&roots.product)
     }
 
-    fn cleanup_roots_if_owned(remove_product: bool) -> Result<(), String> {
+    fn cleanup_roots_if_owned(
+        remove_product: bool,
+        principals: &SecurityPrincipals,
+    ) -> Result<(), String> {
         let roots = fixed_roots()?;
-        let principals = SecurityPrincipals::load_with_service()?;
         let _program_data = open_directory(
             &roots.program_data,
             "collector_service_programdata_open_failed",
         )?;
-        let product = open_and_verify_root(&roots.product, false, &principals)?;
-        let service = open_and_verify_root(&roots.service, true, &principals)?;
+        let product = open_and_verify_root(&roots.product, false, principals)?;
+        let service = open_and_verify_root(&roots.service, true, principals)?;
         for leaf in [
             ETW_LEASE_FILE_NAME,
             ETW_OWNER_LOCK_FILE_NAME,
             SERVICE_LIFECYCLE_FILE_NAME,
         ] {
             let path = roots.service.join(leaf);
-            drop(verify_optional_leaf(&path, &principals)?);
+            drop(verify_optional_leaf(&path, principals)?);
             let path_wide = wide_path(&path);
             if unsafe { DeleteFileW(path_wide.as_ptr()) } == 0 {
                 let error = unsafe { GetLastError() };
@@ -2166,5 +2196,35 @@ mod tests {
     #[test]
     fn service_identity_constant_matches_the_runtime_contract() {
         assert_eq!(COLLECTOR_SERVICE_NAME, "BatCaveCollector");
+    }
+
+    #[test]
+    fn absent_leaf_and_absent_parent_are_both_missing_paths() {
+        assert!(is_missing_path_error(ERROR_FILE_NOT_FOUND_CODE));
+        assert!(is_missing_path_error(ERROR_PATH_NOT_FOUND_CODE));
+        assert!(!is_missing_path_error(5));
+    }
+
+    #[test]
+    fn no_follow_residue_probe_reports_present_and_missing_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-residue-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("probe root");
+        let file = root.join("residue");
+        assert!(!native::path_exists_no_follow(&file).expect("missing leaf probe"));
+        std::fs::write(&file, b"owned residue").expect("probe residue");
+        assert!(native::path_exists_no_follow(&file).expect("present residue probe"));
+        assert!(
+            !native::path_exists_no_follow(&root.join("missing-parent").join("residue"))
+                .expect("missing parent probe")
+        );
+        std::fs::remove_file(file).expect("probe residue cleanup");
+        std::fs::remove_dir(root).expect("probe root cleanup");
     }
 }
