@@ -1,6 +1,9 @@
 #[cfg(target_os = "linux")]
 #[path = "batcave-install-smoke/install_smoke_linux.rs"]
 mod install_smoke_linux;
+#[cfg(target_os = "macos")]
+#[path = "batcave-install-smoke/install_smoke_macos_updater.rs"]
+mod install_smoke_macos_updater;
 #[path = "batcave-install-smoke/install_smoke_release.rs"]
 mod install_smoke_release;
 

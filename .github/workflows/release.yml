@@ -100,7 +100,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-deb-post-public-smoke.test.mjs scripts/linux-appimage-post-public-smoke.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-deb-post-public-smoke.test.mjs scripts/linux-appimage-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
   windows:
     name: Build Windows release
@@ -656,5 +656,58 @@ jobs:
         with:
           name: batcave-linux-appimage-post-public-${{ needs.prepare.outputs.tag }}
           path: post-public-output/linux-appimage-observation.json
+          if-no-files-found: error
+          retention-days: 30
+
+  macos_updater_post_public_smoke:
+    name: macOS updater post-public staging smoke
+    needs: [prepare, finalize]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Verify protected release controls before sensitive work
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-on-failure: true
+          cache-workspace-crates: true
+
+      - name: Verify and stage the exact published macOS updater archive
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir post-public-output
+          observation="post-public-output/macos-updater-observation.json"
+          cargo run --quiet --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --features private-release-verifier -- "${RELEASE_TAG}" macos-updater > "${observation}"
+          node scripts/validate-macos-updater-post-public-observation.mjs "${observation}" "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}"
+
+      - name: Retain sanitized macOS updater post-public observation
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: batcave-macos-updater-post-public-${{ needs.prepare.outputs.tag }}
+          path: post-public-output/macos-updater-observation.json
           if-no-files-found: error
           retention-days: 30

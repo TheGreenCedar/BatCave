@@ -288,6 +288,7 @@ test("runs release controls first with only the protected environment credential
     "finalize",
     "linux_deb_post_public_smoke",
     "linux_appimage_post_public_smoke",
+    "macos_updater_post_public_smoke",
   ];
   for (const name of sensitiveJobs) {
     const job = workflowJob(name);
@@ -321,10 +322,10 @@ test("runs release controls first with only the protected environment credential
     );
   }
 
-  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 6);
+  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 7);
   assert.equal(
     releaseWorkflow.match(/GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/g)?.length,
-    6,
+    7,
   );
 });
 
@@ -375,6 +376,27 @@ test("runs the AppImage smoke from the same independent public candidate invento
     job,
     /(?:--appimage|--output-dir|RUNNER_TEMP|github\.event|workflow_dispatch)/u,
   );
+});
+
+test("runs the macOS updater observer through the closed Rust-owned staging profile", () => {
+  const job = workflowJob("macos_updater_post_public_smoke");
+  assert.match(job, /^    needs: \[prepare, finalize\]$/m);
+  assert.match(job, /^    if: needs\.prepare\.outputs\.publish == 'true'$/m);
+  assert.match(job, /^    runs-on: macos-15$/m);
+  assert.match(job, /ref: \$\{\{ needs\.prepare\.outputs\.source_sha \}\}/u);
+  assert.match(
+    job,
+    /cargo run --quiet --locked[\s\S]*--bin batcave-install-smoke --features private-release-verifier -- "\$\{RELEASE_TAG\}" macos-updater/u,
+  );
+  assert.match(
+    job,
+    /node scripts\/validate-macos-updater-post-public-observation\.mjs "\$\{observation\}" "\$\{RELEASE_TAG\}" "\$\{RELEASE_SOURCE_SHA\}"/u,
+  );
+  assert.match(
+    job,
+    /name: Retain sanitized macOS updater post-public observation[\s\S]*path: post-public-output\/macos-updater-observation\.json/u,
+  );
+  assert.doesNotMatch(job, /macos-dmg|hdiutil|(?:--archive|--signature|--output-dir|RUNNER_TEMP)/u);
 });
 
 test("gates pre-attestation and complete release inventories before unconditional upload", () => {
