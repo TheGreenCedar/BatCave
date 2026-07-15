@@ -16,6 +16,7 @@ use unicode_normalization::UnicodeNormalization;
 const APP_NAME: &str = "BatCave Monitor.app";
 const TAURI_CONFIG: &str = include_str!("../../../tauri.conf.json");
 const COPY_CHUNK_BYTES: usize = 64 * 1024;
+const CLEANUP_RETRY_LIMIT: usize = 3;
 
 #[derive(Clone, Copy)]
 struct Limits {
@@ -55,6 +56,78 @@ enum StageFailure {
     Cleanup,
 }
 
+#[derive(Debug)]
+struct StageError {
+    primary: Option<StageFailure>,
+    cleanup: Option<StageFailure>,
+    retained_root: Option<PrivateRoot>,
+}
+
+impl StageError {
+    fn primary(primary: StageFailure) -> Self {
+        Self {
+            primary: Some(primary),
+            cleanup: None,
+            retained_root: None,
+        }
+    }
+
+    fn retained(primary: Option<StageFailure>, cleanup: StageFailure, root: PrivateRoot) -> Self {
+        Self {
+            primary,
+            cleanup: Some(cleanup),
+            retained_root: Some(root),
+        }
+    }
+
+    fn residue_retained(&self) -> bool {
+        self.retained_root.is_some()
+    }
+
+    fn retry_cleanup(&mut self) -> Result<(), StageFailure> {
+        let Some(root) = self.retained_root.as_mut() else {
+            return Ok(());
+        };
+        match root.cleanup() {
+            Ok(()) => {
+                self.retained_root.take();
+                Ok(())
+            }
+            Err(cleanup) => {
+                self.cleanup = Some(cleanup);
+                Err(cleanup)
+            }
+        }
+    }
+
+    fn retry_cleanup_bounded(&mut self) -> Result<(), StageFailure> {
+        for _ in 0..CLEANUP_RETRY_LIMIT {
+            match self.retry_cleanup() {
+                Ok(()) => return Ok(()),
+                Err(StageFailure::Cleanup) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        Err(StageFailure::Cleanup)
+    }
+
+    fn into_public_failure(mut self) -> Failure {
+        if self.residue_retained() {
+            let _ = self.retry_cleanup_bounded();
+        }
+        match (self.primary, self.cleanup) {
+            (Some(StageFailure::Materialization), Some(StageFailure::Cleanup)) => {
+                Failure::MaterializationAndCleanupFailed
+            }
+            (Some(StageFailure::Verification), Some(StageFailure::Cleanup)) => {
+                Failure::VerificationAndCleanupFailed
+            }
+            (_, Some(StageFailure::Cleanup)) => Failure::CleanupFailed,
+            _ => Failure::AuthorityRejected,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RecordKind {
     Directory,
@@ -85,13 +158,8 @@ pub(super) fn run(artifact: VerifiedMacOsUpdaterArtifact) -> Result<SanitizedOut
     artifact.revalidate()?;
     verify_updater_signature(artifact.bytes.as_ref(), &artifact.signature)
         .map_err(|_| Failure::AuthorityRejected)?;
-    let member_count =
-        stage_and_cleanup(artifact.bytes.as_ref(), Limits::production()).map_err(|failure| {
-            match failure {
-                StageFailure::Cleanup => Failure::CleanupFailed,
-                _ => Failure::AuthorityRejected,
-            }
-        })?;
+    let member_count = stage_and_cleanup(artifact.bytes.as_ref(), Limits::production())
+        .map_err(StageError::into_public_failure)?;
     Ok(SanitizedOutcome::macos_updater_observed(
         &artifact.identity,
         member_count,
@@ -129,41 +197,120 @@ fn decode_wrapped(value: &[u8]) -> Result<String, StageFailure> {
     String::from_utf8(decoded).map_err(|_| StageFailure::Signature)
 }
 
-fn stage_and_cleanup(owned_archive: &[u8], limits: Limits) -> Result<usize, StageFailure> {
-    let preflight = preflight(owned_archive, limits)?;
-    let root = create_private_root()?;
-    let path = root.path().to_path_buf();
+fn stage_and_cleanup(owned_archive: &[u8], limits: Limits) -> Result<usize, StageError> {
+    let preflight = preflight(owned_archive, limits).map_err(StageError::primary)?;
+    let root = PrivateRoot::create().map_err(StageError::primary)?;
     let staged = materialize(owned_archive, &preflight, root.path(), limits)
         .and_then(|()| verify_staged_tree(root.path(), &preflight));
-    if let Err(primary) = staged {
-        return match root.close() {
-            Ok(()) => Err(primary),
-            Err(_) => Err(StageFailure::Cleanup),
-        };
-    }
-    let member_count = preflight.records.len();
-    root.close().map_err(|_| StageFailure::Cleanup)?;
-    if path.exists() {
-        return Err(StageFailure::Cleanup);
-    }
-    Ok(member_count)
+    settle_staging(root, staged, preflight.records.len())
 }
 
-fn create_private_root() -> Result<tempfile::TempDir, StageFailure> {
-    let root = tempfile::Builder::new()
-        .prefix("batcave-macos-updater-")
-        .tempdir()
-        .map_err(|_| StageFailure::Materialization)?;
-    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
-        .map_err(|_| StageFailure::Materialization)?;
-    let metadata = fs::symlink_metadata(root.path()).map_err(|_| StageFailure::Materialization)?;
-    if !metadata.is_dir()
-        || metadata.file_type().is_symlink()
-        || metadata.permissions().mode() & 0o777 != 0o700
-    {
-        return Err(StageFailure::Materialization);
+fn settle_staging(
+    mut root: PrivateRoot,
+    staged: Result<(), StageFailure>,
+    member_count: usize,
+) -> Result<usize, StageError> {
+    match staged {
+        Err(primary) => match root.cleanup() {
+            Ok(()) => Err(StageError::primary(primary)),
+            Err(cleanup) => Err(StageError::retained(Some(primary), cleanup, root)),
+        },
+        Ok(()) => match root.cleanup() {
+            Ok(()) => Ok(member_count),
+            Err(cleanup) => Err(StageError::retained(None, cleanup, root)),
+        },
     }
-    Ok(root)
+}
+
+#[derive(Debug)]
+struct PrivateRoot {
+    path: Option<PathBuf>,
+    #[cfg(test)]
+    cleanup_failures_remaining: usize,
+}
+
+impl PrivateRoot {
+    fn create() -> Result<Self, StageFailure> {
+        Self::create_with_cleanup_failures(0)
+    }
+
+    fn create_with_cleanup_failures(
+        cleanup_failures_remaining: usize,
+    ) -> Result<Self, StageFailure> {
+        #[cfg(not(test))]
+        let _ = cleanup_failures_remaining;
+        let root = tempfile::Builder::new()
+            .prefix("batcave-macos-updater-")
+            .tempdir()
+            .map_err(|_| StageFailure::Materialization)?;
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
+            .map_err(|_| StageFailure::Materialization)?;
+        let metadata =
+            fs::symlink_metadata(root.path()).map_err(|_| StageFailure::Materialization)?;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || metadata.permissions().mode() & 0o777 != 0o700
+        {
+            return Err(StageFailure::Materialization);
+        }
+        Ok(Self {
+            path: Some(root.keep()),
+            #[cfg(test)]
+            cleanup_failures_remaining,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        self.path.as_deref().expect("private root is retained")
+    }
+
+    fn cleanup(&mut self) -> Result<(), StageFailure> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        if self.cleanup_failures_remaining > 0 {
+            self.cleanup_failures_remaining -= 1;
+            return Err(StageFailure::Cleanup);
+        }
+        make_tree_removable(path)?;
+        fs::remove_dir_all(path).map_err(|_| StageFailure::Cleanup)?;
+        if path.exists() {
+            return Err(StageFailure::Cleanup);
+        }
+        self.path.take();
+        Ok(())
+    }
+}
+
+fn make_tree_removable(path: &Path) -> Result<(), StageFailure> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| StageFailure::Cleanup)?;
+    if metadata.file_type().is_symlink() {
+        return fs::remove_file(path).map_err(|_| StageFailure::Cleanup);
+    }
+    if metadata.is_file() {
+        return fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|_| StageFailure::Cleanup);
+    }
+    if !metadata.is_dir() {
+        return fs::remove_file(path).map_err(|_| StageFailure::Cleanup);
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|_| StageFailure::Cleanup)?;
+    for entry in fs::read_dir(path).map_err(|_| StageFailure::Cleanup)? {
+        make_tree_removable(&entry.map_err(|_| StageFailure::Cleanup)?.path())?;
+    }
+    Ok(())
+}
+
+impl Drop for PrivateRoot {
+    fn drop(&mut self) {
+        for _ in 0..CLEANUP_RETRY_LIMIT {
+            if self.cleanup().is_ok() {
+                break;
+            }
+        }
+    }
 }
 
 fn preflight(owned_archive: &[u8], limits: Limits) -> Result<Preflight, StageFailure> {
@@ -748,6 +895,16 @@ mod tests {
         ])
     }
 
+    fn assert_stage_failure(result: Result<usize, StageError>, expected: StageFailure) {
+        let error = match result {
+            Ok(_) => panic!("staging unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error.primary, Some(expected));
+        assert_eq!(error.cleanup, None);
+        assert!(!error.residue_retained());
+    }
+
     #[test]
     fn known_minisign_fixture_verifies_and_tamper_fails() {
         verify_updater_signature_with_key(
@@ -768,10 +925,9 @@ mod tests {
 
     #[test]
     fn exact_stream_stages_reverifies_and_cleans() {
-        assert_eq!(
-            stage_and_cleanup(&valid_archive(), Limits::production()),
-            Ok(3)
-        );
+        let member_count = stage_and_cleanup(&valid_archive(), Limits::production())
+            .expect("valid archive stages and cleans");
+        assert_eq!(member_count, 3);
     }
 
     #[test]
@@ -790,17 +946,17 @@ mod tests {
             ]),
         ];
         for hostile in cases {
-            assert_eq!(
+            assert_stage_failure(
                 stage_and_cleanup(&hostile, Limits::production()),
-                Err(StageFailure::Preflight)
+                StageFailure::Preflight,
             );
         }
 
         let mut trailing = valid_archive();
         trailing.extend_from_slice(&valid_archive());
-        assert_eq!(
+        assert_stage_failure(
             stage_and_cleanup(&trailing, Limits::production()),
-            Err(StageFailure::Preflight)
+            StageFailure::Preflight,
         );
     }
 
@@ -809,16 +965,73 @@ mod tests {
         let bytes = valid_archive();
         let mut compressed = Limits::production();
         compressed.max_compressed_bytes = bytes.len() - 1;
-        assert_eq!(
+        assert_stage_failure(
             stage_and_cleanup(&bytes, compressed),
-            Err(StageFailure::Preflight)
+            StageFailure::Preflight,
         );
 
         let mut expanded = Limits::production();
         expanded.max_expanded_bytes = 1;
+        assert_stage_failure(stage_and_cleanup(&bytes, expanded), StageFailure::Preflight);
+    }
+
+    #[test]
+    fn combined_materialization_and_cleanup_failure_retains_both_until_retry() {
+        let bytes = valid_archive();
+        let limits = Limits::production();
+        let preflight = preflight(&bytes, limits).expect("preflight");
+        let root =
+            PrivateRoot::create_with_cleanup_failures(2).expect("create retained fixture root");
+        let retained_path = root.path().to_path_buf();
+        File::create(root.path().join(APP_NAME)).expect("create materialization collision");
+        let staged = materialize(&bytes, &preflight, root.path(), limits);
+        assert_eq!(staged, Err(StageFailure::Materialization));
+
+        let mut error = settle_staging(root, staged, preflight.records.len())
+            .expect_err("combined failure cannot complete staging");
+        assert_eq!(error.primary, Some(StageFailure::Materialization));
+        assert_eq!(error.cleanup, Some(StageFailure::Cleanup));
+        assert!(error.residue_retained());
+        assert!(retained_path.exists());
+        assert_eq!(error.retry_cleanup(), Err(StageFailure::Cleanup));
+        assert!(error.residue_retained());
+        error
+            .retry_cleanup_bounded()
+            .expect("bounded retry removes retained staging root");
+        assert!(!error.residue_retained());
+        assert!(!retained_path.exists());
         assert_eq!(
-            stage_and_cleanup(&bytes, expanded),
-            Err(StageFailure::Preflight)
+            error.into_public_failure(),
+            Failure::MaterializationAndCleanupFailed
+        );
+    }
+
+    #[test]
+    fn combined_verification_and_cleanup_failure_never_becomes_success() {
+        let bytes = valid_archive();
+        let limits = Limits::production();
+        let preflight = preflight(&bytes, limits).expect("preflight");
+        let root =
+            PrivateRoot::create_with_cleanup_failures(1).expect("create retained fixture root");
+        let retained_path = root.path().to_path_buf();
+        materialize(&bytes, &preflight, root.path(), limits).expect("materialize fixture");
+        File::create(root.path().join(APP_NAME).join("unexpected"))
+            .expect("create verification collision");
+        let staged = verify_staged_tree(root.path(), &preflight);
+        assert_eq!(staged, Err(StageFailure::Verification));
+
+        let mut error = settle_staging(root, staged, preflight.records.len())
+            .expect_err("combined failure cannot emit a completion");
+        assert_eq!(error.primary, Some(StageFailure::Verification));
+        assert_eq!(error.cleanup, Some(StageFailure::Cleanup));
+        assert!(error.residue_retained());
+        error
+            .retry_cleanup_bounded()
+            .expect("bounded retry removes retained staging root");
+        assert!(!retained_path.exists());
+        assert_eq!(
+            error.into_public_failure(),
+            Failure::VerificationAndCleanupFailed
         );
     }
 }

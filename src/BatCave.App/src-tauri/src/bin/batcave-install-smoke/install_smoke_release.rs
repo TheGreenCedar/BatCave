@@ -222,6 +222,8 @@ pub(super) enum Failure {
     AttestationRejected,
     ReadbackDrift,
     CleanupFailed,
+    MaterializationAndCleanupFailed,
+    VerificationAndCleanupFailed,
     AuthorityRejected,
 }
 
@@ -291,6 +293,8 @@ fn public_failure(failure: Failure) -> (SanitizedOutcome, i32) {
         Failure::Offline => "offline",
         Failure::Timeout => "timeout",
         Failure::CleanupFailed => "cleanup_failed",
+        Failure::MaterializationAndCleanupFailed => "materialization_and_cleanup_failed",
+        Failure::VerificationAndCleanupFailed => "verification_and_cleanup_failed",
         _ => "public_release_verification_failed",
     };
     (SanitizedOutcome::failed(reason), 1)
@@ -2135,6 +2139,14 @@ mod tests {
         assert_eq!(
             public_failure(Failure::Redirect).0,
             SanitizedOutcome::failed("public_release_verification_failed")
+        );
+        assert_eq!(
+            public_failure(Failure::MaterializationAndCleanupFailed).0,
+            SanitizedOutcome::failed("materialization_and_cleanup_failed")
+        );
+        assert_eq!(
+            public_failure(Failure::VerificationAndCleanupFailed).0,
+            SanitizedOutcome::failed("verification_and_cleanup_failed")
         );
 
         let (source, trust) = fixture();
