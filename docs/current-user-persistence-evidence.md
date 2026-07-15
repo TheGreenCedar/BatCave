@@ -51,6 +51,37 @@ Run the build command from `src/BatCave.App`. The capture helper refuses to over
 
 The packet deliberately remains `artifact.kind: app_bundle` with `staged_application_bundle_only`. A path-based `hdiutil` mount cannot prove that DiskImages consumed the previously hashed DMG bytes, and the isolated application copy is not a canonical installation. The packet therefore does not populate the `macos-dmg` profile or prove Developer ID signing, notarization, stapling, publication, or release readiness. The contract tests validate every JSON packet under `native-candidates` even though those packets remain outside the package index.
 
+## Linux package automation
+
+The Linux helper captures both locally built package formats on an ephemeral Ubuntu host:
+
+```bash
+BATCAVE_SOURCE_COMMIT_SHA="$(git rev-parse HEAD)" \
+  bash scripts/validate-tauri.sh --bundle-only
+
+node scripts/capture-linux-current-user-persistence.mjs \
+  --deb src/BatCave.App/src-tauri/target/release/bundle/deb/*.deb \
+  --appimage src/BatCave.App/src-tauri/target/release/bundle/appimage/*.AppImage \
+  --source-sha "$(git rev-parse HEAD)" \
+  --output-dir artifacts/current-user-persistence/linux
+```
+
+The output directory must not already exist. The helper copies both artifacts into separate mode-700 private workspaces, re-reads each source before accepting it, and rehashes the private copy around execution. It runs each lifecycle under a separate isolated `HOME` with no inherited caller environment, so the production default `~/.local/share/BatCaveMonitor` resolution is exercised without touching the runner account's ordinary state.
+
+The deb profile rejects a pre-existing BatCave package, verifies the expected package name, version, architecture, and installed executable ownership, installs the private copy through fixed absolute `sudo` and `dpkg` commands, and purges it after the degraded phase. The AppImage profile launches the private AppImage through its own extract-and-run runtime, which avoids a hosted-runner FUSE dependency while retaining runtime `APPIMAGE` provenance, then removes the staged package. Both profiles require bounded output, timeout, direct-child exit, and process-group settlement before application removal or workspace cleanup.
+
+Native package execution is restricted to the repository owner's manual `Platform bundles` workflow dispatch with `capture_linux_persistence` enabled. That mode runs only the Linux job; Windows and macOS jobs are skipped. Pull requests cannot trigger the workflow, ordinary main pushes only build bundles, and neither path installs a pull-request deb. The manual job embeds `${{ github.sha }}` in the packaged receipts, validates the two sanitized packets, and uploads only those JSON files as a short-lived workflow artifact.
+
+A locally built package packet is still candidate evidence. It must retain `candidate_not_release_evidence` and `local_bundle_without_public_provenance`; the AppImage packet also retains `appimage_extract_and_run`. These packets can populate the matching `linux-deb` and `linux-appimage` index profiles because the observed artifact kinds are the actual packages, but they do not prove a public checksum, source attestation, package-repository signature, Tauri updater signature, public download, update flow, or release readiness. Those claims remain with #76 and #115.
+
+### Retained Linux package candidates
+
+The indexed [`deb`](evidence/persistence/package-candidates/linux-deb-270e50ebaa3a.json) and [`AppImage`](evidence/persistence/package-candidates/linux-appimage-270e50ebaa3a.json) packets retain the exact sanitized bytes uploaded by trusted owner dispatch [29365844562](https://github.com/TheGreenCedar/BatCave/actions/runs/29365844562). The Ubuntu 22.04 x86_64 job built and exercised both packages from exact source `270e50ebaa3a5716224a84f04c0b8ef730e55ab1`. Every lifecycle receipt reports that same source identity.
+
+The separately uploaded package bytes independently match the packet claims: the deb is `sha256:ae82d2a342d9dfca716818ca2028c17e5498e8c9a17f7e61e407a00ff2d3a720`, and the AppImage is `sha256:cbed1bd6b56bb0fc90bdc3ba3cc26f15f5eefc2c0f953318514a911b3a9046aa`. Both candidates record a private `0700` current-user root and `0600` owned files, settings retained across restart, a successful visibly degraded launch with corrupt settings bytes preserved, package removal with state retained, and an untouched outside sentinel. The retained packet-byte digests are `sha256:05c0612bd7aa0b684907bbbe4a67665102066367927b2fd5e1835525d8661de5` for deb and `sha256:bb17f55542849764933b24e1760fd5eea7322fbfc3addd6e9e52f38f8be90548` for AppImage.
+
+These remain local-build native candidates. The AppImage used its extract-and-run runtime on the hosted runner. Neither packet proves public provenance, signing, updater transport, another Linux distribution or architecture, or release readiness.
+
 ## Packet and index rules
 
 [`validate-current-user-persistence-evidence.mjs`](../scripts/validate-current-user-persistence-evidence.mjs) is the executable version-1 packet and index contract. It enforces:
@@ -68,6 +99,7 @@ Run the repeatable contract proof with:
 
 ```bash
 node --test \
+  scripts/capture-linux-current-user-persistence.test.mjs \
   scripts/capture-macos-current-user-persistence.test.mjs \
   scripts/validate-current-user-persistence-evidence.test.mjs
 

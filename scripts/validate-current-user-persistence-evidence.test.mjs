@@ -207,7 +207,7 @@ test("requires visible degraded persistence and preserves the fixed restart muta
   }
 });
 
-test("validates the checked-in pending index without treating pending as blocked", () => {
+test("validates checked-in native candidates without treating pending profiles as blocked", () => {
   const index = JSON.parse(
     fs.readFileSync(
       path.join(ROOT, "docs/evidence/persistence/current-user-persistence-index.v1.json"),
@@ -217,7 +217,7 @@ test("validates the checked-in pending index without treating pending as blocked
   assert.equal(validateCurrentUserPersistenceIndex(index, { repositoryRoot: ROOT }), index);
   assert.deepEqual(
     index.profiles.map(({ status }) => status),
-    ["pending", "pending", "pending", "pending"],
+    ["native_candidate", "native_candidate", "pending", "pending"],
   );
 });
 
