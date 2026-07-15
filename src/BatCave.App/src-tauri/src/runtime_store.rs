@@ -6434,14 +6434,9 @@ mod tests {
                 .pointer("/event/payload/privileged_collection/collector_service/service_version"),
             Some(&serde_json::json!(env!("CARGO_PKG_VERSION")))
         );
-        let expected_fallback_source = if cfg!(windows) {
-            "local_process"
-        } else {
-            "none"
-        };
         assert_eq!(
             decoded.pointer("/event/payload/privileged_collection/source"),
-            Some(&serde_json::json!(expected_fallback_source))
+            Some(&serde_json::json!("none"))
         );
 
         let _ = fs::remove_dir_all(&base_dir);

@@ -68,6 +68,7 @@ pub struct TelemetryCollector {
 }
 
 impl TelemetryCollector {
+    #[cfg(not(windows))]
     pub fn new() -> Self {
         Self::new_with_process_network(true)
     }

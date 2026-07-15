@@ -42,6 +42,7 @@ use super::{
 
 const SERVICE_EXECUTABLE_NAME: &str = "batcave-collector-service.exe";
 const CONNECT_TIMEOUT_MS: u32 = 250;
+const _: () = assert!(CONNECT_TIMEOUT_MS <= 1_000);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const PIPE_BUFFER_BYTES: usize = 64 * 1024;
@@ -565,7 +566,6 @@ mod tests {
     #[test]
     fn operation_deadline_is_bounded_below_host_idle_timeout() {
         assert!(OPERATION_TIMEOUT < Duration::from_secs(30));
-        assert!(CONNECT_TIMEOUT_MS <= 1_000);
     }
 
     #[test]
