@@ -87,10 +87,14 @@ impl TelemetryCollector {
     }
 
     #[cfg(windows)]
-    pub(crate) fn for_collector_service() -> Self {
-        // #70 owns the leased, bounded service ETW lifecycle. Until then the
-        // service publishes explicit held process-network quality.
-        Self::new_with_process_network(false)
+    pub(crate) fn for_collector_service(monitor: NetworkAttributionMonitor) -> Self {
+        let mut collector = Self::new_with_process_network(false);
+        *collector
+            .network_attribution
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            NetworkAttributionState::Ready(monitor);
+        collector
     }
 
     #[cfg(windows)]
@@ -1290,8 +1294,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn collector_service_keeps_etw_disabled_until_lifecycle_hardening() {
-        let collector = TelemetryCollector::for_collector_service();
+    fn standard_fallback_keeps_etw_disabled() {
+        let collector = TelemetryCollector::for_standard_fallback();
         let state = collector.network_attribution.lock().unwrap();
 
         assert!(matches!(&*state, NetworkAttributionState::Disabled));

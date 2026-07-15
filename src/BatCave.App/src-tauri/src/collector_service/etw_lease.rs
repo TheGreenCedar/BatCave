@@ -80,6 +80,7 @@ impl<T> PlatformLeaseRootGuard for T where T: std::fmt::Debug + Send + Sync {}
 #[derive(Debug, Clone)]
 pub(crate) struct ProtectedEtwLeaseRoot {
     path: PathBuf,
+    install_id: [u8; 16],
     brand: Arc<()>,
     _platform_guard: Arc<dyn PlatformLeaseRootGuard>,
 }
@@ -97,16 +98,22 @@ impl ProtectedEtwLeaseRoot {
     /// capability's lifetime.
     pub(crate) unsafe fn from_platform_verified<G>(
         path: PathBuf,
+        install_id: [u8; 16],
         platform_guard: G,
     ) -> Result<Self, EtwLeasePersistenceError>
     where
         G: std::fmt::Debug + Send + Sync + 'static,
     {
-        if !path.is_absolute() || path.file_name().is_none() || !path.is_dir() {
+        if !path.is_absolute()
+            || path.file_name().is_none()
+            || !path.is_dir()
+            || install_id == [0; 16]
+        {
             return Err(EtwLeasePersistenceError::InvalidProtectedRoot);
         }
         Ok(Self {
             path,
+            install_id,
             brand: Arc::new(()),
             _platform_guard: Arc::new(platform_guard),
         })
@@ -114,6 +121,10 @@ impl ProtectedEtwLeaseRoot {
 
     fn lease_path(&self) -> PathBuf {
         self.path.join(ETW_LEASE_FILE_NAME)
+    }
+
+    pub(crate) fn install_id(&self) -> [u8; 16] {
+        self.install_id
     }
 }
 
@@ -841,7 +852,13 @@ mod tests {
     #[test]
     fn protected_root_capability_rejects_relative_missing_and_file_paths() {
         assert!(matches!(
-            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(PathBuf::from("relative"), ()) },
+            unsafe {
+                ProtectedEtwLeaseRoot::from_platform_verified(
+                    PathBuf::from("relative"),
+                    [1; 16],
+                    (),
+                )
+            },
             Err(EtwLeasePersistenceError::InvalidProtectedRoot)
         ));
 
@@ -851,7 +868,7 @@ mod tests {
             unique_suffix()
         ));
         assert!(matches!(
-            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(missing, ()) },
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(missing, [1; 16], ()) },
             Err(EtwLeasePersistenceError::InvalidProtectedRoot)
         ));
 
@@ -862,10 +879,22 @@ mod tests {
         ));
         fs::write(&file, b"not a directory").expect("file fixture");
         assert!(matches!(
-            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(file.clone(), ()) },
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(file.clone(), [1; 16], ()) },
             Err(EtwLeasePersistenceError::InvalidProtectedRoot)
         ));
         fs::remove_file(file).expect("file fixture cleanup");
+
+        let root = std::env::temp_dir().join(format!(
+            "batcave-etw-zero-install-id-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir(&root).expect("root fixture");
+        assert!(matches!(
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(root.clone(), [0; 16], ()) },
+            Err(EtwLeasePersistenceError::InvalidProtectedRoot)
+        ));
+        fs::remove_dir(root).expect("root fixture cleanup");
     }
 
     #[test]
@@ -1358,8 +1387,9 @@ mod tests {
         }
         // SAFETY: this process created the unique test directory, rejects public
         // access on Unix, and retains exclusive ownership until cleanup.
-        let root = unsafe { ProtectedEtwLeaseRoot::from_platform_verified(path.clone(), ()) }
-            .expect("test root accepted");
+        let root =
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(path.clone(), [7; 16], ()) }
+                .expect("test root accepted");
         (path, root)
     }
 

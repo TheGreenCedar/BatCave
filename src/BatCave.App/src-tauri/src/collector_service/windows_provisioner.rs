@@ -1491,6 +1491,7 @@ mod native {
         )?;
         let product = open_and_verify_root(&roots.product, false, &principals)?;
         let service = open_and_verify_root(&roots.service, true, &principals)?;
+        let install_id = protected_root_install_id(service.raw())?;
         let mut leaves = Vec::new();
         for leaf in [ETW_LEASE_FILE_NAME, ETW_OWNER_LOCK_FILE_NAME] {
             if let Some(handle) = verify_optional_leaf(&roots.service.join(leaf), &principals)? {
@@ -1503,8 +1504,18 @@ mod native {
             _service: service,
             _leaves: leaves,
         };
-        unsafe { ProtectedEtwLeaseRoot::from_platform_verified(roots.service, guard) }
+        unsafe { ProtectedEtwLeaseRoot::from_platform_verified(roots.service, install_id, guard) }
             .map_err(|error| format!("collector_service_protected_root_invalid:{error:?}"))
+    }
+
+    fn protected_root_install_id(handle: HANDLE) -> Result<[u8; 16], String> {
+        let info = file_information(handle, "collector_service_root_identity_failed")?;
+        let mut identity = [0_u8; 16];
+        identity[..4].copy_from_slice(&info.dwVolumeSerialNumber.to_le_bytes());
+        identity[4..8].copy_from_slice(&info.nFileIndexHigh.to_le_bytes());
+        identity[8..12].copy_from_slice(&info.nFileIndexLow.to_le_bytes());
+        identity[12..].copy_from_slice(b"BCE1");
+        Ok(identity)
     }
 
     #[derive(Debug)]
