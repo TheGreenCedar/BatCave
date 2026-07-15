@@ -337,6 +337,10 @@ export const macosPersistenceCaptureInternals = {
   canonicalArchitecture,
   hashBundleTree,
   inspectRoot,
+  isoSeconds,
   parseArgs,
+  packagedExecutable,
+  proofEnvironment,
   regularFileInside,
+  runProof,
 };
