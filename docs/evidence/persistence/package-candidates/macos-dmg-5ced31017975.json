@@ -2,7 +2,7 @@
   "schema_version": 1,
   "packet_kind": "native_candidate",
   "packet_id": "macos-dmg-5ced31017975",
-  "observed_at_utc": "2026-07-15T13:47:40Z",
+  "observed_at_utc": "2026-07-15T14:00:00Z",
   "source": {
     "repository": "TheGreenCedar/BatCave",
     "source_sha": "5ced3101797501c5b6ae1106ee5c947da5f0ae61",

@@ -6,8 +6,14 @@ import test from "node:test";
 
 import { macosPersistenceCaptureInternals } from "./capture-macos-current-user-persistence.mjs";
 
-const { hashBundleTree, inspectRoot, parseArgs, regularFileInside } =
-  macosPersistenceCaptureInternals;
+const {
+  createMacosProofWorkspace,
+  hashBundleTree,
+  inspectRoot,
+  parseArgs,
+  proofEnvironment,
+  regularFileInside,
+} = macosPersistenceCaptureInternals;
 
 test("requires a fixed app and exact source identity", () => {
   assert.deepEqual(parseArgs(["--app", "BatCave Monitor.app", "--source-sha", "a".repeat(40)]), {
@@ -116,3 +122,51 @@ test(
     fs.rmSync(root, { recursive: true, force: true });
   },
 );
+
+test(
+  "proof environment ignores hostile caller injection and owns private HOME and TMPDIR",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-proof-environment-"));
+    const home = path.join(root, "home");
+    fs.mkdirSync(home, { mode: 0o700 });
+    const previous = {
+      DYLD_INSERT_LIBRARIES: process.env.DYLD_INSERT_LIBRARIES,
+      DYLD_LIBRARY_PATH: process.env.DYLD_LIBRARY_PATH,
+      TMPDIR: process.env.TMPDIR,
+    };
+    process.env.DYLD_INSERT_LIBRARIES = "/hostile/injection.dylib";
+    process.env.DYLD_LIBRARY_PATH = "/hostile/libraries";
+    process.env.TMPDIR = "/hostile/tmp";
+    try {
+      const environment = proofEnvironment(home);
+      assert.deepEqual(environment, {
+        BATCAVE_CURRENT_USER_PERSISTENCE_PROOF: "1",
+        HOME: fs.realpathSync(home),
+        TMPDIR: path.join(fs.realpathSync(home), "tmp"),
+      });
+      assert.equal(fs.lstatSync(environment.TMPDIR).mode & 0o777, 0o700);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("macOS proof workspace ignores caller TMPDIR", { skip: process.platform !== "darwin" }, () => {
+  const previous = process.env.TMPDIR;
+  process.env.TMPDIR = "/hostile/tmp";
+  let workspace;
+  try {
+    workspace = createMacosProofWorkspace("batcave-fixed-root-test-");
+    assert.equal(path.dirname(workspace), "/private/tmp");
+    assert.equal(fs.lstatSync(workspace).mode & 0o777, 0o700);
+  } finally {
+    if (previous === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previous;
+    if (workspace) fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});

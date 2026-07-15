@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -10,6 +9,7 @@ import { validateCurrentUserPersistencePacket } from "./validate-current-user-pe
 
 const {
   canonicalArchitecture,
+  createMacosProofWorkspace,
   hashBundleTree,
   inspectRoot,
   isoSeconds,
@@ -20,6 +20,14 @@ const {
 
 const DISK_IMAGES_LOCK = "/tmp/batcave-diskimages-proof.lock";
 const SOURCE_SHA = /^[0-9a-f]{40}$/u;
+
+class UnsettledDiskImagesError extends Error {
+  constructor() {
+    super("DiskImages authority is retained because local settlement is unproven");
+    this.name = "UnsettledDiskImagesError";
+    this.retainDiskImagesAuthority = true;
+  }
+}
 
 function fail(message) {
   throw new Error(message);
@@ -100,6 +108,7 @@ function writePrivateArtifact(file, bytes) {
 function withDiskImagesLock(callback, lockPath = DISK_IMAGES_LOCK) {
   let descriptor;
   let identity;
+  let retainAuthority = false;
   try {
     descriptor = fs.openSync(lockPath, "wx", 0o600);
     identity = fs.fstatSync(descriptor);
@@ -111,15 +120,18 @@ function withDiskImagesLock(callback, lockPath = DISK_IMAGES_LOCK) {
     return callback();
   } catch (error) {
     if (error?.code === "EEXIST") fail("DiskImages proof lock is busy");
+    retainAuthority = error?.retainDiskImagesAuthority === true;
     throw error;
   } finally {
     if (descriptor !== undefined) {
       try {
-        const current = fs.lstatSync(lockPath);
-        if (current.dev !== identity.dev || current.ino !== identity.ino) {
-          fail("DiskImages proof lock identity changed before release");
+        if (!retainAuthority) {
+          const current = fs.lstatSync(lockPath);
+          if (current.dev !== identity.dev || current.ino !== identity.ino) {
+            fail("DiskImages proof lock identity changed before release");
+          }
+          fs.unlinkSync(lockPath);
         }
-        fs.unlinkSync(lockPath);
       } finally {
         fs.closeSync(descriptor);
       }
@@ -127,15 +139,89 @@ function withDiskImagesLock(callback, lockPath = DISK_IMAGES_LOCK) {
   }
 }
 
-function runHdiutil(args) {
+function tryHdiutil(args, timeout = 60_000) {
   const result = spawnSync("/usr/bin/hdiutil", args, {
     encoding: "utf8",
-    timeout: 60_000,
+    timeout,
     maxBuffer: 64 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  return result;
+}
+
+function runHdiutil(args) {
+  const result = tryHdiutil(args);
   if (result.error) fail(`fixed hdiutil operation failed to start: ${result.error.message}`);
   if (result.status !== 0) fail(`fixed hdiutil operation exited ${result.status}`);
+}
+
+function directoryIdentity(directory) {
+  const metadata = fs.lstatSync(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    fail("DMG mount point must remain a real directory");
+  }
+  return { dev: metadata.dev, ino: metadata.ino };
+}
+
+function sameDirectoryIdentity(directory, expected) {
+  try {
+    const current = directoryIdentity(directory);
+    return current.dev === expected.dev && current.ino === expected.ino;
+  } catch {
+    return false;
+  }
+}
+
+function mountInventoryContains(mountPoint) {
+  const result = spawnSync("/sbin/mount", [], {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 256 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.error || result.status !== 0) fail("could not inspect the fixed mount inventory");
+  return result.stdout.split("\n").some((line) => line.includes(` on ${mountPoint} (`));
+}
+
+function helperProcessIds() {
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.error || result.status !== 0) fail("could not inspect the fixed helper inventory");
+  return new Set(
+    result.stdout
+      .split("\n")
+      .filter((line) => /(?:hdiutil|DiskImages|diskimages-helper|hdiejectd)/iu.test(line))
+      .map((line) => line.trim().split(/\s+/u)[0])
+      .filter((pid) => /^\d+$/u.test(pid)),
+  );
+}
+
+function waitMilliseconds(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function settleFailedOrMountedAttach({ mountPoint, mountIdentity, helperBaseline }) {
+  tryHdiutil(["detach", mountPoint, "-force", "-quiet"], 10_000);
+  let cleanObservations = 0;
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const currentHelpers = helperProcessIds();
+    const noNewHelpers = [...currentHelpers].every((pid) => helperBaseline.has(pid));
+    const clean =
+      sameDirectoryIdentity(mountPoint, mountIdentity) &&
+      !mountInventoryContains(mountPoint) &&
+      noNewHelpers;
+    cleanObservations = clean ? cleanObservations + 1 : 0;
+    if (cleanObservations === 2) return;
+    if (!clean && attempt > 0 && attempt % 5 === 0) {
+      tryHdiutil(["detach", mountPoint, "-force", "-quiet"], 10_000);
+    }
+    waitMilliseconds(100);
+  }
+  throw new UnsettledDiskImagesError();
 }
 
 function onlyMountedApp(mountPoint) {
@@ -149,15 +235,17 @@ function onlyMountedApp(mountPoint) {
 }
 
 function copyMountedApplication({ privateDmg, expectedDmgDigest, mountPoint, installedApp }) {
-  let mounted = false;
+  const mountIdentity = directoryIdentity(mountPoint);
+  let diskImagesOperationAttempted = false;
   return withDiskImagesLock(() => {
+    const helperBaseline = helperProcessIds();
     try {
       if (sha256(readStableRegularFile(privateDmg, "private DMG")) !== expectedDmgDigest) {
         fail("private DMG bytes changed before verification");
       }
+      diskImagesOperationAttempted = true;
       runHdiutil(["verify", privateDmg]);
       runHdiutil(["attach", "-nobrowse", "-readonly", "-mountpoint", mountPoint, privateDmg]);
-      mounted = true;
       const mountedApp = onlyMountedApp(mountPoint);
       const mountedDigest = hashBundleTree(mountedApp);
       execFileSync("/usr/bin/ditto", ["--noqtn", mountedApp, installedApp], {
@@ -171,7 +259,9 @@ function copyMountedApplication({ privateDmg, expectedDmgDigest, mountPoint, ins
       }
       return { installedDigest, mountedDigest };
     } finally {
-      if (mounted) runHdiutil(["detach", mountPoint, "-quiet"]);
+      if (diskImagesOperationAttempted) {
+        settleFailedOrMountedAttach({ mountPoint, mountIdentity, helperBaseline });
+      }
       if (sha256(readStableRegularFile(privateDmg, "private DMG")) !== expectedDmgDigest) {
         fail("private DMG bytes changed after detach");
       }
@@ -184,8 +274,7 @@ function capture({ dmg, sourceSha }) {
   if (!dmg.endsWith(".dmg")) fail("--dmg must name a local .dmg file");
   const sourceBytes = readStableRegularFile(dmg, "source DMG");
   const artifactDigest = sha256(sourceBytes);
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-dmg-persistence-proof-"));
-  fs.chmodSync(workspace, 0o700);
+  const workspace = createMacosProofWorkspace("batcave-dmg-persistence-proof-");
   const privateDmg = path.join(workspace, "candidate.dmg");
   const mountPoint = path.join(workspace, "mount");
   const installedApp = path.join(workspace, "Applications", "BatCave Monitor.app");
@@ -194,6 +283,7 @@ function capture({ dmg, sourceSha }) {
   const outsideSentinel = path.join(workspace, "outside-sentinel");
   const corruptSettings = Buffer.from('{"schema_version":1,"corrupt":"preserve-me"', "utf8");
   const sentinelBytes = crypto.randomBytes(32);
+  let failure;
 
   try {
     fs.mkdirSync(mountPoint, { mode: 0o700 });
@@ -291,10 +381,18 @@ function capture({ dmg, sourceSha }) {
     };
     validateCurrentUserPersistencePacket(packet);
     return packet;
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     sourceBytes.fill(0);
-    fs.rmSync(workspace, { recursive: true, force: true });
+    cleanupProofWorkspace(workspace, failure);
   }
+}
+
+function cleanupProofWorkspace(workspace, failure) {
+  if (failure?.retainDiskImagesAuthority === true) return;
+  fs.rmSync(workspace, { recursive: true, force: true });
 }
 
 function main(argv) {
@@ -319,10 +417,15 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 }
 
 export const macosDmgPersistenceCaptureInternals = {
+  cleanupProofWorkspace,
   copyMountedApplication,
+  directoryIdentity,
+  helperProcessIds,
+  mountInventoryContains,
   parseArgs,
   readStableRegularFile,
   sha256,
+  UnsettledDiskImagesError,
   withDiskImagesLock,
   writePrivateArtifact,
 };

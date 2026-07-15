@@ -24,7 +24,7 @@
       "package_kind": "dmg",
       "status": "native_candidate",
       "packet_path": "docs/evidence/persistence/package-candidates/macos-dmg-5ced31017975.json",
-      "packet_sha256": "sha256:e44d40b7d8176407ecbb98ff6df4009d282203a8bc155bc647901e4a417de85f"
+      "packet_sha256": "sha256:ca63f8bbf7e320f34ce2975f099e857bab938340907077ff34ed60f6381ba218"
     },
     {
       "id": "windows-nsis",
