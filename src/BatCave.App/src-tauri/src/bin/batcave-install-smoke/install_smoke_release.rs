@@ -861,7 +861,7 @@ fn validate_build_statement(
     {
         return Err(Failure::AttestationRejected);
     }
-    let actual = statement_subjects(statement, "sha256")?;
+    let actual = exact_build_subjects(statement)?;
     if actual != *expected_subjects {
         return Err(Failure::AttestationRejected);
     }
@@ -903,34 +903,20 @@ fn validate_release_statement(
     {
         return Err(Failure::AttestationRejected);
     }
-    let subjects = statement
-        .get("subject")
-        .and_then(serde_json::Value::as_array)
-        .ok_or(Failure::AttestationRejected)?;
-    let source = subjects
-        .iter()
-        .filter(|subject| {
-            subject
-                .pointer("/digest/sha1")
-                .and_then(serde_json::Value::as_str)
-                == Some(commit)
-        })
-        .count();
-    let assets = statement_subjects(statement, "sha256")?;
     let expected = release
         .assets
         .iter()
         .map(|asset| Ok((asset.name.clone(), digest_value(&asset.digest)?)))
         .collect::<Result<BTreeMap<_, _>, Failure>>()?;
-    if source != 1 || assets != expected {
+    let assets = exact_release_subjects(statement, tag, commit)?;
+    if assets != expected {
         return Err(Failure::AttestationRejected);
     }
     Ok(())
 }
 
-fn statement_subjects(
+fn exact_build_subjects(
     statement: &serde_json::Value,
-    algorithm: &str,
 ) -> Result<BTreeMap<String, String>, Failure> {
     let subjects = statement
         .get("subject")
@@ -938,26 +924,97 @@ fn statement_subjects(
         .ok_or(Failure::AttestationRejected)?;
     let mut result = BTreeMap::new();
     for subject in subjects {
-        let Some(digest) = subject
-            .get("digest")
-            .and_then(|value| value.get(algorithm))
+        if !has_exact_keys(subject, &["digest", "name"]) {
+            return Err(Failure::AttestationRejected);
+        }
+        let raw_name = subject
+            .get("name")
             .and_then(serde_json::Value::as_str)
-        else {
-            continue;
-        };
-        let Some(raw_name) = subject.get("name").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let name = raw_name.strip_prefix("./").unwrap_or(raw_name);
+            .ok_or(Failure::AttestationRejected)?;
+        let name = raw_name
+            .strip_prefix("./")
+            .ok_or(Failure::AttestationRejected)?;
         require_safe_name(name).map_err(|_| Failure::AttestationRejected)?;
-        if result
-            .insert(name.to_string(), digest.to_string())
-            .is_some()
-        {
+        let digest = exact_digest(subject, "sha256", 64)?;
+        if result.insert(name.to_string(), digest).is_some() {
             return Err(Failure::AttestationRejected);
         }
     }
     Ok(result)
+}
+
+fn exact_release_subjects(
+    statement: &serde_json::Value,
+    tag: &str,
+    commit: &str,
+) -> Result<BTreeMap<String, String>, Failure> {
+    let subjects = statement
+        .get("subject")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(Failure::AttestationRejected)?;
+    let expected_uri = format!("pkg:github/{REPOSITORY}@{tag}");
+    let mut source_count = 0usize;
+    let mut assets = BTreeMap::new();
+    for subject in subjects {
+        if has_exact_keys(subject, &["digest", "uri"]) {
+            if subject.get("uri").and_then(serde_json::Value::as_str) != Some(&expected_uri)
+                || exact_digest(subject, "sha1", 40)? != commit
+            {
+                return Err(Failure::AttestationRejected);
+            }
+            source_count += 1;
+            continue;
+        }
+        if !has_exact_keys(subject, &["digest", "name"]) {
+            return Err(Failure::AttestationRejected);
+        }
+        let name = subject
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(Failure::AttestationRejected)?;
+        require_safe_name(name).map_err(|_| Failure::AttestationRejected)?;
+        let digest = exact_digest(subject, "sha256", 64)?;
+        if assets.insert(name.to_string(), digest).is_some() {
+            return Err(Failure::AttestationRejected);
+        }
+    }
+    if source_count != 1 {
+        return Err(Failure::AttestationRejected);
+    }
+    Ok(assets)
+}
+
+fn exact_digest(
+    subject: &serde_json::Value,
+    algorithm: &str,
+    length: usize,
+) -> Result<String, Failure> {
+    let digest = subject
+        .get("digest")
+        .and_then(serde_json::Value::as_object)
+        .ok_or(Failure::AttestationRejected)?;
+    if digest.len() != 1 {
+        return Err(Failure::AttestationRejected);
+    }
+    let value = digest
+        .get(algorithm)
+        .and_then(serde_json::Value::as_str)
+        .ok_or(Failure::AttestationRejected)?;
+    if value.len() != length
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(Failure::AttestationRejected);
+    }
+    Ok(value.to_string())
+}
+
+fn has_exact_keys(value: &serde_json::Value, expected: &[&str]) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.len() == expected.len() && expected.iter().all(|key| object.contains_key(*key))
 }
 
 #[cfg(test)]
@@ -1094,6 +1151,62 @@ mod tests {
         )
     }
 
+    fn build_statement(subjects: &BTreeMap<String, String>) -> serde_json::Value {
+        serde_json::json!({
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": subjects.iter().map(|(name, digest)| serde_json::json!({
+                "name": format!("./{name}"),
+                "digest": { "sha256": digest },
+            })).collect::<Vec<_>>(),
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "predicate": {
+                "buildDefinition": {
+                    "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+                    "externalParameters": { "workflow": {
+                        "repository": "https://github.com/TheGreenCedar/BatCave",
+                        "ref": SOURCE_REF,
+                        "path": WORKFLOW_PATH,
+                    }},
+                    "internalParameters": { "github": {
+                        "runner_environment": "github-hosted",
+                        "repository_id": REPOSITORY_ID,
+                        "repository_owner_id": OWNER_ID,
+                    }},
+                    "resolvedDependencies": [{
+                        "uri": "git+https://github.com/TheGreenCedar/BatCave@refs/heads/main",
+                        "digest": { "gitCommit": SHA },
+                    }],
+                },
+                "runDetails": { "builder": { "id": WORKFLOW_IDENTITY } },
+            },
+        })
+    }
+
+    fn release_statement(release: &ReleaseReadback) -> serde_json::Value {
+        let mut subjects = vec![serde_json::json!({
+            "uri": format!("pkg:github/{REPOSITORY}@{TAG}"),
+            "digest": { "sha1": SHA },
+        })];
+        subjects.extend(release.assets.iter().map(|asset| {
+            serde_json::json!({
+                "name": asset.name,
+                "digest": { "sha256": digest_value(&asset.digest).unwrap() },
+            })
+        }));
+        serde_json::json!({
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": subjects,
+            "predicateType": "https://in-toto.io/attestation/release/v0.1",
+            "predicate": {
+                "ownerId": OWNER_ID,
+                "releaseId": release.id.to_string(),
+                "repository": REPOSITORY,
+                "repositoryId": REPOSITORY_ID,
+                "tag": TAG,
+            },
+        })
+    }
+
     #[test]
     fn complete_verification_retains_selected_bytes_then_stops_without_native_proof() {
         let (source, trust) = fixture();
@@ -1153,6 +1266,64 @@ mod tests {
         trust.build_ok = false;
         assert_eq!(
             execute(TAG, "linux-deb", &source, &trust, false),
+            Err(Failure::AttestationRejected)
+        );
+    }
+
+    #[test]
+    fn build_attestation_rejects_extra_or_multi_algorithm_subjects() {
+        let expected = BTreeMap::from([
+            ("asset-a".to_string(), "a".repeat(64)),
+            ("asset-b".to_string(), "b".repeat(64)),
+        ]);
+        let valid = build_statement(&expected);
+        assert!(validate_build_statement(&valid, &expected, SHA).is_ok());
+
+        let mut extra = valid.clone();
+        extra["subject"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "./ignored",
+                "digest": { "sha512": "c".repeat(128) },
+            }));
+        assert_eq!(
+            validate_build_statement(&extra, &expected, SHA),
+            Err(Failure::AttestationRejected)
+        );
+
+        let mut multi = valid;
+        multi["subject"][0]["digest"]["sha512"] = serde_json::json!("d".repeat(128));
+        assert_eq!(
+            validate_build_statement(&multi, &expected, SHA),
+            Err(Failure::AttestationRejected)
+        );
+    }
+
+    #[test]
+    fn release_attestation_rejects_extra_or_multi_algorithm_subjects() {
+        let (source, _) = fixture();
+        let release = source.releases.borrow()[0].clone();
+        let valid = release_statement(&release);
+        assert!(validate_release_statement(&valid, TAG, SHA, &release).is_ok());
+
+        let mut extra = valid.clone();
+        extra["subject"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "ignored",
+                "digest": { "sha512": "e".repeat(128) },
+            }));
+        assert_eq!(
+            validate_release_statement(&extra, TAG, SHA, &release),
+            Err(Failure::AttestationRejected)
+        );
+
+        let mut multi = valid;
+        multi["subject"][1]["digest"]["sha512"] = serde_json::json!("f".repeat(128));
+        assert_eq!(
+            validate_release_statement(&multi, TAG, SHA, &release),
             Err(Failure::AttestationRejected)
         );
     }
