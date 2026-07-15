@@ -222,7 +222,9 @@ pub(super) enum Failure {
     AttestationRejected,
     ReadbackDrift,
     CleanupFailed,
+    #[cfg(any(target_os = "macos", test))]
     MaterializationAndCleanupFailed,
+    #[cfg(any(target_os = "macos", test))]
     VerificationAndCleanupFailed,
     AuthorityRejected,
 }
@@ -293,7 +295,9 @@ fn public_failure(failure: Failure) -> (SanitizedOutcome, i32) {
         Failure::Offline => "offline",
         Failure::Timeout => "timeout",
         Failure::CleanupFailed => "cleanup_failed",
+        #[cfg(any(target_os = "macos", test))]
         Failure::MaterializationAndCleanupFailed => "materialization_and_cleanup_failed",
+        #[cfg(any(target_os = "macos", test))]
         Failure::VerificationAndCleanupFailed => "verification_and_cleanup_failed",
         _ => "public_release_verification_failed",
     };
@@ -324,10 +328,12 @@ struct VerifiedArtifact {
     release: ReleaseReadback,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     selected: ReleaseAsset,
+    #[cfg(target_os = "macos")]
     updater_signature: Option<BoundUpdaterSignature>,
     artifact: BoundArtifact,
 }
 
+#[cfg(target_os = "macos")]
 struct BoundUpdaterSignature {
     asset: ReleaseAsset,
     bytes: Vec<u8>,
@@ -335,17 +341,7 @@ struct BoundUpdaterSignature {
 
 impl VerifiedArtifact {
     pub(super) fn finish_without_native(self) -> Result<SanitizedOutcome, Failure> {
-        let Self {
-            profile: _,
-            tag: _,
-            version: _,
-            source_sha: _,
-            release: _,
-            selected: _,
-            updater_signature: _,
-            artifact,
-        } = self;
-        artifact.finish_without_native()
+        self.artifact.finish_without_native()
     }
 
     #[cfg(target_os = "linux")]
@@ -700,6 +696,7 @@ fn verify_and_bind(
         if digest_hex(&selected_bytes) != digest_value(&selected.digest)? {
             return Err(Failure::AuthorityRejected);
         }
+        #[cfg(target_os = "macos")]
         let updater_signature = if profile == Profile::MacOsUpdater {
             let signature_name = format!("{}.sig", selected.name);
             let asset = before
@@ -736,6 +733,7 @@ fn verify_and_bind(
             source_sha: commit,
             release: before,
             selected,
+            #[cfg(target_os = "macos")]
             updater_signature,
             artifact: BoundArtifact::new(selected_bytes),
         })
