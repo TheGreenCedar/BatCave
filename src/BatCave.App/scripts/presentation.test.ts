@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { buildResourceBrief, resolveContributorProcess } from "../src/lib/cockpit.ts";
 import {
@@ -806,6 +806,14 @@ test("compact workload controls expose the active sort direction", () => {
   assert.match(commandBar, /onclick=\{onToggleDirection\}/);
   assert.match(app, /function toggleSortDirection\(\): void/);
   assert.match(app, /onToggleDirection=\{toggleSortDirection\}/);
+});
+
+test("the frontend entrypoint uses one authoritative product stylesheet", () => {
+  const entrypoint = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+
+  assert.match(entrypoint, /import "\.\/styles\/redesign\.css";/);
+  assert.doesNotMatch(entrypoint, /components\.css/);
+  assert.equal(existsSync(new URL("../src/styles/components.css", import.meta.url)), false);
 });
 
 test("process fallback icon categories are deterministic", () => {

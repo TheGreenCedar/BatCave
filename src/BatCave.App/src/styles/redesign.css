@@ -1166,6 +1166,10 @@ dialog.detail-pane::backdrop {
   white-space: nowrap;
 }
 
+.redesigned-identity > span strong {
+  color: var(--text);
+}
+
 .redesigned-identity > span small {
   color: var(--text-muted);
   font-size: var(--text-xs);
@@ -1417,6 +1421,7 @@ dialog.detail-pane::backdrop {
 
 .inspector-hero-chart strong,
 .detail-hero-chart strong {
+  color: var(--text);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
@@ -1569,7 +1574,12 @@ dialog.detail-pane::backdrop {
 
 .core-distribution h3 {
   margin: 0;
+  color: var(--text);
   font-size: var(--text-sm);
+}
+
+.core-distribution > header > span {
+  color: var(--text-muted);
 }
 
 .core-bars {
