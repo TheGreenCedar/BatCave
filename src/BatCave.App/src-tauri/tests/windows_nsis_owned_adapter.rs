@@ -335,8 +335,8 @@ fn delete_exact_leaf(
         }
     }
     mark_delete(handle.as_raw_handle() as HANDLE)?;
-    // Windows removes the pending name from the link count immediately. Zero
-    // therefore proves this was the sole link while delete-pending blocks new ones.
+    // Windows removes the pending original name from the link count immediately.
+    // Zero proves no external name remains through which another link can be added.
     let delete_pending_information =
         file_information(&handle).map_err(|_| FailureKind::CleanupFailed)?;
     if delete_pending_information.identity != expected_identity
