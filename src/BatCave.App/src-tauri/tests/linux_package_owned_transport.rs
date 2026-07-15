@@ -904,13 +904,15 @@ mod linux {
         }
     }
 
+    struct UnsettledProbe {
+        diagnostic: String,
+        process: ProbeProcess,
+        subreaper: SubreaperGuard,
+    }
+
     enum ProbeFailure {
         Settled(String),
-        Unsettled {
-            diagnostic: String,
-            process: ProbeProcess,
-            subreaper: SubreaperGuard,
-        },
+        Unsettled(Box<UnsettledProbe>),
     }
 
     impl ProbeFailure {
@@ -926,11 +928,11 @@ mod linux {
                     if process.settled {
                         Self::Settled(diagnostic)
                     } else {
-                        Self::Unsettled {
+                        Self::Unsettled(Box::new(UnsettledProbe {
                             diagnostic,
                             process,
                             subreaper,
-                        }
+                        }))
                     }
                 }
             }
@@ -938,7 +940,8 @@ mod linux {
 
         fn diagnostic(&self) -> &str {
             match self {
-                Self::Settled(diagnostic) | Self::Unsettled { diagnostic, .. } => diagnostic,
+                Self::Settled(diagnostic) => diagnostic,
+                Self::Unsettled(probe) => &probe.diagnostic,
             }
         }
 
@@ -958,10 +961,7 @@ mod linux {
             formatter
                 .debug_struct("ProbeFailure")
                 .field("diagnostic", &self.diagnostic())
-                .field(
-                    "ownership_retained",
-                    &matches!(self, Self::Unsettled { .. }),
-                )
+                .field("ownership_retained", &matches!(self, Self::Unsettled(_)))
                 .finish()
         }
     }
@@ -1071,7 +1071,7 @@ mod linux {
 
     enum OwnedOperationError {
         Settled(String),
-        Retained(RetainedOperation),
+        Retained(Box<RetainedOperation>),
     }
 
     impl OwnedOperationError {
@@ -1184,7 +1184,7 @@ mod linux {
         }
         let mut writable = unsafe { File::from_raw_fd(raw_fd) };
         writable
-            .write_all(&bytes)
+            .write_all(bytes)
             .map_err(|error| format!("owned artifact write failed: {error}"))?;
         writable
             .flush()
@@ -2192,17 +2192,20 @@ mod linux {
             Err(ProbeFailure::Settled(error)) => root
                 .finish::<T>(Err(error))
                 .map_err(OwnedOperationError::Settled),
-            Err(ProbeFailure::Unsettled {
-                diagnostic,
-                process,
-                subreaper,
-            }) => Err(OwnedOperationError::Retained(RetainedOperation {
-                artifact: Some(artifact),
-                root: Some(root),
-                process: Some(process),
-                subreaper: Some(subreaper),
-                diagnostic,
-            })),
+            Err(ProbeFailure::Unsettled(unsettled)) => {
+                let UnsettledProbe {
+                    diagnostic,
+                    process,
+                    subreaper,
+                } = *unsettled;
+                Err(OwnedOperationError::Retained(Box::new(RetainedOperation {
+                    artifact: Some(artifact),
+                    root: Some(root),
+                    process: Some(process),
+                    subreaper: Some(subreaper),
+                    diagnostic,
+                })))
+            }
         }
     }
 
@@ -2231,6 +2234,18 @@ mod linux {
         assert!(
             !path.exists(),
             "explicit cleanup retry removes injected cleanup residue"
+        );
+    }
+
+    #[test]
+    fn unsettled_authority_stays_out_of_line_at_error_boundaries() {
+        assert!(
+            std::mem::size_of::<ProbeFailure>() < std::mem::size_of::<UnsettledProbe>(),
+            "probe failures must not move live process authority inline"
+        );
+        assert!(
+            std::mem::size_of::<OwnedOperationError>() < std::mem::size_of::<RetainedOperation>(),
+            "operation errors must not move retained artifact/process/root authority inline"
         );
     }
 
