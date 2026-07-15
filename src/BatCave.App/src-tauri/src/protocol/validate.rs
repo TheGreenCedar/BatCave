@@ -751,7 +751,7 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
                 || service
                     .minimum_desktop_version
                     .as_deref()
-                    .is_none_or(|value| value.trim().is_empty()))
+                    .is_some_and(|value| value.trim().is_empty()))
         {
             return Err("protocol_collector_service_incompatible_version_invalid".to_string());
         }

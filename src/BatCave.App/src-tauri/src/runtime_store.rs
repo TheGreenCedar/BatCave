@@ -41,7 +41,7 @@ use crate::{
         DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
     },
     runtime_provenance::RuntimeProvenance,
-    telemetry::now_ms,
+    telemetry::{now_ms, TelemetrySampleProvenance},
 };
 
 #[cfg(test)]
@@ -1062,6 +1062,7 @@ struct RuntimeStore {
     publication_seq: u64,
     sample_seq: u64,
     sampled_at_ms: Option<u64>,
+    last_sample_provenance: Option<TelemetrySampleProvenance>,
     elevated_helper_rows_published: bool,
     last_verified_elevated_frame: Option<VerifiedElevatedFrame>,
     process_access_baseline_dirty: bool,
@@ -1288,6 +1289,7 @@ impl RuntimeStore {
             publication_seq,
             sample_seq: 0,
             sampled_at_ms: None,
+            last_sample_provenance: None,
             elevated_helper_rows_published: false,
             last_verified_elevated_frame: None,
             process_access_baseline_dirty: false,
@@ -1575,14 +1577,30 @@ impl RuntimeStore {
         &mut self,
         sample: crate::telemetry::TelemetrySample,
         raw_collection_latency_ms: f64,
-        sample_ts_ms: u64,
+        completed_at_ms: u64,
         collector: &dyn ProcessNetworkControl,
     ) -> Instant {
+        let processing_started = Instant::now();
+        let source_provenance = sample.source_provenance.clone();
+        let sample_ts_ms = source_provenance
+            .as_ref()
+            .map_or(completed_at_ms, |provenance| provenance.sampled_at_ms);
+        let source_unchanged = source_provenance.is_some()
+            && source_provenance.as_ref() == self.last_sample_provenance.as_ref();
         let service_active =
             self.apply_collector_service_status(sample.collector_service.clone(), sample_ts_ms);
+        if source_unchanged {
+            self.sync_collector_warnings(sample.warnings);
+            self.record_collection_latency_ms(
+                raw_collection_latency_ms + processing_started.elapsed().as_secs_f64() * 1_000.0,
+            );
+            let publication_started = Instant::now();
+            self.publish_snapshot_only(None);
+            return publication_started;
+        }
+        self.last_sample_provenance = source_provenance;
         let previous_process_baseline_live = self.live_process_snapshot;
         self.live_process_snapshot = false;
-        let processing_started = Instant::now();
         self.collector_state = Some(sample.collector_state);
 
         let mut active_collector_warnings = sample.warnings;
@@ -4074,6 +4092,7 @@ mod tests {
                     processes: vec![sample("10", "Fake", count as f64)],
                     warnings: Vec::new(),
                     collector_service: None,
+                    source_provenance: None,
                 }),
                 FakeOutcome::Unavailable(error) => {
                     Err(CollectionFailure::Unavailable(error.to_string()))
@@ -4155,6 +4174,7 @@ mod tests {
                     processes: Vec::new(),
                     warnings: Vec::new(),
                     collector_service: None,
+                    source_provenance: None,
                 })),
                 collection_latency_ms: 0.0,
                 cadence: CollectorCadence::default(),
@@ -6379,6 +6399,93 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_service_snapshot_publishes_heartbeat_without_reapplying_counters() {
+        let base_dir = runtime_test_dir("collector-service-unchanged-snapshot");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+
+        let service_sample = |source_sample_seq, sampled_at_ms, received_total_bytes| {
+            let mut system = empty_system();
+            system.network_received_total_bytes = received_total_bytes;
+            crate::telemetry::TelemetrySample {
+                latency_ms: 1,
+                collector_state: RuntimeCollectorState::Healthy,
+                system,
+                processes: Vec::new(),
+                warnings: Vec::new(),
+                collector_service: Some(crate::contracts::RuntimeCollectorServiceStatus {
+                    state: RuntimeCollectorServiceState::Active,
+                    release_identity: Some(crate::contracts::RuntimeReleaseIdentity {
+                        app_version: env!("CARGO_PKG_VERSION").to_string(),
+                        source_commit_sha: None,
+                    }),
+                    service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    negotiated_protocol_version: Some(
+                        crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                    ),
+                    minimum_desktop_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    instance_id: Some("service-instance-1".to_string()),
+                    last_connected_at_ms: Some(sampled_at_ms),
+                    detail: None,
+                }),
+                source_provenance: Some(crate::telemetry::TelemetrySampleProvenance {
+                    source_instance_id: "service-instance-1".to_string(),
+                    source_sample_seq,
+                    sampled_at_ms,
+                }),
+            }
+        };
+
+        store.note_heartbeat_at(10_000);
+        store.apply_raw_sample(
+            service_sample(1, 1_000, 10_000),
+            1.0,
+            10_000,
+            &NOOP_PROCESS_NETWORK_CONTROL,
+        );
+        let first_publication_seq = store.publication_seq;
+        let first_sample_seq = store.sample_seq;
+
+        store.note_heartbeat_at(10_500);
+        store.apply_raw_sample(
+            service_sample(1, 1_000, 10_000),
+            1.0,
+            10_500,
+            &NOOP_PROCESS_NETWORK_CONTROL,
+        );
+
+        assert_eq!(store.publication_seq, first_publication_seq + 1);
+        assert_eq!(store.sample_seq, first_sample_seq);
+        assert_eq!(store.sampled_at_ms, Some(1_000));
+        assert_eq!(store.last_heartbeat_at_ms, Some(10_500));
+        assert_eq!(store.snapshot.system.network_received_total_bytes, 10_000);
+        assert_eq!(store.snapshot.system.network_received_bps, 0);
+        assert_eq!(
+            store.previous_totals.as_ref().map(|totals| totals.ts_ms),
+            Some(1_000)
+        );
+
+        store.note_heartbeat_at(11_000);
+        store.apply_raw_sample(
+            service_sample(2, 2_000, 11_000),
+            1.0,
+            11_000,
+            &NOOP_PROCESS_NETWORK_CONTROL,
+        );
+
+        assert_eq!(store.sample_seq, first_sample_seq + 1);
+        assert_eq!(store.sampled_at_ms, Some(2_000));
+        assert_eq!(store.snapshot.system.network_received_total_bytes, 11_000);
+        assert_eq!(store.snapshot.system.network_received_bps, 1_000);
+        assert_eq!(
+            store.previous_totals.as_ref().map(|totals| totals.ts_ms),
+            Some(2_000)
+        );
+
+        let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
     fn negotiated_not_ready_fallback_round_trips_through_runtime_protocol() {
         let base_dir = runtime_test_dir("collector-service-not-ready");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
@@ -6413,6 +6520,7 @@ mod tests {
                         .to_string(),
                 ],
                 collector_service: Some(status),
+                source_provenance: None,
             },
             1.0,
             sampled_at_ms,
@@ -6543,6 +6651,7 @@ mod tests {
                         failure.detail
                     )],
                     collector_service: Some(status),
+                    source_provenance: None,
                 },
                 1.0,
                 sampled_at_ms,
@@ -6569,7 +6678,7 @@ mod tests {
                 decoded.pointer(
                     "/event/payload/privileged_collection/collector_service/minimum_desktop_version"
                 ),
-                Some(&serde_json::json!(env!("CARGO_PKG_VERSION")))
+                Some(&serde_json::Value::Null)
             );
             let _ = fs::remove_dir_all(base_dir);
         }

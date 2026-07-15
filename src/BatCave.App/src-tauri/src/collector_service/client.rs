@@ -9,7 +9,7 @@ use crate::{
         RuntimeCollectorServiceStatus, RuntimeReleaseIdentity, SystemMemoryAccounting,
         SystemMetricQuality, SystemMetricsSnapshot,
     },
-    telemetry::TelemetrySample,
+    telemetry::{TelemetrySample, TelemetrySampleProvenance},
 };
 
 #[cfg(windows)]
@@ -290,13 +290,7 @@ pub(crate) fn status_from_failure(
         release_identity,
         service_version: version.clone(),
         negotiated_protocol_version: identity.map(|identity| identity.protocol_version),
-        minimum_desktop_version: identity
-            .map(|identity| identity.minimum_desktop_version.clone())
-            .or_else(|| {
-                (state == RuntimeCollectorServiceState::Incompatible)
-                    .then_some(version)
-                    .flatten()
-            }),
+        minimum_desktop_version: identity.map(|identity| identity.minimum_desktop_version.clone()),
         instance_id: identity.map(|identity| identity.instance_id.clone()),
         last_connected_at_ms: identity.map(|_| now_ms()),
         detail: Some(failure.detail.clone()),
@@ -336,6 +330,11 @@ fn sample_from_snapshot(
     snapshot: CollectorSnapshotV1,
     status: RuntimeCollectorServiceStatus,
 ) -> TelemetrySample {
+    let source_provenance = TelemetrySampleProvenance {
+        source_instance_id: snapshot.service_instance_id.clone(),
+        source_sample_seq: snapshot.sample_seq,
+        sampled_at_ms: snapshot.sampled_at_ms,
+    };
     let system = snapshot.system;
     TelemetrySample {
         latency_ms: snapshot.collection_latency_ms,
@@ -418,6 +417,7 @@ fn sample_from_snapshot(
             .collect(),
         warnings: snapshot.warnings,
         collector_service: Some(status),
+        source_provenance: Some(source_provenance),
     }
 }
 
@@ -605,6 +605,12 @@ mod tests {
                         },
                     )),
                 ),
+                response(
+                    4,
+                    ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                        snapshot("instance-1", 8),
+                    ))),
+                ),
             ]),
             requests: Vec::new(),
         };
@@ -612,8 +618,19 @@ mod tests {
         let mut session = ServiceClientSession::connect(transport).unwrap();
         let first = session.latest_sample().unwrap();
         let held = session.latest_sample().unwrap();
+        let next = session.latest_sample().unwrap();
         assert_eq!(first.system.process_count, 0);
         assert_eq!(held.system.cpu_percent, first.system.cpu_percent);
+        assert_eq!(held.source_provenance, first.source_provenance);
+        assert_ne!(next.source_provenance, first.source_provenance);
+        assert_eq!(
+            first.source_provenance,
+            Some(TelemetrySampleProvenance {
+                source_instance_id: "instance-1".to_string(),
+                source_sample_seq: 7,
+                sampled_at_ms: 7_000,
+            })
+        );
         assert_eq!(
             held.collector_service.unwrap().state,
             RuntimeCollectorServiceState::Active
@@ -641,7 +658,7 @@ mod tests {
         let status = status_from_failure(&failure, false);
         assert_eq!(status.state, RuntimeCollectorServiceState::Incompatible);
         assert!(status.service_version.is_some());
-        assert!(status.minimum_desktop_version.is_some());
+        assert!(status.minimum_desktop_version.is_none());
     }
 
     #[test]
@@ -760,7 +777,7 @@ mod tests {
             snapshot_schema_version: super::super::protocol::COLLECTOR_SNAPSHOT_SCHEMA_VERSION,
             service_instance_id: instance_id.to_string(),
             sample_seq,
-            sampled_at_ms: 1,
+            sampled_at_ms: sample_seq * 1_000,
             collection_latency_ms: 2,
             collector_state: RuntimeCollectorState::Healthy,
             system: super::super::protocol::CollectorSystemV1 {

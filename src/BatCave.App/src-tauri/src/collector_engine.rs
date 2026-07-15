@@ -945,6 +945,7 @@ mod tests {
                     processes: Vec::new(),
                     warnings: Vec::new(),
                     collector_service: None,
+                    source_provenance: None,
                 }),
                 FakeOutcome::Unavailable(error) => {
                     Err(CollectionFailure::Unavailable(error.to_string()))

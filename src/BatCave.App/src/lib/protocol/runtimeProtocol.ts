@@ -790,8 +790,8 @@ function validateCollectorService(
     service.state === "incompatible" &&
     (typeof service.service_version !== "string" ||
       service.service_version.trim().length === 0 ||
-      typeof service.minimum_desktop_version !== "string" ||
-      service.minimum_desktop_version.trim().length === 0)
+      (service.minimum_desktop_version !== null &&
+        service.minimum_desktop_version.trim().length === 0))
   )
     return "Incompatible collector-service status lacks version detail.";
   if (

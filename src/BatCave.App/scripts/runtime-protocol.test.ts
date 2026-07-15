@@ -506,6 +506,26 @@ test("reader rejects descriptor, value, and membership corruption", () => {
     );
   }
 
+  const incompatibleWithoutMinimum = structuredClone(windows);
+  payload(incompatibleWithoutMinimum).privileged_collection.collector_service = {
+    state: "incompatible",
+    release_identity: { app_version: "1.0.0", source_commit_sha: null },
+    service_version: "1.0.0",
+    negotiated_protocol_version: null,
+    minimum_desktop_version: null,
+    instance_id: null,
+    last_connected_at_ms: null,
+    detail: "collector_service_release_incompatible",
+  };
+  assert.equal(decodeProtocolEnvelope(incompatibleWithoutMinimum).kind, "snapshot");
+
+  const incompatibleWithEmptyMinimum = structuredClone(incompatibleWithoutMinimum);
+  const incompatibleService = payload(incompatibleWithEmptyMinimum).privileged_collection
+    .collector_service;
+  assert.ok(incompatibleService);
+  incompatibleService.minimum_desktop_version = " ";
+  assertMismatch(incompatibleWithEmptyMinimum, "lacks version detail");
+
   const resourceVersionOnlyService = structuredClone(matchingActiveService);
   payload(resourceVersionOnlyService).environment.release_identity.source_commit_sha = "a".repeat(
     40,

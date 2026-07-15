@@ -679,6 +679,7 @@ mod tests {
             processes: vec![process],
             warnings: Vec::new(),
             collector_service: None,
+            source_provenance: None,
         }
     }
 

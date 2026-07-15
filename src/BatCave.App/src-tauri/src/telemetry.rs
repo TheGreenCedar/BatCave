@@ -44,6 +44,14 @@ pub struct TelemetrySample {
     pub processes: Vec<ProcessSample>,
     pub warnings: Vec<String>,
     pub collector_service: Option<RuntimeCollectorServiceStatus>,
+    pub source_provenance: Option<TelemetrySampleProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetrySampleProvenance {
+    pub source_instance_id: String,
+    pub source_sample_seq: u64,
+    pub sampled_at_ms: u64,
 }
 
 pub struct TelemetryCollector {
@@ -223,6 +231,7 @@ impl TelemetryCollector {
             processes,
             warnings,
             collector_service: None,
+            source_provenance: None,
         })
     }
 
@@ -298,6 +307,7 @@ impl TelemetryCollector {
             processes,
             warnings,
             collector_service: None,
+            source_provenance: None,
         })
     }
 }
