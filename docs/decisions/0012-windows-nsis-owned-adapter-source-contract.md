@@ -6,11 +6,11 @@
 
 ## Decision
 
-Keep the Windows NSIS slice test-only until a signed public installer can run through the complete standard-user install and uninstall gates. The source contract owns one inert executable image in a private root, retains a read handle that blocks write/delete replacement, launches only that image with a fixed command line and empty environment, assigns the suspended child to a kill-on-close job before it can execute, and rehashes the same handle after the complete job settles.
+Keep the Windows NSIS slice test-only until a signed public installer can run through the complete standard-user install and uninstall gates. The source contract owns one inert executable image in a private root, retains a read handle that blocks write/delete replacement, launches only that image with a fixed command line and empty environment, assigns the suspended child to a kill-on-close job before it can execute, and rehashes the same handle after the complete job settles. Cleanup records the image's stable file identity, keeps a no-delete-share handle on the exact root, reopens and revalidates the exact leaf with delete authority, and deletes both the leaf and root by handle. It never releases both ownership handles and then follows the old pathname for recursive deletion.
 
 The entry accepts only a private hostile scenario. It has no caller command, executable, path, argument, environment, status, observation, receipt, or evidence input. UAC denial is represented only as a pre-child source state; this suite does not request elevation.
 
-Denial, timeout, child failure, residue, ownership failure, and cleanup failure remain separate. Timeout terminates the entire job and waits for zero active processes. Source evidence is constructed only after child-tree settlement, byte revalidation, residue evaluation, and private-root cleanup.
+Denial, timeout, child failure, residue, ownership failure, and cleanup failure remain separate. Timeout terminates the entire job and waits for zero active processes. A pathname or stable-identity mismatch fails cleanup without deleting the replacement. Source evidence is constructed only after child-tree settlement, byte revalidation, residue evaluation, and handle-authorized private-root cleanup.
 
 ## Proof boundary
 

@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
@@ -14,8 +15,9 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_CANCELLED, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
+    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
@@ -91,6 +93,19 @@ struct OwnedImage {
     handle: File,
     size: u64,
     sha256: [u8; 32],
+    identity: FileIdentity,
+    cleanup_leaves: Vec<OwnedCleanupLeaf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    volume_serial: u32,
+    file_index: u64,
+}
+
+struct OwnedCleanupLeaf {
+    path: PathBuf,
+    identity: FileIdentity,
 }
 
 impl OwnedImage {
@@ -127,6 +142,7 @@ impl OwnedImage {
         if observed != sha256 {
             return Err(FailureKind::OwnershipFailed);
         }
+        let identity = file_identity(&handle).map_err(|_| FailureKind::OwnershipFailed)?;
         Ok(Self {
             root,
             root_handle,
@@ -134,6 +150,8 @@ impl OwnedImage {
             handle,
             size: bytes.len() as u64,
             sha256,
+            identity,
+            cleanup_leaves: Vec::new(),
         })
     }
 
@@ -152,10 +170,62 @@ impl OwnedImage {
         Ok(())
     }
 
+    fn add_owned_residue(&mut self) -> Result<(), FailureKind> {
+        let path = self.root.join("unexpected.residue");
+        let mut writer = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .map_err(|_| FailureKind::OwnershipFailed)?;
+        writer
+            .write_all(b"owned hostile residue")
+            .and_then(|_| writer.sync_all())
+            .map_err(|_| FailureKind::OwnershipFailed)?;
+        drop(writer);
+        let handle = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .map_err(|_| FailureKind::OwnershipFailed)?;
+        let identity = file_identity(&handle).map_err(|_| FailureKind::OwnershipFailed)?;
+        self.cleanup_leaves
+            .push(OwnedCleanupLeaf { path, identity });
+        Ok(())
+    }
+
     fn cleanup(self) -> Result<(), FailureKind> {
-        drop(self.handle);
-        drop(self.root_handle);
-        fs::remove_dir_all(&self.root).map_err(|_| FailureKind::CleanupFailed)
+        self.cleanup_with_hook(|_| {})
+    }
+
+    fn cleanup_with_hook<F>(mut self, before_root_delete: F) -> Result<(), FailureKind>
+    where
+        F: FnOnce(&Path),
+    {
+        self.revalidate()?;
+        let OwnedImage {
+            root,
+            root_handle,
+            path,
+            handle,
+            size,
+            sha256,
+            identity,
+            cleanup_leaves,
+        } = self;
+        drop(handle);
+
+        delete_exact_leaf(&path, identity, Some((size, sha256)))?;
+        for leaf in cleanup_leaves {
+            delete_exact_leaf(&leaf.path, leaf.identity, None)?;
+        }
+
+        before_root_delete(&root);
+        root_handle.delete()?;
+        if root.exists() {
+            return Err(FailureKind::CleanupFailed);
+        }
+        Ok(())
     }
 }
 
@@ -167,7 +237,7 @@ impl RootHandle {
         let handle = unsafe {
             CreateFileW(
                 path.as_ptr(),
-                FILE_READ_ATTRIBUTES,
+                FILE_READ_ATTRIBUTES | DELETE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 null(),
                 OPEN_EXISTING,
@@ -179,6 +249,12 @@ impl RootHandle {
             return Err(FailureKind::OwnershipFailed);
         }
         Ok(Self(handle))
+    }
+
+    fn delete(self) -> Result<(), FailureKind> {
+        mark_delete(self.0)?;
+        drop(self);
+        Ok(())
     }
 }
 
@@ -201,6 +277,59 @@ fn digest_handle(file: &mut File) -> std::io::Result<[u8; 32]> {
     }
     file.seek(SeekFrom::Start(0))?;
     Ok(hash.finalize().into())
+}
+
+fn file_identity(file: &File) -> std::io::Result<FileIdentity> {
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(FileIdentity {
+        volume_serial: information.dwVolumeSerialNumber,
+        file_index: (u64::from(information.nFileIndexHigh) << 32)
+            | u64::from(information.nFileIndexLow),
+    })
+}
+
+fn delete_exact_leaf(
+    path: &Path,
+    expected_identity: FileIdentity,
+    expected_content: Option<(u64, [u8; 32])>,
+) -> Result<(), FailureKind> {
+    let mut handle = OpenOptions::new()
+        .access_mode(FILE_GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .map_err(|_| FailureKind::CleanupFailed)?;
+    if file_identity(&handle).map_err(|_| FailureKind::CleanupFailed)? != expected_identity {
+        return Err(FailureKind::CleanupFailed);
+    }
+    if let Some((size, sha256)) = expected_content {
+        let metadata = handle.metadata().map_err(|_| FailureKind::CleanupFailed)?;
+        if metadata.len() != size
+            || digest_handle(&mut handle).map_err(|_| FailureKind::CleanupFailed)? != sha256
+        {
+            return Err(FailureKind::CleanupFailed);
+        }
+    }
+    mark_delete(handle.as_raw_handle() as HANDLE)?;
+    drop(handle);
+    Ok(())
+}
+
+fn mark_delete(handle: HANDLE) -> Result<(), FailureKind> {
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileDispositionInfo,
+            &disposition as *const _ as _,
+            std::mem::size_of_val(&disposition) as u32,
+        )
+    };
+    (ok != 0).then_some(()).ok_or(FailureKind::CleanupFailed)
 }
 
 struct Job(HANDLE);
@@ -464,9 +593,10 @@ fn run(scenario: Scenario) -> Outcome {
             Ok((timed_out, _)) if timed_out => (Some(FailureKind::TimedOut), true, true, true),
             Ok((_, false)) => (Some(FailureKind::ChildFailed), true, true, true),
             Ok((_, true)) if matches!(scenario, Scenario::Residue) => {
-                let residue = image.root.join("unexpected.residue");
-                let _ = fs::write(residue, b"owned hostile residue");
-                (Some(FailureKind::Residue), true, true, true)
+                match image.add_owned_residue() {
+                    Ok(()) => (Some(FailureKind::Residue), true, true, true),
+                    Err(failure) => (Some(failure), true, false, false),
+                }
             }
             Ok((_, true)) => (None, true, true, true),
             Err(failure) => (Some(failure), true, false, false),
@@ -619,7 +749,22 @@ fn owned_handle_blocks_replacement_and_deletion_until_settlement() {
 }
 
 #[test]
-fn assignment_and_primary_termination_failure_retain_handles_until_recovery_settles() {
+fn handle_authorized_cleanup_blocks_root_swap_at_the_deletion_seam() {
+    let image = OwnedImage::acquire().expect("owned image");
+    let root = image.root.clone();
+    let moved = root.with_extension("moved");
+    image
+        .cleanup_with_hook(|owned_root| {
+            assert!(fs::rename(owned_root, &moved).is_err());
+            assert!(fs::create_dir(owned_root).is_err());
+        })
+        .expect("handle-authorized cleanup");
+    assert!(!root.exists());
+    assert!(!moved.exists());
+}
+
+#[test]
+fn unassigned_suspended_child_and_primary_termination_failure_retain_handles_until_settlement() {
     let mut image = OwnedImage::acquire().expect("owned image");
     let job = Job::new().expect("owned job");
     let child = spawn_suspended(&image.path, "worker_slow").expect("suspended owned child");
