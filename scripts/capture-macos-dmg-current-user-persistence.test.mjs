@@ -20,6 +20,52 @@ const {
   writePrivateArtifact,
 } = macosDmgPersistenceCaptureInternals;
 
+function copyFixture(label) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `batcave-dmg-${label}-`));
+  fs.chmodSync(root, 0o700);
+  const privateDmg = path.join(root, "valid.dmg");
+  const mountPoint = path.join(root, "mount");
+  const installedApp = path.join(root, "Applications", "BatCave Monitor.app");
+  const lockPath = path.join(root, "proof.lock");
+  const bytes = Buffer.from("fixture accepted by the injected fixed verifier", "utf8");
+  fs.mkdirSync(mountPoint, { mode: 0o700 });
+  fs.mkdirSync(path.dirname(installedApp), { recursive: true, mode: 0o700 });
+  writePrivateArtifact(privateDmg, bytes);
+  return {
+    root,
+    privateDmg,
+    expectedDmgDigest: sha256(bytes),
+    mountPoint,
+    installedApp,
+    lockPath,
+  };
+}
+
+function postVerifyAttachFailureHooks(fixture, overrides = {}) {
+  const events = [];
+  const helperBaseline = new Set(["101"]);
+  const mountBaseline = new Set(["system-volume"]);
+  return {
+    events,
+    hooks: {
+      lockPath: fixture.lockPath,
+      helperProcessIds: () => helperBaseline,
+      mountInventory: () => mountBaseline,
+      runHdiutil: (args) => {
+        events.push(args[0]);
+        if (args[0] === "verify") return;
+        throw new Error("injected post-verify attach failure");
+      },
+      tryHdiutil: (args) => {
+        events.push(args[0]);
+        return { error: undefined, status: 1 };
+      },
+      waitMilliseconds: () => {},
+      ...overrides,
+    },
+  };
+}
+
 test("requires a fixed DMG and exact source identity", () => {
   assert.deepEqual(parseArgs(["--dmg", "BatCave.dmg", "--source-sha", "a".repeat(40)]), {
     dmg: path.resolve("BatCave.dmg"),
@@ -152,3 +198,80 @@ test(
     assert.equal(fs.existsSync(root), false);
   },
 );
+
+test(
+  "post-verify attach failure settles against global mount and helper baselines",
+  { skip: process.platform === "win32" },
+  () => {
+    const fixture = copyFixture("post-verify-attach");
+    const { events, hooks } = postVerifyAttachFailureHooks(fixture);
+    assert.throws(
+      () => copyMountedApplication(fixture, hooks),
+      /injected post-verify attach failure/u,
+    );
+    assert.deepEqual(events.slice(0, 3), ["verify", "attach", "detach"]);
+    assert.equal(fs.existsSync(fixture.lockPath), false);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  },
+);
+
+test(
+  "a global mount delta retains authority after post-verify attach failure",
+  { skip: process.platform === "win32" },
+  () => {
+    const fixture = copyFixture("global-mount-delta");
+    let mountObservation = 0;
+    const { hooks } = postVerifyAttachFailureHooks(fixture, {
+      mountInventory: () => {
+        mountObservation += 1;
+        return mountObservation === 1
+          ? new Set(["system-volume"])
+          : new Set(["system-volume", "unexpected-new-volume"]);
+      },
+    });
+    let error;
+    assert.throws(
+      () => copyMountedApplication(fixture, hooks),
+      (candidate) => {
+        error = candidate;
+        return true;
+      },
+    );
+    assert.equal(error instanceof UnsettledDiskImagesError, true);
+    assert.match(error.cause.message, /bounded local settlement observations/u);
+    assert.equal(fs.existsSync(fixture.lockPath), true);
+    assert.equal(fs.existsSync(fixture.root), true);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  },
+);
+
+for (const observer of ["helperProcessIds", "mountInventory"]) {
+  test(
+    `${observer} failure after a DiskImages attempt retains authority with its cause`,
+    { skip: process.platform === "win32" },
+    () => {
+      const fixture = copyFixture(`${observer}-failure`);
+      let observation = 0;
+      const { hooks } = postVerifyAttachFailureHooks(fixture, {
+        [observer]: () => {
+          observation += 1;
+          if (observation > 1) throw new Error(`${observer} unavailable`);
+          return observer === "helperProcessIds" ? new Set(["101"]) : new Set(["system-volume"]);
+        },
+      });
+      let error;
+      assert.throws(
+        () => copyMountedApplication(fixture, hooks),
+        (candidate) => {
+          error = candidate;
+          return true;
+        },
+      );
+      assert.equal(error instanceof UnsettledDiskImagesError, true);
+      assert.equal(error.cause.message, `${observer} unavailable`);
+      assert.equal(fs.existsSync(fixture.lockPath), true);
+      assert.equal(fs.existsSync(fixture.root), true);
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    },
+  );
+}

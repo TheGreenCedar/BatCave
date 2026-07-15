@@ -22,8 +22,8 @@ const DISK_IMAGES_LOCK = "/tmp/batcave-diskimages-proof.lock";
 const SOURCE_SHA = /^[0-9a-f]{40}$/u;
 
 class UnsettledDiskImagesError extends Error {
-  constructor() {
-    super("DiskImages authority is retained because local settlement is unproven");
+  constructor(cause) {
+    super("DiskImages authority is retained because local settlement is unproven", { cause });
     this.name = "UnsettledDiskImagesError";
     this.retainDiskImagesAuthority = true;
   }
@@ -172,7 +172,7 @@ function sameDirectoryIdentity(directory, expected) {
   }
 }
 
-function mountInventoryContains(mountPoint) {
+function mountInventory() {
   const result = spawnSync("/sbin/mount", [], {
     encoding: "utf8",
     timeout: 5_000,
@@ -180,7 +180,11 @@ function mountInventoryContains(mountPoint) {
     stdio: ["ignore", "pipe", "ignore"],
   });
   if (result.error || result.status !== 0) fail("could not inspect the fixed mount inventory");
-  return result.stdout.split("\n").some((line) => line.includes(` on ${mountPoint} (`));
+  return new Set(result.stdout.split("\n").filter(Boolean));
+}
+
+function mountInventoryContains(mountPoint, inventory = mountInventory()) {
+  return [...inventory].some((line) => line.includes(` on ${mountPoint} (`));
 }
 
 function helperProcessIds() {
@@ -204,24 +208,47 @@ function waitMilliseconds(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-function settleFailedOrMountedAttach({ mountPoint, mountIdentity, helperBaseline }) {
-  tryHdiutil(["detach", mountPoint, "-force", "-quiet"], 10_000);
-  let cleanObservations = 0;
-  for (let attempt = 0; attempt < 150; attempt += 1) {
-    const currentHelpers = helperProcessIds();
-    const noNewHelpers = [...currentHelpers].every((pid) => helperBaseline.has(pid));
-    const clean =
-      sameDirectoryIdentity(mountPoint, mountIdentity) &&
-      !mountInventoryContains(mountPoint) &&
-      noNewHelpers;
-    cleanObservations = clean ? cleanObservations + 1 : 0;
-    if (cleanObservations === 2) return;
-    if (!clean && attempt > 0 && attempt % 5 === 0) {
-      tryHdiutil(["detach", mountPoint, "-force", "-quiet"], 10_000);
+function settleFailedOrMountedAttach({
+  mountPoint,
+  mountIdentity,
+  helperBaseline,
+  mountBaseline,
+  observeHelpers = helperProcessIds,
+  observeMounts = mountInventory,
+  tryDiskImages = tryHdiutil,
+  wait = waitMilliseconds,
+}) {
+  try {
+    const firstDetach = tryDiskImages(["detach", mountPoint, "-force", "-quiet"], 10_000);
+    if (firstDetach.error || firstDetach.status === null) {
+      throw firstDetach.error ?? new Error("fixed detach did not return a settled status");
     }
-    waitMilliseconds(100);
+    let cleanObservations = 0;
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      const currentHelpers = observeHelpers();
+      const currentMounts = observeMounts();
+      const noNewHelpers = [...currentHelpers].every((pid) => helperBaseline.has(pid));
+      const noNewMounts = [...currentMounts].every((mount) => mountBaseline.has(mount));
+      const clean =
+        sameDirectoryIdentity(mountPoint, mountIdentity) &&
+        !mountInventoryContains(mountPoint, currentMounts) &&
+        noNewHelpers &&
+        noNewMounts;
+      cleanObservations = clean ? cleanObservations + 1 : 0;
+      if (cleanObservations === 2) return;
+      if (!clean && attempt > 0 && attempt % 5 === 0) {
+        const retry = tryDiskImages(["detach", mountPoint, "-force", "-quiet"], 10_000);
+        if (retry.error || retry.status === null) {
+          throw retry.error ?? new Error("fixed detach retry did not return a settled status");
+        }
+      }
+      wait(100);
+    }
+    throw new Error("bounded local settlement observations did not become clean");
+  } catch (cause) {
+    if (cause?.retainDiskImagesAuthority === true) throw cause;
+    throw new UnsettledDiskImagesError(cause);
   }
-  throw new UnsettledDiskImagesError();
 }
 
 function onlyMountedApp(mountPoint) {
@@ -234,18 +261,27 @@ function onlyMountedApp(mountPoint) {
   return path.join(mountPoint, apps[0].name);
 }
 
-function copyMountedApplication({ privateDmg, expectedDmgDigest, mountPoint, installedApp }) {
+function copyMountedApplication(
+  { privateDmg, expectedDmgDigest, mountPoint, installedApp },
+  testHooks = {},
+) {
   const mountIdentity = directoryIdentity(mountPoint);
   let diskImagesOperationAttempted = false;
+  const observeHelpers = testHooks.helperProcessIds ?? helperProcessIds;
+  const observeMounts = testHooks.mountInventory ?? mountInventory;
+  const runDiskImages = testHooks.runHdiutil ?? runHdiutil;
+  const tryDiskImages = testHooks.tryHdiutil ?? tryHdiutil;
+  const wait = testHooks.waitMilliseconds ?? waitMilliseconds;
   return withDiskImagesLock(() => {
-    const helperBaseline = helperProcessIds();
+    const helperBaseline = observeHelpers();
+    const mountBaseline = observeMounts();
     try {
       if (sha256(readStableRegularFile(privateDmg, "private DMG")) !== expectedDmgDigest) {
         fail("private DMG bytes changed before verification");
       }
       diskImagesOperationAttempted = true;
-      runHdiutil(["verify", privateDmg]);
-      runHdiutil(["attach", "-nobrowse", "-readonly", "-mountpoint", mountPoint, privateDmg]);
+      runDiskImages(["verify", privateDmg]);
+      runDiskImages(["attach", "-nobrowse", "-readonly", "-mountpoint", mountPoint, privateDmg]);
       const mountedApp = onlyMountedApp(mountPoint);
       const mountedDigest = hashBundleTree(mountedApp);
       execFileSync("/usr/bin/ditto", ["--noqtn", mountedApp, installedApp], {
@@ -260,13 +296,22 @@ function copyMountedApplication({ privateDmg, expectedDmgDigest, mountPoint, ins
       return { installedDigest, mountedDigest };
     } finally {
       if (diskImagesOperationAttempted) {
-        settleFailedOrMountedAttach({ mountPoint, mountIdentity, helperBaseline });
+        settleFailedOrMountedAttach({
+          mountPoint,
+          mountIdentity,
+          helperBaseline,
+          mountBaseline,
+          observeHelpers,
+          observeMounts,
+          tryDiskImages,
+          wait,
+        });
       }
       if (sha256(readStableRegularFile(privateDmg, "private DMG")) !== expectedDmgDigest) {
         fail("private DMG bytes changed after detach");
       }
     }
-  });
+  }, testHooks.lockPath ?? DISK_IMAGES_LOCK);
 }
 
 function capture({ dmg, sourceSha }) {
@@ -421,6 +466,7 @@ export const macosDmgPersistenceCaptureInternals = {
   copyMountedApplication,
   directoryIdentity,
   helperProcessIds,
+  mountInventory,
   mountInventoryContains,
   parseArgs,
   readStableRegularFile,
