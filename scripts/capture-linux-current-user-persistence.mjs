@@ -10,6 +10,11 @@ import {
   validateCurrentUserPersistencePacket,
   validateCurrentUserPersistenceReceipt,
 } from "./validate-current-user-persistence-evidence.mjs";
+import { expectedReleaseAssetRoles } from "./release-asset-contract.mjs";
+import {
+  requireVerifiedPublicReleaseDownloads,
+  requireVerifiedPublicReleaseReceipt,
+} from "./verify-public-release.mjs";
 
 const PROOF_ENV = "BATCAVE_CURRENT_USER_PERSISTENCE_PROOF";
 const DEB_PACKAGE_NAME = "bat-cave-monitor";
@@ -19,6 +24,9 @@ const MAX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;
 const PROCESS_TIMEOUT_MS = 30_000;
 const COMMAND_TIMEOUT_MS = 120_000;
+const ROOT_UNIT_CLIENT_TIMEOUT_MS = 135_000;
+const ROOT_UNIT_CONTROL_TIMEOUT_MS = 15_000;
+const ROOT_UNIT_SETTLEMENT_TIMEOUT_MS = 5_000;
 const GROUP_GRACE_MS = 100;
 const TERMINATION_TIMEOUT_MS = 2_000;
 const POLL_INTERVAL_MS = 20;
@@ -37,6 +45,11 @@ const FIXED_COMMAND_ENV = Object.freeze({
   NO_COLOR: "1",
   PATH: "/usr/bin:/bin",
 });
+const verifiedPublicDebCaptureResults = new WeakSet();
+const verifiedPublicDebCaptureStates = new WeakMap();
+const verifiedRootUnitSettlementReceipts = new WeakSet();
+const HOSTILE_ROOT_SETTLEMENT_PROGRAM =
+  '/usr/bin/sleep 300 & normal=$!; /usr/bin/setsid /usr/bin/sleep 300 & escaped=$!; /usr/bin/printf \'{"schema_version":1,"pids":[%s,%s]}\\n\' "$normal" "$escaped"';
 
 function fail(message) {
   throw new Error(message);
@@ -72,6 +85,16 @@ function parseArgs(argv) {
 
 function mode(metadata) {
   return (metadata.mode & 0o777).toString(8).padStart(4, "0");
+}
+
+function pathPresent(file) {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function sha256(bytes) {
@@ -151,8 +174,14 @@ function createPrivateDirectory(directory) {
   }
 }
 
-function copyOwnedArtifact(source, destination, label) {
+function copyOwnedArtifact(source, destination, label, expected = null) {
   const sourceRead = readStableRegularFile(source, label);
+  if (
+    expected &&
+    (sourceRead.digest !== expected.sha256 || sourceRead.bytes.length !== expected.size_bytes)
+  ) {
+    fail(`${label} does not match the verified public size and digest`);
+  }
   const descriptor = fs.openSync(
     destination,
     fs.constants.O_WRONLY |
@@ -222,7 +251,11 @@ async function terminateAndSettle(child, closed) {
   return closeObserved && groupSettled;
 }
 
-async function runBoundedProcess(executable, args, { cwd, env, timeoutMs = PROCESS_TIMEOUT_MS }) {
+async function runBoundedProcess(
+  executable,
+  args,
+  { cwd, env, interruptPromise = null, timeoutMs = PROCESS_TIMEOUT_MS },
+) {
   const child = spawn(executable, args, {
     cwd,
     detached: true,
@@ -256,16 +289,26 @@ async function runBoundedProcess(executable, args, { cwd, env, timeoutMs = PROCE
     });
     child.once("close", (code, signal) => resolve({ code, signal, spawnError }));
   });
-  const winner = await Promise.race([
+  const races = [
     closed.then((result) => ({ trigger: "close", result })),
     exceeded,
     delay(timeoutMs).then(() => ({ trigger: "timeout" })),
-  ]);
+  ];
+  if (interruptPromise) {
+    races.push(interruptPromise.then((signal) => ({ signal, trigger: "interrupt" })));
+  }
+  const winner = await Promise.race(races);
 
   if (winner.trigger !== "close") {
     const settled = await terminateAndSettle(child, closed);
     if (!settled) fail(`fixed process ${winner.trigger} with unconfirmed process settlement`);
-    fail(`fixed process exceeded its ${winner.trigger === "timeout" ? "timeout" : "output limit"}`);
+    const reason =
+      winner.trigger === "timeout"
+        ? "timeout"
+        : winner.trigger === "output_limit"
+          ? "output limit"
+          : `interrupt ${winner.signal}`;
+    fail(`fixed process reached its ${reason}`);
   }
   if (winner.result.spawnError) fail("fixed process failed to spawn");
   const groupSettled = await waitForGroupSettlement(child.pid, Date.now() + GROUP_GRACE_MS);
@@ -311,19 +354,330 @@ async function runProof(executable, phase, environment, cwd) {
   }
 }
 
-function fixedCommand(executable, args, { allowFailure = false } = {}) {
+async function runInstalledTelemetryProof(executable, sourceSha, appVersion, workspace) {
+  const home = path.join(workspace, "telemetry-home");
+  const temporaryDirectory = path.join(workspace, "telemetry-tmp");
+  const runtimeDirectory = path.join(workspace, "telemetry-runtime");
+  createPrivateDirectory(home);
+  createPrivateDirectory(temporaryDirectory);
+  createPrivateDirectory(runtimeDirectory);
+  const output = await runBoundedProcess(
+    executable,
+    [
+      "--benchmark",
+      "--platform",
+      "linux",
+      "--architecture",
+      "x86_64",
+      "--machine-class",
+      "github-hosted-ubuntu-22.04",
+      "--workload-profile",
+      "fixed-default",
+      "--warmup-ticks",
+      "0",
+      "--ticks",
+      "2",
+      "--sleep-ms",
+      "1000",
+      "--repeats",
+      "1",
+      "--strict",
+      "--max-p95-ms",
+      "10000",
+    ],
+    {
+      cwd: runtimeDirectory,
+      env: proofEnvironment(home, temporaryDirectory),
+      timeoutMs: COMMAND_TIMEOUT_MS,
+    },
+  );
+  let summary;
+  try {
+    summary = JSON.parse(output.stdout.toString("utf8"));
+  } catch {
+    fail("installed deb telemetry proof emitted invalid JSON");
+  }
+  if (
+    summary?.format_version !== 4 ||
+    summary.release_identity?.source_commit_sha !== sourceSha ||
+    summary.release_identity?.app_version !== appVersion ||
+    summary.platform !== "linux" ||
+    summary.architecture !== "x86_64" ||
+    summary.measurement_origin !== "owned_sampling_engine_refresh_and_protocol_serialization" ||
+    summary.evidence_scope !== "core_runtime_host_only" ||
+    summary.live_command !== "refresh_now" ||
+    summary.warmup_ticks !== 0 ||
+    summary.measured_ticks !== 2 ||
+    summary.inter_command_delay_ms !== 1000 ||
+    summary.repeat_count !== 1 ||
+    summary.sample_quality_passed !== true ||
+    summary.strict_passed !== true
+  ) {
+    fail("installed deb telemetry proof did not satisfy the fixed advancing-sample contract");
+  }
+  return Object.freeze({
+    evidence_scope: summary.evidence_scope,
+    measured_ticks: summary.measured_ticks,
+    samples_advanced: true,
+  });
+}
+
+function fixedCommand(
+  executable,
+  args,
+  { allowFailure = false, timeoutMs = COMMAND_TIMEOUT_MS } = {},
+) {
   const result = spawnSync(executable, args, {
     encoding: "utf8",
     env: FIXED_COMMAND_ENV,
     maxBuffer: MAX_PROCESS_OUTPUT_BYTES,
     shell: false,
-    timeout: COMMAND_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   if (result.error) fail(`fixed command failed to settle: ${path.basename(executable)}`);
   if (!allowFailure && result.status !== 0) {
     fail(`fixed command exited unsuccessfully: ${path.basename(executable)}`);
   }
   return result;
+}
+
+function requireFixedExecutable(file) {
+  const metadata = fs.lstatSync(file);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o111) === 0) {
+    fail(`required fixed executable is unavailable: ${path.basename(file)}`);
+  }
+}
+
+function rootUnitPayload(operation, value) {
+  if (operation === "apt-update") return ["/usr/bin/apt-get", "--quiet=2", "update"];
+  if (operation === "apt-install") {
+    return [
+      "/usr/bin/apt-get",
+      "--quiet=2",
+      "--yes",
+      "--no-install-recommends",
+      "install",
+      "libgtk-3-0",
+      "libwebkit2gtk-4.1-0",
+      "libayatana-appindicator3-1",
+      "librsvg2-2",
+      "libxdo3",
+    ];
+  }
+  if (operation === "install") return ["/usr/bin/dpkg", "--install", value];
+  if (operation === "purge") return ["/usr/bin/dpkg", "--purge", DEB_PACKAGE_NAME];
+  if (operation === "hostile-settlement") {
+    return ["/usr/bin/bash", "-c", HOSTILE_ROOT_SETTLEMENT_PROGRAM];
+  }
+  fail("unknown fixed root unit operation");
+}
+
+function rootUnitProperty(unit, property, allowed) {
+  const result = fixedCommand(
+    "/usr/bin/systemctl",
+    ["show", unit, `--property=${property}`, "--value", "--no-pager"],
+    { allowFailure: true, timeoutMs: ROOT_UNIT_CONTROL_TIMEOUT_MS },
+  );
+  if (
+    result.status !== 0 ||
+    result.signal !== null ||
+    result.stdout.includes("\n\n") ||
+    !allowed.has(result.stdout.trim())
+  ) {
+    fail(`fixed root unit ${property} could not be verified`);
+  }
+  return result.stdout.trim();
+}
+
+function rootUnitState(unit) {
+  return {
+    loadState: rootUnitProperty(unit, "LoadState", new Set(["loaded", "not-found"])),
+    activeState: rootUnitProperty(unit, "ActiveState", new Set(["inactive", "failed"])),
+  };
+}
+
+async function settleRootUnit(unit) {
+  const stop = fixedCommand(
+    "/usr/bin/sudo",
+    ["-n", "/usr/bin/systemctl", "stop", unit],
+    { allowFailure: true, timeoutMs: ROOT_UNIT_CONTROL_TIMEOUT_MS },
+  );
+  if (![0, 5].includes(stop.status) || stop.signal !== null) {
+    fail("fixed root unit stop did not return success or exact not-found status");
+  }
+
+  const deadline = Date.now() + ROOT_UNIT_SETTLEMENT_TIMEOUT_MS;
+  let state;
+  let stableSettledObservations = 0;
+  let lastDisposition = null;
+  do {
+    state = rootUnitState(unit);
+    if (state.activeState === "inactive") {
+      if (stop.status === 5 && state.loadState !== "not-found") {
+        fail("fixed root unit stop reported not-found for a loaded unit");
+      }
+      const disposition = state.loadState === "not-found" ? "collected" : "inactive";
+      stableSettledObservations =
+        disposition === lastDisposition ? stableSettledObservations + 1 : 1;
+      lastDisposition = disposition;
+      if (stableSettledObservations >= 3) {
+        return Object.freeze({
+          disposition,
+          process_tree_settled: true,
+        });
+      }
+    } else {
+      stableSettledObservations = 0;
+      lastDisposition = null;
+    }
+    await delay(POLL_INTERVAL_MS);
+  } while (Date.now() < deadline);
+  fail("fixed root unit did not become inactive or collected");
+}
+
+function requireRootUnitSettlementReceipt(receipt) {
+  if (!receipt || !verifiedRootUnitSettlementReceipts.has(receipt)) {
+    fail("root unit settlement receipt must come from the fixed in-process supervisor");
+  }
+  return receipt;
+}
+
+async function runFixedRootUnit(operation, value = null) {
+  for (const executable of [
+    "/usr/bin/sudo",
+    "/usr/bin/systemd-run",
+    "/usr/bin/systemctl",
+  ]) {
+    requireFixedExecutable(executable);
+  }
+  const payload = rootUnitPayload(operation, value);
+  requireFixedExecutable(payload[0]);
+  const unit = `batcave-deb-${operation}-${crypto.randomBytes(12).toString("hex")}.service`;
+  let interrupted = null;
+  let resolveSignal;
+  const signalReceived = new Promise((resolve) => {
+    resolveSignal = resolve;
+  });
+  const handlers = new Map(
+    ["SIGHUP", "SIGINT", "SIGTERM"].map((signal) => [
+      signal,
+      () => {
+        interrupted ??= signal;
+        resolveSignal(signal);
+      },
+    ]),
+  );
+  for (const [signal, handler] of handlers) process.on(signal, handler);
+  const command = runBoundedProcess(
+    "/usr/bin/sudo",
+    [
+      "-n",
+      "/usr/bin/systemd-run",
+      "--quiet",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=exec",
+      `--unit=${unit}`,
+      "--property=KillMode=control-group",
+      "--property=SendSIGKILL=yes",
+      "--property=TimeoutStopSec=10s",
+      "--property=RuntimeMaxSec=120s",
+      "--property=TasksMax=256",
+      "--property=ProtectControlGroups=yes",
+      "--property=Delegate=no",
+      "--setenv=LANG=C",
+      "--setenv=LC_ALL=C",
+      "--setenv=PATH=/usr/bin:/bin",
+      "--setenv=DEBIAN_FRONTEND=noninteractive",
+      "--",
+      ...payload,
+    ],
+    {
+      env: FIXED_COMMAND_ENV,
+      interruptPromise: signalReceived,
+      timeoutMs: ROOT_UNIT_CLIENT_TIMEOUT_MS,
+    },
+  ).then(
+    (output) => ({ output }),
+    (error) => ({ error }),
+  );
+  let outcome;
+  let settlement;
+  let settlementError = null;
+  try {
+    const winner = await Promise.race([
+      command.then((result) => ({ kind: "command", result })),
+      signalReceived.then((signal) => ({ kind: "signal", signal })),
+    ]);
+    if (winner.kind === "signal") {
+      try {
+        await settleRootUnit(unit);
+      } catch {
+        // This is only a prompt best-effort stop. The post-client settlement below is authoritative.
+      }
+      outcome = await command;
+    } else {
+      outcome = winner.result;
+    }
+  } finally {
+    try {
+      settlement = await settleRootUnit(unit);
+    } catch (error) {
+      settlementError = error;
+    } finally {
+      for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+    }
+  }
+  if (settlementError) {
+    const operationError = outcome?.error?.message;
+    fail(
+      `fixed root unit cleanup failed${operationError ? ` after operation failure: ${operationError}` : ""}: ${settlementError.message}`,
+    );
+  }
+  if (interrupted) fail(`fixed root unit interrupted by ${interrupted} after settlement`);
+  if (outcome?.error) throw outcome.error;
+  const receipt = Object.freeze({
+    disposition: settlement.disposition,
+    operation,
+    process_tree_settled: settlement.process_tree_settled,
+  });
+  verifiedRootUnitSettlementReceipts.add(receipt);
+  return { output: outcome.output, receipt };
+}
+
+async function runRootSettlementHostileProof() {
+  const result = await runFixedRootUnit("hostile-settlement");
+  let fixture;
+  try {
+    fixture = JSON.parse(result.output.stdout.toString("utf8"));
+  } catch {
+    fail("root settlement hostile fixture emitted invalid JSON");
+  }
+  if (
+    fixture?.schema_version !== 1 ||
+    !Array.isArray(fixture.pids) ||
+    fixture.pids.length !== 2 ||
+    fixture.pids.some((pid) => !Number.isSafeInteger(pid) || pid <= 1)
+  ) {
+    fail("root settlement hostile fixture receipt is malformed");
+  }
+  if (fixture.pids.some((pid) => pathPresent(`/proc/${pid}`))) {
+    fail("root settlement hostile fixture left a process after unit settlement");
+  }
+  requireRootUnitSettlementReceipt(result.receipt);
+  return result.receipt;
+}
+
+async function installFixedRuntimePrerequisites() {
+  const update = await runFixedRootUnit("apt-update");
+  const install = await runFixedRootUnit("apt-install");
+  for (const receipt of [update.receipt, install.receipt]) {
+    if (!requireRootUnitSettlementReceipt(receipt).process_tree_settled) {
+      fail("fixed runtime prerequisite unit did not settle");
+    }
+  }
+  return [update.receipt, install.receipt];
 }
 
 function currentArchitecture() {
@@ -534,7 +888,17 @@ function packageStatus(packageName) {
     ["--show", "--showformat=${Status}", packageName],
     { allowFailure: true },
   );
-  return result.status === 0 ? result.stdout.trim() : null;
+  if (result.status === 0 && result.signal === null) return result.stdout.trim();
+  const absent = `dpkg-query: no packages found matching ${packageName}`;
+  if (
+    result.status === 1 &&
+    result.signal === null &&
+    result.stdout.length === 0 &&
+    result.stderr.trim() === absent
+  ) {
+    return null;
+  }
+  fail("dpkg package-state query failed without proving the package absent");
 }
 
 function debMetadata(deb) {
@@ -552,30 +916,97 @@ function debMetadata(deb) {
   return { architecture, packageName, version };
 }
 
-function installDeb(deb, packageName) {
-  if (packageInstalled(packageName)) fail("deb package is already installed on the capture host");
-  fixedCommand("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--install", deb]);
-  if (!packageInstalled(packageName)) fail("deb package did not reach installed state");
-  const executable = "/usr/bin/batcave-monitor-cli";
-  const metadata = fs.lstatSync(executable);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o111) === 0) {
-    fail("installed deb CLI must be an executable regular non-link file");
+function installedPackageFiles(packageName, { requireExecutables = true } = {}) {
+  const result = fixedCommand("/usr/bin/dpkg-query", ["--listfiles", packageName]);
+  const candidates = result.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((entry) => path.normalize(entry));
+  if (
+    candidates.length === 0 ||
+    candidates.some((entry) => !path.isAbsolute(entry) || entry.includes("\u0000")) ||
+    new Set(candidates).size !== candidates.length
+  ) {
+    fail("installed deb owned-path inventory is malformed");
   }
-  const ownership = fixedCommand("/usr/bin/dpkg-query", ["--search", executable]);
-  if (!ownership.stdout.startsWith(`${packageName}: `)) {
-    fail("installed deb CLI is not owned by the expected package");
+  const files = candidates.filter((entry) => {
+    try {
+      return !fs.lstatSync(entry).isDirectory();
+    } catch (error) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  });
+  for (const executable of ["/usr/bin/batcave-monitor", "/usr/bin/batcave-monitor-cli"]) {
+    if (!requireExecutables) continue;
+    if (!files.includes(executable)) {
+      fail(`installed deb owned-path inventory is missing ${path.basename(executable)}`);
+    }
+    const ownership = fixedCommand("/usr/bin/dpkg-query", ["--search", executable]);
+    if (!ownership.stdout.startsWith(`${packageName}: `)) {
+      fail(`installed ${path.basename(executable)} is not owned by the expected package`);
+    }
   }
-  return executable;
+  return files;
 }
 
-function purgeDeb(packageName) {
+async function installDeb(deb, packageName) {
   if (packageStatus(packageName) !== null) {
-    fixedCommand("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--purge", packageName]);
+    fail("deb package already has registered state on the capture host");
   }
-  if (packageStatus(packageName) !== null) fail("deb package remained registered after purge");
-  if (fs.existsSync("/usr/bin/batcave-monitor-cli")) {
-    fail("deb CLI remained after package purge");
+  const rootUnit = await runFixedRootUnit("install", deb);
+  if (!packageInstalled(packageName)) fail("deb package did not reach installed state");
+  const executable = "/usr/bin/batcave-monitor-cli";
+  for (const installedExecutable of ["/usr/bin/batcave-monitor", executable]) {
+    const metadata = fs.lstatSync(installedExecutable);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o111) === 0) {
+      fail(`installed ${path.basename(installedExecutable)} must be an executable regular non-link file`);
+    }
   }
+  return {
+    executable,
+    ownedFiles: installedPackageFiles(packageName),
+    settlementReceipt: rootUnit.receipt,
+  };
+}
+
+async function purgeDeb(packageName, ownedFiles = []) {
+  const errors = [];
+  let settlementReceipt = null;
+  if (packageStatus(packageName) !== null) {
+    if (ownedFiles.length === 0) {
+      try {
+        ownedFiles = installedPackageFiles(packageName, { requireExecutables: false });
+      } catch (error) {
+        errors.push(`owned inventory: ${error.message}`);
+      }
+    }
+    try {
+      settlementReceipt = (await runFixedRootUnit("purge")).receipt;
+    } catch (error) {
+      errors.push(`fixed purge: ${error.message}`);
+    }
+  }
+  try {
+    if (packageStatus(packageName) !== null) errors.push("package remained registered");
+  } catch (error) {
+    errors.push(`post-purge package state: ${error.message}`);
+  }
+  let residue = null;
+  try {
+    residue = [
+      ...ownedFiles,
+      "/usr/bin/batcave-monitor",
+      "/usr/bin/batcave-monitor-cli",
+    ].find((file) => pathPresent(file));
+  } catch (error) {
+    errors.push(`post-purge residue query: ${error.message}`);
+  }
+  if (residue) {
+    errors.push(`package-owned path remained: ${path.basename(residue)}`);
+  }
+  if (errors.length > 0) fail(`deb purge cleanup failed (${errors.join("; ")})`);
+  return settlementReceipt;
 }
 
 async function captureLifecycle({
@@ -646,7 +1077,7 @@ async function captureLifecycle({
     persistence_failure_visible:
       degraded.persistence_warning_present === true && degraded.persistence?.state !== "healthy",
     restart_settings_preserved: restartSettingsPreserved,
-    state_root_preserved: fs.existsSync(root),
+    state_root_preserved: pathPresent(root),
   };
   return buildPacket({
     artifactDigest,
@@ -660,20 +1091,37 @@ async function captureLifecycle({
   });
 }
 
-async function captureDeb(source, sourceSha) {
+async function captureDeb(
+  source,
+  sourceSha,
+  { expectedArtifact = null, rootSettlementRequired = false, telemetryRequired = false } = {},
+) {
   const workspace = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "batcave-linux-deb-persistence-")),
   );
   fs.chmodSync(workspace, 0o700);
   const artifact = path.join(workspace, "candidate.deb");
   let packageName = null;
+  let ownedFiles = [];
   let installAttempted = false;
+  let purgeSettlement = null;
   try {
-    const artifactDigest = copyOwnedArtifact(source, artifact, "deb artifact");
+    const artifactDigest = copyOwnedArtifact(source, artifact, "deb artifact", expectedArtifact);
+    const hostileSettlement = rootSettlementRequired
+      ? await runRootSettlementHostileProof()
+      : null;
+    const prerequisiteSettlements = rootSettlementRequired
+      ? await installFixedRuntimePrerequisites()
+      : [];
     const metadata = debMetadata(artifact);
     packageName = metadata.packageName;
     installAttempted = true;
-    const executable = installDeb(artifact, packageName);
+    const installation = await installDeb(artifact, packageName);
+    const { executable } = installation;
+    ownedFiles = installation.ownedFiles;
+    const telemetry = telemetryRequired
+      ? await runInstalledTelemetryProof(executable, sourceSha, metadata.version, workspace)
+      : null;
     const packet = await captureLifecycle({
       expectedAppVersion: metadata.version,
       artifactDigest,
@@ -682,9 +1130,9 @@ async function captureDeb(source, sourceSha) {
       installKind: "deb",
       limitations: ["candidate_not_release_evidence", "local_bundle_without_public_provenance"],
       removeApplication: async () => {
-        purgeDeb(packageName);
+        purgeSettlement = await purgeDeb(packageName, ownedFiles);
         installAttempted = false;
-        return !packageInstalled(packageName) && !fs.existsSync(executable);
+        return !packageInstalled(packageName) && ownedFiles.every((file) => !pathPresent(file));
       },
       sourceSha,
       workspace,
@@ -692,11 +1140,26 @@ async function captureDeb(source, sourceSha) {
     if (readStableRegularFile(artifact, "private deb artifact").digest !== artifactDigest) {
       fail("deb artifact changed during native capture");
     }
-    return packet;
+    const rootSettlements = [
+      hostileSettlement,
+      ...prerequisiteSettlements,
+      installation.settlementReceipt,
+      purgeSettlement,
+    ].filter(Boolean);
+    if (
+      rootSettlementRequired &&
+      (rootSettlements.length !== 5 ||
+        rootSettlements.some(
+          (receipt) => !requireRootUnitSettlementReceipt(receipt).process_tree_settled,
+        ))
+    ) {
+      fail("verified public deb root unit settlement receipts are incomplete");
+    }
+    return { packet, rootSettlements, telemetry };
   } finally {
     let cleanupError = null;
     try {
-      if (installAttempted && packageName) purgeDeb(packageName);
+      if (installAttempted && packageName) await purgeDeb(packageName, ownedFiles);
     } catch (error) {
       cleanupError = error;
     } finally {
@@ -704,6 +1167,54 @@ async function captureDeb(source, sourceSha) {
     }
     if (cleanupError) throw cleanupError;
   }
+}
+
+async function captureVerifiedPublicDeb(receipt) {
+  const verified = requireVerifiedPublicReleaseReceipt(receipt);
+  const directory = requireVerifiedPublicReleaseDownloads(verified);
+  const contract = expectedReleaseAssetRoles(verified.tag);
+  const role = contract.roles.find(({ role: name }) => name === "Linux deb package");
+  if (!role) fail("release contract has no Linux deb package role");
+  const asset = verified.assets.find(({ name }) => name === role.name);
+  if (!asset) fail("verified public release receipt has no Linux deb package");
+
+  const { packet, rootSettlements, telemetry } = await captureDeb(
+    path.join(directory, role.name),
+    verified.source_sha,
+    { expectedArtifact: asset, rootSettlementRequired: true, telemetryRequired: true },
+  );
+  if (packet.result !== "passed") fail("verified public deb lifecycle did not pass");
+  if (packet.artifact.sha256 !== asset.sha256) {
+    fail("verified public deb lifecycle digest does not match the public verification receipt");
+  }
+  if (packet.source.app_version !== verified.app_version) {
+    fail("verified public deb lifecycle version does not match the public verification receipt");
+  }
+  if (!telemetry?.samples_advanced) fail("verified public deb telemetry proof did not pass");
+  const result = Object.freeze({
+    schema_version: 1,
+    proof_scope: "post_public_deb_native_observation",
+    disposition: "passed",
+    release_evidence_eligible: false,
+  });
+  verifiedPublicDebCaptureResults.add(result);
+  verifiedPublicDebCaptureStates.set(result, {
+    asset: Object.freeze({ ...asset }),
+    packet,
+    receipt: verified,
+    rootSettlements,
+    telemetry,
+  });
+  return result;
+}
+
+function requireVerifiedPublicDebCaptureResult(result, receipt) {
+  const verified = requireVerifiedPublicReleaseReceipt(receipt);
+  const state = verifiedPublicDebCaptureStates.get(result);
+  if (!result || !verifiedPublicDebCaptureResults.has(result) || state?.receipt !== verified) {
+    fail("public deb capture result must be the matching in-process verified native result");
+  }
+  return state;
 }
 
 async function captureAppImage(source, sourceSha) {
@@ -732,7 +1243,7 @@ async function captureAppImage(source, sourceSha) {
           fail("AppImage artifact changed during native capture");
         }
         fs.rmSync(artifact);
-        return !fs.existsSync(artifact);
+        return !pathPresent(artifact);
       },
       sourceSha,
       workspace,
@@ -744,7 +1255,7 @@ async function captureAppImage(source, sourceSha) {
 }
 
 function createOutputDirectory(directory) {
-  if (fs.existsSync(directory)) fail("--output-dir must not already exist");
+  if (pathPresent(directory)) fail("--output-dir must not already exist");
   createPrivateDirectory(directory);
 }
 
@@ -760,7 +1271,7 @@ async function capture(options) {
   if (process.platform !== "linux") fail("this capture helper requires Linux");
   createOutputDirectory(options.outputDir);
   try {
-    const deb = await captureDeb(options.deb, options.sourceSha);
+    const deb = (await captureDeb(options.deb, options.sourceSha)).packet;
     const appimage = await captureAppImage(options.appimage, options.sourceSha);
     if (deb.source.app_version !== appimage.source.app_version) {
       fail("deb and AppImage receipts disagree on application version");
@@ -793,6 +1304,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
 export const linuxPersistenceCaptureInternals = {
   buildPacket,
+  captureVerifiedPublicDeb,
   copyOwnedArtifact,
   createOutputDirectory,
   debPackageName: DEB_PACKAGE_NAME,
@@ -801,6 +1313,7 @@ export const linuxPersistenceCaptureInternals = {
   privateRootPermissionsVerified,
   proofEnvironment,
   readStableRegularFile,
+  requireVerifiedPublicDebCaptureResult,
   runBoundedProcess,
   writeCorruptSettings,
 };

@@ -21,6 +21,7 @@ export const CHECKSUM_MANIFEST = "SHA256SUMS.txt";
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_DIGEST = /^sha256:([0-9a-f]{64})$/;
 const verifiedPublicReleaseReceipts = new WeakSet();
+const verifiedPublicReleaseDownloads = new WeakMap();
 
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
@@ -30,7 +31,7 @@ function deepFreeze(value) {
   return value;
 }
 
-function createVerifiedPublicReleaseReceipt(candidate, plan) {
+function createVerifiedPublicReleaseReceipt(candidate, plan, directory) {
   const { version } = parseReleaseTag(candidate.tag);
   const receipt = deepFreeze({
     schema_version: 1,
@@ -49,6 +50,7 @@ function createVerifiedPublicReleaseReceipt(candidate, plan) {
     })),
   });
   verifiedPublicReleaseReceipts.add(receipt);
+  verifiedPublicReleaseDownloads.set(receipt, path.resolve(directory));
   return receipt;
 }
 
@@ -59,6 +61,15 @@ export function requireVerifiedPublicReleaseReceipt(receipt) {
     );
   }
   return receipt;
+}
+
+export function requireVerifiedPublicReleaseDownloads(receipt) {
+  requireVerifiedPublicReleaseReceipt(receipt);
+  const directory = verifiedPublicReleaseDownloads.get(receipt);
+  if (!directory) {
+    throw new Error("verified public release receipt has no process-local download directory");
+  }
+  return directory;
 }
 
 export function requireSafeAssetName(name) {
@@ -416,7 +427,7 @@ export async function verifyPublicRelease(
   return {
     assetCount: plan.length,
     subjectCount: proof.subjects.length,
-    receipt: createVerifiedPublicReleaseReceipt(candidate, plan),
+    receipt: createVerifiedPublicReleaseReceipt(candidate, plan, directory),
   };
 }
 

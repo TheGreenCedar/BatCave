@@ -16,6 +16,7 @@ import {
   buildPublicDownloadPlan,
   downloadPublicAssets,
   parseChecksumManifest,
+  requireVerifiedPublicReleaseDownloads,
   requireVerifiedPublicReleaseReceipt,
   releaseVerificationArguments,
   runGitHubVerifications,
@@ -133,8 +134,13 @@ test("verifies anonymous public bytes, checksums, release state, and source-boun
       },
     );
     assert.equal(requireVerifiedPublicReleaseReceipt(result.receipt), result.receipt);
+    assert.equal(requireVerifiedPublicReleaseDownloads(result.receipt), downloadDirectory);
     assert.throws(
       () => requireVerifiedPublicReleaseReceipt(structuredClone(result.receipt)),
+      /successful in-process verifyPublicRelease call/u,
+    );
+    assert.throws(
+      () => requireVerifiedPublicReleaseDownloads(structuredClone(result.receipt)),
       /successful in-process verifyPublicRelease call/u,
     );
     assert.equal(Object.isFrozen(result.receipt), true);

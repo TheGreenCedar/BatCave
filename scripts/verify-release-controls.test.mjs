@@ -281,7 +281,7 @@ test("runs release controls first with only the protected environment credential
   const prepare = workflowJob("prepare");
   assert.doesNotMatch(prepare, /verify-release-controls\.mjs/);
 
-  const sensitiveJobs = ["windows", "linux", "macos", "finalize"];
+  const sensitiveJobs = ["windows", "linux", "macos", "finalize", "linux_deb_post_public_smoke"];
   for (const name of sensitiveJobs) {
     const job = workflowJob(name);
     assert.match(job, /^    environment: release$/m, `${name} must use the release environment`);
@@ -314,11 +314,32 @@ test("runs release controls first with only the protected environment credential
     );
   }
 
-  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 4);
+  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 5);
   assert.equal(
     releaseWorkflow.match(/GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/g)?.length,
-    4,
+    5,
   );
+});
+
+test("runs the deb smoke on a fresh pinned Ubuntu host after public release publication", () => {
+  const job = workflowJob("linux_deb_post_public_smoke");
+  assert.match(job, /^    needs: \[prepare, finalize\]$/m);
+  assert.match(job, /^    if: needs\.prepare\.outputs\.publish == 'true'$/m);
+  assert.match(job, /^    runs-on: ubuntu-22\.04$/m);
+  assert.match(job, /ref: \$\{\{ needs\.prepare\.outputs\.source_sha \}\}/u);
+  assert.match(
+    job,
+    /node scripts\/linux-deb-post-public-smoke\.mjs "\$\{RELEASE_TAG\}" "\$\{RELEASE_SOURCE_SHA\}"/u,
+  );
+  assert.match(
+    job,
+    /name: batcave-release-candidate-\$\{\{ needs\.prepare\.outputs\.tag \}\}[\s\S]*path: post-public-input/u,
+  );
+  assert.match(
+    job,
+    /name: Retain sanitized Linux deb post-public observation[\s\S]*name: batcave-linux-deb-post-public-\$\{\{ needs\.prepare\.outputs\.tag \}\}[\s\S]*path: post-public-output\/linux-deb-observation\.json/u,
+  );
+  assert.doesNotMatch(job, /(?:--deb|--output-dir|RUNNER_TEMP|github\.event|workflow_dispatch)/u);
 });
 
 test("gates pre-attestation and complete release inventories before unconditional upload", () => {
@@ -334,6 +355,7 @@ test("gates pre-attestation and complete release inventories before unconditiona
       step.includes("actions/upload-artifact@") &&
       step.includes("name: batcave-release-${{ needs.prepare.outputs.tag }}"),
   );
+  const candidateUpload = stepIndex("Retain exact pre-publication candidate inventory");
   const create = stepIndex("Create and verify draft GitHub Release");
 
   for (const [label, index] of [
@@ -343,12 +365,19 @@ test("gates pre-attestation and complete release inventories before unconditiona
     ["retained provenance", retain],
     ["complete inventory", complete],
     ["final artifact upload", upload],
+    ["pre-publication candidate upload", candidateUpload],
     ["draft release", create],
   ]) {
     assert.ok(index >= 0, `finalize must contain ${label}`);
   }
   assert.ok(checksums < preAttestation && preAttestation < attest);
-  assert.ok(attest < retain && retain < complete && complete < upload && upload < create);
+  assert.ok(
+    attest < retain &&
+      retain < complete &&
+      complete < upload &&
+      upload < candidateUpload &&
+      candidateUpload < create,
+  );
 
   assert.match(
     steps[preAttestation],
@@ -358,4 +387,10 @@ test("gates pre-attestation and complete release inventories before unconditiona
   assert.doesNotMatch(steps[preAttestation], /^\s*if:/mu);
   assert.doesNotMatch(steps[complete], /^\s*if:/mu);
   assert.doesNotMatch(steps[upload], /^\s*if:/mu);
+  assert.match(
+    steps[candidateUpload],
+    /name: batcave-release-candidate-\$\{\{ needs\.prepare\.outputs\.tag \}\}/u,
+  );
+  assert.match(steps[candidateUpload], /path: \$\{\{ runner\.temp \}\}\/release-candidate\.json/u);
+  assert.doesNotMatch(steps[candidateUpload], /^\s*if:/mu);
 });
