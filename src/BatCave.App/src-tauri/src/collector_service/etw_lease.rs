@@ -73,10 +73,15 @@ pub(crate) enum EtwLeasePersistenceError {
 /// The native service-storage lane is the only code allowed to call
 /// `from_platform_verified`. Keeping the constructor unsafe prevents an
 /// arbitrary path from silently becoming trusted before that verifier is wired.
+trait PlatformLeaseRootGuard: std::fmt::Debug + Send + Sync {}
+
+impl<T> PlatformLeaseRootGuard for T where T: std::fmt::Debug + Send + Sync {}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ProtectedEtwLeaseRoot {
     path: PathBuf,
     brand: Arc<()>,
+    _platform_guard: Arc<dyn PlatformLeaseRootGuard>,
 }
 
 impl ProtectedEtwLeaseRoot {
@@ -90,15 +95,20 @@ impl ProtectedEtwLeaseRoot {
     /// excludes unprivileged writers. The directory must already exist. Its
     /// security must remain held by the installer/service boundary for this
     /// capability's lifetime.
-    pub(crate) unsafe fn from_platform_verified(
+    pub(crate) unsafe fn from_platform_verified<G>(
         path: PathBuf,
-    ) -> Result<Self, EtwLeasePersistenceError> {
+        platform_guard: G,
+    ) -> Result<Self, EtwLeasePersistenceError>
+    where
+        G: std::fmt::Debug + Send + Sync + 'static,
+    {
         if !path.is_absolute() || path.file_name().is_none() || !path.is_dir() {
             return Err(EtwLeasePersistenceError::InvalidProtectedRoot);
         }
         Ok(Self {
             path,
             brand: Arc::new(()),
+            _platform_guard: Arc::new(platform_guard),
         })
     }
 
@@ -831,7 +841,7 @@ mod tests {
     #[test]
     fn protected_root_capability_rejects_relative_missing_and_file_paths() {
         assert!(matches!(
-            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(PathBuf::from("relative")) },
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(PathBuf::from("relative"), ()) },
             Err(EtwLeasePersistenceError::InvalidProtectedRoot)
         ));
 
@@ -841,7 +851,7 @@ mod tests {
             unique_suffix()
         ));
         assert!(matches!(
-            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(missing) },
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(missing, ()) },
             Err(EtwLeasePersistenceError::InvalidProtectedRoot)
         ));
 
@@ -852,7 +862,7 @@ mod tests {
         ));
         fs::write(&file, b"not a directory").expect("file fixture");
         assert!(matches!(
-            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(file.clone()) },
+            unsafe { ProtectedEtwLeaseRoot::from_platform_verified(file.clone(), ()) },
             Err(EtwLeasePersistenceError::InvalidProtectedRoot)
         ));
         fs::remove_file(file).expect("file fixture cleanup");
@@ -1348,7 +1358,7 @@ mod tests {
         }
         // SAFETY: this process created the unique test directory, rejects public
         // access on Unix, and retains exclusive ownership until cleanup.
-        let root = unsafe { ProtectedEtwLeaseRoot::from_platform_verified(path.clone()) }
+        let root = unsafe { ProtectedEtwLeaseRoot::from_platform_verified(path.clone(), ()) }
             .expect("test root accepted");
         (path, root)
     }

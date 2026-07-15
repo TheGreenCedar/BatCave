@@ -53,7 +53,9 @@ pub fn run_cli_from_env() -> Option<i32> {
 
 #[cfg(windows)]
 pub fn run_collector_service() -> i32 {
-    collector_service::windows_service::run()
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    collector_service::windows_provisioner::run_cli(&args)
+        .unwrap_or_else(collector_service::windows_service::run)
 }
 
 fn run_cli(args: &[String]) -> Option<i32> {
