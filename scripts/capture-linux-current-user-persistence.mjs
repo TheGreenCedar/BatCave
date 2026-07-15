@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   validateCurrentUserPersistencePacket,
@@ -45,8 +45,16 @@ const FIXED_COMMAND_ENV = Object.freeze({
   NO_COLOR: "1",
   PATH: "/usr/bin:/bin",
 });
+const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+const TAURI_CONFIG = path.resolve(SCRIPT_DIRECTORY, "../src/BatCave.App/src-tauri/tauri.conf.json");
+const UPDATER_VERIFIER = path.resolve(
+  SCRIPT_DIRECTORY,
+  "../src/BatCave.App/src-tauri/target/debug/batcave-verify-updater-signature",
+);
 const verifiedPublicDebCaptureResults = new WeakSet();
 const verifiedPublicDebCaptureStates = new WeakMap();
+const verifiedPublicAppImageCaptureResults = new WeakSet();
+const verifiedPublicAppImageCaptureStates = new WeakMap();
 const verifiedRootUnitSettlementReceipts = new WeakSet();
 const HOSTILE_ROOT_SETTLEMENT_PROGRAM =
   '/usr/bin/sleep 300 & normal=$!; /usr/bin/setsid /usr/bin/sleep 300 & escaped=$!; /usr/bin/printf \'{"schema_version":1,"pids":[%s,%s]}\\n\' "$normal" "$escaped"';
@@ -354,7 +362,13 @@ async function runProof(executable, phase, environment, cwd) {
   }
 }
 
-async function runInstalledTelemetryProof(executable, sourceSha, appVersion, workspace) {
+async function runInstalledTelemetryProof(
+  executable,
+  sourceSha,
+  appVersion,
+  workspace,
+  { appimage = false } = {},
+) {
   const home = path.join(workspace, "telemetry-home");
   const temporaryDirectory = path.join(workspace, "telemetry-tmp");
   const runtimeDirectory = path.join(workspace, "telemetry-runtime");
@@ -387,7 +401,7 @@ async function runInstalledTelemetryProof(executable, sourceSha, appVersion, wor
     ],
     {
       cwd: runtimeDirectory,
-      env: proofEnvironment(home, temporaryDirectory),
+      env: proofEnvironment(home, temporaryDirectory, { appimage }),
       timeoutMs: COMMAND_TIMEOUT_MS,
     },
   );
@@ -395,7 +409,7 @@ async function runInstalledTelemetryProof(executable, sourceSha, appVersion, wor
   try {
     summary = JSON.parse(output.stdout.toString("utf8"));
   } catch {
-    fail("installed deb telemetry proof emitted invalid JSON");
+    fail("installed Linux telemetry proof emitted invalid JSON");
   }
   if (
     summary?.format_version !== 4 ||
@@ -413,7 +427,7 @@ async function runInstalledTelemetryProof(executable, sourceSha, appVersion, wor
     summary.sample_quality_passed !== true ||
     summary.strict_passed !== true
   ) {
-    fail("installed deb telemetry proof did not satisfy the fixed advancing-sample contract");
+    fail("installed Linux telemetry proof did not satisfy the fixed advancing-sample contract");
   }
   return Object.freeze({
     evidence_scope: summary.evidence_scope,
@@ -497,11 +511,10 @@ function rootUnitState(unit) {
 }
 
 async function settleRootUnit(unit) {
-  const stop = fixedCommand(
-    "/usr/bin/sudo",
-    ["-n", "/usr/bin/systemctl", "stop", unit],
-    { allowFailure: true, timeoutMs: ROOT_UNIT_CONTROL_TIMEOUT_MS },
-  );
+  const stop = fixedCommand("/usr/bin/sudo", ["-n", "/usr/bin/systemctl", "stop", unit], {
+    allowFailure: true,
+    timeoutMs: ROOT_UNIT_CONTROL_TIMEOUT_MS,
+  });
   if (![0, 5].includes(stop.status) || stop.signal !== null) {
     fail("fixed root unit stop did not return success or exact not-found status");
   }
@@ -543,11 +556,7 @@ function requireRootUnitSettlementReceipt(receipt) {
 }
 
 async function runFixedRootUnit(operation, value = null) {
-  for (const executable of [
-    "/usr/bin/sudo",
-    "/usr/bin/systemd-run",
-    "/usr/bin/systemctl",
-  ]) {
+  for (const executable of ["/usr/bin/sudo", "/usr/bin/systemd-run", "/usr/bin/systemctl"]) {
     requireFixedExecutable(executable);
   }
   const payload = rootUnitPayload(operation, value);
@@ -960,7 +969,9 @@ async function installDeb(deb, packageName) {
   for (const installedExecutable of ["/usr/bin/batcave-monitor", executable]) {
     const metadata = fs.lstatSync(installedExecutable);
     if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o111) === 0) {
-      fail(`installed ${path.basename(installedExecutable)} must be an executable regular non-link file`);
+      fail(
+        `installed ${path.basename(installedExecutable)} must be an executable regular non-link file`,
+      );
     }
   }
   return {
@@ -994,11 +1005,9 @@ async function purgeDeb(packageName, ownedFiles = []) {
   }
   let residue = null;
   try {
-    residue = [
-      ...ownedFiles,
-      "/usr/bin/batcave-monitor",
-      "/usr/bin/batcave-monitor-cli",
-    ].find((file) => pathPresent(file));
+    residue = [...ownedFiles, "/usr/bin/batcave-monitor", "/usr/bin/batcave-monitor-cli"].find(
+      (file) => pathPresent(file),
+    );
   } catch (error) {
     errors.push(`post-purge residue query: ${error.message}`);
   }
@@ -1107,9 +1116,7 @@ async function captureDeb(
   let purgeSettlement = null;
   try {
     const artifactDigest = copyOwnedArtifact(source, artifact, "deb artifact", expectedArtifact);
-    const hostileSettlement = rootSettlementRequired
-      ? await runRootSettlementHostileProof()
-      : null;
+    const hostileSettlement = rootSettlementRequired ? await runRootSettlementHostileProof() : null;
     const prerequisiteSettlements = rootSettlementRequired
       ? await installFixedRuntimePrerequisites()
       : [];
@@ -1217,14 +1224,34 @@ function requireVerifiedPublicDebCaptureResult(result, receipt) {
   return state;
 }
 
-async function captureAppImage(source, sourceSha) {
+async function captureAppImage(
+  source,
+  sourceSha,
+  { expectedArtifact = null, telemetryRequired = false } = {},
+) {
   const workspace = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "batcave-linux-appimage-persistence-")),
   );
   fs.chmodSync(workspace, 0o700);
   const artifact = path.join(workspace, "candidate.AppImage");
   try {
-    const artifactDigest = copyOwnedArtifact(source, artifact, "AppImage artifact");
+    const artifactDigest = copyOwnedArtifact(
+      source,
+      artifact,
+      "AppImage artifact",
+      expectedArtifact,
+    );
+    const telemetry = telemetryRequired
+      ? await runInstalledTelemetryProof(
+          artifact,
+          sourceSha,
+          expectedArtifact?.app_version,
+          workspace,
+          {
+            appimage: true,
+          },
+        )
+      : null;
     const packet = await captureLifecycle({
       expectedAppVersion: null,
       artifactDigest,
@@ -1248,10 +1275,100 @@ async function captureAppImage(source, sourceSha) {
       sourceSha,
       workspace,
     });
-    return packet;
+    return { packet, telemetry };
   } finally {
     fs.rmSync(workspace, { force: true, recursive: true });
   }
+}
+
+async function captureVerifiedPublicAppImage(receipt) {
+  const verified = requireVerifiedPublicReleaseReceipt(receipt);
+  const directory = requireVerifiedPublicReleaseDownloads(verified);
+  const contract = expectedReleaseAssetRoles(verified.tag);
+  const role = contract.roles.find(
+    ({ role: name }) => name === "Linux AppImage package and updater payload",
+  );
+  if (!role) fail("release contract has no Linux AppImage package role");
+  const asset = verified.assets.find(({ name }) => name === role.name);
+  if (!asset) fail("verified public release receipt has no Linux AppImage package");
+  const signatureRole = contract.roles.find(({ signatureFor }) => signatureFor === role.role);
+  if (!signatureRole) fail("release contract has no Linux AppImage updater signature role");
+  const signatureAsset = verified.assets.find(({ name }) => name === signatureRole.name);
+  if (!signatureAsset) fail("verified public release receipt has no Linux updater signature");
+
+  requireFixedExecutable(UPDATER_VERIFIER);
+  if (fs.realpathSync(UPDATER_VERIFIER) !== UPDATER_VERIFIER) {
+    fail("fixed updater verifier must be reached without links");
+  }
+  const configRead = readStableRegularFile(TAURI_CONFIG, "Tauri updater config");
+  let updaterKey;
+  try {
+    updaterKey = JSON.parse(configRead.bytes.toString("utf8")).plugins.updater.pubkey;
+  } catch {
+    fail("Tauri updater config is invalid");
+  }
+  if (typeof updaterKey !== "string" || updaterKey.length === 0) {
+    fail("Tauri updater config has no embedded public key");
+  }
+  const updaterKeyFingerprint = sha256(Buffer.from(updaterKey, "base64"));
+  const workspace = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "batcave-public-appimage-signature-")),
+  );
+  fs.chmodSync(workspace, 0o700);
+  let packet;
+  let telemetry;
+  try {
+    const verifiedCopy = path.join(workspace, "verified.AppImage");
+    fixedCommand(UPDATER_VERIFIER, [
+      path.join(directory, role.name),
+      path.join(directory, signatureRole.name),
+      TAURI_CONFIG,
+      verifiedCopy,
+    ]);
+    ({ packet, telemetry } = await captureAppImage(verifiedCopy, verified.source_sha, {
+      expectedArtifact: { ...asset, app_version: verified.app_version },
+      telemetryRequired: true,
+    }));
+  } finally {
+    fs.rmSync(workspace, { force: true, recursive: true });
+  }
+  if (packet.result !== "passed") fail("verified public AppImage lifecycle did not pass");
+  if (packet.artifact.sha256 !== asset.sha256) {
+    fail(
+      "verified public AppImage lifecycle digest does not match the public verification receipt",
+    );
+  }
+  if (packet.source.app_version !== verified.app_version) {
+    fail(
+      "verified public AppImage lifecycle version does not match the public verification receipt",
+    );
+  }
+  if (!telemetry?.samples_advanced) fail("verified public AppImage telemetry proof did not pass");
+  const result = Object.freeze({
+    schema_version: 1,
+    proof_scope: "post_public_appimage_native_observation",
+    disposition: "passed",
+    release_evidence_eligible: false,
+  });
+  verifiedPublicAppImageCaptureResults.add(result);
+  verifiedPublicAppImageCaptureStates.set(result, {
+    asset: Object.freeze({ ...asset }),
+    packet,
+    receipt: verified,
+    signatureAsset: Object.freeze({ ...signatureAsset }),
+    telemetry,
+    updaterKeyFingerprint,
+  });
+  return result;
+}
+
+function requireVerifiedPublicAppImageCaptureResult(result, receipt) {
+  const verified = requireVerifiedPublicReleaseReceipt(receipt);
+  const state = verifiedPublicAppImageCaptureStates.get(result);
+  if (!result || !verifiedPublicAppImageCaptureResults.has(result) || state?.receipt !== verified) {
+    fail("public AppImage capture result must be the matching in-process verified native result");
+  }
+  return state;
 }
 
 function createOutputDirectory(directory) {
@@ -1272,7 +1389,7 @@ async function capture(options) {
   createOutputDirectory(options.outputDir);
   try {
     const deb = (await captureDeb(options.deb, options.sourceSha)).packet;
-    const appimage = await captureAppImage(options.appimage, options.sourceSha);
+    const appimage = (await captureAppImage(options.appimage, options.sourceSha)).packet;
     if (deb.source.app_version !== appimage.source.app_version) {
       fail("deb and AppImage receipts disagree on application version");
     }
@@ -1304,6 +1421,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
 export const linuxPersistenceCaptureInternals = {
   buildPacket,
+  captureVerifiedPublicAppImage,
   captureVerifiedPublicDeb,
   copyOwnedArtifact,
   createOutputDirectory,
@@ -1313,6 +1431,7 @@ export const linuxPersistenceCaptureInternals = {
   privateRootPermissionsVerified,
   proofEnvironment,
   readStableRegularFile,
+  requireVerifiedPublicAppImageCaptureResult,
   requireVerifiedPublicDebCaptureResult,
   runBoundedProcess,
   writeCorruptSettings,
