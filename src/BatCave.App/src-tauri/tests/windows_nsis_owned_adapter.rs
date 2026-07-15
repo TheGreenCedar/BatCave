@@ -11,9 +11,12 @@ use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_CANCELLED, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, ERROR_CANCELLED, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
@@ -83,6 +86,7 @@ struct Outcome {
 
 struct OwnedImage {
     root: PathBuf,
+    root_handle: RootHandle,
     path: PathBuf,
     handle: File,
     size: u64,
@@ -99,6 +103,7 @@ impl OwnedImage {
             ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&root).map_err(|_| FailureKind::OwnershipFailed)?;
+        let root_handle = RootHandle::open(&root)?;
         let path = root.join(OWNED_IMAGE_NAME);
         let mut writer = OpenOptions::new()
             .create_new(true)
@@ -124,6 +129,7 @@ impl OwnedImage {
         }
         Ok(Self {
             root,
+            root_handle,
             path,
             handle,
             size: bytes.len() as u64,
@@ -148,7 +154,37 @@ impl OwnedImage {
 
     fn cleanup(self) -> Result<(), FailureKind> {
         drop(self.handle);
+        drop(self.root_handle);
         fs::remove_dir_all(&self.root).map_err(|_| FailureKind::CleanupFailed)
+    }
+}
+
+struct RootHandle(HANDLE);
+
+impl RootHandle {
+    fn open(root: &Path) -> Result<Self, FailureKind> {
+        let path = wide(root.as_os_str());
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(FailureKind::OwnershipFailed);
+        }
+        Ok(Self(handle))
+    }
+}
+
+impl Drop for RootHandle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
     }
 }
 
@@ -542,6 +578,7 @@ fn owned_handle_blocks_replacement_and_deletion_until_settlement() {
     let image = OwnedImage::acquire().expect("owned image");
     assert!(OpenOptions::new().write(true).open(&image.path).is_err());
     assert!(fs::remove_file(&image.path).is_err());
+    assert!(fs::rename(&image.root, image.root.with_extension("moved")).is_err());
     image.cleanup().expect("owned cleanup");
 }
 
