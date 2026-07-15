@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,8 @@ import {
 } from "./validate-release-platform-support.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const LINUX_CLI_DESTINATION = "/usr/bin/batcave-monitor-cli";
+const LINUX_CLI_SOURCE = "target/release/batcave-monitor-cli";
 const PROFILES = new Map(
   RELEASE_PLATFORM_SUPPORT_CONTRACT.profiles.map((profile) => [profile.id, profile]),
 );
@@ -51,6 +54,12 @@ function fixturePlatform(profileId, packageKind, architecture) {
 
 function cloneContract() {
   return structuredClone(RELEASE_PLATFORM_SUPPORT_CONTRACT);
+}
+
+function withMutatedTauri(sources, mutate) {
+  const tauri = structuredClone(sources.tauri);
+  mutate(tauri);
+  return { ...sources, tauri };
 }
 
 function escapeRegex(value) {
@@ -91,6 +100,97 @@ function assertActiveLine(source, command, message) {
   );
 }
 
+function writeTestExecutable(file, source) {
+  fs.writeFileSync(file, source, { mode: 0o755 });
+}
+
+function runBundleOnlyFromCleanState(host) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-tauri-bundle-order-"));
+  const scripts = path.join(root, "scripts");
+  const app = path.join(root, "src", "BatCave.App");
+  const tauri = path.join(app, "src-tauri");
+  const bin = path.join(root, "bin");
+  const log = path.join(root, "commands.log");
+  const cli = path.join(tauri, "target", "release", "batcave-monitor-cli");
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.mkdirSync(tauri, { recursive: true });
+  fs.mkdirSync(bin);
+  fs.copyFileSync(path.join(ROOT, "scripts", "validate-tauri.sh"), path.join(scripts, "validate-tauri.sh"));
+  fs.copyFileSync(path.join(ROOT, "scripts", "build-linux-cli.sh"), path.join(scripts, "build-linux-cli.sh"));
+  fs.writeFileSync(path.join(tauri, "Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n");
+
+  writeTestExecutable(
+    path.join(bin, "uname"),
+    "#!/bin/bash\nprintf '%s\\n' \"$BATCAVE_TEST_HOST\"\n",
+  );
+  writeTestExecutable(
+    path.join(bin, "cargo"),
+    `#!/bin/bash
+set -euo pipefail
+printf 'cargo|%s|%s\\n' "$BATCAVE_SOURCE_COMMIT_SHA" "$*" >> "$BATCAVE_TEST_LOG"
+mkdir -p "$(dirname -- "$BATCAVE_TEST_CLI")"
+: > "$BATCAVE_TEST_CLI"
+`,
+  );
+  writeTestExecutable(
+    path.join(bin, "npm"),
+    `#!/bin/bash
+set -euo pipefail
+printf 'npm|%s\\n' "$*" >> "$BATCAVE_TEST_LOG"
+if [[ "$BATCAVE_TEST_HOST" == "Linux" && "$*" == "run tauri -- build" ]]; then
+  [[ -f "$BATCAVE_TEST_CLI" ]] || exit 71
+fi
+`,
+  );
+  writeTestExecutable(
+    path.join(bin, "rustup"),
+    `#!/bin/bash
+set -euo pipefail
+[[ "$*" == "target list --installed" ]] || exit 72
+printf 'aarch64-apple-darwin\\nx86_64-apple-darwin\\n'
+`,
+  );
+  writeTestExecutable(
+    path.join(scripts, "verify-linux-bundle.sh"),
+    `#!/bin/bash
+set -euo pipefail
+[[ -f "$BATCAVE_TEST_CLI" ]] || exit 73
+printf 'verify-linux|%s\\n' "$*" >> "$BATCAVE_TEST_LOG"
+`,
+  );
+  for (const [name, label] of [
+    ["build-macos-universal-cli.sh", "build-macos"],
+    ["verify-macos-bundle.sh", "verify-macos"],
+  ]) {
+    writeTestExecutable(
+      path.join(scripts, name),
+      `#!/bin/bash\nset -euo pipefail\nprintf '${label}|%s\\n' "$*" >> "$BATCAVE_TEST_LOG"\n`,
+    );
+  }
+
+  try {
+    assert.equal(fs.existsSync(cli), false, "fixture must start without a cached release CLI");
+    const result = spawnSync("/bin/bash", [path.join(scripts, "validate-tauri.sh"), "--bundle-only"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BATCAVE_SOURCE_COMMIT_SHA: "0123456789abcdef0123456789abcdef01234567",
+        BATCAVE_TEST_CLI: cli,
+        BATCAVE_TEST_HOST: host,
+        BATCAVE_TEST_LOG: log,
+        PATH: `${bin}${path.delimiter}/usr/bin:/bin`,
+      },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return {
+      cargoManifest: path.join(tauri, "Cargo.toml"),
+      commands: fs.readFileSync(log, "utf8").trim().split("\n"),
+    };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 function linuxSourceFiles() {
   return {
     validationWorkflow: fs.readFileSync(
@@ -105,6 +205,7 @@ function linuxSourceFiles() {
       path.join(ROOT, ".github", "workflows", "release.yml"),
       "utf8",
     ),
+    buildLinuxCli: fs.readFileSync(path.join(ROOT, "scripts", "build-linux-cli.sh"), "utf8"),
     tauriValidator: fs.readFileSync(path.join(ROOT, "scripts", "validate-tauri.sh"), "utf8"),
     verifier: fs.readFileSync(path.join(ROOT, "scripts", "verify-linux-bundle.sh"), "utf8"),
     tauri: JSON.parse(
@@ -132,13 +233,47 @@ function assertLinuxSourceEnforcementMatchesContract(sources) {
   );
   assertActiveLine(
     sources.tauriValidator,
+    'bash "$repo_root/scripts/build-linux-cli.sh"',
+    "Tauri bundle validation must build the Linux release CLI before packaging",
+  );
+  assertActiveLine(
+    sources.tauriValidator,
     'bash "$repo_root/scripts/verify-linux-bundle.sh"',
     "Tauri bundle validation must actively run Linux package verification",
   );
   assertActiveLine(
     releaseJob,
+    "run: bash scripts/build-linux-cli.sh",
+    "release Linux job must build the release CLI before signed packaging",
+  );
+  assertActiveLine(
+    releaseJob,
     "run: bash scripts/verify-linux-bundle.sh",
     "release Linux job must actively run Linux package verification",
+  );
+  assert.match(sources.releaseWorkflow, /^  BATCAVE_SOURCE_COMMIT_SHA: \$\{\{ github\.sha \}\}$/mu);
+
+  const validatorCli = sources.tauriValidator.indexOf(
+    'bash "$repo_root/scripts/build-linux-cli.sh"',
+  );
+  const validatorBundle = sources.tauriValidator.indexOf("npm run tauri -- build", validatorCli);
+  const validatorVerify = sources.tauriValidator.indexOf(
+    'bash "$repo_root/scripts/verify-linux-bundle.sh"',
+    validatorBundle,
+  );
+  assert.ok(validatorCli < validatorBundle && validatorBundle < validatorVerify);
+
+  const releaseCli = releaseJob.indexOf("run: bash scripts/build-linux-cli.sh");
+  const releaseBundle = releaseJob.indexOf(
+    "run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json",
+  );
+  const releaseVerify = releaseJob.indexOf("run: bash scripts/verify-linux-bundle.sh");
+  assert.ok(releaseCli < releaseBundle && releaseBundle < releaseVerify);
+
+  assert.match(sources.buildLinuxCli, /if \[\[ "\$\(uname -s\)" != "Linux" \]\]; then/u);
+  assert.match(
+    sources.buildLinuxCli,
+    /cargo build \\\n+  --manifest-path "\$cargo_manifest" \\\n+  --release \\\n+  --bin batcave-monitor-cli/u,
   );
 
   const packages = new Map();
@@ -150,6 +285,13 @@ function assertLinuxSourceEnforcementMatchesContract(sources) {
     for (const package_ of profile.packages) packages.set(package_.kind, package_);
   }
   assert.deepEqual([...packages.keys()].sort(), [...sources.tauri.bundle.targets].sort());
+  for (const packageKind of ["deb", "appimage"]) {
+    assert.deepEqual(
+      sources.tauri.bundle.linux?.[packageKind]?.files,
+      { [LINUX_CLI_DESTINATION]: LINUX_CLI_SOURCE },
+      `Tauri ${packageKind} config must package the release CLI at its installed path`,
+    );
+  }
 
   const assetRoles = new Map(
     expectedReleaseAssetRoles("v9.9.9").roles.map((role) => [role.role, role]),
@@ -426,6 +568,27 @@ test("binds Linux source enforcement to the integrated #123 workflows and verifi
   assertLinuxSourceEnforcementMatchesContract(linuxSourceFiles());
 });
 
+test("builds the Linux release CLI from a clean target before bundle and verification", () => {
+  const sourceSha = "0123456789abcdef0123456789abcdef01234567";
+  const { cargoManifest, commands } = runBundleOnlyFromCleanState("Linux");
+  assert.deepEqual(commands, [
+    `cargo|${sourceSha}|build --manifest-path ${cargoManifest} --release --bin batcave-monitor-cli`,
+    "npm|run tauri -- build",
+    "verify-linux|",
+  ]);
+});
+
+test("keeps the Linux CLI prebuild out of the macOS universal bundle path", () => {
+  const { commands } = runBundleOnlyFromCleanState("Darwin");
+  assert.deepEqual(commands, [
+    "npm|run build",
+    "npm|run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json --no-bundle",
+    "build-macos|--lipo-only",
+    "npm|run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json",
+    "verify-macos|--mode adhoc",
+  ]);
+});
+
 test("rejects runner, ABI, package, and runtime drift from the integrated #123 sources", () => {
   const sources = linuxSourceFiles();
   const source = RELEASE_PLATFORM_SUPPORT_CONTRACT.linux_source_enforcement;
@@ -457,6 +620,45 @@ test("rejects runner, ABI, package, and runtime drift from the integrated #123 s
         "        run: bash scripts/validate-tauri.sh --bundle-only",
         "        # run: bash scripts/validate-tauri.sh --bundle-only",
       ),
+    },
+    {
+      ...sources,
+      tauriValidator: sources.tauriValidator.replace(
+        '    bash "$repo_root/scripts/build-linux-cli.sh"',
+        '    # bash "$repo_root/scripts/build-linux-cli.sh"',
+      ),
+    },
+    {
+      ...sources,
+      releaseWorkflow: sources.releaseWorkflow.replace(
+        "        run: bash scripts/build-linux-cli.sh",
+        "        # run: bash scripts/build-linux-cli.sh",
+      ),
+    },
+    {
+      ...sources,
+      buildLinuxCli: sources.buildLinuxCli.replace(
+        "  --bin batcave-monitor-cli",
+        "  --bin batcave-monitor",
+      ),
+    },
+    {
+      ...sources,
+      tauriValidator: sources.tauriValidator
+        .replace('    bash "$repo_root/scripts/build-linux-cli.sh"\n', "")
+        .replace(
+          "    npm run tauri -- build\n",
+          '    npm run tauri -- build\n    bash "$repo_root/scripts/build-linux-cli.sh"\n',
+        ),
+    },
+    {
+      ...sources,
+      releaseWorkflow: sources.releaseWorkflow
+        .replace("      - name: Build Linux release CLI\n        run: bash scripts/build-linux-cli.sh\n\n", "")
+        .replace(
+          "      - name: Verify Linux package version\n",
+          "      - name: Build Linux release CLI\n        run: bash scripts/build-linux-cli.sh\n\n      - name: Verify Linux package version\n",
+        ),
     },
     {
       ...sources,
@@ -529,6 +731,18 @@ test("rejects runner, ABI, package, and runtime drift from the integrated #123 s
       ...sources,
       tauri: { bundle: { targets: ["deb"] } },
     },
+    withMutatedTauri(sources, (tauri) => {
+      tauri.bundle.linux.deb.files[LINUX_CLI_DESTINATION] =
+        "target/debug/batcave-monitor-cli";
+    }),
+    withMutatedTauri(sources, (tauri) => {
+      delete tauri.bundle.linux.appimage.files[LINUX_CLI_DESTINATION];
+    }),
+    withMutatedTauri(sources, (tauri) => {
+      tauri.bundle.linux.appimage.files["/usr/lib/batcave-monitor-cli"] =
+        tauri.bundle.linux.appimage.files[LINUX_CLI_DESTINATION];
+      delete tauri.bundle.linux.appimage.files[LINUX_CLI_DESTINATION];
+    }),
   ];
   for (const mutation of mutations) {
     assert.throws(() => assertLinuxSourceEnforcementMatchesContract(mutation));

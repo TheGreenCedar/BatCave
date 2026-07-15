@@ -5,6 +5,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      capture_linux_persistence:
+        description: Capture sanitized Linux package persistence candidates only
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -16,6 +22,7 @@ concurrency:
 jobs:
   windows:
     name: Windows NSIS bundle
+    if: github.event_name != 'workflow_dispatch' || inputs.capture_linux_persistence != true
     runs-on: windows-latest
     steps:
       - name: Preserve repository line endings
@@ -89,6 +96,8 @@ jobs:
         working-directory: src/BatCave.App
 
       - name: Bundle Linux app
+        env:
+          BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
         run: bash scripts/validate-tauri.sh --bundle-only
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -100,8 +109,38 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Capture Linux current-user persistence candidates
+        id: persistence
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_linux_persistence == true && github.actor == github.repository_owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(src/BatCave.App/src-tauri/target/release/bundle/deb/*.deb)
+          appimages=(src/BatCave.App/src-tauri/target/release/bundle/appimage/*.AppImage)
+          [[ "${#debs[@]}" -eq 1 ]] || { echo "Expected exactly one deb." >&2; exit 1; }
+          [[ "${#appimages[@]}" -eq 1 ]] || { echo "Expected exactly one AppImage." >&2; exit 1; }
+          output="${RUNNER_TEMP}/batcave-linux-persistence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          node scripts/capture-linux-current-user-persistence.mjs \
+            --deb "${debs[0]}" \
+            --appimage "${appimages[0]}" \
+            --source-sha "${GITHUB_SHA}" \
+            --output-dir "${output}"
+          node scripts/validate-current-user-persistence-evidence.mjs "${output}"/*.json
+          echo "path=${output}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload sanitized Linux persistence candidates
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_linux_persistence == true && github.actor == github.repository_owner
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: batcave-linux-persistence-${{ github.run_id }}
+          path: ${{ steps.persistence.outputs.path }}/*.json
+          if-no-files-found: error
+          retention-days: 14
+
   macos:
     name: macOS universal ad-hoc bundle
+    if: github.event_name != 'workflow_dispatch' || inputs.capture_linux_persistence != true
     runs-on: macos-15
     steps:
       - name: Preserve repository line endings

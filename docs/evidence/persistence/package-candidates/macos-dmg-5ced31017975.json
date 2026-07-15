@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "packet_kind": "native_candidate",
+  "packet_id": "macos-dmg-5ced31017975",
+  "observed_at_utc": "2026-07-15T14:00:00Z",
+  "source": {
+    "repository": "TheGreenCedar/BatCave",
+    "source_sha": "5ced3101797501c5b6ae1106ee5c947da5f0ae61",
+    "app_version": "0.2.0-rc.2"
+  },
+  "host": {
+    "platform": "macos",
+    "architecture": "aarch64",
+    "os_version": "macOS 26.5.2"
+  },
+  "artifact": {
+    "kind": "dmg",
+    "sha256": "sha256:652765504e9a64bc7e2ebc97c8a23f7dd2547d6f18536fa8fd416a8fc8634b2c",
+    "digest_scope": "artifact_bytes",
+    "install_kind": "app_bundle"
+  },
+  "root": {
+    "canonical_location": "application_support",
+    "owner_verified": true,
+    "permission_model": "unix_mode",
+    "private_permissions_verified": true,
+    "directory_mode": "0700",
+    "files": [
+      {
+        "component": "diagnostics",
+        "private_permissions_verified": true,
+        "mode": "0600"
+      },
+      {
+        "component": "settings",
+        "private_permissions_verified": true,
+        "mode": "0600"
+      },
+      {
+        "component": "warm_cache",
+        "private_permissions_verified": true,
+        "mode": "0600"
+      }
+    ]
+  },
+  "receipts": {
+    "initialize": {
+      "format_version": 1,
+      "evidence_scope": "packaged_current_user_persistence_observation",
+      "phase": "initialize",
+      "release_identity": {
+        "app_version": "0.2.0-rc.2",
+        "source_commit_sha": "5ced3101797501c5b6ae1106ee5c947da5f0ae61"
+      },
+      "platform": "macos",
+      "architecture": "aarch64",
+      "install_kind": "app_bundle",
+      "settings": {
+        "theme": "ember",
+        "history_point_limit": 180
+      },
+      "health_degraded": false,
+      "persistence_warning_present": false,
+      "persistence": {
+        "state": "healthy",
+        "current_user_root": {
+          "directory_reported": true,
+          "permission_state": "verified"
+        },
+        "components": [
+          {
+            "kind": "diagnostics",
+            "state": "healthy",
+            "durability": "durable",
+            "active_failure": null
+          },
+          {
+            "kind": "settings",
+            "state": "healthy",
+            "durability": "durable",
+            "active_failure": null
+          },
+          {
+            "kind": "warm_cache",
+            "state": "healthy",
+            "durability": "not_applicable",
+            "active_failure": null
+          }
+        ],
+        "suppressed_diagnostic_events": 0
+      }
+    },
+    "restart": {
+      "format_version": 1,
+      "evidence_scope": "packaged_current_user_persistence_observation",
+      "phase": "restart",
+      "release_identity": {
+        "app_version": "0.2.0-rc.2",
+        "source_commit_sha": "5ced3101797501c5b6ae1106ee5c947da5f0ae61"
+      },
+      "platform": "macos",
+      "architecture": "aarch64",
+      "install_kind": "app_bundle",
+      "settings": {
+        "theme": "ember",
+        "history_point_limit": 180
+      },
+      "health_degraded": false,
+      "persistence_warning_present": false,
+      "persistence": {
+        "state": "healthy",
+        "current_user_root": {
+          "directory_reported": true,
+          "permission_state": "verified"
+        },
+        "components": [
+          {
+            "kind": "diagnostics",
+            "state": "healthy",
+            "durability": "not_applicable",
+            "active_failure": null
+          },
+          {
+            "kind": "settings",
+            "state": "healthy",
+            "durability": "durable",
+            "active_failure": null
+          },
+          {
+            "kind": "warm_cache",
+            "state": "healthy",
+            "durability": "durable",
+            "active_failure": null
+          }
+        ],
+        "suppressed_diagnostic_events": 0
+      }
+    },
+    "degraded": {
+      "format_version": 1,
+      "evidence_scope": "packaged_current_user_persistence_observation",
+      "phase": "degraded",
+      "release_identity": {
+        "app_version": "0.2.0-rc.2",
+        "source_commit_sha": "5ced3101797501c5b6ae1106ee5c947da5f0ae61"
+      },
+      "platform": "macos",
+      "architecture": "aarch64",
+      "install_kind": "app_bundle",
+      "settings": null,
+      "health_degraded": true,
+      "persistence_warning_present": true,
+      "persistence": {
+        "state": "degraded",
+        "current_user_root": {
+          "directory_reported": true,
+          "permission_state": "verified"
+        },
+        "components": [
+          {
+            "kind": "diagnostics",
+            "state": "healthy",
+            "durability": "durable",
+            "active_failure": null
+          },
+          {
+            "kind": "settings",
+            "state": "degraded",
+            "durability": "session_only",
+            "active_failure": {
+              "code": "corrupt_data",
+              "operation": "parse",
+              "retryable": false
+            }
+          },
+          {
+            "kind": "warm_cache",
+            "state": "healthy",
+            "durability": "durable",
+            "active_failure": null
+          }
+        ],
+        "suppressed_diagnostic_events": 0
+      }
+    }
+  },
+  "checks": {
+    "application_removed": true,
+    "corrupt_source_preserved": true,
+    "degraded_launch_succeeded": true,
+    "outside_sentinel_preserved": true,
+    "persistence_failure_visible": true,
+    "restart_settings_preserved": true,
+    "state_root_preserved": true
+  },
+  "result": "passed",
+  "limitations": [
+    "adhoc_signature_only",
+    "candidate_not_release_evidence",
+    "local_bundle_without_public_provenance",
+    "path_based_dmg_mount_without_owned_byte_transport"
+  ]
+}

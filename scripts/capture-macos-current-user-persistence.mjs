@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -154,10 +153,21 @@ function packagedExecutable(app) {
 }
 
 function proofEnvironment(home) {
-  const environment = { ...process.env, HOME: home, [PROOF_ENV]: "1" };
-  delete environment.XDG_DATA_HOME;
-  delete environment.LOCALAPPDATA;
-  return environment;
+  const realHome = realDirectory(home, "proof home");
+  const tmpdir = path.join(realHome, "tmp");
+  fs.mkdirSync(tmpdir, { mode: 0o700 });
+  if (realDirectory(tmpdir, "proof temporary directory") !== tmpdir) {
+    fail("proof temporary directory must stay inside the proof home");
+  }
+  return { HOME: realHome, TMPDIR: tmpdir, [PROOF_ENV]: "1" };
+}
+
+function createMacosProofWorkspace(prefix) {
+  const temporaryRoot = "/private/tmp";
+  realDirectory(temporaryRoot, "fixed macOS temporary root");
+  const workspace = fs.mkdtempSync(path.join(temporaryRoot, prefix));
+  fs.chmodSync(workspace, 0o700);
+  return workspace;
 }
 
 function runProof(executable, phase, environment) {
@@ -218,7 +228,7 @@ function capture({ app, sourceSha }) {
   }
   realDirectory(app, "source app bundle");
   const sourceDigest = hashBundleTree(app);
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-persistence-proof-"));
+  const workspace = createMacosProofWorkspace("batcave-persistence-proof-");
   const installedApp = path.join(workspace, "Applications", "BatCave Monitor.app");
   const home = path.join(workspace, "home");
   const root = path.join(home, "Library", "Application Support", "BatCaveMonitor");
@@ -335,8 +345,13 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 
 export const macosPersistenceCaptureInternals = {
   canonicalArchitecture,
+  createMacosProofWorkspace,
   hashBundleTree,
   inspectRoot,
+  isoSeconds,
   parseArgs,
+  packagedExecutable,
+  proofEnvironment,
   regularFileInside,
+  runProof,
 };
