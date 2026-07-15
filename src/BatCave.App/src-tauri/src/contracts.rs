@@ -89,6 +89,41 @@ pub struct RuntimeAdminModeStatus {
     pub source: RuntimePrivilegedSource,
     pub detail: Option<String>,
     pub last_success_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collector_service: Option<RuntimeCollectorServiceStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimeReleaseIdentity {
+    pub app_version: String,
+    pub source_commit_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimeCollectorServiceStatus {
+    pub state: RuntimeCollectorServiceState,
+    pub release_identity: Option<RuntimeReleaseIdentity>,
+    pub service_version: Option<String>,
+    pub negotiated_protocol_version: Option<u16>,
+    pub minimum_desktop_version: Option<String>,
+    pub instance_id: Option<String>,
+    pub last_connected_at_ms: Option<u64>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCollectorServiceState {
+    NotInstalled,
+    Stopped,
+    Connecting,
+    Recovering,
+    Active,
+    Incompatible,
+    Unauthorized,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +141,7 @@ pub enum RuntimePrivilegedSource {
     None,
     CurrentProcess,
     ElevatedHelper,
+    CollectorService,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -857,6 +893,7 @@ mod tests {
                 source: RuntimePrivilegedSource::ElevatedHelper,
                 detail: None,
                 last_success_at_ms: None,
+                collector_service: None,
             },
             settings: RuntimeSettings {
                 query: RuntimeQuery {

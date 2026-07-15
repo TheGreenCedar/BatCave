@@ -99,6 +99,7 @@ impl RuntimeProvenance {
             source,
             detail,
             last_success_at_ms: None,
+            collector_service: None,
         }
     }
 

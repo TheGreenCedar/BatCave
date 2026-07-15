@@ -980,6 +980,42 @@ mod tests {
         });
         assert_eq!(validate_envelope(&matching_service), Ok(()));
 
+        let mut incompatible_without_minimum = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut incompatible_without_minimum.event
+        else {
+            unreachable!()
+        };
+        payload.privileged_collection.collector_service = Some(CollectorServiceStatusV3 {
+            state: CollectorServiceStateV3::Incompatible,
+            release_identity: Some(RuntimeReleaseIdentityV3 {
+                app_version: "1.0.0".to_string(),
+                source_commit_sha: None,
+            }),
+            service_version: Some("1.0.0".to_string()),
+            negotiated_protocol_version: None,
+            minimum_desktop_version: None,
+            instance_id: None,
+            last_connected_at_ms: None,
+            detail: Some("collector_service_release_incompatible".to_string()),
+        });
+        assert_eq!(validate_envelope(&incompatible_without_minimum), Ok(()));
+
+        let mut incompatible_with_empty_minimum = incompatible_without_minimum;
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut incompatible_with_empty_minimum.event
+        else {
+            unreachable!()
+        };
+        payload
+            .privileged_collection
+            .collector_service
+            .as_mut()
+            .expect("collector service")
+            .minimum_desktop_version = Some(" ".to_string());
+        assert_eq!(
+            validate_envelope(&incompatible_with_empty_minimum),
+            Err("protocol_collector_service_incompatible_version_invalid".to_string())
+        );
+
         let mut mismatched_service = matching_service;
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut mismatched_service.event else {
             unreachable!()

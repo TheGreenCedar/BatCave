@@ -108,7 +108,48 @@ fn encode_snapshot_with_identity(
             },
             detail: snapshot.admin_mode.detail,
             last_success_at_ms: snapshot.admin_mode.last_success_at_ms,
-            collector_service: None,
+            collector_service: snapshot.admin_mode.collector_service.map(|service| {
+                CollectorServiceStatusV3 {
+                    state: match service.state {
+                        crate::contracts::RuntimeCollectorServiceState::NotInstalled => {
+                            CollectorServiceStateV3::NotInstalled
+                        }
+                        crate::contracts::RuntimeCollectorServiceState::Stopped => {
+                            CollectorServiceStateV3::Stopped
+                        }
+                        crate::contracts::RuntimeCollectorServiceState::Connecting => {
+                            CollectorServiceStateV3::Connecting
+                        }
+                        crate::contracts::RuntimeCollectorServiceState::Recovering => {
+                            CollectorServiceStateV3::Recovering
+                        }
+                        crate::contracts::RuntimeCollectorServiceState::Active => {
+                            CollectorServiceStateV3::Active
+                        }
+                        crate::contracts::RuntimeCollectorServiceState::Incompatible => {
+                            CollectorServiceStateV3::Incompatible
+                        }
+                        crate::contracts::RuntimeCollectorServiceState::Unauthorized => {
+                            CollectorServiceStateV3::Unauthorized
+                        }
+                        crate::contracts::RuntimeCollectorServiceState::Failed => {
+                            CollectorServiceStateV3::Failed
+                        }
+                    },
+                    release_identity: service.release_identity.map(|identity| {
+                        RuntimeReleaseIdentityV3 {
+                            app_version: identity.app_version,
+                            source_commit_sha: identity.source_commit_sha,
+                        }
+                    }),
+                    service_version: service.service_version,
+                    negotiated_protocol_version: service.negotiated_protocol_version,
+                    minimum_desktop_version: service.minimum_desktop_version,
+                    instance_id: service.instance_id,
+                    last_connected_at_ms: service.last_connected_at_ms,
+                    detail: service.detail,
+                }
+            }),
         },
         settings: RuntimeSettingsV3 {
             query: RuntimeQueryV3 {
@@ -1260,6 +1301,7 @@ fn privileged_source(value: RuntimePrivilegedSource) -> PrivilegedCollectionSour
         RuntimePrivilegedSource::CurrentProcess | RuntimePrivilegedSource::ElevatedHelper => {
             PrivilegedCollectionSourceV3::LocalProcess
         }
+        RuntimePrivilegedSource::CollectorService => PrivilegedCollectionSourceV3::CollectorService,
     }
 }
 fn focus_mode(value: ProcessFocusMode) -> ProcessFocusModeV3 {

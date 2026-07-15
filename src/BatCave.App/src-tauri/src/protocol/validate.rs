@@ -730,10 +730,18 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
         {
             return Err("protocol_collector_service_active_identity_invalid".to_string());
         }
-        if matches!(service.state, CollectorServiceStateV3::Active)
-            && service.release_identity.as_ref() != Some(&payload.environment.release_identity)
-        {
-            return Err("protocol_collector_service_release_mismatch".to_string());
+        if matches!(service.state, CollectorServiceStateV3::Active) {
+            let service_release = service
+                .release_identity
+                .as_ref()
+                .expect("active service identity validated above");
+            if service_release.app_version != payload.environment.release_identity.app_version
+                || service_release.source_commit_sha.is_some()
+                    && service_release.source_commit_sha
+                        != payload.environment.release_identity.source_commit_sha
+            {
+                return Err("protocol_collector_service_release_mismatch".to_string());
+            }
         }
         if matches!(service.state, CollectorServiceStateV3::Incompatible)
             && (service
@@ -743,7 +751,7 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
                 || service
                     .minimum_desktop_version
                     .as_deref()
-                    .is_none_or(|value| value.trim().is_empty()))
+                    .is_some_and(|value| value.trim().is_empty()))
         {
             return Err("protocol_collector_service_incompatible_version_invalid".to_string());
         }

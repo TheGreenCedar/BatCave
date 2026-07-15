@@ -14,8 +14,8 @@ use sysinfo::{
 
 use crate::contracts::{
     AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
-    ProcessMetricQuality, ProcessSample, RuntimeCollectorState, SystemMetricQuality,
-    SystemMetricsSnapshot,
+    ProcessMetricQuality, ProcessSample, RuntimeCollectorServiceStatus, RuntimeCollectorState,
+    SystemMetricQuality, SystemMetricsSnapshot,
 };
 #[cfg(any(windows, target_os = "linux", test))]
 use crate::network_attribution::NetworkAttributionSample;
@@ -43,6 +43,15 @@ pub struct TelemetrySample {
     pub system: SystemMetricsSnapshot,
     pub processes: Vec<ProcessSample>,
     pub warnings: Vec<String>,
+    pub collector_service: Option<RuntimeCollectorServiceStatus>,
+    pub source_provenance: Option<TelemetrySampleProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetrySampleProvenance {
+    pub source_instance_id: String,
+    pub source_sample_seq: u64,
+    pub sampled_at_ms: u64,
 }
 
 pub struct TelemetryCollector {
@@ -67,6 +76,7 @@ pub struct TelemetryCollector {
 }
 
 impl TelemetryCollector {
+    #[cfg(not(windows))]
     pub fn new() -> Self {
         Self::new_with_process_network(true)
     }
@@ -80,6 +90,13 @@ impl TelemetryCollector {
     pub(crate) fn for_collector_service() -> Self {
         // #70 owns the leased, bounded service ETW lifecycle. Until then the
         // service publishes explicit held process-network quality.
+        Self::new_with_process_network(false)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn for_standard_fallback() -> Self {
+        // The standard-user fallback never competes with the SCM service for
+        // machine-global ETW ownership. #70 owns the eventual service lease.
         Self::new_with_process_network(false)
     }
 
@@ -213,6 +230,8 @@ impl TelemetryCollector {
             system: system_snapshot,
             processes,
             warnings,
+            collector_service: None,
+            source_provenance: None,
         })
     }
 
@@ -287,6 +306,8 @@ impl TelemetryCollector {
             system,
             processes,
             warnings,
+            collector_service: None,
+            source_provenance: None,
         })
     }
 }

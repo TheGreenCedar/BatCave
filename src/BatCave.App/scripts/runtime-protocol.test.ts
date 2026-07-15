@@ -506,6 +506,43 @@ test("reader rejects descriptor, value, and membership corruption", () => {
     );
   }
 
+  const incompatibleWithoutMinimum = structuredClone(windows);
+  payload(incompatibleWithoutMinimum).privileged_collection.collector_service = {
+    state: "incompatible",
+    release_identity: { app_version: "1.0.0", source_commit_sha: null },
+    service_version: "1.0.0",
+    negotiated_protocol_version: null,
+    minimum_desktop_version: null,
+    instance_id: null,
+    last_connected_at_ms: null,
+    detail: "collector_service_release_incompatible",
+  };
+  assert.equal(decodeProtocolEnvelope(incompatibleWithoutMinimum).kind, "snapshot");
+
+  const incompatibleWithEmptyMinimum = structuredClone(incompatibleWithoutMinimum);
+  const incompatibleService = payload(incompatibleWithEmptyMinimum).privileged_collection
+    .collector_service;
+  assert.ok(incompatibleService);
+  incompatibleService.minimum_desktop_version = " ";
+  assertMismatch(incompatibleWithEmptyMinimum, "lacks version detail");
+
+  const resourceVersionOnlyService = structuredClone(matchingActiveService);
+  payload(resourceVersionOnlyService).environment.release_identity.source_commit_sha = "a".repeat(
+    40,
+  );
+  const resourceVersionIdentity = payload(resourceVersionOnlyService).privileged_collection
+    .collector_service?.release_identity;
+  assert.ok(resourceVersionIdentity);
+  resourceVersionIdentity.source_commit_sha = null;
+  assert.equal(decodeProtocolEnvelope(resourceVersionOnlyService).kind, "snapshot");
+
+  const falselyClaimedCommit = structuredClone(resourceVersionOnlyService);
+  const falselyClaimedIdentity =
+    payload(falselyClaimedCommit).privileged_collection.collector_service?.release_identity;
+  assert.ok(falselyClaimedIdentity);
+  falselyClaimedIdentity.source_commit_sha = "b".repeat(40);
+  assertMismatch(falselyClaimedCommit, "release identity does not match");
+
   const mismatchedActiveService = structuredClone(matchingActiveService);
   const collectorIdentity =
     payload(mismatchedActiveService).privileged_collection.collector_service?.release_identity;

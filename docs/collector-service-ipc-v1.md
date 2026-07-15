@@ -29,9 +29,9 @@ The decoder reads a four-byte little-endian frame length and never allocates a c
 
 Client JSON carries only the desktop release identity needed for negotiation. It cannot claim a process ID, logon session, token, executable path, or authorization result.
 
-Before any request is authorized, the future transport must create `VerifiedPeer` from operating-system evidence. Negotiation succeeds only when the release claimed in the request equals the independently verified executable release. Every later request stays bound to the same process ID and start time, logon session, principal, executable-file identity, and release. Process-ID reuse or executable replacement breaks the session binding.
+Before any request is authorized, the transport creates `VerifiedPeer` from operating-system evidence. Negotiation succeeds only when the release claimed in the request equals the independently verified executable release. Every later request stays bound to the same process ID and start time, logon session, principal, executable-file identity, and release. Process-ID reuse or executable replacement breaks the session binding.
 
-The desktop side has the same fail-closed rule: it accepts a claimed service identity only alongside a `VerifiedServicePeer` supplied by the transport, with a matching independently verified service release. Neither peer can establish its own transport identity through JSON.
+The desktop side has the same fail-closed rule: it accepts a claimed service identity only alongside a `VerifiedServicePeer` supplied by SCM, pipe-server process, Local System token, canonical image, file-identity, and executable-version evidence. The full service `ProductVersion` must match the desktop before negotiation. Neither peer can establish its own transport identity through JSON. `source_commit_sha` remains optional because neither executable exposes independently readable commit metadata in its Windows version resource.
 
 The response carries the fixed service name, service and release versions, service instance ID, protocol version, minimum desktop version, and exact contract limits. Snapshot sequence numbers must increase within that service instance. Duplicate, regressing, or different-instance frames fail as `stale_sequence`; an `unchanged` response is valid only for the exact previously observed sequence.
 
@@ -39,4 +39,4 @@ The response carries the fixed service name, service and release versions, servi
 
 The v1 error codes are `incompatible`, `unauthorized`, `malformed`, `oversized`, and `stale_sequence`. Error detail is bounded by the same string limit.
 
-The Windows host and transport consume this contract in `windows_service.rs` and `windows_transport.rs`; [Windows collector service host](windows-collector-service-host.md) records their security and lifecycle boundaries. Desktop cutover and installer provisioning remain separate work.
+The Windows host and both transport directions consume this contract in `windows_service.rs`, `windows_transport.rs`, and `windows_client.rs`; [Windows collector service host](windows-collector-service-host.md) records their security, fallback, and lifecycle boundaries. Installer provisioning remains separate work.

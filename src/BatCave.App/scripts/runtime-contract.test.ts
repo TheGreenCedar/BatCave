@@ -739,7 +739,7 @@ function collectorService(state: RuntimeCollectorServiceState): RuntimeCollector
       state === "active" ? { app_version: "1.0.0", source_commit_sha: "abc" } : null,
     service_version: state === "active" || state === "incompatible" ? "1.0.0" : null,
     negotiated_protocol_version: state === "active" ? 3 : null,
-    minimum_desktop_version: state === "incompatible" ? "2.0.0" : null,
+    minimum_desktop_version: null,
     instance_id: state === "active" ? "collector-instance" : null,
     last_connected_at_ms: state === "active" ? 1_783_944_001_000 : null,
     detail: state === "active" ? null : `collector_service_${state}`,

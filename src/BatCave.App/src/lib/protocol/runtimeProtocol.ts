@@ -783,15 +783,15 @@ function validateCollectorService(
     return "Active collector-service status lacks identity, version, or time.";
   if (
     service.state === "active" &&
-    !sameReleaseIdentity(service.release_identity, desktopReleaseIdentity)
+    !serviceReleaseMatchesDesktop(service.release_identity, desktopReleaseIdentity)
   )
     return "Active collector-service release identity does not match desktop.";
   if (
     service.state === "incompatible" &&
     (typeof service.service_version !== "string" ||
       service.service_version.trim().length === 0 ||
-      typeof service.minimum_desktop_version !== "string" ||
-      service.minimum_desktop_version.trim().length === 0)
+      (service.minimum_desktop_version !== null &&
+        service.minimum_desktop_version.trim().length === 0))
   )
     return "Incompatible collector-service status lacks version detail.";
   if (
@@ -802,6 +802,15 @@ function validateCollectorService(
   if (privileged.source === "local_process" && service.state === "active")
     return "Local and collector-service collection cannot both be active.";
   return null;
+}
+
+function serviceReleaseMatchesDesktop(service: unknown, desktop: unknown): boolean {
+  if (!validReleaseIdentity(service) || !validReleaseIdentity(desktop)) return false;
+  if (!isRecord(service) || !isRecord(desktop)) return false;
+  return (
+    service.app_version === desktop.app_version &&
+    (service.source_commit_sha === null || service.source_commit_sha === desktop.source_commit_sha)
+  );
 }
 
 function validReleaseIdentity(value: unknown): boolean {
@@ -816,17 +825,6 @@ function validReleaseIdentity(value: unknown): boolean {
     value.source_commit_sha === null ||
     (typeof value.source_commit_sha === "string" &&
       /^[0-9a-fA-F]{40}$/.test(value.source_commit_sha))
-  );
-}
-
-function sameReleaseIdentity(left: unknown, right: unknown): boolean {
-  return (
-    validReleaseIdentity(left) &&
-    validReleaseIdentity(right) &&
-    (left as Record<string, unknown>).app_version ===
-      (right as Record<string, unknown>).app_version &&
-    (left as Record<string, unknown>).source_commit_sha ===
-      (right as Record<string, unknown>).source_commit_sha
   );
 }
 

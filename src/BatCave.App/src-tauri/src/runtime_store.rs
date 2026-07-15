@@ -31,17 +31,17 @@ use crate::{
         MetricCoverage, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
         ProcessFocusMode, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
-        RuntimeAdminModeStatus, RuntimeCollectorState, RuntimeEngineState, RuntimeEnvironment,
-        RuntimeFatalError, RuntimeHealth, RuntimePersistence, RuntimePersistenceState,
-        RuntimePrivilegedSource, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
-        RuntimeUiPreferences, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
-        SystemMetricsSnapshot, WarmCache,
+        RuntimeAdminModeStatus, RuntimeCollectorServiceState, RuntimeCollectorState,
+        RuntimeEngineState, RuntimeEnvironment, RuntimeFatalError, RuntimeHealth,
+        RuntimePersistence, RuntimePersistenceState, RuntimePrivilegedSource, RuntimeQuery,
+        RuntimeSettings, RuntimeSnapshot, RuntimeUiPreferences, RuntimeWarning, SortColumn,
+        SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     persistence::{
         DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
     },
     runtime_provenance::RuntimeProvenance,
-    telemetry::now_ms,
+    telemetry::{now_ms, TelemetrySampleProvenance},
 };
 
 #[cfg(test)]
@@ -1062,6 +1062,7 @@ struct RuntimeStore {
     publication_seq: u64,
     sample_seq: u64,
     sampled_at_ms: Option<u64>,
+    last_sample_provenance: Option<TelemetrySampleProvenance>,
     elevated_helper_rows_published: bool,
     last_verified_elevated_frame: Option<VerifiedElevatedFrame>,
     process_access_baseline_dirty: bool,
@@ -1288,6 +1289,7 @@ impl RuntimeStore {
             publication_seq,
             sample_seq: 0,
             sampled_at_ms: None,
+            last_sample_provenance: None,
             elevated_helper_rows_published: false,
             last_verified_elevated_frame: None,
             process_access_baseline_dirty: false,
@@ -1575,12 +1577,37 @@ impl RuntimeStore {
         &mut self,
         sample: crate::telemetry::TelemetrySample,
         raw_collection_latency_ms: f64,
-        sample_ts_ms: u64,
+        completed_at_ms: u64,
         collector: &dyn ProcessNetworkControl,
     ) -> Instant {
+        let processing_started = Instant::now();
+        let source_provenance = sample.source_provenance.clone();
+        // Service and desktop clocks have independent wall-time anchors. Keep the service time for
+        // source deltas, but publish freshness only in the desktop clock domain.
+        let source_sample_ts_ms = source_provenance
+            .as_ref()
+            .map_or(completed_at_ms, |provenance| provenance.sampled_at_ms);
+        let source_unchanged = source_provenance.is_some()
+            && source_provenance.as_ref() == self.last_sample_provenance.as_ref();
+        let service_status_ts_ms = if source_unchanged {
+            self.sampled_at_ms.unwrap_or(completed_at_ms)
+        } else {
+            completed_at_ms
+        };
+        let service_active = self
+            .apply_collector_service_status(sample.collector_service.clone(), service_status_ts_ms);
+        if source_unchanged {
+            self.sync_collector_warnings(sample.warnings);
+            self.record_collection_latency_ms(
+                raw_collection_latency_ms + processing_started.elapsed().as_secs_f64() * 1_000.0,
+            );
+            let publication_started = Instant::now();
+            self.publish_snapshot_only(None);
+            return publication_started;
+        }
+        self.last_sample_provenance = source_provenance;
         let previous_process_baseline_live = self.live_process_snapshot;
         self.live_process_snapshot = false;
-        let processing_started = Instant::now();
         self.collector_state = Some(sample.collector_state);
 
         let mut active_collector_warnings = sample.warnings;
@@ -1589,7 +1616,7 @@ impl RuntimeStore {
             .previous_totals
             .as_ref()
             .and_then(|previous| {
-                let delta_ms = sample_ts_ms.saturating_sub(previous.ts_ms);
+                let delta_ms = source_sample_ts_ms.saturating_sub(previous.ts_ms);
                 (delta_ms > 0).then_some(delta_ms as f64 / 1000.0)
             })
             .unwrap_or(1.0)
@@ -1597,19 +1624,24 @@ impl RuntimeStore {
         let mut system = sample.system;
         let mut sample_processes = sample.processes;
         let mut process_rows_fresh = true;
-        let elevated_transition = self.advance_elevated_helper(sample_ts_ms, collector);
-        self.apply_elevated_process_transition(
-            elevated_transition,
-            &mut sample_processes,
-            &mut process_rows_fresh,
-            &mut active_collector_warnings,
-        );
-        if !self.settings.admin_mode_requested {
+        if service_active {
+            self.stop_superseded_elevated_helper(&mut active_collector_warnings);
+            self.settings.admin_mode_enabled = true;
+        } else {
+            let elevated_transition = self.advance_elevated_helper(completed_at_ms, collector);
+            self.apply_elevated_process_transition(
+                elevated_transition,
+                &mut sample_processes,
+                &mut process_rows_fresh,
+                &mut active_collector_warnings,
+            );
+        }
+        if !service_active && !self.settings.admin_mode_requested {
             self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
             if self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
                 && self.admin_mode.state == RuntimeAdminModeState::Active
             {
-                self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
+                self.admin_mode.last_success_at_ms = Some(completed_at_ms);
             }
         }
         self.sync_collector_warnings(active_collector_warnings);
@@ -1669,10 +1701,10 @@ impl RuntimeStore {
         add_process_memory_accounting(&mut system, &processes);
         self.previous_processes = processes;
         self.live_process_snapshot = process_rows_fresh;
-        self.previous_totals = Some(TelemetryTotals::from_system(&system, sample_ts_ms));
+        self.previous_totals = Some(TelemetryTotals::from_system(&system, source_sample_ts_ms));
         self.publication_seq = self.publication_seq.saturating_add(1);
         self.sample_seq = self.sample_seq.saturating_add(1);
-        self.sampled_at_ms = Some(sample_ts_ms);
+        self.sampled_at_ms = Some(completed_at_ms);
 
         let sort_started = Instant::now();
         let rows = shape_rows(&self.previous_processes, &self.settings.query);
@@ -1712,6 +1744,63 @@ impl RuntimeStore {
         );
 
         publication_started
+    }
+
+    fn apply_collector_service_status(
+        &mut self,
+        status: Option<crate::contracts::RuntimeCollectorServiceStatus>,
+        sample_ts_ms: u64,
+    ) -> bool {
+        let Some(status) = status else {
+            return false;
+        };
+        let previous_binding = self
+            .admin_mode
+            .collector_service
+            .as_ref()
+            .filter(|service| service.state == RuntimeCollectorServiceState::Active)
+            .and_then(|service| service.instance_id.clone());
+        let next_binding = (status.state == RuntimeCollectorServiceState::Active)
+            .then(|| status.instance_id.clone())
+            .flatten();
+        if previous_binding != next_binding {
+            self.previous_totals = None;
+            self.previous_processes.clear();
+            self.live_process_snapshot = false;
+            self.process_access_baseline_dirty = false;
+        }
+
+        let service_active = status.state == RuntimeCollectorServiceState::Active;
+        if service_active {
+            self.admin_mode.state = RuntimeAdminModeState::Active;
+            self.admin_mode.source = RuntimePrivilegedSource::CollectorService;
+            self.admin_mode.detail = None;
+            self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
+        } else if self.admin_mode.source == RuntimePrivilegedSource::CollectorService
+            || self.admin_mode.source == RuntimePrivilegedSource::None
+        {
+            let last_success_at_ms = self.admin_mode.last_success_at_ms;
+            self.settings.admin_mode_enabled = false;
+            self.admin_mode = self.provenance.admin_mode_status();
+            self.admin_mode.detail = status.detail.clone();
+            self.admin_mode.last_success_at_ms = last_success_at_ms;
+        }
+        self.admin_mode.collector_service = Some(status);
+        service_active
+    }
+
+    fn stop_superseded_elevated_helper(&mut self, warnings: &mut Vec<String>) {
+        if let Some(mut elevated) = self.elevated.take() {
+            if let Err(error) = elevated.stop() {
+                warnings.push(format!(
+                    "collector_service_helper_transition_cleanup_failed:{error}"
+                ));
+                self.elevated = Some(elevated);
+            }
+        }
+        self.elevated_helper_rows_published = false;
+        self.last_verified_elevated_frame = None;
+        self.process_access_baseline_dirty = false;
     }
 
     fn fail_admin_mode(&mut self, error: String, collector: &dyn ProcessNetworkControl) {
@@ -4009,6 +4098,8 @@ mod tests {
                     system: empty_system(),
                     processes: vec![sample("10", "Fake", count as f64)],
                     warnings: Vec::new(),
+                    collector_service: None,
+                    source_provenance: None,
                 }),
                 FakeOutcome::Unavailable(error) => {
                     Err(CollectionFailure::Unavailable(error.to_string()))
@@ -4089,6 +4180,8 @@ mod tests {
                     system,
                     processes: Vec::new(),
                     warnings: Vec::new(),
+                    collector_service: None,
+                    source_provenance: None,
                 })),
                 collection_latency_ms: 0.0,
                 cadence: CollectorCadence::default(),
@@ -6228,6 +6321,7 @@ mod tests {
             source: RuntimePrivilegedSource::ElevatedHelper,
             detail: None,
             last_success_at_ms: Some(7),
+            collector_service: None,
         };
 
         store.publish_snapshot_only(None);
@@ -6245,6 +6339,366 @@ mod tests {
             RuntimeAdminModeState::Active
         );
         let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn collector_service_transition_is_visible_and_resets_source_baselines() {
+        let base_dir = runtime_test_dir("collector-service-transition");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.previous_processes = vec![sample("10", "old-source", 1.0)];
+        store.live_process_snapshot = true;
+        store.previous_totals = Some(TelemetryTotals::from_system(&empty_system(), 1));
+
+        let active = crate::contracts::RuntimeCollectorServiceStatus {
+            state: RuntimeCollectorServiceState::Active,
+            release_identity: Some(crate::contracts::RuntimeReleaseIdentity {
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                source_commit_sha: None,
+            }),
+            service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            negotiated_protocol_version: Some(
+                crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            ),
+            minimum_desktop_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            instance_id: Some("service-instance-1".to_string()),
+            last_connected_at_ms: Some(7),
+            detail: None,
+        };
+        assert!(store.apply_collector_service_status(Some(active), 7));
+        assert!(store.previous_processes.is_empty());
+        assert!(store.previous_totals.is_none());
+        assert_eq!(
+            store.admin_mode.source,
+            RuntimePrivilegedSource::CollectorService
+        );
+        store.publish_snapshot_only(None);
+        let encoded = crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap();
+        let encoded = serde_json::to_value(encoded).unwrap();
+        assert_eq!(
+            encoded.pointer("/event/payload/privileged_collection/collector_service/state"),
+            Some(&serde_json::json!("active"))
+        );
+
+        let stopped = crate::contracts::RuntimeCollectorServiceStatus {
+            state: RuntimeCollectorServiceState::Stopped,
+            release_identity: None,
+            service_version: None,
+            negotiated_protocol_version: None,
+            minimum_desktop_version: None,
+            instance_id: None,
+            last_connected_at_ms: None,
+            detail: Some("collector_service_stopped".to_string()),
+        };
+        assert!(!store.apply_collector_service_status(Some(stopped), 8));
+        assert_eq!(store.admin_mode.source, RuntimePrivilegedSource::None);
+        assert_eq!(store.admin_mode.last_success_at_ms, Some(7));
+        assert_eq!(
+            store
+                .admin_mode
+                .collector_service
+                .as_ref()
+                .map(|service| service.state),
+            Some(RuntimeCollectorServiceState::Stopped)
+        );
+
+        let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn service_clock_skew_preserves_source_rates_and_desktop_freshness() {
+        let service_sample = |source_sample_seq, sampled_at_ms, received_total_bytes| {
+            let mut system = empty_system();
+            system.network_received_total_bytes = received_total_bytes;
+            crate::telemetry::TelemetrySample {
+                latency_ms: 1,
+                collector_state: RuntimeCollectorState::Healthy,
+                system,
+                processes: Vec::new(),
+                warnings: Vec::new(),
+                collector_service: Some(crate::contracts::RuntimeCollectorServiceStatus {
+                    state: RuntimeCollectorServiceState::Active,
+                    release_identity: Some(crate::contracts::RuntimeReleaseIdentity {
+                        app_version: env!("CARGO_PKG_VERSION").to_string(),
+                        source_commit_sha: None,
+                    }),
+                    service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    negotiated_protocol_version: Some(
+                        crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                    ),
+                    minimum_desktop_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    instance_id: Some("service-instance-1".to_string()),
+                    last_connected_at_ms: Some(sampled_at_ms),
+                    detail: None,
+                }),
+                source_provenance: Some(crate::telemetry::TelemetrySampleProvenance {
+                    source_instance_id: "service-instance-1".to_string(),
+                    source_sample_seq,
+                    sampled_at_ms,
+                }),
+            }
+        };
+
+        for (label, first_source_sampled_at_ms) in
+            [("service-behind", 1_000), ("service-ahead", 100_000)]
+        {
+            let base_dir = runtime_test_dir(&format!("collector-service-clock-{label}"));
+            let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+            store.provenance =
+                RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+
+            store.note_heartbeat_at(10_000);
+            store.apply_raw_sample(
+                service_sample(1, first_source_sampled_at_ms, 10_000),
+                1.0,
+                10_000,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
+            let first_publication_seq = store.publication_seq;
+            let first_sample_seq = store.sample_seq;
+
+            store.note_heartbeat_at(10_500);
+            store.apply_raw_sample(
+                service_sample(1, first_source_sampled_at_ms, 10_000),
+                1.0,
+                10_500,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
+
+            assert_eq!(store.publication_seq, first_publication_seq + 1);
+            assert_eq!(store.sample_seq, first_sample_seq);
+            assert_eq!(store.sampled_at_ms, Some(10_000));
+            assert_eq!(store.last_heartbeat_at_ms, Some(10_500));
+            assert_eq!(store.snapshot.system.network_received_total_bytes, 10_000);
+            assert_eq!(store.snapshot.system.network_received_bps, 0);
+            assert_eq!(
+                store.previous_totals.as_ref().map(|totals| totals.ts_ms),
+                Some(first_source_sampled_at_ms)
+            );
+            crate::protocol::encode_snapshot(store.snapshot.clone())
+                .expect("unchanged service publication remains protocol-valid");
+
+            store.note_heartbeat_at(11_000);
+            store.apply_raw_sample(
+                service_sample(2, first_source_sampled_at_ms + 1_000, 11_000),
+                1.0,
+                11_000,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
+
+            assert_eq!(store.sample_seq, first_sample_seq + 1);
+            assert_eq!(store.sampled_at_ms, Some(11_000));
+            assert_eq!(store.snapshot.system.network_received_total_bytes, 11_000);
+            assert_eq!(store.snapshot.system.network_received_bps, 1_000);
+            assert_eq!(
+                store.previous_totals.as_ref().map(|totals| totals.ts_ms),
+                Some(first_source_sampled_at_ms + 1_000)
+            );
+            crate::protocol::encode_snapshot(store.snapshot.clone())
+                .expect("fresh service publication remains protocol-valid");
+
+            let _ = fs::remove_dir_all(&base_dir);
+        }
+    }
+
+    #[test]
+    fn negotiated_not_ready_fallback_round_trips_through_runtime_protocol() {
+        let base_dir = runtime_test_dir("collector-service-not-ready");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+        store.admin_mode = store.provenance.admin_mode_status();
+        let identity = crate::collector_service::protocol::ServiceIdentityV1 {
+            service_name: crate::collector_service::protocol::COLLECTOR_SERVICE_NAME.to_string(),
+            service_version: env!("CARGO_PKG_VERSION").to_string(),
+            release: crate::collector_service::host::current_release_identity(),
+            instance_id: "service-instance-starting".to_string(),
+            protocol_version:
+                crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            minimum_desktop_version: env!("CARGO_PKG_VERSION").to_string(),
+            limits: crate::collector_service::protocol::ServiceLimitsV1::contract(),
+        };
+        let status = crate::collector_service::client::status_from_failure(
+            &crate::collector_service::client::ClientFailure::new(
+                crate::collector_service::client::ClientFailureKind::NotReady,
+                "collector_service_snapshot_not_ready",
+            )
+            .with_service_identity(&identity),
+            false,
+        );
+        let sampled_at_ms = store.clock.now_ms();
+        store.apply_raw_sample(
+            crate::telemetry::TelemetrySample {
+                latency_ms: 1,
+                collector_state: RuntimeCollectorState::Healthy,
+                system: empty_system(),
+                processes: Vec::new(),
+                warnings: vec![
+                    "collector_service_snapshot_not_ready; standard-access collector fallback is active"
+                        .to_string(),
+                ],
+                collector_service: Some(status),
+                source_provenance: None,
+            },
+            1.0,
+            sampled_at_ms,
+            &NOOP_PROCESS_NETWORK_CONTROL,
+        );
+
+        let encoded = crate::protocol::encode_snapshot(store.snapshot.clone())
+            .expect("connecting fallback status encodes");
+        let bytes = serde_json::to_vec(&encoded).expect("encode runtime protocol JSON");
+        let decoded: crate::protocol::ProtocolEnvelope =
+            serde_json::from_slice(&bytes).expect("decode runtime protocol JSON");
+        let decoded = serde_json::to_value(decoded).expect("inspect decoded runtime protocol");
+        assert_eq!(
+            decoded.pointer("/event/payload/privileged_collection/collector_service/state"),
+            Some(&serde_json::json!("connecting"))
+        );
+        assert_eq!(
+            decoded
+                .pointer("/event/payload/privileged_collection/collector_service/service_version"),
+            Some(&serde_json::json!(env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(
+            decoded.pointer("/event/payload/privileged_collection/source"),
+            Some(&serde_json::json!("none"))
+        );
+
+        let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn negotiation_failures_preserve_verified_release_for_incompatible_fallback() {
+        use crate::collector_service::{
+            authorization::VerifiedServicePeer,
+            client::{
+                status_from_failure, ClientFailure, ClientFailureKind, ClientTransport,
+                ServiceClientSession,
+            },
+            host::current_release_identity,
+            protocol::{
+                ClientRequestV1, ServiceFailureCodeV1, ServiceFailureV1, ServiceOutcomeV1,
+                ServiceResponseV1, COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            },
+        };
+
+        struct NegotiationTransport {
+            peer: VerifiedServicePeer,
+            response: Option<Result<ServiceResponseV1, ClientFailure>>,
+        }
+
+        impl ClientTransport for NegotiationTransport {
+            fn verified_peer(&self) -> &VerifiedServicePeer {
+                &self.peer
+            }
+
+            fn exchange(
+                &mut self,
+                _request: &ClientRequestV1,
+            ) -> Result<ServiceResponseV1, ClientFailure> {
+                self.response.take().unwrap_or_else(|| {
+                    Err(ClientFailure::new(
+                        ClientFailureKind::Failed,
+                        "negotiation_response_missing",
+                    ))
+                })
+            }
+        }
+
+        for (label, response) in [
+            (
+                "exchange-error",
+                Err(ClientFailure::new(
+                    ClientFailureKind::Incompatible,
+                    "collector_service_response_protocol_incompatible",
+                )),
+            ),
+            (
+                "negotiate-error",
+                Ok(ServiceResponseV1 {
+                    protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                    request_id: 1,
+                    outcome: ServiceOutcomeV1::Error(ServiceFailureV1 {
+                        code: ServiceFailureCodeV1::Incompatible,
+                        detail: "collector_service_protocol_incompatible".to_string(),
+                    }),
+                }),
+            ),
+            (
+                "invalid-outcome",
+                Ok(ServiceResponseV1 {
+                    protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                    request_id: 1,
+                    outcome: ServiceOutcomeV1::Disconnected,
+                }),
+            ),
+        ] {
+            let release = current_release_identity();
+            let transport = NegotiationTransport {
+                peer: VerifiedServicePeer::from_transport_verification(
+                    20,
+                    30,
+                    [1; 32],
+                    [2; 32],
+                    release.clone(),
+                )
+                .expect("verified service peer"),
+                response: Some(response),
+            };
+            let failure = ServiceClientSession::connect(transport)
+                .err()
+                .expect("negotiation must fail");
+            assert_eq!(failure.kind, ClientFailureKind::Incompatible);
+            assert_eq!(failure.service_release.as_ref(), Some(&release));
+
+            let status = status_from_failure(&failure, false);
+            let base_dir = runtime_test_dir(&format!("collector-service-negotiation-{label}"));
+            let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+            store.provenance =
+                RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+            let sampled_at_ms = store.clock.now_ms();
+            store.apply_raw_sample(
+                crate::telemetry::TelemetrySample {
+                    latency_ms: 1,
+                    collector_state: RuntimeCollectorState::Healthy,
+                    system: empty_system(),
+                    processes: Vec::new(),
+                    warnings: vec![format!(
+                        "{}; standard-access collector fallback is active",
+                        failure.detail
+                    )],
+                    collector_service: Some(status),
+                    source_provenance: None,
+                },
+                1.0,
+                sampled_at_ms,
+                &NOOP_PROCESS_NETWORK_CONTROL,
+            );
+
+            let encoded = crate::protocol::encode_snapshot(store.snapshot.clone())
+                .expect("incompatible fallback status validates and encodes");
+            let bytes = serde_json::to_vec(&encoded).expect("encode runtime protocol JSON");
+            let decoded: crate::protocol::ProtocolEnvelope =
+                serde_json::from_slice(&bytes).expect("decode runtime protocol JSON");
+            let decoded = serde_json::to_value(decoded).expect("inspect decoded runtime protocol");
+            assert_eq!(
+                decoded.pointer("/event/payload/privileged_collection/collector_service/state"),
+                Some(&serde_json::json!("incompatible"))
+            );
+            assert_eq!(
+                decoded.pointer(
+                    "/event/payload/privileged_collection/collector_service/release_identity/app_version"
+                ),
+                Some(&serde_json::json!(env!("CARGO_PKG_VERSION")))
+            );
+            assert_eq!(
+                decoded.pointer(
+                    "/event/payload/privileged_collection/collector_service/minimum_desktop_version"
+                ),
+                Some(&serde_json::Value::Null)
+            );
+            let _ = fs::remove_dir_all(base_dir);
+        }
     }
 
     #[test]
