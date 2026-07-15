@@ -247,6 +247,13 @@ impl Job {
 
 impl Drop for Job {
     fn drop(&mut self) {
+        loop {
+            unsafe { TerminateJobObject(self.0, 1) };
+            if matches!(self.active_processes(), Ok(0)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         unsafe { CloseHandle(self.0) };
     }
 }
@@ -258,6 +265,10 @@ struct Child {
 
 impl Drop for Child {
     fn drop(&mut self) {
+        while unsafe { WaitForSingleObject(self.process, 0) } != WAIT_OBJECT_0 {
+            unsafe { TerminateProcess(self.process, 1) };
+            std::thread::sleep(Duration::from_millis(10));
+        }
         unsafe {
             CloseHandle(self.thread);
             CloseHandle(self.process);
@@ -327,11 +338,15 @@ fn execute_fixed_child(
     let job = Job::new()?;
     let child = spawn_suspended(&image.path, fixed_worker(scenario))?;
     if unsafe { AssignProcessToJobObject(job.0, child.process) } == 0 {
-        settle_after_error(&job, &child);
+        if settle_after_error(&job, &child, false).is_err() {
+            settle_fail_safe(&job, &child);
+        }
         return Err(FailureKind::OwnershipFailed);
     }
     if unsafe { ResumeThread(child.thread) } == u32::MAX {
-        settle_after_error(&job, &child);
+        if settle_after_error(&job, &child, false).is_err() {
+            settle_fail_safe(&job, &child);
+        }
         return Err(FailureKind::OwnershipFailed);
     }
 
@@ -345,12 +360,12 @@ fn execute_fixed_child(
         let active = match job.active_processes() {
             Ok(active) => active,
             Err(_) => {
-                settle_after_error(&job, &child);
+                settle_fail_safe(&job, &child);
                 return Err(FailureKind::OwnershipFailed);
             }
         };
         if active < expected_processes {
-            settle_after_error(&job, &child);
+            settle_fail_safe(&job, &child);
             return Err(FailureKind::OwnershipFailed);
         }
         if unsafe { TerminateJobObject(job.0, 124) } == 0
@@ -366,7 +381,7 @@ fn execute_fixed_child(
                 }
                 Ok(_) => {}
                 Err(_) => {
-                    settle_after_error(&job, &child);
+                    settle_fail_safe(&job, &child);
                     return Err(FailureKind::OwnershipFailed);
                 }
             }
@@ -375,12 +390,12 @@ fn execute_fixed_child(
         return Err(FailureKind::OwnershipFailed);
     }
     if wait != WAIT_OBJECT_0 {
-        settle_after_error(&job, &child);
+        settle_fail_safe(&job, &child);
         return Err(FailureKind::OwnershipFailed);
     }
     let mut exit_code = 0;
     if unsafe { GetExitCodeProcess(child.process, &mut exit_code) } == 0 {
-        settle_after_error(&job, &child);
+        settle_fail_safe(&job, &child);
         return Err(FailureKind::OwnershipFailed);
     }
     for _ in 0..100 {
@@ -391,27 +406,48 @@ fn execute_fixed_child(
             }
             Ok(_) => {}
             Err(_) => {
-                settle_after_error(&job, &child);
+                settle_fail_safe(&job, &child);
                 return Err(FailureKind::OwnershipFailed);
             }
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    settle_after_error(&job, &child);
+    settle_fail_safe(&job, &child);
     Err(FailureKind::OwnershipFailed)
 }
 
-fn settle_after_error(job: &Job, child: &Child) {
-    unsafe {
-        TerminateJobObject(job.0, 1);
-        TerminateProcess(child.process, 1);
-        WaitForSingleObject(child.process, 5_000);
+fn settle_after_error(
+    job: &Job,
+    child: &Child,
+    force_primary_failure: bool,
+) -> Result<(), FailureKind> {
+    if force_primary_failure
+        || unsafe { TerminateJobObject(job.0, 1) } == 0
+        || unsafe { TerminateProcess(child.process, 1) } == 0
+        || unsafe { WaitForSingleObject(child.process, 5_000) } != WAIT_OBJECT_0
+    {
+        return Err(FailureKind::OwnershipFailed);
     }
     for _ in 0..100 {
-        if matches!(job.active_processes(), Ok(0)) {
-            break;
+        match job.active_processes() {
+            Ok(0) => return Ok(()),
+            Ok(_) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return Err(FailureKind::OwnershipFailed),
         }
-        std::thread::sleep(Duration::from_millis(10));
+    }
+    Err(FailureKind::OwnershipFailed)
+}
+
+fn settle_fail_safe(job: &Job, child: &Child) {
+    loop {
+        unsafe {
+            TerminateJobObject(job.0, 1);
+            TerminateProcess(child.process, 1);
+        }
+        let child_settled = unsafe { WaitForSingleObject(child.process, 100) } == WAIT_OBJECT_0;
+        if child_settled && matches!(job.active_processes(), Ok(0)) {
+            return;
+        }
     }
 }
 
@@ -579,6 +615,33 @@ fn owned_handle_blocks_replacement_and_deletion_until_settlement() {
     assert!(OpenOptions::new().write(true).open(&image.path).is_err());
     assert!(fs::remove_file(&image.path).is_err());
     assert!(fs::rename(&image.root, image.root.with_extension("moved")).is_err());
+    image.cleanup().expect("owned cleanup");
+}
+
+#[test]
+fn assignment_and_primary_termination_failure_retain_handles_until_recovery_settles() {
+    let mut image = OwnedImage::acquire().expect("owned image");
+    let job = Job::new().expect("owned job");
+    let child = spawn_suspended(&image.path, "worker_slow").expect("suspended owned child");
+
+    assert_eq!(
+        settle_after_error(&job, &child, true),
+        Err(FailureKind::OwnershipFailed)
+    );
+    assert_ne!(
+        unsafe { WaitForSingleObject(child.process, 0) },
+        WAIT_OBJECT_0
+    );
+
+    settle_fail_safe(&job, &child);
+    assert_eq!(
+        unsafe { WaitForSingleObject(child.process, 0) },
+        WAIT_OBJECT_0
+    );
+    assert_eq!(job.active_processes(), Ok(0));
+    image.revalidate().expect("owned bytes retained");
+    drop(child);
+    drop(job);
     image.cleanup().expect("owned cleanup");
 }
 
