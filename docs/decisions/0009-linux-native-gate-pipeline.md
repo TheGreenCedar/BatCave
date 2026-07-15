@@ -53,4 +53,6 @@ cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
 bash scripts/validate-tauri.sh --skip-bundle
 ```
 
-Parent issue #115 remains open for the future Rust-owned complete-operation entry and exact public deb/AppImage install/stage, runtime, removal, settlement, sanitized evidence, and native-host proof.
+The follow-up [Linux owned complete-operation source contract](0010-linux-owned-complete-operation-source-contract.md) composes this typestate sequence with an opaque inert capability and fixed descriptor-transport selection while retaining artifact, process, and root authority through cleanup. It remains test-only and cannot prove public or native execution.
+
+Parent issue #115 remains open for the production Rust-owned public-release verifier and exact public deb/AppImage install/stage, runtime, removal, settlement, sanitized evidence, and native-host proof.

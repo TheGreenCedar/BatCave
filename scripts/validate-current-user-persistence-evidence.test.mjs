@@ -207,7 +207,7 @@ test("requires visible degraded persistence and preserves the fixed restart muta
   }
 });
 
-test("validates the checked-in pending index without treating pending as blocked", () => {
+test("validates checked-in native candidates without treating pending profiles as blocked", () => {
   const index = JSON.parse(
     fs.readFileSync(
       path.join(ROOT, "docs/evidence/persistence/current-user-persistence-index.v1.json"),
@@ -217,8 +217,36 @@ test("validates the checked-in pending index without treating pending as blocked
   assert.equal(validateCurrentUserPersistenceIndex(index, { repositoryRoot: ROOT }), index);
   assert.deepEqual(
     index.profiles.map(({ status }) => status),
-    ["pending", "pending", "pending", "pending"],
+    ["native_candidate", "native_candidate", "native_candidate", "pending"],
   );
+});
+
+test("validates every retained unindexed native candidate", () => {
+  const candidatesRoot = path.join(ROOT, "docs/evidence/persistence/native-candidates");
+  const candidates = fs
+    .readdirSync(candidatesRoot, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => entry.name)
+    .sort();
+  assert.ok(candidates.length > 0);
+
+  const index = JSON.parse(
+    fs.readFileSync(
+      path.join(ROOT, "docs/evidence/persistence/current-user-persistence-index.v1.json"),
+      "utf8",
+    ),
+  );
+  const indexedPaths = new Set(
+    index.profiles.map(({ packet_path: packetPath }) => packetPath).filter(Boolean),
+  );
+  for (const candidate of candidates) {
+    const relative = `docs/evidence/persistence/native-candidates/${candidate}`;
+    assert.ok(!indexedPaths.has(relative));
+    validateCurrentUserPersistencePacket(
+      JSON.parse(fs.readFileSync(path.join(candidatesRoot, candidate), "utf8")),
+      `candidate.${candidate}`,
+    );
+  }
 });
 
 test("rehashes and cross-checks indexed native packets", () => {
@@ -296,6 +324,7 @@ test("rehashes and cross-checks indexed native packets", () => {
 test("validation and release workflows execute this contract", () => {
   for (const workflow of [".github/workflows/validation.yml", ".github/workflows/release.yml"]) {
     const source = fs.readFileSync(path.join(ROOT, workflow), "utf8");
+    assert.match(source, /scripts\/capture-macos-dmg-current-user-persistence\.test\.mjs/u);
     assert.match(source, /scripts\/validate-current-user-persistence-evidence\.test\.mjs/u);
   }
 });
