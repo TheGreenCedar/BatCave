@@ -199,15 +199,14 @@ test("keeps validation toolchains, cache writers, and Linux package transport bo
     validationWorkflow.match(
       /shared-key: batcave-validation-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}/g,
     )?.length,
-    4,
+    3,
   );
   assert.equal(
     validationWorkflow.match(/save-if: \$\{\{ github\.event_name != 'pull_request' \}\}/g)
       ?.length,
     3,
   );
-  assert.equal(validationWorkflow.match(/save-if: false/g)?.length, 1);
-  assert.doesNotMatch(validationWorkflow, /cache-on-failure|cache-workspace-crates/);
+  assert.doesNotMatch(validationWorkflow, /cache-on-failure|cache-workspace-crates:\s*true/);
 
   const linux = validationJob("linux");
   assert.doesNotMatch(linux, /--bundle-only|linux_package_owned_transport/);
@@ -222,9 +221,17 @@ test("keeps validation toolchains, cache writers, and Linux package transport bo
   assert.match(packageTransport, /^    name: Linux package transport$/m);
   assert.match(
     packageTransport,
-    /bash scripts\/validate-tauri\.sh --bundle-only[\s\S]*linux_package_owned_transport/u,
+    /bash scripts\/validate-tauri\.sh --bundle-only[\s\S]*cargo test --release [^\n]*--test linux_package_owned_transport/u,
   );
-  assert.match(packageTransport, /^          save-if: false$/m);
+  assert.match(
+    packageTransport,
+    /^          shared-key: batcave-package-release-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}$/m,
+  );
+  assert.match(packageTransport, /^          cache-workspace-crates: false$/m);
+  assert.match(
+    packageTransport,
+    /^          save-if: \$\{\{ github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch' \}\}$/m,
+  );
 
   const windows = validationJob("windows");
   assertStepOrder(windows, "Reject Rust warnings", "Validate Windows app");
