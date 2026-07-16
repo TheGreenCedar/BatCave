@@ -71,6 +71,8 @@ The incompatible-service fixture is now plan-bound to exact retained bytes built
 
 A successful production upgrade proves the commit path but cannot prove rollback. Rollback observation still requires a separate plan-bound candidate or fixed fault fixture; an ad hoc corruption or caller-selected failure is not allowed.
 
+The stacked rollback lane defines one private, feature-gated failing service binary. With no arguments—the SCM candidate-start path—it exits with fixed code `70`. Existing fixed `--provision` arguments delegate to the production provisioner. The binary is not packaged and exposes no new production verb, environment switch, or caller-selected failure mode. Its exact bytes remain untrusted until a later commit pins a selected build in the proof plan.
+
 No crate replaces the complete elevated-process, Job Object, service, named-pipe settlement, and evidence boundary. The controller therefore keeps its narrow `windows-sys` implementation. A private Windows UI Automation client may use the narrowly scoped `uiautomation` crate for bounded native Diagnostics inspection; that dependency would replace COM boilerplate only and would not own lifecycle authority.
 
 ## Required observations

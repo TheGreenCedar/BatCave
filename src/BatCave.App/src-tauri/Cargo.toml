@@ -10,6 +10,7 @@ default-run = "batcave-monitor"
 [features]
 default = []
 private-windows-lifecycle-proof = []
+private-windows-lifecycle-service-fixtures = []
 private-release-verifier = [
     "dep:flate2",
     "dep:reqwest",
@@ -34,6 +35,11 @@ required-features = ["private-release-verifier"]
 name = "batcave-windows-lifecycle-proof"
 path = "src/bin/batcave-windows-lifecycle-proof.rs"
 required-features = ["private-windows-lifecycle-proof"]
+
+[[bin]]
+name = "batcave-windows-failing-service-fixture"
+path = "src/bin/batcave-windows-failing-service-fixture.rs"
+required-features = ["private-windows-lifecycle-service-fixtures"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
