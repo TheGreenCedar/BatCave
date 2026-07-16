@@ -1040,6 +1040,17 @@ impl ElevatedProcess {
     }
 
     pub(crate) fn wait(&mut self, timeout: Duration) -> Result<u32, String> {
+        if let Some(exit_code) = self.wait_without_termination(timeout)? {
+            return Ok(exit_code);
+        }
+        self.terminate_and_settle()?;
+        Err("lifecycle_worker_timeout".to_string())
+    }
+
+    pub(crate) fn wait_without_termination(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<u32>, String> {
         let wait = unsafe {
             WaitForSingleObject(
                 self.handle.raw(),
@@ -1047,8 +1058,7 @@ impl ElevatedProcess {
             )
         };
         if wait == WAIT_TIMEOUT {
-            self.terminate_and_settle()?;
-            return Err("lifecycle_worker_timeout".to_string());
+            return Ok(None);
         }
         if wait != WAIT_OBJECT_0 {
             return Err("lifecycle_worker_wait_failed".to_string());
@@ -1063,7 +1073,7 @@ impl ElevatedProcess {
             }
         }
         self.settled = true;
-        Ok(exit_code)
+        Ok(Some(exit_code))
     }
 
     pub(crate) fn terminate_and_settle(&mut self) -> Result<(), String> {
@@ -3885,6 +3895,13 @@ mod tests {
                 .expect("read exact"),
             payload
         );
+        assert!(
+            fs::write(scratch.root.join(name), br#"{"reason":"raced"}"#).is_err(),
+            "the retained receipt guard must deny a writer racing acknowledgement"
+        );
+        guard
+            .revalidate()
+            .expect("retained receipt authority remains exact");
         drop(guard);
 
         fs::write(scratch.root.join(name), br#"{"reason":"forged"}"#)

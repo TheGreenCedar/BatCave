@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 
 pub(crate) const EMBEDDED_PLAN: &str = include_str!("windows_lifecycle_proof_plan.v1.json");
 pub(crate) const PLAN_SCHEMA: &str = "batcave_windows_lifecycle_proof_plan_v1";
-pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protocol_v2";
+pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protocol_v3";
 pub(crate) const NONCE_HEX_LENGTH: usize = 64;
 pub(crate) const LOCATOR_HEX_LENGTH: usize = 32;
 pub(crate) const FIRST_SEQUENCE: u64 = 1;
@@ -121,7 +121,9 @@ pub(crate) struct Envelope<T> {
 )]
 pub(crate) enum ParentMessage {
     Begin(ClosedRequest),
+    CheckpointAccepted(WorkerCheckpoint),
     DesktopPhaseComplete(Box<DesktopPhaseResult>),
+    Abort(AbortReason),
     EvidenceAccepted,
 }
 
@@ -134,8 +136,36 @@ pub(crate) enum ParentMessage {
 )]
 pub(crate) enum WorkerMessage {
     Accepted(WorkerAccepted),
+    Checkpoint(WorkerCheckpoint),
     RunDesktopPhase(DesktopPhase),
     ResultReady(Box<WorkerResult>),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AbortReason {
+    ArtifactValidation,
+    DesktopFailure,
+    Disconnected,
+    EvidenceValidation,
+    ProtocolViolation,
+    ReceiptValidation,
+    Timeout,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkerCheckpoint {
+    pub completed_stage: LifecycleStage,
+    pub evidence_root_identity: EvidenceRootIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkerAbort {
+    pub reason: AbortReason,
+    pub last_authenticated_checkpoint: Option<WorkerCheckpoint>,
+    pub evidence_root_identity: EvidenceRootIdentity,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -729,6 +759,8 @@ fn valid_bounded_reason(value: &str) -> bool {
 pub(crate) struct WorkerResult {
     pub disposition: WorkerDisposition,
     pub completed_stage: Option<LifecycleStage>,
+    pub last_authenticated_checkpoint: Option<WorkerCheckpoint>,
+    pub abort: Option<WorkerAbort>,
     pub failure: Option<WorkerFailure>,
     pub process_tree_settled: bool,
     pub private_evidence: Vec<EvidenceReceipt>,
@@ -742,6 +774,7 @@ pub(crate) enum WorkerFailureKind {
     EvidenceWrite,
     ProcessSettlement,
     Controller,
+    ParentAbort,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -793,7 +826,7 @@ pub(crate) enum WorkerDisposition {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LifecycleStage {
     InitialState,
@@ -1482,6 +1515,29 @@ mod tests {
     }
 
     #[test]
+    fn abort_messages_reject_unauthenticated_and_malformed_authority() {
+        let nonce = "a".repeat(NONCE_HEX_LENGTH);
+        let message = ParentMessage::Abort(AbortReason::Timeout);
+        let envelope = Envelope {
+            schema_version: PROTOCOL_SCHEMA.to_string(),
+            nonce: nonce.clone(),
+            sequence: FIRST_SEQUENCE,
+            message_sha256: message_sha256(&message).expect("abort digest"),
+            message,
+        };
+        let mut unauthenticated = envelope.clone();
+        unauthenticated.nonce = "b".repeat(NONCE_HEX_LENGTH);
+        assert_eq!(
+            validate_envelope(&unauthenticated, &nonce, &mut SequenceGate::new()),
+            Err("lifecycle_protocol_nonce_invalid".to_string())
+        );
+
+        let mut malformed = serde_json::to_value(envelope).expect("abort envelope");
+        malformed["message"]["value"] = serde_json::json!("run_arbitrary_command");
+        assert!(serde_json::from_value::<Envelope<ParentMessage>>(malformed).is_err());
+    }
+
+    #[test]
     fn protocol_binds_the_evidence_root_and_requires_result_acceptance() {
         let accepted = WorkerMessage::Accepted(WorkerAccepted {
             evidence_root:
@@ -1507,6 +1563,8 @@ mod tests {
         let result_ready = WorkerMessage::ResultReady(Box::new(WorkerResult {
             disposition: WorkerDisposition::Failed,
             completed_stage: None,
+            last_authenticated_checkpoint: None,
+            abort: None,
             failure: Some(WorkerFailure {
                 kind: WorkerFailureKind::Controller,
                 attempted_stage: None,

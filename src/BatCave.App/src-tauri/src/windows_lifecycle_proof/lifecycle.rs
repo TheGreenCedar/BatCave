@@ -11,9 +11,10 @@ use super::private_evidence::{
     write_machine_packet, write_service_crash_packet, write_upgrade_rollback_packet,
 };
 use crate::windows_lifecycle_proof_contract::{
-    DesktopPhase, DesktopPhaseDisposition, DesktopPhaseObservation, DesktopPhaseResult,
-    DesktopSecondInstanceObservation, LifecycleStage, ProofPlan, RestorationOutcome, SequenceGate,
-    WorkerDisposition, WorkerFailure, WorkerFailureKind, WorkerResult,
+    validate_envelope, AbortReason, DesktopPhase, DesktopPhaseDisposition, DesktopPhaseObservation,
+    DesktopPhaseResult, DesktopSecondInstanceObservation, Envelope, LifecycleStage, ParentMessage,
+    ProofPlan, RestorationOutcome, SequenceGate, WorkerAbort, WorkerCheckpoint, WorkerDisposition,
+    WorkerFailure, WorkerFailureKind, WorkerMessage, WorkerResult,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -29,6 +30,55 @@ const BASELINE_INSTALL_ARGUMENTS: &str = "/S";
 const DIRECT_UNINSTALL_ARGUMENTS: &str = r"/S _?=C:\Program Files\BatCave Monitor";
 const SERVICE_STOP_ARGUMENTS: &str = "--provision prepare-upgrade";
 const SERVICE_START_ARGUMENTS: &str = "--provision install";
+
+struct WorkerExecutionFailure {
+    completed_stage: Option<LifecycleStage>,
+    failure: WorkerFailure,
+    process_tree_settled: bool,
+    abort_reason: Option<AbortReason>,
+}
+
+impl From<(Option<LifecycleStage>, WorkerFailure, bool)> for WorkerExecutionFailure {
+    fn from(
+        (completed_stage, failure, process_tree_settled): (
+            Option<LifecycleStage>,
+            WorkerFailure,
+            bool,
+        ),
+    ) -> Self {
+        Self {
+            completed_stage,
+            failure,
+            process_tree_settled,
+            abort_reason: None,
+        }
+    }
+}
+
+impl
+    From<(
+        Option<LifecycleStage>,
+        WorkerFailure,
+        bool,
+        Option<AbortReason>,
+    )> for WorkerExecutionFailure
+{
+    fn from(
+        (completed_stage, failure, process_tree_settled, abort_reason): (
+            Option<LifecycleStage>,
+            WorkerFailure,
+            bool,
+            Option<AbortReason>,
+        ),
+    ) -> Self {
+        Self {
+            completed_stage,
+            failure,
+            process_tree_settled,
+            abort_reason,
+        }
+    }
+}
 
 pub(super) fn require_controller_ready() -> Result<(), String> {
     if CONTROLLER_READY {
@@ -248,11 +298,99 @@ pub(super) struct WorkerContext<'a> {
     pub(super) evidence: &'a ProtectedEvidenceRoot,
     pub(super) pipe: &'a mut PipeConnection,
     pub(super) nonce: &'a str,
-    pub(super) gate: &'a mut SequenceGate,
+    pub(super) outbound_gate: &'a mut SequenceGate,
+    pub(super) inbound_gate: &'a mut SequenceGate,
     pub(super) controller_bindings: &'a [PeerBinding],
 }
 
+struct AuthenticatedWorkerTransport<'a> {
+    pipe: &'a mut PipeConnection,
+    nonce: &'a str,
+    outbound_gate: &'a mut SequenceGate,
+    inbound_gate: &'a mut SequenceGate,
+}
+
 pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
+    if let Err(failure) = require_controller_ready() {
+        return failed(None, None, None, controller_failure(failure), true);
+    }
+    let evidence_identity = context.evidence.identity();
+    let mut last_authenticated_checkpoint = None;
+    let result = execute_worker_inner(context, &mut last_authenticated_checkpoint);
+    match result {
+        Ok(completed_stage) => failed(
+            Some(completed_stage),
+            last_authenticated_checkpoint,
+            None,
+            controller_failure("lifecycle_remaining_stages_not_implemented".to_string()),
+            true,
+        ),
+        Err(failure) => failed(
+            failure.completed_stage,
+            last_authenticated_checkpoint,
+            failure.abort_reason.map(|reason| WorkerAbort {
+                reason,
+                last_authenticated_checkpoint,
+                evidence_root_identity: evidence_identity,
+            }),
+            failure.failure,
+            failure.process_tree_settled,
+        ),
+    }
+}
+
+pub(super) fn abort_after_result(
+    original: &WorkerResult,
+    reason: AbortReason,
+    evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
+) -> WorkerResult {
+    if let Some(result) = preserve_failed_abort_result(original, reason, evidence.identity()) {
+        return result;
+    }
+    let stage = original
+        .completed_stage
+        .unwrap_or(LifecycleStage::InitialState);
+    let last_authenticated_checkpoint = original.last_authenticated_checkpoint;
+    let failure = parent_abort_execution_failure(
+        stage,
+        reason,
+        last_authenticated_checkpoint,
+        evidence,
+        controller_bindings,
+    );
+    failed(
+        failure.completed_stage,
+        last_authenticated_checkpoint,
+        failure.abort_reason.map(|reason| WorkerAbort {
+            reason,
+            last_authenticated_checkpoint,
+            evidence_root_identity: evidence.identity(),
+        }),
+        failure.failure,
+        failure.process_tree_settled,
+    )
+}
+
+fn preserve_failed_abort_result(
+    original: &WorkerResult,
+    reason: AbortReason,
+    evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity,
+) -> Option<WorkerResult> {
+    original.failure.as_ref()?;
+    let mut result = original.clone();
+    result.abort = Some(WorkerAbort {
+        reason,
+        last_authenticated_checkpoint: original.last_authenticated_checkpoint,
+        evidence_root_identity,
+    });
+    Some(result)
+}
+
+fn execute_worker_inner(
+    context: WorkerContext<'_>,
+    last_authenticated_checkpoint: &mut Option<WorkerCheckpoint>,
+) -> Result<LifecycleStage, WorkerExecutionFailure> {
     let WorkerContext {
         plan,
         repo_root: _repo_root,
@@ -261,56 +399,43 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
         incompatible_service_fixture: _incompatible_service_fixture,
         rollback_failing_service_fixture,
         evidence,
-        pipe: _pipe,
-        nonce: _nonce,
-        gate: _gate,
+        pipe,
+        nonce,
+        outbound_gate,
+        inbound_gate,
         controller_bindings,
     } = context;
-    if let Err(failure) = require_controller_ready() {
-        return failed(None, controller_failure(failure), true);
-    }
-    let result = execute_worker_inner(
-        plan,
-        baseline,
-        final_candidate,
-        rollback_failing_service_fixture,
-        evidence,
-        controller_bindings,
-    );
-    match result {
-        Ok(completed_stage) => failed(
-            Some(completed_stage),
-            controller_failure("lifecycle_remaining_stages_not_implemented".to_string()),
-            true,
-        ),
-        Err((completed_stage, failure, settled)) => failed(completed_stage, failure, settled),
-    }
-}
-
-fn execute_worker_inner(
-    plan: &ProofPlan,
-    baseline: &OwnedFile,
-    final_candidate: &OwnedFile,
-    rollback_failing_service_fixture: &OwnedFile,
-    evidence: &ProtectedEvidenceRoot,
-    controller_bindings: &[PeerBinding],
-) -> Result<LifecycleStage, (Option<LifecycleStage>, WorkerFailure, bool)> {
+    let mut transport = AuthenticatedWorkerTransport {
+        pipe,
+        nonce,
+        outbound_gate,
+        inbound_gate,
+    };
     let initial = capture_elevated_machine_snapshot(controller_bindings);
     write_machine_packet(evidence, "initial-state.private.json", &initial).map_err(|failure| {
         (
             None,
             evidence_write_failure("lifecycle_initial_state_evidence_incomplete", failure),
             true,
+            None,
         )
     })?;
     require_allowlisted_elevated_preflight(&initial, plan)
-        .map_err(|failure| (None, controller_failure(failure), true))?;
+        .map_err(|failure| (None, controller_failure(failure), true, None))?;
+    authenticated_checkpoint(
+        LifecycleStage::InitialState,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
 
     let historical_cli = open_allowlisted_legacy_cli(plan).map_err(|failure| {
         (
             Some(LifecycleStage::InitialState),
             controller_failure(failure),
             true,
+            None,
         )
     })?;
     let _historical_cli_copy = historical_cli
@@ -323,6 +448,7 @@ fn execute_worker_inner(
                 Some(LifecycleStage::InitialState),
                 controller_failure(failure),
                 true,
+                None,
             )
         })?;
     drop(historical_cli);
@@ -337,6 +463,7 @@ fn execute_worker_inner(
                 Some(LifecycleStage::InitialState),
                 controller_failure(failure),
                 true,
+                None,
             )
         })?;
     let final_repair_state = execute_mutation(
@@ -359,7 +486,7 @@ fn execute_worker_inner(
             )
         },
     )
-    .map_err(|(failure, settled)| (Some(LifecycleStage::InitialState), failure, settled))?;
+    .map_err(|(failure, settled)| (Some(LifecycleStage::InitialState), failure, settled, None))?;
     write_machine_packet(
         evidence,
         "final-repair-state.private.json",
@@ -370,8 +497,16 @@ fn execute_worker_inner(
             Some(LifecycleStage::FinalRepair),
             evidence_write_failure("lifecycle_final_repair_evidence_incomplete", failure),
             true,
+            None,
         )
     })?;
+    authenticated_checkpoint(
+        LifecycleStage::FinalRepair,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
 
     let installed_uninstaller =
         open_installed_uninstaller(&plan.final_candidate).map_err(|failure| {
@@ -379,6 +514,7 @@ fn execute_worker_inner(
                 Some(LifecycleStage::FinalRepair),
                 controller_failure(failure),
                 true,
+                None,
             )
         })?;
     let uninstaller_copy = installed_uninstaller
@@ -391,6 +527,7 @@ fn execute_worker_inner(
                 Some(LifecycleStage::FinalRepair),
                 controller_failure(failure),
                 true,
+                None,
             )
         })?;
     drop(installed_uninstaller);
@@ -407,7 +544,7 @@ fn execute_worker_inner(
         "lifecycle_initial_uninstall_failed",
         |snapshot| require_elevated_total_product_absence(snapshot, "initial_uninstall"),
     )
-    .map_err(|(failure, settled)| (Some(LifecycleStage::FinalRepair), failure, settled))?;
+    .map_err(|(failure, settled)| (Some(LifecycleStage::FinalRepair), failure, settled, None))?;
     write_machine_packet(
         evidence,
         "initial-uninstall-state.private.json",
@@ -418,8 +555,16 @@ fn execute_worker_inner(
             Some(LifecycleStage::InitialUninstall),
             evidence_write_failure("lifecycle_initial_uninstall_evidence_incomplete", failure),
             true,
+            None,
         )
     })?;
+    authenticated_checkpoint(
+        LifecycleStage::InitialUninstall,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
 
     let baseline_copy = baseline
         .copy_to(
@@ -431,6 +576,7 @@ fn execute_worker_inner(
                 Some(LifecycleStage::InitialUninstall),
                 controller_failure(failure),
                 true,
+                None,
             )
         })?;
     let baseline_install_state = execute_mutation(
@@ -453,7 +599,14 @@ fn execute_worker_inner(
             )
         },
     )
-    .map_err(|(failure, settled)| (Some(LifecycleStage::InitialUninstall), failure, settled))?;
+    .map_err(|(failure, settled)| {
+        (
+            Some(LifecycleStage::InitialUninstall),
+            failure,
+            settled,
+            None,
+        )
+    })?;
     write_machine_packet(
         evidence,
         "baseline-install-state.private.json",
@@ -464,8 +617,16 @@ fn execute_worker_inner(
             Some(LifecycleStage::BaselineInstall),
             evidence_write_failure("lifecycle_baseline_install_evidence_incomplete", failure),
             true,
+            None,
         )
     })?;
+    authenticated_checkpoint(
+        LifecycleStage::BaselineInstall,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
 
     let baseline_stop_service = open_installed_service(&plan.baseline).map_err(|failure| {
         (
@@ -552,6 +713,13 @@ fn execute_worker_inner(
             true,
         )
     })?;
+    authenticated_checkpoint(
+        LifecycleStage::BaselineRestart,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
 
     require_running_service(&baseline_restart_state, "baseline_crash_before").map_err(
         |failure| {
@@ -589,7 +757,8 @@ fn execute_worker_inner(
                     Some(LifecycleStage::BaselineRestart),
                     failure,
                     process_tree_settled,
-                ));
+                )
+                    .into());
             }
         };
     let baseline_crashed_state = capture_elevated_machine_snapshot(controller_bindings);
@@ -607,7 +776,7 @@ fn execute_worker_inner(
             true,
             ServiceCrashMutationObservation::Terminated(&termination),
         );
-        return Err((Some(LifecycleStage::BaselineRestart), failure, true));
+        return Err((Some(LifecycleStage::BaselineRestart), failure, true).into());
     }
     write_service_crash_packet(
         evidence,
@@ -667,6 +836,13 @@ fn execute_worker_inner(
             true,
         )
     })?;
+    authenticated_checkpoint(
+        LifecycleStage::BaselineCrashRecovery,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
 
     let rollback_fixture_copy = rollback_failing_service_fixture
         .copy_to(
@@ -728,7 +904,8 @@ fn execute_worker_inner(
                 Some(LifecycleStage::BaselineCrashRecovery),
                 failure,
                 process_tree_settled,
-            ));
+            )
+                .into());
         }
     };
     if let Err(reason) = rollback_failing_service_fixture
@@ -743,7 +920,7 @@ fn execute_worker_inner(
             &reason,
             true,
         );
-        return Err((Some(LifecycleStage::BaselineCrashRecovery), failure, true));
+        return Err((Some(LifecycleStage::BaselineCrashRecovery), failure, true).into());
     }
     let baseline_rollback_recovery_state = capture_elevated_machine_snapshot(controller_bindings);
     require_elevated_installed_candidate(
@@ -786,7 +963,196 @@ fn execute_worker_inner(
             true,
         )
     })?;
+    authenticated_checkpoint(
+        LifecycleStage::BaselineRollbackRecovery,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
     Ok(LifecycleStage::BaselineRollbackRecovery)
+}
+
+fn authenticated_checkpoint(
+    completed_stage: LifecycleStage,
+    evidence: &ProtectedEvidenceRoot,
+    transport: &mut AuthenticatedWorkerTransport<'_>,
+    last_authenticated_checkpoint: &mut Option<WorkerCheckpoint>,
+    controller_bindings: &[PeerBinding],
+) -> Result<(), WorkerExecutionFailure> {
+    let checkpoint = WorkerCheckpoint {
+        completed_stage,
+        evidence_root_identity: evidence.identity(),
+    };
+    if super::send_worker_message(
+        transport.pipe,
+        transport.nonce,
+        transport.outbound_gate,
+        WorkerMessage::Checkpoint(checkpoint),
+    )
+    .is_err()
+    {
+        return Err(parent_abort_execution_failure(
+            completed_stage,
+            AbortReason::Disconnected,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+        ));
+    }
+    let response: Envelope<ParentMessage> = match transport.pipe.read_json(Duration::from_secs(30))
+    {
+        Ok(response) => response,
+        Err(reason) => {
+            return Err(parent_abort_execution_failure(
+                completed_stage,
+                abort_reason_for_transport_error(&reason),
+                *last_authenticated_checkpoint,
+                evidence,
+                controller_bindings,
+            ));
+        }
+    };
+    if validate_envelope(&response, transport.nonce, transport.inbound_gate).is_err() {
+        return Err(parent_abort_execution_failure(
+            completed_stage,
+            AbortReason::ProtocolViolation,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+        ));
+    }
+    match response.message {
+        ParentMessage::CheckpointAccepted(accepted) if accepted == checkpoint => {
+            *last_authenticated_checkpoint = Some(checkpoint);
+            Ok(())
+        }
+        ParentMessage::Abort(reason) => Err(parent_abort_execution_failure(
+            completed_stage,
+            reason,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+        )),
+        ParentMessage::Begin(_)
+        | ParentMessage::CheckpointAccepted(_)
+        | ParentMessage::DesktopPhaseComplete(_)
+        | ParentMessage::EvidenceAccepted => Err(parent_abort_execution_failure(
+            completed_stage,
+            AbortReason::ProtocolViolation,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+        )),
+    }
+}
+
+fn abort_reason_for_transport_error(reason: &str) -> AbortReason {
+    if reason.contains("timeout") {
+        AbortReason::Timeout
+    } else {
+        AbortReason::Disconnected
+    }
+}
+
+fn parent_abort_execution_failure(
+    completed_stage: LifecycleStage,
+    reason: AbortReason,
+    last_authenticated_checkpoint: Option<WorkerCheckpoint>,
+    evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
+) -> WorkerExecutionFailure {
+    let packet = ParentAbortFailurePacket {
+        schema_version: MUTATION_FAILURE_SCHEMA,
+        reason,
+        completed_stage,
+        last_authenticated_checkpoint,
+        evidence_root_identity: evidence.identity(),
+        process_tree_settled: true,
+        machine_after_settlement: capture_elevated_machine_snapshot(controller_bindings),
+    };
+    let (failure_evidence, evidence_error) = match evidence
+        .write_json_new(super::parent_abort_leaf_for_stage(completed_stage), &packet)
+    {
+        Ok(receipt) => (Some(Box::new(receipt)), None),
+        Err(error) => (None, Some(error)),
+    };
+    WorkerExecutionFailure {
+        completed_stage: Some(completed_stage),
+        failure: WorkerFailure {
+            kind: WorkerFailureKind::ParentAbort,
+            attempted_stage: None,
+            reason: super::parent_abort_reason(reason).to_string(),
+            evidence: failure_evidence,
+            evidence_error,
+            restoration: Box::new(parent_abort_restoration(
+                completed_stage,
+                reason,
+                evidence,
+                controller_bindings,
+            )),
+        },
+        process_tree_settled: true,
+        abort_reason: Some(reason),
+    }
+}
+
+fn parent_abort_restoration(
+    completed_stage: LifecycleStage,
+    reason: AbortReason,
+    evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
+) -> RestorationOutcome {
+    if completed_stage == LifecycleStage::InitialState {
+        return RestorationOutcome::NotRequired;
+    }
+    let restoration_reason = "lifecycle_parent_abort_restoration_not_reviewed".to_string();
+    let packet = ParentAbortRestorationPacket {
+        schema_version: MUTATION_FAILURE_SCHEMA,
+        reason,
+        completed_stage,
+        restoration_reason: &restoration_reason,
+        machine_after_attempt: capture_elevated_machine_snapshot(controller_bindings),
+    };
+    let Some(restoration_leaf) = super::restoration_leaf_for_stage(completed_stage) else {
+        return RestorationOutcome::Failed {
+            reason: restoration_reason,
+            evidence: None,
+            evidence_error: Some("lifecycle_parent_abort_restoration_leaf_missing".to_string()),
+        };
+    };
+    match evidence.write_json_new(restoration_leaf, &packet) {
+        Ok(receipt) => RestorationOutcome::Failed {
+            reason: restoration_reason,
+            evidence: Some(receipt),
+            evidence_error: None,
+        },
+        Err(error) => RestorationOutcome::Failed {
+            reason: restoration_reason,
+            evidence: None,
+            evidence_error: Some(error),
+        },
+    }
+}
+
+#[derive(Serialize)]
+struct ParentAbortFailurePacket {
+    schema_version: &'static str,
+    reason: AbortReason,
+    completed_stage: LifecycleStage,
+    last_authenticated_checkpoint: Option<WorkerCheckpoint>,
+    evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity,
+    process_tree_settled: bool,
+    machine_after_settlement: ElevatedMachineSnapshot,
+}
+
+#[derive(Serialize)]
+struct ParentAbortRestorationPacket<'a> {
+    schema_version: &'static str,
+    reason: AbortReason,
+    completed_stage: LifecycleStage,
+    restoration_reason: &'a str,
+    machine_after_attempt: ElevatedMachineSnapshot,
 }
 
 #[derive(Serialize)]
@@ -1085,6 +1451,8 @@ fn restoration_not_reviewed() -> RestorationOutcome {
 
 fn failed(
     completed_stage: Option<LifecycleStage>,
+    last_authenticated_checkpoint: Option<WorkerCheckpoint>,
+    abort: Option<WorkerAbort>,
     mut failure: WorkerFailure,
     process_tree_settled: bool,
 ) -> WorkerResult {
@@ -1114,6 +1482,8 @@ fn failed(
     WorkerResult {
         disposition: WorkerDisposition::Failed,
         completed_stage,
+        last_authenticated_checkpoint,
+        abort,
         failure: Some(failure),
         process_tree_settled,
         private_evidence: Vec::new(),
@@ -1124,6 +1494,152 @@ fn failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_result_abort_preserves_unsettled_failure_authority() {
+        let evidence_root_identity =
+            crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 7,
+                file_index: 11,
+            };
+        let checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::InitialState,
+            evidence_root_identity,
+        };
+        let original = WorkerResult {
+            disposition: WorkerDisposition::Failed,
+            completed_stage: Some(LifecycleStage::InitialState),
+            last_authenticated_checkpoint: Some(checkpoint),
+            abort: None,
+            failure: Some(WorkerFailure {
+                kind: WorkerFailureKind::ProcessSettlement,
+                attempted_stage: Some(LifecycleStage::FinalRepair),
+                reason: "lifecycle_final_repair_process_tree_unsettled".to_string(),
+                evidence: Some(Box::new(
+                    crate::windows_lifecycle_proof_contract::EvidenceReceipt {
+                        name: "final-repair-failure.private.json".to_string(),
+                        size: 128,
+                        sha256: "a".repeat(64),
+                    },
+                )),
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::BlockedUnsettled),
+            }),
+            process_tree_settled: false,
+            private_evidence: Vec::new(),
+            sanitized_export: None,
+        };
+
+        let aborted = preserve_failed_abort_result(
+            &original,
+            AbortReason::Disconnected,
+            evidence_root_identity,
+        )
+        .expect("unsettled result");
+
+        assert_eq!(aborted.failure, original.failure);
+        assert!(!aborted.process_tree_settled);
+        assert_eq!(
+            aborted
+                .failure
+                .as_ref()
+                .expect("failure")
+                .restoration
+                .as_ref(),
+            &RestorationOutcome::BlockedUnsettled
+        );
+        assert_eq!(
+            aborted.abort,
+            Some(WorkerAbort {
+                reason: AbortReason::Disconnected,
+                last_authenticated_checkpoint: Some(checkpoint),
+                evidence_root_identity,
+            })
+        );
+    }
+
+    #[test]
+    fn post_result_abort_preserves_settled_failure_and_restoration_truth() {
+        let evidence_root_identity =
+            crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 7,
+                file_index: 11,
+            };
+        let checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::InitialState,
+            evidence_root_identity,
+        };
+        let failures = [
+            WorkerFailure {
+                kind: WorkerFailureKind::Mutation,
+                attempted_stage: Some(LifecycleStage::FinalRepair),
+                reason: "lifecycle_final_repair_failed".to_string(),
+                evidence: Some(Box::new(
+                    crate::windows_lifecycle_proof_contract::EvidenceReceipt {
+                        name: "final-repair-failure.private.json".to_string(),
+                        size: 128,
+                        sha256: "a".repeat(64),
+                    },
+                )),
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::Failed {
+                    reason: "lifecycle_restoration_failed".to_string(),
+                    evidence: Some(crate::windows_lifecycle_proof_contract::EvidenceReceipt {
+                        name: "final-repair-restoration.private.json".to_string(),
+                        size: 128,
+                        sha256: "b".repeat(64),
+                    }),
+                    evidence_error: None,
+                }),
+            },
+            WorkerFailure {
+                kind: WorkerFailureKind::EvidenceWrite,
+                attempted_stage: None,
+                reason: "lifecycle_initial_state_evidence_incomplete".to_string(),
+                evidence: None,
+                evidence_error: Some("lifecycle_evidence_create_failed".to_string()),
+                restoration: Box::new(RestorationOutcome::NotRequired),
+            },
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: None,
+                reason: "lifecycle_controller_not_reviewed".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::NotRequired),
+            },
+        ];
+
+        for failure in failures {
+            let original = WorkerResult {
+                disposition: WorkerDisposition::Failed,
+                completed_stage: Some(LifecycleStage::InitialState),
+                last_authenticated_checkpoint: Some(checkpoint),
+                abort: None,
+                failure: Some(failure),
+                process_tree_settled: true,
+                private_evidence: Vec::new(),
+                sanitized_export: None,
+            };
+            let aborted = preserve_failed_abort_result(
+                &original,
+                AbortReason::ReceiptValidation,
+                evidence_root_identity,
+            )
+            .expect("failed result");
+
+            assert_eq!(aborted.failure, original.failure);
+            assert!(aborted.process_tree_settled);
+            assert_eq!(
+                aborted.abort,
+                Some(WorkerAbort {
+                    reason: AbortReason::ReceiptValidation,
+                    last_authenticated_checkpoint: Some(checkpoint),
+                    evidence_root_identity,
+                })
+            );
+        }
+    }
 
     #[test]
     fn direct_uninstaller_form_is_fixed_last_and_unquoted() {
@@ -1205,6 +1721,8 @@ mod tests {
     fn failure_restoration_is_normalized_from_completed_mutation_state() {
         let before_mutation = failed(
             None,
+            None,
+            None,
             evidence_write_failure("initial_evidence_failed", "write_failed".to_string()),
             true,
         );
@@ -1219,6 +1737,8 @@ mod tests {
 
         let after_mutation = failed(
             Some(LifecycleStage::FinalRepair),
+            None,
+            None,
             controller_failure("controller_failed".to_string()),
             true,
         );
