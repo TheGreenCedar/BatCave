@@ -4434,7 +4434,11 @@ mod tests {
 
     #[test]
     fn checkpoint_root_pin_blocks_rename_but_leaf_observation_does_not() {
-        let temporary = std::env::temp_dir().join(format!(
+        let canonical_temp =
+            crate::collector_service::windows_provisioner::strip_verbatim_disk_prefix(
+                fs::canonicalize(std::env::temp_dir()).expect("canonical temp directory"),
+            );
+        let temporary = canonical_temp.join(format!(
             "BatCave-parent-user-pin-{}-{}",
             std::process::id(),
             random_hex(8).expect("nonce")
