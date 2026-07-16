@@ -51,6 +51,7 @@ use super::{
 
 pub(crate) const PIPE_NAME: &str = r"\\.\pipe\BatCaveCollector.v1";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
+const PIPE_INSTANCE_LIMIT: u32 = MAX_CLIENTS as u32 + 1;
 const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -549,7 +550,7 @@ impl PipeConnection {
                 pipe_name.as_ptr(),
                 PIPE_ACCESS_DUPLEX | first,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                MAX_CLIENTS as u32,
+                PIPE_INSTANCE_LIMIT,
                 PIPE_BUFFER_BYTES,
                 PIPE_BUFFER_BYTES,
                 0,
@@ -813,5 +814,10 @@ mod tests {
             Ok("bound")
         );
         assert!(ready_called);
+    }
+
+    #[test]
+    fn client_capacity_reserves_one_pipe_instance_for_the_listener() {
+        assert_eq!(PIPE_INSTANCE_LIMIT, MAX_CLIENTS as u32 + 1);
     }
 }

@@ -135,12 +135,16 @@ fn sanitized_failure_reason(error: &str) -> &'static str {
         } else {
             "etw_startup"
         }
-    } else if error.contains("collector_service_pipe_") || error.contains("transport") {
+    } else if error.contains("lifecycle") {
+        "lifecycle"
+    } else if error.contains("collector_service_pipe_")
+        || error.contains("collector_service_client_")
+        || error.contains("collector_service_executable_")
+        || error.contains("transport")
+    {
         "transport"
     } else if error.contains("collector_engine") || error.contains("collector_") {
         "collector"
-    } else if error.contains("lifecycle") {
-        "lifecycle"
     } else {
         "startup"
     }
@@ -720,6 +724,20 @@ mod tests {
         assert_eq!(
             sanitized_failure_reason("collector_service_pipe_connect_failed:232"),
             "transport"
+        );
+        assert_eq!(
+            sanitized_failure_reason("collector_service_client_spawn_failed:resource exhausted"),
+            "transport"
+        );
+        assert_eq!(
+            sanitized_failure_reason(
+                "collector_service_executable_canonicalize_failed:access denied"
+            ),
+            "transport"
+        );
+        assert_eq!(
+            sanitized_failure_reason("collector_service_lifecycle_file_missing"),
+            "lifecycle"
         );
         assert_eq!(
             sanitized_failure_reason("collector_service_etw_recovery_incomplete:Retain"),
