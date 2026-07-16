@@ -63,22 +63,25 @@ function Assert-FixedServiceFixture {
         [string]$Path,
 
         [Parameter(Mandatory = $true)]
-        [object]$Fixture
+        [object]$Fixture,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Label
     )
 
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $item = Get-Item -LiteralPath $resolved
     if ($item.PSIsContainer -or $item.Length -ne [long]$Fixture.size) {
-        throw "The incompatible service fixture size does not match the embedded plan."
+        throw "The $Label service fixture size does not match the embedded plan."
     }
     $actualSha256 = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualSha256 -cne [string]$Fixture.sha256) {
-        throw "The incompatible service fixture SHA-256 does not match the embedded plan."
+        throw "The $Label service fixture SHA-256 does not match the embedded plan."
     }
     if ($item.VersionInfo.ProductVersion -cne [string]$Fixture.product_version) {
-        throw "The incompatible service fixture ProductVersion does not match the embedded plan."
+        throw "The $Label service fixture ProductVersion does not match the embedded plan."
     }
-    Write-Host "Verified incompatible service fixture: $resolved"
+    Write-Host "Verified $Label service fixture: $resolved"
 }
 
 if ([string]::IsNullOrWhiteSpace($BaselineInstaller) -xor [string]::IsNullOrWhiteSpace($FinalInstaller)) {
@@ -94,7 +97,8 @@ else {
     Assert-FixedArtifact -Path (Join-Path $repoRoot ([string]$plan.baseline.installer_relative_path)) -Candidate $plan.baseline -Label "baseline staged" | Out-Null
     Assert-FixedArtifact -Path (Join-Path $repoRoot ([string]$plan.final_candidate.installer_relative_path)) -Candidate $plan.final_candidate -Label "final staged" | Out-Null
 }
-Assert-FixedServiceFixture -Path (Join-Path $repoRoot ([string]$plan.incompatible_service_fixture.relative_path)) -Fixture $plan.incompatible_service_fixture
+Assert-FixedServiceFixture -Path (Join-Path $repoRoot ([string]$plan.incompatible_service_fixture.relative_path)) -Fixture $plan.incompatible_service_fixture -Label "incompatible"
+Assert-FixedServiceFixture -Path (Join-Path $repoRoot ([string]$plan.rollback_failing_service_fixture.relative_path)) -Fixture $plan.rollback_failing_service_fixture -Label "rollback-failing"
 
 $sourceCommit = (git -C $repoRoot rev-parse HEAD).Trim().ToLowerInvariant()
 if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {

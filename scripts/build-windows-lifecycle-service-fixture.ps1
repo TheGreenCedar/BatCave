@@ -1,18 +1,43 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$SourceRoot
+    [string]$SourceRoot,
+
+    [ValidateSet("incompatible", "rollback-failing")]
+    [string]$Fixture = "incompatible"
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $planPath = Join-Path $repoRoot "src/BatCave.App/src-tauri/src/windows_lifecycle_proof_plan.v1.json"
 $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
-$fixturePlan = $plan.incompatible_service_fixture
+$fixturePlan = if ($Fixture -eq "incompatible") {
+    $plan.incompatible_service_fixture
+}
+else {
+    $plan.rollback_failing_service_fixture
+}
 $fixtureSourceCommit = [string]$fixturePlan.build_source_commit_sha
 $fixtureProductVersion = [string]$fixturePlan.product_version
 $artifactRoot = Join-Path $repoRoot "artifacts/windows-lifecycle-proof"
-$targetRoot = Join-Path $artifactRoot "incompatible-service-target"
+$targetRoot = if ($Fixture -eq "incompatible") {
+    Join-Path $artifactRoot "incompatible-service-target"
+}
+else {
+    Join-Path $artifactRoot "rollback-failing-target"
+}
+$fixtureBinary = if ($Fixture -eq "incompatible") {
+    "batcave-collector-service"
+}
+else {
+    "batcave-windows-failing-service-fixture"
+}
+$fixtureFeatures = if ($Fixture -eq "incompatible") {
+    ""
+}
+else {
+    "private-windows-lifecycle-service-fixtures"
+}
 $fixturePath = Join-Path $repoRoot ([string]$fixturePlan.relative_path)
 
 $resolvedSourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
@@ -35,7 +60,7 @@ if (Test-Path -LiteralPath $fixturePath) {
     if ($retainedFixture.Length -ne [long]$fixturePlan.size -or
         $retainedFixtureSha256 -cne [string]$fixturePlan.sha256 -or
         $retainedFixture.VersionInfo.ProductVersion -cne $fixtureProductVersion) {
-        throw "The retained fixture does not match the pinned plan."
+        throw "The retained $Fixture fixture does not match the pinned plan."
     }
 }
 
@@ -44,10 +69,27 @@ $previousTauriConfig = [Environment]::GetEnvironmentVariable("TAURI_CONFIG", "Pr
 $previousSourceCommit = [Environment]::GetEnvironmentVariable("BATCAVE_SOURCE_COMMIT_SHA", "Process")
 $previousTargetDir = [Environment]::GetEnvironmentVariable("CARGO_TARGET_DIR", "Process")
 try {
-    $env:TAURI_CONFIG = "{`"version`":`"$fixtureProductVersion`"}"
+    if ($Fixture -eq "incompatible") {
+        $env:TAURI_CONFIG = "{`"version`":`"$fixtureProductVersion`"}"
+    }
+    else {
+        Remove-Item -Path Env:TAURI_CONFIG -ErrorAction SilentlyContinue
+    }
     Remove-Item -Path Env:BATCAVE_SOURCE_COMMIT_SHA -ErrorAction SilentlyContinue
     $env:CARGO_TARGET_DIR = $targetRoot
-    cargo build --locked --release --manifest-path $sourceManifest --bin batcave-collector-service
+    $buildArguments = @(
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        $sourceManifest,
+        "--bin",
+        $fixtureBinary
+    )
+    if (-not [string]::IsNullOrEmpty($fixtureFeatures)) {
+        $buildArguments += @("--features", $fixtureFeatures)
+    }
+    & cargo @buildArguments
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -73,21 +115,21 @@ finally {
     }
 }
 
-$builtFixture = Join-Path $targetRoot "release/batcave-collector-service.exe"
+$builtFixture = Join-Path $targetRoot "release/$fixtureBinary.exe"
 if (-not (Test-Path -LiteralPath $builtFixture -PathType Leaf)) {
-    throw "The incompatible service fixture was not produced."
+    throw "The $Fixture service fixture was not produced."
 }
 $builtFixtureItem = Get-Item -LiteralPath $builtFixture
 $builtProductVersion = $builtFixtureItem.VersionInfo.ProductVersion
 if ($builtProductVersion -cne $fixtureProductVersion) {
-    throw "The built incompatible service fixture ProductVersion is not the fixed value."
+    throw "The built $Fixture service fixture ProductVersion is not the fixed value."
 }
 $builtFixtureSha256 = (Get-FileHash -LiteralPath $builtFixture -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($builtFixtureItem.Length -ne [long]$fixturePlan.size -or $builtFixtureSha256 -cne [string]$fixturePlan.sha256) {
     throw "The rebuilt fixture does not match the pinned plan identity."
 }
 if (Test-Path -LiteralPath $fixturePath) {
-    Write-Host "The retained fixture and cache-assisted build match the pinned plan."
+    Write-Host "The retained $Fixture fixture and cache-assisted build match the pinned plan."
 }
 else {
     Copy-Item -LiteralPath $builtFixture -Destination $fixturePath
@@ -95,7 +137,7 @@ else {
 $fixture = Get-Item -LiteralPath $fixturePath
 $productVersion = $fixture.VersionInfo.ProductVersion
 if ($productVersion -cne $fixtureProductVersion) {
-    throw "The incompatible service fixture ProductVersion is not the fixed value."
+    throw "The $Fixture service fixture ProductVersion is not the fixed value."
 }
 $fixtureSha256 = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash.ToLowerInvariant()
 $cargoLockSha256 = (Get-FileHash -LiteralPath (Join-Path $resolvedSourceRoot "src/BatCave.App/src-tauri/Cargo.lock") -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -106,6 +148,7 @@ $cargoLockSha256 = (Get-FileHash -LiteralPath (Join-Path $resolvedSourceRoot "sr
     size = $fixture.Length
     sha256 = $fixtureSha256
     product_version = $productVersion
+    behavior = [string]$fixturePlan.behavior
     cargo_lock_sha256 = $cargoLockSha256
     rustc = (rustc --version)
     cargo = (cargo --version)

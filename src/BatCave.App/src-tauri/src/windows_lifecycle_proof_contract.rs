@@ -18,6 +18,7 @@ pub(crate) struct ProofPlan {
     pub baseline: Candidate,
     pub final_candidate: Candidate,
     pub incompatible_service_fixture: ServiceFixture,
+    pub rollback_failing_service_fixture: ServiceFixture,
     pub allowlisted_start: AllowlistedStart,
 }
 
@@ -49,6 +50,7 @@ pub(crate) struct ServiceFixture {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ServiceFixtureBehavior {
     IncompatibleRelease,
+    FailOnScmStart,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -273,7 +275,13 @@ pub(crate) fn validate_plan(plan: &ProofPlan) -> Result<(), String> {
     }
     validate_candidate(&plan.baseline, "baseline")?;
     validate_candidate(&plan.final_candidate, "final")?;
-    validate_service_fixture(
+    validate_incompatible_service_fixture(
+        &plan.incompatible_service_fixture,
+        &plan.baseline,
+        &plan.final_candidate,
+    )?;
+    validate_rollback_service_fixture(
+        &plan.rollback_failing_service_fixture,
         &plan.incompatible_service_fixture,
         &plan.baseline,
         &plan.final_candidate,
@@ -300,7 +308,7 @@ pub(crate) fn validate_plan(plan: &ProofPlan) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_service_fixture(
+fn validate_incompatible_service_fixture(
     fixture: &ServiceFixture,
     baseline: &Candidate,
     final_candidate: &Candidate,
@@ -325,6 +333,37 @@ fn validate_service_fixture(
         || fixture.behavior != ServiceFixtureBehavior::IncompatibleRelease
     {
         return Err("lifecycle_plan_incompatible_fixture_behavior_invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_rollback_service_fixture(
+    fixture: &ServiceFixture,
+    incompatible_fixture: &ServiceFixture,
+    baseline: &Candidate,
+    final_candidate: &Candidate,
+) -> Result<(), String> {
+    validate_commit_sha(&fixture.build_source_commit_sha, "rollback_fixture")?;
+    if fixture.build_source_commit_sha != "2e7045bbf6de61b2a93f9df92cd2d1d9bd34d3b6" {
+        return Err("lifecycle_plan_rollback_fixture_source_invalid".to_string());
+    }
+    validate_relative_artifact_path(&fixture.relative_path, "rollback_fixture")?;
+    if fixture.relative_path == baseline.installer_relative_path
+        || fixture.relative_path == final_candidate.installer_relative_path
+        || fixture.relative_path == incompatible_fixture.relative_path
+        || fixture.size == 0
+        || fixture.size > 64 * 1024 * 1024
+        || fixture.sha256 == baseline.service_sha256
+        || fixture.sha256 == final_candidate.service_sha256
+        || fixture.sha256 == incompatible_fixture.sha256
+    {
+        return Err("lifecycle_plan_rollback_fixture_identity_invalid".to_string());
+    }
+    validate_sha256(&fixture.sha256, "rollback_fixture")?;
+    if fixture.product_version != env!("CARGO_PKG_VERSION")
+        || fixture.behavior != ServiceFixtureBehavior::FailOnScmStart
+    {
+        return Err("lifecycle_plan_rollback_fixture_behavior_invalid".to_string());
     }
     Ok(())
 }
@@ -443,6 +482,14 @@ mod tests {
             plan.incompatible_service_fixture.product_version,
             env!("CARGO_PKG_VERSION")
         );
+        assert_eq!(
+            plan.rollback_failing_service_fixture.behavior,
+            ServiceFixtureBehavior::FailOnScmStart
+        );
+        assert_eq!(
+            plan.rollback_failing_service_fixture.product_version,
+            env!("CARGO_PKG_VERSION")
+        );
         assert_eq!(plan_sha256().len(), 64);
     }
 
@@ -497,6 +544,30 @@ mod tests {
         assert_eq!(
             validate_plan(&plan),
             Err("lifecycle_plan_incompatible_fixture_identity_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.rollback_failing_service_fixture
+            .build_source_commit_sha = plan.final_candidate.source_commit_sha.clone();
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_rollback_fixture_source_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.rollback_failing_service_fixture.relative_path =
+            plan.incompatible_service_fixture.relative_path.clone();
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_rollback_fixture_identity_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.rollback_failing_service_fixture.behavior =
+            ServiceFixtureBehavior::IncompatibleRelease;
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_rollback_fixture_behavior_invalid".to_string())
         );
     }
 

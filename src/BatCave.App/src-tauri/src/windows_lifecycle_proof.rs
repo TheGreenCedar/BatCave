@@ -53,6 +53,7 @@ struct ParentPreflight {
     baseline: OwnedFile,
     final_candidate: OwnedFile,
     incompatible_service_fixture: OwnedFile,
+    rollback_failing_service_fixture: OwnedFile,
     snapshot: PreflightSnapshot,
     source_commit_sha: String,
 }
@@ -140,6 +141,11 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
         &plan.incompatible_service_fixture,
         "incompatible_service_fixture",
     )?;
+    let rollback_failing_service_fixture = open_service_fixture(
+        &repo_root,
+        &plan.rollback_failing_service_fixture,
+        "rollback_failing_service_fixture",
+    )?;
     let snapshot = native::capture_parent_preflight(&plan)?;
     Ok(ParentPreflight {
         plan,
@@ -148,6 +154,7 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
         baseline,
         final_candidate,
         incompatible_service_fixture,
+        rollback_failing_service_fixture,
         snapshot,
         source_commit_sha,
     })
@@ -225,6 +232,7 @@ fn run_parent() -> Result<i32, String> {
                 preflight.baseline.revalidate()?;
                 preflight.final_candidate.revalidate()?;
                 preflight.incompatible_service_fixture.revalidate()?;
+                preflight.rollback_failing_service_fixture.revalidate()?;
                 if exit_code != 0 {
                     return Err("lifecycle_worker_exit_mismatch".to_string());
                 }
@@ -268,6 +276,7 @@ fn run_parent() -> Result<i32, String> {
                     preflight.baseline.revalidate()?;
                     preflight.final_candidate.revalidate()?;
                     preflight.incompatible_service_fixture.revalidate()?;
+                    preflight.rollback_failing_service_fixture.revalidate()?;
                     Ok(())
                 })();
                 let failure_evidence_verified =
@@ -328,6 +337,11 @@ fn run_worker(locator: &str) -> Result<i32, String> {
         &plan.incompatible_service_fixture,
         "incompatible_service_fixture",
     )?;
+    let rollback_failing_service_fixture = open_service_fixture(
+        &repo_root,
+        &plan.rollback_failing_service_fixture,
+        "rollback_failing_service_fixture",
+    )?;
     let mut pipe = native::connect_worker_pipe(locator, SESSION_TIMEOUT)?;
     let parent = native::authenticate_parent_peer(&pipe, &controller)?;
 
@@ -352,6 +366,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
     baseline.revalidate()?;
     final_candidate.revalidate()?;
     incompatible_service_fixture.revalidate()?;
+    rollback_failing_service_fixture.revalidate()?;
 
     let evidence = native::create_protected_evidence_root(&nonce, &pipe)?;
     send_worker_message(
@@ -371,6 +386,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
         baseline: &baseline,
         final_candidate: &final_candidate,
         incompatible_service_fixture: &incompatible_service_fixture,
+        rollback_failing_service_fixture: &rollback_failing_service_fixture,
         evidence: &evidence,
         pipe: &mut pipe,
         nonce: &nonce,

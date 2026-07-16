@@ -30,6 +30,14 @@
     "product_version": "0.2.0-rc.3",
     "behavior": "incompatible_release"
   },
+  "rollback_failing_service_fixture": {
+    "build_source_commit_sha": "2e7045bbf6de61b2a93f9df92cd2d1d9bd34d3b6",
+    "relative_path": "artifacts/windows-lifecycle-proof/rollback-failing-service.exe",
+    "size": 1557504,
+    "sha256": "356966442a77cbc3ad2370a2f70f1f8e1db4fc533e3802b20511383ae5848db0",
+    "product_version": "0.2.0-rc.2",
+    "behavior": "fail_on_scm_start"
+  },
   "allowlisted_start": {
     "state": "legacy_stopped_1066_1",
     "monitor_sha256": "de3eee8f3c4172bc8017c2365f2b49b62615146415dae4fdf7da5d2d66ff3a1f",
