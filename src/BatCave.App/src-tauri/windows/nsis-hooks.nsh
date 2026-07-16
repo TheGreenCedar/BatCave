@@ -19,8 +19,8 @@
   ${EndIf}
 !macroend
 
-!macro BATCAVE_EXEC_SERVICE_VERB VERB DESCRIPTION
-  nsExec::ExecToStack `"$INSTDIR\${BATCAVE_SERVICE_BINARY}" ${VERB}`
+!macro BATCAVE_EXEC_SERVICE_IMAGE_VERB IMAGE VERB DESCRIPTION
+  nsExec::ExecToStack `"${IMAGE}" ${VERB}`
   Pop $R0
   Pop $R1
   ${If} $R0 != 0
@@ -28,6 +28,10 @@
     SetErrorLevel 1
     Abort
   ${EndIf}
+!macroend
+
+!macro BATCAVE_EXEC_SERVICE_VERB VERB DESCRIPTION
+  !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\${BATCAVE_SERVICE_BINARY}" "${VERB}" "${DESCRIPTION}"
 !macroend
 
 !macro BATCAVE_DEFINE_ASSERT_SERVICE_FUNCTION PREFIX
@@ -75,7 +79,9 @@ FunctionEnd
   Call BatCaveAssertServiceOwnedOrMissing
   ${If} $R9 == "1"
     IfFileExists "$INSTDIR\${BATCAVE_SERVICE_BINARY}" 0 missing_owned_service_binary
-    !insertmacro BATCAVE_EXEC_SERVICE_VERB "--provision prepare-upgrade" "Prepare ${BATCAVE_SERVICE_NAME} upgrade"
+    SetOutPath "$INSTDIR"
+    File /a "/oname=batcave-collector-service.${VERSION}.staged.exe" "..\..\batcave-collector-service.exe"
+    !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" "--provision prepare-upgrade-staged" "Prepare ${BATCAVE_SERVICE_NAME} upgrade"
     Goto service_upgrade_prepared
 
 missing_owned_service_binary:

@@ -40,7 +40,7 @@ test("NSIS hooks own only the fixed LocalSystem collector service", async () => 
   assert.match(hooks, /ObjectName/u);
   assert.match(hooks, /unexpected service type/u);
   assert.match(hooks, /\$PROGRAMFILES64\\BatCave Monitor/u);
-  assert.match(hooks, /--provision prepare-upgrade/u);
+  assert.match(hooks, /--provision prepare-upgrade-staged/u);
   assert.match(hooks, /--provision install/u);
   assert.match(hooks, /--provision uninstall/u);
   assert.equal(hooks.match(/!insertmacro CheckIfAppIsRunning/gmu)?.length, 2);
@@ -51,7 +51,7 @@ test("NSIS hooks delegate all privileged mutation to fixed native verbs", async 
   const hooks = await text("windows/nsis-hooks.nsh");
   assert.match(
     hooks,
-    /nsExec::ExecToStack `"\$INSTDIR\\\$\{BATCAVE_SERVICE_BINARY\}" \$\{VERB\}`/u,
+    /nsExec::ExecToStack `"\$\{IMAGE\}" \$\{VERB\}`/u,
   );
   assert.doesNotMatch(
     hooks,
@@ -65,7 +65,12 @@ test("NSIS hooks delegate all privileged mutation to fixed native verbs", async 
     hooks.indexOf("!macro NSIS_HOOK_POSTINSTALL"),
   );
   assert.ok(
-    preinstall.indexOf("CheckIfAppIsRunning") < preinstall.indexOf("--provision prepare-upgrade"),
+    preinstall.indexOf("CheckIfAppIsRunning")
+      < preinstall.indexOf("--provision prepare-upgrade-staged"),
+  );
+  assert.ok(
+    preinstall.indexOf("/oname=batcave-collector-service.${VERSION}.staged.exe")
+      < preinstall.indexOf("--provision prepare-upgrade-staged"),
   );
   const preuninstall = hooks.slice(hooks.indexOf("!macro NSIS_HOOK_PREUNINSTALL"));
   assert.ok(
@@ -101,7 +106,12 @@ test("legacy Windows CLI cleanup stays exact and native", async () => {
   );
   assert.doesNotMatch(prepareUpgrade, /retire_legacy_cli/u);
   assert.equal(install.match(/retire_legacy_cli\(&image\)/gmu)?.length, 2);
-  assert.equal(uninstall.match(/retire_legacy_cli\(&image\)/gmu)?.length, 2);
+  assert.equal(uninstall.match(/retire_legacy_cli\((?:&image|image)\)/gmu)?.length, 2);
+  assert.equal(install.match(/retire_staged_upgrade_image\(&image\)/gmu)?.length, 2);
+  assert.equal(
+    uninstall.match(/retire_staged_upgrade_image\((?:&image|image)\)/gmu)?.length,
+    2,
+  );
   assert.ok(install.lastIndexOf("retire_legacy_cli") > install.indexOf("start_service_and_wait"));
   assert.ok(uninstall.lastIndexOf("retire_legacy_cli") > uninstall.indexOf("wait_service_deleted"));
 });

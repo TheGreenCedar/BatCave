@@ -43,13 +43,30 @@ fn is_missing_path_error(error: u32) -> bool {
     matches!(error, ERROR_FILE_NOT_FOUND_CODE | ERROR_PATH_NOT_FOUND_CODE)
 }
 
-fn missing_service_cleanup_required(product_root_exists: bool, service_root_exists: bool) -> bool {
-    product_root_exists || service_root_exists
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MissingServiceCleanup {
+    None,
+    ProductOnly,
+    ServiceTree,
+}
+
+fn missing_service_cleanup(
+    product_root_exists: bool,
+    service_root_exists: bool,
+) -> MissingServiceCleanup {
+    if service_root_exists {
+        MissingServiceCleanup::ServiceTree
+    } else if product_root_exists {
+        MissingServiceCleanup::ProductOnly
+    } else {
+        MissingServiceCleanup::None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProvisionVerb {
     PrepareUpgrade,
+    PrepareUpgradeStaged,
     Install,
     Uninstall,
 }
@@ -58,6 +75,7 @@ pub(crate) fn run_cli(args: &[String]) -> Option<i32> {
     let verb = match args {
         [switch, verb] if switch == PROVISION_SWITCH => match verb.as_str() {
             "prepare-upgrade" => ProvisionVerb::PrepareUpgrade,
+            "prepare-upgrade-staged" => ProvisionVerb::PrepareUpgradeStaged,
             "install" => ProvisionVerb::Install,
             "uninstall" => ProvisionVerb::Uninstall,
             _ => {
@@ -88,6 +106,7 @@ pub(crate) fn run_cli(args: &[String]) -> Option<i32> {
 fn run_verb(verb: ProvisionVerb) -> Result<(), String> {
     match verb {
         ProvisionVerb::PrepareUpgrade => native::prepare_upgrade(),
+        ProvisionVerb::PrepareUpgradeStaged => native::prepare_upgrade_staged(),
         ProvisionVerb::Install => native::install(),
         ProvisionVerb::Uninstall => native::uninstall(),
     }
@@ -215,8 +234,21 @@ fn expected_service_path(program_files: &Path) -> PathBuf {
         .join(SERVICE_EXECUTABLE_NAME)
 }
 
-fn validate_current_service_path(current: &Path, program_files: &Path) -> Result<(), String> {
-    if fixed_path_eq(current, &expected_service_path(program_files)) {
+fn staged_service_executable_name() -> String {
+    format!(
+        "batcave-collector-service.{}.staged.exe",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn expected_staged_service_path(program_files: &Path) -> PathBuf {
+    program_files
+        .join(PRODUCT_DIRECTORY_NAME)
+        .join(staged_service_executable_name())
+}
+
+fn validate_current_service_path(current: &Path, expected: &Path) -> Result<(), String> {
+    if fixed_path_eq(current, expected) {
         Ok(())
     } else {
         Err("collector_service_executable_location_invalid".to_string())
@@ -270,6 +302,7 @@ mod native {
 
     use std::{
         ffi::{c_void, OsString},
+        fs,
         mem::size_of,
         os::windows::ffi::{OsStrExt, OsStringExt},
         ptr, thread,
@@ -288,16 +321,17 @@ mod native {
             AclSizeInformation, AdjustTokenPrivileges,
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                GetSecurityInfo, SE_FILE_OBJECT,
+                ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
             },
-            CreateWellKnownSid, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-            GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW,
-            LookupPrivilegeValueW, TokenElevation, WinBuiltinAdministratorsSid, WinInteractiveSid,
-            WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE,
-            DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE, LUID_AND_ATTRIBUTES, OBJECT_INHERIT_ACE,
-            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
-            SECURITY_MAX_SID_SIZE, SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SID_NAME_USE,
-            TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
+            CreateWellKnownSid, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+            GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
+            LookupAccountNameW, LookupPrivilegeValueW, TokenElevation, WinBuiltinAdministratorsSid,
+            WinInteractiveSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION,
+            CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE,
+            LUID_AND_ATTRIBUTES, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE,
+            SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SID_NAME_USE, TOKEN_ADJUST_PRIVILEGES,
+            TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
         },
         Storage::FileSystem::{
             CreateDirectoryW, CreateFileW, DeleteFileW, FileDispositionInfo,
@@ -351,6 +385,9 @@ mod native {
         "Collects local system telemetry for BatCave Monitor without network access.";
     const SERVICE_OWNER_VALUE: &str = "BatCaveInstallerOwner";
     const SERVICE_REGISTRY_PATH: &str = r"SYSTEM\CurrentControlSet\Services\BatCaveCollector";
+    // Deterministic NT SERVICE SID for "BatCaveCollector"; unlike account
+    // lookup, it remains available after SCM deletion for cleanup retries.
+    const SERVICE_SID: &str = "S-1-5-80-729049718-3519104438-3277487564-1168609684-1739013119";
     const SERVICE_REQUIRED_PRIVILEGES: [&str; 2] =
         ["SeChangeNotifyPrivilege", "SeSystemProfilePrivilege"];
     const SERVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -637,9 +674,7 @@ mod native {
 
         fn load_with_service() -> Result<Self, String> {
             let mut principals = Self::load_base()?;
-            principals.service = Some(account_sid(&format!(
-                "NT SERVICE\\{COLLECTOR_SERVICE_NAME}"
-            ))?);
+            principals.service = Some(sid_from_string(SERVICE_SID)?);
             Ok(principals)
         }
 
@@ -820,6 +855,118 @@ mod native {
         )
     }
 
+    fn retire_staged_upgrade_image(image: &VerifiedServiceImage) -> Result<(), String> {
+        let install_directory = image
+            .path()
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
+        let staged_path = install_directory.join(staged_service_executable_name());
+        let staged_wide = wide_path(&staged_path);
+        let raw = unsafe {
+            CreateFileW(
+                staged_wide.as_ptr(),
+                GENERIC_READ | DELETE | READ_CONTROL,
+                FILE_SHARE_READ,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if raw.is_null() || raw == (-1_isize as HANDLE) {
+            let error = unsafe { GetLastError() };
+            return if is_missing_path_error(error) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "collector_service_staged_image_open_failed:{error}"
+                ))
+            };
+        }
+
+        let principals = SecurityPrincipals::load_base()?;
+        let staged = OwnedHandle(raw);
+        let staged_info =
+            file_information(staged.raw(), "collector_service_staged_image_info_failed")?;
+        if staged_info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+            != 0
+            || !fixed_path_eq(
+                &final_path(&staged, "collector_service_staged_image_final_path_failed")?,
+                &staged_path,
+            )
+        {
+            return Err("collector_service_staged_image_untrusted".to_string());
+        }
+        validate_no_untrusted_writer(staged.raw(), &principals, false, false)
+            .map_err(|_| "collector_service_staged_image_untrusted".to_string())?;
+        let staged_size = file_size(&staged_info);
+        let staged_digest = hash_open_file(staged.raw(), staged_size)?;
+
+        let stable =
+            open_file_for_hash(image.path(), &principals, "collector_service_stable_image")?;
+        let stable_info =
+            file_information(stable.raw(), "collector_service_stable_image_info_failed")?;
+        let stable_size = file_size(&stable_info);
+        let stable_digest = hash_open_file(stable.raw(), stable_size)?;
+        if staged_size != stable_size || staged_digest != stable_digest {
+            return Err("collector_service_staged_image_untrusted".to_string());
+        }
+
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe {
+            SetFileInformationByHandle(
+                staged.raw(),
+                FileDispositionInfo,
+                (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(last_error("collector_service_staged_image_remove_failed"));
+        }
+        drop(staged);
+        if path_exists_no_follow(&staged_path)? {
+            Err("collector_service_staged_image_present".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn open_file_for_hash(
+        path: &Path,
+        principals: &SecurityPrincipals,
+        context: &str,
+    ) -> Result<OwnedHandle, String> {
+        let path_wide = wide_path(path);
+        let handle = OwnedHandle::new(
+            unsafe {
+                CreateFileW(
+                    path_wide.as_ptr(),
+                    GENERIC_READ | READ_CONTROL,
+                    FILE_SHARE_READ,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut(),
+                )
+            },
+            context,
+        )?;
+        let info = file_information(handle.raw(), context)?;
+        if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+            || !fixed_path_eq(&final_path(&handle, context)?, path)
+        {
+            return Err(format!("{context}_untrusted"));
+        }
+        validate_no_untrusted_writer(handle.raw(), principals, false, false)
+            .map_err(|_| format!("{context}_untrusted"))?;
+        Ok(handle)
+    }
+
+    fn file_size(info: &BY_HANDLE_FILE_INFORMATION) -> u64 {
+        (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow)
+    }
+
     fn retire_legacy_cli_path(
         path: &Path,
         known_images: &[LegacyCliImage],
@@ -860,7 +1007,7 @@ mod native {
                 .map_err(|_| "collector_service_legacy_cli_residue_untrusted".to_string())?;
         }
 
-        let size = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
+        let size = file_size(&info);
         if !known_images.iter().any(|image| image.size == size) {
             return Err("collector_service_legacy_cli_residue_untrusted".to_string());
         }
@@ -931,6 +1078,11 @@ mod native {
         SERVICE_LIFECYCLE_PROBE_ACCESS & FILE_WRITE_DATA != 0
     }
 
+    #[cfg(test)]
+    pub(super) fn configured_service_sid() -> Result<String, String> {
+        sid_string(&sid_from_string(SERVICE_SID)?)
+    }
+
     pub(super) fn prepare_upgrade() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
@@ -942,6 +1094,22 @@ mod native {
         stop_service_and_wait(&service, true)
     }
 
+    pub(super) fn prepare_upgrade_staged() -> Result<(), String> {
+        require_elevated()?;
+        let staged = verify_current_staged_binary_path()?;
+        let stable = staged
+            .path()
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?
+            .join(SERVICE_EXECUTABLE_NAME);
+        let manager = open_manager(SC_MANAGER_CONNECT)?;
+        let service = open_service(&manager, SERVICE_ALL_ACCESS)?
+            .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
+        validate_service_contract(&service, &stable)?;
+        let _protected_root = open_protected_etw_lease_root()?;
+        repair_dirty_stop_before_upgrade(&service)
+    }
+
     pub(super) fn install() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
@@ -951,7 +1119,8 @@ mod native {
             let _protected_root = open_protected_etw_lease_root()?;
             start_service_and_wait(&service)?;
             validate_service_contract(&service, image.path())?;
-            return retire_legacy_cli(&image);
+            retire_legacy_cli(&image)?;
+            return retire_staged_upgrade_image(&image);
         }
 
         let service = create_service(&manager, image.path())?;
@@ -977,22 +1146,22 @@ mod native {
             }
             return Err(error);
         }
-        retire_legacy_cli(&image)
+        retire_legacy_cli(&image)?;
+        retire_staged_upgrade_image(&image)
     }
 
     pub(super) fn uninstall() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
-        let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? else {
-            let roots = fixed_roots()?;
-            if missing_service_cleanup_required(
-                path_exists_no_follow(&roots.product)?,
-                path_exists_no_follow(&roots.service)?,
-            ) {
-                cleanup_roots_if_owned(true, &SecurityPrincipals::load_with_service()?)?;
+        let service = match open_service(&manager, SERVICE_ALL_ACCESS) {
+            Ok(Some(service)) => service,
+            Ok(None) => return finish_uninstall_after_service_absent(&image),
+            Err(error) if service_open_is_delete_pending(&error) => {
+                wait_service_deleted(&manager)?;
+                return finish_uninstall_after_service_absent(&image);
             }
-            return retire_legacy_cli(&image);
+            Err(error) => return Err(error),
         };
         validate_service_contract(&service, image.path())?;
         let was_running = query_service_status(&service)?.dwCurrentState == SERVICE_RUNNING;
@@ -1015,7 +1184,26 @@ mod native {
         wait_service_deleted(&manager)?;
         drop(_protected_root);
         cleanup_roots_if_owned(true, &principals)?;
-        retire_legacy_cli(&image)
+        retire_legacy_cli(&image)?;
+        retire_staged_upgrade_image(&image)
+    }
+
+    fn finish_uninstall_after_service_absent(image: &VerifiedServiceImage) -> Result<(), String> {
+        let roots = fixed_roots()?;
+        match missing_service_cleanup(
+            path_exists_no_follow(&roots.product)?,
+            path_exists_no_follow(&roots.service)?,
+        ) {
+            MissingServiceCleanup::None => {}
+            MissingServiceCleanup::ProductOnly => {
+                cleanup_product_root_if_owned(&SecurityPrincipals::load_with_service()?)?;
+            }
+            MissingServiceCleanup::ServiceTree => {
+                cleanup_roots_if_owned(true, &SecurityPrincipals::load_with_service()?)?;
+            }
+        }
+        retire_legacy_cli(image)?;
+        retire_staged_upgrade_image(image)
     }
 
     fn open_manager(access: u32) -> Result<OwnedScHandle, String> {
@@ -1037,6 +1225,10 @@ mod native {
         } else {
             Err(format!("collector_service_open_failed:{error}"))
         }
+    }
+
+    pub(super) fn service_open_is_delete_pending(error: &str) -> bool {
+        error == format!("collector_service_open_failed:{ERROR_SERVICE_MARKED_FOR_DELETE}")
     }
 
     fn create_service(manager: &OwnedScHandle, image: &Path) -> Result<OwnedScHandle, String> {
@@ -1595,6 +1787,18 @@ mod native {
         validate_clean_stopped_status(&status)
     }
 
+    fn repair_dirty_stop_before_upgrade(service: &OwnedScHandle) -> Result<(), String> {
+        let status = query_service_status(service)?;
+        if stopped_status_requires_repair(&status) {
+            start_service_and_wait(service)?;
+        }
+        stop_service_and_wait(service, true)
+    }
+
+    pub(super) fn stopped_status_requires_repair(status: &SERVICE_STATUS_PROCESS) -> bool {
+        status.dwCurrentState == SERVICE_STOPPED && status.dwWin32ExitCode != ERROR_SUCCESS
+    }
+
     pub(super) fn validate_clean_stopped_status(
         status: &SERVICE_STATUS_PROCESS,
     ) -> Result<(), String> {
@@ -1641,7 +1845,7 @@ mod native {
                 Err(error) => return Err(error),
             }
             if Instant::now() >= deadline {
-                return Err("collector_service_delete_timeout".to_string());
+                return Err("collector_service_delete_pending_reboot_required".to_string());
             }
             thread::sleep(SERVICE_POLL_INTERVAL);
         }
@@ -1704,6 +1908,7 @@ mod native {
                 }
             }
         }
+        cleanup_stale_atomic_leaves(&roots.service, principals)?;
         drop(service);
         remove_directory(&roots.service)?;
         if remove_product {
@@ -1721,6 +1926,56 @@ mod native {
         } else {
             Ok(())
         }
+    }
+
+    fn cleanup_stale_atomic_leaves(
+        service_root: &Path,
+        principals: &SecurityPrincipals,
+    ) -> Result<(), String> {
+        let entries = fs::read_dir(service_root)
+            .map_err(|error| format!("collector_service_root_enumerate_failed:{error}"))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("collector_service_root_enumerate_failed:{error}"))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !is_etw_lease_temp_name(name) {
+                continue;
+            }
+            let path = entry.path();
+            drop(verify_optional_leaf(&path, principals)?);
+            let path_wide = wide_path(&path);
+            if unsafe { DeleteFileW(path_wide.as_ptr()) } == 0 {
+                let error = unsafe { GetLastError() };
+                if error != ERROR_FILE_NOT_FOUND {
+                    return Err(format!(
+                        "collector_service_root_temp_leaf_remove_failed:{error}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn is_etw_lease_temp_name(name: &str) -> bool {
+        let Some(suffix) = name
+            .strip_prefix(ETW_LEASE_FILE_NAME)
+            .and_then(|name| name.strip_prefix('.'))
+            .and_then(|name| name.strip_suffix(".tmp"))
+        else {
+            return false;
+        };
+        let mut parts = suffix.split('.');
+        matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(process), Some(sequence), None)
+                if !process.is_empty()
+                    && !sequence.is_empty()
+                    && process.bytes().all(|byte| byte.is_ascii_digit())
+                    && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        )
     }
 
     fn aligned_buffer(bytes: usize) -> Vec<usize> {
@@ -2149,9 +2404,24 @@ mod native {
 
     fn verify_current_binary_path() -> Result<VerifiedServiceImage, String> {
         let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
+        verify_current_binary_at(&expected_service_path(&program_files), &program_files)
+    }
+
+    fn verify_current_staged_binary_path() -> Result<VerifiedServiceImage, String> {
+        let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
+        verify_current_binary_at(
+            &expected_staged_service_path(&program_files),
+            &program_files,
+        )
+    }
+
+    fn verify_current_binary_at(
+        expected: &Path,
+        program_files: &Path,
+    ) -> Result<VerifiedServiceImage, String> {
         let current = std::env::current_exe()
             .map_err(|error| format!("collector_service_executable_path_failed:{error}"))?;
-        validate_current_service_path(&current, &program_files)?;
+        validate_current_service_path(&current, expected)?;
         let install_dir = current
             .parent()
             .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
@@ -2323,6 +2593,22 @@ mod native {
         Ok(OwnedSid(sid))
     }
 
+    fn sid_from_string(value: &str) -> Result<OwnedSid, String> {
+        let value = wide(value);
+        let mut sid = ptr::null_mut();
+        if unsafe { ConvertStringSidToSidW(value.as_ptr(), &mut sid) } == 0 || sid.is_null() {
+            return Err(last_error("collector_service_sid_parse_failed"));
+        }
+        let size = unsafe { GetLengthSid(sid) };
+        if size == 0 {
+            unsafe { LocalFree(sid.cast()) };
+            return Err(last_error("collector_service_sid_size_failed"));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), size as usize) }.to_vec();
+        unsafe { LocalFree(sid.cast()) };
+        Ok(OwnedSid(bytes))
+    }
+
     fn sid_string(sid: &OwnedSid) -> Result<String, String> {
         let mut value = ptr::null_mut();
         if unsafe { ConvertSidToStringSidW(sid.as_psid(), &mut value) } == 0 {
@@ -2429,14 +2715,17 @@ mod tests {
     fn service_executable_must_be_at_the_fixed_program_files_path() {
         let program_files = Path::new(r"C:\Program Files");
         let expected = expected_service_path(program_files);
+        assert_eq!(validate_current_service_path(&expected, &expected), Ok(()));
         assert_eq!(
-            validate_current_service_path(&expected, program_files),
-            Ok(())
+            expected_staged_service_path(program_files),
+            PathBuf::from(
+                r"C:\Program Files\BatCave Monitor\batcave-collector-service.0.2.0-rc.2.staged.exe"
+            )
         );
         assert_eq!(
             validate_current_service_path(
                 Path::new(r"C:\Users\standard\BatCave Monitor\batcave-collector-service.exe"),
-                program_files,
+                &expected,
             ),
             Err("collector_service_executable_location_invalid".to_string())
         );
@@ -2549,6 +2838,10 @@ mod tests {
     #[test]
     fn service_identity_constant_matches_the_runtime_contract() {
         assert_eq!(COLLECTOR_SERVICE_NAME, "BatCaveCollector");
+        assert_eq!(
+            native::configured_service_sid().expect("configured service SID"),
+            "S-1-5-80-729049718-3519104438-3277487564-1168609684-1739013119"
+        );
     }
 
     #[test]
@@ -2559,11 +2852,33 @@ mod tests {
     }
 
     #[test]
-    fn missing_service_cleanup_retries_only_when_owned_roots_remain() {
-        assert!(!missing_service_cleanup_required(false, false));
-        assert!(missing_service_cleanup_required(true, false));
-        assert!(missing_service_cleanup_required(false, true));
-        assert!(missing_service_cleanup_required(true, true));
+    fn missing_service_cleanup_resumes_from_partial_root_removal() {
+        assert_eq!(
+            missing_service_cleanup(false, false),
+            MissingServiceCleanup::None
+        );
+        assert_eq!(
+            missing_service_cleanup(true, false),
+            MissingServiceCleanup::ProductOnly
+        );
+        assert_eq!(
+            missing_service_cleanup(false, true),
+            MissingServiceCleanup::ServiceTree
+        );
+        assert_eq!(
+            missing_service_cleanup(true, true),
+            MissingServiceCleanup::ServiceTree
+        );
+    }
+
+    #[test]
+    fn uninstall_recognizes_the_scm_delete_pending_state() {
+        assert!(native::service_open_is_delete_pending(
+            "collector_service_open_failed:1072"
+        ));
+        assert!(!native::service_open_is_delete_pending(
+            "collector_service_open_failed:5"
+        ));
     }
 
     #[test]
@@ -2593,6 +2908,7 @@ mod tests {
             dwServiceSpecificExitCode: 1,
             ..clean
         };
+        assert!(native::stopped_status_requires_repair(&failed));
         assert_eq!(
             native::validate_clean_stopped_status(&failed),
             Err("collector_service_stop_reported_failure:1066:1".to_string())
@@ -2602,6 +2918,7 @@ mod tests {
             dwServiceSpecificExitCode: 9,
             ..clean
         };
+        assert!(!native::stopped_status_requires_repair(&stale_specific));
         assert_eq!(
             native::validate_clean_stopped_status(&stale_specific),
             Ok(())
@@ -2700,5 +3017,22 @@ mod tests {
         );
         std::fs::remove_file(file).expect("probe residue cleanup");
         std::fs::remove_dir(root).expect("probe root cleanup");
+    }
+
+    #[test]
+    fn uninstall_recognizes_only_atomic_etw_lease_temporary_leaves() {
+        assert!(native::is_etw_lease_temp_name(
+            "etw-lease.v1.json.123.456.tmp"
+        ));
+        for name in [
+            "etw-lease.v1.json",
+            "etw-lease.v1.json.tmp",
+            "etw-lease.v1.json.123.tmp",
+            "etw-lease.v1.json.123.456.tmp.extra",
+            "etw-lease.v1.json.pid.456.tmp",
+            "other.123.456.tmp",
+        ] {
+            assert!(!native::is_etw_lease_temp_name(name), "{name}");
+        }
     }
 }
