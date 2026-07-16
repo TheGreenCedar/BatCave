@@ -117,9 +117,7 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
 }
 
 fn sanitized_failure_reason(error: &str) -> &'static str {
-    if error.contains("collector_service_pipe_") || error.contains("transport") {
-        "transport"
-    } else if error.contains("collector_service_etw_recovery_") {
+    if error.contains("collector_service_etw_recovery_") {
         "etw_recovery"
     } else if error.contains("collector_service_etw_") || error.contains("network_attribution_") {
         if error.contains("settlement")
@@ -132,9 +130,13 @@ fn sanitized_failure_reason(error: &str) -> &'static str {
             || error.contains("stop_trace")
         {
             "etw_settlement"
+        } else if error.contains("collector_service_pipe_") || error.contains("transport") {
+            "transport"
         } else {
             "etw_startup"
         }
+    } else if error.contains("collector_service_pipe_") || error.contains("transport") {
+        "transport"
     } else if error.contains("collector_engine") || error.contains("collector_") {
         "collector"
     } else if error.contains("lifecycle") {
@@ -741,6 +743,12 @@ mod tests {
         );
         assert_eq!(
             sanitized_failure_reason("network_attribution_stop_trace_failed:5"),
+            "etw_settlement"
+        );
+        assert_eq!(
+            sanitized_failure_reason(
+                "collector_service_pipe_accept_failed:5;network_attribution_consumer_join_timeout"
+            ),
             "etw_settlement"
         );
         assert_eq!(
