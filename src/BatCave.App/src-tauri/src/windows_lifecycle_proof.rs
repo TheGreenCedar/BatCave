@@ -52,6 +52,7 @@ struct ParentPreflight {
     controller: OwnedFile,
     baseline: OwnedFile,
     final_candidate: OwnedFile,
+    incompatible_service_fixture: OwnedFile,
     snapshot: PreflightSnapshot,
     source_commit_sha: String,
 }
@@ -134,6 +135,11 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
     let controller = OwnedFile::open_current_executable()?;
     let baseline = open_candidate(&repo_root, &plan.baseline, "baseline_installer")?;
     let final_candidate = open_candidate(&repo_root, &plan.final_candidate, "final_installer")?;
+    let incompatible_service_fixture = open_service_fixture(
+        &repo_root,
+        &plan.incompatible_service_fixture,
+        "incompatible_service_fixture",
+    )?;
     let snapshot = native::capture_parent_preflight(&plan)?;
     Ok(ParentPreflight {
         plan,
@@ -141,6 +147,7 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
         controller,
         baseline,
         final_candidate,
+        incompatible_service_fixture,
         snapshot,
         source_commit_sha,
     })
@@ -217,6 +224,7 @@ fn run_parent() -> Result<i32, String> {
                 preflight.controller.revalidate()?;
                 preflight.baseline.revalidate()?;
                 preflight.final_candidate.revalidate()?;
+                preflight.incompatible_service_fixture.revalidate()?;
                 if exit_code != 0 {
                     return Err("lifecycle_worker_exit_mismatch".to_string());
                 }
@@ -259,6 +267,7 @@ fn run_parent() -> Result<i32, String> {
                     preflight.controller.revalidate()?;
                     preflight.baseline.revalidate()?;
                     preflight.final_candidate.revalidate()?;
+                    preflight.incompatible_service_fixture.revalidate()?;
                     Ok(())
                 })();
                 let failure_evidence_verified =
@@ -314,6 +323,11 @@ fn run_worker(locator: &str) -> Result<i32, String> {
     let controller = OwnedFile::open_current_executable()?;
     let baseline = open_candidate(&repo_root, &plan.baseline, "baseline_installer")?;
     let final_candidate = open_candidate(&repo_root, &plan.final_candidate, "final_installer")?;
+    let incompatible_service_fixture = open_service_fixture(
+        &repo_root,
+        &plan.incompatible_service_fixture,
+        "incompatible_service_fixture",
+    )?;
     let mut pipe = native::connect_worker_pipe(locator, SESSION_TIMEOUT)?;
     let parent = native::authenticate_parent_peer(&pipe, &controller)?;
 
@@ -337,6 +351,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
     controller.revalidate()?;
     baseline.revalidate()?;
     final_candidate.revalidate()?;
+    incompatible_service_fixture.revalidate()?;
 
     let evidence = native::create_protected_evidence_root(&nonce, &pipe)?;
     send_worker_message(
@@ -355,6 +370,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
         repo_root: &repo_root,
         baseline: &baseline,
         final_candidate: &final_candidate,
+        incompatible_service_fixture: &incompatible_service_fixture,
         evidence: &evidence,
         pipe: &mut pipe,
         nonce: &nonce,
@@ -388,6 +404,24 @@ fn open_candidate(
         &candidate.installer_sha256,
         label,
     )?;
+    file.require_under(repo_root, label)?;
+    Ok(file)
+}
+
+fn open_service_fixture(
+    repo_root: &Path,
+    fixture: &crate::windows_lifecycle_proof_contract::ServiceFixture,
+    label: &str,
+) -> Result<OwnedFile, String> {
+    let path = repo_root.join(&fixture.relative_path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("lifecycle_{label}_parent_missing"))?;
+    let canonical_parent = native::canonical_real_directory(parent, label)?;
+    if !canonical_parent.starts_with(repo_root) {
+        return Err(format!("lifecycle_{label}_parent_outside_repo"));
+    }
+    let file = OwnedFile::open(&path, fixture.size, &fixture.sha256, label)?;
     file.require_under(repo_root, label)?;
     Ok(file)
 }

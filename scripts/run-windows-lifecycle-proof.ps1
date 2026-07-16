@@ -57,6 +57,30 @@ function Stage-FixedArtifact {
     Assert-FixedArtifact -Path $target -Candidate $Candidate -Label "$Label staged"
 }
 
+function Assert-FixedServiceFixture {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Fixture
+    )
+
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    $item = Get-Item -LiteralPath $resolved
+    if ($item.PSIsContainer -or $item.Length -ne [long]$Fixture.size) {
+        throw "The incompatible service fixture size does not match the embedded plan."
+    }
+    $actualSha256 = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSha256 -cne [string]$Fixture.sha256) {
+        throw "The incompatible service fixture SHA-256 does not match the embedded plan."
+    }
+    if ($item.VersionInfo.ProductVersion -cne [string]$Fixture.product_version) {
+        throw "The incompatible service fixture ProductVersion does not match the embedded plan."
+    }
+    Write-Host "Verified incompatible service fixture: $resolved"
+}
+
 if ([string]::IsNullOrWhiteSpace($BaselineInstaller) -xor [string]::IsNullOrWhiteSpace($FinalInstaller)) {
     throw "Specify both -BaselineInstaller and -FinalInstaller, or neither."
 }
@@ -70,6 +94,7 @@ else {
     Assert-FixedArtifact -Path (Join-Path $repoRoot ([string]$plan.baseline.installer_relative_path)) -Candidate $plan.baseline -Label "baseline staged" | Out-Null
     Assert-FixedArtifact -Path (Join-Path $repoRoot ([string]$plan.final_candidate.installer_relative_path)) -Candidate $plan.final_candidate -Label "final staged" | Out-Null
 }
+Assert-FixedServiceFixture -Path (Join-Path $repoRoot ([string]$plan.incompatible_service_fixture.relative_path)) -Fixture $plan.incompatible_service_fixture
 
 $sourceCommit = (git -C $repoRoot rev-parse HEAD).Trim().ToLowerInvariant()
 if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {

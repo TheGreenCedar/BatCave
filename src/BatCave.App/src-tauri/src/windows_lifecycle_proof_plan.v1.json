@@ -22,6 +22,14 @@
     "uninstaller_size": 83195,
     "uninstaller_sha256": "4aed9b2c11e2a24e15b8b8c495fafe316b1c6729503c5d6fde2eeb4b8e45b266"
   },
+  "incompatible_service_fixture": {
+    "build_source_commit_sha": "17270482aae5d762e3ff2af5779369a506dd3ac3",
+    "relative_path": "artifacts/windows-lifecycle-proof/incompatible-service.exe",
+    "size": 1556992,
+    "sha256": "4a539fb9b86ad7c5e32f61f5cd97650842346ea0e713f58fb457d5f32495378c",
+    "product_version": "0.2.0-rc.3",
+    "behavior": "incompatible_release"
+  },
   "allowlisted_start": {
     "state": "legacy_stopped_1066_1",
     "monitor_sha256": "de3eee8f3c4172bc8017c2365f2b49b62615146415dae4fdf7da5d2d66ff3a1f",

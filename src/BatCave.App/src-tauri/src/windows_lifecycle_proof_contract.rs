@@ -17,6 +17,7 @@ pub(crate) struct ProofPlan {
     pub sequence: u64,
     pub baseline: Candidate,
     pub final_candidate: Candidate,
+    pub incompatible_service_fixture: ServiceFixture,
     pub allowlisted_start: AllowlistedStart,
 }
 
@@ -31,6 +32,23 @@ pub(crate) struct Candidate {
     pub service_sha256: String,
     pub uninstaller_size: u64,
     pub uninstaller_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceFixture {
+    pub build_source_commit_sha: String,
+    pub relative_path: String,
+    pub size: u64,
+    pub sha256: String,
+    pub product_version: String,
+    pub behavior: ServiceFixtureBehavior,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ServiceFixtureBehavior {
+    IncompatibleRelease,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -255,6 +273,11 @@ pub(crate) fn validate_plan(plan: &ProofPlan) -> Result<(), String> {
     }
     validate_candidate(&plan.baseline, "baseline")?;
     validate_candidate(&plan.final_candidate, "final")?;
+    validate_service_fixture(
+        &plan.incompatible_service_fixture,
+        &plan.baseline,
+        &plan.final_candidate,
+    )?;
     if plan.baseline.installer_relative_path == plan.final_candidate.installer_relative_path {
         return Err("lifecycle_plan_installer_paths_collide".to_string());
     }
@@ -273,6 +296,35 @@ pub(crate) fn validate_plan(plan: &ProofPlan) -> Result<(), String> {
         || plan.allowlisted_start.service_specific_exit_code != 1
     {
         return Err("lifecycle_plan_start_exit_codes_invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_service_fixture(
+    fixture: &ServiceFixture,
+    baseline: &Candidate,
+    final_candidate: &Candidate,
+) -> Result<(), String> {
+    validate_commit_sha(&fixture.build_source_commit_sha, "incompatible_fixture")?;
+    if fixture.build_source_commit_sha != final_candidate.source_commit_sha {
+        return Err("lifecycle_plan_incompatible_fixture_source_invalid".to_string());
+    }
+    validate_relative_artifact_path(&fixture.relative_path, "incompatible_fixture")?;
+    if fixture.relative_path == baseline.installer_relative_path
+        || fixture.relative_path == final_candidate.installer_relative_path
+        || fixture.size == 0
+        || fixture.size > 64 * 1024 * 1024
+        || fixture.sha256 == baseline.service_sha256
+        || fixture.sha256 == final_candidate.service_sha256
+    {
+        return Err("lifecycle_plan_incompatible_fixture_identity_invalid".to_string());
+    }
+    validate_sha256(&fixture.sha256, "incompatible_fixture")?;
+    if fixture.product_version != "0.2.0-rc.3"
+        || fixture.product_version == env!("CARGO_PKG_VERSION")
+        || fixture.behavior != ServiceFixtureBehavior::IncompatibleRelease
+    {
+        return Err("lifecycle_plan_incompatible_fixture_behavior_invalid".to_string());
     }
     Ok(())
 }
@@ -383,6 +435,14 @@ mod tests {
             plan.allowlisted_start.state,
             StartState::LegacyStopped1066_1
         );
+        assert_eq!(
+            plan.incompatible_service_fixture.behavior,
+            ServiceFixtureBehavior::IncompatibleRelease
+        );
+        assert_ne!(
+            plan.incompatible_service_fixture.product_version,
+            env!("CARGO_PKG_VERSION")
+        );
         assert_eq!(plan_sha256().len(), 64);
     }
 
@@ -408,6 +468,35 @@ mod tests {
         assert_eq!(
             validate_plan(&plan),
             Err("lifecycle_plan_final_path_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.incompatible_service_fixture.product_version = env!("CARGO_PKG_VERSION").to_string();
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_incompatible_fixture_behavior_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.incompatible_service_fixture.relative_path = "../hostile.exe".to_string();
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_incompatible_fixture_path_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.incompatible_service_fixture.build_source_commit_sha =
+            plan.baseline.source_commit_sha.clone();
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_incompatible_fixture_source_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.incompatible_service_fixture.sha256 = plan.final_candidate.service_sha256.clone();
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_incompatible_fixture_identity_invalid".to_string())
         );
     }
 
