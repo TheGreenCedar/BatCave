@@ -1,8 +1,9 @@
 use crate::windows_lifecycle_proof_contract::{
     Candidate, EvidenceReceipt, EvidenceRootIdentity, Observation, ProofPlan,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::ffi::{c_void, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -88,47 +89,63 @@ const PROCESS_TREE_SETTLEMENT_TIMEOUT_MS: u32 = 30_000;
 const PROCESS_TREE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const WINDOWS_PATH_BUFFER_SIZE: usize = 32_768;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FileIdentity {
     pub(crate) volume_serial: u32,
     pub(crate) file_index: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FileSnapshot {
     pub(crate) size: u64,
     pub(crate) sha256: String,
     pub(crate) identity: FileIdentity,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ServiceSnapshot {
     pub(crate) state: u32,
     pub(crate) process_id: u32,
+    pub(crate) process_started_at_100ns: Option<u64>,
     pub(crate) win32_exit_code: u32,
     pub(crate) service_specific_exit_code: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RegistryView {
+    Registry32,
+    Registry64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RegistrySnapshot {
-    pub(crate) view: &'static str,
+    pub(crate) view: RegistryView,
     pub(crate) install_location: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DirectorySnapshot {
     pub(crate) identity: FileIdentity,
     pub(crate) final_path: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ProcessSnapshot {
     pub(crate) process_id: u32,
+    pub(crate) parent_process_id: u32,
     pub(crate) executable_name: String,
     pub(crate) executable_path: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PreflightSnapshot {
     pub(crate) service: Observation<ServiceSnapshot>,
     pub(crate) install_root: Observation<DirectorySnapshot>,
@@ -140,18 +157,15 @@ pub(crate) struct PreflightSnapshot {
     pub(crate) product_processes: Observation<Vec<ProcessSnapshot>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub(crate) struct BoundarySnapshot {
-    pub(crate) service_contract_valid: bool,
-    pub(crate) protected_service_root_valid: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ElevatedMachineSnapshot {
     pub(crate) machine: PreflightSnapshot,
     pub(crate) product_data_root: Observation<DirectorySnapshot>,
     pub(crate) service_data_root: Observation<DirectorySnapshot>,
-    pub(crate) installed_boundaries: Observation<BoundarySnapshot>,
+    pub(crate) current_user_data_root: Observation<DirectorySnapshot>,
+    pub(crate) installed_boundaries:
+        Observation<crate::collector_service::windows_provisioner::InstalledBoundariesForProof>,
 }
 
 pub(crate) struct OwnedFile {
@@ -162,15 +176,16 @@ pub(crate) struct OwnedFile {
     identity: FileIdentity,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
 pub(crate) enum ProcessTerminal {
     Exited { exit_code: u32 },
     TimedOut,
     SupervisionFailed { reason: String },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ProcessTerminalSnapshot {
     pub(crate) process_id: u32,
     pub(crate) terminal: ProcessTerminal,
@@ -898,11 +913,19 @@ impl ProtectedEvidenceRoot {
         name: &str,
         value: &T,
     ) -> Result<EvidenceReceipt, String> {
+        let payload = serde_json::to_vec_pretty(value)
+            .map_err(|_| "lifecycle_evidence_serialize_failed".to_string())?;
+        self.write_bytes_new(name, &payload)
+    }
+
+    pub(crate) fn write_bytes_new(
+        &self,
+        name: &str,
+        payload: &[u8],
+    ) -> Result<EvidenceReceipt, String> {
         if !valid_evidence_name(name) {
             return Err("lifecycle_evidence_name_invalid".to_string());
         }
-        let payload = serde_json::to_vec_pretty(value)
-            .map_err(|_| "lifecycle_evidence_serialize_failed".to_string())?;
         let path = self.root.join(name);
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -911,7 +934,7 @@ impl ProtectedEvidenceRoot {
             .open(&path)
             .map_err(|_| "lifecycle_evidence_create_failed".to_string())?;
         if file
-            .write_all(&payload)
+            .write_all(payload)
             .and_then(|_| file.sync_all())
             .is_err()
         {
@@ -921,7 +944,7 @@ impl ProtectedEvidenceRoot {
                 Err(_) => Err("lifecycle_evidence_write_cleanup_failed".to_string()),
             };
         }
-        Ok(evidence_receipt(name, &payload))
+        Ok(evidence_receipt(name, payload))
     }
 }
 
@@ -1002,13 +1025,16 @@ pub(crate) fn require_clean_exact_head(repo_root: &Path, expected: &str) -> Resu
     Ok(())
 }
 
-pub(crate) fn capture_parent_preflight(plan: &ProofPlan) -> Result<PreflightSnapshot, String> {
-    let snapshot = capture_machine_snapshot();
+pub(crate) fn capture_parent_preflight(
+    plan: &ProofPlan,
+    controller_bindings: &[PeerBinding],
+) -> Result<PreflightSnapshot, String> {
+    let snapshot = capture_machine_snapshot(controller_bindings);
     require_allowlisted_parent_preflight(&snapshot, plan)?;
     Ok(snapshot)
 }
 
-pub(crate) fn capture_machine_snapshot() -> PreflightSnapshot {
+pub(crate) fn capture_machine_snapshot(controller_bindings: &[PeerBinding]) -> PreflightSnapshot {
     PreflightSnapshot {
         service: observe_service(),
         install_root: observe_directory(Path::new(INSTALL_ROOT), "install_root"),
@@ -1017,12 +1043,14 @@ pub(crate) fn capture_machine_snapshot() -> PreflightSnapshot {
         uninstaller: observe_file(Path::new(UNINSTALLER_PATH), "uninstaller"),
         legacy_cli: observe_file(Path::new(LEGACY_CLI_PATH), "legacy_cli"),
         uninstall_registry: observe_uninstall_registry(),
-        product_processes: observe_product_processes(),
+        product_processes: observe_product_processes(controller_bindings),
     }
 }
 
-pub(crate) fn capture_elevated_machine_snapshot() -> ElevatedMachineSnapshot {
-    let machine = capture_machine_snapshot();
+pub(crate) fn capture_elevated_machine_snapshot(
+    controller_bindings: &[PeerBinding],
+) -> ElevatedMachineSnapshot {
+    let machine = capture_machine_snapshot(controller_bindings);
     let (product_data_root, service_data_root) =
         match crate::collector_service::windows_provisioner::data_roots_for_proof() {
             Ok((product, service)) => (
@@ -1034,15 +1062,17 @@ pub(crate) fn capture_elevated_machine_snapshot() -> ElevatedMachineSnapshot {
                 Observation::Unknown(reason),
             ),
         };
+    // The elevated worker must not infer current-user retention authority from
+    // its own environment. A later lane will bind the authenticated standard
+    // parent's profile root and retain that authority across elevation.
+    let current_user_data_root =
+        Observation::Unknown("lifecycle_parent_user_data_root_not_bound".to_string());
     let installed_boundaries = match &machine.service {
         Observation::Present(_) => {
-            match crate::collector_service::windows_provisioner::validate_installed_boundaries_for_proof(
+            match crate::collector_service::windows_provisioner::observe_installed_boundaries_for_proof(
                 Path::new(SERVICE_PATH),
             ) {
-                Ok(()) => Observation::Present(BoundarySnapshot {
-                    service_contract_valid: true,
-                    protected_service_root_valid: true,
-                }),
+                Ok(boundaries) => Observation::Present(boundaries),
                 Err(reason) => Observation::Unknown(reason),
             }
         }
@@ -1053,6 +1083,7 @@ pub(crate) fn capture_elevated_machine_snapshot() -> ElevatedMachineSnapshot {
         machine,
         product_data_root,
         service_data_root,
+        current_user_data_root,
         installed_boundaries,
     }
 }
@@ -1551,6 +1582,17 @@ pub(crate) fn authenticate_parent_peer(
     Ok(PeerBinding {
         process_id,
         started_at_100ns: peer.started_at_100ns,
+        image_identity: peer.image.identity(),
+        image_sha256: peer.image.sha256_hex(),
+    })
+}
+
+pub(crate) fn current_controller_binding(controller: &OwnedFile) -> Result<PeerBinding, String> {
+    Ok(PeerBinding {
+        process_id: std::process::id(),
+        started_at_100ns: current_process_started_at()?,
+        image_identity: controller.identity(),
+        image_sha256: controller.sha256_hex(),
     })
 }
 
@@ -1818,16 +1860,57 @@ fn observe_service() -> Observation<ServiceSnapshot> {
             GetLastError()
         }));
     }
+    let process_started_at_100ns = if status.dwProcessId == 0 {
+        None
+    } else {
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                0,
+                status.dwProcessId,
+            )
+        };
+        if process.is_null() {
+            return Observation::Unknown(format!("service_process_open_failed:{}", unsafe {
+                GetLastError()
+            }));
+        }
+        match process_started_at(OwnedHandle(process).raw()) {
+            Ok(started_at) => Some(started_at),
+            Err(reason) => return Observation::Unknown(reason),
+        }
+    };
+    let mut revalidated: SERVICE_STATUS_PROCESS = unsafe { zeroed() };
+    if unsafe {
+        QueryServiceStatusEx(
+            service.raw(),
+            SC_STATUS_PROCESS_INFO,
+            (&mut revalidated as *mut SERVICE_STATUS_PROCESS).cast(),
+            size_of::<SERVICE_STATUS_PROCESS>() as u32,
+            &mut returned,
+        )
+    } == 0
+        || revalidated.dwCurrentState != status.dwCurrentState
+        || revalidated.dwProcessId != status.dwProcessId
+        || revalidated.dwWin32ExitCode != status.dwWin32ExitCode
+        || revalidated.dwServiceSpecificExitCode != status.dwServiceSpecificExitCode
+    {
+        return Observation::Unknown("service_status_changed_during_capture".to_string());
+    }
     Observation::Present(ServiceSnapshot {
         state: status.dwCurrentState,
         process_id: status.dwProcessId,
+        process_started_at_100ns,
         win32_exit_code: status.dwWin32ExitCode,
         service_specific_exit_code: status.dwServiceSpecificExitCode,
     })
 }
 
 fn observe_uninstall_registry() -> Observation<RegistrySnapshot> {
-    for (view, label) in [(KEY_WOW64_64KEY, "64"), (KEY_WOW64_32KEY, "32")] {
+    for (view, label) in [
+        (KEY_WOW64_64KEY, RegistryView::Registry64),
+        (KEY_WOW64_32KEY, RegistryView::Registry32),
+    ] {
         match open_registry_key(HKEY_LOCAL_MACHINE, UNINSTALL_KEY, KEY_READ | view) {
             Ok(Some(key)) => match read_registry_string(key.raw(), INSTALL_LOCATION_VALUE) {
                 Ok(value) => {
@@ -1845,7 +1928,9 @@ fn observe_uninstall_registry() -> Observation<RegistrySnapshot> {
     Observation::Absent
 }
 
-fn observe_product_processes() -> Observation<Vec<ProcessSnapshot>> {
+fn observe_product_processes(
+    controller_bindings: &[PeerBinding],
+) -> Observation<Vec<ProcessSnapshot>> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Observation::Unknown("process_snapshot_failed".to_string());
@@ -1853,34 +1938,50 @@ fn observe_product_processes() -> Observation<Vec<ProcessSnapshot>> {
     let snapshot = OwnedHandle(snapshot);
     let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
     entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-    let mut found = Vec::new();
-    let current_process_id = std::process::id();
+    let mut processes = Vec::new();
     let mut ok = unsafe { Process32FirstW(snapshot.raw(), &mut entry) };
     if ok == 0 {
         return if unsafe { GetLastError() } == ERROR_NO_MORE_FILES {
-            Observation::Present(found)
+            Observation::Present(Vec::new())
         } else {
             Observation::Unknown("process_enumeration_start_failed".to_string())
         };
     }
     while ok != 0 {
-        let name = utf16_z(&entry.szExeFile);
-        let lower = name.to_ascii_lowercase();
-        if lower == "batcave-monitor.exe"
-            || lower == "batcave-collector-service.exe"
-            || lower.contains("batcave") && lower.contains("setup")
-            || lower == "uninstall.exe"
-            || lower == "batcave-windows-lifecycle-proof.exe"
-        {
-            if lower == "batcave-windows-lifecycle-proof.exe"
-                && entry.th32ProcessID == current_process_id
-            {
-                ok = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
-                continue;
+        processes.push(EnumeratedProcess {
+            process_id: entry.th32ProcessID,
+            parent_process_id: entry.th32ParentProcessID,
+            executable_name: utf16_z(&entry.szExeFile),
+        });
+        ok = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
+    }
+    if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
+        return Observation::Unknown("process_enumeration_failed".to_string());
+    }
+
+    let mut found = Vec::new();
+    let mut image_paths = HashMap::new();
+    for process in &processes {
+        let lower = process.executable_name.to_ascii_lowercase();
+        let owned_webview = match is_batcave_owned_webview(process, &processes, |process_id| {
+            cached_process_image_path(&mut image_paths, process_id)
+        }) {
+            Ok(owned) => owned,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        if is_product_process_name(&lower) || owned_webview {
+            if lower == "batcave-windows-lifecycle-proof.exe" {
+                match exact_bound_controller_process(process.process_id, controller_bindings) {
+                    Ok(true) => {
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(reason) => return Observation::Unknown(reason),
+                }
             }
-            let path = match process_image_path_by_pid(entry.th32ProcessID) {
+            let path = match cached_process_image_path(&mut image_paths, process.process_id) {
                 Ok(path) => Some(path),
-                Err(reason) if lower == "uninstall.exe" => {
+                Err(reason) if lower == "uninstall.exe" || owned_webview => {
                     return Observation::Unknown(reason);
                 }
                 Err(_) => None,
@@ -1891,19 +1992,119 @@ fn observe_product_processes() -> Observation<Vec<ProcessSnapshot>> {
                     .is_some_and(|value| value.eq_ignore_ascii_case(UNINSTALLER_PATH));
             if is_product {
                 found.push(ProcessSnapshot {
-                    process_id: entry.th32ProcessID,
-                    executable_name: name,
+                    process_id: process.process_id,
+                    parent_process_id: process.parent_process_id,
+                    executable_name: process.executable_name.clone(),
                     executable_path: path,
                 });
             }
         }
-        ok = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
     }
-    if unsafe { GetLastError() } == ERROR_NO_MORE_FILES {
-        Observation::Present(found)
-    } else {
-        Observation::Unknown("process_enumeration_failed".to_string())
+    Observation::Present(found)
+}
+
+fn cached_process_image_path(
+    cache: &mut HashMap<u32, Result<String, String>>,
+    process_id: u32,
+) -> Result<String, String> {
+    cache
+        .entry(process_id)
+        .or_insert_with(|| process_image_path_by_pid(process_id))
+        .clone()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EnumeratedProcess {
+    process_id: u32,
+    parent_process_id: u32,
+    executable_name: String,
+}
+
+fn is_product_process_name(lower: &str) -> bool {
+    lower == "batcave-monitor.exe"
+        || lower == "batcave-collector-service.exe"
+        || lower == "batcave-monitor-cli.exe"
+        || lower.contains("batcave") && lower.contains("setup")
+        || lower == "uninstall.exe"
+        || lower == "batcave-windows-lifecycle-proof.exe"
+}
+
+fn is_batcave_owned_webview(
+    process: &EnumeratedProcess,
+    processes: &[EnumeratedProcess],
+    mut image_path: impl FnMut(u32) -> Result<String, String>,
+) -> Result<bool, String> {
+    const MAX_WEBVIEW_ANCESTRY_DEPTH: usize = 32;
+    if !process
+        .executable_name
+        .eq_ignore_ascii_case("msedgewebview2.exe")
+    {
+        return Ok(false);
     }
+
+    let mut parent_process_id = process.parent_process_id;
+    let mut visited = Vec::new();
+    for _ in 0..MAX_WEBVIEW_ANCESTRY_DEPTH {
+        if parent_process_id == 0 || visited.contains(&parent_process_id) {
+            return Ok(false);
+        }
+        visited.push(parent_process_id);
+        let Some(parent) = processes
+            .iter()
+            .find(|candidate| candidate.process_id == parent_process_id)
+        else {
+            return Ok(false);
+        };
+        if parent
+            .executable_name
+            .eq_ignore_ascii_case("batcave-monitor.exe")
+        {
+            let path = image_path(parent.process_id)
+                .map_err(|_| "lifecycle_webview_monitor_path_unavailable".to_string())?;
+            return Ok(path.eq_ignore_ascii_case(MONITOR_PATH));
+        }
+        if !parent
+            .executable_name
+            .eq_ignore_ascii_case("msedgewebview2.exe")
+        {
+            return Ok(false);
+        }
+        parent_process_id = parent.parent_process_id;
+    }
+    Ok(false)
+}
+
+fn exact_bound_controller_process(
+    process_id: u32,
+    bindings: &[PeerBinding],
+) -> Result<bool, String> {
+    let Some(binding) = bindings
+        .iter()
+        .find(|binding| binding.process_id == process_id)
+    else {
+        return Ok(false);
+    };
+    let process = process_evidence(process_id)?;
+    Ok(controller_binding_matches(
+        binding,
+        process_id,
+        process.started_at_100ns,
+        process.image.identity(),
+        &process.image.sha256_hex(),
+    ))
+}
+
+fn controller_binding_matches(
+    binding: &PeerBinding,
+    process_id: u32,
+    started_at_100ns: u64,
+    image_identity: FileIdentity,
+    image_sha256: &str,
+) -> bool {
+    binding.process_id == process_id
+        && binding.started_at_100ns == started_at_100ns
+        && binding.image_identity == image_identity
+        && binding.image_sha256 == image_sha256
 }
 
 fn require_file_hash(
@@ -2166,9 +2367,12 @@ struct ProcessEvidence {
     image: OwnedFile,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PeerBinding {
     pub(crate) process_id: u32,
     pub(crate) started_at_100ns: u64,
+    image_identity: FileIdentity,
+    image_sha256: String,
 }
 
 fn process_evidence(process_id: u32) -> Result<ProcessEvidence, String> {
@@ -2751,6 +2955,170 @@ mod tests {
     }
 
     #[test]
+    fn controller_exclusion_requires_exact_authenticated_process_generation_and_image() {
+        let identity = FileIdentity {
+            volume_serial: 7,
+            file_index: 11,
+        };
+        let binding = PeerBinding {
+            process_id: 41,
+            started_at_100ns: 1_000,
+            image_identity: identity,
+            image_sha256: "a".repeat(64),
+        };
+        assert!(controller_binding_matches(
+            &binding,
+            41,
+            1_000,
+            identity,
+            &"a".repeat(64)
+        ));
+        assert!(!controller_binding_matches(
+            &binding,
+            41,
+            1_001,
+            identity,
+            &"a".repeat(64)
+        ));
+        assert!(!controller_binding_matches(
+            &binding,
+            42,
+            1_000,
+            identity,
+            &"a".repeat(64)
+        ));
+        assert!(!controller_binding_matches(
+            &binding,
+            41,
+            1_000,
+            FileIdentity {
+                volume_serial: 7,
+                file_index: 12,
+            },
+            &"a".repeat(64)
+        ));
+        assert!(!controller_binding_matches(
+            &binding,
+            41,
+            1_000,
+            identity,
+            &"b".repeat(64)
+        ));
+        assert!(is_product_process_name("batcave-monitor-cli.exe"));
+        assert!(is_product_process_name(
+            "batcave-windows-lifecycle-proof.exe"
+        ));
+        assert!(!is_product_process_name("not-batcave.exe"));
+    }
+
+    #[test]
+    fn webview_residue_requires_a_bounded_exact_installed_monitor_ancestry() {
+        let processes = vec![
+            EnumeratedProcess {
+                process_id: 10,
+                parent_process_id: 1,
+                executable_name: "batcave-monitor.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 11,
+                parent_process_id: 10,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 12,
+                parent_process_id: 11,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 20,
+                parent_process_id: 1,
+                executable_name: "explorer.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 21,
+                parent_process_id: 20,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 22,
+                parent_process_id: 10,
+                executable_name: "unrelated-helper.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 23,
+                parent_process_id: 22,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 30,
+                parent_process_id: 1,
+                executable_name: "batcave-monitor.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 31,
+                parent_process_id: 30,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 40,
+                parent_process_id: 999,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 50,
+                parent_process_id: 51,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+            EnumeratedProcess {
+                process_id: 51,
+                parent_process_id: 50,
+                executable_name: "msedgewebview2.exe".to_string(),
+            },
+        ];
+
+        let exact_path = |process_id| match process_id {
+            10 => Ok(MONITOR_PATH.to_string()),
+            30 => Ok(r"C:\Temp\batcave-monitor.exe".to_string()),
+            _ => Err("unexpected process".to_string()),
+        };
+        assert_eq!(
+            is_batcave_owned_webview(&processes[1], &processes, exact_path),
+            Ok(true)
+        );
+        assert_eq!(
+            is_batcave_owned_webview(&processes[2], &processes, exact_path),
+            Ok(true)
+        );
+        assert_eq!(
+            is_batcave_owned_webview(&processes[4], &processes, exact_path),
+            Ok(false)
+        );
+        assert_eq!(
+            is_batcave_owned_webview(&processes[6], &processes, exact_path),
+            Ok(false)
+        );
+        assert_eq!(
+            is_batcave_owned_webview(&processes[8], &processes, exact_path),
+            Ok(false)
+        );
+        assert_eq!(
+            is_batcave_owned_webview(&processes[9], &processes, exact_path),
+            Ok(false)
+        );
+        assert_eq!(
+            is_batcave_owned_webview(&processes[10], &processes, exact_path),
+            Ok(false)
+        );
+        assert_eq!(
+            is_batcave_owned_webview(&processes[1], &processes, |_| {
+                Err("access denied".to_string())
+            }),
+            Err("lifecycle_webview_monitor_path_unavailable".to_string())
+        );
+        assert!(!is_product_process_name("msedgewebview2.exe"));
+    }
+
+    #[test]
     fn failure_evidence_receipt_binds_the_exact_leaf_bytes() {
         let scratch = ScratchEvidence::new("receipt");
         let name = "failure.private.json";
@@ -2769,6 +3137,44 @@ mod tests {
             verify_evidence_receipt(scratch.evidence(), &receipt).err(),
             Some("lifecycle_failure_evidence_identity_mismatch".to_string())
         );
+    }
+
+    #[test]
+    fn byte_writer_persists_and_receipts_the_exact_create_new_payload() {
+        let scratch = ScratchEvidence::new("byte-writer");
+        let name = "exact.private.json";
+        let payload = b"{\n  \"shape\": \"pretty\"\n}";
+        let receipt = scratch
+            .evidence()
+            .write_bytes_new(name, payload)
+            .expect("write exact byte payload");
+        assert_eq!(receipt, evidence_receipt(name, payload));
+        assert_eq!(
+            fs::read(scratch.root.join(name)).expect("read exact byte payload"),
+            payload
+        );
+        assert_eq!(
+            scratch
+                .evidence()
+                .write_bytes_new(name, b"replacement")
+                .err(),
+            Some("lifecycle_evidence_create_failed".to_string())
+        );
+    }
+
+    #[test]
+    fn owned_file_blocks_replacement_only_until_the_guard_is_dropped() {
+        let scratch = ScratchEvidence::new("owned-file-lifetime");
+        let path = scratch.root.join("installed.exe");
+        fs::write(&path, b"installed").expect("write installed fixture");
+        let guard = OwnedFile::open_unchecked(&path, "installed_fixture")
+            .expect("retain installed fixture");
+        assert!(
+            OpenOptions::new().write(true).open(&path).is_err(),
+            "retained source must block replacement"
+        );
+        drop(guard);
+        fs::write(&path, b"replacement").expect("replacement allowed after explicit drop");
     }
 
     #[test]

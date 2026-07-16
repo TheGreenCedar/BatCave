@@ -3,8 +3,11 @@ use super::native::{
     open_installed_uninstaller, parse_sha256, require_allowlisted_elevated_preflight,
     require_elevated_crashed_candidate, require_elevated_installed_candidate,
     require_elevated_stopped_candidate, require_elevated_total_product_absence,
-    ElevatedMachineSnapshot, ExecuteFailure, OwnedFile, PipeConnection, ProcessTerminal,
-    ProcessTerminalSnapshot, ProtectedEvidenceRoot,
+    ElevatedMachineSnapshot, ExecuteFailure, OwnedFile, PeerBinding, PipeConnection,
+    ProcessTerminal, ProcessTerminalSnapshot, ProtectedEvidenceRoot,
+};
+use super::private_evidence::{
+    write_machine_packet, write_service_crash_packet, write_upgrade_rollback_packet,
 };
 use crate::windows_lifecycle_proof_contract::{
     DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult, LifecycleStage, ProofPlan,
@@ -59,6 +62,7 @@ pub(super) struct WorkerContext<'a> {
     pub(super) pipe: &'a mut PipeConnection,
     pub(super) nonce: &'a str,
     pub(super) gate: &'a mut SequenceGate,
+    pub(super) controller_bindings: &'a [PeerBinding],
 }
 
 pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
@@ -73,6 +77,7 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
         pipe: _pipe,
         nonce: _nonce,
         gate: _gate,
+        controller_bindings,
     } = context;
     if let Err(failure) = require_controller_ready() {
         return failed(None, controller_failure(failure), true);
@@ -83,6 +88,7 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
         final_candidate,
         rollback_failing_service_fixture,
         evidence,
+        controller_bindings,
     );
     match result {
         Ok(completed_stage) => failed(
@@ -100,17 +106,16 @@ fn execute_worker_inner(
     final_candidate: &OwnedFile,
     rollback_failing_service_fixture: &OwnedFile,
     evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
 ) -> Result<LifecycleStage, (Option<LifecycleStage>, WorkerFailure, bool)> {
-    let initial = capture_elevated_machine_snapshot();
-    evidence
-        .write_json_new("initial-state.private.json", &initial)
-        .map_err(|failure| {
-            (
-                None,
-                evidence_write_failure("lifecycle_initial_state_evidence_incomplete", failure),
-                true,
-            )
-        })?;
+    let initial = capture_elevated_machine_snapshot(controller_bindings);
+    write_machine_packet(evidence, "initial-state.private.json", &initial).map_err(|failure| {
+        (
+            None,
+            evidence_write_failure("lifecycle_initial_state_evidence_incomplete", failure),
+            true,
+        )
+    })?;
     require_allowlisted_elevated_preflight(&initial, plan)
         .map_err(|failure| (None, controller_failure(failure), true))?;
 
@@ -149,6 +154,7 @@ fn execute_worker_inner(
         })?;
     let final_repair_state = execute_mutation(
         evidence,
+        controller_bindings,
         "final-repair-failure.private.json",
         LifecycleStage::FinalRepair,
         &initial,
@@ -167,15 +173,18 @@ fn execute_worker_inner(
         },
     )
     .map_err(|(failure, settled)| (Some(LifecycleStage::InitialState), failure, settled))?;
-    evidence
-        .write_json_new("final-repair-state.private.json", &final_repair_state)
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::FinalRepair),
-                evidence_write_failure("lifecycle_final_repair_evidence_incomplete", failure),
-                true,
-            )
-        })?;
+    write_machine_packet(
+        evidence,
+        "final-repair-state.private.json",
+        &final_repair_state,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::FinalRepair),
+            evidence_write_failure("lifecycle_final_repair_evidence_incomplete", failure),
+            true,
+        )
+    })?;
 
     let installed_uninstaller =
         open_installed_uninstaller(&plan.final_candidate).map_err(|failure| {
@@ -197,8 +206,10 @@ fn execute_worker_inner(
                 true,
             )
         })?;
+    drop(installed_uninstaller);
     let initial_uninstall_state = execute_mutation(
         evidence,
+        controller_bindings,
         "initial-uninstall-failure.private.json",
         LifecycleStage::InitialUninstall,
         &final_repair_state,
@@ -210,18 +221,18 @@ fn execute_worker_inner(
         |snapshot| require_elevated_total_product_absence(snapshot, "initial_uninstall"),
     )
     .map_err(|(failure, settled)| (Some(LifecycleStage::FinalRepair), failure, settled))?;
-    evidence
-        .write_json_new(
-            "initial-uninstall-state.private.json",
-            &initial_uninstall_state,
+    write_machine_packet(
+        evidence,
+        "initial-uninstall-state.private.json",
+        &initial_uninstall_state,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::InitialUninstall),
+            evidence_write_failure("lifecycle_initial_uninstall_evidence_incomplete", failure),
+            true,
         )
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::InitialUninstall),
-                evidence_write_failure("lifecycle_initial_uninstall_evidence_incomplete", failure),
-                true,
-            )
-        })?;
+    })?;
 
     let baseline_copy = baseline
         .copy_to(
@@ -237,6 +248,7 @@ fn execute_worker_inner(
         })?;
     let baseline_install_state = execute_mutation(
         evidence,
+        controller_bindings,
         "baseline-install-failure.private.json",
         LifecycleStage::BaselineInstall,
         &initial_uninstall_state,
@@ -255,20 +267,20 @@ fn execute_worker_inner(
         },
     )
     .map_err(|(failure, settled)| (Some(LifecycleStage::InitialUninstall), failure, settled))?;
-    evidence
-        .write_json_new(
-            "baseline-install-state.private.json",
-            &baseline_install_state,
+    write_machine_packet(
+        evidence,
+        "baseline-install-state.private.json",
+        &baseline_install_state,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineInstall),
+            evidence_write_failure("lifecycle_baseline_install_evidence_incomplete", failure),
+            true,
         )
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::BaselineInstall),
-                evidence_write_failure("lifecycle_baseline_install_evidence_incomplete", failure),
-                true,
-            )
-        })?;
+    })?;
 
-    let baseline_service = open_installed_service(&plan.baseline).map_err(|failure| {
+    let baseline_stop_service = open_installed_service(&plan.baseline).map_err(|failure| {
         (
             Some(LifecycleStage::BaselineInstall),
             controller_failure(failure),
@@ -277,10 +289,11 @@ fn execute_worker_inner(
     })?;
     let baseline_restart_stopped = execute_mutation(
         evidence,
+        controller_bindings,
         "baseline-restart-failure.private.json",
         LifecycleStage::BaselineRestart,
         &baseline_install_state,
-        &baseline_service,
+        &baseline_stop_service,
         SERVICE_STOP_ARGUMENTS,
         SERVICE_OPERATION_TIMEOUT,
         "baseline_restart_stop",
@@ -295,27 +308,36 @@ fn execute_worker_inner(
         },
     )
     .map_err(|(failure, settled)| (Some(LifecycleStage::BaselineInstall), failure, settled))?;
-    evidence
-        .write_json_new(
-            "baseline-restart-stopped-state.private.json",
-            &baseline_restart_stopped,
+    drop(baseline_stop_service);
+    write_machine_packet(
+        evidence,
+        "baseline-restart-stopped-state.private.json",
+        &baseline_restart_stopped,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineInstall),
+            evidence_write_failure(
+                "lifecycle_baseline_restart_stopped_evidence_incomplete",
+                failure,
+            ),
+            true,
         )
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::BaselineInstall),
-                evidence_write_failure(
-                    "lifecycle_baseline_restart_stopped_evidence_incomplete",
-                    failure,
-                ),
-                true,
-            )
-        })?;
+    })?;
+    let baseline_start_service = open_installed_service(&plan.baseline).map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineInstall),
+            controller_failure(failure),
+            true,
+        )
+    })?;
     let baseline_restart_state = execute_mutation(
         evidence,
+        controller_bindings,
         "baseline-restart-failure.private.json",
         LifecycleStage::BaselineRestart,
         &baseline_restart_stopped,
-        &baseline_service,
+        &baseline_start_service,
         SERVICE_START_ARGUMENTS,
         SERVICE_OPERATION_TIMEOUT,
         "baseline_restart_start",
@@ -330,18 +352,19 @@ fn execute_worker_inner(
         },
     )
     .map_err(|(failure, settled)| (Some(LifecycleStage::BaselineInstall), failure, settled))?;
-    evidence
-        .write_json_new(
-            "baseline-restart-state.private.json",
-            &baseline_restart_state,
+    drop(baseline_start_service);
+    write_machine_packet(
+        evidence,
+        "baseline-restart-state.private.json",
+        &baseline_restart_state,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineRestart),
+            evidence_write_failure("lifecycle_baseline_restart_evidence_incomplete", failure),
+            true,
         )
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::BaselineRestart),
-                evidence_write_failure("lifecycle_baseline_restart_evidence_incomplete", failure),
-                true,
-            )
-        })?;
+    })?;
 
     require_running_service(&baseline_restart_state, "baseline_crash_before").map_err(
         |failure| {
@@ -368,8 +391,7 @@ fn execute_worker_inner(
             Err(failure) => {
                 let failure = write_service_crash_failure(
                     evidence,
-                    "baseline-crash-recovery-failure.private.json",
-                    LifecycleStage::BaselineCrashRecovery,
+                    controller_bindings,
                     &baseline_restart_state,
                     &failure.reason,
                     failure.service_settled,
@@ -383,7 +405,7 @@ fn execute_worker_inner(
                 ));
             }
         };
-    let baseline_crashed_state = capture_elevated_machine_snapshot();
+    let baseline_crashed_state = capture_elevated_machine_snapshot(controller_bindings);
     if let Err(reason) = require_elevated_crashed_candidate(
         &baseline_crashed_state,
         &plan.baseline,
@@ -392,8 +414,7 @@ fn execute_worker_inner(
     ) {
         let failure = write_service_crash_failure(
             evidence,
-            "baseline-crash-recovery-failure.private.json",
-            LifecycleStage::BaselineCrashRecovery,
+            controller_bindings,
             &baseline_restart_state,
             &reason,
             true,
@@ -401,25 +422,33 @@ fn execute_worker_inner(
         );
         return Err((Some(LifecycleStage::BaselineRestart), failure, true));
     }
-    let crashed = ServiceCrashState {
-        termination,
-        machine: &baseline_crashed_state,
-    };
-    evidence
-        .write_json_new("baseline-crashed-state.private.json", &crashed)
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::BaselineRestart),
-                evidence_write_failure("lifecycle_baseline_crashed_evidence_incomplete", failure),
-                true,
-            )
-        })?;
+    write_service_crash_packet(
+        evidence,
+        "baseline-crashed-state.private.json",
+        &baseline_crashed_state,
+        &termination,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineRestart),
+            evidence_write_failure("lifecycle_baseline_crashed_evidence_incomplete", failure),
+            true,
+        )
+    })?;
+    let baseline_recovery_service = open_installed_service(&plan.baseline).map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineRestart),
+            controller_failure(failure),
+            true,
+        )
+    })?;
     let baseline_crash_recovery_state = execute_mutation(
         evidence,
+        controller_bindings,
         "baseline-crash-recovery-failure.private.json",
         LifecycleStage::BaselineCrashRecovery,
         &baseline_crashed_state,
-        &baseline_service,
+        &baseline_recovery_service,
         SERVICE_START_ARGUMENTS,
         SERVICE_OPERATION_TIMEOUT,
         "baseline_crash_recovery",
@@ -435,21 +464,22 @@ fn execute_worker_inner(
         },
     )
     .map_err(|(failure, settled)| (Some(LifecycleStage::BaselineRestart), failure, settled))?;
-    evidence
-        .write_json_new(
-            "baseline-crash-recovery-state.private.json",
-            &baseline_crash_recovery_state,
+    drop(baseline_recovery_service);
+    write_machine_packet(
+        evidence,
+        "baseline-crash-recovery-state.private.json",
+        &baseline_crash_recovery_state,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineCrashRecovery),
+            evidence_write_failure(
+                "lifecycle_baseline_crash_recovery_evidence_incomplete",
+                failure,
+            ),
+            true,
         )
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::BaselineCrashRecovery),
-                evidence_write_failure(
-                    "lifecycle_baseline_crash_recovery_evidence_incomplete",
-                    failure,
-                ),
-                true,
-            )
-        })?;
+    })?;
 
     let rollback_fixture_copy = rollback_failing_service_fixture
         .copy_to(
@@ -500,6 +530,7 @@ fn execute_worker_inner(
         Err(failure) => {
             let failure = write_upgrade_rollback_failure(
                 evidence,
+                controller_bindings,
                 "baseline-rollback-recovery-failure.private.json",
                 &baseline_crash_recovery_state,
                 &failure.reason,
@@ -519,6 +550,7 @@ fn execute_worker_inner(
     {
         let failure = write_upgrade_rollback_failure(
             evidence,
+            controller_bindings,
             "baseline-rollback-recovery-failure.private.json",
             &baseline_crash_recovery_state,
             &reason,
@@ -526,7 +558,7 @@ fn execute_worker_inner(
         );
         return Err((Some(LifecycleStage::BaselineCrashRecovery), failure, true));
     }
-    let baseline_rollback_recovery_state = capture_elevated_machine_snapshot();
+    let baseline_rollback_recovery_state = capture_elevated_machine_snapshot(controller_bindings);
     require_elevated_installed_candidate(
         &baseline_rollback_recovery_state,
         &plan.baseline,
@@ -543,6 +575,7 @@ fn execute_worker_inner(
     .map_err(|reason| {
         let failure = write_upgrade_rollback_failure(
             evidence,
+            controller_bindings,
             "baseline-rollback-recovery-failure.private.json",
             &baseline_crash_recovery_state,
             &reason,
@@ -550,38 +583,23 @@ fn execute_worker_inner(
         );
         (Some(LifecycleStage::BaselineCrashRecovery), failure, true)
     })?;
-    let rollback_state = UpgradeRollbackState {
-        rollback,
-        machine: &baseline_rollback_recovery_state,
-    };
-    evidence
-        .write_json_new(
-            "baseline-rollback-recovery-state.private.json",
-            &rollback_state,
+    write_upgrade_rollback_packet(
+        evidence,
+        "baseline-rollback-recovery-state.private.json",
+        &baseline_rollback_recovery_state,
+        &rollback,
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineRollbackRecovery),
+            evidence_write_failure(
+                "lifecycle_baseline_rollback_recovery_evidence_incomplete",
+                failure,
+            ),
+            true,
         )
-        .map_err(|failure| {
-            (
-                Some(LifecycleStage::BaselineRollbackRecovery),
-                evidence_write_failure(
-                    "lifecycle_baseline_rollback_recovery_evidence_incomplete",
-                    failure,
-                ),
-                true,
-            )
-        })?;
+    })?;
     Ok(LifecycleStage::BaselineRollbackRecovery)
-}
-
-#[derive(Serialize)]
-struct UpgradeRollbackState<'a> {
-    rollback: crate::collector_service::windows_provisioner::FailedUpgradeRollbackForProof,
-    machine: &'a ElevatedMachineSnapshot,
-}
-
-#[derive(Serialize)]
-struct ServiceCrashState<'a> {
-    termination: crate::collector_service::windows_provisioner::TerminatedServiceForProof,
-    machine: &'a ElevatedMachineSnapshot,
 }
 
 #[derive(Serialize)]
@@ -631,6 +649,7 @@ struct UnsettledMutationFailurePacket<'a> {
 #[allow(clippy::too_many_arguments)]
 fn execute_mutation(
     evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
     evidence_name: &'static str,
     attempted_stage: LifecycleStage,
     before: &ElevatedMachineSnapshot,
@@ -675,7 +694,7 @@ fn execute_mutation(
         }
     };
 
-    let post_settlement = capture_elevated_machine_snapshot();
+    let post_settlement = capture_elevated_machine_snapshot(controller_bindings);
     let revalidation_error = executable.revalidate().err();
     let failure_reason = match &outcome.terminal.terminal {
         ProcessTerminal::Exited { exit_code: 0 } if revalidation_error.is_none() => {
@@ -755,8 +774,7 @@ fn require_running_service<'a>(
 
 fn write_service_crash_failure(
     evidence: &ProtectedEvidenceRoot,
-    evidence_name: &'static str,
-    attempted_stage: LifecycleStage,
+    controller_bindings: &[PeerBinding],
     before: &ElevatedMachineSnapshot,
     reason: &str,
     service_settled: bool,
@@ -764,17 +782,18 @@ fn write_service_crash_failure(
 ) -> WorkerFailure {
     let packet = ServiceCrashFailurePacket {
         schema_version: MUTATION_FAILURE_SCHEMA,
-        attempted_stage,
+        attempted_stage: LifecycleStage::BaselineCrashRecovery,
         reason,
         service_settled,
         mutation,
         machine_before_mutation: before,
-        machine_after_attempt: capture_elevated_machine_snapshot(),
+        machine_after_attempt: capture_elevated_machine_snapshot(controller_bindings),
     };
-    let (receipt, evidence_error) = match evidence.write_json_new(evidence_name, &packet) {
-        Ok(receipt) => (Some(receipt), None),
-        Err(error) => (None, Some(error)),
-    };
+    let (receipt, evidence_error) =
+        match evidence.write_json_new("baseline-crash-recovery-failure.private.json", &packet) {
+            Ok(receipt) => (Some(receipt), None),
+            Err(error) => (None, Some(error)),
+        };
     WorkerFailure {
         kind: if service_settled {
             if receipt.is_some() {
@@ -785,7 +804,7 @@ fn write_service_crash_failure(
         } else {
             WorkerFailureKind::ProcessSettlement
         },
-        attempted_stage: Some(attempted_stage),
+        attempted_stage: Some(LifecycleStage::BaselineCrashRecovery),
         reason: reason.to_string(),
         evidence: receipt.map(Box::new),
         evidence_error,
@@ -799,6 +818,7 @@ fn write_service_crash_failure(
 
 fn write_upgrade_rollback_failure(
     evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
     evidence_name: &'static str,
     before: &ElevatedMachineSnapshot,
     reason: &str,
@@ -810,7 +830,7 @@ fn write_upgrade_rollback_failure(
         reason,
         service_settled,
         machine_before_mutation: before,
-        machine_after_attempt: capture_elevated_machine_snapshot(),
+        machine_after_attempt: capture_elevated_machine_snapshot(controller_bindings),
     };
     let (receipt, evidence_error) = match evidence.write_json_new(evidence_name, &packet) {
         Ok(receipt) => (Some(receipt), None),

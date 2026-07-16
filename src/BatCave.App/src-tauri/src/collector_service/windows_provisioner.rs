@@ -167,8 +167,10 @@ pub(crate) fn acquire_service_lifecycle_marker() -> Result<impl std::fmt::Debug,
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
-pub(crate) fn validate_installed_boundaries_for_proof(expected_image: &Path) -> Result<(), String> {
-    native::validate_installed_boundaries_for_proof(expected_image)
+pub(crate) fn observe_installed_boundaries_for_proof(
+    expected_image: &Path,
+) -> Result<InstalledBoundariesForProof, String> {
+    native::observe_installed_boundaries_for_proof(expected_image)
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -177,7 +179,52 @@ pub(crate) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SecurityPrincipalForProof {
+    LocalSystem,
+    Administrators,
+    TrustedInstaller,
+    InteractiveUsers,
+    CollectorService,
+    Other,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AcePolicyForProof {
+    pub(crate) principal: SecurityPrincipalForProof,
+    pub(crate) allow: bool,
+    pub(crate) inherit_only: bool,
+    pub(crate) object_inherit: bool,
+    pub(crate) container_inherit: bool,
+    pub(crate) mask: u32,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SecurityPolicyForProof {
+    pub(crate) owner: SecurityPrincipalForProof,
+    pub(crate) dacl_protected: bool,
+    pub(crate) reparse: bool,
+    pub(crate) aces: Vec<AcePolicyForProof>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstalledBoundariesForProof {
+    pub(crate) service_dacl_sha256: String,
+    pub(crate) service_aces: Vec<AcePolicyForProof>,
+    pub(crate) service_data_root_dacl_sha256: String,
+    pub(crate) service_data_root: SecurityPolicyForProof,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ServiceTerminationTargetForProof {
     pub(crate) process_id: u32,
     pub(crate) process_started_at_100ns: u64,
@@ -186,7 +233,8 @@ pub(crate) struct ServiceTerminationTargetForProof {
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ServiceTerminationObservationForProof {
     pub(crate) service_state: Option<u32>,
     pub(crate) service_process_id: Option<u32>,
@@ -198,7 +246,8 @@ pub(crate) struct ServiceTerminationObservationForProof {
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TerminatedServiceForProof {
     pub(crate) target: ServiceTerminationTargetForProof,
     pub(crate) process_exit_code: u32,
@@ -207,24 +256,28 @@ pub(crate) struct TerminatedServiceForProof {
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FailedUpgradeRollbackForProof {
     pub(crate) candidate_sha256: String,
-    pub(crate) candidate_failure: String,
+    pub(crate) candidate_failure_code: String,
+    pub(crate) candidate_failure_detail: String,
     pub(crate) execution_marker_sha256: String,
     pub(crate) restored_sha256: String,
     pub(crate) restored_process_id: u32,
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FailedUpgradeRollbackFailure {
     pub(crate) reason: String,
     pub(crate) service_settled: bool,
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ServiceTerminationFailure {
     pub(crate) reason: String,
     pub(crate) service_settled: bool,
@@ -2210,9 +2263,9 @@ mod native {
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
-    pub(super) fn validate_installed_boundaries_for_proof(
+    pub(super) fn observe_installed_boundaries_for_proof(
         expected_image: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<InstalledBoundariesForProof, String> {
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = open_service(
             &manager,
@@ -2222,6 +2275,12 @@ mod native {
         )?
         .ok_or_else(|| "collector_service_proof_service_missing".to_string())?;
         validate_service_contract(&service, expected_image)?;
+        let (service_policy, service_dacl_sha256) = service_dacl_policy(&service)?;
+        validate_service_dacl_policy(&service_policy)?;
+        let service_aces = service_policy
+            .into_iter()
+            .map(ace_policy_for_proof)
+            .collect();
 
         let roots = fixed_roots()?;
         let principals = SecurityPrincipals::load_with_service()?;
@@ -2230,7 +2289,11 @@ mod native {
             "collector_service_programdata_open_failed",
         )?;
         let _product = open_and_verify_root(&roots.product, false, &principals)?;
-        let _service = open_and_verify_root(&roots.service, true, &principals)?;
+        let service_root = open_and_verify_root(&roots.service, true, &principals)?;
+        let (service_data_policy, service_data_root_dacl_sha256) =
+            security_policy_with_dacl_sha256(service_root.raw(), &principals)?;
+        validate_product_root_policy(&service_data_policy, true)?;
+        let service_data_root = security_policy_for_proof(service_data_policy);
         for leaf in [
             ETW_LEASE_FILE_NAME,
             ETW_OWNER_LOCK_FILE_NAME,
@@ -2238,7 +2301,12 @@ mod native {
         ] {
             let _ = verify_optional_leaf(&roots.service.join(leaf), &principals)?;
         }
-        Ok(())
+        Ok(InstalledBoundariesForProof {
+            service_dacl_sha256,
+            service_aces,
+            service_data_root_dacl_sha256,
+            service_data_root,
+        })
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -2369,7 +2437,9 @@ mod native {
 
             Ok(FailedUpgradeRollbackForProof {
                 candidate_sha256: digest_hex(&expected_candidate_sha256),
-                candidate_failure,
+                candidate_failure_code: "collector_service_proof_candidate_start_failed"
+                    .to_string(),
+                candidate_failure_detail: candidate_failure,
                 execution_marker_sha256,
                 restored_sha256: digest_hex(&expected_original_sha256),
                 restored_process_id,
@@ -2813,7 +2883,7 @@ mod native {
         read_multi_wide(info.pmszRequiredPrivileges)
     }
 
-    fn validate_service_dacl(service: &OwnedScHandle) -> Result<(), String> {
+    fn service_dacl_policy(service: &OwnedScHandle) -> Result<(Vec<AcePolicy>, String), String> {
         let mut needed = 0_u32;
         unsafe {
             QueryServiceObjectSecurity(
@@ -2852,7 +2922,16 @@ mod native {
             return Err(last_error("collector_service_dacl_invalid"));
         }
         let principals = SecurityPrincipals::load_base()?;
-        let aces = read_aces(dacl, &principals)?;
+        let dacl_sha256 = dacl_sha256(dacl, "collector_service_dacl")?;
+        Ok((read_aces(dacl, &principals)?, dacl_sha256))
+    }
+
+    fn validate_service_dacl(service: &OwnedScHandle) -> Result<(), String> {
+        let (aces, _) = service_dacl_policy(service)?;
+        validate_service_dacl_policy(&aces)
+    }
+
+    fn validate_service_dacl_policy(aces: &[AcePolicy]) -> Result<(), String> {
         let expected = [
             (PrincipalClass::LocalSystem, SERVICE_ALL_ACCESS),
             (PrincipalClass::Administrators, SERVICE_ALL_ACCESS),
@@ -3751,6 +3830,13 @@ mod native {
         handle: HANDLE,
         principals: &SecurityPrincipals,
     ) -> Result<SecurityPolicy, String> {
+        security_policy_with_dacl_sha256(handle, principals).map(|(policy, _)| policy)
+    }
+
+    fn security_policy_with_dacl_sha256(
+        handle: HANDLE,
+        principals: &SecurityPrincipals,
+    ) -> Result<(SecurityPolicy, String), String> {
         let security = OwnedSecurityInfo::read(handle, "collector_service_root_security_failed")?;
         let owner = principals.classify(security.owner);
         let mut control = 0_u16;
@@ -3761,13 +3847,51 @@ mod native {
             return Err(last_error("collector_service_root_control_failed"));
         }
         let aces = read_aces(security.dacl, principals)?;
+        let dacl_sha256 = dacl_sha256(security.dacl, "collector_service_root_dacl")?;
         drop(security);
-        Ok(SecurityPolicy {
-            owner,
-            dacl_protected: control & SE_DACL_PROTECTED != 0,
-            reparse: false,
-            aces,
-        })
+        Ok((
+            SecurityPolicy {
+                owner,
+                dacl_protected: control & SE_DACL_PROTECTED != 0,
+                reparse: false,
+                aces,
+            },
+            dacl_sha256,
+        ))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn security_policy_for_proof(policy: SecurityPolicy) -> SecurityPolicyForProof {
+        SecurityPolicyForProof {
+            owner: principal_for_proof(policy.owner),
+            dacl_protected: policy.dacl_protected,
+            reparse: policy.reparse,
+            aces: policy.aces.into_iter().map(ace_policy_for_proof).collect(),
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn ace_policy_for_proof(policy: AcePolicy) -> AcePolicyForProof {
+        AcePolicyForProof {
+            principal: principal_for_proof(policy.principal),
+            allow: policy.allow,
+            inherit_only: policy.inherit_only,
+            object_inherit: policy.object_inherit,
+            container_inherit: policy.container_inherit,
+            mask: policy.mask,
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn principal_for_proof(principal: PrincipalClass) -> SecurityPrincipalForProof {
+        match principal {
+            PrincipalClass::LocalSystem => SecurityPrincipalForProof::LocalSystem,
+            PrincipalClass::Administrators => SecurityPrincipalForProof::Administrators,
+            PrincipalClass::TrustedInstaller => SecurityPrincipalForProof::TrustedInstaller,
+            PrincipalClass::InteractiveUsers => SecurityPrincipalForProof::InteractiveUsers,
+            PrincipalClass::CollectorService => SecurityPrincipalForProof::CollectorService,
+            PrincipalClass::Other => SecurityPrincipalForProof::Other,
+        }
     }
 
     fn read_aces(
@@ -3808,6 +3932,24 @@ mod native {
             });
         }
         Ok(result)
+    }
+
+    pub(super) fn dacl_sha256(
+        dacl: *mut windows_sys::Win32::Security::ACL,
+        context: &str,
+    ) -> Result<String, String> {
+        if dacl.is_null() {
+            return Err(format!("{context}_missing"));
+        }
+        let size = usize::from(unsafe { (*dacl).AclSize });
+        if size < size_of::<windows_sys::Win32::Security::ACL>() {
+            return Err(format!("{context}_size_invalid"));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(dacl.cast::<u8>(), size) };
+        Ok(Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
     }
 
     fn validate_no_untrusted_writer(
@@ -4195,6 +4337,77 @@ mod tests {
                 mask: service_mask,
             },
         ]
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[test]
+    fn proof_policy_preserves_every_observed_principal_and_ace_flag() {
+        let policy = AcePolicy {
+            principal: PrincipalClass::Other,
+            allow: false,
+            inherit_only: true,
+            object_inherit: false,
+            container_inherit: true,
+            mask: 0x1234,
+        };
+        assert_eq!(
+            native::ace_policy_for_proof(policy),
+            AcePolicyForProof {
+                principal: SecurityPrincipalForProof::Other,
+                allow: false,
+                inherit_only: true,
+                object_inherit: false,
+                container_inherit: true,
+                mask: 0x1234,
+            }
+        );
+
+        let boundaries = InstalledBoundariesForProof {
+            service_dacl_sha256: "a".repeat(64),
+            service_aces: vec![native::ace_policy_for_proof(policy)],
+            service_data_root_dacl_sha256: "b".repeat(64),
+            service_data_root: SecurityPolicyForProof {
+                owner: SecurityPrincipalForProof::LocalSystem,
+                dacl_protected: true,
+                reparse: false,
+                aces: vec![native::ace_policy_for_proof(policy)],
+            },
+        };
+        let encoded = serde_json::to_vec(&boundaries).expect("serialize proof boundaries");
+        assert_eq!(
+            serde_json::from_slice::<InstalledBoundariesForProof>(&encoded)
+                .expect("deserialize proof boundaries"),
+            boundaries
+        );
+    }
+
+    #[test]
+    fn dacl_digest_binds_the_exact_acl_byte_sequence() {
+        let mut acl = windows_sys::Win32::Security::ACL {
+            AclRevision: 2,
+            Sbz1: 0,
+            AclSize: size_of::<windows_sys::Win32::Security::ACL>() as u16,
+            AceCount: 0,
+            Sbz2: 0,
+        };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const acl).cast::<u8>(),
+                size_of::<windows_sys::Win32::Security::ACL>(),
+            )
+        };
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let original = native::dacl_sha256(&raw mut acl, "fixture").expect("hash fixture ACL");
+        assert_eq!(original, expected);
+
+        acl.AceCount = 1;
+        assert_ne!(
+            native::dacl_sha256(&raw mut acl, "fixture").expect("hash changed fixture ACL"),
+            original
+        );
     }
 
     #[test]

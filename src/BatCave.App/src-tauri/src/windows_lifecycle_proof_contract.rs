@@ -812,7 +812,12 @@ pub(crate) enum LifecycleStage {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", tag = "state", content = "value")]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "snake_case",
+    tag = "state",
+    content = "value"
+)]
 pub(crate) enum Observation<T> {
     Present(T),
     Absent,
@@ -1561,6 +1566,29 @@ mod tests {
         injected_generation["observation"]["second_instance"]["collector_generation_before"] =
             serde_json::json!(7);
         assert!(serde_json::from_value::<DesktopPhaseResult>(injected_generation).is_err());
+    }
+
+    #[test]
+    fn observation_wire_contract_rejects_unknown_sibling_fields() {
+        let present = serde_json::json!({
+            "state": "present",
+            "value": 7,
+            "unexpected": true
+        });
+        assert!(serde_json::from_value::<Observation<u32>>(present).is_err());
+
+        let absent = serde_json::json!({
+            "state": "absent",
+            "unexpected": true
+        });
+        assert!(serde_json::from_value::<Observation<u32>>(absent).is_err());
+
+        let unknown = serde_json::json!({
+            "state": "unknown",
+            "value": "probe_failed",
+            "unexpected": true
+        });
+        assert!(serde_json::from_value::<Observation<u32>>(unknown).is_err());
     }
 
     fn passed_desktop_phase(phase: DesktopPhase) -> DesktopPhaseResult {

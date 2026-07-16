@@ -2,6 +2,7 @@
 mod evidence;
 mod lifecycle;
 mod native;
+mod private_evidence;
 
 use crate::windows_lifecycle_proof_contract::{
     message_sha256, parse_plan, plan_sha256, validate_desktop_phase_result, validate_envelope,
@@ -164,7 +165,8 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
         &plan.rollback_failing_service_fixture,
         "rollback_failing_service_fixture",
     )?;
-    let snapshot = native::capture_parent_preflight(&plan)?;
+    let controller_binding = native::current_controller_binding(&controller)?;
+    let snapshot = native::capture_parent_preflight(&plan, &[controller_binding])?;
     Ok(ParentPreflight {
         plan,
         repo_root,
@@ -479,6 +481,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
     rollback_failing_service_fixture.revalidate()?;
 
     let evidence = native::create_protected_evidence_root(&nonce, &pipe)?;
+    let worker_binding = native::current_controller_binding(&controller)?;
     send_worker_message(
         &mut pipe,
         &nonce,
@@ -502,6 +505,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
         pipe: &mut pipe,
         nonce: &nonce,
         gate: &mut gate,
+        controller_bindings: &[parent, worker_binding],
     });
     send_worker_message(
         &mut pipe,
