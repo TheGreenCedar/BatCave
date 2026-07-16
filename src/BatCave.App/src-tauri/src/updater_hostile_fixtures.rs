@@ -405,13 +405,8 @@ fn wrong_key_invalid_signature_and_tampered_bytes_fail_before_installation() {
 
 #[test]
 fn unreachable_loopback_endpoint_is_an_ordinary_check_failure() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve offline fixture port");
-    let endpoint = format!(
-        "http://{}/latest.json",
-        listener.local_addr().expect("read offline fixture address")
-    );
-    drop(listener);
-
-    let app = updater_app(&endpoint, FIXTURE_PUBLIC_KEY);
+    // Port zero cannot be a listening TCP endpoint. Using it directly avoids
+    // releasing an ephemeral port that a parallel fixture server can reuse.
+    let app = updater_app("http://127.0.0.1:0/latest.json", FIXTURE_PUBLIC_KEY);
     assert!(check(&app).is_err());
 }
