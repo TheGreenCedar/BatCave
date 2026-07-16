@@ -2638,6 +2638,9 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir(&root).expect("legacy CLI fixture root");
+        let root = strip_verbatim_disk_prefix(
+            std::fs::canonicalize(&root).expect("canonical legacy CLI fixture root"),
+        );
         let path = root.join(LEGACY_WINDOWS_CLI_NAME);
         let expected = b"known legacy CLI fixture";
         assert_eq!(native::retire_legacy_cli_fixture(&path, expected), Ok(()));
