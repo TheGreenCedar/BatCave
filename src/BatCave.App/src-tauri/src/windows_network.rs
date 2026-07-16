@@ -363,8 +363,8 @@ mod windows_impl {
         core::GUID,
         Win32::{
             Foundation::{
-                ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
-                ERROR_WMI_INSTANCE_NOT_FOUND,
+                ERROR_ALREADY_EXISTS, ERROR_CTX_CLOSE_PENDING, ERROR_INSUFFICIENT_BUFFER,
+                ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
             },
             System::Diagnostics::Etw::{
                 CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW, TcpIpGuid,
@@ -590,7 +590,7 @@ mod windows_impl {
             }
             if let Some(process_handle) = self.process_handle.take() {
                 let close_result = unsafe { CloseTrace(process_handle) };
-                if close_result != ERROR_SUCCESS {
+                if !close_trace_succeeded(close_result) {
                     errors.push(format!(
                         "network_attribution_close_trace_failed:{close_result}"
                     ));
@@ -664,6 +664,10 @@ mod windows_impl {
                 "network_attribution_start_trace_failed:{start_result}"
             )),
         }
+    }
+
+    fn close_trace_succeeded(result: u32) -> bool {
+        matches!(result, ERROR_SUCCESS | ERROR_CTX_CLOSE_PENDING)
     }
 
     impl Drop for WindowsNetworkAttributionMonitor {
@@ -1183,6 +1187,13 @@ mod windows_impl {
                 trace_handle_from_start_result(ERROR_ALREADY_EXISTS, 0),
                 Err("network_attribution_existing_trace_session".to_string())
             );
+        }
+
+        #[test]
+        fn close_trace_accepts_async_consumer_shutdown() {
+            assert!(close_trace_succeeded(ERROR_SUCCESS));
+            assert!(close_trace_succeeded(ERROR_CTX_CLOSE_PENDING));
+            assert!(!close_trace_succeeded(ERROR_ALREADY_EXISTS));
         }
 
         #[test]

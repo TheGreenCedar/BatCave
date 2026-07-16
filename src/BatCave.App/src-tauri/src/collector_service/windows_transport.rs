@@ -71,7 +71,7 @@ pub(crate) fn run_pipe_server(
         .into_owned();
     let policy = ClientTrustPolicy::new(&service_directory).map_err(|error| error.to_string())?;
     let mut workers = Vec::<JoinHandle<()>>::new();
-    let mut first_instance = true;
+    let mut pipe = PipeConnection::create(true)?;
 
     while !stop.load(Ordering::Acquire) {
         reap_workers(&mut workers);
@@ -80,16 +80,28 @@ pub(crate) fn run_pipe_server(
             continue;
         }
 
-        let pipe = PipeConnection::create(first_instance)?;
-        first_instance = false;
-        while !stop.load(Ordering::Acquire) && !pipe.connect_if_ready()? {
-            std::thread::sleep(PIPE_POLL_INTERVAL);
-        }
+        let connected = loop {
+            if stop.load(Ordering::Acquire) {
+                break false;
+            }
+            match pipe.connect_state()? {
+                PipeConnectState::Connected => break true,
+                PipeConnectState::Abandoned => break false,
+                PipeConnectState::Listening => std::thread::sleep(PIPE_POLL_INTERVAL),
+            }
+        };
         if stop.load(Ordering::Acquire) {
             break;
         }
+        // Create the successor while this instance still owns the namespace.
+        let next_pipe = PipeConnection::create(false)?;
+        if !connected {
+            pipe = next_pipe;
+            continue;
+        }
+        let connected_pipe = std::mem::replace(&mut pipe, next_pipe);
 
-        let peer = match verify_pipe_peer(&pipe, &policy) {
+        let peer = match verify_pipe_peer(&connected_pipe, &policy) {
             Ok(peer) => peer,
             Err(_) => continue,
         };
@@ -100,8 +112,13 @@ pub(crate) fn run_pipe_server(
             std::thread::Builder::new()
                 .name("batcave-collector-client".to_string())
                 .spawn(move || {
-                    let _ =
-                        serve_client(pipe, peer, worker_stop, worker_identity, worker_snapshots);
+                    let _ = serve_client(
+                        connected_pipe,
+                        peer,
+                        worker_stop,
+                        worker_identity,
+                        worker_snapshots,
+                    );
                 })
                 .map_err(|error| format!("collector_service_client_spawn_failed:{error}"))?,
         );
@@ -489,6 +506,25 @@ struct PipeConnection {
     handle: OwnedHandle,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PipeConnectState {
+    Listening,
+    Connected,
+    Abandoned,
+}
+
+fn classify_pipe_connect(connected: bool, error: u32) -> Result<PipeConnectState, String> {
+    if connected || error == ERROR_PIPE_CONNECTED {
+        Ok(PipeConnectState::Connected)
+    } else {
+        match error {
+            ERROR_PIPE_LISTENING => Ok(PipeConnectState::Listening),
+            ERROR_NO_DATA => Ok(PipeConnectState::Abandoned),
+            error => Err(format!("collector_service_pipe_connect_failed:{error}")),
+        }
+    }
+}
+
 impl PipeConnection {
     fn create(first_instance: bool) -> Result<Self, String> {
         let mut security = PipeSecurity::new()?;
@@ -519,15 +555,9 @@ impl PipeConnection {
         self.handle.raw()
     }
 
-    fn connect_if_ready(&self) -> Result<bool, String> {
-        if unsafe { ConnectNamedPipe(self.raw(), std::ptr::null_mut()) } != 0 {
-            return Ok(true);
-        }
-        match unsafe { GetLastError() } {
-            ERROR_PIPE_CONNECTED => Ok(true),
-            ERROR_PIPE_LISTENING => Ok(false),
-            error => Err(format!("collector_service_pipe_connect_failed:{error}")),
-        }
+    fn connect_state(&self) -> Result<PipeConnectState, String> {
+        let connected = unsafe { ConnectNamedPipe(self.raw(), std::ptr::null_mut()) } != 0;
+        classify_pipe_connect(connected, unsafe { GetLastError() })
     }
 
     fn client_identity(&self) -> Result<(u32, u32), String> {
@@ -728,5 +758,22 @@ mod tests {
     #[test]
     fn client_restricted_pipe_security_descriptor_is_accepted_by_windows() {
         PipeSecurity::new().expect("valid protected pipe security descriptor");
+    }
+
+    #[test]
+    fn abandoned_nonblocking_pipe_instance_does_not_fail_the_listener() {
+        assert_eq!(
+            classify_pipe_connect(false, ERROR_NO_DATA),
+            Ok(PipeConnectState::Abandoned)
+        );
+        assert_eq!(
+            classify_pipe_connect(false, ERROR_PIPE_LISTENING),
+            Ok(PipeConnectState::Listening)
+        );
+        assert_eq!(
+            classify_pipe_connect(false, ERROR_PIPE_CONNECTED),
+            Ok(PipeConnectState::Connected)
+        );
+        assert!(classify_pipe_connect(false, 5).is_err());
     }
 }

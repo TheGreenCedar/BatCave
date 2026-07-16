@@ -95,8 +95,9 @@ impl ProtectedEtwLeaseRoot {
     /// If the lease or owner-lock leaf already exists, the caller must also
     /// prove that it is a service-owned regular file whose access control
     /// excludes unprivileged writers. The directory must already exist. Its
-    /// security must remain held by the installer/service boundary for this
-    /// capability's lifetime.
+    /// security and immutable owner-lock identity must remain held by the
+    /// installer/service boundary for this capability's lifetime; the mutable
+    /// lease is revalidated around each authority-gated atomic replacement.
     pub(crate) unsafe fn from_platform_verified<G>(
         path: PathBuf,
         install_id: [u8; 16],

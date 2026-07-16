@@ -9,6 +9,7 @@ const PRODUCT_DIRECTORY_NAME: &str = "BatCave Monitor";
 const SERVICE_EXECUTABLE_NAME: &str = "batcave-collector-service.exe";
 const SERVICE_ACCOUNT: &str = "LocalSystem";
 const SERVICE_OWNER_MARKER: &str = "dev.batcave.monitor/service-v1";
+const SERVICE_FAILURE_VALUE: &str = "BatCaveLastFailure";
 const SERVICE_TYPE_OWN_PROCESS: u32 = 0x10;
 const ERROR_FILE_NOT_FOUND_CODE: u32 = 2;
 const ERROR_PATH_NOT_FOUND_CODE: u32 = 3;
@@ -65,6 +66,14 @@ fn run_verb(verb: ProvisionVerb) -> Result<(), String> {
 
 pub(crate) fn open_protected_etw_lease_root() -> Result<ProtectedEtwLeaseRoot, String> {
     native::open_protected_etw_lease_root()
+}
+
+pub(crate) fn record_service_failure(category: &str) {
+    let _ = native::record_service_failure(category);
+}
+
+pub(crate) fn clear_service_failure() {
+    let _ = native::clear_service_failure();
 }
 
 pub(crate) fn acquire_service_lifecycle_marker() -> Result<impl std::fmt::Debug, String> {
@@ -272,8 +281,8 @@ mod native {
         },
         System::{
             Registry::{
-                RegCloseKey, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY_LOCAL_MACHINE,
-                KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
+                RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+                HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
             },
             Services::{
                 ChangeServiceConfig2W, CloseServiceHandle, ControlService, CreateServiceW,
@@ -318,6 +327,8 @@ mod native {
     const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
     const SERVICE_QUERY_STATUS_MASK: u32 = 0x0000_0004;
     const SERVICE_LIFECYCLE_FILE_NAME: &str = "process-owner.v1.lock";
+    const SERVICE_LIFECYCLE_PROBE_ACCESS: u32 =
+        FILE_READ_ATTRIBUTES | FILE_WRITE_DATA | READ_CONTROL;
     const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const GENERIC_ALL: u32 = 0x1000_0000;
@@ -719,7 +730,7 @@ mod native {
         let file = unsafe {
             CreateFileW(
                 path.as_ptr(),
-                FILE_READ_ATTRIBUTES | READ_CONTROL,
+                SERVICE_LIFECYCLE_PROBE_ACCESS,
                 0,
                 ptr::null(),
                 OPEN_EXISTING,
@@ -763,6 +774,11 @@ mod native {
         } else {
             Err(format!("collector_service_residue_probe_failed:{error}"))
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn lifecycle_probe_requests_write_access() -> bool {
+        SERVICE_LIFECYCLE_PROBE_ACCESS & FILE_WRITE_DATA != 0
     }
 
     pub(super) fn prepare_upgrade() -> Result<(), String> {
@@ -1208,6 +1224,38 @@ mod native {
         Ok(())
     }
 
+    pub(super) fn record_service_failure(category: &str) -> Result<(), String> {
+        let key = open_service_registry_key(KEY_SET_VALUE)?;
+        let name = wide(SERVICE_FAILURE_VALUE);
+        let value = wide(category);
+        let status = unsafe {
+            RegSetValueExW(
+                key.0,
+                name.as_ptr(),
+                0,
+                REG_SZ,
+                value.as_ptr().cast(),
+                (value.len() * size_of::<u16>()) as u32,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(format!("collector_service_failure_record_failed:{status}"))
+        }
+    }
+
+    pub(super) fn clear_service_failure() -> Result<(), String> {
+        let key = open_service_registry_key(KEY_SET_VALUE)?;
+        let name = wide(SERVICE_FAILURE_VALUE);
+        let status = unsafe { RegDeleteValueW(key.0, name.as_ptr()) };
+        if status == 0 || status == ERROR_FILE_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(format!("collector_service_failure_clear_failed:{status}"))
+        }
+    }
+
     fn read_owner_marker() -> Result<Option<String>, String> {
         let key = match open_service_registry_key(KEY_QUERY_VALUE) {
             Ok(key) => key,
@@ -1359,7 +1407,7 @@ mod native {
         }
         if status.dwCurrentState == SERVICE_STOPPED {
             prove_service_lifecycle_settled(lifecycle_required_if_stopped)?;
-            return Ok(());
+            return validate_clean_stopped_status(&status);
         }
         if status.dwCurrentState == SERVICE_STOP_PENDING {
             require_service_lifecycle_active()?;
@@ -1368,10 +1416,7 @@ mod native {
             prove_service_lifecycle_settled(true)?;
             wait_service_process_exit(&process)?;
             status = query_service_status(service)?;
-            if status.dwCurrentState != SERVICE_STOPPED {
-                return Err("collector_service_stop_settlement_unproven".to_string());
-            }
-            return Ok(());
+            return validate_clean_stopped_status(&status);
         }
         if status.dwCurrentState != SERVICE_RUNNING {
             return Err(format!(
@@ -1392,8 +1437,20 @@ mod native {
         prove_service_lifecycle_settled(true)?;
         wait_service_process_exit(&process)?;
         status = query_service_status(service)?;
+        validate_clean_stopped_status(&status)
+    }
+
+    pub(super) fn validate_clean_stopped_status(
+        status: &SERVICE_STATUS_PROCESS,
+    ) -> Result<(), String> {
         if status.dwCurrentState != SERVICE_STOPPED {
             return Err("collector_service_stop_settlement_unproven".to_string());
+        }
+        if status.dwWin32ExitCode != ERROR_SUCCESS {
+            return Err(format!(
+                "collector_service_stop_reported_failure:{}:{}",
+                status.dwWin32ExitCode, status.dwServiceSpecificExitCode
+            ));
         }
         Ok(())
     }
@@ -1598,7 +1655,9 @@ mod native {
         let mut leaves = Vec::new();
         for leaf in [ETW_LEASE_FILE_NAME, ETW_OWNER_LOCK_FILE_NAME] {
             if let Some(handle) = verify_optional_leaf(&roots.service.join(leaf), &principals)? {
-                leaves.push(handle);
+                if retain_verified_leaf(leaf) {
+                    leaves.push(handle);
+                }
             }
         }
         let guard = ProtectedRootGuard {
@@ -1609,6 +1668,15 @@ mod native {
         };
         unsafe { ProtectedEtwLeaseRoot::from_platform_verified(roots.service, install_id, guard) }
             .map_err(|error| format!("collector_service_protected_root_invalid:{error:?}"))
+    }
+
+    fn retain_verified_leaf(name: &str) -> bool {
+        name == ETW_OWNER_LOCK_FILE_NAME
+    }
+
+    #[cfg(test)]
+    pub(super) fn mutable_lease_handle_is_released_after_verification() -> bool {
+        !retain_verified_leaf(ETW_LEASE_FILE_NAME) && retain_verified_leaf(ETW_OWNER_LOCK_FILE_NAME)
     }
 
     fn protected_root_install_id(handle: HANDLE) -> Result<[u8; 16], String> {
@@ -2333,6 +2401,57 @@ mod tests {
         assert!(is_missing_path_error(ERROR_FILE_NOT_FOUND_CODE));
         assert!(is_missing_path_error(ERROR_PATH_NOT_FOUND_CODE));
         assert!(!is_missing_path_error(5));
+    }
+
+    #[test]
+    fn lifecycle_probe_requests_access_that_conflicts_with_the_owner() {
+        assert!(native::lifecycle_probe_requests_write_access());
+    }
+
+    #[test]
+    fn mutable_lease_verification_does_not_block_atomic_replacement() {
+        assert!(native::mutable_lease_handle_is_released_after_verification());
+    }
+
+    #[test]
+    fn stopped_service_status_requires_a_clean_scm_exit() {
+        use windows_sys::Win32::System::Services::{
+            SERVICE_RUNNING, SERVICE_STATUS_PROCESS, SERVICE_STOPPED,
+        };
+
+        let clean = SERVICE_STATUS_PROCESS {
+            dwCurrentState: SERVICE_STOPPED,
+            ..Default::default()
+        };
+        assert_eq!(native::validate_clean_stopped_status(&clean), Ok(()));
+
+        let failed = SERVICE_STATUS_PROCESS {
+            dwWin32ExitCode: 1_066,
+            dwServiceSpecificExitCode: 1,
+            ..clean
+        };
+        assert_eq!(
+            native::validate_clean_stopped_status(&failed),
+            Err("collector_service_stop_reported_failure:1066:1".to_string())
+        );
+
+        let stale_specific = SERVICE_STATUS_PROCESS {
+            dwServiceSpecificExitCode: 9,
+            ..clean
+        };
+        assert_eq!(
+            native::validate_clean_stopped_status(&stale_specific),
+            Ok(())
+        );
+
+        let running = SERVICE_STATUS_PROCESS {
+            dwCurrentState: SERVICE_RUNNING,
+            ..clean
+        };
+        assert_eq!(
+            native::validate_clean_stopped_status(&running),
+            Err("collector_service_stop_settlement_unproven".to_string())
+        );
     }
 
     #[test]

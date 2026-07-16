@@ -95,6 +95,7 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
     let _lifecycle_marker = match windows_provisioner::acquire_service_lifecycle_marker() {
         Ok(marker) => marker,
         Err(error) => {
+            windows_provisioner::record_service_failure(sanitized_failure_reason(&error));
             eprintln!("{error}");
             let _ = report_stopped(status_handle, ERROR_SERVICE_SPECIFIC_ERROR, 1);
             return;
@@ -108,9 +109,38 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
     } else {
         (ERROR_SERVICE_SPECIFIC_ERROR, 1)
     };
-    let _ = report_stopped(status_handle, exit_code, service_specific);
-    if let Err(error) = result {
+    if let Err(error) = &result {
+        windows_provisioner::record_service_failure(sanitized_failure_reason(error));
         eprintln!("{error}");
+    }
+    let _ = report_stopped(status_handle, exit_code, service_specific);
+}
+
+fn sanitized_failure_reason(error: &str) -> &'static str {
+    if error.contains("collector_service_pipe_") || error.contains("transport") {
+        "transport"
+    } else if error.contains("collector_service_etw_recovery_") {
+        "etw_recovery"
+    } else if error.contains("collector_service_etw_") || error.contains("network_attribution_") {
+        if error.contains("settlement")
+            || error.contains("stopping")
+            || error.contains("shutdown")
+            || error.contains("session_not_absent")
+            || error.contains("lease_remove")
+            || error.contains("close_trace")
+            || error.contains("consumer_join")
+            || error.contains("stop_trace")
+        {
+            "etw_settlement"
+        } else {
+            "etw_startup"
+        }
+    } else if error.contains("collector_engine") || error.contains("collector_") {
+        "collector"
+    } else if error.contains("lifecycle") {
+        "lifecycle"
+    } else {
+        "startup"
     }
 }
 
@@ -153,6 +183,7 @@ fn run_service_body(
     }
     let snapshots: Arc<dyn SnapshotProvider> =
         Arc::new(CollectorSnapshotSource::new(collector, instance_id));
+    windows_provisioner::clear_service_failure();
     report_status(status_handle, SERVICE_RUNNING, 0, 0)?;
 
     let transport = run_pipe_server(Arc::clone(&stop), identity, snapshots);
@@ -306,12 +337,22 @@ fn recover_etw_start(
     snapshot: EtwLeaseSnapshot,
 ) -> Result<EtwLeaseSnapshot, String> {
     let session = NetworkAttributionMonitor::observe_session();
-    let controller = match snapshot.observation() {
+    let observed_controller = match snapshot.observation() {
         EtwLeaseObservation::Trusted(lease) if lease.boot_identity == expected.boot_identity => {
             observe_controller(&lease.controller)
         }
         _ => EtwControllerObservation::QueryUnavailable,
     };
+    // The caller holds both the service lifecycle marker and the exclusive ETW
+    // owner guard. If the exact ETW session is also absent, no other process can
+    // still write this lease, even when Windows will not reopen the dead
+    // LocalSystem PID for an advisory creation-time query.
+    let controller = controller_with_exclusive_owner(&session, observed_controller);
+    if let EtwLeaseObservation::Trusted(lease) = snapshot.observation() {
+        if stale_prior_generation_can_be_discarded(expected, lease, &session, &controller) {
+            return remove_stale_lease(store, owner, &snapshot);
+        }
+    }
     let decision = decide_etw_recovery(
         expected,
         snapshot.observation(),
@@ -374,6 +415,43 @@ fn recover_etw_start(
         EtwRecoveryDecision::Conflict(_) | EtwRecoveryDecision::Retain(_) => Err(format!(
             "collector_service_etw_recovery_blocked:{decision:?}"
         )),
+    }
+}
+
+fn stale_prior_generation_can_be_discarded(
+    expected: &EtwExpectedOwnerV1,
+    lease: &EtwLeaseV1,
+    session: &EtwSessionObservation,
+    controller: &EtwControllerObservation,
+) -> bool {
+    if lease.service_generation == expected.service_generation
+        || lease.phase != EtwLeasePhase::Stopping
+    {
+        return false;
+    }
+    let mut prior = expected.clone();
+    prior.service_generation = lease.service_generation;
+    decide_etw_recovery(
+        &prior,
+        &EtwLeaseObservation::Trusted(lease.clone()),
+        session,
+        controller,
+        EtwReclaimAttempt::NotAttempted,
+    ) == (EtwRecoveryDecision::StartFresh {
+        discard_stale_lease: true,
+    })
+}
+
+fn controller_with_exclusive_owner(
+    session: &EtwSessionObservation,
+    controller: EtwControllerObservation,
+) -> EtwControllerObservation {
+    if matches!(session, EtwSessionObservation::Absent)
+        && matches!(controller, EtwControllerObservation::QueryUnavailable)
+    {
+        EtwControllerObservation::Absent
+    } else {
+        controller
     }
 }
 
@@ -636,6 +714,43 @@ mod tests {
     }
 
     #[test]
+    fn service_failures_expose_only_stable_failure_categories() {
+        assert_eq!(
+            sanitized_failure_reason("collector_service_pipe_connect_failed:232"),
+            "transport"
+        );
+        assert_eq!(
+            sanitized_failure_reason("collector_service_etw_recovery_incomplete:Retain"),
+            "etw_recovery"
+        );
+        assert_eq!(
+            sanitized_failure_reason("network_attribution_settlement_unproven"),
+            "etw_settlement"
+        );
+        assert_eq!(
+            sanitized_failure_reason("collector_service_etw_session_not_absent"),
+            "etw_settlement"
+        );
+        assert_eq!(
+            sanitized_failure_reason("network_attribution_close_trace_failed:7007"),
+            "etw_settlement"
+        );
+        assert_eq!(
+            sanitized_failure_reason("network_attribution_consumer_join_timeout"),
+            "etw_settlement"
+        );
+        assert_eq!(
+            sanitized_failure_reason("network_attribution_stop_trace_failed:5"),
+            "etw_settlement"
+        );
+        assert_eq!(
+            sanitized_failure_reason("collector_service_etw_intent_write_failed:AccessDenied"),
+            "etw_startup"
+        );
+        assert_eq!(sanitized_failure_reason("private path text"), "startup");
+    }
+
+    #[test]
     fn service_etw_recovery_rejects_unowned_or_untrusted_state() {
         let expected = expected_owner();
         assert_eq!(
@@ -658,6 +773,75 @@ mod tests {
             ),
             EtwRecoveryDecision::Conflict(EtwLeaseConflict::CorruptLease)
         );
+    }
+
+    #[test]
+    fn exclusive_owner_and_absent_session_corroborate_an_unqueryable_controller() {
+        assert_eq!(
+            controller_with_exclusive_owner(
+                &EtwSessionObservation::Absent,
+                EtwControllerObservation::QueryUnavailable,
+            ),
+            EtwControllerObservation::Absent
+        );
+        assert_eq!(
+            controller_with_exclusive_owner(
+                &EtwSessionObservation::QueryUnavailable,
+                EtwControllerObservation::QueryUnavailable,
+            ),
+            EtwControllerObservation::QueryUnavailable
+        );
+        let live = EtwControllerIdentityV1 {
+            process_id: 7,
+            process_started_at: 11,
+        };
+        assert_eq!(
+            controller_with_exclusive_owner(
+                &EtwSessionObservation::Absent,
+                EtwControllerObservation::Present(live.clone()),
+            ),
+            EtwControllerObservation::Present(live)
+        );
+    }
+
+    #[test]
+    fn prior_generation_is_discarded_only_as_proven_stale_metadata() {
+        let expected = expected_owner();
+        let lease = EtwLeaseV1 {
+            schema_version: ETW_LEASE_SCHEMA_VERSION,
+            phase: EtwLeasePhase::Stopping,
+            install_id: expected.install_id,
+            service_generation: [9; 16],
+            service_instance_id: [8; 16],
+            boot_identity: expected.boot_identity,
+            controller: EtwControllerIdentityV1 {
+                process_id: 7,
+                process_started_at: 11,
+            },
+            session: expected.session.clone(),
+        };
+        assert!(stale_prior_generation_can_be_discarded(
+            &expected,
+            &lease,
+            &EtwSessionObservation::Absent,
+            &EtwControllerObservation::Absent,
+        ));
+        assert!(!stale_prior_generation_can_be_discarded(
+            &expected,
+            &lease,
+            &EtwSessionObservation::Present(expected.session.clone()),
+            &EtwControllerObservation::Absent,
+        ));
+        for phase in [EtwLeasePhase::Intent, EtwLeasePhase::Active] {
+            let mut unsafe_phase = lease.clone();
+            unsafe_phase.phase = phase;
+            assert!(!stale_prior_generation_can_be_discarded(
+                &expected,
+                &unsafe_phase,
+                &EtwSessionObservation::Absent,
+                &EtwControllerObservation::Absent,
+            ));
+        }
     }
 
     #[test]
