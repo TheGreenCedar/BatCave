@@ -147,6 +147,11 @@ pub(crate) fn validate_installed_boundaries_for_proof(expected_image: &Path) -> 
     native::validate_installed_boundaries_for_proof(expected_image)
 }
 
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
+    native::data_roots_for_proof()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PrincipalClass {
     LocalSystem,
@@ -2121,6 +2126,12 @@ mod native {
             let _ = verify_optional_leaf(&roots.service.join(leaf), &principals)?;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
+        let roots = fixed_roots()?;
+        Ok((roots.product, roots.service))
     }
 
     struct QueriedServiceConfig {

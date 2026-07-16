@@ -143,6 +143,8 @@ pub(crate) struct BoundarySnapshot {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct ElevatedMachineSnapshot {
     pub(crate) machine: PreflightSnapshot,
+    pub(crate) product_data_root: Observation<DirectorySnapshot>,
+    pub(crate) service_data_root: Observation<DirectorySnapshot>,
     pub(crate) installed_boundaries: Observation<BoundarySnapshot>,
 }
 
@@ -814,6 +816,17 @@ pub(crate) fn capture_machine_snapshot() -> PreflightSnapshot {
 
 pub(crate) fn capture_elevated_machine_snapshot() -> ElevatedMachineSnapshot {
     let machine = capture_machine_snapshot();
+    let (product_data_root, service_data_root) =
+        match crate::collector_service::windows_provisioner::data_roots_for_proof() {
+            Ok((product, service)) => (
+                observe_directory(&product, "product_data_root"),
+                observe_directory(&service, "service_data_root"),
+            ),
+            Err(reason) => (
+                Observation::Unknown(reason.clone()),
+                Observation::Unknown(reason),
+            ),
+        };
     let installed_boundaries = match &machine.service {
         Observation::Present(_) => {
             match crate::collector_service::windows_provisioner::validate_installed_boundaries_for_proof(
@@ -831,6 +844,8 @@ pub(crate) fn capture_elevated_machine_snapshot() -> ElevatedMachineSnapshot {
     };
     ElevatedMachineSnapshot {
         machine,
+        product_data_root,
+        service_data_root,
         installed_boundaries,
     }
 }
@@ -973,6 +988,14 @@ pub(crate) fn require_elevated_installed_candidate(
         &snapshot.installed_boundaries,
         &format!("{label}_installed_boundaries"),
     )?;
+    require_present(
+        &snapshot.product_data_root,
+        &format!("{label}_product_data_root"),
+    )?;
+    require_present(
+        &snapshot.service_data_root,
+        &format!("{label}_service_data_root"),
+    )?;
     Ok(())
 }
 
@@ -1008,6 +1031,14 @@ pub(crate) fn require_elevated_total_product_absence(
     require_absent(
         &snapshot.installed_boundaries,
         &format!("{label}_installed_boundaries"),
+    )?;
+    require_absent(
+        &snapshot.product_data_root,
+        &format!("{label}_product_data_root"),
+    )?;
+    require_absent(
+        &snapshot.service_data_root,
+        &format!("{label}_service_data_root"),
     )
 }
 

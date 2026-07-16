@@ -216,7 +216,13 @@ fn run_parent() -> Result<i32, String> {
                     return Err("lifecycle_worker_failure_before_acceptance".to_string());
                 }
                 validate_worker_result(&result, false)?;
-                let _ = worker.wait(Duration::from_secs(30));
+                let exit_code = worker.wait(Duration::from_secs(30))?;
+                preflight.controller.revalidate()?;
+                preflight.baseline.revalidate()?;
+                preflight.final_candidate.revalidate()?;
+                if exit_code != 0 {
+                    return Err("lifecycle_worker_failure_exit_mismatch".to_string());
+                }
                 print_json(&ControllerOutcome {
                     disposition: "worker_failed",
                     reason: result.failure,
