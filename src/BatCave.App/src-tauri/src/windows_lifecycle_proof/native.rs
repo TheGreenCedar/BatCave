@@ -2584,6 +2584,8 @@ mod tests {
                 random_hex(16).expect("unique lifecycle scratch")
             ));
             fs::create_dir(&root).expect("create lifecycle scratch");
+            let root =
+                canonical_real_directory(&root, "scratch").expect("canonical lifecycle scratch");
             let root_wide = wide(root.as_os_str());
             let handle = unsafe {
                 CreateFileW(
