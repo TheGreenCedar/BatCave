@@ -79,7 +79,7 @@ mod authority {
         expected_size: usize,
         expected_sha256: [u8; 32],
         step_timeout: Duration,
-        probe_delay: Duration,
+        probe_behavior: ProbeBehavior,
         cleanup_fails_once: bool,
     }
 
@@ -101,9 +101,9 @@ mod authority {
         behavior: ProbeBehavior,
         cleanup_fails_once: bool,
     ) -> ClosedPlan {
-        let (step_timeout, probe_delay) = match behavior {
-            ProbeBehavior::Normal => (Duration::from_secs(1), Duration::from_millis(2)),
-            ProbeBehavior::Slow => (Duration::from_millis(1), Duration::from_millis(15)),
+        let step_timeout = match behavior {
+            ProbeBehavior::Normal => Duration::from_secs(1),
+            ProbeBehavior::Slow => Duration::from_millis(1),
         };
         ClosedPlan {
             binding_id: format!("prototype-{}", profile.id().replace([':', '_'], "-")),
@@ -111,7 +111,7 @@ mod authority {
             expected_size: expected.len(),
             expected_sha256: digest(expected),
             step_timeout,
-            probe_delay,
+            probe_behavior: behavior,
             cleanup_fails_once,
         }
     }
@@ -281,15 +281,24 @@ mod authority {
                     .as_ref()
                     .expect("acquired authority owns exact bytes"),
             );
-            let delay = self.plan.probe_delay;
+            let behavior = self.plan.probe_behavior;
             let (sender, receiver) = mpsc::sync_channel(1);
+            let (release_sender, release_receiver) = mpsc::sync_channel(0);
             let worker = thread::spawn(move || {
-                thread::sleep(delay);
+                match behavior {
+                    ProbeBehavior::Normal => thread::sleep(Duration::from_millis(2)),
+                    ProbeBehavior::Slow => {
+                        let _ = release_receiver.recv();
+                    }
+                }
                 let observation = (bytes.len(), digest(&bytes));
                 let _ = sender.send(observation);
             });
 
             let observation = receiver.recv_timeout(self.plan.step_timeout);
+            if matches!(behavior, ProbeBehavior::Slow) {
+                let _ = release_sender.send(());
+            }
             self.phase = Phase::Settling;
             let settled = worker.join().is_ok();
 
