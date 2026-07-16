@@ -2,16 +2,16 @@
 
 The installed collector-service acceptance matrix must run through one source-controlled controller. Temporary PowerShell orchestration, ad hoc service commands, and repeated elevation attempts are not evidence.
 
-This document is the implementation gate for the attended #69/#70 Windows proof. It does not claim that the controller or installed lifecycle evidence already exists.
+This document is the implementation gate for the attended #69/#70 Windows proof. A private source-controlled controller now owns the fixed plan, exact artifact binding, authenticated one-elevation broker, protected evidence root, and Job Object process settlement. Its mutation entry remains deliberately fail-closed with `lifecycle_controller_not_reviewed` until the complete lifecycle sequence and independent review are accepted. No installed lifecycle evidence is claimed yet.
 
 ## Fixed architecture
 
 The controller is a private Rust proof binary with two fixed modes:
 
-1. A standard-user parent performs every read-only preflight, creates a 256-bit nonce and monotonic request sequence, retains no-write/no-delete handles for the exact installers, launches standard-token desktop phases, and requests one elevation.
-2. One elevated worker authenticates that closed request, creates a protected private staging root, copies and revalidates the exact installer bytes, and executes a compiled lifecycle state machine. The request cannot supply a command, arguments, destination, observation, result, or evidence payload.
+1. A standard-user parent performs every read-only preflight available to its token, creates a 256-bit nonce and monotonic request sequence, retains no-write/no-delete handles for the exact installers, launches standard-token desktop phases, and requests one elevation.
+2. One elevated worker authenticates the named-pipe peer by PID, process creation time, user SID, session, token elevation, controller file identity, and controller SHA-256. Each nonce-bound message also carries a canonical payload digest. The worker creates a protected private staging root, completes the privileged pre-mutation observations that the standard token cannot read, copies and revalidates the exact installer bytes, and executes a compiled lifecycle state machine. The request cannot supply a command, arguments, destination, observation, result, or evidence payload.
 
-A thin PowerShell wrapper may build and start the parent. It must not own installer, service, process, cleanup, or evidence decisions.
+The thin `scripts/run-windows-lifecycle-proof.ps1` wrapper may hash-check and stage the two plan-bound installers, build the exact controller head, copy those controller bytes out of Cargo's hard-linked output into the private proof staging root, and select `preflight` or the explicit `-Run` entry. It must not own installer arguments, service actions, process settlement, cleanup, observations, or evidence decisions.
 
 Every installer, uninstaller, desktop, WebView, and proof child belongs to an owned kill-on-close Job Object with an absolute deadline. The worker creates each child suspended, assigns it to the Job, resumes it, waits for the entire process tree, and revalidates the owned bytes only after the Job reports zero active processes. Timeout terminates the Job and proves settlement before any cleanup or further mutation.
 
@@ -30,9 +30,9 @@ The parent stops before elevation unless all of these checks pass:
 - The repository, branch, exact commit, installer paths, file sizes, and SHA-256 values match the requested proof packet.
 - The controller and both worker modes passed unit tests and exact-head build validation.
 - The current machine state is one documented allowlisted starting state; an access error or malformed state is not treated as absence.
-- The install root, service registration, uninstall registration, current binaries, service data root, and user-state roots have captured identities and ACLs.
+- The standard token captures the install root, service status, uninstall registration, current binaries, product processes, and readable user-state roots. The authenticated elevated worker must capture the service DACL and protected service data root before its first mutation; neither ACL is weakened for proof convenience.
 - No BatCave desktop, WebView, installer, uninstaller, or prior controller process is running.
-- The evidence root contains no stale request, response, completion, failure, PID, or log marker.
+- The fixed protected `%ProgramData%` evidence leaf for the nonce does not already exist. The controller never reuses or clears a stale evidence root.
 - An independent review accepted the exact controller head.
 
 Every environmental probe returns exactly one of:
@@ -63,7 +63,9 @@ Reboot and independent multi-user evidence remain separate attended packets when
 
 ## Required observations
 
-Each stage records bounded JSON with:
+Each stage records bounded private JSON with exact machine paths under the protected local evidence root. A distinct sanitized export replaces those paths with logical root identities and relative leaves before it can leave the machine.
+
+Each stage records:
 
 - service SCM state, PID, creation time, exact image path and digest, account, type, start mode, exit codes, recovery configuration, owner marker, and service DACL;
 - pipe presence and server PID;

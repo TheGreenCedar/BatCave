@@ -142,6 +142,11 @@ pub(crate) fn acquire_service_lifecycle_marker() -> Result<impl std::fmt::Debug,
     native::acquire_service_lifecycle_marker()
 }
 
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn validate_installed_boundaries_for_proof(expected_image: &Path) -> Result<(), String> {
+    native::validate_installed_boundaries_for_proof(expected_image)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PrincipalClass {
     LocalSystem,
@@ -281,7 +286,7 @@ fn fixed_path_eq(left: &Path, right: &Path) -> bool {
         })
 }
 
-fn strip_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
     use std::{
         ffi::OsString,
         os::windows::ffi::{OsStrExt, OsStringExt},
@@ -2084,6 +2089,38 @@ mod native {
             return Err("collector_service_privileges_contract_invalid".to_string());
         }
         validate_service_dacl(service)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn validate_installed_boundaries_for_proof(
+        expected_image: &Path,
+    ) -> Result<(), String> {
+        let manager = open_manager(SC_MANAGER_CONNECT)?;
+        let service = open_service(
+            &manager,
+            SERVICE_QUERY_STATUS
+                | windows_sys::Win32::System::Services::SERVICE_QUERY_CONFIG
+                | READ_CONTROL,
+        )?
+        .ok_or_else(|| "collector_service_proof_service_missing".to_string())?;
+        validate_service_contract(&service, expected_image)?;
+
+        let roots = fixed_roots()?;
+        let principals = SecurityPrincipals::load_with_service()?;
+        let _program_data = open_directory(
+            &roots.program_data,
+            "collector_service_programdata_open_failed",
+        )?;
+        let _product = open_and_verify_root(&roots.product, false, &principals)?;
+        let _service = open_and_verify_root(&roots.service, true, &principals)?;
+        for leaf in [
+            ETW_LEASE_FILE_NAME,
+            ETW_OWNER_LOCK_FILE_NAME,
+            UPGRADE_JOURNAL_FILE_NAME,
+        ] {
+            let _ = verify_optional_leaf(&roots.service.join(leaf), &principals)?;
+        }
+        Ok(())
     }
 
     struct QueriedServiceConfig {

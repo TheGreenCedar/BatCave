@@ -28,6 +28,11 @@ mod runtime_store;
 mod telemetry;
 #[cfg(test)]
 mod updater_hostile_fixtures;
+#[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+mod windows_lifecycle_proof;
+#[cfg(any(test, feature = "private-windows-lifecycle-proof"))]
+#[cfg_attr(not(feature = "private-windows-lifecycle-proof"), allow(dead_code))]
+mod windows_lifecycle_proof_contract;
 #[cfg(any(windows, test))]
 mod windows_network;
 #[cfg(any(windows, test))]
@@ -56,6 +61,11 @@ pub fn run_collector_service() -> i32 {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     collector_service::windows_provisioner::run_cli(&args)
         .unwrap_or_else(collector_service::windows_service::run)
+}
+
+#[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+pub fn run_windows_lifecycle_proof() -> i32 {
+    windows_lifecycle_proof::run()
 }
 
 fn run_cli(args: &[String]) -> Option<i32> {

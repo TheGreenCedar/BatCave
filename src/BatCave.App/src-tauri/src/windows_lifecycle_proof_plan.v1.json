@@ -1,0 +1,34 @@
+{
+  "schema_version": "batcave_windows_lifecycle_proof_plan_v1",
+  "profile": "issues_69_70_grouped_collector_cutover",
+  "sequence": 1,
+  "baseline": {
+    "source_commit_sha": "e693cc60eeaff79c553d3cff8038caa01d63c1a1",
+    "installer_relative_path": "artifacts/windows-lifecycle-proof/baseline-installer.exe",
+    "installer_size": 210119979,
+    "installer_sha256": "e0fed98868461f02d700379139f8f88d8589feffc76045326fcf464ecd7899eb",
+    "monitor_sha256": "8a4595b26ae36c1d438bca01acf81019fa571b4544f0289bf2a6d200473b324b",
+    "service_sha256": "adba437062380f1c4502e80b7b6c7231bca7d5abfd53921ba7dc80518322c60a",
+    "uninstaller_size": 82736,
+    "uninstaller_sha256": "82b5f1b80f7fe695b31696b04d00d03e21b100e17bc45181b3b7c0710a6b5f05"
+  },
+  "final_candidate": {
+    "source_commit_sha": "17270482aae5d762e3ff2af5779369a506dd3ac3",
+    "installer_relative_path": "artifacts/windows-lifecycle-proof/final-installer.exe",
+    "installer_size": 210414888,
+    "installer_sha256": "657d6653c3ab7831c1c9c059a263122180961f7a3bad0e0946a634f62fb4213d",
+    "monitor_sha256": "b9e366d000994eadbb9eb2b34dede66528c99e84923d84e9e465ef3cefb36b2a",
+    "service_sha256": "be98fed55dd2361e0516ef1fb8b8d089d434673dfadd54898d091495a5e73b6c",
+    "uninstaller_size": 83195,
+    "uninstaller_sha256": "4aed9b2c11e2a24e15b8b8c495fafe316b1c6729503c5d6fde2eeb4b8e45b266"
+  },
+  "allowlisted_start": {
+    "state": "legacy_stopped_1066_1",
+    "monitor_sha256": "de3eee8f3c4172bc8017c2365f2b49b62615146415dae4fdf7da5d2d66ff3a1f",
+    "service_sha256": "95102bc1e759e985cc1c17b113753e4d7348d8ce18620b73e24c5d6d41c58f49",
+    "uninstaller_sha256": "82b5f1b80f7fe695b31696b04d00d03e21b100e17bc45181b3b7c0710a6b5f05",
+    "legacy_cli_sha256": "80f309392d52cad1de5b184c28a5e8cff651d6a257079bd3344cbb67cf215b4a",
+    "win32_exit_code": 1066,
+    "service_specific_exit_code": 1
+  }
+}

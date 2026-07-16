@@ -95,6 +95,14 @@ jobs:
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle
 
+      - name: Verify private Windows lifecycle proof controller
+        env:
+          BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
+        run: |
+          cargo test --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml windows_lifecycle_proof --features private-windows-lifecycle-proof --lib
+          cargo build --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-proof
+          cargo clippy --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-proof -- -D warnings
+
       - name: Reject Rust warnings
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
 
