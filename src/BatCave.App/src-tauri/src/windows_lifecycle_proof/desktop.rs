@@ -422,18 +422,15 @@ where
     Wait: FnMut(),
 {
     loop {
-        match read() {
-            Err(reason) => return Err(reason),
-            Ok(labels) => match classify_visible_labels(phase, labels) {
-                VisibleRead::Ready(visible) => return Ok(visible),
-                VisibleRead::Authority(reason) => return Err(reason),
-                VisibleRead::Retryable(reason) => {
-                    if expired() {
-                        return Err(format!("lifecycle_desktop_visible_state_timeout:{reason}"));
-                    }
-                    wait();
+        match classify_visible_labels(phase, read()?) {
+            VisibleRead::Ready(visible) => return Ok(visible),
+            VisibleRead::Authority(reason) => return Err(reason),
+            VisibleRead::Retryable(reason) => {
+                if expired() {
+                    return Err(format!("lifecycle_desktop_visible_state_timeout:{reason}"));
                 }
-            },
+                wait();
+            }
         }
     }
 }
