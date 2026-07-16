@@ -345,7 +345,7 @@ fn validate_rollback_service_fixture(
     final_candidate: &Candidate,
 ) -> Result<(), String> {
     validate_commit_sha(&fixture.build_source_commit_sha, "rollback_fixture")?;
-    if fixture.build_source_commit_sha != "2e7045bbf6de61b2a93f9df92cd2d1d9bd34d3b6" {
+    if fixture.build_source_commit_sha != "c95fffc870226f0852048055d79fa4a18a14471c" {
         return Err("lifecycle_plan_rollback_fixture_source_invalid".to_string());
     }
     validate_relative_artifact_path(&fixture.relative_path, "rollback_fixture")?;

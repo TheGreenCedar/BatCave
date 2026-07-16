@@ -134,8 +134,8 @@ if (Test-Path -LiteralPath $fixturePath) {
 else {
     Copy-Item -LiteralPath $builtFixture -Destination $fixturePath
 }
-$fixture = Get-Item -LiteralPath $fixturePath
-$productVersion = $fixture.VersionInfo.ProductVersion
+$retainedArtifact = Get-Item -LiteralPath $fixturePath
+$productVersion = $retainedArtifact.VersionInfo.ProductVersion
 if ($productVersion -cne $fixtureProductVersion) {
     throw "The $Fixture service fixture ProductVersion is not the fixed value."
 }
@@ -145,7 +145,7 @@ $cargoLockSha256 = (Get-FileHash -LiteralPath (Join-Path $resolvedSourceRoot "sr
 [ordered]@{
     build_source_commit_sha = $fixtureSourceCommit
     relative_path = [string]$fixturePlan.relative_path
-    size = $fixture.Length
+    size = $retainedArtifact.Length
     sha256 = $fixtureSha256
     product_version = $productVersion
     behavior = [string]$fixturePlan.behavior
