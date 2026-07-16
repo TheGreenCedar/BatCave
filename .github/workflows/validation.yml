@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,14 +58,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          cache-on-failure: true
-          cache-workspace-crates: true
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -91,6 +92,14 @@ jobs:
       - name: Test release evidence index contract
         run: node --test scripts/validate-release-evidence-index.test.mjs
 
+      - name: Reject Rust warnings
+        run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Reject private Windows lifecycle proof warnings
+        env:
+          BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
+        run: cargo clippy --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-proof -- -D warnings
+
       - name: Validate Windows app
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle
@@ -104,14 +113,6 @@ jobs:
         env:
           BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
         run: cargo build --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-proof
-
-      - name: Reject private Windows lifecycle proof warnings
-        env:
-          BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
-        run: cargo clippy --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-proof -- -D warnings
-
-      - name: Reject Rust warnings
-        run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
 
   linux:
     name: Linux validation
@@ -134,10 +135,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          cache-on-failure: true
-          cache-workspace-crates: true
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install Linux native dependencies
         run: bash scripts/install-linux-deps.sh
@@ -160,16 +160,49 @@ jobs:
       - name: Test release contracts
         run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-deb-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
-      - name: Validate Linux app
-        run: bash scripts/validate-tauri.sh --skip-bundle
-
       - name: Reject Rust warnings on the MSRV
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
 
-      - name: Verify private public-release verifier
-        run: |
-          cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --features private-release-verifier
-          cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --tests --features private-release-verifier -- -D warnings
+      - name: Reject private public-release verifier warnings
+        run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --tests --features private-release-verifier -- -D warnings
+
+      - name: Validate Linux app
+        run: bash scripts/validate-tauri.sh --skip-bundle
+
+      - name: Test private public-release verifier
+        run: cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --features private-release-verifier
+
+  linux-package-transport:
+    name: Linux package transport
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@4e529fb27e59237866a6523e61ab248308c068b4 # 1.88.0
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          save-if: false
+
+      - name: Install Linux native dependencies
+        run: bash scripts/install-linux-deps.sh
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: src/BatCave.App
 
       - name: Probe closed Linux package transports
         run: |
@@ -193,15 +226,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          cache-on-failure: true
-          cache-workspace-crates: true
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -213,15 +246,15 @@ jobs:
       - name: Test release contracts
         run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-deb-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
-      - name: Validate native macOS app
-        run: bash scripts/validate-tauri.sh --skip-bundle
-
-      - name: Verify private macOS updater staging observer
-        run: |
-          cargo test --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --features private-release-verifier
-          cargo clippy --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --tests --features private-release-verifier -- -D warnings
-
       - name: Reject Rust warnings for both Apple architectures
         run: |
           cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets --target aarch64-apple-darwin -- -D warnings
           cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets --target x86_64-apple-darwin -- -D warnings
+
+      - name: Verify private macOS updater staging observer
+        run: |
+          cargo clippy --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --tests --features private-release-verifier -- -D warnings
+          cargo test --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --features private-release-verifier
+
+      - name: Validate native macOS app
+        run: bash scripts/validate-tauri.sh --skip-bundle

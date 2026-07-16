@@ -87,6 +87,7 @@ test("accepts immutable releases, reviewed main, and a protected release environ
     "Dependency review",
     "Windows validation",
     "Linux validation",
+    "Linux package transport",
     "macOS universal validation",
   ]);
   assert.equal(verifyReleaseControls(validControls()), true);
