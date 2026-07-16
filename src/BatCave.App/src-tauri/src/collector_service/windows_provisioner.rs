@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
 use super::{etw_lease::ProtectedEtwLeaseRoot, protocol::COLLECTOR_SERVICE_NAME};
@@ -7,12 +8,36 @@ use super::{etw_lease::ProtectedEtwLeaseRoot, protocol::COLLECTOR_SERVICE_NAME};
 const PROVISION_SWITCH: &str = "--provision";
 const PRODUCT_DIRECTORY_NAME: &str = "BatCave Monitor";
 const SERVICE_EXECUTABLE_NAME: &str = "batcave-collector-service.exe";
+const LEGACY_WINDOWS_CLI_NAME: &str = "batcave-monitor-cli.exe";
 const SERVICE_ACCOUNT: &str = "LocalSystem";
 const SERVICE_OWNER_MARKER: &str = "dev.batcave.monitor/service-v1";
 const SERVICE_FAILURE_VALUE: &str = "BatCaveLastFailure";
 const SERVICE_TYPE_OWN_PROCESS: u32 = 0x10;
 const ERROR_FILE_NOT_FOUND_CODE: u32 = 2;
 const ERROR_PATH_NOT_FOUND_CODE: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LegacyCliImage {
+    size: u64,
+    sha256: [u8; 32],
+}
+
+// Exact bytes from the former per-machine Windows CLI payload. The current
+// Windows CLI is a standalone release asset and is not owned by NSIS.
+const LEGACY_WINDOWS_CLI_IMAGES: [LegacyCliImage; 1] = [LegacyCliImage {
+    size: 1_425_920,
+    sha256: [
+        0x80, 0xf3, 0x09, 0x39, 0x2d, 0x52, 0xca, 0xd1, 0xde, 0x5b, 0x18, 0x4c, 0x28, 0xa5, 0xe8,
+        0xcf, 0xf6, 0x51, 0xd6, 0xa2, 0x57, 0x07, 0x9b, 0xd3, 0x34, 0x4c, 0xbb, 0x67, 0xcf, 0x21,
+        0x5b, 0x4a,
+    ],
+}];
+
+fn legacy_cli_image_matches(images: &[LegacyCliImage], size: u64, sha256: &[u8; 32]) -> bool {
+    images
+        .iter()
+        .any(|image| image.size == size && image.sha256 == *sha256)
+}
 
 fn is_missing_path_error(error: u32) -> bool {
     matches!(error, ERROR_FILE_NOT_FOUND_CODE | ERROR_PATH_NOT_FOUND_CODE)
@@ -271,10 +296,11 @@ mod native {
             TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
         },
         Storage::FileSystem::{
-            CreateDirectoryW, CreateFileW, DeleteFileW, GetFileInformationByHandle,
-            GetFinalPathNameByHandleW, RemoveDirectoryW, BY_HANDLE_FILE_INFORMATION, DELETE,
-            FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
+            CreateDirectoryW, CreateFileW, DeleteFileW, FileDispositionInfo,
+            GetFileInformationByHandle, GetFinalPathNameByHandleW, ReadFile, RemoveDirectoryW,
+            SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_SUBDIRECTORY,
+            FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_DELETE_CHILD, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
             FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
             FILE_SHARE_WRITE, FILE_WRITE_DATA, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
             WRITE_OWNER,
@@ -330,6 +356,7 @@ mod native {
     const SERVICE_LIFECYCLE_PROBE_ACCESS: u32 =
         FILE_READ_ATTRIBUTES | FILE_WRITE_DATA | READ_CONTROL;
     const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+    const GENERIC_READ: u32 = 0x8000_0000;
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const GENERIC_ALL: u32 = 0x1000_0000;
     const UNTRUSTED_WRITE_MASK: u32 = FILE_WRITE_DATA
@@ -776,6 +803,125 @@ mod native {
         }
     }
 
+    fn retire_legacy_cli(image: &VerifiedServiceImage) -> Result<(), String> {
+        let install_directory = image
+            .path()
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
+        let principals = SecurityPrincipals::load_base()?;
+        retire_legacy_cli_path(
+            &install_directory.join(LEGACY_WINDOWS_CLI_NAME),
+            &LEGACY_WINDOWS_CLI_IMAGES,
+            Some(&principals),
+        )
+    }
+
+    fn retire_legacy_cli_path(
+        path: &Path,
+        known_images: &[LegacyCliImage],
+        principals: Option<&SecurityPrincipals>,
+    ) -> Result<(), String> {
+        let path_wide = wide_path(path);
+        let raw = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                GENERIC_READ | DELETE | READ_CONTROL,
+                FILE_SHARE_READ,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if raw.is_null() || raw == (-1_isize as HANDLE) {
+            let error = unsafe { GetLastError() };
+            return if is_missing_path_error(error) {
+                Ok(())
+            } else {
+                Err(format!("collector_service_legacy_cli_open_failed:{error}"))
+            };
+        }
+        let file = OwnedHandle(raw);
+        let info = file_information(file.raw(), "collector_service_legacy_cli_info_failed")?;
+        if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+            || !fixed_path_eq(
+                &final_path(&file, "collector_service_legacy_cli_final_path_failed")?,
+                path,
+            )
+        {
+            return Err("collector_service_legacy_cli_residue_untrusted".to_string());
+        }
+        if let Some(principals) = principals {
+            validate_no_untrusted_writer(file.raw(), principals, false, false)
+                .map_err(|_| "collector_service_legacy_cli_residue_untrusted".to_string())?;
+        }
+
+        let size = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
+        if !known_images.iter().any(|image| image.size == size) {
+            return Err("collector_service_legacy_cli_residue_untrusted".to_string());
+        }
+        let digest = hash_open_file(file.raw(), size)?;
+        if !legacy_cli_image_matches(known_images, size, &digest) {
+            return Err("collector_service_legacy_cli_residue_untrusted".to_string());
+        }
+
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe {
+            SetFileInformationByHandle(
+                file.raw(),
+                FileDispositionInfo,
+                (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(last_error("collector_service_legacy_cli_remove_failed"));
+        }
+        drop(file);
+        if path_exists_no_follow(path)? {
+            Err("collector_service_legacy_cli_residue_present".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn hash_open_file(handle: HANDLE, size: u64) -> Result<[u8; 32], String> {
+        let mut remaining = size;
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        while remaining > 0 {
+            let requested = remaining.min(buffer.len() as u64) as u32;
+            let mut read = 0_u32;
+            if unsafe {
+                ReadFile(
+                    handle,
+                    buffer.as_mut_ptr().cast(),
+                    requested,
+                    &mut read,
+                    ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(last_error("collector_service_legacy_cli_read_failed"));
+            }
+            if read == 0 {
+                return Err("collector_service_legacy_cli_read_incomplete".to_string());
+            }
+            digest.update(&buffer[..read as usize]);
+            remaining = remaining.saturating_sub(u64::from(read));
+        }
+        Ok(digest.finalize().into())
+    }
+
+    #[cfg(test)]
+    pub(super) fn retire_legacy_cli_fixture(path: &Path, expected: &[u8]) -> Result<(), String> {
+        let image = LegacyCliImage {
+            size: expected.len() as u64,
+            sha256: Sha256::digest(expected).into(),
+        };
+        retire_legacy_cli_path(path, &[image], None)
+    }
+
     #[cfg(test)]
     pub(super) fn lifecycle_probe_requests_write_access() -> bool {
         SERVICE_LIFECYCLE_PROBE_ACCESS & FILE_WRITE_DATA != 0
@@ -784,6 +930,7 @@ mod native {
     pub(super) fn prepare_upgrade() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
+        retire_legacy_cli(&image)?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = open_service(&manager, SERVICE_ALL_ACCESS)?
             .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
@@ -795,6 +942,7 @@ mod native {
     pub(super) fn install() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
+        retire_legacy_cli(&image)?;
         let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
         if let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? {
             validate_service_contract(&service, image.path())?;
@@ -832,6 +980,7 @@ mod native {
     pub(super) fn uninstall() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
+        retire_legacy_cli(&image)?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? else {
             let roots = fixed_roots()?;
@@ -2452,6 +2601,65 @@ mod tests {
             native::validate_clean_stopped_status(&running),
             Err("collector_service_stop_settlement_unproven".to_string())
         );
+    }
+
+    #[test]
+    fn legacy_cli_allowlist_accepts_only_the_observed_product_bytes() {
+        let known = LEGACY_WINDOWS_CLI_IMAGES[0];
+        assert_eq!(known.size, 1_425_920);
+        assert!(legacy_cli_image_matches(
+            &LEGACY_WINDOWS_CLI_IMAGES,
+            known.size,
+            &known.sha256,
+        ));
+
+        let mut changed = known.sha256;
+        changed[0] ^= 1;
+        assert!(!legacy_cli_image_matches(
+            &LEGACY_WINDOWS_CLI_IMAGES,
+            known.size,
+            &changed,
+        ));
+        assert!(!legacy_cli_image_matches(
+            &LEGACY_WINDOWS_CLI_IMAGES,
+            known.size + 1,
+            &known.sha256,
+        ));
+    }
+
+    #[test]
+    fn legacy_cli_cleanup_deletes_the_hashed_handle_and_retains_a_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-legacy-cli-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("legacy CLI fixture root");
+        let path = root.join(LEGACY_WINDOWS_CLI_NAME);
+        let expected = b"known legacy CLI fixture";
+        assert_eq!(native::retire_legacy_cli_fixture(&path, expected), Ok(()));
+
+        std::fs::write(&path, expected).expect("known legacy CLI fixture");
+        assert_eq!(native::retire_legacy_cli_fixture(&path, expected), Ok(()));
+        assert!(!path.exists());
+
+        let replacement = b"arbitrary replacement...";
+        assert_eq!(replacement.len(), expected.len());
+        std::fs::write(&path, replacement).expect("replacement fixture");
+        assert_eq!(
+            native::retire_legacy_cli_fixture(&path, expected),
+            Err("collector_service_legacy_cli_residue_untrusted".to_string())
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("replacement remains"),
+            replacement
+        );
+
+        std::fs::remove_file(path).expect("replacement cleanup");
+        std::fs::remove_dir(root).expect("legacy CLI fixture root cleanup");
     }
 
     #[test]

@@ -12,6 +12,8 @@ All build and publication jobs enter the protected `release` environment. Config
 
 Every release artifact contains the offline-capable Windows NSIS installer, Windows GUI and benchmark CLI executables, Linux deb and AppImage packages, the universal macOS DMG and updater archive, `SHA256SUMS.txt`, and a Sigstore/GitHub build-provenance bundle. Workflow artifacts are retained for 30 days; published GitHub Release assets are durable.
 
+On Windows, `batcave-monitor-cli.exe` is a standalone release asset for benchmarks and automation; it is not an NSIS-installed product component. The per-machine installer owns the desktop and collector service binaries only. Upgrade and uninstall recognize the single historical CLI payload by its exact size and SHA-256, remove those bytes through the verified open file handle, and reject any different object at that fixed path as untrusted residue.
+
 ## Platform support and proof
 
 The [platform capabilities matrix](platform-capabilities.md) is the canonical human view of supported release profiles; the [version 1 platform support contract](evidence/releases/platform-support-contract.v1.json) is the machine authority. `declared` records the intended host, architecture, runtime, and package boundary. `source_enforced` records that repository configuration, hosted builds, metadata, and extraction-only package checks agree with that boundary. Every current profile still has `native_oldest_supported: pending`, so none of those checks proves installation or runtime behavior on its oldest-supported host.

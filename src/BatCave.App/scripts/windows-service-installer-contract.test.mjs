@@ -3,9 +3,14 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 const tauriRoot = new URL("../src-tauri/", import.meta.url);
+const repoRoot = new URL("../../../", tauriRoot);
 
 async function text(path) {
   return readFile(new URL(path, tauriRoot), "utf8");
+}
+
+async function repoText(path) {
+  return readFile(new URL(path, repoRoot), "utf8");
 }
 
 test("Windows bundle packages the collector service beside the asInvoker desktop", async () => {
@@ -66,4 +71,21 @@ test("NSIS hooks delegate all privileged mutation to fixed native verbs", async 
   assert.ok(
     preuninstall.indexOf("CheckIfAppIsRunning") < preuninstall.indexOf("--provision uninstall"),
   );
+});
+
+test("legacy Windows CLI cleanup stays exact and native", async () => {
+  const config = JSON.parse(await text("tauri.windows.conf.json"));
+  const hooks = await text("windows/nsis-hooks.nsh");
+  const provisioner = await text("src/collector_service/windows_provisioner.rs");
+  const releaseAssets = await repoText("scripts/release-asset-contract.mjs");
+
+  assert.doesNotMatch(JSON.stringify(config.bundle), /batcave-monitor-cli/iu);
+  assert.doesNotMatch(hooks, /batcave-monitor-cli|\bDelete\b/iu);
+  assert.match(releaseAssets, /role: "Windows CLI executable"/u);
+  assert.match(releaseAssets, /name: \(\) => "batcave-monitor-cli\.exe"/u);
+  assert.match(provisioner, /const LEGACY_WINDOWS_CLI_NAME/u);
+  assert.match(provisioner, /const LEGACY_WINDOWS_CLI_IMAGES/u);
+  assert.match(provisioner, /SetFileInformationByHandle/u);
+  assert.match(provisioner, /FileDispositionInfo/u);
+  assert.equal(provisioner.match(/retire_legacy_cli\(&image\)\?/gmu)?.length, 3);
 });
