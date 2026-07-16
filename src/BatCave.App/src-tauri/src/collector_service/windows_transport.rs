@@ -71,7 +71,8 @@ pub(crate) fn run_pipe_server(
         .ok_or_else(|| "collector_service_executable_parent_missing".to_string())?
         .to_string_lossy()
         .into_owned();
-    let policy = ClientTrustPolicy::new(&service_directory).map_err(|error| error.to_string())?;
+    let policy = ClientTrustPolicy::new(&service_directory)
+        .map_err(|error| format!("collector_service_transport_policy_failed:{error}"))?;
     let mut workers = Vec::<JoinHandle<()>>::new();
     let mut pipe = bind_before_ready(|| PipeConnection::create(true), ready)?;
 

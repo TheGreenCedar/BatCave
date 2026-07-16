@@ -95,7 +95,9 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
     let _lifecycle_marker = match windows_provisioner::acquire_service_lifecycle_marker() {
         Ok(marker) => marker,
         Err(error) => {
-            windows_provisioner::record_service_failure(sanitized_failure_reason(&error));
+            if let Err(record_error) = windows_provisioner::record_service_failure("lifecycle") {
+                eprintln!("{record_error}");
+            }
             eprintln!("{error}");
             let _ = report_stopped(status_handle, ERROR_SERVICE_SPECIFIC_ERROR, 1);
             return;
@@ -110,44 +112,66 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
         (ERROR_SERVICE_SPECIFIC_ERROR, 1)
     };
     if let Err(error) = &result {
-        windows_provisioner::record_service_failure(sanitized_failure_reason(error));
+        if let Err(record_error) =
+            windows_provisioner::record_service_failure(sanitized_failure_reason(error))
+        {
+            eprintln!("{record_error}");
+        }
         eprintln!("{error}");
     }
     let _ = report_stopped(status_handle, exit_code, service_specific);
 }
 
 fn sanitized_failure_reason(error: &str) -> &'static str {
-    if error.contains("collector_service_etw_recovery_") {
+    let codes = error
+        .split(';')
+        .map(|part| part.split(':').next().unwrap_or(part))
+        .collect::<Vec<_>>();
+    let has_code = |prefix: &str| codes.iter().any(|code| code.starts_with(prefix));
+    let has_settlement_code = codes.iter().any(|code| {
+        (code.starts_with("collector_service_etw_") || code.starts_with("network_attribution_"))
+            && (code.contains("settlement")
+                || code.contains("stopping")
+                || code.contains("shutdown")
+                || code.contains("session_not_absent")
+                || code.contains("lease_remove")
+                || code.contains("close_trace")
+                || code.contains("consumer_join")
+                || code.contains("stop_trace"))
+    });
+
+    if has_code("collector_service_etw_recovery_") {
         "etw_recovery"
-    } else if error.contains("collector_service_etw_") || error.contains("network_attribution_") {
-        if error.contains("settlement")
-            || error.contains("stopping")
-            || error.contains("shutdown")
-            || error.contains("session_not_absent")
-            || error.contains("lease_remove")
-            || error.contains("close_trace")
-            || error.contains("consumer_join")
-            || error.contains("stop_trace")
-        {
-            "etw_settlement"
-        } else if error.contains("collector_service_pipe_") || error.contains("transport") {
-            "transport"
-        } else {
-            "etw_startup"
-        }
-    } else if error.contains("lifecycle") {
+    } else if has_settlement_code {
+        "etw_settlement"
+    } else if has_code("collector_service_etw_") || has_code("network_attribution_") {
+        "etw_startup"
+    } else if has_code("collector_service_lifecycle_")
+        || has_code("collector_service_status_failed")
+        || has_code("collector_service_failure_clear_failed")
+    {
         "lifecycle"
-    } else if error.contains("collector_service_pipe_")
-        || error.contains("collector_service_client_")
-        || error.contains("collector_service_executable_")
-        || error.contains("transport")
+    } else if has_code("collector_service_pipe_")
+        || has_code("collector_service_client_")
+        || has_code("collector_service_transport_")
+        || has_code("collector_service_executable_resolve_failed")
+        || has_code("collector_service_executable_canonicalize_failed")
+        || has_code("collector_service_executable_parent_missing")
     {
         "transport"
-    } else if error.contains("collector_engine") || error.contains("collector_") {
+    } else if has_code("collector_engine") || has_code("collector_") {
         "collector"
     } else {
         "startup"
     }
+}
+
+fn complete_service_readiness(
+    clear_failure: impl FnOnce() -> Result<(), String>,
+    report_running: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    clear_failure()?;
+    report_running()
 }
 
 fn run_service_body(
@@ -156,11 +180,13 @@ fn run_service_body(
 ) -> Result<(), String> {
     // The root capability retains the verifier's no-delete handles for the
     // complete service/ETW lifetime.
-    let protected_etw_root = windows_provisioner::open_protected_etw_lease_root()?;
+    let protected_etw_root = windows_provisioner::open_protected_etw_lease_root()
+        .map_err(|error| format!("collector_service_etw_root_open_failed:{error}"))?;
     let instance_id = new_instance_id();
     let identity = service_identity(instance_id.clone());
     let (mut etw_lifecycle, network_monitor) =
-        ServiceEtwLifecycle::start(&protected_etw_root, &instance_id)?;
+        ServiceEtwLifecycle::start(&protected_etw_root, &instance_id)
+            .map_err(|error| format!("collector_service_etw_startup_failed:{error}"))?;
     let engine = match CollectorEngine::start(
         Box::new(TelemetryCollector::for_collector_service(network_monitor)),
         CollectorEngineConfig {
@@ -190,8 +216,9 @@ fn run_service_body(
     let snapshots: Arc<dyn SnapshotProvider> =
         Arc::new(CollectorSnapshotSource::new(collector, instance_id));
     let transport = run_pipe_server(Arc::clone(&stop), identity, snapshots, || {
-        windows_provisioner::clear_service_failure();
-        report_status(status_handle, SERVICE_RUNNING, 0, 0)
+        complete_service_readiness(windows_provisioner::clear_service_failure, || {
+            report_status(status_handle, SERVICE_RUNNING, 0, 0)
+        })
     });
     stop.store(true, Ordering::Release);
     let _ = report_status(status_handle, SERVICE_STOP_PENDING, 2, 0);
@@ -736,7 +763,33 @@ mod tests {
             "transport"
         );
         assert_eq!(
+            sanitized_failure_reason(
+                "collector_service_etw_startup_failed:collector_service_executable_path_failed:access denied"
+            ),
+            "etw_startup"
+        );
+        assert_eq!(
+            sanitized_failure_reason(
+                "collector_service_etw_startup_failed:collector_service_executable_read_failed:access denied"
+            ),
+            "etw_startup"
+        );
+        assert_eq!(
+            sanitized_failure_reason(
+                "collector_service_transport_policy_failed:Unauthorized:collector_service_directory_invalid"
+            ),
+            "transport"
+        );
+        assert_eq!(
             sanitized_failure_reason("collector_service_lifecycle_file_missing"),
+            "lifecycle"
+        );
+        assert_eq!(
+            sanitized_failure_reason("collector_service_status_failed:5"),
+            "lifecycle"
+        );
+        assert_eq!(
+            sanitized_failure_reason("collector_service_failure_clear_failed:5"),
             "lifecycle"
         );
         assert_eq!(
@@ -773,7 +826,41 @@ mod tests {
             sanitized_failure_reason("collector_service_etw_intent_write_failed:AccessDenied"),
             "etw_startup"
         );
+        assert_eq!(
+            sanitized_failure_reason(
+                "collector_service_pipe_accept_failed:5;private lifecycle transport text"
+            ),
+            "transport"
+        );
         assert_eq!(sanitized_failure_reason("private path text"), "startup");
+    }
+
+    #[test]
+    fn service_readiness_requires_the_failure_marker_to_clear() {
+        let mut running_reported = false;
+        assert_eq!(
+            complete_service_readiness(
+                || Err("collector_service_failure_clear_failed:5".to_string()),
+                || {
+                    running_reported = true;
+                    Ok(())
+                },
+            ),
+            Err("collector_service_failure_clear_failed:5".to_string())
+        );
+        assert!(!running_reported);
+
+        assert_eq!(
+            complete_service_readiness(
+                || Ok(()),
+                || {
+                    running_reported = true;
+                    Ok(())
+                },
+            ),
+            Ok(())
+        );
+        assert!(running_reported);
     }
 
     #[test]

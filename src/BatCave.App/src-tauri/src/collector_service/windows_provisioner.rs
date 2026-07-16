@@ -97,12 +97,12 @@ pub(crate) fn open_protected_etw_lease_root() -> Result<ProtectedEtwLeaseRoot, S
     native::open_protected_etw_lease_root()
 }
 
-pub(crate) fn record_service_failure(category: &str) {
-    let _ = native::record_service_failure(category);
+pub(crate) fn record_service_failure(category: &str) -> Result<(), String> {
+    native::record_service_failure(category)
 }
 
-pub(crate) fn clear_service_failure() {
-    let _ = native::clear_service_failure();
+pub(crate) fn clear_service_failure() -> Result<(), String> {
+    native::clear_service_failure()
 }
 
 pub(crate) fn acquire_service_lifecycle_marker() -> Result<impl std::fmt::Debug, String> {
