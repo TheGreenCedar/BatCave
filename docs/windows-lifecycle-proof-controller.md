@@ -15,6 +15,8 @@ The thin `scripts/run-windows-lifecycle-proof.ps1` wrapper may hash-check and st
 
 Every installer, uninstaller, desktop, WebView, and proof child belongs to an owned kill-on-close Job Object with an absolute deadline. The worker creates each child suspended, assigns it to the Job, resumes it, waits for the entire process tree, and revalidates the owned bytes only after the Job reports zero active processes. Timeout terminates the Job and proves settlement before any cleanup or further mutation.
 
+The elevated broker starts from the canonical system directory instead of the invoking user's working directory. Installer and uninstaller trees receive a fixed Unicode environment containing only canonical machine `ComSpec`, `Path`, `SystemRoot`, and `WINDIR` values plus `TEMP` and `TMP` bound to the protected evidence root. Their current directory is also the protected evidence root. The controller does not inherit caller-controlled process lookup or extraction paths into a privileged mutation.
+
 The elevated worker must run a protected copied uninstaller with:
 
 ```text

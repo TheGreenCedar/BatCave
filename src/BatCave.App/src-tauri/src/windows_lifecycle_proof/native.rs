@@ -1,11 +1,11 @@
 use crate::windows_lifecycle_proof_contract::{Candidate, Observation, ProofPlan};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
-use std::ffi::{c_void, OsStr};
+use std::ffi::{c_void, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::{size_of, zeroed};
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
@@ -56,11 +56,14 @@ use windows_sys::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
     SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_STATUS_PROCESS,
 };
+use windows_sys::Win32::System::SystemInformation::{
+    GetSystemDirectoryW, GetSystemWindowsDirectoryW,
+};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes,
     OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, ResumeThread, TerminateProcess,
-    WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    STARTUPINFOW,
+    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
@@ -81,6 +84,7 @@ const EVIDENCE_ROOT_PREFIX: &str = r"C:\ProgramData\BatCaveLifecycleProof-v1-";
 const PROCESS_TREE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_TREE_SETTLEMENT_TIMEOUT_MS: u32 = 30_000;
 const PROCESS_TREE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const WINDOWS_PATH_BUFFER_SIZE: usize = 32_768;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct FileIdentity {
@@ -161,6 +165,42 @@ pub(crate) struct ProcessOutcome {
     pub(crate) exit_code: u32,
     pub(crate) timed_out: bool,
     pub(crate) process_tree_settled: bool,
+}
+
+struct FixedLaunchContext {
+    environment: Vec<u16>,
+    current_directory: Vec<u16>,
+}
+
+impl FixedLaunchContext {
+    fn for_evidence_root(evidence: &ProtectedEvidenceRoot) -> Result<Self, String> {
+        let system = system_directory()?;
+        let windows = windows_directory()?;
+        let canonical_evidence =
+            canonical_real_directory(evidence.root(), "child_working_directory")?;
+        if !canonical_evidence
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&evidence.root().to_string_lossy())
+        {
+            return Err("lifecycle_child_working_directory_changed".to_string());
+        }
+        Self::from_paths(&system, &windows, &canonical_evidence)
+    }
+
+    fn from_paths(system: &Path, windows: &Path, evidence: &Path) -> Result<Self, String> {
+        let command_processor = system.join("cmd.exe");
+        let metadata = fs::symlink_metadata(&command_processor)
+            .map_err(|_| "lifecycle_command_processor_metadata_failed".to_string())?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("lifecycle_command_processor_type_invalid".to_string());
+        }
+        let environment =
+            build_fixed_environment_block(system, windows, evidence, &command_processor)?;
+        Ok(Self {
+            environment,
+            current_directory: wide(evidence.as_os_str()),
+        })
+    }
 }
 
 impl OwnedFile {
@@ -288,13 +328,15 @@ impl OwnedFile {
 
     pub(crate) fn execute(
         &self,
+        evidence: &ProtectedEvidenceRoot,
         fixed_arguments: &str,
         timeout: Duration,
         label: &str,
     ) -> Result<ProcessOutcome, String> {
         self.revalidate()?;
+        let launch = FixedLaunchContext::for_evidence_root(evidence)?;
         let job = Job::new(label)?;
-        let child = SuspendedChild::spawn(&self.path, fixed_arguments, label)?;
+        let child = SuspendedChild::spawn(&self.path, fixed_arguments, &launch, label)?;
         if unsafe { AssignProcessToJobObject(job.raw(), child.process.raw()) } == 0 {
             child.settle_unassigned(label)?;
             return Err(format!("lifecycle_{label}_job_assignment_failed"));
@@ -428,7 +470,12 @@ struct SuspendedChild {
 }
 
 impl SuspendedChild {
-    fn spawn(path: &Path, fixed_arguments: &str, label: &str) -> Result<Self, String> {
+    fn spawn(
+        path: &Path,
+        fixed_arguments: &str,
+        launch: &FixedLaunchContext,
+        label: &str,
+    ) -> Result<Self, String> {
         if fixed_arguments.contains('\0')
             || fixed_arguments.contains('\r')
             || fixed_arguments.contains('\n')
@@ -452,9 +499,9 @@ impl SuspendedChild {
                 null(),
                 null(),
                 0,
-                CREATE_SUSPENDED,
-                null(),
-                null(),
+                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                launch.environment.as_ptr().cast(),
+                launch.current_directory.as_ptr(),
                 &startup,
                 &mut information,
             )
@@ -1129,15 +1176,18 @@ pub(crate) fn connect_worker_pipe(
 pub(crate) fn launch_elevated_worker(locator: &str) -> Result<ElevatedProcess, String> {
     let executable =
         std::env::current_exe().map_err(|_| "lifecycle_controller_path_failed".to_string())?;
+    let protected_directory = system_directory()?;
     let verb = wide("runas");
     let file = wide(executable.as_os_str());
     let parameters = wide(format!("--worker {locator}"));
+    let directory = wide(protected_directory.as_os_str());
     let mut info: SHELLEXECUTEINFOW = unsafe { zeroed() };
     info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
     info.fMask = SEE_MASK_NOCLOSEPROCESS;
     info.lpVerb = verb.as_ptr();
     info.lpFile = file.as_ptr();
     info.lpParameters = parameters.as_ptr();
+    info.lpDirectory = directory.as_ptr();
     info.nShow = SW_HIDE;
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         return Err(if unsafe { GetLastError() } == ERROR_CANCELLED {
@@ -2065,6 +2115,57 @@ fn valid_evidence_name(name: &str) -> bool {
         && !name.contains("..")
 }
 
+fn system_directory() -> Result<PathBuf, String> {
+    query_windows_directory(GetSystemDirectoryW, "system_directory")
+}
+
+fn windows_directory() -> Result<PathBuf, String> {
+    query_windows_directory(GetSystemWindowsDirectoryW, "windows_directory")
+}
+
+fn query_windows_directory(
+    query: unsafe extern "system" fn(*mut u16, u32) -> u32,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let mut buffer = vec![0_u16; WINDOWS_PATH_BUFFER_SIZE];
+    let length = unsafe { query(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err(format!("lifecycle_{label}_query_failed"));
+    }
+    buffer.truncate(length);
+    canonical_real_directory(&PathBuf::from(OsString::from_wide(&buffer)), label)
+}
+
+fn build_fixed_environment_block(
+    system: &Path,
+    windows: &Path,
+    evidence: &Path,
+    command_processor: &Path,
+) -> Result<Vec<u16>, String> {
+    let entries = [
+        ("ComSpec", command_processor),
+        ("Path", system),
+        ("SystemRoot", windows),
+        ("TEMP", evidence),
+        ("TMP", evidence),
+        ("WINDIR", windows),
+    ];
+    let mut block = Vec::new();
+    for (name, value) in entries {
+        let mut entry = OsString::from(name);
+        entry.push("=");
+        entry.push(value.as_os_str());
+        let encoded = entry.encode_wide().collect::<Vec<_>>();
+        if encoded.contains(&0) {
+            return Err("lifecycle_child_environment_value_invalid".to_string());
+        }
+        block.extend(encoded);
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
+}
+
 fn utf16_z(value: &[u16]) -> String {
     let end = value
         .iter()
@@ -2214,5 +2315,113 @@ mod tests {
             copy_completed_read(&source, &mut destination, 5),
             Err("lifecycle_pipe_read_count_invalid".to_string())
         );
+    }
+
+    #[test]
+    fn child_environment_is_fixed_sorted_and_double_terminated() {
+        let block = build_fixed_environment_block(
+            Path::new(r"C:\Windows\System32"),
+            Path::new(r"C:\Windows"),
+            Path::new(r"C:\ProgramData\BatCaveLifecycleProof-v1-test"),
+            Path::new(r"C:\Windows\System32\cmd.exe"),
+        )
+        .expect("fixed environment");
+        assert!(block.ends_with(&[0, 0]));
+        let entries = block[..block.len() - 1]
+            .split(|value| *value == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [
+                r"ComSpec=C:\Windows\System32\cmd.exe",
+                r"Path=C:\Windows\System32",
+                r"SystemRoot=C:\Windows",
+                r"TEMP=C:\ProgramData\BatCaveLifecycleProof-v1-test",
+                r"TMP=C:\ProgramData\BatCaveLifecycleProof-v1-test",
+                r"WINDIR=C:\Windows",
+            ]
+        );
+    }
+
+    #[test]
+    fn suspended_child_receives_only_fixed_environment_and_working_directory() {
+        struct Scratch {
+            root: PathBuf,
+            output: PathBuf,
+        }
+
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(&self.output);
+                let _ = fs::remove_dir(&self.root);
+            }
+        }
+
+        let system = system_directory().expect("system directory");
+        let windows = windows_directory().expect("Windows directory");
+        let root = std::env::temp_dir().join(format!(
+            "batcave-lifecycle-child-{}",
+            random_hex(16).expect("unique child probe")
+        ));
+        fs::create_dir(&root).expect("create child probe root");
+        let scratch = Scratch {
+            output: root.join("child-environment.txt"),
+            root,
+        };
+        let launch =
+            FixedLaunchContext::from_paths(&system, &windows, &scratch.root).expect("launch");
+        let child = SuspendedChild::spawn(
+            &std::env::current_exe().expect("test executable"),
+            "--ignored --exact windows_lifecycle_proof::native::tests::fixed_environment_probe_child --nocapture",
+            &launch,
+            "child_environment_probe",
+        )
+        .expect("spawn fixed child");
+        assert_ne!(unsafe { ResumeThread(child.thread.raw()) }, u32::MAX);
+        assert_eq!(
+            unsafe { WaitForSingleObject(child.process.raw(), 30_000) },
+            WAIT_OBJECT_0
+        );
+        let mut exit_code = u32::MAX;
+        assert_ne!(
+            unsafe { GetExitCodeProcess(child.process.raw(), &mut exit_code) },
+            0
+        );
+        assert_eq!(exit_code, 0);
+        drop(child);
+
+        let output = fs::read_to_string(&scratch.output).expect("child environment output");
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[..6],
+            [
+                format!("ComSpec={}", system.join("cmd.exe").display()),
+                format!("Path={}", system.display()),
+                format!("SystemRoot={}", windows.display()),
+                format!("TEMP={}", scratch.root.display()),
+                format!("TMP={}", scratch.root.display()),
+                format!("WINDIR={}", windows.display()),
+            ]
+        );
+        assert!(lines[6].eq_ignore_ascii_case(&scratch.root.to_string_lossy()));
+    }
+
+    #[test]
+    #[ignore = "private child entry for the explicit environment probe"]
+    fn fixed_environment_probe_child() {
+        let mut environment = std::env::vars_os()
+            .map(|(name, value)| format!("{}={}", name.to_string_lossy(), value.to_string_lossy()))
+            .collect::<Vec<_>>();
+        environment.sort_by_key(|entry| entry.to_ascii_lowercase());
+        environment.push(
+            std::env::current_dir()
+                .expect("probe current directory")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        fs::write("child-environment.txt", environment.join("\n"))
+            .expect("write child environment");
     }
 }

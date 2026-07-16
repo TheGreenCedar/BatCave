@@ -93,7 +93,12 @@ fn execute_worker_inner(
         )
         .map_err(|failure| (Some(LifecycleStage::InitialState), failure, true))?;
     let final_repair = final_copy
-        .execute(FINAL_REPAIR_ARGUMENTS, INSTALLER_TIMEOUT, "final_repair")
+        .execute(
+            evidence,
+            FINAL_REPAIR_ARGUMENTS,
+            INSTALLER_TIMEOUT,
+            "final_repair",
+        )
         .map_err(|failure| (Some(LifecycleStage::InitialState), failure, false))?;
     if final_repair.timed_out || !final_repair.process_tree_settled || final_repair.exit_code != 0 {
         return Err((
@@ -124,6 +129,7 @@ fn execute_worker_inner(
         .map_err(|failure| (Some(LifecycleStage::FinalRepair), failure, true))?;
     let uninstall = uninstaller_copy
         .execute(
+            evidence,
             DIRECT_UNINSTALL_ARGUMENTS,
             UNINSTALLER_TIMEOUT,
             "initial_uninstall",
@@ -154,6 +160,7 @@ fn execute_worker_inner(
         .map_err(|failure| (Some(LifecycleStage::InitialUninstall), failure, true))?;
     let baseline_install = baseline_copy
         .execute(
+            evidence,
             BASELINE_INSTALL_ARGUMENTS,
             INSTALLER_TIMEOUT,
             "baseline_install",
