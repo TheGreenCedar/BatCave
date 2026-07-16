@@ -1087,7 +1087,7 @@ impl RuntimeStore {
     }
 
     fn from_base_dir_with_persistence_and_provenance(
-        base_dir: PathBuf,
+        _base_dir: PathBuf,
         clock: Arc<MonotonicWireClock>,
         mut persistence: RuntimePersistenceCoordinator,
         provenance: RuntimeProvenance,
@@ -1162,7 +1162,7 @@ impl RuntimeStore {
         #[cfg(windows)]
         {
             match run_legacy_helper_migration(
-                &base_dir,
+                &_base_dir,
                 &mut persistence,
                 provenance.environment().process_elevation,
                 clock.now_ms(),
