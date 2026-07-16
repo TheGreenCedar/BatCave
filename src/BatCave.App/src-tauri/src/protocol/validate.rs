@@ -696,7 +696,7 @@ fn validate_health(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
 fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
     let privileged = &payload.privileged_collection;
     if matches!(privileged.state, PrivilegedCollectionStateV3::Active)
-        != !matches!(privileged.source, PrivilegedCollectionSourceV3::None)
+        == matches!(privileged.source, PrivilegedCollectionSourceV3::None)
     {
         return Err("protocol_privileged_collection_state_source_invalid".to_string());
     }

@@ -1347,12 +1347,11 @@ impl RuntimeStore {
         let mut system = sample.system;
         let sample_processes = sample.processes;
         let process_rows_fresh = true;
-        if !service_active {
-            if self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
-                && self.admin_mode.state == RuntimeAdminModeState::Active
-            {
-                self.admin_mode.last_success_at_ms = Some(completed_at_ms);
-            }
+        if !service_active
+            && self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
+            && self.admin_mode.state == RuntimeAdminModeState::Active
+        {
+            self.admin_mode.last_success_at_ms = Some(completed_at_ms);
         }
         self.sync_collector_warnings(active_collector_warnings);
         let disk_source = system
