@@ -1,4 +1,4 @@
-use crate::windows_lifecycle_proof_contract::{Candidate, Observation, ProofPlan};
+use crate::windows_lifecycle_proof_contract::{Candidate, EvidenceReceipt, Observation, ProofPlan};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::{c_void, OsStr, OsString};
@@ -160,11 +160,32 @@ pub(crate) struct OwnedFile {
     identity: FileIdentity,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub(crate) struct ProcessOutcome {
-    pub(crate) exit_code: u32,
-    pub(crate) timed_out: bool,
-    pub(crate) process_tree_settled: bool,
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub(crate) enum ProcessTerminal {
+    Exited { exit_code: u32 },
+    TimedOut,
+    SupervisionFailed { reason: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ProcessTerminalSnapshot {
+    pub(crate) process_id: u32,
+    pub(crate) terminal: ProcessTerminal,
+    pub(crate) active_processes: Observation<u32>,
+}
+
+pub(crate) struct SettledProcessOutcome {
+    pub(crate) terminal: ProcessTerminalSnapshot,
+}
+
+#[derive(Debug)]
+pub(crate) enum ExecuteFailure {
+    NotStarted(String),
+    SettlementUnproven {
+        reason: String,
+        terminal: ProcessTerminalSnapshot,
+    },
 }
 
 struct FixedLaunchContext {
@@ -332,64 +353,133 @@ impl OwnedFile {
         fixed_arguments: &str,
         timeout: Duration,
         label: &str,
-    ) -> Result<ProcessOutcome, String> {
-        self.revalidate()?;
-        let launch = FixedLaunchContext::for_evidence_root(evidence)?;
-        let job = Job::new(label)?;
-        let child = SuspendedChild::spawn(&self.path, fixed_arguments, &launch, label)?;
+    ) -> Result<SettledProcessOutcome, ExecuteFailure> {
+        self.revalidate().map_err(ExecuteFailure::NotStarted)?;
+        let launch =
+            FixedLaunchContext::for_evidence_root(evidence).map_err(ExecuteFailure::NotStarted)?;
+        let job = Job::new(label).map_err(ExecuteFailure::NotStarted)?;
+        let child = SuspendedChild::spawn(&self.path, fixed_arguments, &launch, label)
+            .map_err(ExecuteFailure::NotStarted)?;
         if unsafe { AssignProcessToJobObject(job.raw(), child.process.raw()) } == 0 {
-            child.settle_unassigned(label)?;
-            return Err(format!("lifecycle_{label}_job_assignment_failed"));
+            let primary = format!("lifecycle_{label}_job_assignment_failed");
+            return match child.settle_unassigned(label) {
+                Ok(()) => Err(ExecuteFailure::NotStarted(primary)),
+                Err(settlement) => Err(ExecuteFailure::SettlementUnproven {
+                    reason: combined_failure(&primary, &settlement),
+                    terminal: child.unassigned_terminal(primary),
+                }),
+            };
         }
         if unsafe { ResumeThread(child.thread.raw()) } == u32::MAX {
-            job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label)?;
-            return Err(format!("lifecycle_{label}_resume_failed"));
+            let primary = format!("lifecycle_{label}_resume_failed");
+            let terminal = child.terminal_snapshot(
+                &job,
+                ProcessTerminal::SupervisionFailed {
+                    reason: primary.clone(),
+                },
+            );
+            return match job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label) {
+                Ok(()) => Err(ExecuteFailure::NotStarted(primary)),
+                Err(settlement) => Err(ExecuteFailure::SettlementUnproven {
+                    reason: combined_failure(&primary, &settlement),
+                    terminal,
+                }),
+            };
         }
 
         let deadline = Instant::now() + timeout;
-        let primary_wait = wait_handle_until(child.process.raw(), deadline, label)?;
-        let timed_out = primary_wait == WAIT_TIMEOUT;
-        if timed_out {
-            job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label)?;
-            self.revalidate()?;
-            return Ok(ProcessOutcome {
-                exit_code: 124,
-                timed_out: true,
-                process_tree_settled: true,
-            });
+        let primary_wait = match wait_handle_until(child.process.raw(), deadline, label) {
+            Ok(wait) => wait,
+            Err(reason) => {
+                return settle_failed_process(
+                    &job,
+                    child.terminal_snapshot(&job, ProcessTerminal::SupervisionFailed { reason }),
+                    label,
+                );
+            }
+        };
+        if primary_wait == WAIT_TIMEOUT {
+            return settle_failed_process(
+                &job,
+                child.terminal_snapshot(&job, ProcessTerminal::TimedOut),
+                label,
+            );
         }
         if primary_wait != WAIT_OBJECT_0 {
-            job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label)?;
-            return Err(format!("lifecycle_{label}_primary_wait_failed"));
+            let reason = format!("lifecycle_{label}_primary_wait_failed");
+            return settle_failed_process(
+                &job,
+                child.terminal_snapshot(&job, ProcessTerminal::SupervisionFailed { reason }),
+                label,
+            );
         }
         let mut exit_code = 0;
         if unsafe { GetExitCodeProcess(child.process.raw(), &mut exit_code) } == 0 {
-            job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label)?;
-            return Err(format!("lifecycle_{label}_exit_query_failed"));
+            let reason = format!("lifecycle_{label}_exit_query_failed");
+            return settle_failed_process(
+                &job,
+                child.terminal_snapshot(&job, ProcessTerminal::SupervisionFailed { reason }),
+                label,
+            );
+        }
+        if exit_code != 0 {
+            return settle_failed_process(
+                &job,
+                child.terminal_snapshot(&job, ProcessTerminal::Exited { exit_code }),
+                label,
+            );
         }
         match job.wait_for_zero(deadline) {
-            Ok(true) => {}
-            Ok(false) => {
-                job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label)?;
-                self.revalidate()?;
-                return Ok(ProcessOutcome {
-                    exit_code,
-                    timed_out: true,
-                    process_tree_settled: true,
-                });
-            }
-            Err(error) => {
-                job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label)?;
-                return Err(error);
-            }
+            Ok(true) => Ok(SettledProcessOutcome {
+                terminal: ProcessTerminalSnapshot {
+                    process_id: child.process_id,
+                    terminal: ProcessTerminal::Exited { exit_code },
+                    active_processes: Observation::Present(0),
+                },
+            }),
+            Ok(false) => settle_failed_process(
+                &job,
+                child.terminal_snapshot(&job, ProcessTerminal::TimedOut),
+                label,
+            ),
+            Err(reason) => settle_failed_process(
+                &job,
+                child.terminal_snapshot(&job, ProcessTerminal::SupervisionFailed { reason }),
+                label,
+            ),
         }
-        self.revalidate()?;
-        Ok(ProcessOutcome {
-            exit_code,
-            timed_out: false,
-            process_tree_settled: true,
-        })
     }
+}
+
+fn settle_failed_process(
+    job: &Job,
+    terminal: ProcessTerminalSnapshot,
+    label: &str,
+) -> Result<SettledProcessOutcome, ExecuteFailure> {
+    match job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label) {
+        Ok(()) => Ok(SettledProcessOutcome { terminal }),
+        Err(settlement) => {
+            let primary = terminal_failure(&terminal.terminal, label);
+            Err(ExecuteFailure::SettlementUnproven {
+                reason: combined_failure(&primary, &settlement),
+                terminal,
+            })
+        }
+    }
+}
+
+fn terminal_failure(terminal: &ProcessTerminal, label: &str) -> String {
+    match terminal {
+        ProcessTerminal::Exited { exit_code } => {
+            format!("lifecycle_{label}_exit_code_{exit_code}")
+        }
+        ProcessTerminal::TimedOut => format!("lifecycle_{label}_timeout"),
+        ProcessTerminal::SupervisionFailed { reason } => reason.clone(),
+    }
+}
+
+fn combined_failure(primary: &str, settlement: &str) -> String {
+    format!("{primary}|{settlement}")
 }
 
 struct Job(OwnedHandle);
@@ -438,6 +528,13 @@ impl Job {
         Ok(accounting.ActiveProcesses)
     }
 
+    fn observe_active_processes(&self) -> Observation<u32> {
+        match self.active_processes() {
+            Ok(active) => Observation::Present(active),
+            Err(reason) => Observation::Unknown(reason),
+        }
+    }
+
     fn wait_for_zero(&self, deadline: Instant) -> Result<bool, String> {
         loop {
             if self.active_processes()? == 0 {
@@ -467,6 +564,7 @@ impl Job {
 struct SuspendedChild {
     process: OwnedHandle,
     thread: OwnedHandle,
+    process_id: u32,
 }
 
 impl SuspendedChild {
@@ -512,7 +610,26 @@ impl SuspendedChild {
         Ok(Self {
             process: OwnedHandle(information.hProcess),
             thread: OwnedHandle(information.hThread),
+            process_id: information.dwProcessId,
         })
+    }
+
+    fn terminal_snapshot(&self, job: &Job, terminal: ProcessTerminal) -> ProcessTerminalSnapshot {
+        ProcessTerminalSnapshot {
+            process_id: self.process_id,
+            terminal,
+            active_processes: job.observe_active_processes(),
+        }
+    }
+
+    fn unassigned_terminal(&self, reason: String) -> ProcessTerminalSnapshot {
+        ProcessTerminalSnapshot {
+            process_id: self.process_id,
+            terminal: ProcessTerminal::SupervisionFailed { reason },
+            active_processes: Observation::Unknown(
+                "lifecycle_unassigned_process_job_state_unavailable".to_string(),
+            ),
+        }
     }
 
     fn settle_unassigned(&self, label: &str) -> Result<(), String> {
@@ -550,6 +667,10 @@ impl ElevatedProcess {
 
     pub(crate) fn started_at_100ns(&self) -> u64 {
         self.started_at_100ns
+    }
+
+    pub(crate) fn is_settled(&self) -> bool {
+        self.settled
     }
 
     pub(crate) fn bind_to_parent_job(&mut self) -> Result<(), String> {
@@ -591,7 +712,7 @@ impl ElevatedProcess {
         Ok(exit_code)
     }
 
-    fn terminate_and_settle(&mut self) -> Result<(), String> {
+    pub(crate) fn terminate_and_settle(&mut self) -> Result<(), String> {
         if let Some(job) = &self.job {
             job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, "worker")?;
         } else if unsafe { TerminateProcess(self.handle.raw(), 124) } == 0
@@ -747,21 +868,35 @@ impl ProtectedEvidenceRoot {
         &self.root
     }
 
-    pub(crate) fn write_json_new<T: Serialize>(&self, name: &str, value: &T) -> Result<(), String> {
+    pub(crate) fn write_json_new<T: Serialize>(
+        &self,
+        name: &str,
+        value: &T,
+    ) -> Result<EvidenceReceipt, String> {
         if !valid_evidence_name(name) {
             return Err("lifecycle_evidence_name_invalid".to_string());
         }
         let payload = serde_json::to_vec_pretty(value)
             .map_err(|_| "lifecycle_evidence_serialize_failed".to_string())?;
+        let path = self.root.join(name);
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
             .share_mode(FILE_SHARE_READ)
-            .open(self.root.join(name))
+            .open(&path)
             .map_err(|_| "lifecycle_evidence_create_failed".to_string())?;
-        file.write_all(&payload)
+        if file
+            .write_all(&payload)
             .and_then(|_| file.sync_all())
-            .map_err(|_| "lifecycle_evidence_write_failed".to_string())
+            .is_err()
+        {
+            drop(file);
+            return match fs::remove_file(path) {
+                Ok(()) => Err("lifecycle_evidence_write_failed".to_string()),
+                Err(_) => Err("lifecycle_evidence_write_cleanup_failed".to_string()),
+            };
+        }
+        Ok(evidence_receipt(name, &payload))
     }
 }
 
@@ -1336,6 +1471,29 @@ pub(crate) fn validate_evidence_root(value: &str, nonce: &str) -> Result<(), Str
         Ok(())
     } else {
         Err("lifecycle_evidence_root_binding_invalid".to_string())
+    }
+}
+
+pub(crate) fn verify_evidence_receipt(
+    root: &str,
+    receipt: &EvidenceReceipt,
+) -> Result<OwnedFile, String> {
+    if !valid_evidence_name(&receipt.name) || receipt.size == 0 {
+        return Err("lifecycle_failure_evidence_receipt_invalid".to_string());
+    }
+    OwnedFile::open(
+        &Path::new(root).join(&receipt.name),
+        receipt.size,
+        &receipt.sha256,
+        "failure_evidence",
+    )
+}
+
+fn evidence_receipt(name: &str, payload: &[u8]) -> EvidenceReceipt {
+    EvidenceReceipt {
+        name: name.to_string(),
+        size: payload.len() as u64,
+        sha256: hex_digest(&Sha256::digest(payload)),
     }
 }
 
@@ -2276,6 +2434,52 @@ impl AlignedBuffer {
 mod tests {
     use super::*;
 
+    struct ScratchEvidence {
+        evidence: Option<ProtectedEvidenceRoot>,
+        root: PathBuf,
+    }
+
+    impl ScratchEvidence {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "batcave-lifecycle-{label}-{}",
+                random_hex(16).expect("unique lifecycle scratch")
+            ));
+            fs::create_dir(&root).expect("create lifecycle scratch");
+            let root_wide = wide(root.as_os_str());
+            let handle = unsafe {
+                CreateFileW(
+                    root_wide.as_ptr(),
+                    FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                    null_mut(),
+                )
+            };
+            assert_ne!(handle, INVALID_HANDLE_VALUE, "open lifecycle scratch");
+            Self {
+                evidence: Some(ProtectedEvidenceRoot {
+                    root: root.clone(),
+                    _handle: OwnedHandle(handle),
+                }),
+                root,
+            }
+        }
+
+        fn evidence(&self) -> &ProtectedEvidenceRoot {
+            self.evidence.as_ref().expect("scratch evidence")
+        }
+    }
+
+    impl Drop for ScratchEvidence {
+        fn drop(&mut self) {
+            drop(self.evidence.take());
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
     #[test]
     fn entropy_helpers_emit_canonical_hex() {
         for length in [32, 64] {
@@ -2292,6 +2496,38 @@ mod tests {
         assert!(valid_evidence_name("initial-state.private.json"));
         assert!(!valid_evidence_name("../escape"));
         assert!(!valid_evidence_name("nested/path"));
+    }
+
+    #[test]
+    fn failure_evidence_receipt_binds_the_exact_leaf_bytes() {
+        struct Scratch(PathBuf);
+
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "batcave-lifecycle-receipt-{}",
+            random_hex(16).expect("unique receipt probe")
+        )));
+        fs::create_dir(&scratch.0).expect("create receipt probe root");
+        let name = "failure.private.json";
+        let payload = br#"{"reason":"failed"}"#;
+        fs::write(scratch.0.join(name), payload).expect("write receipt probe");
+        let receipt = evidence_receipt(name, payload);
+        assert_eq!(receipt.size, payload.len() as u64);
+        assert_eq!(receipt.sha256.len(), 64);
+        let guard = verify_evidence_receipt(&scratch.0.to_string_lossy(), &receipt)
+            .expect("exact bytes must verify");
+        drop(guard);
+
+        fs::write(scratch.0.join(name), br#"{"reason":"forged"}"#).expect("replace receipt probe");
+        assert_eq!(
+            verify_evidence_receipt(&scratch.0.to_string_lossy(), &receipt).err(),
+            Some("lifecycle_failure_evidence_identity_mismatch".to_string())
+        );
     }
 
     #[test]
@@ -2409,6 +2645,41 @@ mod tests {
     }
 
     #[test]
+    fn failed_children_return_only_after_their_job_is_settled() {
+        let executable = OwnedFile::open_current_executable().expect("owned test executable");
+
+        let nonzero_root = ScratchEvidence::new("nonzero-child");
+        let nonzero = executable
+            .execute(
+                nonzero_root.evidence(),
+                "--ignored --exact windows_lifecycle_proof::native::tests::fixed_nonzero_child --nocapture",
+                Duration::from_secs(30),
+                "nonzero_child",
+            )
+            .expect("nonzero child settlement");
+        assert!(matches!(
+            nonzero.terminal.terminal,
+            ProcessTerminal::Exited { exit_code: 23 }
+        ));
+
+        let timeout_root = ScratchEvidence::new("timeout-child");
+        let timeout = executable
+            .execute(
+                timeout_root.evidence(),
+                "--ignored --exact windows_lifecycle_proof::native::tests::fixed_timeout_child --nocapture",
+                Duration::from_millis(100),
+                "timeout_child",
+            )
+            .expect("timeout child settlement");
+        assert_eq!(timeout.terminal.terminal, ProcessTerminal::TimedOut);
+        assert_ne!(
+            timeout.terminal.active_processes,
+            Observation::Present(0),
+            "the timeout snapshot must precede Job termination"
+        );
+    }
+
+    #[test]
     #[ignore = "private child entry for the explicit environment probe"]
     fn fixed_environment_probe_child() {
         let mut environment = std::env::vars_os()
@@ -2423,5 +2694,17 @@ mod tests {
         );
         fs::write("child-environment.txt", environment.join("\n"))
             .expect("write child environment");
+    }
+
+    #[test]
+    #[ignore = "private child entry for process failure settlement"]
+    fn fixed_nonzero_child() {
+        std::process::exit(23);
+    }
+
+    #[test]
+    #[ignore = "private child entry for process timeout settlement"]
+    fn fixed_timeout_child() {
+        std::thread::sleep(Duration::from_secs(30));
     }
 }

@@ -137,10 +137,37 @@ pub(crate) enum DesktopPhaseDisposition {
 pub(crate) struct WorkerResult {
     pub disposition: WorkerDisposition,
     pub completed_stage: Option<LifecycleStage>,
-    pub failure: Option<String>,
+    pub failure: Option<WorkerFailure>,
     pub process_tree_settled: bool,
     pub private_evidence_complete: bool,
     pub sanitized_export_complete: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkerFailureKind {
+    Mutation,
+    EvidenceWrite,
+    ProcessSettlement,
+    Controller,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EvidenceReceipt {
+    pub name: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkerFailure {
+    pub kind: WorkerFailureKind,
+    pub attempted_stage: Option<LifecycleStage>,
+    pub reason: String,
+    pub evidence: Option<EvidenceReceipt>,
+    pub evidence_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
