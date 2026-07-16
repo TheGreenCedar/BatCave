@@ -43,6 +43,10 @@ fn is_missing_path_error(error: u32) -> bool {
     matches!(error, ERROR_FILE_NOT_FOUND_CODE | ERROR_PATH_NOT_FOUND_CODE)
 }
 
+fn missing_service_cleanup_required(product_root_exists: bool, service_root_exists: bool) -> bool {
+    product_root_exists || service_root_exists
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProvisionVerb {
     PrepareUpgrade,
@@ -984,10 +988,13 @@ mod native {
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? else {
             let roots = fixed_roots()?;
-            if path_exists_no_follow(&roots.product)? || path_exists_no_follow(&roots.service)? {
-                return Err("collector_service_orphaned_root_rejected".to_string());
+            if !missing_service_cleanup_required(
+                path_exists_no_follow(&roots.product)?,
+                path_exists_no_follow(&roots.service)?,
+            ) {
+                return Ok(());
             }
-            return Ok(());
+            return cleanup_roots_if_owned(true, &SecurityPrincipals::load_with_service()?);
         };
         validate_service_contract(&service, image.path())?;
         let was_running = query_service_status(&service)?.dwCurrentState == SERVICE_RUNNING;
@@ -2550,6 +2557,14 @@ mod tests {
         assert!(is_missing_path_error(ERROR_FILE_NOT_FOUND_CODE));
         assert!(is_missing_path_error(ERROR_PATH_NOT_FOUND_CODE));
         assert!(!is_missing_path_error(5));
+    }
+
+    #[test]
+    fn missing_service_cleanup_retries_only_when_owned_roots_remain() {
+        assert!(!missing_service_cleanup_required(false, false));
+        assert!(missing_service_cleanup_required(true, false));
+        assert!(missing_service_cleanup_required(false, true));
+        assert!(missing_service_cleanup_required(true, true));
     }
 
     #[test]

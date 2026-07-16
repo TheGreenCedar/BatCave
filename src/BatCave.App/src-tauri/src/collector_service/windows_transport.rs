@@ -60,6 +60,7 @@ pub(crate) fn run_pipe_server(
     stop: Arc<AtomicBool>,
     identity: ServiceIdentityV1,
     snapshots: Arc<dyn SnapshotProvider>,
+    ready: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let service_directory = std::env::current_exe()
         .map_err(|error| format!("collector_service_executable_resolve_failed:{error}"))?
@@ -71,7 +72,7 @@ pub(crate) fn run_pipe_server(
         .into_owned();
     let policy = ClientTrustPolicy::new(&service_directory).map_err(|error| error.to_string())?;
     let mut workers = Vec::<JoinHandle<()>>::new();
-    let mut pipe = PipeConnection::create(true)?;
+    let mut pipe = bind_before_ready(|| PipeConnection::create(true), ready)?;
 
     while !stop.load(Ordering::Acquire) {
         reap_workers(&mut workers);
@@ -128,6 +129,15 @@ pub(crate) fn run_pipe_server(
         let _ = worker.join();
     }
     Ok(())
+}
+
+fn bind_before_ready<T>(
+    bind: impl FnOnce() -> Result<T, String>,
+    ready: impl FnOnce() -> Result<(), String>,
+) -> Result<T, String> {
+    let bound = bind()?;
+    ready()?;
+    Ok(bound)
 }
 
 fn reap_workers(workers: &mut Vec<JoinHandle<()>>) {
@@ -775,5 +785,33 @@ mod tests {
             Ok(PipeConnectState::Connected)
         );
         assert!(classify_pipe_connect(false, 5).is_err());
+    }
+
+    #[test]
+    fn service_readiness_is_published_only_after_the_pipe_is_bound() {
+        let mut ready_called = false;
+        assert_eq!(
+            bind_before_ready(
+                || Err::<(), _>("bind failed".to_string()),
+                || {
+                    ready_called = true;
+                    Ok(())
+                },
+            ),
+            Err("bind failed".to_string())
+        );
+        assert!(!ready_called);
+
+        assert_eq!(
+            bind_before_ready(
+                || Ok("bound"),
+                || {
+                    ready_called = true;
+                    Ok(())
+                },
+            ),
+            Ok("bound")
+        );
+        assert!(ready_called);
     }
 }

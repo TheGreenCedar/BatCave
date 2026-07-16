@@ -185,10 +185,10 @@ fn run_service_body(
     }
     let snapshots: Arc<dyn SnapshotProvider> =
         Arc::new(CollectorSnapshotSource::new(collector, instance_id));
-    windows_provisioner::clear_service_failure();
-    report_status(status_handle, SERVICE_RUNNING, 0, 0)?;
-
-    let transport = run_pipe_server(Arc::clone(&stop), identity, snapshots);
+    let transport = run_pipe_server(Arc::clone(&stop), identity, snapshots, || {
+        windows_provisioner::clear_service_failure();
+        report_status(status_handle, SERVICE_RUNNING, 0, 0)
+    });
     stop.store(true, Ordering::Release);
     let _ = report_status(status_handle, SERVICE_STOP_PENDING, 2, 0);
     let shutdown = etw_lifecycle.shutdown_engine(&engine);
