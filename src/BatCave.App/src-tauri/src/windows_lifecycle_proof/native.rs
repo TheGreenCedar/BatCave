@@ -79,6 +79,7 @@ const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstal
 const INSTALL_LOCATION_VALUE: &str = "InstallLocation";
 const EVIDENCE_ROOT_PREFIX: &str = r"C:\ProgramData\BatCaveLifecycleProof-v1-";
 const PROCESS_TREE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+const PROCESS_TREE_SETTLEMENT_TIMEOUT_MS: u32 = 30_000;
 const PROCESS_TREE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -585,7 +586,8 @@ impl PipeConnection {
         if !self.server || self.connected {
             return Err("lifecycle_pipe_connect_state_invalid".to_string());
         }
-        let mut pending = PendingOverlapped::new("lifecycle_pipe_connect_event_failed")?;
+        let timeout_ms = duration_ms(timeout, "lifecycle_pipe_connect_timeout_invalid")?;
+        let mut pending = PendingOverlapped::new((), "lifecycle_pipe_connect_event_failed")?;
         let connected = unsafe { ConnectNamedPipe(self.handle.raw(), pending.as_mut_ptr()) };
         if connected == 0 {
             match unsafe { GetLastError() } {
@@ -594,7 +596,7 @@ impl PipeConnection {
                     wait_overlapped(
                         self.handle.raw(),
                         pending,
-                        timeout,
+                        timeout_ms,
                         "lifecycle_pipe_connect_timeout",
                     )?;
                 }
@@ -1844,25 +1846,17 @@ fn create_event(reason: &str) -> Result<OwnedHandle, String> {
     Ok(OwnedHandle(handle))
 }
 
-fn wait_overlapped(
+fn wait_overlapped<T>(
     handle: HANDLE,
-    pending: PendingOverlapped,
-    timeout: Duration,
+    pending: PendingOverlapped<T>,
+    timeout_ms: u32,
     timeout_reason: &str,
-) -> Result<u32, String> {
-    let wait =
-        unsafe { WaitForSingleObject(pending.event.raw(), duration_ms(timeout, timeout_reason)?) };
+) -> Result<(PendingOverlapped<T>, u32), String> {
+    let wait = unsafe { WaitForSingleObject(pending.event.raw(), timeout_ms) };
     if wait == WAIT_TIMEOUT {
         unsafe { CancelIoEx(handle, pending.as_ptr()) };
-        let cancel_wait = unsafe {
-            WaitForSingleObject(
-                pending.event.raw(),
-                duration_ms(
-                    PROCESS_TREE_SETTLEMENT_TIMEOUT,
-                    "lifecycle_pipe_cancel_wait_invalid",
-                )?,
-            )
-        };
+        let cancel_wait =
+            unsafe { WaitForSingleObject(pending.event.raw(), PROCESS_TREE_SETTLEMENT_TIMEOUT_MS) };
         if cancel_wait != WAIT_OBJECT_0 {
             std::mem::forget(pending);
             return Err(format!("{timeout_reason}_cancel_unsettled"));
@@ -1873,21 +1867,22 @@ fn wait_overlapped(
     }
     if wait != WAIT_OBJECT_0 {
         unsafe { CancelIoEx(handle, pending.as_ptr()) };
-        let cancel_wait = unsafe {
-            WaitForSingleObject(
-                pending.event.raw(),
-                duration_ms(
-                    PROCESS_TREE_SETTLEMENT_TIMEOUT,
-                    "lifecycle_pipe_cancel_wait_invalid",
-                )?,
-            )
-        };
+        let cancel_wait =
+            unsafe { WaitForSingleObject(pending.event.raw(), PROCESS_TREE_SETTLEMENT_TIMEOUT_MS) };
         if cancel_wait != WAIT_OBJECT_0 {
             std::mem::forget(pending);
             return Err("lifecycle_pipe_wait_cancel_unsettled".to_string());
         }
         return Err("lifecycle_pipe_wait_failed".to_string());
     }
+    let transferred = completed_overlapped_result(handle, &pending)?;
+    Ok((pending, transferred))
+}
+
+fn completed_overlapped_result<T>(
+    handle: HANDLE,
+    pending: &PendingOverlapped<T>,
+) -> Result<u32, String> {
     let mut transferred = 0;
     if unsafe { GetOverlappedResult(handle, pending.as_ptr(), &mut transferred, 0) } == 0 {
         let error = unsafe { GetLastError() };
@@ -1900,24 +1895,31 @@ fn wait_overlapped(
 }
 
 fn overlapped_read(handle: HANDLE, buffer: &mut [u8], timeout: Duration) -> Result<usize, String> {
-    let mut pending = PendingOverlapped::new("lifecycle_pipe_read_event_failed")?;
-    let mut immediate = 0;
+    let length =
+        u32::try_from(buffer.len()).map_err(|_| "lifecycle_pipe_read_size_invalid".to_string())?;
+    let timeout_ms = duration_ms(timeout, "lifecycle_pipe_read_timeout_invalid")?;
+    let mut pending = PendingOverlapped::new(
+        vec![0_u8; buffer.len()].into_boxed_slice(),
+        "lifecycle_pipe_read_event_failed",
+    )?;
     let result = unsafe {
         windows_sys::Win32::Storage::FileSystem::ReadFile(
             handle,
-            buffer.as_mut_ptr().cast(),
-            buffer.len() as u32,
-            &mut immediate,
+            pending.payload.as_mut_ptr().cast(),
+            length,
+            null_mut(),
             pending.as_mut_ptr(),
         )
     };
     if result != 0 {
-        return Ok(immediate as usize);
+        let transferred = completed_overlapped_result(handle, &pending)?;
+        return copy_completed_read(&pending.payload, buffer, transferred);
     }
     match unsafe { GetLastError() } {
         ERROR_IO_PENDING => {
-            wait_overlapped(handle, pending, timeout, "lifecycle_pipe_read_timeout")
-                .map(|value| value as usize)
+            wait_overlapped(handle, pending, timeout_ms, "lifecycle_pipe_read_timeout").and_then(
+                |(pending, transferred)| copy_completed_read(&pending.payload, buffer, transferred),
+            )
         }
         ERROR_BROKEN_PIPE => Ok(0),
         error => Err(format!("lifecycle_pipe_read_failed:{error}")),
@@ -1925,26 +1927,57 @@ fn overlapped_read(handle: HANDLE, buffer: &mut [u8], timeout: Duration) -> Resu
 }
 
 fn overlapped_write(handle: HANDLE, buffer: &[u8], timeout: Duration) -> Result<usize, String> {
-    let mut pending = PendingOverlapped::new("lifecycle_pipe_write_event_failed")?;
-    let mut immediate = 0;
+    let length =
+        u32::try_from(buffer.len()).map_err(|_| "lifecycle_pipe_write_size_invalid".to_string())?;
+    let timeout_ms = duration_ms(timeout, "lifecycle_pipe_write_timeout_invalid")?;
+    let mut pending = PendingOverlapped::new(
+        buffer.to_vec().into_boxed_slice(),
+        "lifecycle_pipe_write_event_failed",
+    )?;
     let result = unsafe {
         windows_sys::Win32::Storage::FileSystem::WriteFile(
             handle,
-            buffer.as_ptr().cast(),
-            buffer.len() as u32,
-            &mut immediate,
+            pending.payload.as_ptr().cast(),
+            length,
+            null_mut(),
             pending.as_mut_ptr(),
         )
     };
     if result != 0 {
-        return Ok(immediate as usize);
+        let transferred = completed_overlapped_result(handle, &pending)?;
+        return validate_transfer_count(transferred, buffer.len(), "write");
     }
     match unsafe { GetLastError() } {
         ERROR_IO_PENDING => {
-            wait_overlapped(handle, pending, timeout, "lifecycle_pipe_write_timeout")
-                .map(|value| value as usize)
+            wait_overlapped(handle, pending, timeout_ms, "lifecycle_pipe_write_timeout").and_then(
+                |(_, transferred)| validate_transfer_count(transferred, buffer.len(), "write"),
+            )
         }
         error => Err(format!("lifecycle_pipe_write_failed:{error}")),
+    }
+}
+
+fn copy_completed_read(
+    source: &[u8],
+    destination: &mut [u8],
+    transferred: u32,
+) -> Result<usize, String> {
+    let transferred =
+        validate_transfer_count(transferred, source.len().min(destination.len()), "read")?;
+    destination[..transferred].copy_from_slice(&source[..transferred]);
+    Ok(transferred)
+}
+
+fn validate_transfer_count(
+    transferred: u32,
+    buffer_length: usize,
+    operation: &str,
+) -> Result<usize, String> {
+    let transferred = transferred as usize;
+    if transferred > buffer_length {
+        Err(format!("lifecycle_pipe_{operation}_count_invalid"))
+    } else {
+        Ok(transferred)
     }
 }
 
@@ -1952,17 +1985,22 @@ fn duration_ms(duration: Duration, reason: &str) -> Result<u32, String> {
     u32::try_from(duration.as_millis()).map_err(|_| reason.to_string())
 }
 
-struct PendingOverlapped {
+struct PendingOverlapped<T> {
     overlapped: Box<OVERLAPPED>,
     event: OwnedHandle,
+    payload: T,
 }
 
-impl PendingOverlapped {
-    fn new(reason: &str) -> Result<Self, String> {
+impl<T> PendingOverlapped<T> {
+    fn new(payload: T, reason: &str) -> Result<Self, String> {
         let event = create_event(reason)?;
         let mut overlapped = Box::new(unsafe { zeroed::<OVERLAPPED>() });
         overlapped.hEvent = event.raw();
-        Ok(Self { overlapped, event })
+        Ok(Self {
+            overlapped,
+            event,
+            payload,
+        })
     }
 
     fn as_ptr(&self) -> *mut OVERLAPPED {
@@ -2133,5 +2171,17 @@ mod tests {
         assert!(!is_fixed_install_location(
             r#""C:\Program Files\Other App""#
         ));
+    }
+
+    #[test]
+    fn completed_pipe_reads_copy_only_confirmed_owned_bytes() {
+        let source = [1_u8, 2, 3, 4];
+        let mut destination = [0_u8; 4];
+        assert_eq!(copy_completed_read(&source, &mut destination, 3), Ok(3));
+        assert_eq!(destination, [1, 2, 3, 0]);
+        assert_eq!(
+            copy_completed_read(&source, &mut destination, 5),
+            Err("lifecycle_pipe_read_count_invalid".to_string())
+        );
     }
 }
