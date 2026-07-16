@@ -1,4 +1,6 @@
-use crate::windows_lifecycle_proof_contract::{Candidate, EvidenceReceipt, Observation, ProofPlan};
+use crate::windows_lifecycle_proof_contract::{
+    Candidate, EvidenceReceipt, EvidenceRootIdentity, Observation, ProofPlan,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::{c_void, OsStr, OsString};
@@ -691,10 +693,6 @@ impl ElevatedProcess {
         self.started_at_100ns
     }
 
-    pub(crate) fn is_settled(&self) -> bool {
-        self.settled
-    }
-
     pub(crate) fn bind_to_parent_job(&mut self) -> Result<(), String> {
         if self.job.is_some() {
             return Err("lifecycle_worker_job_already_bound".to_string());
@@ -882,12 +880,17 @@ impl PipeConnection {
 
 pub(crate) struct ProtectedEvidenceRoot {
     root: PathBuf,
+    identity: EvidenceRootIdentity,
     _handle: OwnedHandle,
 }
 
 impl ProtectedEvidenceRoot {
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn identity(&self) -> EvidenceRootIdentity {
+        self.identity
     }
 
     pub(crate) fn write_json_new<T: Serialize>(
@@ -1612,29 +1615,88 @@ pub(crate) fn create_protected_evidence_root(
     if handle == INVALID_HANDLE_VALUE {
         return Err("lifecycle_evidence_root_open_failed".to_string());
     }
+    let handle = OwnedHandle(handle);
+    let information = file_information_handle(handle.raw())
+        .map_err(|_| "lifecycle_evidence_root_identity_failed".to_string())?;
+    let final_path = final_path_handle(handle.raw())
+        .map_err(|_| "lifecycle_evidence_root_handle_path_failed".to_string())?;
+    if !final_path
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&root.to_string_lossy())
+    {
+        return Err("lifecycle_evidence_root_handle_path_invalid".to_string());
+    }
     Ok(ProtectedEvidenceRoot {
         root,
-        _handle: OwnedHandle(handle),
+        identity: EvidenceRootIdentity {
+            volume_serial: information.identity.volume_serial,
+            file_index: information.identity.file_index,
+        },
+        _handle: handle,
     })
 }
 
-pub(crate) fn validate_evidence_root(value: &str, nonce: &str) -> Result<(), String> {
-    if value == format!("{EVIDENCE_ROOT_PREFIX}{nonce}") {
-        Ok(())
-    } else {
-        Err("lifecycle_evidence_root_binding_invalid".to_string())
+pub(crate) fn open_protected_evidence_root(
+    value: &str,
+    nonce: &str,
+    expected_identity: EvidenceRootIdentity,
+) -> Result<ProtectedEvidenceRoot, String> {
+    if value != format!("{EVIDENCE_ROOT_PREFIX}{nonce}") {
+        return Err("lifecycle_evidence_root_binding_invalid".to_string());
     }
+    let root = PathBuf::from(value);
+    let metadata = fs::symlink_metadata(&root)
+        .map_err(|_| "lifecycle_evidence_root_metadata_failed".to_string())?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err("lifecycle_evidence_root_type_invalid".to_string());
+    }
+    let root_wide = wide(root.as_os_str());
+    let handle = unsafe {
+        CreateFileW(
+            root_wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err("lifecycle_evidence_root_open_failed".to_string());
+    }
+    let handle = OwnedHandle(handle);
+    let information = file_information_handle(handle.raw())
+        .map_err(|_| "lifecycle_evidence_root_identity_failed".to_string())?;
+    let identity = EvidenceRootIdentity {
+        volume_serial: information.identity.volume_serial,
+        file_index: information.identity.file_index,
+    };
+    let final_path = final_path_handle(handle.raw())
+        .map_err(|_| "lifecycle_evidence_root_handle_path_failed".to_string())?;
+    if identity != expected_identity
+        || !final_path
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&root.to_string_lossy())
+    {
+        return Err("lifecycle_evidence_root_identity_mismatch".to_string());
+    }
+    Ok(ProtectedEvidenceRoot {
+        root,
+        identity,
+        _handle: handle,
+    })
 }
 
 pub(crate) fn verify_evidence_receipt(
-    root: &str,
+    root: &ProtectedEvidenceRoot,
     receipt: &EvidenceReceipt,
 ) -> Result<OwnedFile, String> {
     if !valid_evidence_name(&receipt.name) || receipt.size == 0 {
         return Err("lifecycle_failure_evidence_receipt_invalid".to_string());
     }
     OwnedFile::open(
-        &Path::new(root).join(&receipt.name),
+        &root.root.join(&receipt.name),
         receipt.size,
         &receipt.sha256,
         "failure_evidence",
@@ -2167,9 +2229,12 @@ struct FileInformation {
 }
 
 fn file_information(file: &File) -> std::io::Result<FileInformation> {
+    file_information_handle(file.as_raw_handle() as HANDLE)
+}
+
+fn file_information_handle(handle: HANDLE) -> std::io::Result<FileInformation> {
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) } == 0
-    {
+    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(FileInformation {
@@ -2183,7 +2248,10 @@ fn file_information(file: &File) -> std::io::Result<FileInformation> {
 }
 
 fn final_path(file: &File) -> std::io::Result<PathBuf> {
-    let handle = file.as_raw_handle() as HANDLE;
+    final_path_handle(file.as_raw_handle() as HANDLE)
+}
+
+fn final_path_handle(handle: HANDLE) -> std::io::Result<PathBuf> {
     let required = unsafe { GetFinalPathNameByHandleW(handle, null_mut(), 0, 0) };
     if required == 0 || required > 32_768 {
         return Err(std::io::Error::last_os_error());
@@ -2621,9 +2689,15 @@ mod tests {
                 )
             };
             assert_ne!(handle, INVALID_HANDLE_VALUE, "open lifecycle scratch");
+            let information =
+                file_information_handle(handle).expect("read lifecycle scratch identity");
             Self {
                 evidence: Some(ProtectedEvidenceRoot {
                     root: root.clone(),
+                    identity: EvidenceRootIdentity {
+                        volume_serial: information.identity.volume_serial,
+                        file_index: information.identity.file_index,
+                    },
                     _handle: OwnedHandle(handle),
                 }),
                 root,
@@ -2678,32 +2752,21 @@ mod tests {
 
     #[test]
     fn failure_evidence_receipt_binds_the_exact_leaf_bytes() {
-        struct Scratch(PathBuf);
-
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-
-        let scratch = Scratch(std::env::temp_dir().join(format!(
-            "batcave-lifecycle-receipt-{}",
-            random_hex(16).expect("unique receipt probe")
-        )));
-        fs::create_dir(&scratch.0).expect("create receipt probe root");
+        let scratch = ScratchEvidence::new("receipt");
         let name = "failure.private.json";
         let payload = br#"{"reason":"failed"}"#;
-        fs::write(scratch.0.join(name), payload).expect("write receipt probe");
+        fs::write(scratch.root.join(name), payload).expect("write receipt probe");
         let receipt = evidence_receipt(name, payload);
         assert_eq!(receipt.size, payload.len() as u64);
         assert_eq!(receipt.sha256.len(), 64);
-        let guard = verify_evidence_receipt(&scratch.0.to_string_lossy(), &receipt)
-            .expect("exact bytes must verify");
+        let guard =
+            verify_evidence_receipt(scratch.evidence(), &receipt).expect("exact bytes must verify");
         drop(guard);
 
-        fs::write(scratch.0.join(name), br#"{"reason":"forged"}"#).expect("replace receipt probe");
+        fs::write(scratch.root.join(name), br#"{"reason":"forged"}"#)
+            .expect("replace receipt probe");
         assert_eq!(
-            verify_evidence_receipt(&scratch.0.to_string_lossy(), &receipt).err(),
+            verify_evidence_receipt(scratch.evidence(), &receipt).err(),
             Some("lifecycle_failure_evidence_identity_mismatch".to_string())
         );
     }

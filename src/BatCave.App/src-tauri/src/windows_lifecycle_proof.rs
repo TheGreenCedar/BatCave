@@ -7,8 +7,8 @@ use crate::windows_lifecycle_proof_contract::{
     message_sha256, parse_plan, plan_sha256, validate_desktop_phase_result, validate_envelope,
     validate_locator, validate_nonce, validate_sha256, ClosedRequest, DesktopPhase,
     DesktopPhaseDisposition, DesktopPhaseResult, Envelope, EvidenceReceipt, LifecycleStage,
-    ParentMessage, ProofPlan, SequenceGate, WorkerFailureKind, WorkerMessage, WorkerResult,
-    PROTOCOL_SCHEMA, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
+    ParentMessage, ProofPlan, RestorationOutcome, SequenceGate, WorkerFailureKind, WorkerMessage,
+    WorkerResult, PROTOCOL_SCHEMA, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
 };
 use native::{OwnedFile, PipeConnection, PreflightSnapshot};
 use serde::Serialize;
@@ -42,6 +42,8 @@ struct ControllerOutcome {
     failure_evidence: Option<EvidenceReceipt>,
     failure_evidence_verified: Option<bool>,
     evidence_error: Option<String>,
+    restoration: Option<RestorationOutcome>,
+    restoration_evidence_verified: Option<bool>,
     parent_followup_error: Option<String>,
     private_evidence: Option<Vec<EvidenceReceipt>>,
     sanitized_export: Option<EvidenceReceipt>,
@@ -77,6 +79,8 @@ pub(crate) fn run() -> i32 {
                 failure_evidence: None,
                 failure_evidence_verified: None,
                 evidence_error: None,
+                restoration: None,
+                restoration_evidence_verified: None,
                 parent_followup_error: None,
                 private_evidence: None,
                 sanitized_export: None,
@@ -104,6 +108,8 @@ fn dispatch(entry: Entry) -> Result<i32, String> {
                 failure_evidence: None,
                 failure_evidence_verified: None,
                 evidence_error: None,
+                restoration: None,
+                restoration_evidence_verified: None,
                 parent_followup_error: None,
                 private_evidence: None,
                 sanitized_export: None,
@@ -208,8 +214,11 @@ fn run_parent() -> Result<i32, String> {
                 {
                     return Err("lifecycle_worker_acceptance_invalid".to_string());
                 }
-                native::validate_evidence_root(&accepted.evidence_root, &nonce)?;
-                evidence_root = Some(accepted.evidence_root);
+                evidence_root = Some(native::open_protected_evidence_root(
+                    &accepted.evidence_root,
+                    &nonce,
+                    accepted.evidence_root_identity,
+                )?);
             }
             WorkerMessage::RunDesktopPhase(phase) => {
                 if evidence_root.is_none() {
@@ -240,27 +249,18 @@ fn run_parent() -> Result<i32, String> {
                 )?;
                 desktop_phase_index += 1;
             }
-            WorkerMessage::Complete(result) => {
+            WorkerMessage::ResultReady(result) if result.failure.is_none() => {
                 if evidence_root.is_none() || desktop_phase_index != DESKTOP_PHASES.len() {
                     return Err("lifecycle_worker_completion_order_invalid".to_string());
                 }
                 validate_worker_result(&result, true)?;
-                let exit_code = worker.wait(Duration::from_secs(30))?;
-                preflight.controller.revalidate()?;
-                preflight.baseline.revalidate()?;
-                preflight.final_candidate.revalidate()?;
-                preflight.incompatible_service_fixture.revalidate()?;
-                preflight.rollback_failing_service_fixture.revalidate()?;
-                if exit_code != 0 {
-                    return Err("lifecycle_worker_exit_mismatch".to_string());
-                }
-                let evidence_root_value = evidence_root
-                    .as_deref()
+                let evidence_root_guard = evidence_root
+                    .as_ref()
                     .ok_or_else(|| "lifecycle_evidence_root_missing".to_string())?;
                 let mut private_evidence_guards = Vec::with_capacity(result.private_evidence.len());
                 for receipt in &result.private_evidence {
                     private_evidence_guards.push(native::verify_evidence_receipt(
-                        evidence_root_value,
+                        evidence_root_guard,
                         receipt,
                     )?);
                 }
@@ -269,7 +269,7 @@ fn run_parent() -> Result<i32, String> {
                     .as_ref()
                     .ok_or_else(|| "lifecycle_sanitized_export_missing".to_string())?;
                 let sanitized_evidence_guard =
-                    native::verify_evidence_receipt(evidence_root_value, sanitized_export)?;
+                    native::verify_evidence_receipt(evidence_root_guard, sanitized_export)?;
                 evidence::validate_sanitized_export_bytes_with_parent_results(
                     &sanitized_evidence_guard.read_all_exact("sanitized_export")?,
                     &preflight.plan,
@@ -278,6 +278,20 @@ fn run_parent() -> Result<i32, String> {
                     &result.private_evidence,
                     &desktop_results,
                 )?;
+                revalidate_preflight_artifacts(&preflight)?;
+                send_parent_message(
+                    &mut pipe,
+                    &nonce,
+                    &mut gate,
+                    ParentMessage::EvidenceAccepted,
+                )?;
+                let exit_code = worker.wait(Duration::from_secs(30))?;
+                revalidate_preflight_artifacts(&preflight)?;
+                if exit_code != 0 {
+                    return Err("lifecycle_worker_exit_mismatch".to_string());
+                }
+                let evidence_root_value =
+                    Some(evidence_root_guard.root().to_string_lossy().into_owned());
                 print_json(&ControllerOutcome {
                     disposition: "passed",
                     reason: None,
@@ -286,18 +300,20 @@ fn run_parent() -> Result<i32, String> {
                     failure_evidence: None,
                     failure_evidence_verified: None,
                     evidence_error: None,
+                    restoration: None,
+                    restoration_evidence_verified: None,
                     parent_followup_error: None,
                     private_evidence: Some(result.private_evidence.clone()),
                     sanitized_export: result.sanitized_export.clone(),
                     success_evidence_verified: Some(true),
                     profile: Some(preflight.plan.profile),
                     controller_source_commit_sha: Some(preflight.source_commit_sha),
-                    evidence_root,
+                    evidence_root: evidence_root_value,
                     preflight: Some(preflight.snapshot),
                 });
                 return Ok(0);
             }
-            WorkerMessage::Failed(result) => {
+            WorkerMessage::ResultReady(result) => {
                 if evidence_root.is_none() {
                     return Err("lifecycle_worker_failure_before_acceptance".to_string());
                 }
@@ -306,27 +322,56 @@ fn run_parent() -> Result<i32, String> {
                     .failure
                     .as_ref()
                     .ok_or_else(|| "lifecycle_worker_failure_missing".to_string())?;
+                let terminate_without_ack = matches!(
+                    failure.restoration.as_ref(),
+                    RestorationOutcome::BlockedUnsettled
+                );
                 let mut evidence_guard = None;
+                let mut restoration_evidence_guard = None;
                 let followup = (|| -> Result<(), String> {
-                    settle_reported_worker_failure(&mut worker, failure.kind)?;
+                    let evidence_root_guard = evidence_root
+                        .as_ref()
+                        .ok_or_else(|| "lifecycle_evidence_root_missing".to_string())?;
+                    if terminate_without_ack {
+                        worker.terminate_and_settle()?;
+                    }
                     if let Some(receipt) = &failure.evidence {
                         evidence_guard = Some(native::verify_evidence_receipt(
-                            evidence_root
-                                .as_deref()
-                                .ok_or_else(|| "lifecycle_evidence_root_missing".to_string())?,
+                            evidence_root_guard,
                             receipt,
                         )?);
                     }
-                    preflight.controller.revalidate()?;
-                    preflight.baseline.revalidate()?;
-                    preflight.final_candidate.revalidate()?;
-                    preflight.incompatible_service_fixture.revalidate()?;
-                    preflight.rollback_failing_service_fixture.revalidate()?;
+                    if let Some(receipt) = restoration_evidence(failure.restoration.as_ref()) {
+                        restoration_evidence_guard = Some(native::verify_evidence_receipt(
+                            evidence_root_guard,
+                            receipt,
+                        )?);
+                    }
+                    revalidate_preflight_artifacts(&preflight)?;
+                    if !terminate_without_ack {
+                        send_parent_message(
+                            &mut pipe,
+                            &nonce,
+                            &mut gate,
+                            ParentMessage::EvidenceAccepted,
+                        )?;
+                        let exit_code = worker.wait(Duration::from_secs(30))?;
+                        if exit_code != 0 {
+                            return Err("lifecycle_worker_failure_exit_mismatch".to_string());
+                        }
+                        revalidate_preflight_artifacts(&preflight)?;
+                    }
                     Ok(())
                 })();
                 let failure_evidence_verified =
                     failure.evidence.as_ref().map(|_| evidence_guard.is_some());
+                let restoration_evidence_verified =
+                    restoration_evidence(failure.restoration.as_ref())
+                        .map(|_| restoration_evidence_guard.is_some());
                 let parent_followup_error = followup.err();
+                let evidence_root_value = evidence_root
+                    .as_ref()
+                    .map(|root| root.root().to_string_lossy().into_owned());
                 print_json(&ControllerOutcome {
                     disposition: if parent_followup_error.is_some() {
                         "worker_failure_followup_failed"
@@ -336,16 +381,18 @@ fn run_parent() -> Result<i32, String> {
                     reason: Some(failure.reason.clone()),
                     worker_failure_kind: Some(failure.kind),
                     attempted_stage: failure.attempted_stage,
-                    failure_evidence: failure.evidence.clone(),
+                    failure_evidence: failure.evidence.as_deref().cloned(),
                     failure_evidence_verified,
                     evidence_error: failure.evidence_error.clone(),
+                    restoration: Some(failure.restoration.as_ref().clone()),
+                    restoration_evidence_verified,
                     parent_followup_error,
                     private_evidence: None,
                     sanitized_export: None,
                     success_evidence_verified: None,
                     profile: Some(preflight.plan.profile),
                     controller_source_commit_sha: Some(preflight.source_commit_sha),
-                    evidence_root,
+                    evidence_root: evidence_root_value,
                     preflight: Some(preflight.snapshot),
                 });
                 return Ok(1);
@@ -365,21 +412,25 @@ fn validate_requested_desktop_phase_result(
     validate_desktop_phase_result(result, plan)
 }
 
-fn settle_reported_worker_failure(
-    worker: &mut native::ElevatedProcess,
-    kind: WorkerFailureKind,
-) -> Result<(), String> {
-    if kind == WorkerFailureKind::ProcessSettlement {
-        return worker.terminate_and_settle();
-    }
-    match worker.wait(Duration::from_secs(30)) {
-        Ok(0) => Ok(()),
-        Ok(_) => Err("lifecycle_worker_failure_exit_mismatch".to_string()),
-        Err(primary) if worker.is_settled() => Err(primary),
-        Err(primary) => match worker.terminate_and_settle() {
-            Ok(()) => Err(primary),
-            Err(settlement) => Err(format!("{primary}|{settlement}")),
-        },
+fn revalidate_preflight_artifacts(preflight: &ParentPreflight) -> Result<(), String> {
+    preflight.controller.revalidate()?;
+    preflight.baseline.revalidate()?;
+    preflight.final_candidate.revalidate()?;
+    preflight.incompatible_service_fixture.revalidate()?;
+    preflight.rollback_failing_service_fixture.revalidate()
+}
+
+fn restoration_evidence(restoration: &RestorationOutcome) -> Option<&EvidenceReceipt> {
+    match restoration {
+        RestorationOutcome::Restored { evidence }
+        | RestorationOutcome::Failed {
+            evidence: Some(evidence),
+            ..
+        } => Some(evidence),
+        RestorationOutcome::NotRequired
+        | RestorationOutcome::BlockedUnsettled
+        | RestorationOutcome::BlockedUntrusted { .. }
+        | RestorationOutcome::Failed { evidence: None, .. } => None,
     }
 }
 
@@ -434,6 +485,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
         &mut gate,
         WorkerMessage::Accepted(crate::windows_lifecycle_proof_contract::WorkerAccepted {
             evidence_root: evidence.root().to_string_lossy().into_owned(),
+            evidence_root_identity: evidence.identity(),
             worker_process_id: std::process::id(),
             worker_started_at_100ns: native::current_process_started_at()?,
         }),
@@ -451,12 +503,17 @@ fn run_worker(locator: &str) -> Result<i32, String> {
         nonce: &nonce,
         gate: &mut gate,
     });
-    let message = if result.failure.is_none() {
-        WorkerMessage::Complete(result)
-    } else {
-        WorkerMessage::Failed(result)
-    };
-    send_worker_message(&mut pipe, &nonce, &mut gate, message)?;
+    send_worker_message(
+        &mut pipe,
+        &nonce,
+        &mut gate,
+        WorkerMessage::ResultReady(Box::new(result)),
+    )?;
+    let accepted: Envelope<ParentMessage> = pipe.read_json(SESSION_TIMEOUT)?;
+    validate_envelope(&accepted, &nonce, &mut gate)?;
+    if accepted.message != ParentMessage::EvidenceAccepted {
+        return Err("lifecycle_parent_evidence_acceptance_required".to_string());
+    }
     Ok(0)
 }
 
@@ -595,6 +652,7 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
         }
         WorkerFailureKind::ProcessSettlement => {
             !result.process_tree_settled
+                && failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
                 && (failure.evidence.is_some() != failure.evidence_error.is_some())
                 && mutation_failure_binding(result, failure).is_some_and(|expected_name| {
                     failure
@@ -613,7 +671,146 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
     if !failure_shape_valid {
         return Err("lifecycle_worker_failure_shape_invalid".to_string());
     }
+    validate_restoration_for_failure(result, failure)?;
     Ok(())
+}
+
+fn validate_restoration_for_failure(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> Result<(), String> {
+    match failure.kind {
+        WorkerFailureKind::ProcessSettlement => {
+            if !result.process_tree_settled
+                && failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
+            {
+                Ok(())
+            } else {
+                Err("lifecycle_worker_restoration_disposition_invalid".to_string())
+            }
+        }
+        WorkerFailureKind::Mutation => validate_required_restoration(result, failure),
+        WorkerFailureKind::EvidenceWrite | WorkerFailureKind::Controller => {
+            if failure_requires_restoration(result, failure) {
+                validate_required_restoration(result, failure)
+            } else if failure.restoration.as_ref() == &RestorationOutcome::NotRequired {
+                Ok(())
+            } else {
+                Err("lifecycle_worker_restoration_disposition_invalid".to_string())
+            }
+        }
+    }
+}
+
+fn validate_required_restoration(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> Result<(), String> {
+    let expected_name = restoration_leaf_for_failure(result, failure)
+        .ok_or_else(|| "lifecycle_worker_restoration_stage_invalid".to_string())?;
+    match failure.restoration.as_ref() {
+        RestorationOutcome::Restored { evidence } => {
+            validate_restoration_receipt(evidence, expected_name, failure.evidence.as_deref())
+        }
+        RestorationOutcome::BlockedUntrusted { reason } => {
+            validate_restoration_reason(reason, "blocked_untrusted")
+        }
+        RestorationOutcome::Failed {
+            reason,
+            evidence,
+            evidence_error,
+        } => {
+            validate_restoration_reason(reason, "failed")?;
+            if evidence.is_some() == evidence_error.is_some() {
+                return Err("lifecycle_worker_restoration_failure_shape_invalid".to_string());
+            }
+            if let Some(receipt) = evidence {
+                validate_restoration_receipt(receipt, expected_name, failure.evidence.as_deref())?;
+            }
+            if evidence_error.as_deref().is_some_and(str::is_empty) {
+                return Err("lifecycle_worker_restoration_failure_shape_invalid".to_string());
+            }
+            Ok(())
+        }
+        RestorationOutcome::NotRequired | RestorationOutcome::BlockedUnsettled => {
+            Err("lifecycle_worker_restoration_disposition_invalid".to_string())
+        }
+    }
+}
+
+fn failure_requires_restoration(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> bool {
+    match failure.kind {
+        WorkerFailureKind::Mutation => true,
+        WorkerFailureKind::ProcessSettlement => false,
+        WorkerFailureKind::EvidenceWrite | WorkerFailureKind::Controller => {
+            restoration_stage(result, failure)
+                .is_some_and(|stage| stage != LifecycleStage::InitialState)
+        }
+    }
+}
+
+fn restoration_leaf_for_failure(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> Option<&'static str> {
+    match restoration_stage(result, failure)? {
+        LifecycleStage::InitialState => None,
+        LifecycleStage::FinalRepair => Some("final-repair-restoration.private.json"),
+        LifecycleStage::InitialUninstall => Some("initial-uninstall-restoration.private.json"),
+        LifecycleStage::BaselineInstall => Some("baseline-install-restoration.private.json"),
+        LifecycleStage::BaselineRestart => Some("baseline-restart-restoration.private.json"),
+        LifecycleStage::BaselineCrashRecovery => {
+            Some("baseline-crash-recovery-restoration.private.json")
+        }
+        LifecycleStage::BaselineRollbackRecovery => {
+            Some("baseline-rollback-recovery-restoration.private.json")
+        }
+        LifecycleStage::LegacyResidueSeeded => {
+            Some("legacy-residue-seeded-restoration.private.json")
+        }
+        LifecycleStage::FinalUpgrade => Some("final-upgrade-restoration.private.json"),
+        LifecycleStage::FinalRestart => Some("final-restart-restoration.private.json"),
+        LifecycleStage::FinalCrashRecovery => Some("final-crash-recovery-restoration.private.json"),
+        LifecycleStage::FinalFallbackStates => {
+            Some("final-fallback-states-restoration.private.json")
+        }
+        LifecycleStage::FinalUninstall => Some("final-uninstall-restoration.private.json"),
+    }
+}
+
+fn restoration_stage(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> Option<LifecycleStage> {
+    failure.attempted_stage.or(result.completed_stage)
+}
+
+fn validate_restoration_reason(reason: &str, label: &str) -> Result<(), String> {
+    if reason.is_empty() || reason.len() > 192 {
+        Err(format!(
+            "lifecycle_worker_restoration_{label}_reason_invalid"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_restoration_receipt(
+    receipt: &EvidenceReceipt,
+    expected_name: &str,
+    failure_receipt: Option<&EvidenceReceipt>,
+) -> Result<(), String> {
+    if receipt.size == 0
+        || receipt.size > 8 * 1024 * 1024
+        || receipt.name != expected_name
+        || failure_receipt.is_some_and(|failure| failure.name == receipt.name)
+    {
+        return Err("lifecycle_worker_restoration_receipt_invalid".to_string());
+    }
+    validate_sha256(&receipt.sha256, "restoration_evidence")
 }
 
 fn valid_success_evidence_receipts(result: &WorkerResult) -> bool {
@@ -820,8 +1017,11 @@ mod tests {
             kind: WorkerFailureKind::Mutation,
             attempted_stage: Some(LifecycleStage::FinalRepair),
             reason: "mutation_failed".to_string(),
-            evidence: Some(evidence_receipt("final-repair-failure.private.json")),
+            evidence: Some(Box::new(evidence_receipt(
+                "final-repair-failure.private.json",
+            ))),
             evidence_error: None,
+            restoration: restoration_not_reviewed(),
         });
         assert!(validate_worker_result(&mutation, false).is_ok());
 
@@ -831,6 +1031,7 @@ mod tests {
             reason: "evidence_incomplete".to_string(),
             evidence: None,
             evidence_error: Some("write_failed".to_string()),
+            restoration: Box::new(RestorationOutcome::NotRequired),
         });
         assert!(validate_worker_result(&evidence_write, false).is_ok());
 
@@ -838,8 +1039,11 @@ mod tests {
             kind: WorkerFailureKind::ProcessSettlement,
             attempted_stage: Some(LifecycleStage::FinalRepair),
             reason: "settlement_unproven".to_string(),
-            evidence: Some(evidence_receipt("final-repair-failure.private.json")),
+            evidence: Some(Box::new(evidence_receipt(
+                "final-repair-failure.private.json",
+            ))),
             evidence_error: None,
+            restoration: Box::new(RestorationOutcome::BlockedUnsettled),
         });
         settlement.process_tree_settled = false;
         assert!(validate_worker_result(&settlement, false).is_ok());
@@ -850,8 +1054,23 @@ mod tests {
             reason: "controller_failed".to_string(),
             evidence: None,
             evidence_error: None,
+            restoration: Box::new(RestorationOutcome::NotRequired),
         });
         assert!(validate_worker_result(&controller, false).is_ok());
+
+        let restored = failed_result(WorkerFailure {
+            kind: WorkerFailureKind::Mutation,
+            attempted_stage: Some(LifecycleStage::FinalRepair),
+            reason: "mutation_failed".to_string(),
+            evidence: Some(Box::new(evidence_receipt(
+                "final-repair-failure.private.json",
+            ))),
+            evidence_error: None,
+            restoration: Box::new(RestorationOutcome::Restored {
+                evidence: evidence_receipt("final-repair-restoration.private.json"),
+            }),
+        });
+        assert!(validate_worker_result(&restored, false).is_ok());
     }
 
     #[test]
@@ -862,6 +1081,7 @@ mod tests {
             reason: "mutation_failed".to_string(),
             evidence: None,
             evidence_error: None,
+            restoration: restoration_not_reviewed(),
         });
         assert_eq!(
             validate_worker_result(&forged_mutation, false),
@@ -874,6 +1094,7 @@ mod tests {
             reason: "settlement_unproven".to_string(),
             evidence: None,
             evidence_error: Some("write_failed".to_string()),
+            restoration: Box::new(RestorationOutcome::BlockedUnsettled),
         });
         forged_settlement.process_tree_settled = true;
         assert_eq!(
@@ -885,12 +1106,102 @@ mod tests {
             kind: WorkerFailureKind::Mutation,
             attempted_stage: Some(LifecycleStage::FinalRepair),
             reason: "mutation_failed".to_string(),
-            evidence: Some(evidence_receipt("baseline-install-failure.private.json")),
+            evidence: Some(Box::new(evidence_receipt(
+                "baseline-install-failure.private.json",
+            ))),
             evidence_error: None,
+            restoration: restoration_not_reviewed(),
         });
         assert_eq!(
             validate_worker_result(&forged_leaf, false),
             Err("lifecycle_worker_failure_shape_invalid".to_string())
+        );
+
+        for restoration in [
+            RestorationOutcome::NotRequired,
+            RestorationOutcome::BlockedUnsettled,
+            RestorationOutcome::Restored {
+                evidence: evidence_receipt("final-repair-failure.private.json"),
+            },
+            RestorationOutcome::Restored {
+                evidence: evidence_receipt("baseline-install-restoration.private.json"),
+            },
+        ] {
+            let invalid_restoration = failed_result(WorkerFailure {
+                kind: WorkerFailureKind::Mutation,
+                attempted_stage: Some(LifecycleStage::FinalRepair),
+                reason: "mutation_failed".to_string(),
+                evidence: Some(Box::new(evidence_receipt(
+                    "final-repair-failure.private.json",
+                ))),
+                evidence_error: None,
+                restoration: Box::new(restoration),
+            });
+            assert!(validate_worker_result(&invalid_restoration, false).is_err());
+        }
+
+        for kind in [
+            WorkerFailureKind::EvidenceWrite,
+            WorkerFailureKind::Controller,
+        ] {
+            let after_mutation = failed_result_at(
+                LifecycleStage::FinalRepair,
+                WorkerFailure {
+                    kind,
+                    attempted_stage: None,
+                    reason: "post_mutation_failed".to_string(),
+                    evidence: None,
+                    evidence_error: (kind == WorkerFailureKind::EvidenceWrite)
+                        .then(|| "write_failed".to_string()),
+                    restoration: Box::new(RestorationOutcome::NotRequired),
+                },
+            );
+            assert!(validate_worker_result(&after_mutation, false).is_err());
+
+            let valid_after_mutation = failed_result_at(
+                LifecycleStage::FinalRepair,
+                WorkerFailure {
+                    kind,
+                    attempted_stage: None,
+                    reason: "post_mutation_failed".to_string(),
+                    evidence: None,
+                    evidence_error: (kind == WorkerFailureKind::EvidenceWrite)
+                        .then(|| "write_failed".to_string()),
+                    restoration: restoration_not_reviewed(),
+                },
+            );
+            assert!(validate_worker_result(&valid_after_mutation, false).is_ok());
+        }
+
+        let mut empty_restoration_reason = failed_result(WorkerFailure {
+            kind: WorkerFailureKind::Mutation,
+            attempted_stage: Some(LifecycleStage::FinalRepair),
+            reason: "mutation_failed".to_string(),
+            evidence: Some(Box::new(evidence_receipt(
+                "final-repair-failure.private.json",
+            ))),
+            evidence_error: None,
+            restoration: Box::new(RestorationOutcome::BlockedUntrusted {
+                reason: String::new(),
+            }),
+        });
+        assert_eq!(
+            validate_worker_result(&empty_restoration_reason, false),
+            Err("lifecycle_worker_restoration_blocked_untrusted_reason_invalid".to_string())
+        );
+
+        *empty_restoration_reason
+            .failure
+            .as_mut()
+            .expect("failure")
+            .restoration = RestorationOutcome::Failed {
+            reason: "restoration_failed".to_string(),
+            evidence: Some(evidence_receipt("restoration.private.json")),
+            evidence_error: Some("write_failed".to_string()),
+        };
+        assert_eq!(
+            validate_worker_result(&empty_restoration_reason, false),
+            Err("lifecycle_worker_restoration_failure_shape_invalid".to_string())
         );
     }
 
@@ -934,8 +1245,9 @@ mod tests {
                     kind: WorkerFailureKind::Mutation,
                     attempted_stage: Some(attempted),
                     reason: "mutation_failed".to_string(),
-                    evidence: Some(evidence_receipt(leaf)),
+                    evidence: Some(Box::new(evidence_receipt(leaf))),
                     evidence_error: None,
+                    restoration: restoration_not_reviewed(),
                 },
             );
             assert!(validate_worker_result(&result, false).is_ok(), "{leaf}");
@@ -944,6 +1256,12 @@ mod tests {
 
     fn failed_result(failure: WorkerFailure) -> WorkerResult {
         failed_result_at(LifecycleStage::InitialState, failure)
+    }
+
+    fn restoration_not_reviewed() -> Box<RestorationOutcome> {
+        Box::new(RestorationOutcome::BlockedUntrusted {
+            reason: "lifecycle_restoration_not_reviewed".to_string(),
+        })
     }
 
     fn success_result() -> WorkerResult {

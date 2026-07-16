@@ -1,19 +1,23 @@
+use crate::collector_service::etw_lease::{
+    EtwLeasePhase, EtwLeaseV1, EtwSessionIdentityV1, ETW_LEASE_SCHEMA_VERSION,
+};
 #[cfg(test)]
 use crate::windows_lifecycle_proof_contract::DesktopPhaseObservation;
 use crate::windows_lifecycle_proof_contract::{
     plan_sha256, valid_service_instance_id, validate_desktop_phase_result,
     validate_desktop_visible, validate_sha256, DesktopCollectorRuntimeObservation,
-    DesktopEtwObservation, DesktopFileObservation, DesktopPhase, DesktopPhaseDisposition,
-    DesktopPhaseResult, DesktopProcessObservation, DesktopSecondInstanceObservation,
-    DesktopServiceProcessObservation, DesktopVisibleObservation, EvidenceReceipt, LifecycleStage,
-    Observation, ProofPlan, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
+    DesktopFileObservation, DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult,
+    DesktopProcessObservation, DesktopSecondInstanceObservation, DesktopServiceProcessObservation,
+    DesktopVisibleObservation, EvidenceReceipt, LifecycleStage, Observation, ProofPlan,
+    SUCCESS_PRIVATE_EVIDENCE_LEAVES,
 };
+use crate::windows_network::NetworkAttributionMonitor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) const SANITIZED_SCHEMA: &str = "batcave_windows_lifecycle_sanitized_v1";
+pub(super) const SANITIZED_SCHEMA: &str = "batcave_windows_lifecycle_sanitized_v2";
 const MAX_EVIDENCE_SIZE: u64 = 8 * 1024 * 1024;
 const PRIVATE_EVIDENCE_PROJECTION_READY: bool = false;
 const KNOWN_RETIRED_HELPER_LEAVES: [&str; 8] = [
@@ -92,6 +96,7 @@ struct SanitizedExportPacket {
     private_evidence: Vec<SanitizedPrivateEvidence>,
     final_product_absent: bool,
     current_user_data_preserved: bool,
+    current_user_retention: SanitizedCurrentUserRetention,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -143,7 +148,7 @@ struct SanitizedMachineSnapshot {
     installed_boundaries: Observation<SanitizedBoundarySnapshot>,
     service_registry_key: Option<LogicalPath>,
     named_pipe: Option<SanitizedNamedPipeSnapshot>,
-    etw_session: Option<DesktopEtwObservation>,
+    etw_session: Option<SanitizedEtwObservation>,
     etw_lease_file: Option<LogicalPath>,
     etw_owner_lock: Option<LogicalPath>,
     service_lifecycle_lock: Option<LogicalPath>,
@@ -158,7 +163,6 @@ struct SanitizedMachineSnapshot {
     common_start_menu_shortcut: Option<SanitizedShortcutSnapshot>,
     known_retired_helper_artifacts: Vec<SanitizedPathFileSnapshot>,
     unknown_helper_sentinel: Option<SanitizedPathFileSnapshot>,
-    current_user_retention: SanitizedCurrentUserRetention,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -252,6 +256,17 @@ struct SanitizedNamedPipeSnapshot {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+struct SanitizedEtwObservation {
+    lease: EtwLeaseV1,
+    observed_session: EtwSessionIdentityV1,
+    owner_lock_held: bool,
+    process_lock_held: bool,
+    events_lost: u64,
+    buffers_lost: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SanitizedPathFileSnapshot {
     path: LogicalPath,
     file: SanitizedFileSnapshot,
@@ -276,6 +291,8 @@ struct SanitizedShortcutSnapshot {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SanitizedCurrentUserRetention {
+    before_uninstall_source: EvidenceReceipt,
+    after_uninstall_source: EvidenceReceipt,
     settings: SanitizedRetainedUserObject,
     cache: SanitizedRetainedUserObject,
     diagnostics: SanitizedRetainedUserObject,
@@ -349,8 +366,6 @@ struct SanitizedDesktopSecondInstanceObservation {
     focused_primary_started_at_100ns: u64,
     service_instance_id_before: String,
     service_instance_id_after: String,
-    collector_generation_before: u64,
-    collector_generation_after: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -378,8 +393,6 @@ struct SanitizedDesktopCollectorRuntimeObservation {
     installed_service: Option<SanitizedDesktopFileObservation>,
     service_process: Option<SanitizedDesktopServiceProcessObservation>,
     pipe_server_process_id: Option<u32>,
-    service_etw: Option<DesktopEtwObservation>,
-    failure_marker_present: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -453,6 +466,14 @@ pub(super) fn validate_sanitized_export_bytes(
         return Err("lifecycle_sanitized_export_source_commit_invalid".to_string());
     }
     validate_sanitized_private_evidence(&packet.private_evidence, expected_receipts, plan)?;
+    validate_current_user_retention(&packet.current_user_retention)?;
+    validate_current_user_retention_sources(
+        &packet.current_user_retention,
+        &packet.private_evidence,
+    )?;
+    if !current_user_retention_preserved(&packet.current_user_retention) {
+        return Err("lifecycle_sanitized_user_retention_invalid".to_string());
+    }
     let final_packet = packet
         .private_evidence
         .iter()
@@ -593,7 +614,6 @@ fn validate_desktop_machine_runtime(
             if runtime.installed_service.is_some()
                 || runtime.service_process.is_some()
                 || runtime.pipe_server_process_id.is_some()
-                || runtime.service_etw.is_some()
                 || !matches!(machine.service, Observation::Absent)
                 || !matches!(machine.service_binary, Observation::Absent)
                 || machine.named_pipe.is_some()
@@ -619,7 +639,6 @@ fn validate_desktop_machine_runtime(
                 || installed.executable_sha256 != service_file.sha256
                 || runtime.service_process.is_some()
                 || runtime.pipe_server_process_id.is_some()
-                || runtime.service_etw.is_some()
                 || machine.named_pipe.is_some()
                 || machine.etw_session.is_some()
             {
@@ -642,6 +661,9 @@ fn validate_desktop_machine_runtime(
             let process = runtime.service_process.as_ref().ok_or_else(|| {
                 "lifecycle_sanitized_desktop_machine_runtime_mismatch".to_string()
             })?;
+            let etw = machine.etw_session.as_ref().ok_or_else(|| {
+                "lifecycle_sanitized_desktop_machine_runtime_mismatch".to_string()
+            })?;
             if service.state != 4
                 || service.process_id != process.process_id
                 || service.process_started_at_100ns != Some(process.started_at_100ns)
@@ -656,7 +678,13 @@ fn validate_desktop_machine_runtime(
                     .as_ref()
                     .map(|pipe| pipe.server_process_id)
                     != runtime.pipe_server_process_id
-                || machine.etw_session.as_ref() != runtime.service_etw.as_ref()
+                || desktop
+                    .visible
+                    .service_instance_id
+                    .as_deref()
+                    .is_some_and(|instance| {
+                        digest16(instance.as_bytes()) != etw.lease.service_instance_id
+                    })
             {
                 return Err("lifecycle_sanitized_desktop_machine_runtime_mismatch".to_string());
             }
@@ -669,7 +697,7 @@ fn validate_desktop_machine_runtime(
 struct ServiceGeneration {
     process_id: u32,
     started_at_100ns: u64,
-    etw_generation: u64,
+    service_instance_id: [u8; 16],
     image_path: LogicalPath,
     image_sha256: String,
 }
@@ -678,13 +706,39 @@ fn validate_lifecycle_continuity(
     entries: &BTreeMap<&str, &SanitizedPrivateEvidence>,
 ) -> Result<(), String> {
     let mut installed_boundary = None;
-    for entry in entries.values() {
+    let mut run_etw_identity = None;
+    let mut pre_uninstall_install_id = None;
+    let mut post_reinstall_install_id = None;
+    let mut post_uninstall_epoch = false;
+    for receipt_name in SUCCESS_PRIVATE_EVIDENCE_LEAVES {
+        let entry = required_entry(entries, receipt_name)?;
         if let Observation::Present(boundary) = &entry.machine.installed_boundaries {
             if installed_boundary.is_none() {
                 installed_boundary = Some(boundary);
             } else if installed_boundary != Some(boundary) {
                 return Err("lifecycle_sanitized_security_boundary_drift".to_string());
             }
+        }
+        if let Some(etw) = &entry.machine.etw_session {
+            let identity = (etw.lease.boot_identity, &etw.lease.session);
+            if run_etw_identity.is_none() {
+                run_etw_identity = Some(identity);
+            } else if run_etw_identity != Some(identity) {
+                return Err("lifecycle_sanitized_etw_run_identity_drift".to_string());
+            }
+            let epoch_install_id = if post_uninstall_epoch {
+                &mut post_reinstall_install_id
+            } else {
+                &mut pre_uninstall_install_id
+            };
+            if epoch_install_id.is_none() {
+                *epoch_install_id = Some(etw.lease.install_id);
+            } else if *epoch_install_id != Some(etw.lease.install_id) {
+                return Err("lifecycle_sanitized_etw_install_epoch_drift".to_string());
+            }
+        }
+        if receipt_name == "initial-uninstall-state.private.json" {
+            post_uninstall_epoch = true;
         }
     }
     for (state, desktop) in [
@@ -762,7 +816,7 @@ fn validate_lifecycle_continuity(
     let missing_restored = running_generation(
         &required_entry(entries, "final-missing-service-restored-state.private.json")?.machine,
     )?;
-    require_new_service_process(&final_recovered, &missing_restored)?;
+    require_new_generation(&final_recovered, &missing_restored)?;
     let stopped_restored = running_generation(
         &required_entry(entries, "final-stopped-service-restored-state.private.json")?.machine,
     )?;
@@ -803,15 +857,17 @@ fn running_generation(machine: &SanitizedMachineSnapshot) -> Result<ServiceGener
     if service.state != 4
         || service.process_id == 0
         || service.process_started_at_100ns.is_none()
-        || etw.lease_owner_process_id != service.process_id
-        || etw.controller_started_at_100ns != service.process_started_at_100ns.unwrap_or_default()
+        || etw.lease.controller.process_id != service.process_id
+        || etw.lease.controller.process_started_at
+            != service.process_started_at_100ns.unwrap_or_default()
+        || etw.lease.service_generation != sha256_digest16(&service.image_sha256)?
     {
         return Err("lifecycle_sanitized_generation_invalid".to_string());
     }
     Ok(ServiceGeneration {
         process_id: service.process_id,
         started_at_100ns: service.process_started_at_100ns.unwrap_or_default(),
-        etw_generation: etw.session_generation,
+        service_instance_id: etw.lease.service_instance_id,
         image_path: service.image_path.clone(),
         image_sha256: service.image_sha256.clone(),
     })
@@ -822,7 +878,7 @@ fn require_new_generation(
     after: &ServiceGeneration,
 ) -> Result<(), String> {
     require_new_service_process(before, after)?;
-    if before.etw_generation >= after.etw_generation {
+    if before.service_instance_id == after.service_instance_id {
         return Err("lifecycle_sanitized_generation_continuity_invalid".to_string());
     }
     Ok(())
@@ -978,8 +1034,6 @@ fn sanitize_parent_second_instance(
         focused_primary_started_at_100ns: second.focused_primary_started_at_100ns,
         service_instance_id_before: second.service_instance_id_before.clone(),
         service_instance_id_after: second.service_instance_id_after.clone(),
-        collector_generation_before: second.collector_generation_before,
-        collector_generation_after: second.collector_generation_after,
     })
 }
 
@@ -999,8 +1053,6 @@ fn sanitize_parent_collector_runtime(
             .map(|process| sanitize_parent_service_process(process, roots))
             .transpose()?,
         pipe_server_process_id: runtime.pipe_server_process_id,
-        service_etw: runtime.service_etw.clone(),
-        failure_marker_present: runtime.failure_marker_present,
     })
 }
 
@@ -1096,6 +1148,19 @@ fn validate_machine_snapshot(machine: &SanitizedMachineSnapshot) -> Result<(), S
     }
     if let Some(etw) = &machine.etw_session {
         validate_etw_observation(etw)?;
+        let service = machine
+            .service
+            .as_present()
+            .ok_or_else(|| "lifecycle_sanitized_etw_service_missing".to_string())?;
+        if service.process_id == 0
+            || service.process_started_at_100ns.is_none()
+            || etw.lease.controller.process_id != service.process_id
+            || etw.lease.controller.process_started_at
+                != service.process_started_at_100ns.unwrap_or_default()
+            || etw.lease.service_generation != sha256_digest16(&service.image_sha256)?
+        {
+            return Err("lifecycle_sanitized_etw_service_identity_invalid".to_string());
+        }
     }
     for path in [
         machine.etw_lease_file.as_ref(),
@@ -1149,7 +1214,7 @@ fn validate_machine_snapshot(machine: &SanitizedMachineSnapshot) -> Result<(), S
     if let Some(sentinel) = &machine.unknown_helper_sentinel {
         validate_path_file(sentinel, Some(LogicalRoot::CurrentUserData))?;
     }
-    validate_current_user_retention(&machine.current_user_retention)
+    Ok(())
 }
 
 fn validate_observation<T>(
@@ -1275,23 +1340,44 @@ fn validate_registry_path(path: &LogicalPath, root: LogicalRoot) -> Result<(), S
     validate_logical_path(path)
 }
 
-fn validate_etw_observation(etw: &DesktopEtwObservation) -> Result<(), String> {
-    if etw.session_name != "BatCave Collector Process Network v1"
-        || etw.lease_owner_process_id == 0
-        || etw.controller_started_at_100ns == 0
-        || etw.lease_generation == 0
-        || etw.lease_generation != etw.session_generation
-        || !etw.lease_active
+fn validate_etw_observation(etw: &SanitizedEtwObservation) -> Result<(), String> {
+    let lease = &etw.lease;
+    let session = &etw.observed_session;
+    if lease.schema_version != ETW_LEASE_SCHEMA_VERSION
+        || lease.phase != EtwLeasePhase::Active
+        || lease.install_id == [0; 16]
+        || lease.service_generation == [0; 16]
+        || lease.service_instance_id == [0; 16]
+        || lease.boot_identity == [0; 16]
+        || lease.controller.process_id == 0
+        || lease.controller.process_started_at == 0
+        || lease.session != *session
+        || session != &NetworkAttributionMonitor::session_identity()
         || !etw.owner_lock_held
         || !etw.process_lock_held
-        || !etw.decoder_healthy
-        || !etw.consumer_healthy
         || etw.events_lost != 0
         || etw.buffers_lost != 0
     {
         return Err("lifecycle_sanitized_etw_invalid".to_string());
     }
     Ok(())
+}
+
+fn sha256_digest16(value: &str) -> Result<[u8; 16], String> {
+    validate_sha256(value, "sanitized_service_generation")?;
+    let mut digest = [0_u8; 16];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| "lifecycle_sanitized_service_generation_invalid".to_string())?;
+    }
+    Ok(digest)
+}
+
+fn digest16(bytes: &[u8]) -> [u8; 16] {
+    let digest = Sha256::digest(bytes);
+    let mut value = [0_u8; 16];
+    value.copy_from_slice(&digest[..16]);
+    value
 }
 
 fn validate_path_file(
@@ -1355,6 +1441,26 @@ fn validate_current_user_retention(
         validate_nonroot_logical_path(&object.path)?;
         validate_digest_observation(&object.before_uninstall)?;
         validate_digest_observation(&object.after_uninstall)?;
+    }
+    Ok(())
+}
+
+fn validate_current_user_retention_sources(
+    retention: &SanitizedCurrentUserRetention,
+    entries: &[SanitizedPrivateEvidence],
+) -> Result<(), String> {
+    let by_name = entries
+        .iter()
+        .map(|entry| (entry.receipt.name.as_str(), &entry.receipt))
+        .collect::<BTreeMap<_, _>>();
+    if by_name
+        .get("final-incompatible-service-restored-state.private.json")
+        .copied()
+        != Some(&retention.before_uninstall_source)
+        || by_name.get("final-uninstall-state.private.json").copied()
+            != Some(&retention.after_uninstall_source)
+    {
+        return Err("lifecycle_sanitized_user_retention_source_invalid".to_string());
     }
     Ok(())
 }
@@ -1811,8 +1917,9 @@ fn validate_installed_machine(
                     .as_ref()
                     .is_some_and(|pipe| pipe.server_process_id == service.process_id)
                 && machine.etw_session.as_ref().is_some_and(|etw| {
-                    etw.lease_owner_process_id == service.process_id
-                        && service.process_started_at_100ns == Some(etw.controller_started_at_100ns)
+                    etw.lease.controller.process_id == service.process_id
+                        && service.process_started_at_100ns
+                            == Some(etw.lease.controller.process_started_at)
                 })
                 && machine.etw_lease_file.as_ref().is_some_and(|path| {
                     logical_leaf_eq(path, LogicalRoot::ServiceData, "etw-lease.v1.json")
@@ -2152,9 +2259,6 @@ fn validate_sanitized_collector_runtime(
     runtime: &SanitizedDesktopCollectorRuntimeObservation,
     plan: &ProofPlan,
 ) -> Result<(), String> {
-    if runtime.failure_marker_present {
-        return Err("lifecycle_sanitized_collector_failure_marker_present".to_string());
-    }
     let expected_service_sha256 = match phase {
         DesktopPhase::BaselinePrimary | DesktopPhase::BaselineSecondInstance => {
             &plan.baseline.service_sha256
@@ -2198,33 +2302,14 @@ fn validate_sanitized_collector_runtime(
             .as_ref()
             .ok_or_else(|| "lifecycle_sanitized_service_process_missing".to_string())?;
         validate_sanitized_service_process(process)?;
-        let etw = runtime
-            .service_etw
-            .as_ref()
-            .ok_or_else(|| "lifecycle_sanitized_service_etw_missing".to_string())?;
         if process.executable_path != service.executable_path
             || process.executable_size != service.executable_size
             || process.executable_sha256 != service.executable_sha256
             || runtime.pipe_server_process_id != Some(process.process_id)
-            || etw.session_name != "BatCave Collector Process Network v1"
-            || etw.lease_owner_process_id != process.process_id
-            || etw.controller_started_at_100ns != process.started_at_100ns
-            || etw.lease_generation == 0
-            || etw.lease_generation != etw.session_generation
-            || !etw.lease_active
-            || !etw.owner_lock_held
-            || !etw.process_lock_held
-            || !etw.decoder_healthy
-            || !etw.consumer_healthy
-            || etw.events_lost != 0
-            || etw.buffers_lost != 0
         {
             return Err("lifecycle_sanitized_service_runtime_invalid".to_string());
         }
-    } else if runtime.service_process.is_some()
-        || runtime.pipe_server_process_id.is_some()
-        || runtime.service_etw.is_some()
-    {
+    } else if runtime.service_process.is_some() || runtime.pipe_server_process_id.is_some() {
         return Err("lifecycle_sanitized_service_runtime_unexpected".to_string());
     }
     Ok(())
@@ -2312,13 +2397,6 @@ fn validate_sanitized_second_instance(
             || !valid_service_instance_id(&second.service_instance_id_before)
             || observation.visible.service_instance_id.as_deref()
                 != Some(second.service_instance_id_before.as_str())
-            || second.collector_generation_before == 0
-            || second.collector_generation_before != second.collector_generation_after
-            || observation
-                .collector_runtime
-                .service_etw
-                .as_ref()
-                .is_none_or(|etw| etw.session_generation != second.collector_generation_before)
         {
             return Err("lifecycle_sanitized_second_instance_invalid".to_string());
         }
@@ -2397,7 +2475,6 @@ fn validate_product_absence(
         || machine.common_start_menu_shortcut.is_some()
         || !machine.known_retired_helper_artifacts.is_empty()
         || (require_unknown_sentinel != machine.unknown_helper_sentinel.is_some())
-        || !current_user_retention_preserved(&machine.current_user_retention)
         || !directory_role_valid(
             &machine.current_user_data_root,
             LogicalRoot::CurrentUserData,
@@ -2658,6 +2735,29 @@ mod tests {
         let plan = parse_plan().expect("plan");
         let receipts = success_receipts();
         let packet = valid_export(&plan, &receipts);
+        let pre_uninstall_install_id = packet
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("final repair")
+            .machine
+            .etw_session
+            .as_ref()
+            .expect("pre-uninstall ETW")
+            .lease
+            .install_id;
+        let post_reinstall_install_id = packet
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "baseline-install-state.private.json")
+            .expect("baseline install")
+            .machine
+            .etw_session
+            .as_ref()
+            .expect("post-reinstall ETW")
+            .lease
+            .install_id;
+        assert_ne!(pre_uninstall_install_id, post_reinstall_install_id);
         assert_eq!(
             validate_sanitized_export_bytes(
                 &serde_json::to_vec(&packet).expect("packet"),
@@ -2710,6 +2810,7 @@ mod tests {
         );
 
         let mut drift = packet;
+        let drifted_instance = "00000065-00000000000000000000000000000002".to_string();
         drift
             .private_evidence
             .iter_mut()
@@ -2719,7 +2820,23 @@ mod tests {
             .as_mut()
             .expect("desktop phase")
             .visible
-            .service_instance_id = Some("00000065-00000000000000000000000000000002".to_string());
+            .service_instance_id = Some(drifted_instance.clone());
+        for name in [
+            "final-repair-state.private.json",
+            "final-primary-desktop.private.json",
+        ] {
+            drift
+                .private_evidence
+                .iter_mut()
+                .find(|entry| entry.receipt.name == name)
+                .expect("final repair observation")
+                .machine
+                .etw_session
+                .as_mut()
+                .expect("ETW")
+                .lease
+                .service_instance_id = digest16(drifted_instance.as_bytes());
+        }
         let bytes = serde_json::to_vec(&drift).expect("drift");
         assert!(validate_sanitized_export_bytes(
             &bytes,
@@ -2820,11 +2937,6 @@ mod tests {
 
         let mut retention_drift = valid_export(&plan, &receipts);
         retention_drift
-            .private_evidence
-            .iter_mut()
-            .find(|entry| entry.receipt.name == "final-uninstall-state.private.json")
-            .expect("final uninstall")
-            .machine
             .current_user_retention
             .settings
             .after_uninstall = Observation::Present(SanitizedDigestSnapshot {
@@ -2841,14 +2953,11 @@ mod tests {
         .is_err());
 
         let mut aliased_retention = valid_export(&plan, &receipts);
-        let final_machine = &mut aliased_retention
-            .private_evidence
-            .iter_mut()
-            .find(|entry| entry.receipt.name == "final-uninstall-state.private.json")
-            .expect("final uninstall")
-            .machine;
-        final_machine.current_user_retention.cache.path =
-            final_machine.current_user_retention.settings.path.clone();
+        aliased_retention.current_user_retention.cache.path = aliased_retention
+            .current_user_retention
+            .settings
+            .path
+            .clone();
         assert!(validate_sanitized_export_bytes(
             &serde_json::to_vec(&aliased_retention).expect("aliased retention"),
             &plan,
@@ -2857,6 +2966,25 @@ mod tests {
             &receipts,
         )
         .is_err());
+
+        let mut wrong_retention_source = valid_export(&plan, &receipts);
+        wrong_retention_source
+            .current_user_retention
+            .before_uninstall_source = receipts
+            .iter()
+            .find(|receipt| receipt.name == "final-uninstall-state.private.json")
+            .expect("final uninstall receipt")
+            .clone();
+        assert_eq!(
+            validate_sanitized_export_bytes(
+                &serde_json::to_vec(&wrong_retention_source).expect("wrong retention source"),
+                &plan,
+                &"c".repeat(40),
+                &"d".repeat(64),
+                &receipts,
+            ),
+            Err("lifecycle_sanitized_user_retention_source_invalid".to_string())
+        );
 
         let mut missing_service_cli_residue = valid_export(&plan, &receipts);
         missing_service_cli_residue
@@ -2922,7 +3050,9 @@ mod tests {
             .etw_session
             .as_mut()
             .expect("etw")
-            .controller_started_at_100ns = 5_499;
+            .lease
+            .controller
+            .process_started_at = 5_499;
         assert!(validate_sanitized_export_bytes(
             &serde_json::to_vec(&stale_etw_owner).expect("stale etw owner"),
             &plan,
@@ -2931,6 +3061,94 @@ mod tests {
             &receipts,
         )
         .is_err());
+
+        let mut mismatched_etw_session = valid_export(&plan, &receipts);
+        mismatched_etw_session
+            .private_evidence
+            .iter_mut()
+            .find(|entry| entry.receipt.name == "final-upgrade-state.private.json")
+            .expect("final upgrade")
+            .machine
+            .etw_session
+            .as_mut()
+            .expect("etw")
+            .observed_session
+            .configuration_digest = [9; 32];
+        assert!(validate_sanitized_export_bytes(
+            &serde_json::to_vec(&mismatched_etw_session).expect("mismatched etw session"),
+            &plan,
+            &"c".repeat(40),
+            &"d".repeat(64),
+            &receipts,
+        )
+        .is_err());
+
+        let mut forged_service_generation = valid_export(&plan, &receipts);
+        forged_service_generation
+            .private_evidence
+            .iter_mut()
+            .find(|entry| entry.receipt.name == "final-upgrade-state.private.json")
+            .expect("final upgrade")
+            .machine
+            .etw_session
+            .as_mut()
+            .expect("etw")
+            .lease
+            .service_generation[0] ^= 1;
+        assert!(validate_sanitized_export_bytes(
+            &serde_json::to_vec(&forged_service_generation).expect("forged service generation"),
+            &plan,
+            &"c".repeat(40),
+            &"d".repeat(64),
+            &receipts,
+        )
+        .is_err());
+
+        let mut visible_instance_mismatch = valid_export(&plan, &receipts);
+        visible_instance_mismatch
+            .private_evidence
+            .iter_mut()
+            .find(|entry| entry.receipt.name == "final-primary-desktop.private.json")
+            .expect("final desktop")
+            .desktop_phase
+            .as_mut()
+            .expect("desktop phase")
+            .visible
+            .service_instance_id = Some(test_service_instance_id(55, 99));
+        assert!(validate_sanitized_export_bytes(
+            &serde_json::to_vec(&visible_instance_mismatch).expect("visible instance mismatch"),
+            &plan,
+            &"c".repeat(40),
+            &"d".repeat(64),
+            &receipts,
+        )
+        .is_err());
+
+        for mutate in [
+            |etw: &mut SanitizedEtwObservation| etw.lease.install_id[0] ^= 1,
+            |etw: &mut SanitizedEtwObservation| etw.lease.boot_identity[0] ^= 1,
+        ] {
+            let mut run_identity_drift = valid_export(&plan, &receipts);
+            mutate(
+                run_identity_drift
+                    .private_evidence
+                    .iter_mut()
+                    .find(|entry| entry.receipt.name == "final-restart-state.private.json")
+                    .expect("final restart")
+                    .machine
+                    .etw_session
+                    .as_mut()
+                    .expect("etw"),
+            );
+            assert!(validate_sanitized_export_bytes(
+                &serde_json::to_vec(&run_identity_drift).expect("run identity drift"),
+                &plan,
+                &"c".repeat(40),
+                &"d".repeat(64),
+                &receipts,
+            )
+            .is_err());
+        }
 
         let mut aliased_locks = valid_export(&plan, &receipts);
         let machine = &mut aliased_locks
@@ -3032,9 +3250,6 @@ mod tests {
         service.process_id = 102;
         service.started_at_100ns = 10_200;
         desktop.collector_runtime.pipe_server_process_id = Some(102);
-        let etw = desktop.collector_runtime.service_etw.as_mut().expect("etw");
-        etw.lease_owner_process_id = 102;
-        etw.controller_started_at_100ns = 10_200;
         assert!(validate_sanitized_export_bytes(
             &serde_json::to_vec(&colliding_service).expect("colliding service"),
             &plan,
@@ -3061,9 +3276,6 @@ mod tests {
         service.process_id = 77;
         service.started_at_100ns = 7_700;
         desktop.collector_runtime.pipe_server_process_id = Some(77);
-        let etw = desktop.collector_runtime.service_etw.as_mut().expect("etw");
-        etw.lease_owner_process_id = 77;
-        etw.controller_started_at_100ns = 7_700;
         assert!(validate_sanitized_export_bytes(
             &serde_json::to_vec(&contradictory_desktop_machine)
                 .expect("contradictory desktop machine"),
@@ -3075,13 +3287,28 @@ mod tests {
         .is_err());
 
         let mut replayed_generation = valid_export(&plan, &receipts);
-        let machine = &mut replayed_generation
+        let prior_instance_id = replayed_generation
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-upgrade-state.private.json")
+            .expect("final upgrade")
+            .machine
+            .etw_session
+            .as_ref()
+            .expect("etw")
+            .lease
+            .service_instance_id;
+        replayed_generation
             .private_evidence
             .iter_mut()
             .find(|entry| entry.receipt.name == "final-restart-state.private.json")
             .expect("final restart")
-            .machine;
-        apply_test_generation(machine, 69, 6_900, 12);
+            .machine
+            .etw_session
+            .as_mut()
+            .expect("etw")
+            .lease
+            .service_instance_id = prior_instance_id;
         assert!(validate_sanitized_export_bytes(
             &serde_json::to_vec(&replayed_generation).expect("replayed generation"),
             &plan,
@@ -3220,6 +3447,7 @@ mod tests {
                 .collect(),
             final_product_absent: true,
             current_user_data_preserved: true,
+            current_user_retention: retention(receipts),
         }
     }
 
@@ -3227,7 +3455,11 @@ mod tests {
         let state = phase.expected_collector_state();
         let active = state == DesktopCollectorState::Active;
         let incompatible = state == DesktopCollectorState::Incompatible;
-        let collector_generation = test_generation_for_phase(phase).map(|(_, _, value)| value);
+        let service_instance_id = active.then(|| {
+            let (process_id, _, generation) =
+                test_generation_for_phase(phase).expect("active generation");
+            test_service_instance_id(process_id, generation)
+        });
         SanitizedDesktopPhaseObservation {
             phase,
             process_tree_settled: true,
@@ -3259,12 +3491,12 @@ mod tests {
                     process_tree_settled: true,
                     focused_primary_process_id: 101,
                     focused_primary_started_at_100ns: 10_100,
-                    service_instance_id_before: "00000065-00000000000000000000000000000001"
-                        .to_string(),
-                    service_instance_id_after: "00000065-00000000000000000000000000000001"
-                        .to_string(),
-                    collector_generation_before: collector_generation.expect("generation"),
-                    collector_generation_after: collector_generation.expect("generation"),
+                    service_instance_id_before: service_instance_id
+                        .clone()
+                        .expect("second instance service identity"),
+                    service_instance_id_after: service_instance_id
+                        .clone()
+                        .expect("second instance service identity"),
                 }
             }),
             collector_runtime: sanitized_collector_runtime(phase, plan),
@@ -3287,8 +3519,7 @@ mod tests {
                     .or_else(|| incompatible.then(|| "0.2.0-rc.3".to_string())),
                 negotiated_protocol_version: active.then_some(1),
                 minimum_desktop_version: active.then(|| env!("CARGO_PKG_VERSION").to_string()),
-                service_instance_id: active
-                    .then(|| "00000065-00000000000000000000000000000001".to_string()),
+                service_instance_id,
                 service_detail: if incompatible {
                     Some("collector_service_desktop_release_incompatible".to_string())
                 } else {
@@ -3368,8 +3599,6 @@ mod tests {
             focused_primary_started_at_100ns: second.focused_primary_started_at_100ns,
             service_instance_id_before: second.service_instance_id_before.clone(),
             service_instance_id_after: second.service_instance_id_after.clone(),
-            collector_generation_before: second.collector_generation_before,
-            collector_generation_after: second.collector_generation_after,
         }
     }
 
@@ -3395,8 +3624,6 @@ mod tests {
                 }
             }),
             pipe_server_process_id: runtime.pipe_server_process_id,
-            service_etw: runtime.service_etw.clone(),
-            failure_marker_present: runtime.failure_marker_present,
         }
     }
 
@@ -3424,8 +3651,6 @@ mod tests {
                 installed_service: None,
                 service_process: None,
                 pipe_server_process_id: None,
-                service_etw: None,
-                failure_marker_present: false,
             };
         }
         let (sha256, size) = if phase == DesktopPhase::FinalIncompatibleService {
@@ -3451,11 +3676,9 @@ mod tests {
                 installed_service: Some(installed_service),
                 service_process: None,
                 pipe_server_process_id: None,
-                service_etw: None,
-                failure_marker_present: false,
             };
         }
-        let (process_id, started_at_100ns, generation) =
+        let (process_id, started_at_100ns, _) =
             test_generation_for_phase(phase).expect("running generation");
         SanitizedDesktopCollectorRuntimeObservation {
             installed_service: Some(installed_service.clone()),
@@ -3468,21 +3691,6 @@ mod tests {
                 executable_sha256: installed_service.executable_sha256,
             }),
             pipe_server_process_id: Some(process_id),
-            service_etw: Some(DesktopEtwObservation {
-                session_name: "BatCave Collector Process Network v1".to_string(),
-                lease_owner_process_id: process_id,
-                controller_started_at_100ns: started_at_100ns,
-                lease_generation: generation,
-                session_generation: generation,
-                lease_active: true,
-                owner_lock_held: true,
-                process_lock_held: true,
-                decoder_healthy: true,
-                consumer_healthy: true,
-                events_lost: 0,
-                buffers_lost: 0,
-            }),
-            failure_marker_present: false,
         }
     }
 
@@ -3633,6 +3841,17 @@ mod tests {
         {
             apply_test_generation(&mut machine, process_id, started_at_100ns, generation);
         }
+        if matches!(
+            receipt_name,
+            "final-repair-state.private.json" | "final-primary-desktop.private.json"
+        ) {
+            machine
+                .etw_session
+                .as_mut()
+                .expect("pre-uninstall ETW")
+                .lease
+                .install_id = [2; 16];
+        }
         machine
     }
 
@@ -3677,10 +3896,10 @@ mod tests {
             .expect("named pipe")
             .server_process_id = process_id;
         let etw = machine.etw_session.as_mut().expect("etw");
-        etw.lease_owner_process_id = process_id;
-        etw.controller_started_at_100ns = started_at_100ns;
-        etw.lease_generation = generation;
-        etw.session_generation = generation;
+        etw.lease.controller.process_id = process_id;
+        etw.lease.controller.process_started_at = started_at_100ns;
+        etw.lease.service_instance_id =
+            digest16(test_service_instance_id(process_id, generation).as_bytes());
     }
 
     fn installed_machine(
@@ -3694,7 +3913,10 @@ mod tests {
                 Some(SanitizedNamedPipeSnapshot {
                     server_process_id: 55,
                 }),
-                Some(healthy_etw()),
+                Some(healthy_etw(
+                    artifacts.service_sha256,
+                    &test_service_instance_id(55, 7),
+                )),
                 true,
             ),
             ServiceExpectation::Stopped {
@@ -3794,7 +4016,6 @@ mod tests {
             common_start_menu_shortcut: Some(shortcut(LogicalRoot::CommonStartMenu)),
             known_retired_helper_artifacts: Vec::new(),
             unknown_helper_sentinel: preserve_unknown_sentinel.then(unknown_sentinel),
-            current_user_retention: retention(),
         }
     }
 
@@ -3852,7 +4073,6 @@ mod tests {
             common_start_menu_shortcut: None,
             known_retired_helper_artifacts: Vec::new(),
             unknown_helper_sentinel: preserve_unknown_sentinel.then(unknown_sentinel),
-            current_user_retention: retention(),
         }
     }
 
@@ -3880,21 +4100,32 @@ mod tests {
         }
     }
 
-    fn healthy_etw() -> DesktopEtwObservation {
-        DesktopEtwObservation {
-            session_name: "BatCave Collector Process Network v1".to_string(),
-            lease_owner_process_id: 55,
-            controller_started_at_100ns: 5_500,
-            lease_generation: 7,
-            session_generation: 7,
-            lease_active: true,
+    fn healthy_etw(service_sha256: &str, service_instance_id: &str) -> SanitizedEtwObservation {
+        let session = NetworkAttributionMonitor::session_identity();
+        SanitizedEtwObservation {
+            lease: EtwLeaseV1 {
+                schema_version: ETW_LEASE_SCHEMA_VERSION,
+                phase: EtwLeasePhase::Active,
+                install_id: [1; 16],
+                service_generation: sha256_digest16(service_sha256).expect("service generation"),
+                service_instance_id: digest16(service_instance_id.as_bytes()),
+                boot_identity: [3; 16],
+                controller: crate::collector_service::etw_lease::EtwControllerIdentityV1 {
+                    process_id: 55,
+                    process_started_at: 5_500,
+                },
+                session: session.clone(),
+            },
+            observed_session: session,
             owner_lock_held: true,
             process_lock_held: true,
-            decoder_healthy: true,
-            consumer_healthy: true,
             events_lost: 0,
             buffers_lost: 0,
         }
+    }
+
+    fn test_service_instance_id(process_id: u32, generation: u64) -> String {
+        format!("{process_id:08x}-{generation:032x}")
     }
 
     fn file(sha256: &str) -> SanitizedFileSnapshot {
@@ -3945,8 +4176,20 @@ mod tests {
         }
     }
 
-    fn retention() -> SanitizedCurrentUserRetention {
+    fn retention(receipts: &[EvidenceReceipt]) -> SanitizedCurrentUserRetention {
         SanitizedCurrentUserRetention {
+            before_uninstall_source: receipts
+                .iter()
+                .find(|receipt| {
+                    receipt.name == "final-incompatible-service-restored-state.private.json"
+                })
+                .expect("before uninstall source")
+                .clone(),
+            after_uninstall_source: receipts
+                .iter()
+                .find(|receipt| receipt.name == "final-uninstall-state.private.json")
+                .expect("after uninstall source")
+                .clone(),
             settings: retained(RETAINED_SETTINGS_LEAF, "a"),
             cache: retained(RETAINED_CACHE_LEAF, "b"),
             diagnostics: retained(RETAINED_DIAGNOSTICS_LEAF, "c"),

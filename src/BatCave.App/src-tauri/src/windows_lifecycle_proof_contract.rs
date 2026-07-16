@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 
 pub(crate) const EMBEDDED_PLAN: &str = include_str!("windows_lifecycle_proof_plan.v1.json");
 pub(crate) const PLAN_SCHEMA: &str = "batcave_windows_lifecycle_proof_plan_v1";
-pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protocol_v1";
+pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protocol_v2";
 pub(crate) const NONCE_HEX_LENGTH: usize = 64;
 pub(crate) const LOCATOR_HEX_LENGTH: usize = 32;
 pub(crate) const FIRST_SEQUENCE: u64 = 1;
@@ -122,6 +122,7 @@ pub(crate) struct Envelope<T> {
 pub(crate) enum ParentMessage {
     Begin(ClosedRequest),
     DesktopPhaseComplete(Box<DesktopPhaseResult>),
+    EvidenceAccepted,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -134,8 +135,7 @@ pub(crate) enum ParentMessage {
 pub(crate) enum WorkerMessage {
     Accepted(WorkerAccepted),
     RunDesktopPhase(DesktopPhase),
-    Complete(WorkerResult),
-    Failed(WorkerResult),
+    ResultReady(Box<WorkerResult>),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -152,8 +152,16 @@ pub(crate) struct ClosedRequest {
 #[serde(deny_unknown_fields)]
 pub(crate) struct WorkerAccepted {
     pub evidence_root: String,
+    pub evidence_root_identity: EvidenceRootIdentity,
     pub worker_process_id: u32,
     pub worker_started_at_100ns: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EvidenceRootIdentity {
+    pub volume_serial: u32,
+    pub file_index: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -233,8 +241,6 @@ pub(crate) struct DesktopSecondInstanceObservation {
     pub focused_primary_started_at_100ns: u64,
     pub service_instance_id_before: String,
     pub service_instance_id_after: String,
-    pub collector_generation_before: u64,
-    pub collector_generation_after: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -258,29 +264,10 @@ pub(crate) struct DesktopServiceProcessObservation {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DesktopEtwObservation {
-    pub session_name: String,
-    pub lease_owner_process_id: u32,
-    pub controller_started_at_100ns: u64,
-    pub lease_generation: u64,
-    pub session_generation: u64,
-    pub lease_active: bool,
-    pub owner_lock_held: bool,
-    pub process_lock_held: bool,
-    pub decoder_healthy: bool,
-    pub consumer_healthy: bool,
-    pub events_lost: u64,
-    pub buffers_lost: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct DesktopCollectorRuntimeObservation {
     pub installed_service: Option<DesktopFileObservation>,
     pub service_process: Option<DesktopServiceProcessObservation>,
     pub pipe_server_process_id: Option<u32>,
-    pub service_etw: Option<DesktopEtwObservation>,
-    pub failure_marker_present: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -498,9 +485,6 @@ fn validate_collector_runtime(
     runtime: &DesktopCollectorRuntimeObservation,
     plan: &ProofPlan,
 ) -> Result<(), String> {
-    if runtime.failure_marker_present {
-        return Err("lifecycle_desktop_collector_failure_marker_present".to_string());
-    }
     let expected_service_sha256 = match phase {
         DesktopPhase::BaselinePrimary | DesktopPhase::BaselineSecondInstance => {
             &plan.baseline.service_sha256
@@ -545,35 +529,16 @@ fn validate_collector_runtime(
             .as_ref()
             .ok_or_else(|| "lifecycle_desktop_service_process_missing".to_string())?;
         validate_desktop_service_process(process)?;
-        let etw = runtime
-            .service_etw
-            .as_ref()
-            .ok_or_else(|| "lifecycle_desktop_service_etw_missing".to_string())?;
         if !process
             .executable_path
             .eq_ignore_ascii_case(&service.executable_path)
             || process.executable_size != service.executable_size
             || process.executable_sha256 != service.executable_sha256
             || runtime.pipe_server_process_id != Some(process.process_id)
-            || etw.session_name != "BatCave Collector Process Network v1"
-            || etw.lease_owner_process_id != process.process_id
-            || etw.controller_started_at_100ns != process.started_at_100ns
-            || etw.lease_generation == 0
-            || etw.lease_generation != etw.session_generation
-            || !etw.lease_active
-            || !etw.owner_lock_held
-            || !etw.process_lock_held
-            || !etw.decoder_healthy
-            || !etw.consumer_healthy
-            || etw.events_lost != 0
-            || etw.buffers_lost != 0
         {
             return Err("lifecycle_desktop_service_runtime_invalid".to_string());
         }
-    } else if runtime.service_process.is_some()
-        || runtime.pipe_server_process_id.is_some()
-        || runtime.service_etw.is_some()
-    {
+    } else if runtime.service_process.is_some() || runtime.pipe_server_process_id.is_some() {
         return Err("lifecycle_desktop_service_runtime_unexpected".to_string());
     }
     Ok(())
@@ -664,13 +629,6 @@ fn validate_second_instance(
             || !valid_service_instance_id(&second.service_instance_id_before)
             || observation.visible.service_instance_id.as_deref()
                 != Some(second.service_instance_id_before.as_str())
-            || second.collector_generation_before == 0
-            || second.collector_generation_before != second.collector_generation_after
-            || observation
-                .collector_runtime
-                .service_etw
-                .as_ref()
-                .is_none_or(|etw| etw.session_generation != second.collector_generation_before)
         {
             return Err("lifecycle_desktop_second_instance_invalid".to_string());
         }
@@ -800,8 +758,32 @@ pub(crate) struct WorkerFailure {
     pub kind: WorkerFailureKind,
     pub attempted_stage: Option<LifecycleStage>,
     pub reason: String,
-    pub evidence: Option<EvidenceReceipt>,
+    pub evidence: Option<Box<EvidenceReceipt>>,
     pub evidence_error: Option<String>,
+    pub restoration: Box<RestorationOutcome>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "snake_case",
+    tag = "disposition",
+    content = "value"
+)]
+pub(crate) enum RestorationOutcome {
+    NotRequired,
+    Restored {
+        evidence: EvidenceReceipt,
+    },
+    BlockedUnsettled,
+    BlockedUntrusted {
+        reason: String,
+    },
+    Failed {
+        reason: String,
+        evidence: Option<EvidenceReceipt>,
+        evidence_error: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1359,7 +1341,7 @@ mod tests {
             .second_instance
             .as_mut()
             .expect("second instance")
-            .collector_generation_after += 1;
+            .service_instance_id_after = "00000065-00000000000000000000000000000002".to_string();
         assert_eq!(
             validate_desktop_phase_result(&forged_second, &plan),
             Err("lifecycle_desktop_second_instance_invalid".to_string())
@@ -1390,13 +1372,6 @@ mod tests {
         service.process_id = 102;
         service.started_at_100ns = 10_200;
         observation.collector_runtime.pipe_server_process_id = Some(102);
-        let etw = observation
-            .collector_runtime
-            .service_etw
-            .as_mut()
-            .expect("etw");
-        etw.lease_owner_process_id = 102;
-        etw.controller_started_at_100ns = 10_200;
         assert_eq!(
             validate_desktop_phase_result(&colliding_service, &plan),
             Err("lifecycle_desktop_process_role_collision".to_string())
@@ -1501,6 +1476,93 @@ mod tests {
         assert!(serde_json::from_value::<Envelope<ParentMessage>>(value).is_err());
     }
 
+    #[test]
+    fn protocol_binds_the_evidence_root_and_requires_result_acceptance() {
+        let accepted = WorkerMessage::Accepted(WorkerAccepted {
+            evidence_root:
+                r"C:\ProgramData\BatCaveMonitor\lifecycle-proof\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            evidence_root_identity: EvidenceRootIdentity {
+                volume_serial: 17,
+                file_index: 29,
+            },
+            worker_process_id: 41,
+            worker_started_at_100ns: 43,
+        });
+        let accepted_value = serde_json::to_value(&accepted).expect("accepted message");
+        assert_eq!(accepted_value["kind"], "accepted");
+        assert_eq!(
+            accepted_value["value"]["evidence_root_identity"],
+            serde_json::json!({
+                "volume_serial": 17,
+                "file_index": 29,
+            })
+        );
+
+        let result_ready = WorkerMessage::ResultReady(Box::new(WorkerResult {
+            disposition: WorkerDisposition::Failed,
+            completed_stage: None,
+            failure: Some(WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: None,
+                reason: "controller_failed".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::NotRequired),
+            }),
+            process_tree_settled: true,
+            private_evidence: Vec::new(),
+            sanitized_export: None,
+        }));
+        assert_eq!(
+            serde_json::to_value(&result_ready).expect("result ready")["kind"],
+            "result_ready"
+        );
+        assert_eq!(
+            serde_json::to_value(ParentMessage::EvidenceAccepted).expect("evidence acceptance"),
+            serde_json::json!({"kind": "evidence_accepted"})
+        );
+
+        let mut injected_identity = accepted_value;
+        injected_identity["value"]["evidence_root_identity"]["path"] =
+            serde_json::json!(r"C:\other");
+        assert!(serde_json::from_value::<WorkerMessage>(injected_identity).is_err());
+        assert!(serde_json::from_value::<WorkerMessage>(serde_json::json!({
+            "kind": "complete",
+            "value": {}
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn desktop_wire_contract_rejects_privileged_synthetic_fields() {
+        let result = passed_desktop_phase(DesktopPhase::BaselineSecondInstance);
+        let value = serde_json::to_value(&result).expect("desktop result");
+        let observation = &value["observation"];
+        assert!(observation["collector_runtime"]
+            .get("service_etw")
+            .is_none());
+        assert!(observation["collector_runtime"]
+            .get("failure_marker_present")
+            .is_none());
+        assert!(observation["second_instance"]
+            .get("collector_generation_before")
+            .is_none());
+        assert!(observation["second_instance"]
+            .get("collector_generation_after")
+            .is_none());
+
+        let mut injected_etw = value.clone();
+        injected_etw["observation"]["collector_runtime"]["service_etw"] =
+            serde_json::json!({"lease_generation": 7});
+        assert!(serde_json::from_value::<DesktopPhaseResult>(injected_etw).is_err());
+
+        let mut injected_generation = value;
+        injected_generation["observation"]["second_instance"]["collector_generation_before"] =
+            serde_json::json!(7);
+        assert!(serde_json::from_value::<DesktopPhaseResult>(injected_generation).is_err());
+    }
+
     fn passed_desktop_phase(phase: DesktopPhase) -> DesktopPhaseResult {
         let plan = parse_plan().expect("plan");
         let state = phase.expected_collector_state();
@@ -1540,8 +1602,6 @@ mod tests {
                             .to_string(),
                         service_instance_id_after: "00000065-00000000000000000000000000000001"
                             .to_string(),
-                        collector_generation_before: 7,
-                        collector_generation_after: 7,
                     }
                 }),
                 collector_runtime: collector_runtime(phase, &plan),
@@ -1594,8 +1654,6 @@ mod tests {
                 installed_service: None,
                 service_process: None,
                 pipe_server_process_id: None,
-                service_etw: None,
-                failure_marker_present: false,
             };
         }
         let (sha256, size) = if phase == DesktopPhase::FinalIncompatibleService {
@@ -1622,8 +1680,6 @@ mod tests {
                 installed_service: Some(installed_service),
                 service_process: None,
                 pipe_server_process_id: None,
-                service_etw: None,
-                failure_marker_present: false,
             };
         }
         DesktopCollectorRuntimeObservation {
@@ -1637,21 +1693,6 @@ mod tests {
                 executable_sha256: installed_service.executable_sha256,
             }),
             pipe_server_process_id: Some(55),
-            service_etw: Some(DesktopEtwObservation {
-                session_name: "BatCave Collector Process Network v1".to_string(),
-                lease_owner_process_id: 55,
-                controller_started_at_100ns: 5_500,
-                lease_generation: 7,
-                session_generation: 7,
-                lease_active: true,
-                owner_lock_held: true,
-                process_lock_held: true,
-                decoder_healthy: true,
-                consumer_healthy: true,
-                events_lost: 0,
-                buffers_lost: 0,
-            }),
-            failure_marker_present: false,
         }
     }
 

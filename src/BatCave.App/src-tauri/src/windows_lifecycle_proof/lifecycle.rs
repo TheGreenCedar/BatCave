@@ -8,7 +8,8 @@ use super::native::{
 };
 use crate::windows_lifecycle_proof_contract::{
     DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult, LifecycleStage, ProofPlan,
-    SequenceGate, WorkerDisposition, WorkerFailure, WorkerFailureKind, WorkerResult,
+    RestorationOutcome, SequenceGate, WorkerDisposition, WorkerFailure, WorkerFailureKind,
+    WorkerResult,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -665,8 +666,9 @@ fn execute_mutation(
                     kind: WorkerFailureKind::ProcessSettlement,
                     attempted_stage: Some(attempted_stage),
                     reason,
-                    evidence: receipt,
+                    evidence: receipt.map(Box::new),
                     evidence_error,
+                    restoration: Box::new(RestorationOutcome::BlockedUnsettled),
                 },
                 false,
             ));
@@ -704,8 +706,9 @@ fn execute_mutation(
                 kind: WorkerFailureKind::Mutation,
                 attempted_stage: Some(attempted_stage),
                 reason,
-                evidence: Some(receipt),
+                evidence: Some(Box::new(receipt)),
                 evidence_error: None,
+                restoration: Box::new(restoration_not_reviewed()),
             },
             true,
         )),
@@ -716,6 +719,7 @@ fn execute_mutation(
                 reason,
                 evidence: None,
                 evidence_error: Some(error),
+                restoration: Box::new(restoration_not_reviewed()),
             },
             true,
         )),
@@ -783,8 +787,13 @@ fn write_service_crash_failure(
         },
         attempted_stage: Some(attempted_stage),
         reason: reason.to_string(),
-        evidence: receipt,
+        evidence: receipt.map(Box::new),
         evidence_error,
+        restoration: Box::new(if service_settled {
+            restoration_not_reviewed()
+        } else {
+            RestorationOutcome::BlockedUnsettled
+        }),
     }
 }
 
@@ -819,8 +828,13 @@ fn write_upgrade_rollback_failure(
         },
         attempted_stage: Some(LifecycleStage::BaselineRollbackRecovery),
         reason: reason.to_string(),
-        evidence: receipt,
+        evidence: receipt.map(Box::new),
         evidence_error,
+        restoration: Box::new(if service_settled {
+            restoration_not_reviewed()
+        } else {
+            RestorationOutcome::BlockedUnsettled
+        }),
     }
 }
 
@@ -841,6 +855,7 @@ fn controller_failure(reason: String) -> WorkerFailure {
         reason,
         evidence: None,
         evidence_error: None,
+        restoration: Box::new(RestorationOutcome::NotRequired),
     }
 }
 
@@ -851,14 +866,44 @@ fn evidence_write_failure(reason: &str, evidence_error: String) -> WorkerFailure
         reason: reason.to_string(),
         evidence: None,
         evidence_error: Some(evidence_error),
+        restoration: Box::new(restoration_not_reviewed()),
+    }
+}
+
+fn restoration_not_reviewed() -> RestorationOutcome {
+    RestorationOutcome::BlockedUntrusted {
+        reason: "lifecycle_restoration_not_reviewed".to_string(),
     }
 }
 
 fn failed(
     completed_stage: Option<LifecycleStage>,
-    failure: WorkerFailure,
+    mut failure: WorkerFailure,
     process_tree_settled: bool,
 ) -> WorkerResult {
+    if process_tree_settled
+        && matches!(
+            failure.kind,
+            WorkerFailureKind::EvidenceWrite | WorkerFailureKind::Controller
+        )
+    {
+        let restoration_required = failure
+            .attempted_stage
+            .or(completed_stage)
+            .is_some_and(|stage| stage != LifecycleStage::InitialState);
+        if restoration_required && failure.restoration.as_ref() == &RestorationOutcome::NotRequired
+        {
+            failure.restoration = Box::new(restoration_not_reviewed());
+        } else if !restoration_required
+            && matches!(
+                failure.restoration.as_ref(),
+                RestorationOutcome::BlockedUntrusted { reason }
+                    if reason == "lifecycle_restoration_not_reviewed"
+            )
+        {
+            failure.restoration = Box::new(RestorationOutcome::NotRequired);
+        }
+    }
     WorkerResult {
         disposition: WorkerDisposition::Failed,
         completed_stage,
@@ -919,5 +964,37 @@ mod tests {
             ),
             "lifecycle_install_failed:lifecycle_wait_failed"
         );
+    }
+
+    #[test]
+    fn failure_restoration_is_normalized_from_completed_mutation_state() {
+        let before_mutation = failed(
+            None,
+            evidence_write_failure("initial_evidence_failed", "write_failed".to_string()),
+            true,
+        );
+        assert_eq!(
+            before_mutation
+                .failure
+                .expect("failure")
+                .restoration
+                .as_ref(),
+            &RestorationOutcome::NotRequired
+        );
+
+        let after_mutation = failed(
+            Some(LifecycleStage::FinalRepair),
+            controller_failure("controller_failed".to_string()),
+            true,
+        );
+        assert!(matches!(
+            after_mutation
+                .failure
+                .expect("failure")
+                .restoration
+                .as_ref(),
+            RestorationOutcome::BlockedUntrusted { reason }
+                if reason == "lifecycle_restoration_not_reviewed"
+        ));
     }
 }
