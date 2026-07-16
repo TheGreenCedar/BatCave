@@ -81,14 +81,10 @@ FunctionEnd
   Call BatCaveAssertServiceOwnedOrMissing
   StrCpy $BatCaveServiceUpgrade $R9
   ${If} $R9 == "1"
-    IfFileExists "$INSTDIR\${BATCAVE_SERVICE_BINARY}" 0 missing_owned_service_binary
     SetOutPath "$INSTDIR"
-    File /a "/oname=batcave-collector-service.${VERSION}.staged.exe" "..\..\batcave-collector-service.exe"
-    !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" "--provision prepare-upgrade-staged" "Prepare ${BATCAVE_SERVICE_NAME} upgrade"
+    File /a "/oname=batcave-collector-service.recovery.exe" "..\..\batcave-collector-service.exe"
+    !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.recovery.exe" "--provision prepare-upgrade-staged" "Prepare ${BATCAVE_SERVICE_NAME} upgrade"
     Goto service_upgrade_prepared
-
-missing_owned_service_binary:
-    !insertmacro BATCAVE_ABORT "The owned collector service binary is missing; refusing an unsafe upgrade."
 service_upgrade_prepared:
   ${EndIf}
 !macroend
@@ -97,8 +93,8 @@ service_upgrade_prepared:
   !insertmacro BATCAVE_REQUIRE_FIXED_INSTALL_DIR
   IfFileExists "$INSTDIR\${BATCAVE_SERVICE_BINARY}" 0 missing_new_service_binary
   ${If} $BatCaveServiceUpgrade == "1"
-    IfFileExists "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" 0 missing_staged_service_binary
-    !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" "--provision commit-upgrade-staged" "Commit ${BATCAVE_SERVICE_NAME} upgrade"
+    IfFileExists "$INSTDIR\batcave-collector-service.recovery.exe" 0 missing_staged_service_binary
+    !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.recovery.exe" "--provision commit-upgrade-staged" "Commit ${BATCAVE_SERVICE_NAME} upgrade"
   ${EndIf}
   !insertmacro BATCAVE_EXEC_SERVICE_VERB "--provision install" "Install ${BATCAVE_SERVICE_NAME}"
   Goto service_install_complete
@@ -114,11 +110,39 @@ service_install_complete:
   !insertmacro BATCAVE_REQUIRE_FIXED_INSTALL_DIR
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   Call un.BatCaveAssertServiceOwnedOrMissing
+  IfFileExists "$INSTDIR\batcave-collector-service.recovery.exe" use_recovery_uninstall_service_binary 0
+  IfFileExists "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" use_legacy_staged_uninstall_service_binary 0
+  Goto use_stable_uninstall_service_binary
+
+use_recovery_uninstall_service_binary:
+  !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.recovery.exe" "--provision uninstall-staged" "Uninstall ${BATCAVE_SERVICE_NAME} through the recovery controller"
+  Delete "$INSTDIR\batcave-collector-service.recovery.exe"
+  IfFileExists "$INSTDIR\batcave-collector-service.recovery.exe" staged_uninstall_service_binary_present 0
+  Goto service_uninstall_complete
+
+use_legacy_staged_uninstall_service_binary:
+  !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" "--provision uninstall-staged" "Uninstall ${BATCAVE_SERVICE_NAME} through the compatibility controller"
+  Delete "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe"
+  IfFileExists "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" staged_uninstall_service_binary_present 0
+  Goto service_uninstall_complete
+
+use_stable_uninstall_service_binary:
   IfFileExists "$INSTDIR\${BATCAVE_SERVICE_BINARY}" 0 missing_uninstall_service_binary
   !insertmacro BATCAVE_EXEC_SERVICE_VERB "--provision uninstall" "Uninstall ${BATCAVE_SERVICE_NAME}"
   Goto service_uninstall_complete
 
+staged_uninstall_service_binary_present:
+  !insertmacro BATCAVE_ABORT "The staged collector service controller could not be removed."
 missing_uninstall_service_binary:
   !insertmacro BATCAVE_ABORT "The collector service binary is missing; refusing unsafe service cleanup."
 service_uninstall_complete:
+  DeleteRegKey HKLM "Software\batcave\BatCave Monitor"
+  System::Call 'advapi32::RegOpenKeyExW(p 0x80000002, w "Software\batcave\BatCave Monitor", i 0, i 0x20019, *p .R8) i.R7'
+  ${If} $R7 == 0
+    System::Call 'advapi32::RegCloseKey(p R8)'
+    !insertmacro BATCAVE_ABORT "The BatCave product registry key is still present."
+  ${ElseIf} $R7 != 2
+    !insertmacro BATCAVE_ABORT "The BatCave product registry key removal could not be verified."
+  ${EndIf}
+  DeleteRegKey /ifempty HKLM "Software\batcave"
 !macroend
