@@ -1,6 +1,6 @@
 # Windows ETW lease recovery policy
 
-- Status: accepted; fresh-start service ownership is wired, crash reclaim remains deferred
+- Status: accepted and wired for exact crashed-owner reclaim
 - Date: 2026-07-14
 - Issue: [#70](https://github.com/TheGreenCedar/BatCave/issues/70)
 - Service boundary: [#69](https://github.com/TheGreenCedar/BatCave/issues/69)
@@ -9,7 +9,7 @@
 
 Recover a BatCave Event Tracing for Windows (ETW) process-network session only from one protected `EtwLeaseV1` whose complete identity agrees with the installed service and the observed native session. Never reclaim by a BatCave-looking name or provider alone.
 
-The recovery decision is paired with the durable-store boundary and exact Windows ownership guard. The collector service now accepts only the narrow fresh-start decision: both the protected lease and exact native session must be absent. It writes `intent` before starting ETW, advances to `active` only after the consumer starts, writes `stopping` before collector-engine shutdown, and removes the exact lease only after the consumer joins cleanly and native session absence is observed. Stop, close, join-timeout, or consumer-panic failure propagates through collector-engine shutdown and retains the lease. Every stale, corrupt, conflicting, or unqueryable state remains fail-closed; this slice deliberately does not reclaim a crashed owner.
+The recovery decision is paired with the durable-store boundary and exact Windows ownership guard. The collector service starts fresh when both the protected lease and exact native session are absent. For a trusted stale lease, it proves the recorded controller dead by PID and process creation time, advances the lease to `stopping`, queries the hard-coded service session, matches its complete identity, stops it through that returned native session handle, proves controller and session absence, removes the exact lease, and then writes a new `intent` lease. It advances to `active` only after the consumer starts, writes `stopping` before collector-engine shutdown, and removes the exact lease only after the consumer joins cleanly and native session absence is observed. Stop, close, join-timeout, or consumer-panic failure propagates through collector-engine shutdown and retains the lease. Every corrupt, conflicting, mismatched, or unqueryable state remains fail-closed.
 
 ## Lease identity
 
@@ -76,9 +76,9 @@ All-target Clippy and the repository validation workflow must also pass. Reposit
 ## Non-claims and follow-up
 
 - This is source and hosted-test proof, not installed/native Windows lifecycle evidence.
-- A pre-existing lease or session is retained and blocks startup. Exact crashed-owner reclaim remains a later bounded slice.
-- No Windows crash, restart, reboot, upgrade, uninstall, second-instance, or multi-user behavior is proven.
+- Exact reclaim is source- and hosted-test-backed; no installed Windows crash/restart walkthrough is claimed.
+- No reboot, upgrade, uninstall, second-instance, or multi-user behavior is proven.
 - No helper path is deleted; installed crash/restart/upgrade/uninstall and multi-user proof remain open.
 - No release evidence may describe process-network attribution as installed-service-native from this decision alone.
 
-#70 remains open for crashed-owner reclaim, installed lifecycle proof, multi-user behavior, upgrade/uninstall cleanup, and legacy-helper removal.
+#70 remains open for installed crash/restart proof, multi-user behavior, upgrade/uninstall cleanup, and legacy-helper removal.

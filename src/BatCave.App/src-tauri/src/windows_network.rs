@@ -207,6 +207,11 @@ impl NetworkAttributionMonitor {
         WindowsNetworkAttributionMonitor::observe_session()
     }
 
+    #[cfg(windows)]
+    pub(crate) fn stop_session_if_exact(expected: &EtwSessionIdentityV1) -> Result<(), String> {
+        WindowsNetworkAttributionMonitor::stop_session_if_exact(expected)
+    }
+
     #[cfg(not(windows))]
     pub fn new() -> Result<Self, String> {
         Err("network_attribution_requires_windows".to_string())
@@ -492,25 +497,29 @@ mod windows_impl {
         }
 
         pub fn observe_session() -> EtwSessionObservation {
-            let session_name = wide(COLLECTOR_SERVICE_SESSION.name);
-            let mut properties =
-                trace_properties(&session_name, COLLECTOR_SERVICE_SESSION.logger_guid);
-            let result = unsafe {
-                ControlTraceW(
-                    windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE { Value: 0 },
-                    session_name.as_ptr(),
-                    properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
-                    EVENT_TRACE_CONTROL_QUERY,
-                )
-            };
-            match result {
-                ERROR_SUCCESS => EtwSessionObservation::Present(session_identity_from_properties(
-                    COLLECTOR_SERVICE_SESSION.name,
-                    &properties,
-                )),
-                ERROR_WMI_INSTANCE_NOT_FOUND => EtwSessionObservation::Absent,
-                _ => EtwSessionObservation::QueryUnavailable,
+            match query_service_session() {
+                Ok(Some((identity, _))) => EtwSessionObservation::Present(identity),
+                Ok(None) => EtwSessionObservation::Absent,
+                Err(_) => EtwSessionObservation::QueryUnavailable,
             }
+        }
+
+        pub fn stop_session_if_exact(expected: &EtwSessionIdentityV1) -> Result<(), String> {
+            if expected != &Self::session_identity() {
+                return Err("network_attribution_reclaim_identity_not_configured".to_string());
+            }
+            let (observed, trace_handle) = match query_service_session() {
+                Ok(Some(session)) => session,
+                Ok(None) => return Err("network_attribution_reclaim_session_absent".to_string()),
+                Err(_) => return Err("network_attribution_reclaim_query_failed".to_string()),
+            };
+            if &observed != expected {
+                return Err("network_attribution_reclaim_identity_mismatch".to_string());
+            }
+            if trace_handle == 0 {
+                return Err("network_attribution_reclaim_handle_missing".to_string());
+            }
+            stop_trace_by_handle(trace_handle, COLLECTOR_SERVICE_SESSION.logger_guid)
         }
 
         pub fn sample(&self) -> NetworkAttributionSample {
@@ -616,6 +625,34 @@ mod windows_impl {
             } else {
                 Err(errors.join(";"))
             }
+        }
+    }
+
+    fn query_service_session() -> Result<Option<(EtwSessionIdentityV1, u64)>, u32> {
+        let session_name = wide(COLLECTOR_SERVICE_SESSION.name);
+        let mut properties = trace_properties(&session_name, COLLECTOR_SERVICE_SESSION.logger_guid);
+        let result = unsafe {
+            ControlTraceW(
+                windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE { Value: 0 },
+                session_name.as_ptr(),
+                properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+                EVENT_TRACE_CONTROL_QUERY,
+            )
+        };
+        match result {
+            ERROR_SUCCESS => {
+                let identity =
+                    session_identity_from_properties(COLLECTOR_SERVICE_SESSION.name, &properties);
+                let trace_handle = unsafe {
+                    (*(properties.as_ptr() as *const EVENT_TRACE_PROPERTIES))
+                        .Wnode
+                        .Anonymous1
+                        .HistoricalContext
+                };
+                Ok(Some((identity, trace_handle)))
+            }
+            ERROR_WMI_INSTANCE_NOT_FOUND => Ok(None),
+            _ => Err(result),
         }
     }
 
@@ -803,6 +840,14 @@ mod windows_impl {
         if trace_handle == 0 {
             return Ok(());
         }
+        control_stop_trace(trace_handle, session_name, logger_guid)
+    }
+
+    fn control_stop_trace(
+        trace_handle: u64,
+        session_name: &[u16],
+        logger_guid: GUID,
+    ) -> Result<(), String> {
         let mut properties = trace_properties(session_name, logger_guid);
         let result = unsafe {
             ControlTraceW(
@@ -810,6 +855,26 @@ mod windows_impl {
                     Value: trace_handle,
                 },
                 session_name.as_ptr(),
+                properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+                EVENT_TRACE_CONTROL_STOP,
+            )
+        };
+        if result == ERROR_SUCCESS || result == ERROR_WMI_INSTANCE_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(format!("network_attribution_stop_trace_failed:{result}"))
+        }
+    }
+
+    fn stop_trace_by_handle(trace_handle: u64, logger_guid: GUID) -> Result<(), String> {
+        let session_name = wide(COLLECTOR_SERVICE_SESSION.name);
+        let mut properties = trace_properties(&session_name, logger_guid);
+        let result = unsafe {
+            ControlTraceW(
+                windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE {
+                    Value: trace_handle,
+                },
+                std::ptr::null(),
                 properties.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
                 EVENT_TRACE_CONTROL_STOP,
             )
@@ -1147,6 +1212,16 @@ mod windows_impl {
                 session_identity_from_properties(COLLECTOR_SERVICE_SESSION.name, &changed);
             assert_eq!(changed.provider_id, expected.provider_id);
             assert_ne!(changed.configuration_digest, expected.configuration_digest);
+        }
+
+        #[test]
+        fn reclaim_refuses_any_session_identity_except_the_fixed_service_contract() {
+            let mut different = WindowsNetworkAttributionMonitor::session_identity();
+            different.name.push_str("-other");
+            assert_eq!(
+                WindowsNetworkAttributionMonitor::stop_session_if_exact(&different),
+                Err("network_attribution_reclaim_identity_not_configured".to_string())
+            );
         }
     }
 }
