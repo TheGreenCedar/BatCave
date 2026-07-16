@@ -16,3 +16,5 @@ pub(crate) mod windows_provisioner;
 pub(crate) mod windows_service;
 #[cfg(windows)]
 pub(crate) mod windows_transport;
+#[cfg(windows)]
+pub(crate) mod windows_upgrade;

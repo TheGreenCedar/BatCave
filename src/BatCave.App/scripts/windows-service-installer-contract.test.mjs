@@ -41,6 +41,7 @@ test("NSIS hooks own only the fixed LocalSystem collector service", async () => 
   assert.match(hooks, /unexpected service type/u);
   assert.match(hooks, /\$PROGRAMFILES64\\BatCave Monitor/u);
   assert.match(hooks, /--provision prepare-upgrade-staged/u);
+  assert.match(hooks, /--provision commit-upgrade-staged/u);
   assert.match(hooks, /--provision install/u);
   assert.match(hooks, /--provision uninstall/u);
   assert.equal(hooks.match(/!insertmacro CheckIfAppIsRunning/gmu)?.length, 2);
@@ -75,6 +76,14 @@ test("NSIS hooks delegate all privileged mutation to fixed native verbs", async 
   const preuninstall = hooks.slice(hooks.indexOf("!macro NSIS_HOOK_PREUNINSTALL"));
   assert.ok(
     preuninstall.indexOf("CheckIfAppIsRunning") < preuninstall.indexOf("--provision uninstall"),
+  );
+  const postinstall = hooks.slice(
+    hooks.indexOf("!macro NSIS_HOOK_POSTINSTALL"),
+    hooks.indexOf("!macro NSIS_HOOK_PREUNINSTALL"),
+  );
+  assert.ok(
+    postinstall.indexOf("--provision commit-upgrade-staged")
+      < postinstall.indexOf("--provision install"),
   );
 });
 

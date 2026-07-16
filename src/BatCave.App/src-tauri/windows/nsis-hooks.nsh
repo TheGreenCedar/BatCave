@@ -7,6 +7,8 @@
 !define BATCAVE_SERVICE_BINARY "batcave-collector-service.exe"
 !define BATCAVE_INSTALL_DIR "$PROGRAMFILES64\BatCave Monitor"
 
+Var BatCaveServiceUpgrade
+
 !macro BATCAVE_ABORT MESSAGE
   DetailPrint "${MESSAGE}"
   SetErrorLevel 1
@@ -77,6 +79,7 @@ FunctionEnd
   !insertmacro BATCAVE_REQUIRE_FIXED_INSTALL_DIR
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   Call BatCaveAssertServiceOwnedOrMissing
+  StrCpy $BatCaveServiceUpgrade $R9
   ${If} $R9 == "1"
     IfFileExists "$INSTDIR\${BATCAVE_SERVICE_BINARY}" 0 missing_owned_service_binary
     SetOutPath "$INSTDIR"
@@ -93,9 +96,15 @@ service_upgrade_prepared:
 !macro NSIS_HOOK_POSTINSTALL
   !insertmacro BATCAVE_REQUIRE_FIXED_INSTALL_DIR
   IfFileExists "$INSTDIR\${BATCAVE_SERVICE_BINARY}" 0 missing_new_service_binary
+  ${If} $BatCaveServiceUpgrade == "1"
+    IfFileExists "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" 0 missing_staged_service_binary
+    !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" "--provision commit-upgrade-staged" "Commit ${BATCAVE_SERVICE_NAME} upgrade"
+  ${EndIf}
   !insertmacro BATCAVE_EXEC_SERVICE_VERB "--provision install" "Install ${BATCAVE_SERVICE_NAME}"
   Goto service_install_complete
 
+missing_staged_service_binary:
+  !insertmacro BATCAVE_ABORT "The staged collector service controller is missing."
 missing_new_service_binary:
   !insertmacro BATCAVE_ABORT "The packaged collector service binary is missing."
 service_install_complete:

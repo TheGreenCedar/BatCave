@@ -3,7 +3,14 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-use super::{etw_lease::ProtectedEtwLeaseRoot, protocol::COLLECTOR_SERVICE_NAME};
+use super::{
+    etw_lease::ProtectedEtwLeaseRoot,
+    protocol::COLLECTOR_SERVICE_NAME,
+    windows_upgrade::{
+        decide_upgrade_resume, UpgradeJournalV1, UpgradePhase, UpgradeResumeAction,
+        UPGRADE_JOURNAL_FILE_NAME,
+    },
+};
 
 const PROVISION_SWITCH: &str = "--provision";
 const PRODUCT_DIRECTORY_NAME: &str = "BatCave Monitor";
@@ -67,6 +74,7 @@ fn missing_service_cleanup(
 enum ProvisionVerb {
     PrepareUpgrade,
     PrepareUpgradeStaged,
+    CommitUpgradeStaged,
     Install,
     Uninstall,
 }
@@ -76,6 +84,7 @@ pub(crate) fn run_cli(args: &[String]) -> Option<i32> {
         [switch, verb] if switch == PROVISION_SWITCH => match verb.as_str() {
             "prepare-upgrade" => ProvisionVerb::PrepareUpgrade,
             "prepare-upgrade-staged" => ProvisionVerb::PrepareUpgradeStaged,
+            "commit-upgrade-staged" => ProvisionVerb::CommitUpgradeStaged,
             "install" => ProvisionVerb::Install,
             "uninstall" => ProvisionVerb::Uninstall,
             _ => {
@@ -107,6 +116,7 @@ fn run_verb(verb: ProvisionVerb) -> Result<(), String> {
     match verb {
         ProvisionVerb::PrepareUpgrade => native::prepare_upgrade(),
         ProvisionVerb::PrepareUpgradeStaged => native::prepare_upgrade_staged(),
+        ProvisionVerb::CommitUpgradeStaged => native::commit_upgrade_staged(),
         ProvisionVerb::Install => native::install(),
         ProvisionVerb::Uninstall => native::uninstall(),
     }
@@ -335,13 +345,14 @@ mod native {
         },
         Storage::FileSystem::{
             CreateDirectoryW, CreateFileW, DeleteFileW, FileDispositionInfo,
-            GetFileInformationByHandle, GetFinalPathNameByHandleW, ReadFile, RemoveDirectoryW,
-            SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_SUBDIRECTORY,
-            FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-            FILE_DELETE_CHILD, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE, FILE_WRITE_DATA, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
-            WRITE_OWNER,
+            GetFileInformationByHandle, GetFinalPathNameByHandleW, MoveFileExW, ReadFile,
+            RemoveDirectoryW, SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE,
+            FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_DISPOSITION_INFO,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_ALWAYS, OPEN_EXISTING,
+            READ_CONTROL, WRITE_DAC, WRITE_OWNER,
         },
         System::{
             Registry::{
@@ -364,8 +375,8 @@ mod native {
                 SERVICE_WIN32_OWN_PROCESS,
             },
             Threading::{
-                GetCurrentProcess, OpenProcess, OpenProcessToken, WaitForSingleObject,
-                PROCESS_QUERY_LIMITED_INFORMATION,
+                GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+                WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
             },
         },
         UI::Shell::{
@@ -391,6 +402,7 @@ mod native {
     const SERVICE_REQUIRED_PRIVILEGES: [&str; 2] =
         ["SeChangeNotifyPrivilege", "SeSystemProfilePrivilege"];
     const SERVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+    const UPGRADE_JOURNAL_MAX_BYTES: usize = 16 * 1024;
     const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
     const SERVICE_QUERY_STATUS_MASK: u32 = 0x0000_0004;
     const SERVICE_LIFECYCLE_FILE_NAME: &str = "process-owner.v1.lock";
@@ -967,6 +979,201 @@ mod native {
         (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow)
     }
 
+    fn trusted_file_digest(path: &Path, context: &str) -> Result<[u8; 32], String> {
+        let principals = SecurityPrincipals::load_base()?;
+        let file = open_file_for_hash(path, &principals, context)?;
+        let info = file_information(file.raw(), context)?;
+        hash_open_file(file.raw(), file_size(&info))
+    }
+
+    fn digest_hex(digest: &[u8; 32]) -> String {
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn upgrade_backup_name(digest: &[u8; 32]) -> String {
+        format!(
+            "batcave-collector-service.{}.rollback.exe",
+            digest_hex(digest)
+        )
+    }
+
+    fn upgrade_journal_path() -> Result<PathBuf, String> {
+        Ok(fixed_roots()?.service.join(UPGRADE_JOURNAL_FILE_NAME))
+    }
+
+    fn read_upgrade_journal() -> Result<Option<UpgradeJournalV1>, String> {
+        let path = upgrade_journal_path()?;
+        let principals = SecurityPrincipals::load_with_service()?;
+        if verify_optional_leaf(&path, &principals)?.is_none() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("collector_service_upgrade_journal_read_failed:{error}"))?;
+        if bytes.len() > UPGRADE_JOURNAL_MAX_BYTES {
+            return Err("collector_service_upgrade_journal_too_large".to_string());
+        }
+        let journal = serde_json::from_slice::<UpgradeJournalV1>(&bytes)
+            .map_err(|error| format!("collector_service_upgrade_journal_parse_failed:{error}"))?;
+        journal.validate().map_err(str::to_string)?;
+        Ok(Some(journal))
+    }
+
+    fn write_upgrade_journal(journal: &UpgradeJournalV1) -> Result<(), String> {
+        journal.validate().map_err(str::to_string)?;
+        let path = upgrade_journal_path()?;
+        let bytes = serde_json::to_vec(journal).map_err(|error| {
+            format!("collector_service_upgrade_journal_serialize_failed:{error}")
+        })?;
+        crate::atomic_json::write_bytes_atomic(&path, &bytes).map_err(|error| {
+            format!(
+                "collector_service_upgrade_journal_write_failed:{:?}:{}",
+                error.operation, error.error
+            )
+        })?;
+        let principals = SecurityPrincipals::load_with_service()?;
+        verify_optional_leaf(&path, &principals)?
+            .ok_or_else(|| "collector_service_upgrade_journal_missing".to_string())?;
+        Ok(())
+    }
+
+    fn delete_upgrade_journal() -> Result<(), String> {
+        let path = upgrade_journal_path()?;
+        let principals = SecurityPrincipals::load_with_service()?;
+        drop(verify_optional_leaf(&path, &principals)?);
+        let path_wide = wide_path(&path);
+        if unsafe { DeleteFileW(path_wide.as_ptr()) } == 0 {
+            let error = unsafe { GetLastError() };
+            if !is_missing_path_error(error) {
+                return Err(format!(
+                    "collector_service_upgrade_journal_remove_failed:{error}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_upgrade_backup(
+        stable: &Path,
+        install_directory: &Path,
+        old_digest: [u8; 32],
+    ) -> Result<String, String> {
+        let backup_name = upgrade_backup_name(&old_digest);
+        let backup = install_directory.join(&backup_name);
+        if path_exists_no_follow(&backup)? {
+            if trusted_file_digest(&backup, "collector_service_upgrade_backup")? != old_digest {
+                return Err("collector_service_upgrade_backup_identity_invalid".to_string());
+            }
+            return Ok(backup_name);
+        }
+        fs::copy(stable, &backup)
+            .map_err(|error| format!("collector_service_upgrade_backup_copy_failed:{error}"))?;
+        if trusted_file_digest(&backup, "collector_service_upgrade_backup")? != old_digest {
+            return Err("collector_service_upgrade_backup_identity_invalid".to_string());
+        }
+        Ok(backup_name)
+    }
+
+    fn restore_upgrade_backup(
+        stable: &Path,
+        backup: &Path,
+        expected_digest: [u8; 32],
+    ) -> Result<(), String> {
+        if trusted_file_digest(backup, "collector_service_upgrade_backup")? != expected_digest {
+            return Err("collector_service_upgrade_backup_identity_invalid".to_string());
+        }
+        let temp = stable.with_file_name("batcave-collector-service.rollback.tmp");
+        fs::copy(backup, &temp)
+            .map_err(|error| format!("collector_service_upgrade_restore_copy_failed:{error}"))?;
+        if trusted_file_digest(&temp, "collector_service_upgrade_restore_temp")? != expected_digest
+        {
+            return Err("collector_service_upgrade_restore_identity_invalid".to_string());
+        }
+        let temp_wide = wide_path(&temp);
+        let stable_wide = wide_path(stable);
+        if unsafe {
+            MoveFileExW(
+                temp_wide.as_ptr(),
+                stable_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(last_error(
+                "collector_service_upgrade_restore_replace_failed",
+            ));
+        }
+        if trusted_file_digest(stable, "collector_service_stable_image")? != expected_digest {
+            return Err("collector_service_upgrade_restore_identity_invalid".to_string());
+        }
+        Ok(())
+    }
+
+    fn delete_upgrade_backup(
+        install_directory: &Path,
+        journal: &UpgradeJournalV1,
+    ) -> Result<(), String> {
+        let path = install_directory.join(&journal.backup_name);
+        let path_wide = wide_path(&path);
+        let raw = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                GENERIC_READ | DELETE | READ_CONTROL,
+                FILE_SHARE_READ,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if raw.is_null() || raw == (-1_isize as HANDLE) {
+            let error = unsafe { GetLastError() };
+            return if is_missing_path_error(error) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "collector_service_upgrade_backup_open_failed:{error}"
+                ))
+            };
+        }
+        let principals = SecurityPrincipals::load_base()?;
+        let backup = OwnedHandle(raw);
+        let info = file_information(backup.raw(), "collector_service_upgrade_backup_info_failed")?;
+        if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+            || !fixed_path_eq(
+                &final_path(
+                    &backup,
+                    "collector_service_upgrade_backup_final_path_failed",
+                )?,
+                &path,
+            )
+        {
+            return Err("collector_service_upgrade_backup_identity_invalid".to_string());
+        }
+        validate_no_untrusted_writer(backup.raw(), &principals, false, false)
+            .map_err(|_| "collector_service_upgrade_backup_identity_invalid".to_string())?;
+        if hash_open_file(backup.raw(), file_size(&info))? != journal.old_digest {
+            return Err("collector_service_upgrade_backup_identity_invalid".to_string());
+        }
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe {
+            SetFileInformationByHandle(
+                backup.raw(),
+                FileDispositionInfo,
+                (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(last_error("collector_service_upgrade_backup_remove_failed"));
+        }
+        drop(backup);
+        if path_exists_no_follow(&path)? {
+            Err("collector_service_upgrade_backup_present".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
     fn retire_legacy_cli_path(
         path: &Path,
         known_images: &[LegacyCliImage],
@@ -1107,7 +1314,40 @@ mod native {
             .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
         validate_service_contract(&service, &stable)?;
         let _protected_root = open_protected_etw_lease_root()?;
-        repair_dirty_stop_before_upgrade(&service)
+        let prepared = resume_upgrade_transaction(&staged, &stable, &service)?;
+        repair_dirty_stop_before_upgrade(&service)?;
+        if prepared {
+            Ok(())
+        } else {
+            prepare_upgrade_transaction(&staged, &stable)
+        }
+    }
+
+    pub(super) fn commit_upgrade_staged() -> Result<(), String> {
+        require_elevated()?;
+        let staged = verify_current_staged_binary_path()?;
+        let stable = staged
+            .path()
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?
+            .join(SERVICE_EXECUTABLE_NAME);
+        let manager = open_manager(SC_MANAGER_CONNECT)?;
+        let service = open_service(&manager, SERVICE_ALL_ACCESS)?
+            .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
+        validate_service_contract(&service, &stable)?;
+        let _protected_root = open_protected_etw_lease_root()?;
+        let mut journal = read_upgrade_journal()?
+            .ok_or_else(|| "collector_service_upgrade_journal_missing".to_string())?;
+        let action = upgrade_resume_action(&journal, &stable, staged.path())?;
+        match action {
+            UpgradeResumeAction::CommitCandidate => {
+                commit_upgrade_candidate(&mut journal, &service, &stable)
+            }
+            UpgradeResumeAction::FinalizeVerified => Ok(()),
+            UpgradeResumeAction::ReusePrepared | UpgradeResumeAction::RetryRollback => {
+                Err("collector_service_upgrade_candidate_not_installed".to_string())
+            }
+        }
     }
 
     pub(super) fn install() -> Result<(), String> {
@@ -1120,6 +1360,7 @@ mod native {
             start_service_and_wait(&service)?;
             validate_service_contract(&service, image.path())?;
             retire_legacy_cli(&image)?;
+            finalize_upgrade_transaction(&image)?;
             return retire_staged_upgrade_image(&image);
         }
 
@@ -1147,7 +1388,166 @@ mod native {
             return Err(error);
         }
         retire_legacy_cli(&image)?;
+        finalize_upgrade_transaction(&image)?;
         retire_staged_upgrade_image(&image)
+    }
+
+    fn prepare_upgrade_transaction(
+        staged: &VerifiedServiceImage,
+        stable: &Path,
+    ) -> Result<(), String> {
+        if read_upgrade_journal()?.is_some() {
+            return Err("collector_service_upgrade_journal_already_exists".to_string());
+        }
+        let install_directory = stable
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
+        let old_digest = trusted_file_digest(stable, "collector_service_stable_image")?;
+        let new_digest = trusted_file_digest(staged.path(), "collector_service_staged_image")?;
+        let backup_name = ensure_upgrade_backup(stable, install_directory, old_digest)?;
+        let journal = UpgradeJournalV1::new(
+            old_digest,
+            new_digest,
+            backup_name,
+            staged_service_executable_name(),
+        );
+        write_upgrade_journal(&journal)
+    }
+
+    fn resume_upgrade_transaction(
+        staged: &VerifiedServiceImage,
+        stable: &Path,
+        service: &OwnedScHandle,
+    ) -> Result<bool, String> {
+        let Some(mut journal) = read_upgrade_journal()? else {
+            return Ok(false);
+        };
+        match upgrade_resume_action(&journal, stable, staged.path())? {
+            UpgradeResumeAction::ReusePrepared => Ok(true),
+            UpgradeResumeAction::CommitCandidate => {
+                commit_upgrade_candidate(&mut journal, service, stable)?;
+                finalize_verified_upgrade(stable, staged.path(), &journal)?;
+                Ok(false)
+            }
+            UpgradeResumeAction::RetryRollback => {
+                rollback_upgrade(&mut journal, service, stable)?;
+                Ok(true)
+            }
+            UpgradeResumeAction::FinalizeVerified => {
+                finalize_verified_upgrade(stable, staged.path(), &journal)?;
+                Ok(false)
+            }
+        }
+    }
+
+    fn upgrade_resume_action(
+        journal: &UpgradeJournalV1,
+        stable: &Path,
+        staged: &Path,
+    ) -> Result<UpgradeResumeAction, String> {
+        if journal.staged_name != staged_service_executable_name() {
+            return Err("collector_service_upgrade_journal_identity_invalid".to_string());
+        }
+        let install_directory = stable
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
+        let backup = install_directory.join(&journal.backup_name);
+        let backup_digest = if path_exists_no_follow(&backup)? {
+            trusted_file_digest(&backup, "collector_service_upgrade_backup")?
+        } else {
+            [0; 32]
+        };
+        decide_upgrade_resume(
+            journal,
+            trusted_file_digest(stable, "collector_service_stable_image")?,
+            trusted_file_digest(staged, "collector_service_staged_image")?,
+            backup_digest,
+        )
+        .map_err(str::to_string)
+    }
+
+    fn commit_upgrade_candidate(
+        journal: &mut UpgradeJournalV1,
+        service: &OwnedScHandle,
+        stable: &Path,
+    ) -> Result<(), String> {
+        journal.phase = UpgradePhase::CandidateInstalled;
+        write_upgrade_journal(journal)?;
+        let result = (|| {
+            start_service_and_wait(service)?;
+            validate_service_contract(service, stable)?;
+            validate_running_service_image(service, stable, journal.new_digest)?;
+            journal.phase = UpgradePhase::Verified;
+            write_upgrade_journal(journal)
+        })();
+        if let Err(error) = result {
+            return match rollback_upgrade(journal, service, stable) {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(format!(
+                    "{error};collector_service_upgrade_rollback_failed:{rollback}"
+                )),
+            };
+        }
+        Ok(())
+    }
+
+    fn rollback_upgrade(
+        journal: &mut UpgradeJournalV1,
+        service: &OwnedScHandle,
+        stable: &Path,
+    ) -> Result<(), String> {
+        let status = query_service_status(service)?;
+        if status.dwCurrentState != SERVICE_STOPPED {
+            stop_service_and_wait(service, true)?;
+        } else {
+            prove_service_lifecycle_settled(true)?;
+        }
+        let install_directory = stable
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
+        restore_upgrade_backup(
+            stable,
+            &install_directory.join(&journal.backup_name),
+            journal.old_digest,
+        )?;
+        validate_service_contract(service, stable)?;
+        start_service_and_wait(service)?;
+        validate_running_service_image(service, stable, journal.old_digest)?;
+        journal.phase = UpgradePhase::Prepared;
+        write_upgrade_journal(journal)
+    }
+
+    fn finalize_upgrade_transaction(image: &VerifiedServiceImage) -> Result<(), String> {
+        let Some(journal) = read_upgrade_journal()? else {
+            return Ok(());
+        };
+        if journal.phase != UpgradePhase::Verified {
+            return Err("collector_service_upgrade_journal_not_verified".to_string());
+        }
+        let install_directory = image
+            .path()
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
+        let staged = install_directory.join(&journal.staged_name);
+        finalize_verified_upgrade(image.path(), &staged, &journal)
+    }
+
+    fn finalize_verified_upgrade(
+        stable: &Path,
+        staged: &Path,
+        journal: &UpgradeJournalV1,
+    ) -> Result<(), String> {
+        if journal.phase != UpgradePhase::Verified
+            || trusted_file_digest(stable, "collector_service_stable_image")? != journal.new_digest
+            || trusted_file_digest(staged, "collector_service_staged_image")? != journal.new_digest
+        {
+            return Err("collector_service_upgrade_journal_state_invalid".to_string());
+        }
+        let install_directory = stable
+            .parent()
+            .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
+        delete_upgrade_backup(install_directory, journal)?;
+        delete_upgrade_journal()
     }
 
     pub(super) fn uninstall() -> Result<(), String> {
@@ -1166,6 +1566,9 @@ mod native {
         validate_service_contract(&service, image.path())?;
         let was_running = query_service_status(&service)?.dwCurrentState == SERVICE_RUNNING;
         let _protected_root = open_protected_etw_lease_root()?;
+        if read_upgrade_journal()?.is_some() {
+            return Err("collector_service_upgrade_transaction_pending".to_string());
+        }
         stop_service_and_wait(&service, true)?;
         let principals = SecurityPrincipals::load_with_service()?;
         if unsafe { DeleteService(service.raw()) } == 0 {
@@ -1189,6 +1592,9 @@ mod native {
     }
 
     fn finish_uninstall_after_service_absent(image: &VerifiedServiceImage) -> Result<(), String> {
+        if read_upgrade_journal()?.is_some() {
+            return Err("collector_service_upgrade_transaction_pending".to_string());
+        }
         let roots = fixed_roots()?;
         match missing_service_cleanup(
             path_exists_no_follow(&roots.product)?,
@@ -1732,6 +2138,36 @@ mod native {
         Ok(OwnedHandle(handle))
     }
 
+    fn validate_running_service_image(
+        service: &OwnedScHandle,
+        expected_path: &Path,
+        expected_digest: [u8; 32],
+    ) -> Result<(), String> {
+        let status = query_service_status(service)?;
+        if status.dwCurrentState != SERVICE_RUNNING {
+            return Err("collector_service_upgrade_running_state_unproven".to_string());
+        }
+        let process = open_service_process(&status)?;
+        let mut path = vec![0_u16; 32_768];
+        let mut length = path.len() as u32;
+        if unsafe { QueryFullProcessImageNameW(process.raw(), 0, path.as_mut_ptr(), &mut length) }
+            == 0
+        {
+            return Err(last_error(
+                "collector_service_upgrade_process_image_query_failed",
+            ));
+        }
+        path.truncate(length as usize);
+        let process_path = strip_verbatim_disk_prefix(PathBuf::from(OsString::from_wide(&path)));
+        if !fixed_path_eq(&process_path, expected_path)
+            || trusted_file_digest(expected_path, "collector_service_stable_image")?
+                != expected_digest
+        {
+            return Err("collector_service_upgrade_running_image_invalid".to_string());
+        }
+        Ok(())
+    }
+
     fn wait_service_process_exit(process: &OwnedHandle) -> Result<(), String> {
         let wait = unsafe {
             WaitForSingleObject(process.raw(), SERVICE_OPERATION_TIMEOUT.as_millis() as u32)
@@ -1897,6 +2333,7 @@ mod native {
             ETW_LEASE_FILE_NAME,
             ETW_OWNER_LOCK_FILE_NAME,
             SERVICE_LIFECYCLE_FILE_NAME,
+            UPGRADE_JOURNAL_FILE_NAME,
         ] {
             let path = roots.service.join(leaf);
             drop(verify_optional_leaf(&path, principals)?);
@@ -1941,7 +2378,7 @@ mod native {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if !is_etw_lease_temp_name(name) {
+            if !is_owned_atomic_temp_name(name) {
                 continue;
             }
             let path = entry.path();
@@ -1959,14 +2396,17 @@ mod native {
         Ok(())
     }
 
-    pub(super) fn is_etw_lease_temp_name(name: &str) -> bool {
-        let Some(suffix) = name
-            .strip_prefix(ETW_LEASE_FILE_NAME)
-            .and_then(|name| name.strip_prefix('.'))
-            .and_then(|name| name.strip_suffix(".tmp"))
-        else {
-            return false;
-        };
+    pub(super) fn is_owned_atomic_temp_name(name: &str) -> bool {
+        [ETW_LEASE_FILE_NAME, UPGRADE_JOURNAL_FILE_NAME]
+            .iter()
+            .any(|base| atomic_temp_suffix(name, base).is_some())
+    }
+
+    fn atomic_temp_suffix<'a>(name: &'a str, base: &str) -> Option<&'a str> {
+        let suffix = name
+            .strip_prefix(base)?
+            .strip_prefix('.')?
+            .strip_suffix(".tmp")?;
         let mut parts = suffix.split('.');
         matches!(
             (parts.next(), parts.next(), parts.next()),
@@ -1976,6 +2416,7 @@ mod native {
                     && process.bytes().all(|byte| byte.is_ascii_digit())
                     && sequence.bytes().all(|byte| byte.is_ascii_digit())
         )
+        .then_some(suffix)
     }
 
     fn aligned_buffer(bytes: usize) -> Vec<usize> {
@@ -2063,7 +2504,11 @@ mod native {
         let service = open_and_verify_root(&roots.service, true, &principals)?;
         let install_id = protected_root_install_id(service.raw())?;
         let mut leaves = Vec::new();
-        for leaf in [ETW_LEASE_FILE_NAME, ETW_OWNER_LOCK_FILE_NAME] {
+        for leaf in [
+            ETW_LEASE_FILE_NAME,
+            ETW_OWNER_LOCK_FILE_NAME,
+            UPGRADE_JOURNAL_FILE_NAME,
+        ] {
             if let Some(handle) = verify_optional_leaf(&roots.service.join(leaf), &principals)? {
                 if retain_verified_leaf(leaf) {
                     leaves.push(handle);
@@ -2221,7 +2666,7 @@ mod native {
         };
         if handle.is_null() || handle == (-1_isize as HANDLE) {
             let error = unsafe { GetLastError() };
-            if error == ERROR_FILE_NOT_FOUND {
+            if is_missing_path_error(error) {
                 return Ok(None);
             }
             return Err(format!("collector_service_root_leaf_open_failed:{error}"));
@@ -2426,10 +2871,8 @@ mod native {
             .parent()
             .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
         let principals = SecurityPrincipals::load_base()?;
-        let program_files_handle = open_directory(
-            &program_files,
-            "collector_service_program_files_open_failed",
-        )?;
+        let program_files_handle =
+            open_directory(program_files, "collector_service_program_files_open_failed")?;
         let install = open_directory(
             install_dir,
             "collector_service_install_directory_open_failed",
@@ -3020,9 +3463,12 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_recognizes_only_atomic_etw_lease_temporary_leaves() {
-        assert!(native::is_etw_lease_temp_name(
+    fn uninstall_recognizes_only_owned_atomic_temporary_leaves() {
+        assert!(native::is_owned_atomic_temp_name(
             "etw-lease.v1.json.123.456.tmp"
+        ));
+        assert!(native::is_owned_atomic_temp_name(
+            "installer-upgrade.v1.json.123.456.tmp"
         ));
         for name in [
             "etw-lease.v1.json",
@@ -3032,7 +3478,7 @@ mod tests {
             "etw-lease.v1.json.pid.456.tmp",
             "other.123.456.tmp",
         ] {
-            assert!(!native::is_etw_lease_temp_name(name), "{name}");
+            assert!(!native::is_owned_atomic_temp_name(name), "{name}");
         }
     }
 }
