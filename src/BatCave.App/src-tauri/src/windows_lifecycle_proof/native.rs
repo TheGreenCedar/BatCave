@@ -339,6 +339,28 @@ impl OwnedFile {
         OwnedFile::open(target, self.size, &self.sha256_hex(), label)
     }
 
+    pub(crate) fn read_all_exact(&self, label: &str) -> Result<Vec<u8>, String> {
+        self.revalidate()?;
+        let mut source = self
+            .handle
+            .try_clone()
+            .map_err(|_| format!("lifecycle_{label}_source_clone_failed"))?;
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| format!("lifecycle_{label}_source_seek_failed"))?;
+        let capacity =
+            usize::try_from(self.size).map_err(|_| format!("lifecycle_{label}_size_invalid"))?;
+        let mut bytes = Vec::with_capacity(capacity);
+        source
+            .read_to_end(&mut bytes)
+            .map_err(|_| format!("lifecycle_{label}_source_read_failed"))?;
+        if bytes.len() != capacity {
+            return Err(format!("lifecycle_{label}_source_read_incomplete"));
+        }
+        self.revalidate()?;
+        Ok(bytes)
+    }
+
     pub(crate) fn snapshot(&self) -> FileSnapshot {
         FileSnapshot {
             size: self.size,

@@ -206,6 +206,7 @@ pub(crate) enum LifecycleStage {
     BaselineInstall,
     BaselineRestart,
     BaselineCrashRecovery,
+    BaselineRollbackRecovery,
     LegacyResidueSeeded,
     FinalUpgrade,
     FinalRestart,

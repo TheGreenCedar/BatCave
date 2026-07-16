@@ -65,7 +65,7 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
         baseline,
         final_candidate,
         incompatible_service_fixture: _incompatible_service_fixture,
-        rollback_failing_service_fixture: _rollback_failing_service_fixture,
+        rollback_failing_service_fixture,
         evidence,
         pipe: _pipe,
         nonce: _nonce,
@@ -74,7 +74,13 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
     if let Err(failure) = require_controller_ready() {
         return failed(None, controller_failure(failure), true);
     }
-    let result = execute_worker_inner(plan, baseline, final_candidate, evidence);
+    let result = execute_worker_inner(
+        plan,
+        baseline,
+        final_candidate,
+        rollback_failing_service_fixture,
+        evidence,
+    );
     match result {
         Ok(completed_stage) => failed(
             Some(completed_stage),
@@ -89,6 +95,7 @@ fn execute_worker_inner(
     plan: &ProofPlan,
     baseline: &OwnedFile,
     final_candidate: &OwnedFile,
+    rollback_failing_service_fixture: &OwnedFile,
     evidence: &ProtectedEvidenceRoot,
 ) -> Result<LifecycleStage, (Option<LifecycleStage>, WorkerFailure, bool)> {
     let initial = capture_elevated_machine_snapshot();
@@ -440,7 +447,132 @@ fn execute_worker_inner(
                 true,
             )
         })?;
-    Ok(LifecycleStage::BaselineCrashRecovery)
+
+    let rollback_fixture_copy = rollback_failing_service_fixture
+        .copy_to(
+            &evidence.root().join("rollback-failing-service.exe"),
+            "rollback_failing_service_copy",
+        )
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::BaselineCrashRecovery),
+                controller_failure(failure),
+                true,
+            )
+        })?;
+    let rollback_fixture_bytes = rollback_fixture_copy
+        .read_all_exact("rollback_failing_service")
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::BaselineCrashRecovery),
+                controller_failure(failure),
+                true,
+            )
+        })?;
+    let rollback_fixture_sha256 = parse_sha256(
+        &plan.rollback_failing_service_fixture.sha256,
+        "rollback_failing_service",
+    )
+    .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineCrashRecovery),
+            controller_failure(failure),
+            true,
+        )
+    })?;
+    let baseline_service_sha256 = parse_sha256(&plan.baseline.service_sha256, "baseline_service")
+        .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineCrashRecovery),
+            controller_failure(failure),
+            true,
+        )
+    })?;
+    let rollback = match crate::collector_service::windows_provisioner::exercise_failed_upgrade_rollback_for_proof(
+        &rollback_fixture_bytes,
+        rollback_fixture_sha256,
+        baseline_service_sha256,
+    ) {
+        Ok(rollback) => rollback,
+        Err(failure) => {
+            let failure = write_upgrade_rollback_failure(
+                evidence,
+                "baseline-rollback-recovery-failure.private.json",
+                &baseline_crash_recovery_state,
+                &failure.reason,
+                failure.service_settled,
+            );
+            let process_tree_settled = failure.kind != WorkerFailureKind::ProcessSettlement;
+            return Err((
+                Some(LifecycleStage::BaselineCrashRecovery),
+                failure,
+                process_tree_settled,
+            ));
+        }
+    };
+    if let Err(reason) = rollback_failing_service_fixture
+        .revalidate()
+        .and_then(|_| rollback_fixture_copy.revalidate())
+    {
+        let failure = write_upgrade_rollback_failure(
+            evidence,
+            "baseline-rollback-recovery-failure.private.json",
+            &baseline_crash_recovery_state,
+            &reason,
+            true,
+        );
+        return Err((Some(LifecycleStage::BaselineCrashRecovery), failure, true));
+    }
+    let baseline_rollback_recovery_state = capture_elevated_machine_snapshot();
+    require_elevated_installed_candidate(
+        &baseline_rollback_recovery_state,
+        &plan.baseline,
+        false,
+        "baseline_rollback_recovery",
+    )
+    .and_then(|_| {
+        require_running_service(
+            &baseline_rollback_recovery_state,
+            "baseline_rollback_recovery",
+        )
+        .map(|_| ())
+    })
+    .map_err(|reason| {
+        let failure = write_upgrade_rollback_failure(
+            evidence,
+            "baseline-rollback-recovery-failure.private.json",
+            &baseline_crash_recovery_state,
+            &reason,
+            true,
+        );
+        (Some(LifecycleStage::BaselineCrashRecovery), failure, true)
+    })?;
+    let rollback_state = UpgradeRollbackState {
+        rollback,
+        machine: &baseline_rollback_recovery_state,
+    };
+    evidence
+        .write_json_new(
+            "baseline-rollback-recovery-state.private.json",
+            &rollback_state,
+        )
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::BaselineRollbackRecovery),
+                evidence_write_failure(
+                    "lifecycle_baseline_rollback_recovery_evidence_incomplete",
+                    failure,
+                ),
+                true,
+            )
+        })?;
+    Ok(LifecycleStage::BaselineRollbackRecovery)
+}
+
+#[derive(Serialize)]
+struct UpgradeRollbackState<'a> {
+    rollback: crate::collector_service::windows_provisioner::FailedUpgradeRollbackForProof,
+    machine: &'a ElevatedMachineSnapshot,
 }
 
 #[derive(Serialize)]
@@ -652,6 +784,52 @@ fn write_service_crash_failure(
         evidence: receipt,
         evidence_error,
     }
+}
+
+fn write_upgrade_rollback_failure(
+    evidence: &ProtectedEvidenceRoot,
+    evidence_name: &'static str,
+    before: &ElevatedMachineSnapshot,
+    reason: &str,
+    service_settled: bool,
+) -> WorkerFailure {
+    let packet = UpgradeRollbackFailurePacket {
+        schema_version: MUTATION_FAILURE_SCHEMA,
+        attempted_stage: LifecycleStage::BaselineRollbackRecovery,
+        reason,
+        service_settled,
+        machine_before_mutation: before,
+        machine_after_attempt: capture_elevated_machine_snapshot(),
+    };
+    let (receipt, evidence_error) = match evidence.write_json_new(evidence_name, &packet) {
+        Ok(receipt) => (Some(receipt), None),
+        Err(error) => (None, Some(error)),
+    };
+    WorkerFailure {
+        kind: if service_settled {
+            if receipt.is_some() {
+                WorkerFailureKind::Mutation
+            } else {
+                WorkerFailureKind::EvidenceWrite
+            }
+        } else {
+            WorkerFailureKind::ProcessSettlement
+        },
+        attempted_stage: Some(LifecycleStage::BaselineRollbackRecovery),
+        reason: reason.to_string(),
+        evidence: receipt,
+        evidence_error,
+    }
+}
+
+#[derive(Serialize)]
+struct UpgradeRollbackFailurePacket<'a> {
+    schema_version: &'static str,
+    attempted_stage: LifecycleStage,
+    reason: &'a str,
+    service_settled: bool,
+    machine_before_mutation: &'a ElevatedMachineSnapshot,
+    machine_after_attempt: ElevatedMachineSnapshot,
 }
 
 fn controller_failure(reason: String) -> WorkerFailure {

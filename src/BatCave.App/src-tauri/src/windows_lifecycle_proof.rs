@@ -575,6 +575,9 @@ fn mutation_failure_binding(
         (LifecycleStage::BaselineCrashRecovery, Some(LifecycleStage::BaselineRestart)) => {
             Some("baseline-crash-recovery-failure.private.json")
         }
+        (LifecycleStage::BaselineRollbackRecovery, Some(LifecycleStage::BaselineCrashRecovery)) => {
+            Some("baseline-rollback-recovery-failure.private.json")
+        }
         _ => None,
     }
 }
@@ -763,6 +766,11 @@ mod tests {
                 LifecycleStage::BaselineCrashRecovery,
                 LifecycleStage::BaselineRestart,
                 "baseline-crash-recovery-failure.private.json",
+            ),
+            (
+                LifecycleStage::BaselineRollbackRecovery,
+                LifecycleStage::BaselineCrashRecovery,
+                "baseline-rollback-recovery-failure.private.json",
             ),
         ] {
             let result = failed_result_at(

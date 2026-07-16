@@ -23,6 +23,12 @@ const SERVICE_FAILURE_VALUE: &str = "BatCaveLastFailure";
 const SERVICE_TYPE_OWN_PROCESS: u32 = 0x10;
 const ERROR_FILE_NOT_FOUND_CODE: u32 = 2;
 const ERROR_PATH_NOT_FOUND_CODE: u32 = 3;
+#[cfg(feature = "private-windows-lifecycle-proof")]
+const PRIVATE_ROLLBACK_FIXTURE_MAX_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(feature = "private-windows-lifecycle-proof")]
+const PRIVATE_ROLLBACK_MARKER_NAME: &str = "batcave-rollback-fixture-ran.v1";
+#[cfg(feature = "private-windows-lifecycle-proof")]
+const PRIVATE_ROLLBACK_MARKER_BYTES: &[u8] = b"batcave_windows_lifecycle_rollback_fixture_v1\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LegacyCliImage {
@@ -126,6 +132,24 @@ fn run_verb(verb: ProvisionVerb) -> Result<(), String> {
     }
 }
 
+#[cfg(feature = "private-windows-lifecycle-proof")]
+fn validate_failed_upgrade_fixture_inputs(
+    candidate_bytes: &[u8],
+    expected_candidate_sha256: [u8; 32],
+    expected_original_sha256: [u8; 32],
+) -> Result<(), String> {
+    if candidate_bytes.is_empty()
+        || candidate_bytes.len() > PRIVATE_ROLLBACK_FIXTURE_MAX_BYTES
+        || expected_candidate_sha256 == [0; 32]
+        || expected_original_sha256 == [0; 32]
+        || expected_candidate_sha256 == expected_original_sha256
+        || <[u8; 32]>::from(Sha256::digest(candidate_bytes)) != expected_candidate_sha256
+    {
+        return Err("collector_service_proof_upgrade_fixture_invalid".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn open_protected_etw_lease_root() -> Result<ProtectedEtwLeaseRoot, String> {
     native::open_protected_etw_lease_root()
 }
@@ -184,6 +208,23 @@ pub(crate) struct TerminatedServiceForProof {
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct FailedUpgradeRollbackForProof {
+    pub(crate) candidate_sha256: String,
+    pub(crate) candidate_failure: String,
+    pub(crate) execution_marker_sha256: String,
+    pub(crate) restored_sha256: String,
+    pub(crate) restored_process_id: u32,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct FailedUpgradeRollbackFailure {
+    pub(crate) reason: String,
+    pub(crate) service_settled: bool,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub(crate) struct ServiceTerminationFailure {
     pub(crate) reason: String,
     pub(crate) service_settled: bool,
@@ -196,6 +237,19 @@ pub(crate) fn terminate_running_service_for_proof(
     expected_sha256: [u8; 32],
 ) -> Result<TerminatedServiceForProof, Box<ServiceTerminationFailure>> {
     native::terminate_running_service_for_proof(expected_sha256)
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn exercise_failed_upgrade_rollback_for_proof(
+    candidate_bytes: &[u8],
+    expected_candidate_sha256: [u8; 32],
+    expected_original_sha256: [u8; 32],
+) -> Result<FailedUpgradeRollbackForProof, Box<FailedUpgradeRollbackFailure>> {
+    native::exercise_failed_upgrade_rollback_for_proof(
+        candidate_bytes,
+        expected_candidate_sha256,
+        expected_original_sha256,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1426,15 +1480,23 @@ mod native {
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = open_service(&manager, SERVICE_ALL_ACCESS)?
             .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
-        validate_service_contract(&service, &stable)?;
+        prepare_upgrade_staged_image(&staged, &stable, &service)
+    }
+
+    fn prepare_upgrade_staged_image(
+        staged: &VerifiedServiceImage,
+        stable: &Path,
+        service: &OwnedScHandle,
+    ) -> Result<(), String> {
+        validate_service_contract(service, stable)?;
         let _protected_root = open_protected_etw_lease_root()?;
-        let prepared = resume_upgrade_transaction(&staged, &stable, &service)?;
-        ensure_uninstaller_compatibility_alias(&staged)?;
-        settle_service_for_replacement(&service)?;
+        let prepared = resume_upgrade_transaction(staged, stable, service)?;
+        ensure_uninstaller_compatibility_alias(staged)?;
+        settle_service_for_replacement(service)?;
         if prepared {
             Ok(())
         } else {
-            prepare_upgrade_transaction(&staged, &stable)
+            prepare_upgrade_transaction(staged, stable)
         }
     }
 
@@ -2183,6 +2245,293 @@ mod native {
     pub(super) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
         let roots = fixed_roots()?;
         Ok((roots.product, roots.service))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn exercise_failed_upgrade_rollback_for_proof(
+        candidate_bytes: &[u8],
+        expected_candidate_sha256: [u8; 32],
+        expected_original_sha256: [u8; 32],
+    ) -> Result<FailedUpgradeRollbackForProof, Box<FailedUpgradeRollbackFailure>> {
+        let before_mutation = |reason| {
+            Box::new(FailedUpgradeRollbackFailure {
+                reason,
+                service_settled: true,
+            })
+        };
+        require_elevated().map_err(before_mutation)?;
+        validate_failed_upgrade_fixture_inputs(
+            candidate_bytes,
+            expected_candidate_sha256,
+            expected_original_sha256,
+        )
+        .map_err(before_mutation)?;
+
+        let program_files = known_folder(CSIDL_PROGRAM_FILES).map_err(before_mutation)?;
+        let stable = expected_service_path(&program_files);
+        let staged = expected_staged_service_path(&program_files);
+        let install_directory = stable
+            .parent()
+            .ok_or_else(|| {
+                before_mutation("collector_service_install_directory_missing".to_string())
+            })?
+            .to_path_buf();
+        let manager = open_manager(SC_MANAGER_CONNECT).map_err(before_mutation)?;
+        let service = open_service(&manager, SERVICE_ALL_ACCESS)
+            .map_err(before_mutation)?
+            .ok_or_else(|| {
+                before_mutation("collector_service_proof_service_missing".to_string())
+            })?;
+        validate_service_contract(&service, &stable).map_err(before_mutation)?;
+        let _protected_root = open_protected_etw_lease_root().map_err(before_mutation)?;
+        if trusted_file_digest(&stable, "collector_service_stable_image")
+            .map_err(before_mutation)?
+            != expected_original_sha256
+        {
+            return Err(before_mutation(
+                "collector_service_proof_original_digest_invalid".to_string(),
+            ));
+        }
+        let original_status = query_service_status(&service).map_err(before_mutation)?;
+        validate_running_service_image(
+            &service,
+            &stable,
+            expected_original_sha256,
+            original_status.dwProcessId,
+        )
+        .map_err(before_mutation)?;
+        ensure_upgrade_proof_residue_absent(&install_directory).map_err(before_mutation)?;
+
+        let operation = (|| -> Result<FailedUpgradeRollbackForProof, String> {
+            crate::atomic_json::write_bytes_atomic(&staged, candidate_bytes).map_err(|error| {
+                format!(
+                    "collector_service_proof_staged_write_failed:{:?}:{}",
+                    error.operation, error.error
+                )
+            })?;
+            let staged_image = verify_service_image_at(&staged, &program_files)?;
+            if trusted_file_digest(staged_image.path(), "collector_service_staged_image")?
+                != expected_candidate_sha256
+            {
+                return Err("collector_service_proof_staged_digest_invalid".to_string());
+            }
+
+            prepare_upgrade_staged_image(&staged_image, &stable, &service)?;
+            let prepared = read_upgrade_journal()?
+                .ok_or_else(|| "collector_service_proof_upgrade_journal_missing".to_string())?;
+            if prepared.phase != UpgradePhase::Prepared
+                || prepared.old_digest != expected_original_sha256
+                || prepared.new_digest != expected_candidate_sha256
+            {
+                return Err("collector_service_proof_upgrade_journal_invalid".to_string());
+            }
+
+            restore_upgrade_backup(&stable, staged_image.path(), expected_candidate_sha256)?;
+            let mut journal = read_upgrade_journal()?
+                .ok_or_else(|| "collector_service_proof_upgrade_journal_missing".to_string())?;
+            if upgrade_resume_action(&journal, &stable, staged_image.path())?
+                != UpgradeResumeAction::CommitCandidate
+            {
+                return Err("collector_service_proof_candidate_action_invalid".to_string());
+            }
+            let candidate_failure = match commit_upgrade_candidate(&mut journal, &service, &stable)
+            {
+                Ok(()) => {
+                    rollback_upgrade(&mut journal, &service, &stable)?;
+                    return Err(
+                        "collector_service_proof_candidate_unexpectedly_started".to_string()
+                    );
+                }
+                Err(failure) => failure,
+            };
+            let execution_marker_sha256 =
+                verify_and_retire_rollback_execution_marker(&install_directory, true)?;
+
+            let restored_journal = read_upgrade_journal()?
+                .ok_or_else(|| "collector_service_proof_upgrade_journal_missing".to_string())?;
+            if restored_journal.phase != UpgradePhase::Prepared
+                || restored_journal.old_digest != expected_original_sha256
+                || restored_journal.new_digest != expected_candidate_sha256
+            {
+                return Err("collector_service_proof_rollback_journal_invalid".to_string());
+            }
+            let restored_process_id =
+                validate_proof_running_generation(&service, &stable, expected_original_sha256)?;
+            drop(staged_image);
+            let mut restored_journal = restored_journal;
+            resolve_superseded_upgrade_transaction(&mut restored_journal, &service, &stable, None)?;
+            ensure_upgrade_proof_residue_absent(&install_directory)?;
+            let final_process_id =
+                validate_proof_running_generation(&service, &stable, expected_original_sha256)?;
+            if final_process_id != restored_process_id {
+                return Err("collector_service_proof_restored_generation_changed".to_string());
+            }
+
+            Ok(FailedUpgradeRollbackForProof {
+                candidate_sha256: digest_hex(&expected_candidate_sha256),
+                candidate_failure,
+                execution_marker_sha256,
+                restored_sha256: digest_hex(&expected_original_sha256),
+                restored_process_id,
+            })
+        })();
+
+        match operation {
+            Ok(proof) => Ok(proof),
+            Err(primary) => {
+                let recovery = recover_failed_upgrade_proof(
+                    &service,
+                    &stable,
+                    &staged,
+                    &install_directory,
+                    expected_candidate_sha256,
+                    expected_original_sha256,
+                );
+                Err(Box::new(FailedUpgradeRollbackFailure {
+                    reason: match &recovery {
+                        Ok(()) => primary,
+                        Err(recovery) => {
+                            format!("{primary};collector_service_proof_recovery_failed:{recovery}")
+                        }
+                    },
+                    service_settled: recovery.is_ok(),
+                }))
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn validate_proof_running_generation(
+        service: &OwnedScHandle,
+        stable: &Path,
+        expected_digest: [u8; 32],
+    ) -> Result<u32, String> {
+        validate_service_contract(service, stable)?;
+        let status = query_service_status(service)?;
+        validate_running_service_image(service, stable, expected_digest, status.dwProcessId)?;
+        Ok(status.dwProcessId)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn recover_failed_upgrade_proof(
+        service: &OwnedScHandle,
+        stable: &Path,
+        staged: &Path,
+        install_directory: &Path,
+        expected_candidate_sha256: [u8; 32],
+        expected_original_sha256: [u8; 32],
+    ) -> Result<(), String> {
+        if let Some(mut journal) = read_upgrade_journal()? {
+            if journal.old_digest != expected_original_sha256
+                || journal.new_digest != expected_candidate_sha256
+            {
+                return Err("collector_service_proof_recovery_journal_invalid".to_string());
+            }
+            resolve_superseded_upgrade_transaction(&mut journal, service, stable, None)?;
+        } else {
+            if trusted_file_digest(stable, "collector_service_stable_image")?
+                != expected_original_sha256
+            {
+                return Err("collector_service_proof_recovery_original_missing".to_string());
+            }
+            let status = query_service_status(service)?;
+            if status.dwCurrentState == SERVICE_STOPPED && status.dwProcessId == 0 {
+                start_upgrade_service_generation(service, false)?;
+            }
+            validate_proof_running_generation(service, stable, expected_original_sha256)?;
+            delete_trusted_leaf(
+                staged,
+                Some(expected_candidate_sha256),
+                "collector_service_proof_staged_cleanup",
+            )?;
+            let backup = install_directory.join(upgrade_backup_name(&expected_original_sha256));
+            delete_trusted_leaf(
+                &backup,
+                Some(expected_original_sha256),
+                "collector_service_proof_backup_cleanup",
+            )?;
+            cleanup_upgrade_install_residue(install_directory, None)?;
+        }
+        verify_and_retire_rollback_execution_marker(install_directory, false)?;
+        ensure_upgrade_proof_residue_absent(install_directory)?;
+        validate_proof_running_generation(service, stable, expected_original_sha256).map(|_| ())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn ensure_upgrade_proof_residue_absent(install_directory: &Path) -> Result<(), String> {
+        if read_upgrade_journal()?.is_some() {
+            return Err("collector_service_proof_upgrade_residue_present".to_string());
+        }
+        let service_root = fixed_roots()?.service;
+        for entry in fs::read_dir(&service_root).map_err(|error| {
+            format!("collector_service_upgrade_service_root_read_failed:{error}")
+        })? {
+            let entry = entry.map_err(|error| {
+                format!("collector_service_upgrade_service_root_entry_failed:{error}")
+            })?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name == UPGRADE_JOURNAL_FILE_NAME
+                || atomic_temp_base(name) == Some(UPGRADE_JOURNAL_FILE_NAME)
+            {
+                return Err("collector_service_proof_upgrade_residue_present".to_string());
+            }
+        }
+        for entry in fs::read_dir(install_directory).map_err(|error| {
+            format!("collector_service_upgrade_install_directory_read_failed:{error}")
+        })? {
+            let entry = entry.map_err(|error| {
+                format!("collector_service_upgrade_install_directory_entry_failed:{error}")
+            })?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let atomic_base = atomic_temp_base(name);
+            if name == PRIVATE_ROLLBACK_MARKER_NAME
+                || name == "batcave-collector-service.rollback.tmp"
+                || is_staged_upgrade_name(name)
+                || rollback_digest_from_name(name).is_some()
+                || atomic_base.and_then(rollback_digest_from_name).is_some()
+            {
+                return Err("collector_service_proof_upgrade_residue_present".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn verify_and_retire_rollback_execution_marker(
+        install_directory: &Path,
+        required: bool,
+    ) -> Result<String, String> {
+        let marker = install_directory.join(PRIVATE_ROLLBACK_MARKER_NAME);
+        if !path_exists_no_follow(&marker)? {
+            return if required {
+                Err("collector_service_proof_execution_marker_missing".to_string())
+            } else {
+                Ok(String::new())
+            };
+        }
+        let expected_digest: [u8; 32] = Sha256::digest(PRIVATE_ROLLBACK_MARKER_BYTES).into();
+        if trusted_file_digest(&marker, "collector_service_proof_execution_marker")?
+            != expected_digest
+        {
+            return Err("collector_service_proof_execution_marker_invalid".to_string());
+        }
+        delete_trusted_leaf(
+            &marker,
+            Some(expected_digest),
+            "collector_service_proof_execution_marker",
+        )?;
+        Ok(digest_hex(&expected_digest))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn digest_hex(digest: &[u8; 32]) -> String {
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -3565,7 +3914,14 @@ mod native {
         let current = std::env::current_exe()
             .map_err(|error| format!("collector_service_executable_path_failed:{error}"))?;
         validate_current_service_path(&current, expected)?;
-        let install_dir = current
+        verify_service_image_at(&current, program_files)
+    }
+
+    fn verify_service_image_at(
+        image_path: &Path,
+        program_files: &Path,
+    ) -> Result<VerifiedServiceImage, String> {
+        let install_dir = image_path
             .parent()
             .ok_or_else(|| "collector_service_install_directory_missing".to_string())?;
         let principals = SecurityPrincipals::load_base()?;
@@ -3585,16 +3941,16 @@ mod native {
             return Err("collector_service_install_directory_identity_invalid".to_string());
         }
         validate_no_untrusted_writer(install.raw(), &principals, false, false)?;
-        let image = open_file(&current, "collector_service_executable_open_failed")?;
+        let image = open_file(image_path, "collector_service_executable_open_failed")?;
         if !fixed_path_eq(
             &final_path(&image, "collector_service_executable_final_path_failed")?,
-            &current,
+            image_path,
         ) {
             return Err("collector_service_executable_identity_invalid".to_string());
         }
         validate_no_untrusted_writer(image.raw(), &principals, false, false)?;
         Ok(VerifiedServiceImage {
-            path: current,
+            path: image_path.to_path_buf(),
             _program_files: program_files_handle,
             _install_directory: install,
             _image: image,
@@ -4105,6 +4461,30 @@ mod tests {
             known.size + 1,
             &known.sha256,
         ));
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[test]
+    fn private_rollback_fixture_inputs_are_digest_bound_and_bounded() {
+        let bytes = b"fixed rollback candidate";
+        let candidate: [u8; 32] = Sha256::digest(bytes).into();
+        let original = [0x5a; 32];
+        assert_eq!(
+            validate_failed_upgrade_fixture_inputs(bytes, candidate, original),
+            Ok(())
+        );
+        for invalid in [
+            validate_failed_upgrade_fixture_inputs(&[], candidate, original),
+            validate_failed_upgrade_fixture_inputs(bytes, [0; 32], original),
+            validate_failed_upgrade_fixture_inputs(bytes, candidate, [0; 32]),
+            validate_failed_upgrade_fixture_inputs(bytes, candidate, candidate),
+            validate_failed_upgrade_fixture_inputs(bytes, [0x7b; 32], original),
+        ] {
+            assert_eq!(
+                invalid,
+                Err("collector_service_proof_upgrade_fixture_invalid".to_string())
+            );
+        }
     }
 
     #[test]
