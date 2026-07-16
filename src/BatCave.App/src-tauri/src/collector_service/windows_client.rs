@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -56,6 +56,12 @@ pub(crate) struct WindowsServiceTransport {
 
 impl WindowsServiceTransport {
     pub(crate) fn connect() -> Result<Self, ClientFailure> {
+        Self::connect_with_expectation(None)
+    }
+
+    fn connect_with_expectation(
+        expectation: Option<&ProofPeerExpectation<'_>>,
+    ) -> Result<Self, ClientFailure> {
         let pipe_name = wide(PIPE_NAME);
         if unsafe { WaitNamedPipeW(pipe_name.as_ptr(), CONNECT_TIMEOUT_MS) } == 0 {
             return Err(classify_unavailable("collector_service_pipe_wait_failed"));
@@ -72,7 +78,7 @@ impl WindowsServiceTransport {
             )
         })
         .ok_or_else(|| classify_unavailable("collector_service_pipe_open_failed"))?;
-        let peer = verify_service_peer(pipe.raw())?;
+        let peer = verify_service_peer(pipe.raw(), expectation)?;
         Ok(Self {
             pipe,
             peer,
@@ -191,6 +197,31 @@ impl WindowsServiceTransport {
     }
 }
 
+struct ProofPeerExpectation<'a> {
+    desktop_path: &'a Path,
+    desktop_file_identity: [u8; 32],
+    service_path: &'a Path,
+    service_file_identity: [u8; 32],
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn verified_service_peer_for_proof(
+    desktop_path: &Path,
+    desktop_file_identity: [u8; 32],
+    service_path: &Path,
+    service_file_identity: [u8; 32],
+) -> Result<VerifiedServicePeer, String> {
+    let expectation = ProofPeerExpectation {
+        desktop_path,
+        desktop_file_identity,
+        service_path,
+        service_file_identity,
+    };
+    WindowsServiceTransport::connect_with_expectation(Some(&expectation))
+        .map(|transport| transport.peer)
+        .map_err(|failure| failure.detail)
+}
+
 impl ClientTransport for WindowsServiceTransport {
     fn verified_peer(&self) -> &VerifiedServicePeer {
         &self.peer
@@ -202,7 +233,10 @@ impl ClientTransport for WindowsServiceTransport {
     }
 }
 
-fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailure> {
+fn verify_service_peer(
+    pipe: HANDLE,
+    expectation: Option<&ProofPeerExpectation<'_>>,
+) -> Result<VerifiedServicePeer, ClientFailure> {
     let process_id = pipe_server_process_id(pipe)?;
     let first_probe = service_probe()?;
     first_probe.verify_running_process(process_id)?;
@@ -226,7 +260,9 @@ fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailur
                 "collector_service_server_path_canonicalize_failed:{error}"
             ))
         })?;
-    verify_service_path(&canonical_path).map_err(|failure| peer_failure(failure.detail))?;
+    if expectation.is_none() {
+        verify_service_path(&canonical_path).map_err(|failure| peer_failure(failure.detail))?;
+    }
     let path_wide = wide(&canonical_path.to_string_lossy());
     let executable = OwnedHandle::new(unsafe {
         CreateFileW(
@@ -245,6 +281,10 @@ fn verify_service_peer(pipe: HANDLE) -> Result<VerifiedServicePeer, ClientFailur
         ))
     })?;
     let executable_file_identity = file_identity(executable.raw()).map_err(peer_failure)?;
+    if let Some(expectation) = expectation {
+        verify_proof_expectation(&canonical_path, executable_file_identity, expectation)
+            .map_err(peer_failure)?;
+    }
     let executable_release = executable_release(&path_wide).map_err(peer_failure)?;
 
     let mut token = std::ptr::null_mut();
@@ -368,7 +408,7 @@ fn continuity_from_observations(
     }
 }
 
-fn verify_service_path(path: &std::path::Path) -> Result<(), ClientFailure> {
+fn verify_service_path(path: &Path) -> Result<(), ClientFailure> {
     let current = std::env::current_exe()
         .map_err(|error| unauthorized(format!("collector_service_desktop_path_failed:{error}")))?
         .canonicalize()
@@ -377,7 +417,11 @@ fn verify_service_path(path: &std::path::Path) -> Result<(), ClientFailure> {
                 "collector_service_desktop_path_canonicalize_failed:{error}"
             ))
         })?;
-    let desktop_name = current
+    verify_service_path_for_desktop(path, &current)
+}
+
+fn verify_service_path_for_desktop(path: &Path, desktop: &Path) -> Result<(), ClientFailure> {
+    let desktop_name = desktop
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
@@ -386,7 +430,7 @@ fn verify_service_path(path: &std::path::Path) -> Result<(), ClientFailure> {
             "collector_service_desktop_executable_name_invalid",
         ));
     }
-    let same_directory = current.parent().and_then(|directory| {
+    let same_directory = desktop.parent().and_then(|directory| {
         path.parent().map(|parent| {
             parent
                 .to_string_lossy()
@@ -401,6 +445,54 @@ fn verify_service_path(path: &std::path::Path) -> Result<(), ClientFailure> {
         return Err(unauthorized(
             "collector_service_server_executable_unauthorized",
         ));
+    }
+    Ok(())
+}
+
+fn verify_proof_expectation(
+    service_path: &Path,
+    service_file_identity: [u8; 32],
+    expectation: &ProofPeerExpectation<'_>,
+) -> Result<(), String> {
+    let desktop_path = expectation
+        .desktop_path
+        .canonicalize()
+        .map_err(|_| "collector_service_proof_desktop_path_invalid".to_string())?;
+    let expected_service_path = expectation
+        .service_path
+        .canonicalize()
+        .map_err(|_| "collector_service_proof_service_path_invalid".to_string())?;
+    if !service_path
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&expected_service_path.to_string_lossy())
+        || service_file_identity != expectation.service_file_identity
+    {
+        return Err("collector_service_proof_service_identity_mismatch".to_string());
+    }
+    verify_expected_file_identity(&desktop_path, expectation.desktop_file_identity, "desktop")?;
+    verify_service_path_for_desktop(service_path, &desktop_path).map_err(|failure| failure.detail)
+}
+
+fn verify_expected_file_identity(
+    path: &Path,
+    expected: [u8; 32],
+    label: &str,
+) -> Result<(), String> {
+    let path = wide(&path.to_string_lossy());
+    let file = OwnedHandle::new(unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    })
+    .ok_or_else(|| format!("collector_service_proof_{label}_open_failed"))?;
+    if file_identity(file.raw())? != expected {
+        return Err(format!("collector_service_proof_{label}_identity_mismatch"));
     }
     Ok(())
 }
@@ -572,6 +664,27 @@ mod tests {
     fn client_uses_fixed_versioned_local_pipe_and_exact_data_rights() {
         assert_eq!(PIPE_NAME, r"\\.\pipe\BatCaveCollector.v1");
         assert_eq!(FILE_READ_DATA | FILE_WRITE_DATA, 0x0000_0003);
+    }
+
+    #[test]
+    fn proof_path_policy_uses_the_retained_desktop_identity_without_weakening_names() {
+        let service = Path::new(r"C:\Program Files\BatCave Monitor\batcave-collector-service.exe");
+        let desktop = Path::new(r"C:\Program Files\BatCave Monitor\batcave-monitor.exe");
+        assert!(verify_service_path_for_desktop(service, desktop).is_ok());
+        assert_eq!(
+            verify_service_path_for_desktop(
+                service,
+                Path::new(r"C:\Program Files\BatCave Monitor\batcave-windows-lifecycle-proof.exe"),
+            )
+            .err()
+            .map(|failure| failure.detail),
+            Some("collector_service_desktop_executable_name_invalid".to_string())
+        );
+        assert!(verify_service_path_for_desktop(
+            Path::new(r"C:\Other\batcave-collector-service.exe"),
+            desktop,
+        )
+        .is_err());
     }
 
     #[test]

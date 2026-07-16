@@ -79,6 +79,8 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
           }
         : null,
     },
+    standard_fallback_process_etw_disabled:
+      payload.privileged_collection.standard_fallback_process_etw_disabled,
     settings: {
       query: { ...payload.settings.query },
       metric_window_seconds: payload.settings.metric_window_seconds,

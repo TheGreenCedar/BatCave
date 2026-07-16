@@ -39,6 +39,7 @@ export function makeEmptySnapshot(
       last_success_at_ms: null,
       collector_service: null,
     },
+    standard_fallback_process_etw_disabled: false,
     settings: {
       query: makeDefaultRuntimeQuery(),
       metric_window_seconds: 60,

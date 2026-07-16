@@ -418,6 +418,7 @@ fn sample_from_snapshot(
         warnings: snapshot.warnings,
         collector_service: Some(status),
         source_provenance: Some(source_provenance),
+        standard_fallback_process_etw_disabled: false,
     }
 }
 
@@ -608,6 +609,9 @@ mod tests {
         let first = session.latest_sample().unwrap();
         let held = session.latest_sample().unwrap();
         let next = session.latest_sample().unwrap();
+        assert!(!first.standard_fallback_process_etw_disabled);
+        assert!(!held.standard_fallback_process_etw_disabled);
+        assert!(!next.standard_fallback_process_etw_disabled);
         assert_eq!(first.system.process_count, 0);
         assert_eq!(held.system.cpu_percent, first.system.cpu_percent);
         assert_eq!(held.source_provenance, first.source_provenance);

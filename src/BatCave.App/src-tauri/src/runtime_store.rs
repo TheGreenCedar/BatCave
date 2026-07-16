@@ -33,9 +33,10 @@ use crate::{
         ProcessFocusMode, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
         RuntimeAdminModeStatus, RuntimeCollectorServiceState, RuntimeCollectorState,
         RuntimeEngineState, RuntimeEnvironment, RuntimeFatalError, RuntimeHealth,
-        RuntimePersistence, RuntimePersistenceState, RuntimePrivilegedSource, RuntimeQuery,
-        RuntimeSettings, RuntimeSnapshot, RuntimeUiPreferences, RuntimeWarning, SortColumn,
-        SortDirection, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        RuntimePersistence, RuntimePersistenceState, RuntimePlatform, RuntimePrivilegedSource,
+        RuntimeProcessElevation, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
+        RuntimeUiPreferences, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
+        SystemMetricsSnapshot, WarmCache,
     },
     persistence::{
         DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
@@ -43,9 +44,6 @@ use crate::{
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetrySampleProvenance},
 };
-
-#[cfg(windows)]
-use crate::contracts::RuntimeProcessElevation;
 
 #[cfg(test)]
 const SETTINGS_FILE: &str = "settings.json";
@@ -1004,6 +1002,7 @@ struct RuntimeStore {
     // Runtime-only shaping can differ from the last user-authored query.
     durable_query: RuntimeQuery,
     admin_mode: RuntimeAdminModeStatus,
+    standard_fallback_process_etw_disabled: bool,
     snapshot: RuntimeSnapshot,
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
@@ -1235,6 +1234,7 @@ impl RuntimeStore {
             provenance.environment(),
             &settings,
             &admin_mode,
+            false,
             initial_health,
             Some(persistence_health),
             empty_system(),
@@ -1250,6 +1250,7 @@ impl RuntimeStore {
             settings,
             durable_query,
             admin_mode,
+            standard_fallback_process_etw_disabled: false,
             snapshot,
             warnings,
             previous_totals: None,
@@ -1351,6 +1352,14 @@ impl RuntimeStore {
         };
         let service_active = self
             .apply_collector_service_status(sample.collector_service.clone(), service_status_ts_ms);
+        self.standard_fallback_process_etw_disabled =
+            authenticate_standard_fallback_process_etw_disabled(
+                sample.standard_fallback_process_etw_disabled,
+                self.provenance.environment().platform,
+                self.provenance.environment().process_elevation,
+                self.admin_mode.source,
+                service_active,
+            );
         if source_unchanged {
             self.sync_collector_warnings(sample.warnings);
             self.record_collection_latency_ms(
@@ -1476,6 +1485,7 @@ impl RuntimeStore {
             self.provenance.environment(),
             &self.settings,
             &self.admin_mode,
+            self.standard_fallback_process_etw_disabled,
             health,
             Some(self.persistence.health()),
             system,
@@ -1545,6 +1555,7 @@ impl RuntimeStore {
             self.provenance.environment(),
             &self.settings,
             &self.admin_mode,
+            self.standard_fallback_process_etw_disabled,
             health,
             Some(self.persistence.health()),
             self.snapshot.system.clone(),
@@ -1959,6 +1970,20 @@ impl Drop for RuntimeStore {
     }
 }
 
+fn authenticate_standard_fallback_process_etw_disabled(
+    collector_reported_disabled: bool,
+    platform: RuntimePlatform,
+    process_elevation: RuntimeProcessElevation,
+    privileged_source: RuntimePrivilegedSource,
+    collector_service_active: bool,
+) -> bool {
+    collector_reported_disabled
+        && platform == RuntimePlatform::Windows
+        && process_elevation == RuntimeProcessElevation::Standard
+        && privileged_source == RuntimePrivilegedSource::None
+        && !collector_service_active
+}
+
 fn warning_degrades_health(category: &str) -> bool {
     matches!(category, "collector" | "admin_mode" | "persistence")
 }
@@ -2095,6 +2120,7 @@ fn build_snapshot(
     environment: &RuntimeEnvironment,
     settings: &RuntimeSettings,
     admin_mode: &RuntimeAdminModeStatus,
+    standard_fallback_process_etw_disabled: bool,
     health: RuntimeHealth,
     persistence: Option<RuntimePersistence>,
     system: SystemMetricsSnapshot,
@@ -2112,6 +2138,7 @@ fn build_snapshot(
         source: "tauri_runtime".to_string(),
         environment: environment.clone(),
         admin_mode: admin_mode.clone(),
+        standard_fallback_process_etw_disabled,
         settings: settings.clone(),
         health,
         persistence,
@@ -3842,6 +3869,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    standard_fallback_process_etw_disabled: false,
                 }),
                 FakeOutcome::Unavailable(error) => {
                     Err(CollectionFailure::Unavailable(error.to_string()))
@@ -3915,6 +3943,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    standard_fallback_process_etw_disabled: false,
                 })),
                 collection_latency_ms: 0.0,
                 cadence: CollectorCadence::default(),
@@ -4445,6 +4474,7 @@ mod tests {
             provenance.environment(),
             &settings,
             &provenance.admin_mode_status(),
+            false,
             RuntimeHealth::default(),
             None,
             empty_system(),
@@ -4614,6 +4644,7 @@ mod tests {
             provenance.environment(),
             &settings,
             &provenance.admin_mode_status(),
+            false,
             RuntimeHealth::default(),
             None,
             empty_system(),
@@ -6133,6 +6164,7 @@ mod tests {
             store.provenance.environment(),
             &store.settings,
             &store.admin_mode,
+            false,
             RuntimeHealth::default(),
             Some(store.persistence.health()),
             empty_system(),
@@ -6256,6 +6288,7 @@ mod tests {
                     source_sample_seq,
                     sampled_at_ms,
                 }),
+                standard_fallback_process_etw_disabled: false,
             }
         };
 
@@ -6313,9 +6346,125 @@ mod tests {
             );
             crate::protocol::encode_snapshot(store.snapshot.clone())
                 .expect("fresh service publication remains protocol-valid");
+            assert!(!store.snapshot.standard_fallback_process_etw_disabled);
 
             let _ = fs::remove_dir_all(&base_dir);
         }
+    }
+
+    #[test]
+    fn standard_fallback_etw_authority_requires_standard_windows_without_privileged_source() {
+        assert!(authenticate_standard_fallback_process_etw_disabled(
+            true,
+            RuntimePlatform::Windows,
+            RuntimeProcessElevation::Standard,
+            RuntimePrivilegedSource::None,
+            false,
+        ));
+
+        for (label, reported, platform, elevation, source, service_active) in [
+            (
+                "collector did not report disabled ETW",
+                false,
+                RuntimePlatform::Windows,
+                RuntimeProcessElevation::Standard,
+                RuntimePrivilegedSource::None,
+                false,
+            ),
+            (
+                "non-Windows platform",
+                true,
+                RuntimePlatform::Linux,
+                RuntimeProcessElevation::Standard,
+                RuntimePrivilegedSource::None,
+                false,
+            ),
+            (
+                "elevated process",
+                true,
+                RuntimePlatform::Windows,
+                RuntimeProcessElevation::Elevated,
+                RuntimePrivilegedSource::CurrentProcess,
+                false,
+            ),
+            (
+                "unknown process elevation",
+                true,
+                RuntimePlatform::Windows,
+                RuntimeProcessElevation::Unknown,
+                RuntimePrivilegedSource::None,
+                false,
+            ),
+            (
+                "current-process privileged source",
+                true,
+                RuntimePlatform::Windows,
+                RuntimeProcessElevation::Standard,
+                RuntimePrivilegedSource::CurrentProcess,
+                false,
+            ),
+            (
+                "collector-service privileged source",
+                true,
+                RuntimePlatform::Windows,
+                RuntimeProcessElevation::Standard,
+                RuntimePrivilegedSource::CollectorService,
+                false,
+            ),
+            (
+                "active collector service",
+                true,
+                RuntimePlatform::Windows,
+                RuntimeProcessElevation::Standard,
+                RuntimePrivilegedSource::None,
+                true,
+            ),
+        ] {
+            assert!(
+                !authenticate_standard_fallback_process_etw_disabled(
+                    reported,
+                    platform,
+                    elevation,
+                    source,
+                    service_active,
+                ),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn elevated_fallback_cannot_publish_standard_token_etw_authority() {
+        let base_dir = runtime_test_dir("elevated-fallback-etw-authority");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Elevated);
+        store.admin_mode = store.provenance.admin_mode_status();
+        assert_eq!(
+            store.admin_mode.source,
+            RuntimePrivilegedSource::CurrentProcess
+        );
+
+        let sampled_at_ms = store.clock.now_ms();
+        store.apply_raw_sample(
+            crate::telemetry::TelemetrySample {
+                latency_ms: 1,
+                collector_state: RuntimeCollectorState::Healthy,
+                system: empty_system(),
+                processes: Vec::new(),
+                warnings: Vec::new(),
+                collector_service: None,
+                source_provenance: None,
+                standard_fallback_process_etw_disabled: true,
+            },
+            1.0,
+            sampled_at_ms,
+        );
+
+        assert!(!store.snapshot.standard_fallback_process_etw_disabled);
+        crate::protocol::encode_snapshot(store.snapshot.clone())
+            .expect("elevated fallback remains protocol-valid after authority clamp");
+
+        let _ = fs::remove_dir_all(&base_dir);
     }
 
     #[test]
@@ -6355,6 +6504,7 @@ mod tests {
                 ],
                 collector_service: Some(status),
                 source_provenance: None,
+                standard_fallback_process_etw_disabled: true,
             },
             1.0,
             sampled_at_ms,
@@ -6366,6 +6516,13 @@ mod tests {
         let decoded: crate::protocol::ProtocolEnvelope =
             serde_json::from_slice(&bytes).expect("decode runtime protocol JSON");
         let decoded = serde_json::to_value(decoded).expect("inspect decoded runtime protocol");
+        assert!(store.snapshot.standard_fallback_process_etw_disabled);
+        assert_eq!(
+            decoded.pointer(
+                "/event/payload/privileged_collection/standard_fallback_process_etw_disabled"
+            ),
+            Some(&serde_json::json!(true))
+        );
         assert_eq!(
             decoded.pointer("/event/payload/privileged_collection/collector_service/state"),
             Some(&serde_json::json!("connecting"))
@@ -6483,6 +6640,7 @@ mod tests {
                     )],
                     collector_service: Some(status),
                     source_provenance: None,
+                    standard_fallback_process_etw_disabled: true,
                 },
                 1.0,
                 sampled_at_ms,

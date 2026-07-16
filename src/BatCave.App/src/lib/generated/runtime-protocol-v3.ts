@@ -29,7 +29,7 @@ export type CollectorServiceStateV3 = "not_installed" | "stopped" | "connecting"
 
 export type RuntimeEnvironmentV3 = { platform: RuntimePlatformV3, architecture: RuntimeArchitectureV3, process_elevation: RuntimeProcessElevationV3, install_kind: RuntimeInstallKindV3, data_directory: string | null, release_identity: RuntimeReleaseIdentityV3, };
 
-export type RuntimePrivilegedCollectionV3 = { state: PrivilegedCollectionStateV3, source: PrivilegedCollectionSourceV3, preference: PrivilegedCollectionPreferenceV3, detail: string | null, last_success_at_ms: number | null, collector_service: CollectorServiceStatusV3 | null, };
+export type RuntimePrivilegedCollectionV3 = { state: PrivilegedCollectionStateV3, source: PrivilegedCollectionSourceV3, preference: PrivilegedCollectionPreferenceV3, standard_fallback_process_etw_disabled: boolean, detail: string | null, last_success_at_ms: number | null, collector_service: CollectorServiceStatusV3 | null, };
 
 export type ProcessFocusModeV3 = "all" | "attention" | "io";
 

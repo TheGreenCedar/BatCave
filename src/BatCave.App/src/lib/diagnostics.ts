@@ -1,6 +1,18 @@
-import type { RuntimeAdminModeStatus, RuntimePersistence, RuntimeWarning } from "./types";
+import type {
+  RuntimeAdminModeStatus,
+  RuntimePersistence,
+  RuntimeSnapshot,
+  RuntimeWarning,
+} from "./types";
 
 export type DiagnosticAction = "enable" | "retry";
+export type DiagnosticPollState = "starting" | "native" | "fixture" | "error";
+
+export interface NativeLifecycleDiagnosticLabels {
+  standardFallback: "Current" | "Paused" | "Stale" | "No sample" | "Not active";
+  protectedSample: "Current" | "Paused" | "Stale" | "No sample" | "Unavailable";
+  fallbackProcessEtw: "Disabled" | "Not active" | "Not verified";
+}
 
 export interface DiagnosticIssue {
   key: string;
@@ -16,6 +28,29 @@ export function suppressedDiagnosticsLabel(persistence: RuntimePersistence | nul
   return persistence ? String(persistence.suppressed_diagnostic_events) : "Not reported";
 }
 
+export function nativeLifecycleDiagnosticLabels(
+  snapshot: RuntimeSnapshot,
+  pollState: DiagnosticPollState,
+): NativeLifecycleDiagnosticLabels {
+  const service = snapshot.admin_mode.collector_service;
+  const active =
+    snapshot.admin_mode.state === "active" &&
+    snapshot.admin_mode.source === "collector_service" &&
+    service?.state === "active";
+  const fallback = snapshot.standard_fallback_process_etw_disabled && !active;
+  const freshness = currentSampleLabel(snapshot, pollState);
+
+  return {
+    standardFallback: fallback ? freshness : "Not active",
+    protectedSample: active ? freshness : "Unavailable",
+    fallbackProcessEtw: active
+      ? "Not active"
+      : snapshot.standard_fallback_process_etw_disabled
+        ? "Disabled"
+        : "Not verified",
+  };
+}
+
 export function currentDiagnosticIssues(
   warnings: RuntimeWarning[],
   adminMode: RuntimeAdminModeStatus,
@@ -29,6 +64,16 @@ export function currentDiagnosticIssues(
 
 export function uniqueWarningCount(warnings: RuntimeWarning[]): number {
   return new Set(warnings.map((warning) => warning.key)).size;
+}
+
+function currentSampleLabel(
+  snapshot: RuntimeSnapshot,
+  pollState: DiagnosticPollState,
+): "Current" | "Paused" | "Stale" | "No sample" {
+  if (snapshot.sampled_at_ms === null) return "No sample";
+  if (pollState === "error") return "Stale";
+  if (snapshot.settings.paused) return "Paused";
+  return pollState === "native" ? "Current" : "Stale";
 }
 
 function toDiagnosticIssue(

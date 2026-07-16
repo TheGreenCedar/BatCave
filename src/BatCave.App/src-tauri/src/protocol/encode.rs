@@ -106,6 +106,7 @@ fn encode_snapshot_with_identity(
             } else {
                 PrivilegedCollectionPreferenceV3::StandardOnly
             },
+            standard_fallback_process_etw_disabled: snapshot.standard_fallback_process_etw_disabled,
             detail: snapshot.admin_mode.detail,
             last_success_at_ms: snapshot.admin_mode.last_success_at_ms,
             collector_service: snapshot.admin_mode.collector_service.map(|service| {

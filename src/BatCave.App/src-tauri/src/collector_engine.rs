@@ -907,6 +907,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    standard_fallback_process_etw_disabled: false,
                 }),
                 FakeOutcome::Unavailable(error) => {
                     Err(CollectionFailure::Unavailable(error.to_string()))

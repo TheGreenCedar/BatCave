@@ -309,6 +309,7 @@ test("shared fixture exposes the preview environment and stable empty arrays", (
   );
   assert.equal(canonicalSnapshot.seq, undefined);
   assert.equal(canonicalSnapshot.ts_ms, undefined);
+  assert.equal(canonicalSnapshot.standard_fallback_process_etw_disabled, false);
   assert.deepEqual(canonicalSnapshot.admin_mode, {
     state: "off",
     source: "none",

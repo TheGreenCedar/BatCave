@@ -389,6 +389,7 @@ function validatePayload(input: unknown): string | null {
     !privilegedStates.has(payload.privileged_collection.state) ||
     !privilegedSources.has(payload.privileged_collection.source) ||
     !privilegedPreferences.has(payload.privileged_collection.preference) ||
+    typeof payload.privileged_collection.standard_fallback_process_etw_disabled !== "boolean" ||
     (payload.privileged_collection.detail !== null &&
       typeof payload.privileged_collection.detail !== "string") ||
     (payload.privileged_collection.last_success_at_ms !== null &&
@@ -412,6 +413,14 @@ function validatePayload(input: unknown): string | null {
     payload.environment.release_identity,
   );
   if (collectorServiceError !== null) return collectorServiceError;
+  if (
+    payload.privileged_collection.standard_fallback_process_etw_disabled &&
+    (payload.environment.platform !== "windows" ||
+      payload.environment.process_elevation !== "standard" ||
+      payload.privileged_collection.source !== "none" ||
+      payload.privileged_collection.collector_service?.state === "active")
+  )
+    return "Standard-fallback ETW authority is inconsistent.";
   const query = payload.settings.query;
   if (
     typeof query.filter_text !== "string" ||

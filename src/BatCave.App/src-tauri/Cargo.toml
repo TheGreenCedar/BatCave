@@ -9,7 +9,7 @@ default-run = "batcave-monitor"
 
 [features]
 default = []
-private-windows-lifecycle-proof = []
+private-windows-lifecycle-proof = ["dep:uiautomation"]
 private-windows-lifecycle-service-fixtures = []
 private-release-verifier = [
     "dep:flate2",
@@ -64,6 +64,7 @@ unicode-casefold = { version = "0.2.0", optional = true }
 unicode-normalization = { version = "0.1.25", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+uiautomation = { version = "=0.25.0", default-features = false, features = ["control", "input"], optional = true }
 windows-sys = { version = "0.60.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

@@ -147,6 +147,7 @@ pub struct RuntimePrivilegedCollectionV3 {
     pub state: PrivilegedCollectionStateV3,
     pub source: PrivilegedCollectionSourceV3,
     pub preference: PrivilegedCollectionPreferenceV3,
+    pub standard_fallback_process_etw_disabled: bool,
     pub detail: Option<String>,
     #[cfg_attr(test, ts(type = "number | null"))]
     pub last_success_at_ms: Option<u64>,

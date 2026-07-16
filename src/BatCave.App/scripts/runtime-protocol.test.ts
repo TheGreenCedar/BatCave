@@ -7,7 +7,10 @@ import type {
   RuntimeSnapshotPayloadV3,
   WorkloadDetailV3,
 } from "../src/lib/generated/runtime-protocol-v3.ts";
-import { canonicalKernelPoolStableId } from "../src/lib/protocol/fixtureProtocol.ts";
+import {
+  canonicalKernelPoolStableId,
+  encodeFixtureSnapshot,
+} from "../src/lib/protocol/fixtureProtocol.ts";
 import { adaptRuntimePayload } from "../src/lib/protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope } from "../src/lib/protocol/runtimeProtocol.ts";
 
@@ -135,7 +138,13 @@ test("platform fixtures carry their privilege and collection limits", () => {
   assert.equal(elevatedDecoded.payload.privileged_collection.state, "active");
   assert.equal(elevatedDecoded.payload.privileged_collection.source, "local_process");
   assert.equal(elevatedDecoded.payload.privileged_collection.preference, "best_available");
-  assert.equal(adaptRuntimePayload(elevatedDecoded.payload).admin_mode.source, "current_process");
+  assert.equal(
+    elevatedDecoded.payload.privileged_collection.standard_fallback_process_etw_disabled,
+    false,
+  );
+  const adaptedElevated = adaptRuntimePayload(elevatedDecoded.payload);
+  assert.equal(adaptedElevated.admin_mode.source, "current_process");
+  assert.equal(adaptedElevated.standard_fallback_process_etw_disabled, false);
 
   const linuxDecoded = decodeProtocolEnvelope(linux);
   assert.equal(linuxDecoded.kind, "snapshot");
@@ -144,6 +153,10 @@ test("platform fixtures carry their privilege and collection limits", () => {
   const memory = observation(linuxDecoded.payload, process, "resident_memory");
   assert.equal(linuxDecoded.payload.environment.platform, "linux");
   assert.equal(linuxDecoded.payload.environment.architecture, "aarch64");
+  assert.equal(
+    linuxDecoded.payload.privileged_collection.standard_fallback_process_etw_disabled,
+    false,
+  );
   assert.equal(linuxDecoded.payload.quality_codes[memory[2]], "partial");
   assert.equal(linuxDecoded.payload.descriptors[memory[0]].source, "procfs");
 
@@ -156,6 +169,10 @@ test("platform fixtures carry their privilege and collection limits", () => {
   );
   assert.equal(macNetwork?.source, "sysinfo");
   assert.equal(macNetwork?.network_scope, "all_interface_aggregate");
+  assert.equal(
+    macosDecoded.payload.privileged_collection.standard_fallback_process_etw_disabled,
+    false,
+  );
   const macDisk = macosDecoded.payload.descriptors.find(
     (descriptor) =>
       descriptor.scope === "system" && descriptor.semantic === "physical_disk_read_total",
@@ -168,6 +185,31 @@ test("platform fixtures carry their privilege and collection limits", () => {
   assert.ok(macDiskObservation);
   if (!macDiskObservation) return;
   assert.equal(macosDecoded.payload.quality_codes[macDiskObservation[2]], "held");
+});
+
+test("adapter carries only explicit standard-fallback ETW authority", () => {
+  const fallback = structuredClone(windows);
+  payload(fallback).privileged_collection.standard_fallback_process_etw_disabled = true;
+
+  const decoded = decodeProtocolEnvelope(fallback);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+
+  assert.equal(adaptRuntimePayload(decoded.payload).standard_fallback_process_etw_disabled, true);
+});
+
+test("fixture encoding cannot claim standard-fallback ETW authority", () => {
+  const decoded = decodeProtocolEnvelope(windows);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+  const fixture = adaptRuntimePayload(decoded.payload);
+  fixture.standard_fallback_process_etw_disabled = true;
+
+  assert.equal(
+    payload(encodeFixtureSnapshot(fixture)).privileged_collection
+      .standard_fallback_process_etw_disabled,
+    false,
+  );
 });
 
 test("I/O baseline transitions retain totals while holding only rates", () => {
@@ -461,6 +503,35 @@ test("reader rejects descriptor, value, and membership corruption", () => {
   payload(standardLocalProcess).privileged_collection.source = "local_process";
   assertMismatch(standardLocalProcess, "requires an elevated process");
 
+  const missingFallbackAuthority = structuredClone(windows);
+  delete (payload(missingFallbackAuthority).privileged_collection as Record<string, unknown>)
+    .standard_fallback_process_etw_disabled;
+  assertMismatch(missingFallbackAuthority, "privileged collection context is malformed");
+
+  const nonWindowsFallbackAuthority = structuredClone(linux);
+  payload(
+    nonWindowsFallbackAuthority,
+  ).privileged_collection.standard_fallback_process_etw_disabled = true;
+  assertMismatch(nonWindowsFallbackAuthority, "etw authority is inconsistent");
+
+  const elevatedFallbackAuthority = structuredClone(windows);
+  payload(elevatedFallbackAuthority).environment.process_elevation = "elevated";
+  payload(elevatedFallbackAuthority).privileged_collection.standard_fallback_process_etw_disabled =
+    true;
+  assertMismatch(elevatedFallbackAuthority, "etw authority is inconsistent");
+
+  const elevatedLocalProcessFallbackAuthority = structuredClone(elevatedFallbackAuthority);
+  payload(elevatedLocalProcessFallbackAuthority).privileged_collection.state = "active";
+  payload(elevatedLocalProcessFallbackAuthority).privileged_collection.source = "local_process";
+  assertMismatch(elevatedLocalProcessFallbackAuthority, "etw authority is inconsistent");
+
+  const unknownElevationFallbackAuthority = structuredClone(windows);
+  payload(unknownElevationFallbackAuthority).environment.process_elevation = "unknown";
+  payload(
+    unknownElevationFallbackAuthority,
+  ).privileged_collection.standard_fallback_process_etw_disabled = true;
+  assertMismatch(unknownElevationFallbackAuthority, "etw authority is inconsistent");
+
   const futureWarning = structuredClone(windows);
   payload(futureWarning).warnings[0].publication_seq = payload(futureWarning).publication_seq + 1;
   assertMismatch(futureWarning, "warnings are malformed");
@@ -475,6 +546,7 @@ test("reader rejects descriptor, value, and membership corruption", () => {
     state: "active",
     source: "collector_service",
     preference: "best_available",
+    standard_fallback_process_etw_disabled: false,
     detail: null,
     last_success_at_ms: null,
     collector_service: {
@@ -506,6 +578,12 @@ test("reader rejects descriptor, value, and membership corruption", () => {
       matchingPayload.privileged_collection.collector_service?.release_identity,
     );
   }
+
+  const activeServiceWithFallbackAuthority = structuredClone(matchingActiveService);
+  payload(
+    activeServiceWithFallbackAuthority,
+  ).privileged_collection.standard_fallback_process_etw_disabled = true;
+  assertMismatch(activeServiceWithFallbackAuthority, "etw authority is inconsistent");
 
   const incompatibleWithoutMinimum = structuredClone(windows);
   payload(incompatibleWithoutMinimum).privileged_collection.collector_service = {
@@ -556,6 +634,7 @@ test("reader rejects descriptor, value, and membership corruption", () => {
     state: "active",
     source: "collector_service",
     preference: "best_available",
+    standard_fallback_process_etw_disabled: false,
     detail: null,
     last_success_at_ms: null,
     collector_service: {

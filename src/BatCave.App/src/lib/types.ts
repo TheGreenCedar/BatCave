@@ -12,6 +12,7 @@ export interface RuntimeSnapshot {
   source: RuntimeTelemetrySource;
   environment: RuntimeEnvironment;
   admin_mode: RuntimeAdminModeStatus;
+  standard_fallback_process_etw_disabled: boolean;
   settings: RuntimeSettings;
   health: RuntimeHealth;
   persistence: RuntimePersistence | null;

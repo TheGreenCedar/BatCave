@@ -1,7 +1,11 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
-  import { currentDiagnosticIssues, suppressedDiagnosticsLabel } from "../../diagnostics";
+  import {
+    currentDiagnosticIssues,
+    nativeLifecycleDiagnosticLabels,
+    suppressedDiagnosticsLabel,
+  } from "../../diagnostics";
   import {
     collectorServiceStateLabel,
     installKindLabel,
@@ -45,6 +49,7 @@
   let copyStatus = "";
 
   $: collectorService = snapshot.admin_mode.collector_service ?? null;
+  $: lifecycleDiagnostics = nativeLifecycleDiagnosticLabels(snapshot, pollState);
 
   $: if (dialog) syncDialog(dialog, open);
 
@@ -187,19 +192,58 @@
               <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
               <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
               <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>
-              <div><dt>Current process</dt><dd>{processElevationLabel(snapshot.environment)}</dd></div>
+              <div
+                role="group"
+                aria-label={`Current process: ${processElevationLabel(snapshot.environment)}`}
+              ><dt>Current process</dt><dd>{processElevationLabel(snapshot.environment)}</dd></div>
               <div><dt>Privileged collection</dt><dd>{adminStatus}</dd></div>
-              <div><dt>Privileged source</dt><dd>{privilegedSourceLabel(snapshot.admin_mode.source)}</dd></div>
+              <div
+                role="group"
+                aria-label={`Privileged source: ${privilegedSourceLabel(snapshot.admin_mode.source)}`}
+              ><dt>Privileged source</dt><dd>{privilegedSourceLabel(snapshot.admin_mode.source)}</dd></div>
               <div><dt>Last privileged sample</dt><dd>{snapshot.admin_mode.last_success_at_ms ? new Date(snapshot.admin_mode.last_success_at_ms).toLocaleString() : "None this session"}</dd></div>
+              <div
+                role="group"
+                aria-label={`Standard fallback: ${lifecycleDiagnostics.standardFallback}`}
+              ><dt>Standard fallback</dt><dd>{lifecycleDiagnostics.standardFallback}</dd></div>
+              <div
+                role="group"
+                aria-label={`Protected sample: ${lifecycleDiagnostics.protectedSample}`}
+              ><dt>Protected sample</dt><dd>{lifecycleDiagnostics.protectedSample}</dd></div>
+              <div
+                role="group"
+                aria-label={`Fallback process ETW: ${lifecycleDiagnostics.fallbackProcessEtw}`}
+              ><dt>Fallback process ETW</dt><dd>{lifecycleDiagnostics.fallbackProcessEtw}</dd></div>
               {#if collectorService}
-                <div><dt>Collector service</dt><dd>{collectorServiceStateLabel(collectorService)}</dd></div>
-                <div><dt>Service version</dt><dd>{collectorService.service_version ?? "Not reported"}</dd></div>
-                <div><dt>Service protocol</dt><dd>{collectorService.negotiated_protocol_version ?? "Not negotiated"}</dd></div>
-                <div><dt>Minimum desktop</dt><dd>{collectorService.minimum_desktop_version ?? "Not reported"}</dd></div>
-                <div><dt>Service release</dt><dd>{collectorService.release_identity?.app_version ?? "Not reported"}</dd></div>
-                <div><dt>Service instance</dt><dd>{collectorService.instance_id ?? "Not connected"}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Collector service: ${collectorServiceStateLabel(collectorService)}`}
+                ><dt>Collector service</dt><dd>{collectorServiceStateLabel(collectorService)}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Service version: ${collectorService.service_version ?? "Not reported"}`}
+                ><dt>Service version</dt><dd>{collectorService.service_version ?? "Not reported"}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Service protocol: ${collectorService.negotiated_protocol_version ?? "Not negotiated"}`}
+                ><dt>Service protocol</dt><dd>{collectorService.negotiated_protocol_version ?? "Not negotiated"}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Minimum desktop: ${collectorService.minimum_desktop_version ?? "Not reported"}`}
+                ><dt>Minimum desktop</dt><dd>{collectorService.minimum_desktop_version ?? "Not reported"}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Service release: ${collectorService.release_identity?.app_version ?? "Not reported"}`}
+                ><dt>Service release</dt><dd>{collectorService.release_identity?.app_version ?? "Not reported"}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Service instance: ${collectorService.instance_id ?? "Not connected"}`}
+                ><dt>Service instance</dt><dd>{collectorService.instance_id ?? "Not connected"}</dd></div>
                 <div><dt>Last service connection</dt><dd>{collectorService.last_connected_at_ms ? new Date(collectorService.last_connected_at_ms).toLocaleString() : "None this session"}</dd></div>
-                <div><dt>Service detail</dt><dd>{collectorService.detail ?? "None"}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Service detail: ${collectorService.detail ?? "None"}`}
+                ><dt>Service detail</dt><dd>{collectorService.detail ?? "None"}</dd></div>
               {/if}
               <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
               <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>

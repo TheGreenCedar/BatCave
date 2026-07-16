@@ -786,6 +786,20 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
     {
         return Err("protocol_local_and_service_collection_conflict".to_string());
     }
+    if privileged.standard_fallback_process_etw_disabled
+        && (!matches!(payload.environment.platform, RuntimePlatformV3::Windows)
+            || !matches!(
+                payload.environment.process_elevation,
+                RuntimeProcessElevationV3::Standard
+            )
+            || !matches!(privileged.source, PrivilegedCollectionSourceV3::None)
+            || privileged
+                .collector_service
+                .as_ref()
+                .is_some_and(|service| matches!(service.state, CollectorServiceStateV3::Active)))
+    {
+        return Err("protocol_standard_fallback_etw_authority_invalid".to_string());
+    }
     Ok(())
 }
 

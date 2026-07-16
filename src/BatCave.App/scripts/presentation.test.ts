@@ -9,6 +9,7 @@ import {
   ScriptTarget,
 } from "typescript";
 import { buildResourceBrief, resolveContributorProcess } from "../src/lib/cockpit.ts";
+import { nativeLifecycleDiagnosticLabels } from "../src/lib/diagnostics.ts";
 import {
   displayMetricValue,
   displayGroupMetricValue,
@@ -40,6 +41,115 @@ import {
 } from "../src/lib/process.ts";
 import { makeEmptySnapshot } from "../src/lib/runtimeSnapshot.ts";
 import type { MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "../src/lib/types.ts";
+
+test("native lifecycle diagnostics expose only deterministic public runtime truth", () => {
+  const active = resourceSnapshot(null);
+  active.admin_mode.state = "active";
+  active.admin_mode.source = "collector_service";
+  active.standard_fallback_process_etw_disabled = true;
+  active.admin_mode.last_success_at_ms = active.sampled_at_ms;
+  active.admin_mode.collector_service = {
+    state: "active",
+    release_identity: { app_version: "0.2.0-rc.2", source_commit_sha: null },
+    service_version: "0.2.0-rc.2",
+    negotiated_protocol_version: 1,
+    minimum_desktop_version: "0.2.0-rc.2",
+    instance_id: "00000065-00000000000000000000000000000001",
+    last_connected_at_ms: active.sampled_at_ms,
+    detail: null,
+  };
+  assert.deepEqual(nativeLifecycleDiagnosticLabels(active, "native"), {
+    standardFallback: "Not active",
+    protectedSample: "Current",
+    fallbackProcessEtw: "Not active",
+  });
+
+  for (const state of [
+    "not_installed",
+    "stopped",
+    "connecting",
+    "recovering",
+    "incompatible",
+    "unauthorized",
+    "failed",
+  ] as const) {
+    const fallback = resourceSnapshot(null);
+    makeStandardWindowsFallback(fallback);
+    fallback.admin_mode.state = "failed";
+    fallback.admin_mode.source = "none";
+    fallback.standard_fallback_process_etw_disabled = true;
+    fallback.admin_mode.collector_service = {
+      state,
+      release_identity: null,
+      service_version: null,
+      negotiated_protocol_version: null,
+      minimum_desktop_version: null,
+      instance_id: null,
+      last_connected_at_ms: null,
+      detail: `collector_service_${state}`,
+    };
+    assert.deepEqual(nativeLifecycleDiagnosticLabels(fallback, "native"), {
+      standardFallback: "Current",
+      protectedSample: "Unavailable",
+      fallbackProcessEtw: "Disabled",
+    });
+  }
+});
+
+test("native lifecycle diagnostics do not synthesize fallback ETW ownership", () => {
+  const fallback = resourceSnapshot(null);
+  fallback.admin_mode.state = "off";
+  fallback.admin_mode.source = "none";
+  fallback.admin_mode.collector_service = null;
+
+  assert.equal(makeEmptySnapshot().standard_fallback_process_etw_disabled, false);
+  assert.deepEqual(nativeLifecycleDiagnosticLabels(fallback, "native"), {
+    standardFallback: "Not active",
+    protectedSample: "Unavailable",
+    fallbackProcessEtw: "Not verified",
+  });
+});
+
+test("native lifecycle diagnostics trust backend fallback ETW authority without a service status", () => {
+  const fallback = resourceSnapshot(null);
+  makeStandardWindowsFallback(fallback);
+  fallback.admin_mode.state = "off";
+  fallback.admin_mode.source = "none";
+  fallback.admin_mode.collector_service = null;
+  fallback.standard_fallback_process_etw_disabled = true;
+
+  assert.deepEqual(nativeLifecycleDiagnosticLabels(fallback, "native"), {
+    standardFallback: "Current",
+    protectedSample: "Unavailable",
+    fallbackProcessEtw: "Disabled",
+  });
+});
+
+test("native lifecycle diagnostics do not call paused stale or missing samples current", () => {
+  const fallback = resourceSnapshot(null);
+  makeStandardWindowsFallback(fallback);
+  fallback.admin_mode.state = "failed";
+  fallback.admin_mode.source = "none";
+  fallback.standard_fallback_process_etw_disabled = true;
+  fallback.admin_mode.collector_service = {
+    state: "stopped",
+    release_identity: null,
+    service_version: null,
+    negotiated_protocol_version: null,
+    minimum_desktop_version: null,
+    instance_id: null,
+    last_connected_at_ms: null,
+    detail: "collector_service_stopped",
+  };
+
+  fallback.settings.paused = true;
+  assert.equal(nativeLifecycleDiagnosticLabels(fallback, "native").standardFallback, "Paused");
+  assert.equal(nativeLifecycleDiagnosticLabels(fallback, "native").fallbackProcessEtw, "Disabled");
+  fallback.settings.paused = false;
+  assert.equal(nativeLifecycleDiagnosticLabels(fallback, "error").standardFallback, "Stale");
+  fallback.sampled_at_ms = null;
+  assert.equal(nativeLifecycleDiagnosticLabels(fallback, "native").standardFallback, "No sample");
+});
 
 test("selected resource brief keeps machine and process CPU scopes explicit", () => {
   const brief = buildResourceBrief(
@@ -900,6 +1010,13 @@ function resourceSnapshot(contributor: string | null): RuntimeSnapshot {
     total: snapshot.total_process_count,
   };
   return snapshot;
+}
+
+function makeStandardWindowsFallback(snapshot: RuntimeSnapshot): void {
+  snapshot.environment.platform = "windows";
+  snapshot.environment.process_elevation = "standard";
+  snapshot.environment.admin_mode_available = true;
+  snapshot.admin_mode.source = "none";
 }
 
 function process(overrides: Partial<ProcessSample> = {}): ProcessSample {

@@ -112,6 +112,21 @@ impl VerifiedServicePeer {
     pub(crate) fn executable_release(&self) -> &ReleaseIdentityV1 {
         &self.executable_release
     }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(crate) fn process_id(&self) -> u32 {
+        self.process_id
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(crate) fn process_started_at(&self) -> u64 {
+        self.process_started_at
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(crate) fn executable_file_identity(&self) -> [u8; 32] {
+        self.executable_file_identity
+    }
 }
 
 pub(crate) fn authorize_service_identity(

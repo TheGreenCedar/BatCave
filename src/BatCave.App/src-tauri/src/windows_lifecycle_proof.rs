@@ -1,3 +1,4 @@
+mod desktop;
 #[allow(dead_code)] // The fail-closed export contract is wired by the remaining lifecycle stages.
 mod evidence;
 mod lifecycle;

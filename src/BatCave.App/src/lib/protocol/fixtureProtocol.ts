@@ -354,6 +354,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
       preference: snapshot.environment.admin_mode_available
         ? ("best_available" as const)
         : ("standard_only" as const),
+      standard_fallback_process_etw_disabled: false,
       detail: snapshot.admin_mode.detail,
       last_success_at_ms: snapshot.admin_mode.last_success_at_ms,
       collector_service: null,

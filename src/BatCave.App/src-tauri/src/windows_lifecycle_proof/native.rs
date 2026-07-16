@@ -1,5 +1,7 @@
 use crate::windows_lifecycle_proof_contract::{
-    Candidate, EvidenceReceipt, EvidenceRootIdentity, Observation, ProofPlan,
+    Candidate, DesktopCollectorRuntimeObservation, DesktopFileObservation,
+    DesktopProcessObservation, DesktopServiceProcessObservation, EvidenceReceipt,
+    EvidenceRootIdentity, Observation, ProofPlan,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,8 +30,9 @@ use windows_sys::Win32::Security::Cryptography::{
     BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
 };
 use windows_sys::Win32::Security::{
-    GetLengthSid, GetTokenInformation, IsValidSid, TokenElevation, TokenSessionId, TokenUser,
-    SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
+    GetLengthSid, GetTokenInformation, IsValidSid, TokenElevation, TokenElevationType,
+    TokenElevationTypeFull, TokenSessionId, TokenUser, SECURITY_ATTRIBUTES, TOKEN_ELEVATION,
+    TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION,
@@ -42,9 +45,10 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
-    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
@@ -57,7 +61,8 @@ use windows_sys::Win32::System::Registry::{
 };
 use windows_sys::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
-    SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_STATUS_PROCESS,
+    SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_RUNNING,
+    SERVICE_STATUS_PROCESS,
 };
 use windows_sys::Win32::System::SystemInformation::{
     GetSystemDirectoryW, GetSystemWindowsDirectoryW,
@@ -69,8 +74,12 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
-use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+use windows_sys::Win32::UI::Shell::{
+    GetUserProfileDirectoryW, ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, SW_HIDE,
+};
 
 const PIPE_PREFIX: &str = r"\\.\pipe\BatCaveLifecycleProof.v1.";
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
@@ -87,6 +96,9 @@ const EVIDENCE_ROOT_PREFIX: &str = r"C:\ProgramData\BatCaveLifecycleProof-v1-";
 const PROCESS_TREE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_TREE_SETTLEMENT_TIMEOUT_MS: u32 = 30_000;
 const PROCESS_TREE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const DESKTOP_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+const DESKTOP_PROCESS_STABLE_INTERVAL: Duration = Duration::from_millis(50);
+const DESKTOP_PROCESS_STABLE_SNAPSHOTS: usize = 3;
 const WINDOWS_PATH_BUFFER_SIZE: usize = 32_768;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -262,6 +274,24 @@ impl FixedLaunchContext {
             current_directory: wide(evidence.as_os_str()),
         })
     }
+
+    fn for_desktop(parent_token: &TokenEvidence) -> Result<Self, String> {
+        let current_directory =
+            canonical_real_directory(Path::new(INSTALL_ROOT), "desktop_working_directory")?;
+        if !current_directory
+            .to_string_lossy()
+            .eq_ignore_ascii_case(INSTALL_ROOT)
+        {
+            return Err("lifecycle_desktop_working_directory_changed".to_string());
+        }
+        let profile = current_user_profile_directory(parent_token)?;
+        let system = system_directory()?;
+        let windows = windows_directory()?;
+        Ok(Self {
+            environment: build_desktop_environment_block(&profile, &system, &windows)?,
+            current_directory: wide(current_directory.as_os_str()),
+        })
+    }
 }
 
 impl OwnedFile {
@@ -320,6 +350,10 @@ impl OwnedFile {
 
     pub(crate) fn identity(&self) -> FileIdentity {
         self.identity
+    }
+
+    fn transport_identity(&self) -> [u8; 32] {
+        transport_file_identity(self.identity)
     }
 
     pub(crate) fn require_under(&self, root: &Path, label: &str) -> Result<(), String> {
@@ -597,6 +631,56 @@ impl Job {
         }
     }
 
+    fn process_ids(&self) -> Result<Vec<u32>, String> {
+        let mut capacity = self.active_processes()?.max(1) as usize;
+        loop {
+            if capacity > 129 {
+                return Err("lifecycle_desktop_process_tree_too_large".to_string());
+            }
+            let bytes = size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
+                + capacity.saturating_sub(1) * size_of::<usize>();
+            let words = bytes.div_ceil(size_of::<usize>());
+            let mut buffer = vec![0_usize; words];
+            let list = buffer
+                .as_mut_ptr()
+                .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let queried = unsafe {
+                QueryInformationJobObject(
+                    self.raw(),
+                    JobObjectBasicProcessIdList,
+                    list.cast(),
+                    u32::try_from(bytes)
+                        .map_err(|_| "lifecycle_desktop_job_process_size_invalid".to_string())?,
+                    null_mut(),
+                )
+            };
+            let assigned = unsafe { (*list).NumberOfAssignedProcesses as usize };
+            let listed = unsafe { (*list).NumberOfProcessIdsInList as usize };
+            if assigned > listed {
+                capacity = assigned.max(capacity.saturating_mul(2)).max(1);
+                continue;
+            }
+            if queried == 0 {
+                return Err("lifecycle_desktop_job_process_query_failed".to_string());
+            }
+            let raw_ids =
+                unsafe { std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), listed) };
+            let mut ids = raw_ids
+                .iter()
+                .map(|process_id| {
+                    u32::try_from(*process_id)
+                        .map_err(|_| "lifecycle_desktop_job_process_id_invalid".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            ids.sort_unstable();
+            ids.dedup();
+            if ids.len() != listed || ids.is_empty() {
+                return Err("lifecycle_desktop_job_process_list_invalid".to_string());
+            }
+            return Ok(ids);
+        }
+    }
+
     fn wait_for_zero(&self, deadline: Instant) -> Result<bool, String> {
         loop {
             if self.active_processes()? == 0 {
@@ -627,6 +711,218 @@ struct SuspendedChild {
     process: OwnedHandle,
     thread: OwnedHandle,
     process_id: u32,
+}
+
+pub(super) struct DesktopProcess {
+    job: Job,
+    child: SuspendedChild,
+    executable: OwnedFile,
+    root: DesktopProcessObservation,
+    parent_token: TokenEvidence,
+    settled: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct DesktopLaunchFailure {
+    pub(super) reason: String,
+    pub(super) process_tree_settled: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct DesktopSettlementFailure {
+    pub(super) reason: String,
+    pub(super) process_tree_settled: bool,
+}
+
+struct RetainedDesktopProcess {
+    observation: DesktopProcessObservation,
+    process: OwnedHandle,
+    image: OwnedFile,
+}
+
+pub(super) struct DesktopProcessTree {
+    retained: Vec<RetainedDesktopProcess>,
+    observations: Vec<DesktopProcessObservation>,
+    webview_process_ids: Vec<u32>,
+}
+
+impl DesktopProcessTree {
+    pub(super) fn observations(&self) -> Vec<DesktopProcessObservation> {
+        self.observations.clone()
+    }
+
+    pub(super) fn webview_process_ids(&self) -> Vec<u32> {
+        self.webview_process_ids.clone()
+    }
+
+    fn revalidate_after_settlement(&self) -> Result<(), String> {
+        for retained in &self.retained {
+            if unsafe { WaitForSingleObject(retained.process.raw(), 0) } != WAIT_OBJECT_0
+                || process_started_at(retained.process.raw())?
+                    != retained.observation.started_at_100ns
+            {
+                return Err("lifecycle_desktop_retained_process_unsettled".to_string());
+            }
+            retained.image.revalidate()?;
+        }
+        Ok(())
+    }
+}
+
+impl DesktopProcess {
+    pub(super) fn launch(expected_sha256: &str, label: &str) -> Result<Self, DesktopLaunchFailure> {
+        let parent_token = standard_token_evidence().map_err(settled_launch_failure)?;
+        let executable = OwnedFile::open_unchecked(Path::new(MONITOR_PATH), label)
+            .map_err(settled_launch_failure)?;
+        if executable.sha256_hex() != expected_sha256 {
+            return Err(settled_launch_failure(format!(
+                "lifecycle_{label}_identity_mismatch"
+            )));
+        }
+        let launch =
+            FixedLaunchContext::for_desktop(&parent_token).map_err(settled_launch_failure)?;
+        let job = Job::new(label).map_err(settled_launch_failure)?;
+        let child = SuspendedChild::spawn(&executable.path, "", &launch, label)
+            .map_err(settled_launch_failure)?;
+        if unsafe { AssignProcessToJobObject(job.raw(), child.process.raw()) } == 0 {
+            let primary = format!("lifecycle_{label}_job_assignment_failed");
+            return Err(launch_failure_after_settlement(
+                primary,
+                child.settle_unassigned(label),
+            ));
+        }
+        let root = match observe_desktop_process(child.process_id, None, label, Some(&parent_token))
+        {
+            Ok(root) => root,
+            Err(primary) => {
+                return Err(launch_failure_after_settlement(
+                    primary,
+                    job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label),
+                ));
+            }
+        };
+        if unsafe { ResumeThread(child.thread.raw()) } == u32::MAX {
+            let primary = format!("lifecycle_{label}_resume_failed");
+            return Err(launch_failure_after_settlement(
+                primary,
+                job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label),
+            ));
+        }
+        if !root.executable_path.eq_ignore_ascii_case(MONITOR_PATH)
+            || root.executable_sha256 != expected_sha256
+        {
+            let primary = format!("lifecycle_{label}_launched_identity_invalid");
+            return Err(launch_failure_after_settlement(
+                primary,
+                job.terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label),
+            ));
+        }
+        Ok(Self {
+            job,
+            child,
+            executable,
+            root,
+            parent_token,
+            settled: false,
+        })
+    }
+
+    pub(super) fn process_id(&self) -> u32 {
+        self.child.process_id
+    }
+
+    pub(super) fn observation(&self) -> DesktopProcessObservation {
+        self.root.clone()
+    }
+
+    pub(super) fn current_job_process_ids(&self) -> Result<Vec<u32>, String> {
+        self.job.process_ids()
+    }
+
+    pub(super) fn process_tree(&self) -> Result<DesktopProcessTree, String> {
+        observe_stable_desktop_process_tree(&self.job, self.process_id(), &self.parent_token)
+    }
+
+    pub(super) fn executable_path(&self) -> &Path {
+        &self.executable.path
+    }
+
+    pub(super) fn executable_transport_identity(&self) -> [u8; 32] {
+        self.executable.transport_identity()
+    }
+
+    pub(super) fn wait_for_clean_exit(
+        &mut self,
+        retained_tree: Option<&DesktopProcessTree>,
+    ) -> Result<u32, String> {
+        let deadline = Instant::now() + DESKTOP_PROCESS_TIMEOUT;
+        if wait_handle_until(self.child.process.raw(), deadline, "desktop")? != WAIT_OBJECT_0 {
+            return Err("lifecycle_desktop_exit_timeout".to_string());
+        }
+        let mut exit_code = 0;
+        if unsafe { GetExitCodeProcess(self.child.process.raw(), &mut exit_code) } == 0 {
+            return Err("lifecycle_desktop_exit_query_failed".to_string());
+        }
+        if !self.job.wait_for_zero(deadline)? {
+            return Err("lifecycle_desktop_descendants_unsettled".to_string());
+        }
+        self.executable.revalidate()?;
+        if let Some(retained_tree) = retained_tree {
+            retained_tree.revalidate_after_settlement()?;
+        }
+        self.settled = true;
+        Ok(exit_code)
+    }
+
+    pub(super) fn terminate_and_settle(
+        &mut self,
+        label: &str,
+    ) -> Result<(), DesktopSettlementFailure> {
+        self.job
+            .terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, label)
+            .map_err(|reason| DesktopSettlementFailure {
+                reason,
+                process_tree_settled: false,
+            })?;
+        self.executable
+            .revalidate()
+            .map_err(|reason| DesktopSettlementFailure {
+                reason,
+                process_tree_settled: true,
+            })?;
+        self.settled = true;
+        Ok(())
+    }
+}
+
+fn settled_launch_failure(reason: String) -> DesktopLaunchFailure {
+    DesktopLaunchFailure {
+        reason,
+        process_tree_settled: true,
+    }
+}
+
+fn launch_failure_after_settlement(
+    primary: String,
+    settlement: Result<(), String>,
+) -> DesktopLaunchFailure {
+    match settlement {
+        Ok(()) => settled_launch_failure(primary),
+        Err(settlement) => DesktopLaunchFailure {
+            reason: combined_failure(&primary, &settlement),
+            process_tree_settled: false,
+        },
+    }
+}
+
+impl Drop for DesktopProcess {
+    fn drop(&mut self) {
+        if !self.settled {
+            let _ = self
+                .job
+                .terminate_and_settle(PROCESS_TREE_SETTLEMENT_TIMEOUT, "desktop_drop");
+        }
+    }
 }
 
 impl SuspendedChild {
@@ -972,11 +1268,7 @@ impl ProtectedEvidenceRoot {
 }
 
 pub(crate) fn require_standard_token() -> Result<(), String> {
-    if current_process_elevated()? {
-        Err("lifecycle_parent_must_use_standard_token".to_string())
-    } else {
-        Ok(())
-    }
+    standard_token_evidence().map(|_| ())
 }
 
 pub(crate) fn require_elevated_token() -> Result<(), String> {
@@ -989,6 +1281,19 @@ pub(crate) fn require_elevated_token() -> Result<(), String> {
 
 pub(crate) fn current_process_elevated() -> Result<bool, String> {
     Ok(current_token()?.elevated)
+}
+
+fn standard_token_evidence() -> Result<TokenEvidence, String> {
+    let token = current_token()?;
+    if token.elevated
+        || token.elevation_type == TokenElevationTypeFull
+        || token.session_id == 0
+        || token.sid.is_empty()
+    {
+        Err("lifecycle_parent_must_use_standard_token".to_string())
+    } else {
+        Ok(token)
+    }
 }
 
 pub(crate) fn current_process_started_at() -> Result<u64, String> {
@@ -2134,6 +2439,293 @@ fn controller_binding_matches(
         && binding.image_sha256 == image_sha256
 }
 
+pub(super) fn observe_desktop_collector_runtime(
+    desktop: &DesktopProcess,
+) -> Result<DesktopCollectorRuntimeObservation, String> {
+    let installed_service = match fs::symlink_metadata(SERVICE_PATH) {
+        Ok(_) => Some(OwnedFile::open_unchecked(
+            Path::new(SERVICE_PATH),
+            "desktop_installed_service",
+        )?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("lifecycle_desktop_installed_service_metadata_failed".to_string()),
+    };
+    let installed_service_observation = installed_service.as_ref().map(desktop_file_observation);
+    match observe_service() {
+        Observation::Absent => Ok(DesktopCollectorRuntimeObservation {
+            installed_service: installed_service_observation,
+            service_process: None,
+            pipe_server_process_id: None,
+        }),
+        Observation::Present(service) if service.state != SERVICE_RUNNING => {
+            Ok(DesktopCollectorRuntimeObservation {
+                installed_service: installed_service_observation,
+                service_process: None,
+                pipe_server_process_id: None,
+            })
+        }
+        Observation::Present(service) => {
+            let installed_service = installed_service
+                .ok_or_else(|| "lifecycle_desktop_running_service_binary_missing".to_string())?;
+            let installed_service_observation = desktop_file_observation(&installed_service);
+            let peer = crate::collector_service::windows_client::verified_service_peer_for_proof(
+                desktop.executable_path(),
+                desktop.executable_transport_identity(),
+                &installed_service.path,
+                installed_service.transport_identity(),
+            )?;
+            if peer.process_id() != service.process_id {
+                return Err("lifecycle_desktop_service_peer_pid_mismatch".to_string());
+            }
+            if peer.executable_file_identity() != installed_service.transport_identity() {
+                return Err("lifecycle_desktop_service_peer_file_mismatch".to_string());
+            }
+            Ok(DesktopCollectorRuntimeObservation {
+                service_process: Some(DesktopServiceProcessObservation {
+                    process_id: peer.process_id(),
+                    started_at_100ns: peer.process_started_at(),
+                    local_system: true,
+                    executable_path: installed_service_observation.executable_path.clone(),
+                    executable_size: installed_service_observation.executable_size,
+                    executable_sha256: installed_service_observation.executable_sha256.clone(),
+                }),
+                pipe_server_process_id: Some(peer.process_id()),
+                installed_service: Some(installed_service_observation),
+            })
+        }
+        Observation::Unknown(reason) => Err(format!("lifecycle_desktop_service_unknown:{reason}")),
+    }
+}
+
+pub(super) fn wait_for_foreground_window_identity(
+    expected_window: isize,
+    expected_process_id: u32,
+    expected_started_at_100ns: u64,
+) -> Result<(), String> {
+    let deadline = Instant::now() + DESKTOP_PROCESS_TIMEOUT;
+    loop {
+        let window = unsafe { GetForegroundWindow() };
+        if window as isize == expected_window
+            && validate_window_process_identity(
+                expected_window,
+                expected_process_id,
+                expected_started_at_100ns,
+            )
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("lifecycle_desktop_primary_focus_timeout".to_string());
+        }
+        std::thread::sleep(PROCESS_TREE_POLL_INTERVAL);
+    }
+}
+
+pub(super) fn validate_window_process_identity(
+    window: isize,
+    expected_process_id: u32,
+    expected_started_at_100ns: u64,
+) -> Result<(), String> {
+    if window == 0 {
+        return Err("lifecycle_desktop_window_handle_invalid".to_string());
+    }
+    let mut process_id = 0;
+    if unsafe { GetWindowThreadProcessId(window as _, &mut process_id) } == 0
+        || process_id != expected_process_id
+    {
+        return Err("lifecycle_desktop_window_process_mismatch".to_string());
+    }
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null()
+        || process_started_at(OwnedHandle(process).raw())? != expected_started_at_100ns
+    {
+        return Err("lifecycle_desktop_window_generation_mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn desktop_file_observation(file: &OwnedFile) -> DesktopFileObservation {
+    DesktopFileObservation {
+        executable_path: file.path.to_string_lossy().into_owned(),
+        executable_size: file.size,
+        executable_sha256: file.sha256_hex(),
+    }
+}
+
+fn observe_desktop_process(
+    process_id: u32,
+    parent_process_id: Option<u32>,
+    label: &str,
+    expected_token: Option<&TokenEvidence>,
+) -> Result<DesktopProcessObservation, String> {
+    Ok(retain_desktop_process(process_id, parent_process_id, label, expected_token)?.observation)
+}
+
+fn retain_desktop_process(
+    process_id: u32,
+    parent_process_id: Option<u32>,
+    label: &str,
+    expected_token: Option<&TokenEvidence>,
+) -> Result<RetainedDesktopProcess, String> {
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+            0,
+            process_id,
+        )
+    };
+    if process.is_null() {
+        return Err(format!("lifecycle_{label}_process_open_failed"));
+    }
+    let process = OwnedHandle(process);
+    let token = token_for_process(process.raw())?;
+    if let Some(expected) = expected_token {
+        if token.sid != expected.sid
+            || token.session_id != expected.session_id
+            || token.elevated
+            || token.elevation_type != expected.elevation_type
+        {
+            return Err(format!("lifecycle_{label}_token_identity_invalid"));
+        }
+    }
+    let path = process_image_path(process.raw())?;
+    let image = OwnedFile::open_unchecked(Path::new(&path), label)?;
+    let observation = DesktopProcessObservation {
+        process_id,
+        parent_process_id,
+        started_at_100ns: process_started_at(process.raw())?,
+        session_id: token.session_id,
+        elevated: token.elevated,
+        executable_path: image.path.to_string_lossy().into_owned(),
+        executable_size: image.size,
+        executable_sha256: image.sha256_hex(),
+    };
+    Ok(RetainedDesktopProcess {
+        observation,
+        process,
+        image,
+    })
+}
+
+fn observe_stable_desktop_process_tree(
+    job: &Job,
+    root_process_id: u32,
+    expected_token: &TokenEvidence,
+) -> Result<DesktopProcessTree, String> {
+    let deadline = Instant::now() + DESKTOP_PROCESS_TIMEOUT;
+    let mut previous = None;
+    let mut stable_snapshots = 0;
+    let mut last_failure = "lifecycle_desktop_process_tree_not_ready".to_string();
+    loop {
+        match capture_desktop_process_tree(job, root_process_id, expected_token) {
+            Ok(tree) => {
+                let signature = tree.observations.clone();
+                if previous.as_ref() == Some(&signature) {
+                    stable_snapshots += 1;
+                } else {
+                    previous = Some(signature);
+                    stable_snapshots = 1;
+                }
+                if stable_snapshots >= DESKTOP_PROCESS_STABLE_SNAPSHOTS {
+                    return Ok(tree);
+                }
+            }
+            Err(reason) => {
+                previous = None;
+                stable_snapshots = 0;
+                last_failure = reason;
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "lifecycle_desktop_process_tree_unstable:{last_failure}"
+            ));
+        }
+        std::thread::sleep(DESKTOP_PROCESS_STABLE_INTERVAL);
+    }
+}
+
+fn capture_desktop_process_tree(
+    job: &Job,
+    root_process_id: u32,
+    expected_token: &TokenEvidence,
+) -> Result<DesktopProcessTree, String> {
+    let job_process_ids = job.process_ids()?;
+    if !job_process_ids.contains(&root_process_id) {
+        return Err("lifecycle_desktop_root_not_in_job".to_string());
+    }
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err("lifecycle_desktop_process_snapshot_failed".to_string());
+    }
+    let snapshot = OwnedHandle(snapshot);
+    let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut parent_process_ids = std::collections::BTreeMap::new();
+    let mut ok = unsafe { Process32FirstW(snapshot.raw(), &mut entry) };
+    while ok != 0 {
+        if job_process_ids.binary_search(&entry.th32ProcessID).is_ok() {
+            parent_process_ids.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        }
+        ok = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
+    }
+    if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
+        return Err("lifecycle_desktop_process_enumeration_failed".to_string());
+    }
+    if parent_process_ids.len() != job_process_ids.len() {
+        return Err("lifecycle_desktop_job_process_churn_detected".to_string());
+    }
+
+    let job_process_id_set = job_process_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut retained = Vec::new();
+    let mut webview_process_ids = Vec::new();
+    for process_id in job_process_ids {
+        if process_id == root_process_id {
+            continue;
+        }
+        let parent_process_id = *parent_process_ids
+            .get(&process_id)
+            .ok_or_else(|| "lifecycle_desktop_child_parent_missing".to_string())?;
+        if parent_process_id == process_id || !job_process_id_set.contains(&parent_process_id) {
+            return Err("lifecycle_desktop_child_parent_outside_job".to_string());
+        }
+        let process = retain_desktop_process(
+            process_id,
+            Some(parent_process_id),
+            "desktop_child",
+            Some(expected_token),
+        )?;
+        if process
+            .observation
+            .executable_path
+            .rsplit('\\')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("msedgewebview2.exe"))
+        {
+            webview_process_ids.push(process_id);
+        }
+        retained.push(process);
+    }
+    retained.sort_by_key(|process| process.observation.process_id);
+    webview_process_ids.sort_unstable();
+    if retained.is_empty() || webview_process_ids.is_empty() {
+        return Err("lifecycle_desktop_process_tree_not_ready".to_string());
+    }
+    let observations = retained
+        .iter()
+        .map(|process| process.observation.clone())
+        .collect();
+    Ok(DesktopProcessTree {
+        retained,
+        observations,
+        webview_process_ids,
+    })
+}
+
 fn require_file_hash(
     observation: &Observation<FileSnapshot>,
     expected: &str,
@@ -2269,11 +2861,13 @@ fn read_registry_string(key: HKEY, name: &str) -> Result<String, String> {
     String::from_utf16(&buffer).map_err(|_| "registry_value_utf16_invalid".to_string())
 }
 
+#[derive(Clone)]
 struct TokenEvidence {
     sid: Vec<u8>,
     sid_string: String,
     session_id: u32,
     elevated: bool,
+    elevation_type: TOKEN_ELEVATION_TYPE,
 }
 
 fn current_token() -> Result<TokenEvidence, String> {
@@ -2303,11 +2897,13 @@ fn token_evidence(token: &OwnedHandle) -> Result<TokenEvidence, String> {
     let sid_string = sid_string(token_user.User.Sid)?;
     let session_id = token_session_id(token.raw())?;
     let elevated = token_is_elevated(token.raw())?;
+    let elevation_type = token_elevation_type(token.raw())?;
     Ok(TokenEvidence {
         sid,
         sid_string,
         session_id,
         elevated,
+        elevation_type,
     })
 }
 
@@ -2350,6 +2946,25 @@ fn token_session_id(token: HANDLE) -> Result<u32, String> {
         return Err("lifecycle_token_session_query_failed".to_string());
     }
     Ok(session_id)
+}
+
+fn token_elevation_type(token: HANDLE) -> Result<TOKEN_ELEVATION_TYPE, String> {
+    let mut elevation_type = 0;
+    let mut returned = 0;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevationType,
+            (&mut elevation_type as *mut TOKEN_ELEVATION_TYPE).cast(),
+            size_of::<TOKEN_ELEVATION_TYPE>() as u32,
+            &mut returned,
+        )
+    } == 0
+        || returned != size_of::<TOKEN_ELEVATION_TYPE>() as u32
+    {
+        return Err("lifecycle_token_elevation_type_query_failed".to_string());
+    }
+    Ok(elevation_type)
 }
 
 fn token_is_elevated(token: HANDLE) -> Result<bool, String> {
@@ -2476,6 +3091,15 @@ fn file_information_handle(handle: HANDLE) -> std::io::Result<FileInformation> {
         },
         number_of_links: information.nNumberOfLinks,
     })
+}
+
+fn transport_file_identity(identity: FileIdentity) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"batcave_windows_file_identity_v1");
+    digest.update(identity.volume_serial.to_le_bytes());
+    digest.update(((identity.file_index >> 32) as u32).to_le_bytes());
+    digest.update((identity.file_index as u32).to_le_bytes());
+    digest.finalize().into()
 }
 
 fn final_path(file: &File) -> std::io::Result<PathBuf> {
@@ -2775,6 +3399,104 @@ fn build_fixed_environment_block(
         let encoded = entry.encode_wide().collect::<Vec<_>>();
         if encoded.contains(&0) {
             return Err("lifecycle_child_environment_value_invalid".to_string());
+        }
+        block.extend(encoded);
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
+}
+
+fn current_user_profile_directory(expected_token: &TokenEvidence) -> Result<PathBuf, String> {
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err("lifecycle_desktop_profile_token_open_failed".to_string());
+    }
+    let token = OwnedHandle(token);
+    let observed_token = token_evidence(&token)?;
+    if observed_token.sid != expected_token.sid
+        || observed_token.session_id != expected_token.session_id
+        || observed_token.elevated
+        || observed_token.elevation_type != expected_token.elevation_type
+    {
+        return Err("lifecycle_desktop_profile_token_changed".to_string());
+    }
+    let mut required = 0;
+    unsafe {
+        GetUserProfileDirectoryW(token.raw(), null_mut(), &mut required);
+    }
+    if required == 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+        return Err("lifecycle_desktop_profile_size_failed".to_string());
+    }
+    let mut buffer = vec![0_u16; required as usize];
+    if unsafe { GetUserProfileDirectoryW(token.raw(), buffer.as_mut_ptr(), &mut required) } == 0 {
+        return Err("lifecycle_desktop_profile_query_failed".to_string());
+    }
+    while buffer.last() == Some(&0) {
+        buffer.pop();
+    }
+    let profile = PathBuf::from(OsString::from_wide(&buffer));
+    canonical_real_directory(&profile, "desktop_profile")
+}
+
+fn build_desktop_environment_block(
+    profile: &Path,
+    system: &Path,
+    windows: &Path,
+) -> Result<Vec<u16>, String> {
+    let profile = profile
+        .to_str()
+        .ok_or_else(|| "lifecycle_desktop_profile_utf16_invalid".to_string())?;
+    let system = system
+        .to_str()
+        .ok_or_else(|| "lifecycle_desktop_system_utf16_invalid".to_string())?;
+    let windows = windows
+        .to_str()
+        .ok_or_else(|| "lifecycle_desktop_windows_utf16_invalid".to_string())?;
+    let home_drive = profile
+        .get(..2)
+        .filter(|drive| drive.as_bytes().get(1) == Some(&b':'))
+        .ok_or_else(|| "lifecycle_desktop_profile_path_invalid".to_string())?;
+    let home_path = profile
+        .get(2..)
+        .filter(|path| path.starts_with('\\'))
+        .ok_or_else(|| "lifecycle_desktop_profile_path_invalid".to_string())?;
+    let system_drive = windows
+        .get(..2)
+        .filter(|drive| drive.as_bytes().get(1) == Some(&b':'))
+        .ok_or_else(|| "lifecycle_desktop_windows_path_invalid".to_string())?;
+    let local_app_data = Path::new(profile).join("AppData").join("Local");
+    let roaming_app_data = Path::new(profile).join("AppData").join("Roaming");
+    let temp = local_app_data.join("Temp");
+    let command_processor = Path::new(system).join("cmd.exe");
+    let path = format!("{system};{windows}");
+    let entries = [
+        ("ALLUSERSPROFILE", format!(r"{system_drive}\ProgramData")),
+        ("APPDATA", roaming_app_data.to_string_lossy().into_owned()),
+        ("ComSpec", command_processor.to_string_lossy().into_owned()),
+        ("HOMEDRIVE", home_drive.to_string()),
+        ("HOMEPATH", home_path.to_string()),
+        (
+            "LOCALAPPDATA",
+            local_app_data.to_string_lossy().into_owned(),
+        ),
+        ("OS", "Windows_NT".to_string()),
+        ("PATH", path),
+        ("PATHEXT", ".COM;.EXE;.BAT;.CMD".to_string()),
+        ("SystemDrive", system_drive.to_string()),
+        ("SystemRoot", windows.to_string()),
+        ("TEMP", temp.to_string_lossy().into_owned()),
+        ("TMP", temp.to_string_lossy().into_owned()),
+        ("USERPROFILE", profile.to_string()),
+        ("windir", windows.to_string()),
+    ];
+    let mut block = Vec::new();
+    for (name, value) in entries {
+        let encoded = OsString::from(format!("{name}={value}"))
+            .encode_wide()
+            .collect::<Vec<_>>();
+        if encoded.contains(&0) {
+            return Err("lifecycle_desktop_environment_value_invalid".to_string());
         }
         block.extend(encoded);
         block.push(0);
@@ -3259,6 +3981,77 @@ mod tests {
                 r"TMP=C:\ProgramData\BatCaveLifecycleProof-v1-test",
                 r"WINDIR=C:\Windows",
             ]
+        );
+    }
+
+    #[test]
+    fn desktop_environment_is_profile_bound_and_does_not_inherit_process_controls() {
+        let block = build_desktop_environment_block(
+            Path::new(r"D:\Users\proof-user"),
+            Path::new(r"C:\Windows\System32"),
+            Path::new(r"C:\Windows"),
+        )
+        .expect("desktop environment");
+        assert!(block.ends_with(&[0, 0]));
+        let entries = block[..block.len() - 1]
+            .split(|value| *value == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [
+                r"ALLUSERSPROFILE=C:\ProgramData",
+                r"APPDATA=D:\Users\proof-user\AppData\Roaming",
+                r"ComSpec=C:\Windows\System32\cmd.exe",
+                r"HOMEDRIVE=D:",
+                r"HOMEPATH=\Users\proof-user",
+                r"LOCALAPPDATA=D:\Users\proof-user\AppData\Local",
+                r"OS=Windows_NT",
+                r"PATH=C:\Windows\System32;C:\Windows",
+                r"PATHEXT=.COM;.EXE;.BAT;.CMD",
+                r"SystemDrive=C:",
+                r"SystemRoot=C:\Windows",
+                r"TEMP=D:\Users\proof-user\AppData\Local\Temp",
+                r"TMP=D:\Users\proof-user\AppData\Local\Temp",
+                r"USERPROFILE=D:\Users\proof-user",
+                r"windir=C:\Windows",
+            ]
+        );
+        assert!(entries.iter().all(|entry| {
+            !entry.starts_with("WEBVIEW2_")
+                && !entry.starts_with("BATCAVE_")
+                && !entry.starts_with("RUST_")
+        }));
+    }
+
+    #[test]
+    fn transport_identity_matches_the_production_file_identity_domain() {
+        let identity = FileIdentity {
+            volume_serial: 0x1122_3344,
+            file_index: 0x5566_7788_99aa_bbcc,
+        };
+        let mut digest = Sha256::new();
+        digest.update(b"batcave_windows_file_identity_v1");
+        digest.update(0x1122_3344_u32.to_le_bytes());
+        digest.update(0x5566_7788_u32.to_le_bytes());
+        digest.update(0x99aa_bbcc_u32.to_le_bytes());
+        let expected: [u8; 32] = digest.finalize().into();
+        assert_eq!(transport_file_identity(identity), expected);
+    }
+
+    #[test]
+    fn launch_failure_preserves_unproven_settlement() {
+        assert!(
+            !launch_failure_after_settlement(
+                "lifecycle_desktop_launch_failed".to_string(),
+                Err("lifecycle_desktop_job_settlement_unproven".to_string()),
+            )
+            .process_tree_settled
+        );
+        assert!(
+            launch_failure_after_settlement("lifecycle_desktop_launch_failed".to_string(), Ok(()),)
+                .process_tree_settled
         );
     }
 

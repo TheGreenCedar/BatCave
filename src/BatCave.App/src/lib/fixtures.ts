@@ -95,6 +95,7 @@ function applyFixtureState(
       state: "unavailable",
       source: "none",
       preference: "standard_only",
+      standard_fallback_process_etw_disabled: false,
       detail: null,
       last_success_at_ms: null,
       collector_service: null,

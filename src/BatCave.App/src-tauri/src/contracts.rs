@@ -11,6 +11,8 @@ pub struct RuntimeSnapshot {
     pub source: String,
     pub environment: RuntimeEnvironment,
     pub admin_mode: RuntimeAdminModeStatus,
+    #[serde(default)]
+    pub standard_fallback_process_etw_disabled: bool,
     pub settings: RuntimeSettings,
     pub health: RuntimeHealth,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -888,6 +890,7 @@ mod tests {
                 last_success_at_ms: None,
                 collector_service: None,
             },
+            standard_fallback_process_etw_disabled: false,
             settings: RuntimeSettings {
                 query: RuntimeQuery {
                     filter_text: "bat".to_string(),
@@ -1058,6 +1061,7 @@ mod tests {
                     "detail": null,
                     "last_success_at_ms": null
                 },
+                "standard_fallback_process_etw_disabled": false,
                 "settings": {
                     "query": {
                         "filter_text": "bat",

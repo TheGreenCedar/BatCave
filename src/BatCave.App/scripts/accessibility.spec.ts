@@ -30,11 +30,17 @@ async function openFixture(page: Page, state: FixtureState): Promise<void> {
     await expect(page.getByRole("dialog", { name })).toBeVisible();
   } else if (state === "stale") {
     await expect(
-      page.getByRole("button", { name: /Telemetry stale\. Open diagnostics\./ }),
+      page.getByRole("button", {
+        name: "Telemetry stale. Open diagnostics.",
+        exact: true,
+      }),
     ).toBeVisible();
   } else if (state === "degraded") {
     await expect(
-      page.getByRole("button", { name: /App resource warning\. Open diagnostics\./ }),
+      page.getByRole("button", {
+        name: "App resource warning. Open diagnostics.",
+        exact: true,
+      }),
     ).toBeVisible();
   }
 }

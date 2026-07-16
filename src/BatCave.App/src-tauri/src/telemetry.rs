@@ -44,6 +44,7 @@ pub struct TelemetrySample {
     pub warnings: Vec<String>,
     pub collector_service: Option<RuntimeCollectorServiceStatus>,
     pub source_provenance: Option<TelemetrySampleProvenance>,
+    pub standard_fallback_process_etw_disabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,24 +73,28 @@ pub struct TelemetryCollector {
     pdh_disk: PdhDiskState,
     #[cfg(windows)]
     network_attribution: NetworkAttributionState,
+    standard_fallback_process_etw_disabled: bool,
 }
 
 impl TelemetryCollector {
     #[cfg(not(windows))]
     pub fn new() -> Self {
-        Self::new_inner()
+        Self::new_inner(false)
     }
 
     #[cfg(windows)]
     pub(crate) fn for_collector_service(monitor: NetworkAttributionMonitor) -> Self {
-        Self::new_inner(NetworkAttributionState::ServiceReady(Box::new(monitor)))
+        Self::new_inner(
+            NetworkAttributionState::ServiceReady(Box::new(monitor)),
+            false,
+        )
     }
 
     #[cfg(windows)]
     pub(crate) fn for_standard_fallback() -> Self {
         // The standard-user fallback never competes with the SCM service for
         // machine-global ETW ownership. #70 owns the eventual service lease.
-        Self::new_inner(NetworkAttributionState::Disabled)
+        Self::new_inner(NetworkAttributionState::Disabled, true)
     }
 
     #[cfg(windows)]
@@ -104,7 +109,10 @@ impl TelemetryCollector {
         }
     }
 
-    fn new_inner(#[cfg(windows)] network_attribution: NetworkAttributionState) -> Self {
+    fn new_inner(
+        #[cfg(windows)] network_attribution: NetworkAttributionState,
+        standard_fallback_process_etw_disabled: bool,
+    ) -> Self {
         Self {
             system: System::new_with_specifics(sysinfo_refresh_kind()),
             networks: Networks::new_with_refreshed_list(),
@@ -124,6 +132,7 @@ impl TelemetryCollector {
             pdh_disk: PdhDiskState::new(),
             #[cfg(windows)]
             network_attribution,
+            standard_fallback_process_etw_disabled,
         }
     }
 
@@ -188,6 +197,7 @@ impl TelemetryCollector {
             warnings,
             collector_service: None,
             source_provenance: None,
+            standard_fallback_process_etw_disabled: self.standard_fallback_process_etw_disabled,
         })
     }
 
@@ -248,6 +258,7 @@ impl TelemetryCollector {
             warnings,
             collector_service: None,
             source_provenance: None,
+            standard_fallback_process_etw_disabled: self.standard_fallback_process_etw_disabled,
         })
     }
 }
@@ -1120,12 +1131,19 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn standard_fallback_keeps_etw_disabled() {
-        let collector = TelemetryCollector::for_standard_fallback();
+        let mut collector = TelemetryCollector::for_standard_fallback();
 
         assert!(matches!(
             collector.network_attribution,
             NetworkAttributionState::Disabled
         ));
+        assert!(collector.standard_fallback_process_etw_disabled);
+        assert!(
+            collector
+                .collect()
+                .expect("standard fallback sample")
+                .standard_fallback_process_etw_disabled
+        );
     }
 
     #[test]

@@ -1,8 +1,9 @@
+use super::desktop::DesktopWindow;
 use super::native::{
     capture_elevated_machine_snapshot, open_allowlisted_legacy_cli, open_installed_service,
     open_installed_uninstaller, parse_sha256, require_allowlisted_elevated_preflight,
     require_elevated_crashed_candidate, require_elevated_installed_candidate,
-    require_elevated_stopped_candidate, require_elevated_total_product_absence,
+    require_elevated_stopped_candidate, require_elevated_total_product_absence, DesktopProcess,
     ElevatedMachineSnapshot, ExecuteFailure, OwnedFile, PeerBinding, PipeConnection,
     ProcessTerminal, ProcessTerminalSnapshot, ProtectedEvidenceRoot,
 };
@@ -10,9 +11,9 @@ use super::private_evidence::{
     write_machine_packet, write_service_crash_packet, write_upgrade_rollback_packet,
 };
 use crate::windows_lifecycle_proof_contract::{
-    DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult, LifecycleStage, ProofPlan,
-    RestorationOutcome, SequenceGate, WorkerDisposition, WorkerFailure, WorkerFailureKind,
-    WorkerResult,
+    DesktopPhase, DesktopPhaseDisposition, DesktopPhaseObservation, DesktopPhaseResult,
+    DesktopSecondInstanceObservation, LifecycleStage, ProofPlan, RestorationOutcome, SequenceGate,
+    WorkerDisposition, WorkerFailure, WorkerFailureKind, WorkerResult,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -40,15 +41,201 @@ pub(super) fn require_controller_ready() -> Result<(), String> {
 pub(super) fn run_parent_desktop_phase(
     phase: DesktopPhase,
     _repo_root: &Path,
-    _plan: &ProofPlan,
+    plan: &ProofPlan,
 ) -> Result<DesktopPhaseResult, String> {
-    Ok(DesktopPhaseResult {
+    let expected_monitor_sha256 = match phase {
+        DesktopPhase::BaselinePrimary | DesktopPhase::BaselineSecondInstance => {
+            plan.baseline.monitor_sha256.as_str()
+        }
+        DesktopPhase::FinalPrimary
+        | DesktopPhase::FinalMissingService
+        | DesktopPhase::FinalStoppedService
+        | DesktopPhase::FinalIncompatibleService => plan.final_candidate.monitor_sha256.as_str(),
+    };
+    let mut primary = match DesktopProcess::launch(expected_monitor_sha256, "desktop_primary") {
+        Ok(primary) => primary,
+        Err(failure) => {
+            return Ok(failed_desktop_phase(
+                phase,
+                failure.reason,
+                failure.process_tree_settled,
+            ))
+        }
+    };
+
+    let outcome = (|| -> Result<DesktopPhaseObservation, DesktopPhaseFailure> {
+        let window =
+            DesktopWindow::open(&primary.observation()).map_err(settled_desktop_failure)?;
+        let mut allowed_process_ids = primary
+            .current_job_process_ids()
+            .map_err(settled_desktop_failure)?
+            .into_iter()
+            .collect();
+        let mut visible = window
+            .read_visible(phase, &allowed_process_ids)
+            .map_err(settled_desktop_failure)?;
+        let second_instance = if phase == DesktopPhase::BaselineSecondInstance {
+            let service_instance_id_before =
+                visible.service_instance_id.clone().ok_or_else(|| {
+                    settled_desktop_failure(
+                        "lifecycle_desktop_service_instance_before_missing".to_string(),
+                    )
+                })?;
+            let mut attempted =
+                DesktopProcess::launch(expected_monitor_sha256, "desktop_second_instance")
+                    .map_err(|failure| DesktopPhaseFailure {
+                        reason: failure.reason,
+                        process_tree_settled: failure.process_tree_settled,
+                    })?;
+            let attempted_process = attempted.observation();
+            let terminal_exit_code = match attempted.wait_for_clean_exit(None) {
+                Ok(exit_code) => exit_code,
+                Err(reason) => {
+                    let (reason, process_tree_settled) = combine_desktop_settlement(
+                        reason,
+                        attempted.terminate_and_settle("desktop_second_instance_failure"),
+                    );
+                    return Err(DesktopPhaseFailure {
+                        reason,
+                        process_tree_settled,
+                    });
+                }
+            };
+            if terminal_exit_code != 0 {
+                return Err(settled_desktop_failure(format!(
+                    "lifecycle_desktop_second_instance_exit_code_{terminal_exit_code}"
+                )));
+            }
+            let primary_observation = primary.observation();
+            window
+                .wait_for_primary_focus(&primary_observation)
+                .map_err(settled_desktop_failure)?;
+            allowed_process_ids = primary
+                .current_job_process_ids()
+                .map_err(settled_desktop_failure)?
+                .into_iter()
+                .collect();
+            visible = window
+                .read_visible(phase, &allowed_process_ids)
+                .map_err(settled_desktop_failure)?;
+            let service_instance_id_after =
+                visible.service_instance_id.clone().ok_or_else(|| {
+                    settled_desktop_failure(
+                        "lifecycle_desktop_service_instance_after_missing".to_string(),
+                    )
+                })?;
+            Some(DesktopSecondInstanceObservation {
+                attempted_process,
+                terminal_exit_code,
+                process_tree_settled: true,
+                focused_primary_process_id: primary_observation.process_id,
+                focused_primary_started_at_100ns: primary_observation.started_at_100ns,
+                service_instance_id_before,
+                service_instance_id_after,
+            })
+        } else {
+            None
+        };
+        let process_tree = primary.process_tree().map_err(settled_desktop_failure)?;
+        let collector_runtime = super::native::observe_desktop_collector_runtime(&primary)
+            .map_err(settled_desktop_failure)?;
+        let desktop = primary.observation();
+        window.close().map_err(settled_desktop_failure)?;
+        let exit_code = primary
+            .wait_for_clean_exit(Some(&process_tree))
+            .map_err(settled_desktop_failure)?;
+        if exit_code != 0 {
+            return Err(settled_desktop_failure(format!(
+                "lifecycle_desktop_primary_exit_code_{exit_code}"
+            )));
+        }
+        Ok(DesktopPhaseObservation {
+            desktop,
+            process_tree: process_tree.observations(),
+            webview_process_ids: process_tree.webview_process_ids(),
+            second_instance,
+            collector_runtime,
+            visible,
+        })
+    })();
+
+    match outcome {
+        Ok(observation) => Ok(DesktopPhaseResult {
+            phase,
+            disposition: DesktopPhaseDisposition::Passed,
+            process_tree_settled: true,
+            observation: Some(observation),
+            failure_reason: None,
+        }),
+        Err(failure) => {
+            let (reason, primary_settled) = combine_desktop_settlement(
+                failure.reason,
+                primary.terminate_and_settle("desktop_primary_failure"),
+            );
+            Ok(failed_desktop_phase(
+                phase,
+                reason,
+                failure.process_tree_settled && primary_settled,
+            ))
+        }
+    }
+}
+
+struct DesktopPhaseFailure {
+    reason: String,
+    process_tree_settled: bool,
+}
+
+fn settled_desktop_failure(reason: String) -> DesktopPhaseFailure {
+    DesktopPhaseFailure {
+        reason,
+        process_tree_settled: true,
+    }
+}
+
+fn combine_desktop_settlement(
+    primary: String,
+    settlement: Result<(), super::native::DesktopSettlementFailure>,
+) -> (String, bool) {
+    match settlement {
+        Ok(()) => (primary, true),
+        Err(settlement) => (
+            format!("{primary}|{}", settlement.reason),
+            settlement.process_tree_settled,
+        ),
+    }
+}
+
+fn failed_desktop_phase(
+    phase: DesktopPhase,
+    reason: String,
+    process_tree_settled: bool,
+) -> DesktopPhaseResult {
+    DesktopPhaseResult {
         phase,
         disposition: DesktopPhaseDisposition::Failed,
-        process_tree_settled: true,
+        process_tree_settled,
         observation: None,
-        failure_reason: Some("lifecycle_desktop_phase_not_implemented".to_string()),
-    })
+        failure_reason: Some(bounded_desktop_reason(&reason)),
+    }
+}
+
+fn bounded_desktop_reason(reason: &str) -> String {
+    let mut bounded = reason
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, ':' | '_' | '-' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(192)
+        .collect::<String>();
+    if bounded.is_empty() {
+        bounded.push_str("lifecycle_desktop_phase_failed");
+    }
+    bounded
 }
 
 pub(super) struct WorkerContext<'a> {
@@ -959,6 +1146,34 @@ mod tests {
         assert_eq!(
             require_controller_ready(),
             Err("lifecycle_controller_not_reviewed".to_string())
+        );
+    }
+
+    #[test]
+    fn desktop_settlement_preserves_exact_process_tree_state() {
+        assert_eq!(
+            combine_desktop_settlement("primary".to_string(), Ok(())),
+            ("primary".to_string(), true)
+        );
+        assert_eq!(
+            combine_desktop_settlement(
+                "primary".to_string(),
+                Err(super::super::native::DesktopSettlementFailure {
+                    reason: "identity_revalidation_failed".to_string(),
+                    process_tree_settled: true,
+                }),
+            ),
+            ("primary|identity_revalidation_failed".to_string(), true)
+        );
+        assert_eq!(
+            combine_desktop_settlement(
+                "primary".to_string(),
+                Err(super::super::native::DesktopSettlementFailure {
+                    reason: "job_settlement_unproven".to_string(),
+                    process_tree_settled: false,
+                }),
+            ),
+            ("primary|job_settlement_unproven".to_string(), false)
         );
     }
 

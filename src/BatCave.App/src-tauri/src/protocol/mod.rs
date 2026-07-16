@@ -973,6 +973,57 @@ mod tests {
             Err("protocol_collector_service_active_identity_invalid".to_string())
         );
 
+        let mut standard_fallback = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut standard_fallback.event else {
+            unreachable!()
+        };
+        payload
+            .privileged_collection
+            .standard_fallback_process_etw_disabled = true;
+        assert_eq!(validate_envelope(&standard_fallback), Ok(()));
+
+        let mut non_windows_fallback = standard_fallback.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut non_windows_fallback.event else {
+            unreachable!()
+        };
+        payload.environment.platform = RuntimePlatformV3::Linux;
+        assert_eq!(
+            validate_envelope(&non_windows_fallback),
+            Err("protocol_standard_fallback_etw_authority_invalid".to_string())
+        );
+
+        let mut elevated_fallback = standard_fallback.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut elevated_fallback.event else {
+            unreachable!()
+        };
+        payload.environment.process_elevation = RuntimeProcessElevationV3::Elevated;
+        assert_eq!(
+            validate_envelope(&elevated_fallback),
+            Err("protocol_standard_fallback_etw_authority_invalid".to_string())
+        );
+
+        let mut elevated_local_process_fallback = elevated_fallback.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut elevated_local_process_fallback.event
+        else {
+            unreachable!()
+        };
+        payload.privileged_collection.state = PrivilegedCollectionStateV3::Active;
+        payload.privileged_collection.source = PrivilegedCollectionSourceV3::LocalProcess;
+        assert_eq!(
+            validate_envelope(&elevated_local_process_fallback),
+            Err("protocol_standard_fallback_etw_authority_invalid".to_string())
+        );
+
+        let mut unknown_elevation_fallback = standard_fallback.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut unknown_elevation_fallback.event else {
+            unreachable!()
+        };
+        payload.environment.process_elevation = RuntimeProcessElevationV3::Unknown;
+        assert_eq!(
+            validate_envelope(&unknown_elevation_fallback),
+            Err("protocol_standard_fallback_etw_authority_invalid".to_string())
+        );
+
         let mut matching_service = envelope.clone();
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut matching_service.event else {
             unreachable!()
@@ -990,6 +1041,19 @@ mod tests {
             detail: None,
         });
         assert_eq!(validate_envelope(&matching_service), Ok(()));
+
+        let mut service_with_fallback_authority = matching_service.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut service_with_fallback_authority.event
+        else {
+            unreachable!()
+        };
+        payload
+            .privileged_collection
+            .standard_fallback_process_etw_disabled = true;
+        assert_eq!(
+            validate_envelope(&service_with_fallback_authority),
+            Err("protocol_standard_fallback_etw_authority_invalid".to_string())
+        );
 
         let mut incompatible_without_minimum = envelope.clone();
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut incompatible_without_minimum.event
