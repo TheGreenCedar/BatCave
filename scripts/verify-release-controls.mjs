@@ -6,6 +6,7 @@ export const REQUIRED_STATUS_CHECK_CONTEXTS = Object.freeze([
   "Dependency review",
   "Windows validation",
   "Linux validation",
+  "Linux package transport",
   "macOS universal validation",
 ]);
 export const GITHUB_ACTIONS_APP_ID = 15_368;

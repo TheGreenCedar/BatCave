@@ -5,6 +5,27 @@ import path from "node:path";
 import test from "node:test";
 import { collectActionPinViolations } from "./validate-action-pins.mjs";
 
+const validationWorkflow = fs.readFileSync(
+  new URL("../.github/workflows/validation.yml", import.meta.url),
+  "utf8",
+);
+
+function validationJob(name) {
+  const match = validationWorkflow.match(
+    new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, "m"),
+  );
+  assert.ok(match, `validation workflow job ${name} must exist`);
+  return match[0];
+}
+
+function assertStepOrder(job, earlier, later) {
+  const earlierIndex = job.indexOf(`- name: ${earlier}`);
+  const laterIndex = job.indexOf(`- name: ${later}`);
+  assert.notEqual(earlierIndex, -1, `validation step ${earlier} must exist`);
+  assert.notEqual(laterIndex, -1, `validation step ${later} must exist`);
+  assert.ok(earlierIndex < laterIndex, `${earlier} must run before ${later}`);
+}
+
 function withWorkflows(files, run) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-action-pins-"));
   try {
@@ -168,5 +189,59 @@ test("reports violations in stable path and line order", () => {
         ],
       );
     },
+  );
+});
+
+test("keeps validation toolchains, cache writers, and Linux package transport bounded", () => {
+  assert.match(validationWorkflow, /^  workflow_dispatch:$/m);
+  assert.equal(validationWorkflow.match(/toolchain: 1\.97\.1/g)?.length, 2);
+  assert.equal(
+    validationWorkflow.match(
+      /shared-key: batcave-validation-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}/g,
+    )?.length,
+    4,
+  );
+  assert.equal(
+    validationWorkflow.match(/save-if: \$\{\{ github\.event_name != 'pull_request' \}\}/g)
+      ?.length,
+    3,
+  );
+  assert.equal(validationWorkflow.match(/save-if: false/g)?.length, 1);
+  assert.doesNotMatch(validationWorkflow, /cache-on-failure|cache-workspace-crates/);
+
+  const linux = validationJob("linux");
+  assert.doesNotMatch(linux, /--bundle-only|linux_package_owned_transport/);
+  assertStepOrder(linux, "Reject Rust warnings on the MSRV", "Validate Linux app");
+  assertStepOrder(
+    linux,
+    "Reject private public-release verifier warnings",
+    "Validate Linux app",
+  );
+
+  const packageTransport = validationJob("linux-package-transport");
+  assert.match(packageTransport, /^    name: Linux package transport$/m);
+  assert.match(
+    packageTransport,
+    /bash scripts\/validate-tauri\.sh --bundle-only[\s\S]*linux_package_owned_transport/u,
+  );
+  assert.match(packageTransport, /^          save-if: false$/m);
+
+  const windows = validationJob("windows");
+  assertStepOrder(windows, "Reject Rust warnings", "Validate Windows app");
+  assertStepOrder(
+    windows,
+    "Reject private Windows lifecycle proof warnings",
+    "Validate Windows app",
+  );
+
+  const macos = validationJob("macos");
+  assertStepOrder(
+    macos,
+    "Reject Rust warnings for both Apple architectures",
+    "Validate native macOS app",
+  );
+  assert.match(
+    macos,
+    /Verify private macOS updater staging observer[\s\S]*cargo clippy[\s\S]*cargo test/u,
   );
 });
