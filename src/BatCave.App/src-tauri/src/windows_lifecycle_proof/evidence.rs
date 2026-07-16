@@ -2494,8 +2494,10 @@ fn current_user_retention_preserved(retention: &SanitizedCurrentUserRetention) -
     ]
     .into_iter()
     .all(|object| {
-        !matches!(&object.before_uninstall, Observation::Unknown(_))
-            && object.before_uninstall == object.after_uninstall
+        matches!(
+            (&object.before_uninstall, &object.after_uninstall),
+            (Observation::Present(before), Observation::Present(after)) if before == after
+        )
     })
 }
 
@@ -2945,6 +2947,24 @@ mod tests {
         });
         assert!(validate_sanitized_export_bytes(
             &serde_json::to_vec(&retention_drift).expect("retention drift"),
+            &plan,
+            &"c".repeat(40),
+            &"d".repeat(64),
+            &receipts,
+        )
+        .is_err());
+
+        let mut absent_retention = valid_export(&plan, &receipts);
+        absent_retention
+            .current_user_retention
+            .diagnostics
+            .before_uninstall = Observation::Absent;
+        absent_retention
+            .current_user_retention
+            .diagnostics
+            .after_uninstall = Observation::Absent;
+        assert!(validate_sanitized_export_bytes(
+            &serde_json::to_vec(&absent_retention).expect("absent retention"),
             &plan,
             &"c".repeat(40),
             &"d".repeat(64),
