@@ -200,6 +200,29 @@ fn fixed_path_eq(left: &Path, right: &Path) -> bool {
         })
 }
 
+fn strip_verbatim_disk_prefix(path: PathBuf) -> PathBuf {
+    use std::{
+        ffi::OsString,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+    };
+
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+
+    let wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let Some(disk_path) = wide.strip_prefix(VERBATIM_PREFIX) else {
+        return path;
+    };
+    if disk_path.len() < 3
+        || !matches!(disk_path[0], 0x41..=0x5a | 0x61..=0x7a)
+        || disk_path[1] != b':' as u16
+        || disk_path[2] != b'\\' as u16
+    {
+        return path;
+    }
+
+    PathBuf::from(OsString::from_wide(disk_path))
+}
+
 fn attributes_are_reparse(attributes: u32) -> bool {
     attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
@@ -217,24 +240,26 @@ mod native {
 
     use windows_sys::Win32::{
         Foundation::{
-            CloseHandle, GetLastError, LocalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
-            ERROR_INSUFFICIENT_BUFFER, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
+            CloseHandle, GetLastError, LocalFree, SetLastError, ERROR_ALREADY_EXISTS,
+            ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ALL_ASSIGNED,
+            ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
             ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SERVICE_NOT_ACTIVE, ERROR_SHARING_VIOLATION,
-            HANDLE, WAIT_OBJECT_0,
+            ERROR_SUCCESS, HANDLE, LUID, WAIT_OBJECT_0,
         },
         Security::{
-            AclSizeInformation,
+            AclSizeInformation, AdjustTokenPrivileges,
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
                 GetSecurityInfo, SE_FILE_OBJECT,
             },
             CreateWellKnownSid, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-            GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, TokenElevation,
-            WinBuiltinAdministratorsSid, WinInteractiveSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE,
-            ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
-            INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-            PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, SE_DACL_PROTECTED, SID_NAME_USE,
-            TOKEN_ELEVATION,
+            GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW,
+            LookupPrivilegeValueW, TokenElevation, WinBuiltinAdministratorsSid, WinInteractiveSid,
+            WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE,
+            DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE, LUID_AND_ATTRIBUTES, OBJECT_INHERIT_ACE,
+            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+            SECURITY_MAX_SID_SIZE, SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SID_NAME_USE,
+            TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
         },
         Storage::FileSystem::{
             CreateDirectoryW, CreateFileW, DeleteFileW, GetFileInformationByHandle,
@@ -332,6 +357,84 @@ mod native {
         fn drop(&mut self) {
             unsafe {
                 CloseHandle(self.0);
+            }
+        }
+    }
+
+    struct EnabledPrivilege {
+        token: OwnedHandle,
+        previous: TOKEN_PRIVILEGES,
+    }
+
+    impl EnabledPrivilege {
+        fn new(name: &str) -> Result<Self, String> {
+            let mut token = ptr::null_mut();
+            if unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                    &mut token,
+                )
+            } == 0
+            {
+                return Err(last_error("collector_service_privilege_token_open_failed"));
+            }
+            let token = OwnedHandle::new(token, "collector_service_privilege_token_invalid")?;
+
+            let name = wide(name);
+            let mut luid = LUID::default();
+            if unsafe { LookupPrivilegeValueW(ptr::null(), name.as_ptr(), &mut luid) } == 0 {
+                return Err(last_error("collector_service_privilege_lookup_failed"));
+            }
+
+            let requested = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            let mut previous = TOKEN_PRIVILEGES::default();
+            let mut returned = 0_u32;
+            unsafe { SetLastError(ERROR_SUCCESS) };
+            if unsafe {
+                AdjustTokenPrivileges(
+                    token.raw(),
+                    0,
+                    &requested,
+                    size_of::<TOKEN_PRIVILEGES>() as u32,
+                    &mut previous,
+                    &mut returned,
+                )
+            } == 0
+            {
+                return Err(last_error("collector_service_privilege_enable_failed"));
+            }
+            let status = unsafe { GetLastError() };
+            if status == ERROR_NOT_ALL_ASSIGNED {
+                return Err("collector_service_privilege_not_assigned".to_string());
+            }
+            if status != ERROR_SUCCESS {
+                return Err(format!(
+                    "collector_service_privilege_enable_failed:{status}"
+                ));
+            }
+
+            Ok(Self { token, previous })
+        }
+    }
+
+    impl Drop for EnabledPrivilege {
+        fn drop(&mut self) {
+            unsafe {
+                AdjustTokenPrivileges(
+                    self.token.raw(),
+                    0,
+                    &self.previous,
+                    0,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                );
             }
         }
     }
@@ -1546,6 +1649,9 @@ mod native {
     fn provision_roots(journal: &mut RootCreationJournal) -> Result<(), String> {
         let roots = fixed_roots()?;
         let principals = SecurityPrincipals::load_with_service()?;
+        // An elevated administrator owns this provisioning process, so Windows
+        // requires SeRestorePrivilege while assigning LocalSystem as owner.
+        let _restore_privilege = EnabledPrivilege::new("SeRestorePrivilege")?;
         let _program_data = open_directory(
             &roots.program_data,
             "collector_service_programdata_open_failed",
@@ -2044,10 +2150,7 @@ mod native {
             return Err(last_error(context));
         }
         let path = PathBuf::from(OsString::from_wide(&buffer[..written as usize]));
-        Ok(path
-            .strip_prefix(r"\\?\")
-            .map(Path::to_path_buf)
-            .unwrap_or(path))
+        Ok(strip_verbatim_disk_prefix(path))
     }
 
     fn last_error(context: &str) -> String {
@@ -2113,6 +2216,22 @@ mod tests {
                 program_files,
             ),
             Err("collector_service_executable_location_invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn final_disk_path_normalization_preserves_non_disk_namespaces() {
+        assert_eq!(
+            strip_verbatim_disk_prefix(PathBuf::from(r"\\?\C:\Program Files\BatCave Monitor")),
+            PathBuf::from(r"C:\Program Files\BatCave Monitor")
+        );
+        assert_eq!(
+            strip_verbatim_disk_prefix(PathBuf::from(r"C:\Program Files\BatCave Monitor")),
+            PathBuf::from(r"C:\Program Files\BatCave Monitor")
+        );
+        assert_eq!(
+            strip_verbatim_disk_prefix(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\?\UNC\server\share")
         );
     }
 
