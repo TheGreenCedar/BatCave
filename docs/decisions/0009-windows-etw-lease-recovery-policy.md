@@ -78,7 +78,7 @@ All-target Clippy and the repository validation workflow must also pass. Reposit
 - This is source and hosted-test proof, not installed/native Windows lifecycle evidence.
 - Exact reclaim is source- and hosted-test-backed; no installed Windows crash/restart walkthrough is claimed.
 - No reboot, upgrade, uninstall, second-instance, or multi-user behavior is proven.
-- No helper path is deleted; installed crash/restart/upgrade/uninstall and multi-user proof remain open.
+- The legacy helper source path is deleted by the dependent #75 cleanup; installed crash/restart/upgrade/uninstall and multi-user proof remain open.
 - No release evidence may describe process-network attribution as installed-service-native from this decision alone.
 
-#70 remains open for installed crash/restart proof, multi-user behavior, upgrade/uninstall cleanup, and legacy-helper removal.
+#70 remains open for installed crash/restart proof, multi-user behavior, and upgrade/uninstall cleanup.

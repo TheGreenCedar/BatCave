@@ -15,7 +15,7 @@ This is the static support contract for BatCave Monitor 0.2. Runtime protocol ob
 | Process identity and resources | Win32 process APIs | `/proc/<pid>` | sysinfo row enriched by libproc |
 | Process read/write I/O | Win32 cumulative transfer counters | `/proc/<pid>/io` cumulative counters | libproc `proc_pid_rusage` cumulative counters |
 | Process network | ETW IP socket payload attribution | Optional bpftrace/eBPF IP socket payload attribution | Unavailable |
-| Protected collection | Current elevated token or local elevated helper | No helper; normal host permissions apply | No helper; normal host permissions apply |
+| Protected collection | Current elevated token or installed collector service | Normal host permissions apply | Normal host permissions apply |
 
 The macOS host-disk number is a physical block-driver aggregate, not a sum of mounted APFS volumes or visible processes. Registry entry IDs deduplicate the source. Attaching a DMG may add an `IOBlockStorageDriver`, but its `IOHDIXController`/DiskImages registry path is excluded. If any eligible physical driver lacks a complete byte-counter pair, the whole host-disk metric fails closed to `unavailable`; it is not published as a partial host total. Device-set changes require a fresh baseline before rates resume.
 

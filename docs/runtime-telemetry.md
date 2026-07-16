@@ -18,7 +18,7 @@ Svelte cockpit
         -> query shaping
         -> byte-rate derivation
         -> local JSON persistence
-        -> Rust collectors and helper modes
+        -> Rust collectors and collector-service client
           -> Win32 process telemetry
           -> Win32 system telemetry
           -> PDH disk-rate telemetry
@@ -26,7 +26,7 @@ Svelte cockpit
           -> Linux /proc and /sys telemetry
           -> Linux optional bpftrace/eBPF network attribution
           -> macOS sysinfo, libproc, and deduplicated IOKit telemetry
-          -> local elevated Windows helper launched on demand
+          -> installed Windows collector service with standard-access fallback
           -> Rust benchmark CLI
 ```
 
@@ -38,12 +38,11 @@ The UI talks to the runtime through Tauri commands:
 - `resume_runtime`
 - `set_sample_interval`
 - `set_process_query`
-- `set_admin_mode`
 - `get_process_icons`
 
-The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, session-scoped admin state, warm cache, health, diagnostics, and persistence belong in Rust.
+The UI should not own long-lived runtime truth. Settings, pause state, refresh cadence, process query shape, collector-service state, warm cache, health, diagnostics, and persistence belong in Rust.
 
-Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, cadence, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. A Rust worker owns sampling; frontend reads are passive. The required `environment` object reports `platform`, current-process `process_elevation`, runtime-derived `install_kind`, and the resolved `data_directory`. `admin_mode.source` separately identifies whether protected collection comes from the current process or the local elevated helper.
+Every snapshot carries two clocks. `publication_seq` and `published_at_ms` change for every response, including query, pause, cadence, and error publications. `sample_seq` and nullable `sampled_at_ms` change only after successful collection. A Rust worker owns sampling; frontend reads are passive. The required `environment` object reports `platform`, current-process `process_elevation`, runtime-derived `install_kind`, and the resolved `data_directory`. `admin_mode.source` separately identifies whether protected collection comes from the current process or the installed collector service.
 
 This is the preview contract; the removed `seq`, `ts_ms`, and `focus_mode: active` aliases are not serialized. Process selection and rate identity use `pid` plus `start_time_ms` so PID reuse cannot inherit an earlier process's state. Empty kernel-pool-tag `driver_candidates` are always serialized as `[]`.
 
@@ -56,7 +55,7 @@ The pre-release v2 contract corrects process I/O names before the transport is d
 Implemented runtime surfaces:
 
 - Production snake_case JSON contracts for runtime snapshots, settings, process samples, system metrics, quality metadata, warnings, and health.
-- Runtime settings, warm cache, keyed current warnings, diagnostics transition history, health budgets, query shaping, pause/resume, refresh, and admin-mode state in the Rust store.
+- Runtime settings, warm cache, keyed current warnings, diagnostics transition history, health budgets, query shaping, pause/resume, refresh, and collector-service state in the Rust store.
 - Stable process grouping for runtime process views, including aggregate one-core-equivalent CPU, memory, read/write I/O, network, and thread totals for group rows.
 - Local JSON persistence with same-directory, per-writer atomic temporary files for settings and runtime state.
 - Rust CLI mode for deterministic benchmark snapshots.
@@ -66,7 +65,7 @@ Windows native telemetry:
 - Process identity, PID, parent PID, start-time identity, executable path, access state, one-core-equivalent CPU, kernel CPU, memory, private bytes, process read/write I/O totals, thread count, and handle count. Windows `GetProcessIoCounters` exposes `ReadTransferCount`, `WriteTransferCount`, and `OtherTransferCount` separately. BatCave's read/write I/O value sums only read and write; other I/O remains a separate raw process field. None of these counters are called physical-disk traffic.
 - Physical memory, Windows commit totals, kernel paged/nonpaged pool, system cache, aggregate CPU deltas, logical CPU percentages, interface-level network totals/rates, and PDH physical-disk rates.
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
-- The running Windows process token determines `environment.process_elevation`. NSIS, portable, and development provenance does not imply elevation. The app starts with the invoking user's token and requests elevation only for the out-of-process local helper. `admin_mode.source` remains `elevated_helper` while that helper supplies protected rows; it never rewrites the parent process token. Denial keeps standard monitoring running and leaves a retryable helper state. An unreadable token is labeled `unknown` and never presented as confirmed standard or elevated access.
+- The running Windows process token determines `environment.process_elevation`. NSIS, portable, and development provenance does not imply elevation. The app starts with the invoking user's token and remains `asInvoker`. `admin_mode.source` reports `collector_service` only after authenticated service negotiation and never rewrites the parent process token. Missing or rejected service access keeps standard monitoring running. An unreadable token is labeled `unknown` and never presented as confirmed standard or elevated access.
 
 Linux native telemetry:
 
@@ -80,7 +79,7 @@ macOS native telemetry:
 - Local libproc enrichment for resident memory, physical footprint, virtual memory, process read/write totals, thread count, and file-descriptor count when process access allows.
 - IOKit `IOBlockStorageDriver` byte counters aggregated once per physical registry entry. Disk-image paths are excluded; incomplete physical coverage is unavailable, and topology changes establish a new rate baseline. Process read/write I/O is never substituted for system disk telemetry.
 - The sysinfo interface aggregate includes `lo0`; protocol v3 labels its scope `all_interface_aggregate` rather than non-loopback.
-- Per-process network attribution and privileged helper mode are unavailable in this release. Rows remain visible with quality messages rather than fabricated zero rates.
+- Per-process network attribution and privileged collection are unavailable in this release. Rows remain visible with quality messages rather than fabricated zero rates.
 
 Fallback behavior:
 
@@ -141,7 +140,7 @@ Network readouts prefer a nonzero live attributed rate when the row has one, whi
 
 ## Local Data
 
-Runtime state, settings, warm cache, helper snapshots, and logs are local-only.
+Runtime state, settings, warm cache, and logs are local-only.
 
 - Windows: `%LOCALAPPDATA%\BatCaveMonitor`
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
@@ -155,7 +154,7 @@ The [current-user state ownership and retention contract](current-user-state.md)
 - Linux reports `appimage` from the AppImage runtime environment, `deb` when the local Debian package database owns the executable, `development` for a debug binary in a development output directory, and `portable` otherwise.
 - macOS reports `development` for a debug binary in a development output directory, `app_bundle` for a running `.app`, and `portable` for a standalone binary. A copied app does not claim `dmg` because its original download container is no longer observable at runtime.
 
-On Windows, `GetTokenInformation(TokenElevation)` determines the parent process state: `standard`, `elevated`, or `unknown`. Privileged collection has its own state and source. A manually elevated parent uses `current_process`; a normal parent can launch the local `elevated_helper`; cancellation or denial returns the helper to a failed, retryable state without stopping standard monitoring. Linux and macOS keep this Windows-specific helper capability unavailable.
+On Windows, `GetTokenInformation(TokenElevation)` determines the parent process state: `standard`, `elevated`, or `unknown`. Privileged collection has its own state and source. A manually elevated parent uses `current_process`; an installed collector uses `collector_service`; missing, stopped, incompatible, or unauthorized service states retain standard monitoring. Linux and macOS report privileged collection as unavailable.
 
 Do not add outbound tracking, hosted collection, or remote logging. BatCave is a local instrument panel, not a service backend in a trench coat.
 

@@ -40,7 +40,7 @@ Each accepted connection gets an independent authorization session. Negotiation 
 
 The desktop waits at most 250 ms for the fixed pipe and gives each request/response operation a two-second deadline. It accepts exactly one request-bound response, requires increasing sample sequences for the negotiated service instance, and reuses an `unchanged` response only when it names the exact cached sequence. Authenticated service timestamps drive only per-service rate deltas; public freshness is stamped when the desktop observes a new snapshot so independent service and desktop clock anchors cannot skew it. A disconnect, timeout, malformed frame, wrong request ID, sequence regression, identity drift, or peer-verification failure closes the client session.
 
-Startup and recovery try the service first. Missing, stopped, incompatible, unauthorized, and failed service states are carried into runtime protocol v3 and the desktop immediately samples through a local standard-access collector. That fallback has process-network ETW disabled, retries the service on a bounded five-second cadence, and adds a visible collector warning instead of presenting protected fields as current. A service/fallback or service-instance transition clears rate baselines before publishing the new source. The desktop manifest remains `asInvoker`; the legacy helper remains available only as migration behavior and is stopped if the authenticated service becomes active.
+Startup and recovery try the service first. Missing, stopped, incompatible, unauthorized, and failed service states are carried into runtime protocol v3 and the desktop immediately samples through a local standard-access collector. That fallback has process-network ETW disabled, retries the service on a bounded five-second cadence, and adds a visible collector warning instead of presenting protected fields as current. A service/fallback or service-instance transition clears rate baselines before publishing the new source. The desktop manifest remains `asInvoker`; there is no launch-time elevation helper or helper fallback.
 
 SCM stop and shutdown controls set the service stop signal. The nonblocking listener and client loops observe that signal, client workers join, and the collector engine shuts down before the service reports `SERVICE_STOPPED`.
 
@@ -63,4 +63,4 @@ Upgrade denial occurs before the elevated installer runs and therefore leaves th
 - Prove installed happy-path, denied-install/upgrade, missing-service, stopped-service, unauthorized-client, and incompatible-version behavior on Windows.
 - Capture fresh native Tauri evidence for the access and diagnostic states.
 
-#70 still owns installed crash/restart proof, reboot/upgrade behavior, multi-user lifecycle proof, and legacy-helper removal.
+#70 still owns installed crash/restart proof, reboot/upgrade behavior, and multi-user lifecycle proof.
