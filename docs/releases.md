@@ -12,6 +12,8 @@ All build and publication jobs enter the protected `release` environment. Config
 
 Every release artifact contains the offline-capable Windows NSIS installer, Windows GUI and benchmark CLI executables, Linux deb and AppImage packages, the universal macOS DMG and updater archive, `SHA256SUMS.txt`, and a Sigstore/GitHub build-provenance bundle. Workflow artifacts are retained for 30 days; published GitHub Release assets are durable.
 
+The independent Linux package-transport validation job uses a release-profile Rust cache separate from the main validation caches. Pull requests only restore it; trusted pushes and manual validation dispatches may save it. After building the deb and AppImage, the job runs the ignored package-transport tests with Cargo's release profile so dependency artifacts can be reused without caching workspace crates. This changes build reuse only; all package and transport gates remain required.
+
 On Windows, `batcave-monitor-cli.exe` is a standalone release asset for benchmarks and automation; it is not an NSIS-installed product component. The per-machine installer owns the desktop and collector service binaries only. Upgrade and uninstall recognize the single historical CLI payload by its exact size and SHA-256, remove those bytes through the verified open file handle, and reject any different object at that fixed path as untrusted residue.
 
 ## Windows collector privilege migration
