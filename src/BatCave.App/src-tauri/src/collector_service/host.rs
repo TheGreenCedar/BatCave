@@ -458,14 +458,6 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| CollectionFailure::Unavailable("empty".to_string()))
         }
-
-        fn process_network_ready(&self) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn retry_process_network(&mut self) -> Result<(), String> {
-            Ok(())
-        }
     }
 
     #[test]

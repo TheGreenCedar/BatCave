@@ -3696,14 +3696,6 @@ mod tests {
                 FakeOutcome::Panic => panic!("scripted collector panic"),
             }
         }
-
-        fn process_network_ready(&self) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn retry_process_network(&mut self) -> Result<(), String> {
-            Ok(())
-        }
     }
 
     impl Drop for FakeCollector {

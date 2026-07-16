@@ -18,18 +18,16 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 type PublicationReply = mpsc::Sender<Result<Arc<CollectorPublication>, String>>;
 type UnitReply = mpsc::Sender<Result<(), String>>;
-type BoolReply = mpsc::Sender<Result<bool, String>>;
 
 #[derive(Clone, Debug)]
 pub(crate) enum CollectionFailure {
     Unavailable(String),
+    #[allow(dead_code)]
     Fatal(String),
 }
 
 pub(crate) trait RawCollector: Send {
     fn collect(&mut self) -> Result<TelemetrySample, CollectionFailure>;
-    fn process_network_ready(&self) -> Result<bool, String>;
-    fn retry_process_network(&mut self) -> Result<(), String>;
     fn shutdown(&mut self) -> Result<(), String> {
         Ok(())
     }
@@ -37,21 +35,7 @@ pub(crate) trait RawCollector: Send {
 
 impl RawCollector for TelemetryCollector {
     fn collect(&mut self) -> Result<TelemetrySample, CollectionFailure> {
-        TelemetryCollector::collect(self).map_err(|error| {
-            if error.contains("lock is poisoned") {
-                CollectionFailure::Fatal(error)
-            } else {
-                CollectionFailure::Unavailable(error)
-            }
-        })
-    }
-
-    fn process_network_ready(&self) -> Result<bool, String> {
-        TelemetryCollector::process_network_ready(self)
-    }
-
-    fn retry_process_network(&mut self) -> Result<(), String> {
-        TelemetryCollector::retry_process_network(self)
+        TelemetryCollector::collect(self).map_err(CollectionFailure::Unavailable)
     }
 
     #[cfg(windows)]
@@ -64,14 +48,6 @@ impl RawCollector for TelemetryCollector {
 impl RawCollector for crate::collector_service::client::DesktopCollector {
     fn collect(&mut self) -> Result<TelemetrySample, CollectionFailure> {
         crate::collector_service::client::DesktopCollector::collect(self)
-    }
-
-    fn process_network_ready(&self) -> Result<bool, String> {
-        crate::collector_service::client::DesktopCollector::process_network_ready(self)
-    }
-
-    fn retry_process_network(&mut self) -> Result<(), String> {
-        crate::collector_service::client::DesktopCollector::retry_process_network(self)
     }
 }
 
@@ -130,8 +106,6 @@ enum CollectorControl {
     Pause(UnitReply),
     Resume(PublicationReply),
     SetInterval(Duration, UnitReply),
-    ProcessNetworkReady(BoolReply),
-    RetryProcessNetwork(UnitReply),
     Shutdown,
 }
 
@@ -201,18 +175,6 @@ impl CollectorEngineHandle {
     pub fn set_interval(&self, interval: Duration) -> Result<(), String> {
         validate_interval(interval)?;
         self.request_unit(|reply| CollectorControl::SetInterval(interval, reply))
-    }
-
-    pub fn process_network_ready(&self) -> Result<bool, String> {
-        let (reply, receiver) = mpsc::channel();
-        self.send(CollectorControl::ProcessNetworkReady(reply))?;
-        receiver
-            .recv_timeout(CONTROL_RESPONSE_TIMEOUT)
-            .map_err(|_| "collector_control_timeout".to_string())?
-    }
-
-    pub fn retry_process_network(&self) -> Result<(), String> {
-        self.request_unit(CollectorControl::RetryProcessNetwork)
     }
 
     fn request_unit(
@@ -603,12 +565,6 @@ fn collector_loop(
                     let _ = reply.send(Ok(()));
                 }
             }
-            Ok(CollectorControl::ProcessNetworkReady(reply)) => {
-                let _ = reply.send(collector.process_network_ready());
-            }
-            Ok(CollectorControl::RetryProcessNetwork(reply)) => {
-                let _ = reply.send(collector.retry_process_network());
-            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return false,
         }
@@ -687,15 +643,10 @@ fn fatal_control_loop(receiver: &Receiver<CollectorControl>, shutdown_started: &
         match control {
             CollectorControl::Shutdown => return,
             CollectorControl::Refresh => {}
-            CollectorControl::Pause(reply)
-            | CollectorControl::SetInterval(_, reply)
-            | CollectorControl::RetryProcessNetwork(reply) => {
+            CollectorControl::Pause(reply) | CollectorControl::SetInterval(_, reply) => {
                 let _ = reply.send(Err("collector_engine_fatal".to_string()));
             }
             CollectorControl::Resume(reply) => {
-                let _ = reply.send(Err("collector_engine_fatal".to_string()));
-            }
-            CollectorControl::ProcessNetworkReady(reply) => {
                 let _ = reply.send(Err("collector_engine_fatal".to_string()));
             }
         }
@@ -963,14 +914,6 @@ mod tests {
                 FakeOutcome::Fatal(error) => Err(CollectionFailure::Fatal(error.to_string())),
                 FakeOutcome::Panic => panic!("scripted collector panic"),
             }
-        }
-
-        fn process_network_ready(&self) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn retry_process_network(&mut self) -> Result<(), String> {
-            Ok(())
         }
 
         fn shutdown(&mut self) -> Result<(), String> {

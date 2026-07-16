@@ -1,6 +1,5 @@
 use std::{
     cmp::Ordering,
-    sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -55,130 +54,80 @@ pub struct TelemetrySampleProvenance {
 }
 
 pub struct TelemetryCollector {
-    system: Mutex<System>,
-    networks: Mutex<Networks>,
+    system: System,
+    networks: Networks,
     #[cfg(target_os = "linux")]
-    linux_system: Mutex<LinuxSystemCollector>,
+    linux_system: LinuxSystemCollector,
     #[cfg(target_os = "linux")]
-    linux_processes: Mutex<LinuxProcessCollector>,
+    linux_processes: LinuxProcessCollector,
     #[cfg(target_os = "linux")]
-    linux_network_attribution: Mutex<LinuxNetworkAttribution>,
+    linux_network_attribution: LinuxNetworkAttribution,
     #[cfg(target_os = "macos")]
-    macos_system: Mutex<MacosSystemCollector>,
+    macos_system: MacosSystemCollector,
     #[cfg(target_os = "macos")]
-    macos_processes: Mutex<MacosProcessCollector>,
+    macos_processes: MacosProcessCollector,
     #[cfg(windows)]
-    previous_cpu_times: Mutex<Option<windows_system::CpuTimes>>,
+    previous_cpu_times: Option<windows_system::CpuTimes>,
     #[cfg(windows)]
-    pdh_disk: Mutex<PdhDiskState>,
+    pdh_disk: PdhDiskState,
     #[cfg(windows)]
-    network_attribution: Mutex<NetworkAttributionState>,
+    network_attribution: NetworkAttributionState,
 }
 
 impl TelemetryCollector {
     #[cfg(not(windows))]
     pub fn new() -> Self {
-        Self::new_with_process_network(true)
+        Self::new_inner()
     }
 
     #[cfg(windows)]
     pub(crate) fn for_collector_service(monitor: NetworkAttributionMonitor) -> Self {
-        let mut collector = Self::new_with_process_network(false);
-        *collector
-            .network_attribution
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            NetworkAttributionState::ServiceReady(Box::new(monitor));
-        collector
+        Self::new_inner(NetworkAttributionState::ServiceReady(Box::new(monitor)))
     }
 
     #[cfg(windows)]
     pub(crate) fn for_standard_fallback() -> Self {
         // The standard-user fallback never competes with the SCM service for
         // machine-global ETW ownership. #70 owns the eventual service lease.
-        Self::new_with_process_network(false)
-    }
-
-    pub(crate) fn process_network_ready(&self) -> Result<bool, String> {
-        #[cfg(windows)]
-        {
-            let state = self
-                .network_attribution
-                .lock()
-                .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
-            Ok(matches!(
-                &*state,
-                NetworkAttributionState::Ready(_) | NetworkAttributionState::ServiceReady(_)
-            ))
-        }
-        #[cfg(not(windows))]
-        {
-            Ok(false)
-        }
-    }
-
-    pub(crate) fn retry_process_network(&self) -> Result<(), String> {
-        #[cfg(windows)]
-        {
-            let mut state = self
-                .network_attribution
-                .lock()
-                .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
-            if matches!(&*state, NetworkAttributionState::ServiceReady(_)) {
-                return Err(
-                    "collector_service_network_restart_requires_service_restart".to_string()
-                );
-            }
-            *state = NetworkAttributionState::Disabled;
-            *state = NetworkAttributionState::new();
-        }
-        Ok(())
+        Self::new_inner(NetworkAttributionState::Disabled)
     }
 
     #[cfg(windows)]
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
-        let state = self
-            .network_attribution
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let prior = std::mem::replace(state, NetworkAttributionState::Disabled);
+        let prior = std::mem::replace(
+            &mut self.network_attribution,
+            NetworkAttributionState::Disabled,
+        );
         match prior {
-            NetworkAttributionState::Ready(mut monitor)
-            | NetworkAttributionState::ServiceReady(mut monitor) => monitor.shutdown(),
-            NetworkAttributionState::Disabled | NetworkAttributionState::Failed { .. } => Ok(()),
+            NetworkAttributionState::ServiceReady(mut monitor) => monitor.shutdown(),
+            NetworkAttributionState::Disabled => Ok(()),
         }
     }
 
-    fn new_with_process_network(process_network: bool) -> Self {
-        #[cfg(not(windows))]
-        let _ = process_network;
+    fn new_inner(#[cfg(windows)] network_attribution: NetworkAttributionState) -> Self {
         Self {
-            system: Mutex::new(System::new_with_specifics(sysinfo_refresh_kind())),
-            networks: Mutex::new(Networks::new_with_refreshed_list()),
+            system: System::new_with_specifics(sysinfo_refresh_kind()),
+            networks: Networks::new_with_refreshed_list(),
             #[cfg(target_os = "linux")]
-            linux_system: Mutex::new(LinuxSystemCollector::new()),
+            linux_system: LinuxSystemCollector::new(),
             #[cfg(target_os = "linux")]
-            linux_processes: Mutex::new(LinuxProcessCollector::new()),
+            linux_processes: LinuxProcessCollector::new(),
             #[cfg(target_os = "linux")]
-            linux_network_attribution: Mutex::new(LinuxNetworkAttribution::new()),
+            linux_network_attribution: LinuxNetworkAttribution::new(),
             #[cfg(target_os = "macos")]
-            macos_system: Mutex::new(MacosSystemCollector::new()),
+            macos_system: MacosSystemCollector::new(),
             #[cfg(target_os = "macos")]
-            macos_processes: Mutex::new(MacosProcessCollector::new()),
+            macos_processes: MacosProcessCollector::new(),
             #[cfg(windows)]
-            previous_cpu_times: Mutex::new(None),
+            previous_cpu_times: None,
             #[cfg(windows)]
-            pdh_disk: Mutex::new(PdhDiskState::new()),
+            pdh_disk: PdhDiskState::new(),
             #[cfg(windows)]
-            network_attribution: Mutex::new(if process_network {
-                NetworkAttributionState::new()
-            } else {
-                NetworkAttributionState::Disabled
-            }),
+            network_attribution,
         }
     }
 
-    pub fn collect(&self) -> Result<TelemetrySample, String> {
+    pub fn collect(&mut self) -> Result<TelemetrySample, String> {
         #[cfg(target_os = "linux")]
         {
             self.collect_linux()
@@ -190,33 +139,24 @@ impl TelemetryCollector {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn collect_sysinfo_seeded(&self) -> Result<TelemetrySample, String> {
+    fn collect_sysinfo_seeded(&mut self) -> Result<TelemetrySample, String> {
         let started = Instant::now();
         let mut warnings = Vec::new();
 
-        let mut sysinfo_system = self
-            .system
-            .lock()
-            .map_err(|_| "system telemetry lock is poisoned".to_string())?;
-        sysinfo_system.refresh_specifics(sysinfo_refresh_kind());
+        self.system.refresh_specifics(sysinfo_refresh_kind());
+        self.networks.refresh(true);
 
-        let mut sysinfo_networks = self
-            .networks
-            .lock()
-            .map_err(|_| "network telemetry lock is poisoned".to_string())?;
-        sysinfo_networks.refresh(true);
-
-        let sysinfo_processes = collect_sysinfo_processes(&sysinfo_system);
+        let sysinfo_processes = collect_sysinfo_processes(&self.system);
         let sysinfo_cpu_by_pid = sysinfo_processes
             .iter()
             .map(|process| (process.pid.clone(), process.cpu_percent))
             .collect::<HashMap<_, _>>();
-        let logical_cpu_percent = logical_cpu_percent(&sysinfo_system, &mut warnings);
+        let logical_cpu_percent = logical_cpu_percent(&self.system, &mut warnings);
+        let sysinfo_snapshot = collect_sysinfo_system(&self.system, &self.networks);
         let mut processes =
             collect_processes(&sysinfo_processes, &sysinfo_cpu_by_pid, &mut warnings, self)?;
         let mut system_snapshot = collect_system_snapshot(
-            &sysinfo_system,
-            &sysinfo_networks,
+            sysinfo_snapshot,
             &logical_cpu_percent,
             &processes,
             &mut warnings,
@@ -224,13 +164,8 @@ impl TelemetryCollector {
         )?;
         #[cfg(windows)]
         {
-            let network_attribution = self.network_attribution_sample(&mut warnings)?;
+            let network_attribution = self.network_attribution_sample(&mut warnings);
             apply_network_attribution(&mut processes, network_attribution, MetricSource::Etw);
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let network_attribution = self.linux_network_attribution_sample(&mut warnings)?;
-            apply_network_attribution(&mut processes, network_attribution, MetricSource::Ebpf);
         }
 
         processes.sort_by(|left, right| {
@@ -257,34 +192,18 @@ impl TelemetryCollector {
     }
 
     #[cfg(target_os = "linux")]
-    fn collect_linux(&self) -> Result<TelemetrySample, String> {
+    fn collect_linux(&mut self) -> Result<TelemetrySample, String> {
         let started = Instant::now();
-        let process_result = self
-            .linux_processes
-            .lock()
-            .map_err(|_| "linux process telemetry lock is poisoned".to_string())?
-            .collect();
-        let system_result = self
-            .linux_system
-            .lock()
-            .map_err(|_| "linux system telemetry lock is poisoned".to_string())?
-            .sample();
+        let process_result = self.linux_processes.collect();
+        let system_result = self.linux_system.sample();
 
         let needs_fallback = process_result.is_err() || system_result.is_err();
         let (fallback_processes, fallback_system) = if needs_fallback {
-            let mut system = self
-                .system
-                .lock()
-                .map_err(|_| "system telemetry lock is poisoned".to_string())?;
-            system.refresh_specifics(sysinfo_refresh_kind());
-            let mut networks = self
-                .networks
-                .lock()
-                .map_err(|_| "network telemetry lock is poisoned".to_string())?;
-            networks.refresh(true);
+            self.system.refresh_specifics(sysinfo_refresh_kind());
+            self.networks.refresh(true);
             (
-                Some(collect_sysinfo_processes(&system)),
-                Some(collect_sysinfo_system(&system, &networks)),
+                Some(collect_sysinfo_processes(&self.system)),
+                Some(collect_sysinfo_system(&self.system, &self.networks)),
             )
         } else {
             (None, None)
@@ -309,7 +228,7 @@ impl TelemetryCollector {
                 fallback_system.expect("sysinfo fallback is collected after native failure")
             }
         };
-        let network_attribution = self.linux_network_attribution_sample(&mut warnings)?;
+        let network_attribution = self.linux_network_attribution_sample(&mut warnings);
         apply_network_attribution(&mut processes, network_attribution, MetricSource::Ebpf);
         processes.sort_by(|left, right| {
             right
@@ -406,7 +325,7 @@ fn collect_processes(
     sysinfo_processes: &[ProcessSample],
     sysinfo_cpu_by_pid: &HashMap<String, f64>,
     warnings: &mut Vec<String>,
-    collector: &TelemetryCollector,
+    collector: &mut TelemetryCollector,
 ) -> Result<Vec<ProcessSample>, String> {
     #[cfg(windows)]
     let _ = collector;
@@ -435,34 +354,12 @@ fn collect_processes(
         }
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        let _ = sysinfo_cpu_by_pid;
-        let mut linux_processes = collector
-            .linux_processes
-            .lock()
-            .map_err(|_| "linux process telemetry lock is poisoned".to_string())?;
-        match linux_processes.collect() {
-            Ok(processes) => Ok(processes),
-            Err(error) => {
-                warnings.push(format!(
-                    "linux_process_collector_failed:{error}; using sysinfo fallback"
-                ));
-                Ok(sysinfo_processes.to_vec())
-            }
-        }
-    }
-
     #[cfg(target_os = "macos")]
     {
         let _ = sysinfo_cpu_by_pid;
-        let mut macos_processes = collector
-            .macos_processes
-            .lock()
-            .map_err(|_| "macOS process telemetry lock is poisoned".to_string())?;
         let mut processes = sysinfo_processes.to_vec();
         let process_count = processes.len();
-        let collection = macos_processes.enrich(&mut processes);
+        let collection = collector.macos_processes.enrich(&mut processes);
         if process_count > 0
             && collection
                 .denied_count
@@ -486,19 +383,16 @@ fn collect_processes(
 
 #[cfg(not(target_os = "linux"))]
 fn collect_system_snapshot(
-    sysinfo_system: &System,
-    sysinfo_networks: &Networks,
+    sysinfo_snapshot: SystemMetricsSnapshot,
     logical_cpu_percent: &[f64],
     processes: &[ProcessSample],
     warnings: &mut Vec<String>,
-    collector: &TelemetryCollector,
+    collector: &mut TelemetryCollector,
 ) -> Result<SystemMetricsSnapshot, String> {
-    let sysinfo_snapshot = collect_sysinfo_system(sysinfo_system, sysinfo_networks);
-
     #[cfg(windows)]
     {
         let _ = processes;
-        let cpu_load = collector.native_cpu_load(warnings)?;
+        let cpu_load = collector.native_cpu_load(warnings);
 
         match windows_system::sample_system() {
             Ok(mut snapshot) => {
@@ -510,7 +404,7 @@ fn collect_system_snapshot(
                     snapshot.cpu_percent = sysinfo_snapshot.cpu_percent;
                     snapshot.kernel_cpu_percent = 0.0;
                 }
-                let disk_quality = collector.apply_pdh_disk_rates(&mut snapshot, warnings)?;
+                let disk_quality = collector.apply_pdh_disk_rates(&mut snapshot, warnings);
                 snapshot.quality = Some(system_quality(cpu_load.is_some(), disk_quality));
                 Ok(snapshot)
             }
@@ -523,43 +417,11 @@ fn collect_system_snapshot(
         }
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        let _ = (
-            sysinfo_system,
-            sysinfo_networks,
-            logical_cpu_percent,
-            processes,
-        );
-        let mut linux_system = collector
-            .linux_system
-            .lock()
-            .map_err(|_| "linux system telemetry lock is poisoned".to_string())?;
-        match linux_system.sample() {
-            Ok(snapshot) => Ok(snapshot),
-            Err(error) => {
-                warnings.push(format!(
-                    "linux_system_collector_failed:{error}; using sysinfo fallback"
-                ));
-                Ok(sysinfo_snapshot)
-            }
-        }
-    }
-
     #[cfg(target_os = "macos")]
     {
-        let _ = (
-            sysinfo_system,
-            sysinfo_networks,
-            logical_cpu_percent,
-            warnings,
-        );
+        let _ = (logical_cpu_percent, warnings);
         let mut snapshot = sysinfo_snapshot;
-        let mut macos_system = collector
-            .macos_system
-            .lock()
-            .map_err(|_| "macOS system telemetry lock is poisoned".to_string())?;
-        macos_system.enrich(&mut snapshot, processes);
+        collector.macos_system.enrich(&mut snapshot, processes);
         Ok(snapshot)
     }
 
@@ -573,120 +435,82 @@ fn collect_system_snapshot(
 impl TelemetryCollector {
     #[cfg(windows)]
     fn apply_pdh_disk_rates(
-        &self,
+        &mut self,
         snapshot: &mut SystemMetricsSnapshot,
         warnings: &mut Vec<String>,
-    ) -> Result<DiskQualityState, String> {
-        let mut state = self
-            .pdh_disk
-            .lock()
-            .map_err(|_| "pdh disk telemetry lock is poisoned".to_string())?;
-        if matches!(&*state, PdhDiskState::Failed(_, failed_at) if failed_at.elapsed() >= std::time::Duration::from_secs(30))
+    ) -> DiskQualityState {
+        if matches!(&self.pdh_disk, PdhDiskState::Failed(_, failed_at) if failed_at.elapsed() >= std::time::Duration::from_secs(30))
         {
-            *state = PdhDiskState::new();
+            self.pdh_disk = PdhDiskState::new();
         }
-        match &mut *state {
+        match &mut self.pdh_disk {
             PdhDiskState::Ready(sampler) => match sampler.sample() {
                 Ok(PdhSample::Ready(rates)) => {
                     snapshot.disk_read_bps = rates.read_bps;
                     snapshot.disk_write_bps = rates.write_bps;
-                    Ok(DiskQualityState::Native)
+                    DiskQualityState::Native
                 }
-                Ok(PdhSample::Held(message)) => Ok(DiskQualityState::Held(message)),
+                Ok(PdhSample::Held(message)) => DiskQualityState::Held(message),
                 Err(error) => {
                     warnings.push(format!("pdh_disk_collector_failed:{error}"));
-                    *state = PdhDiskState::Failed(error.clone(), Instant::now());
-                    Ok(DiskQualityState::Unavailable(error))
+                    self.pdh_disk = PdhDiskState::Failed(error.clone(), Instant::now());
+                    DiskQualityState::Unavailable(error)
                 }
             },
             PdhDiskState::Failed(error, _) => {
                 warnings.push(format!("pdh_disk_collector_failed:{error}"));
-                Ok(DiskQualityState::Unavailable(error.clone()))
+                DiskQualityState::Unavailable(error.clone())
             }
         }
     }
 
     #[cfg(windows)]
     fn network_attribution_sample(
-        &self,
+        &mut self,
         warnings: &mut Vec<String>,
-    ) -> Result<NetworkAttributionSample, String> {
-        let mut state = self
-            .network_attribution
-            .lock()
-            .map_err(|_| "network attribution telemetry lock is poisoned".to_string())?;
-        match &mut *state {
-            NetworkAttributionState::Disabled => Ok(NetworkAttributionSample::Held(
-                "Network attribution is owned by the main runtime.".to_string(),
-            )),
-            NetworkAttributionState::Ready(monitor) => {
-                let sample = monitor.sample();
-                if let NetworkAttributionSample::Failed(message) = &sample {
-                    warnings.push(format!("network_attribution_failed:{message}"));
-                    *state = NetworkAttributionState::Failed {
-                        message: message.clone(),
-                        failed_at: Instant::now(),
-                    };
-                }
-                Ok(sample)
-            }
+    ) -> NetworkAttributionSample {
+        match &mut self.network_attribution {
+            NetworkAttributionState::Disabled => NetworkAttributionSample::Held(
+                "Network attribution is owned by the installed collector service.".to_string(),
+            ),
             NetworkAttributionState::ServiceReady(monitor) => {
                 let sample = monitor.sample();
                 if let NetworkAttributionSample::Failed(message) = &sample {
                     warnings.push(format!("network_attribution_failed:{message}"));
                 }
-                Ok(sample)
-            }
-            NetworkAttributionState::Failed { message, failed_at } => {
-                if failed_at.elapsed() >= std::time::Duration::from_secs(30) {
-                    *state = NetworkAttributionState::new();
-                    return Ok(NetworkAttributionSample::Held(
-                        "ETW network attribution is retrying.".to_string(),
-                    ));
-                }
-                warnings.push(format!("network_attribution_failed:{message}"));
-                Ok(NetworkAttributionSample::Failed(message.clone()))
+                sample
             }
         }
     }
 
     #[cfg(windows)]
-    fn native_cpu_load(
-        &self,
-        warnings: &mut Vec<String>,
-    ) -> Result<Option<windows_system::CpuLoad>, String> {
+    fn native_cpu_load(&mut self, warnings: &mut Vec<String>) -> Option<windows_system::CpuLoad> {
         let current = match windows_system::sample_cpu_times() {
             Ok(current) => current,
             Err(error) => {
                 warnings.push(format!(
                     "native_cpu_collector_failed:{error}; using sysinfo fallback"
                 ));
-                return Ok(None);
+                return None;
             }
         };
-        let mut previous = self
+        let load = self
             .previous_cpu_times
-            .lock()
-            .map_err(|_| "cpu telemetry lock is poisoned".to_string())?;
-        let load = previous.map(|previous| windows_system::calculate_cpu_load(previous, current));
-        *previous = Some(current);
-        Ok(load)
+            .map(|previous| windows_system::calculate_cpu_load(previous, current));
+        self.previous_cpu_times = Some(current);
+        load
     }
 
     #[cfg(target_os = "linux")]
     fn linux_network_attribution_sample(
-        &self,
+        &mut self,
         warnings: &mut Vec<String>,
-    ) -> Result<NetworkAttributionSample, String> {
-        let mut state = self
-            .linux_network_attribution
-            .lock()
-            .map_err(|_| "linux network attribution telemetry lock is poisoned".to_string())?;
-        let sample = state.sample();
+    ) -> NetworkAttributionSample {
+        let sample = self.linux_network_attribution.sample();
         if let NetworkAttributionSample::Failed(message) = &sample {
             warnings.push(format!("linux_network_attribution_failed:{message}"));
         }
-        Ok(sample)
+        sample
     }
 }
 
@@ -1027,22 +851,7 @@ enum DiskQualityState {
 #[cfg(windows)]
 enum NetworkAttributionState {
     Disabled,
-    Ready(Box<NetworkAttributionMonitor>),
     ServiceReady(Box<NetworkAttributionMonitor>),
-    Failed { message: String, failed_at: Instant },
-}
-
-#[cfg(windows)]
-impl NetworkAttributionState {
-    fn new() -> Self {
-        match NetworkAttributionMonitor::new() {
-            Ok(monitor) => Self::Ready(Box::new(monitor)),
-            Err(message) => Self::Failed {
-                message,
-                failed_at: Instant::now(),
-            },
-        }
-    }
 }
 
 #[cfg(any(windows, target_os = "linux", test))]
@@ -1312,9 +1121,11 @@ mod tests {
     #[test]
     fn standard_fallback_keeps_etw_disabled() {
         let collector = TelemetryCollector::for_standard_fallback();
-        let state = collector.network_attribution.lock().unwrap();
 
-        assert!(matches!(&*state, NetworkAttributionState::Disabled));
+        assert!(matches!(
+            collector.network_attribution,
+            NetworkAttributionState::Disabled
+        ));
     }
 
     #[test]
@@ -1430,7 +1241,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_collector_reports_procfs_metric_sources() {
-        let collector = TelemetryCollector::new();
+        let mut collector = TelemetryCollector::new();
         let sample = collector.collect().unwrap();
 
         let system_quality = sample.system.quality.unwrap();
@@ -1470,7 +1281,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_collector_reports_native_process_and_honest_system_sources() {
-        let collector = TelemetryCollector::new();
+        let mut collector = TelemetryCollector::new();
         let first = collector
             .collect()
             .expect("macOS baseline telemetry sample");

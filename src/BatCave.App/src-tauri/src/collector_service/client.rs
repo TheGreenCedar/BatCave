@@ -497,13 +497,10 @@ impl DesktopCollector {
             }
         }
 
-        let mut sample = self.fallback.collect().map_err(|error| {
-            if error.contains("lock is poisoned") {
-                CollectionFailure::Fatal(error)
-            } else {
-                CollectionFailure::Unavailable(error)
-            }
-        })?;
+        let mut sample = self
+            .fallback
+            .collect()
+            .map_err(CollectionFailure::Unavailable)?;
         let status = self.last_status.clone().unwrap_or_else(|| {
             status_from_failure(
                 &ClientFailure::new(
@@ -520,14 +517,6 @@ impl DesktopCollector {
         }
         sample.collector_service = Some(status);
         Ok(sample)
-    }
-
-    pub(crate) fn process_network_ready(&self) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    pub(crate) fn retry_process_network(&mut self) -> Result<(), String> {
-        Ok(())
     }
 
     fn note_failure(&mut self, failure: ClientFailure) {

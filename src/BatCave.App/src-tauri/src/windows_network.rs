@@ -175,14 +175,6 @@ pub struct NetworkAttributionMonitor;
 
 impl NetworkAttributionMonitor {
     #[cfg(windows)]
-    pub fn new() -> Result<Self, String> {
-        WindowsNetworkAttributionMonitor::start_legacy().map(|inner| Self {
-            inner,
-            settlement: None,
-        })
-    }
-
-    #[cfg(windows)]
     pub(crate) fn new_for_collector_service() -> Result<(Self, NetworkAttributionSettlement), String>
     {
         let settlement = NetworkAttributionSettlement::new();
@@ -393,15 +385,6 @@ mod windows_impl {
         logger_guid: GUID,
     }
 
-    const LEGACY_SESSION: EtwSessionConfig = EtwSessionConfig {
-        name: "BatCave Process Network",
-        logger_guid: GUID {
-            data1: 0x4cbda9c4,
-            data2: 0x64aa,
-            data3: 0x4c39,
-            data4: [0x91, 0xd3, 0x45, 0x1d, 0xb1, 0x87, 0x54, 0xe7],
-        },
-    };
     const COLLECTOR_SERVICE_SESSION: EtwSessionConfig = EtwSessionConfig {
         name: "BatCave Collector Process Network v1",
         logger_guid: GUID {
@@ -434,10 +417,6 @@ mod windows_impl {
     }
 
     impl WindowsNetworkAttributionMonitor {
-        pub fn start_legacy() -> Result<Self, String> {
-            Self::start(LEGACY_SESSION)
-        }
-
         pub fn start_for_collector_service() -> Result<Self, String> {
             Self::start(COLLECTOR_SERVICE_SESSION)
         }
