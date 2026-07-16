@@ -934,7 +934,6 @@ mod native {
     pub(super) fn prepare_upgrade() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
-        retire_legacy_cli(&image)?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = open_service(&manager, SERVICE_ALL_ACCESS)?
             .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
@@ -946,13 +945,13 @@ mod native {
     pub(super) fn install() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
-        retire_legacy_cli(&image)?;
         let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
         if let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? {
             validate_service_contract(&service, image.path())?;
             let _protected_root = open_protected_etw_lease_root()?;
             start_service_and_wait(&service)?;
-            return validate_service_contract(&service, image.path());
+            validate_service_contract(&service, image.path())?;
+            return retire_legacy_cli(&image);
         }
 
         let service = create_service(&manager, image.path())?;
@@ -978,23 +977,22 @@ mod native {
             }
             return Err(error);
         }
-        Ok(())
+        retire_legacy_cli(&image)
     }
 
     pub(super) fn uninstall() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
-        retire_legacy_cli(&image)?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? else {
             let roots = fixed_roots()?;
-            if !missing_service_cleanup_required(
+            if missing_service_cleanup_required(
                 path_exists_no_follow(&roots.product)?,
                 path_exists_no_follow(&roots.service)?,
             ) {
-                return Ok(());
+                cleanup_roots_if_owned(true, &SecurityPrincipals::load_with_service()?)?;
             }
-            return cleanup_roots_if_owned(true, &SecurityPrincipals::load_with_service()?);
+            return retire_legacy_cli(&image);
         };
         validate_service_contract(&service, image.path())?;
         let was_running = query_service_status(&service)?.dwCurrentState == SERVICE_RUNNING;
@@ -1016,7 +1014,8 @@ mod native {
         drop(service);
         wait_service_deleted(&manager)?;
         drop(_protected_root);
-        cleanup_roots_if_owned(true, &principals)
+        cleanup_roots_if_owned(true, &principals)?;
+        retire_legacy_cli(&image)
     }
 
     fn open_manager(access: u32) -> Result<OwnedScHandle, String> {

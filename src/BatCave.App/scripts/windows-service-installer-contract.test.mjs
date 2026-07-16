@@ -87,5 +87,21 @@ test("legacy Windows CLI cleanup stays exact and native", async () => {
   assert.match(provisioner, /const LEGACY_WINDOWS_CLI_IMAGES/u);
   assert.match(provisioner, /SetFileInformationByHandle/u);
   assert.match(provisioner, /FileDispositionInfo/u);
-  assert.equal(provisioner.match(/retire_legacy_cli\(&image\)\?/gmu)?.length, 3);
+  const prepareUpgrade = provisioner.slice(
+    provisioner.indexOf("pub(super) fn prepare_upgrade"),
+    provisioner.indexOf("pub(super) fn install"),
+  );
+  const install = provisioner.slice(
+    provisioner.indexOf("pub(super) fn install"),
+    provisioner.indexOf("pub(super) fn uninstall"),
+  );
+  const uninstall = provisioner.slice(
+    provisioner.indexOf("pub(super) fn uninstall"),
+    provisioner.indexOf("fn open_manager"),
+  );
+  assert.doesNotMatch(prepareUpgrade, /retire_legacy_cli/u);
+  assert.equal(install.match(/retire_legacy_cli\(&image\)/gmu)?.length, 2);
+  assert.equal(uninstall.match(/retire_legacy_cli\(&image\)/gmu)?.length, 2);
+  assert.ok(install.lastIndexOf("retire_legacy_cli") > install.indexOf("start_service_and_wait"));
+  assert.ok(uninstall.lastIndexOf("retire_legacy_cli") > uninstall.indexOf("wait_service_deleted"));
 });
