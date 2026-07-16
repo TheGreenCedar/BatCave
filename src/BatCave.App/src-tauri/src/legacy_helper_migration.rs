@@ -10,6 +10,7 @@ const ARTIFACT_NAMES: [&str; 4] = [
     "accepted.signal",
 ];
 
+#[cfg(windows)]
 pub(crate) fn legacy_state_present(base_dir: &Path) -> Result<bool, String> {
     metadata_if_present(&base_dir.join(HELPER_DIRECTORY), "helper_root")
         .map(|value| value.is_some())

@@ -1057,9 +1057,41 @@ impl RuntimeStore {
     fn from_base_dir_with_persistence(
         base_dir: PathBuf,
         clock: Arc<MonotonicWireClock>,
-        mut persistence: RuntimePersistenceCoordinator,
+        persistence: RuntimePersistenceCoordinator,
     ) -> Self {
         let provenance = RuntimeProvenance::detect(&base_dir);
+        Self::from_base_dir_with_persistence_and_provenance(
+            base_dir,
+            clock,
+            persistence,
+            provenance,
+        )
+    }
+
+    #[cfg(test)]
+    fn from_base_dir_with_test_provenance(
+        base_dir: PathBuf,
+        provenance: RuntimeProvenance,
+    ) -> Self {
+        let clock = Arc::new(MonotonicWireClock::new());
+        let persistence = RuntimePersistenceCoordinator::for_current_user_directory(
+            base_dir.clone(),
+            clock.now_ms(),
+        );
+        Self::from_base_dir_with_persistence_and_provenance(
+            base_dir,
+            clock,
+            persistence,
+            provenance,
+        )
+    }
+
+    fn from_base_dir_with_persistence_and_provenance(
+        base_dir: PathBuf,
+        clock: Arc<MonotonicWireClock>,
+        mut persistence: RuntimePersistenceCoordinator,
+        provenance: RuntimeProvenance,
+    ) -> Self {
         let mut warnings = VecDeque::new();
         #[cfg(windows)]
         let mut legacy_helper_migration_pending = true;
@@ -5916,7 +5948,7 @@ mod tests {
         fs::write(run_dir.join("snapshot.json"), "legacy").expect("legacy snapshot writes");
         fs::write(run_dir.join("stop.signal"), "stop").expect("legacy stop signal writes");
 
-        let _store = RuntimeStore::from_base_dir(base_dir.clone());
+        let _store = runtime_store_for_standard_user(base_dir.clone());
 
         assert!(!helper_root.exists());
         let _ = fs::remove_dir_all(base_dir);
@@ -5930,7 +5962,7 @@ mod tests {
         let rejected_artifact = helper_root.join("snapshot.json");
         fs::create_dir_all(&rejected_artifact).expect("unexpected artifact directory creates");
 
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let mut store = runtime_store_for_standard_user(base_dir.clone());
         assert!(store.legacy_helper_migration_pending);
         assert!(store.warnings.iter().any(|warning| {
             warning
@@ -5984,7 +6016,7 @@ mod tests {
         std::os::windows::fs::symlink_dir(&target_dir, &base_dir)
             .expect("invalid reparse root fixture creates");
 
-        let store = RuntimeStore::from_base_dir(base_dir.clone());
+        let store = runtime_store_for_standard_user(base_dir.clone());
 
         assert!(store.legacy_helper_migration_pending);
         assert!(store.warnings.iter().any(|warning| {
@@ -6437,9 +6469,7 @@ mod tests {
 
             let status = status_from_failure(&failure, false);
             let base_dir = runtime_test_dir(&format!("collector-service-negotiation-{label}"));
-            let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-            store.provenance =
-                RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+            let mut store = runtime_store_for_standard_user(base_dir.clone());
             let sampled_at_ms = store.clock.now_ms();
             store.apply_raw_sample(
                 crate::telemetry::TelemetrySample {
@@ -6875,7 +6905,7 @@ mod tests {
     #[test]
     fn shutdown_flushes_settings_and_warm_cache_once() {
         let base_dir = runtime_test_dir("shutdown-persistence-flush");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let mut store = runtime_store_for_standard_user(base_dir.clone());
         // This fixture proves the standard-user cache flush path independently of the host token.
         store.settings.ui_preferences = Some(RuntimeUiPreferences {
             theme: "ember".to_string(),
@@ -6981,6 +7011,13 @@ mod tests {
             std::env::temp_dir().join(format!("batcave-runtime-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn runtime_store_for_standard_user(base_dir: PathBuf) -> RuntimeStore {
+        RuntimeStore::from_base_dir_with_test_provenance(
+            base_dir,
+            RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard),
+        )
     }
 
     fn row_cpu_percent(row: &ProcessViewRow) -> f64 {
