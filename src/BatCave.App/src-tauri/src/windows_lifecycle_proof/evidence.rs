@@ -1,5 +1,16 @@
+use super::native::{
+    DirectorySnapshot, ElevatedMachineSnapshot, FileSnapshot, ProcessSnapshot, RegistrySnapshot,
+    RegistryView, ServiceSnapshot, VerifiedEvidenceFile,
+};
+use super::private_evidence::{
+    parse_private_success_packet, PrivateSuccessPacket, PrivateSuccessPayload,
+};
 use crate::collector_service::etw_lease::{
     EtwLeasePhase, EtwLeaseV1, EtwSessionIdentityV1, ETW_LEASE_SCHEMA_VERSION,
+};
+use crate::collector_service::windows_provisioner::{
+    AcePolicyForProof, InstalledBoundariesForProof, SecurityPrincipalForProof,
+    TerminatedServiceForProof,
 };
 #[cfg(test)]
 use crate::windows_lifecycle_proof_contract::DesktopPhaseObservation;
@@ -500,6 +511,468 @@ pub(super) fn validate_sanitized_export_bytes_with_parent_results(
     let packet: SanitizedExportPacket = serde_json::from_slice(bytes)
         .map_err(|_| "lifecycle_sanitized_export_json_invalid".to_string())?;
     validate_parent_desktop_results(&packet.private_evidence, parent_desktop_results, plan)
+}
+
+pub(super) fn validate_verified_private_projection(
+    private_files: &[VerifiedEvidenceFile],
+    sanitized_file: &VerifiedEvidenceFile,
+    plan: &ProofPlan,
+    controller_source_commit_sha: &str,
+    controller_sha256: &str,
+    parent_desktop_results: &[DesktopPhaseResult],
+) -> Result<(), String> {
+    validate_verified_projection_manifest(private_files, sanitized_file)?;
+    let expected_receipts = private_files
+        .iter()
+        .map(|file| file.receipt().clone())
+        .collect::<Vec<_>>();
+    let mut private_packets = Vec::with_capacity(private_files.len());
+    for file in private_files {
+        let bytes = file.read_all_exact("private_projection")?;
+        let packet = parse_private_success_packet(&file.receipt().name, &bytes)?;
+        private_packets.push((file.receipt(), packet));
+    }
+
+    let sanitized_bytes = sanitized_file.read_all_exact("sanitized_export")?;
+    reject_private_path_leakage(&sanitized_bytes)?;
+    validate_sanitized_export_bytes_with_parent_results(
+        &sanitized_bytes,
+        plan,
+        controller_source_commit_sha,
+        controller_sha256,
+        &expected_receipts,
+        parent_desktop_results,
+    )?;
+    let packet: SanitizedExportPacket = serde_json::from_slice(&sanitized_bytes)
+        .map_err(|_| "lifecycle_sanitized_export_json_invalid".to_string())?;
+    compare_verified_projection(&packet, &private_packets, plan, parent_desktop_results)?;
+
+    // The current raw packet deliberately does not claim the standard-parent
+    // current-user root, pipe ownership, ETW/lock/loss state, or the remaining
+    // stage artifacts. Those fields must be added to raw capture before a
+    // complete sanitized packet can be derived without trusting worker claims.
+    require_complete_raw_projection_authority()
+}
+
+fn require_complete_raw_projection_authority() -> Result<(), String> {
+    Err("lifecycle_private_projection_raw_authority_incomplete".to_string())
+}
+
+fn validate_verified_projection_manifest(
+    private_files: &[VerifiedEvidenceFile],
+    sanitized_file: &VerifiedEvidenceFile,
+) -> Result<(), String> {
+    for file in private_files {
+        file.revalidate()?;
+    }
+    sanitized_file.revalidate()?;
+    let private = private_files
+        .iter()
+        .map(|file| (file.receipt(), file.identity()))
+        .collect::<Vec<_>>();
+    validate_projection_manifest_parts(
+        &private,
+        (sanitized_file.receipt(), sanitized_file.identity()),
+    )
+}
+
+fn validate_projection_manifest_parts(
+    private: &[(&EvidenceReceipt, super::native::FileIdentity)],
+    sanitized: (&EvidenceReceipt, super::native::FileIdentity),
+) -> Result<(), String> {
+    if private.len() != SUCCESS_PRIVATE_EVIDENCE_LEAVES.len()
+        || sanitized.0.name != "windows-lifecycle-proof.sanitized.json"
+        || sanitized.0.size == 0
+        || sanitized.0.size > MAX_EVIDENCE_SIZE
+        || validate_sha256(&sanitized.0.sha256, "private_projection_sanitized").is_err()
+    {
+        return Err("lifecycle_private_projection_manifest_invalid".to_string());
+    }
+    let mut names = BTreeSet::new();
+    let mut identities = Vec::with_capacity(private.len() + 1);
+    for (receipt, identity) in private {
+        if receipt.size == 0
+            || receipt.size > MAX_EVIDENCE_SIZE
+            || validate_sha256(&receipt.sha256, "private_projection").is_err()
+            || !names.insert(receipt.name.as_str())
+            || identities.contains(identity)
+        {
+            return Err("lifecycle_private_projection_manifest_invalid".to_string());
+        }
+        identities.push(*identity);
+    }
+    if names
+        != SUCCESS_PRIVATE_EVIDENCE_LEAVES
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        || identities.contains(&sanitized.1)
+    {
+        return Err("lifecycle_private_projection_manifest_invalid".to_string());
+    }
+    Ok(())
+}
+
+fn reject_private_path_leakage(bytes: &[u8]) -> Result<(), String> {
+    let lower = bytes.iter().map(u8::to_ascii_lowercase).collect::<Vec<_>>();
+    let drive_absolute = lower
+        .windows(4)
+        .any(|window| window[0].is_ascii_alphabetic() && window[1..] == *b":\\\\");
+    if drive_absolute
+        || lower.windows(4).any(|window| window == b"\\\\\\\\")
+        || lower
+            .windows(b"batcavelifecycleproof-v1-".len())
+            .any(|window| window == b"batcavelifecycleproof-v1-")
+    {
+        return Err("lifecycle_private_projection_path_leak".to_string());
+    }
+    Ok(())
+}
+
+fn compare_verified_projection(
+    export: &SanitizedExportPacket,
+    private_packets: &[(&EvidenceReceipt, PrivateSuccessPacket)],
+    plan: &ProofPlan,
+    parent_desktop_results: &[DesktopPhaseResult],
+) -> Result<(), String> {
+    let by_name = export
+        .private_evidence
+        .iter()
+        .map(|entry| (entry.receipt.name.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    for (receipt, packet) in private_packets {
+        let entry = by_name
+            .get(receipt.name.as_str())
+            .copied()
+            .ok_or_else(|| "lifecycle_private_projection_manifest_invalid".to_string())?;
+        if entry.receipt != **receipt {
+            return Err("lifecycle_private_projection_receipt_mismatch".to_string());
+        }
+        let machine = match packet.payload() {
+            PrivateSuccessPayload::Machine(machine) => {
+                if entry.desktop_phase.is_some() || entry.event.is_some() {
+                    return Err("lifecycle_private_projection_payload_mismatch".to_string());
+                }
+                machine
+            }
+            PrivateSuccessPayload::Desktop(desktop) => {
+                let parent = parent_desktop_results
+                    .iter()
+                    .find(|result| result.phase == desktop.result.phase)
+                    .ok_or_else(|| {
+                        "lifecycle_private_projection_parent_desktop_missing".to_string()
+                    })?;
+                if desktop.result != *parent {
+                    return Err("lifecycle_private_projection_parent_desktop_drift".to_string());
+                }
+                let projected = sanitize_parent_desktop_result(&desktop.result)?;
+                if entry.desktop_phase.as_ref() != Some(&projected) || entry.event.is_some() {
+                    return Err("lifecycle_private_projection_desktop_drift".to_string());
+                }
+                &desktop.machine
+            }
+            PrivateSuccessPayload::ServiceCrash(crash) => {
+                let projected =
+                    SanitizedStageEvent::ServiceCrash(project_service_crash(&crash.termination)?);
+                if entry.event.as_ref() != Some(&projected) || entry.desktop_phase.is_some() {
+                    return Err("lifecycle_private_projection_event_drift".to_string());
+                }
+                &crash.machine
+            }
+            PrivateSuccessPayload::UpgradeRollback(rollback) => {
+                let projected =
+                    SanitizedStageEvent::UpgradeRollback(SanitizedUpgradeRollbackEvent {
+                        candidate_sha256: rollback.rollback.candidate_sha256.clone(),
+                        candidate_failure_code: rollback.rollback.candidate_failure_code.clone(),
+                        candidate_failure_detail: rollback
+                            .rollback
+                            .candidate_failure_detail
+                            .clone(),
+                        execution_marker_sha256: rollback.rollback.execution_marker_sha256.clone(),
+                        restored_sha256: rollback.rollback.restored_sha256.clone(),
+                        restored_process_id: rollback.rollback.restored_process_id,
+                    });
+                if entry.event.as_ref() != Some(&projected) || entry.desktop_phase.is_some() {
+                    return Err("lifecycle_private_projection_event_drift".to_string());
+                }
+                &rollback.machine
+            }
+        };
+        compare_machine_projection(machine, &entry.machine, plan)?;
+    }
+    Ok(())
+}
+
+fn compare_machine_projection(
+    raw: &ElevatedMachineSnapshot,
+    sanitized: &SanitizedMachineSnapshot,
+    _plan: &ProofPlan,
+) -> Result<(), String> {
+    let roots = projection_roots()?;
+    compare_service_projection(
+        &raw.machine.service,
+        &raw.machine.service_binary,
+        &raw.installed_boundaries,
+        &sanitized.service,
+    )?;
+    compare_observation(
+        &project_directory_observation(&raw.machine.install_root, &roots, LogicalRoot::Install)?,
+        &sanitized.install_root,
+    )?;
+    compare_observation(
+        &project_file_observation(&raw.machine.monitor)?,
+        &sanitized.monitor,
+    )?;
+    compare_observation(
+        &project_file_observation(&raw.machine.service_binary)?,
+        &sanitized.service_binary,
+    )?;
+    compare_observation(
+        &project_file_observation(&raw.machine.uninstaller)?,
+        &sanitized.uninstaller,
+    )?;
+    compare_observation(
+        &project_file_observation(&raw.machine.legacy_cli)?,
+        &sanitized.legacy_cli,
+    )?;
+    compare_observation(
+        &project_registry_observation(&raw.machine.uninstall_registry, &roots)?,
+        &sanitized.uninstall_registry,
+    )?;
+    compare_observation(
+        &project_process_observation(&raw.machine.product_processes, &roots)?,
+        &sanitized.product_processes,
+    )?;
+    compare_observation(
+        &project_directory_observation(&raw.product_data_root, &roots, LogicalRoot::ProductData)?,
+        &sanitized.product_data_root,
+    )?;
+    compare_observation(
+        &project_directory_observation(&raw.service_data_root, &roots, LogicalRoot::ServiceData)?,
+        &sanitized.service_data_root,
+    )?;
+    compare_observation(
+        &project_boundaries_observation(&raw.installed_boundaries)?,
+        &sanitized.installed_boundaries,
+    )
+}
+
+fn projection_roots() -> Result<Vec<SanitizationRoot>, String> {
+    Ok(vec![
+        SanitizationRoot::new(LogicalRoot::Install, r"C:\Program Files\BatCave Monitor")?,
+        SanitizationRoot::new(LogicalRoot::ProductData, r"C:\ProgramData\BatCaveMonitor")?,
+        SanitizationRoot::new(
+            LogicalRoot::ServiceData,
+            r"C:\ProgramData\BatCaveMonitor\Service",
+        )?,
+        SanitizationRoot::new(
+            LogicalRoot::WebViewRuntime,
+            r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application",
+        )?,
+    ])
+}
+
+fn compare_service_projection(
+    raw: &Observation<ServiceSnapshot>,
+    raw_service_file: &Observation<FileSnapshot>,
+    raw_boundaries: &Observation<InstalledBoundariesForProof>,
+    sanitized: &Observation<SanitizedServiceSnapshot>,
+) -> Result<(), String> {
+    match (raw, sanitized) {
+        (Observation::Absent, Observation::Absent) => Ok(()),
+        (Observation::Present(raw), Observation::Present(sanitized)) => {
+            if raw.state != sanitized.state
+                || raw.process_id != sanitized.process_id
+                || raw.process_started_at_100ns != sanitized.process_started_at_100ns
+                || raw.win32_exit_code != sanitized.win32_exit_code
+                || raw.service_specific_exit_code != sanitized.service_specific_exit_code
+            {
+                return Err("lifecycle_private_projection_service_drift".to_string());
+            }
+            let Observation::Present(file) = raw_service_file else {
+                return Err("lifecycle_private_projection_service_file_missing".to_string());
+            };
+            let Observation::Present(boundaries) = raw_boundaries else {
+                return Err("lifecycle_private_projection_service_boundary_missing".to_string());
+            };
+            if file.sha256 != sanitized.image_sha256
+                || boundaries.service_dacl_sha256 != sanitized.service_dacl_sha256
+            {
+                return Err("lifecycle_private_projection_service_drift".to_string());
+            }
+            Ok(())
+        }
+        (Observation::Unknown(_), _) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        _ => Err("lifecycle_private_projection_service_drift".to_string()),
+    }
+}
+
+fn project_file_observation(
+    raw: &Observation<FileSnapshot>,
+) -> Result<Observation<SanitizedFileSnapshot>, String> {
+    project_observation(raw, |file| {
+        Ok(SanitizedFileSnapshot {
+            size: file.size,
+            sha256: file.sha256.clone(),
+            volume_serial: file.identity.volume_serial,
+            file_index: file.identity.file_index,
+        })
+    })
+}
+
+fn project_directory_observation(
+    raw: &Observation<DirectorySnapshot>,
+    roots: &[SanitizationRoot],
+    expected_root: LogicalRoot,
+) -> Result<Observation<SanitizedDirectorySnapshot>, String> {
+    project_observation(raw, |directory| {
+        let final_path = sanitize_path(&directory.final_path, roots)?;
+        if final_path.root != expected_root {
+            return Err("lifecycle_private_projection_directory_root_invalid".to_string());
+        }
+        Ok(SanitizedDirectorySnapshot {
+            volume_serial: directory.identity.volume_serial,
+            file_index: directory.identity.file_index,
+            final_path,
+        })
+    })
+}
+
+fn project_registry_observation(
+    raw: &Observation<RegistrySnapshot>,
+    roots: &[SanitizationRoot],
+) -> Result<Observation<SanitizedRegistrySnapshot>, String> {
+    project_observation(raw, |registry| {
+        let install_location = sanitize_path(&registry.install_location, roots)?;
+        if install_location.root != LogicalRoot::Install
+            || !install_location.relative_leaf.is_empty()
+        {
+            return Err("lifecycle_private_projection_registry_root_invalid".to_string());
+        }
+        Ok(SanitizedRegistrySnapshot {
+            view: match registry.view {
+                RegistryView::Registry32 => "32",
+                RegistryView::Registry64 => "64",
+            }
+            .to_string(),
+            key: LogicalPath {
+                root: LogicalRoot::Hklm,
+                relative_leaf:
+                    "software/microsoft/windows/currentversion/uninstall/batcave-monitor"
+                        .to_string(),
+            },
+            install_location,
+        })
+    })
+}
+
+fn project_process_observation(
+    raw: &Observation<Vec<ProcessSnapshot>>,
+    roots: &[SanitizationRoot],
+) -> Result<Observation<Vec<SanitizedProcessSnapshot>>, String> {
+    project_observation(raw, |processes| {
+        processes
+            .iter()
+            .map(|process| {
+                Ok(SanitizedProcessSnapshot {
+                    process_id: process.process_id,
+                    executable_name: process.executable_name.clone(),
+                    executable_path: process
+                        .executable_path
+                        .as_deref()
+                        .map(|path| sanitize_path(path, roots))
+                        .transpose()?,
+                })
+            })
+            .collect()
+    })
+}
+
+fn project_boundaries_observation(
+    raw: &Observation<InstalledBoundariesForProof>,
+) -> Result<Observation<SanitizedBoundarySnapshot>, String> {
+    project_observation(raw, |boundaries| {
+        Ok(SanitizedBoundarySnapshot {
+            service_dacl_sha256: boundaries.service_dacl_sha256.clone(),
+            service_aces: boundaries
+                .service_aces
+                .iter()
+                .map(project_ace)
+                .collect::<Result<_, _>>()?,
+            service_data_root_owner: project_principal(boundaries.service_data_root.owner)?,
+            service_data_root_dacl_protected: boundaries.service_data_root.dacl_protected,
+            service_data_root_reparse: boundaries.service_data_root.reparse,
+            service_data_root_dacl_sha256: boundaries.service_data_root_dacl_sha256.clone(),
+            service_data_root_aces: boundaries
+                .service_data_root
+                .aces
+                .iter()
+                .map(project_ace)
+                .collect::<Result<_, _>>()?,
+        })
+    })
+}
+
+fn project_ace(ace: &AcePolicyForProof) -> Result<SanitizedAceSnapshot, String> {
+    Ok(SanitizedAceSnapshot {
+        principal: project_principal(ace.principal)?,
+        allow: ace.allow,
+        inherit_only: ace.inherit_only,
+        object_inherit: ace.object_inherit,
+        container_inherit: ace.container_inherit,
+        mask: ace.mask,
+    })
+}
+
+fn project_principal(principal: SecurityPrincipalForProof) -> Result<SanitizedPrincipal, String> {
+    match principal {
+        SecurityPrincipalForProof::LocalSystem => Ok(SanitizedPrincipal::LocalSystem),
+        SecurityPrincipalForProof::Administrators => Ok(SanitizedPrincipal::Administrators),
+        SecurityPrincipalForProof::InteractiveUsers => Ok(SanitizedPrincipal::InteractiveUsers),
+        SecurityPrincipalForProof::CollectorService => Ok(SanitizedPrincipal::CollectorService),
+        SecurityPrincipalForProof::TrustedInstaller | SecurityPrincipalForProof::Other => {
+            Err("lifecycle_private_projection_principal_invalid".to_string())
+        }
+    }
+}
+
+fn project_service_crash(
+    termination: &TerminatedServiceForProof,
+) -> Result<SanitizedServiceCrashEvent, String> {
+    Ok(SanitizedServiceCrashEvent {
+        process_id: termination.target.process_id,
+        process_started_at_100ns: termination.target.process_started_at_100ns,
+        image_path: sanitize_path(&termination.target.image_path, &projection_roots()?)?,
+        image_sha256: termination.target.image_sha256.clone(),
+        process_exit_code: termination.process_exit_code,
+        win32_exit_code: termination.win32_exit_code,
+        service_specific_exit_code: termination.service_specific_exit_code,
+    })
+}
+
+fn project_observation<T, U>(
+    raw: &Observation<T>,
+    project: impl FnOnce(&T) -> Result<U, String>,
+) -> Result<Observation<U>, String> {
+    match raw {
+        Observation::Present(value) => Ok(Observation::Present(project(value)?)),
+        Observation::Absent => Ok(Observation::Absent),
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+    }
+}
+
+fn compare_observation<T: PartialEq>(
+    projected: &Observation<T>,
+    supplied: &Observation<T>,
+) -> Result<(), String> {
+    if projected == supplied {
+        Ok(())
+    } else {
+        Err("lifecycle_private_projection_machine_drift".to_string())
+    }
 }
 
 fn validate_sanitized_private_evidence(
@@ -2639,7 +3112,14 @@ fn valid_bounded_reason(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::private_evidence::{
+        packet_for_test, PrivateDesktopPayload, PrivateServiceCrashPayload,
+        PrivateUpgradeRollbackPayload,
+    };
     use super::*;
+    use crate::collector_service::windows_provisioner::{
+        FailedUpgradeRollbackForProof, SecurityPolicyForProof, ServiceTerminationTargetForProof,
+    };
     use crate::windows_lifecycle_proof_contract::{
         parse_plan, DesktopCollectorState, DesktopPrivilegedSource,
     };
@@ -2650,6 +3130,384 @@ mod tests {
             require_private_evidence_projection_ready(),
             Err("lifecycle_private_evidence_projection_not_reviewed".to_string())
         );
+    }
+
+    #[test]
+    fn verified_projection_derives_representable_machine_semantics() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let entry = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "initial-state.private.json")
+            .expect("initial entry");
+        let packet = packet_for_test(PrivateSuccessPayload::Machine(raw_machine(&entry.machine)));
+
+        assert_eq!(
+            compare_verified_projection(
+                &export,
+                &[(&entry.receipt, packet)],
+                &plan,
+                &parent_desktop_results(&plan),
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            require_complete_raw_projection_authority(),
+            Err("lifecycle_private_projection_raw_authority_incomplete".to_string())
+        );
+    }
+
+    #[test]
+    fn verified_projection_rejects_worker_sanitized_drift_and_swapped_machine_payloads() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let original = valid_export(&plan, &receipts);
+        let initial = original
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "initial-state.private.json")
+            .expect("initial entry");
+        let raw = raw_machine(&initial.machine);
+
+        let mut drifted = original.clone();
+        let drifted_initial = drifted
+            .private_evidence
+            .iter_mut()
+            .find(|entry| entry.receipt.name == "initial-state.private.json")
+            .expect("drifted initial");
+        let Observation::Present(monitor) = &mut drifted_initial.machine.monitor else {
+            panic!("initial monitor");
+        };
+        monitor.sha256 = "f".repeat(64);
+        assert_eq!(
+            compare_verified_projection(
+                &drifted,
+                &[(
+                    &initial.receipt,
+                    packet_for_test(PrivateSuccessPayload::Machine(raw.clone())),
+                )],
+                &plan,
+                &parent_desktop_results(&plan),
+            ),
+            Err("lifecycle_private_projection_machine_drift".to_string())
+        );
+
+        let final_repair = original
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("final repair");
+        assert!(compare_verified_projection(
+            &original,
+            &[(
+                &final_repair.receipt,
+                packet_for_test(PrivateSuccessPayload::Machine(raw)),
+            )],
+            &plan,
+            &parent_desktop_results(&plan),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn present_service_requires_exact_raw_binary_and_boundary_authority() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let entry = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("running service entry");
+        let raw = raw_machine(&entry.machine);
+
+        for missing_binary in [
+            Observation::Absent,
+            Observation::Unknown("lifecycle_service_binary_access_denied".to_string()),
+        ] {
+            let mut hostile = raw.clone();
+            hostile.machine.service_binary = missing_binary;
+            assert_eq!(
+                compare_machine_projection(&hostile, &entry.machine, &plan),
+                Err("lifecycle_private_projection_service_file_missing".to_string())
+            );
+        }
+
+        for missing_boundaries in [
+            Observation::Absent,
+            Observation::Unknown("lifecycle_service_boundary_access_denied".to_string()),
+        ] {
+            let mut hostile = raw.clone();
+            hostile.installed_boundaries = missing_boundaries;
+            assert_eq!(
+                compare_machine_projection(&hostile, &entry.machine, &plan),
+                Err("lifecycle_private_projection_service_boundary_missing".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn verified_projection_rejects_parent_desktop_and_crash_event_drift() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let mut parent = parent_desktop_results(&plan);
+        let final_primary = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-primary-desktop.private.json")
+            .expect("final primary");
+        let result = parent
+            .iter()
+            .find(|result| result.phase == DesktopPhase::FinalPrimary)
+            .expect("parent final primary")
+            .clone();
+        parent[0]
+            .observation
+            .as_mut()
+            .expect("parent observation")
+            .desktop
+            .process_id += 1;
+        assert_eq!(
+            compare_verified_projection(
+                &export,
+                &[(
+                    &final_primary.receipt,
+                    packet_for_test(PrivateSuccessPayload::Desktop(Box::new(
+                        PrivateDesktopPayload {
+                            machine: raw_machine(&final_primary.machine),
+                            result,
+                        },
+                    ))),
+                )],
+                &plan,
+                &parent,
+            ),
+            Err("lifecycle_private_projection_parent_desktop_drift".to_string())
+        );
+
+        let crashed = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "baseline-crashed-state.private.json")
+            .expect("baseline crash");
+        let Some(SanitizedStageEvent::ServiceCrash(event)) = crashed.event.as_ref() else {
+            panic!("crash event");
+        };
+        let mut termination = raw_termination(event);
+        termination.target.process_id += 1;
+        assert_eq!(
+            compare_verified_projection(
+                &export,
+                &[(
+                    &crashed.receipt,
+                    packet_for_test(PrivateSuccessPayload::ServiceCrash(
+                        PrivateServiceCrashPayload {
+                            machine: raw_machine(&crashed.machine),
+                            termination,
+                        },
+                    )),
+                )],
+                &plan,
+                &parent_desktop_results(&plan),
+            ),
+            Err("lifecycle_private_projection_event_drift".to_string())
+        );
+
+        let rollback = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "baseline-rollback-recovery-state.private.json")
+            .expect("rollback");
+        let Some(SanitizedStageEvent::UpgradeRollback(event)) = rollback.event.as_ref() else {
+            panic!("rollback event");
+        };
+        let mut raw_rollback = FailedUpgradeRollbackForProof {
+            candidate_sha256: event.candidate_sha256.clone(),
+            candidate_failure_code: event.candidate_failure_code.clone(),
+            candidate_failure_detail: event.candidate_failure_detail.clone(),
+            execution_marker_sha256: event.execution_marker_sha256.clone(),
+            restored_sha256: event.restored_sha256.clone(),
+            restored_process_id: event.restored_process_id,
+        };
+        raw_rollback.restored_process_id += 1;
+        assert_eq!(
+            compare_verified_projection(
+                &export,
+                &[(
+                    &rollback.receipt,
+                    packet_for_test(PrivateSuccessPayload::UpgradeRollback(
+                        PrivateUpgradeRollbackPayload {
+                            machine: raw_machine(&rollback.machine),
+                            rollback: raw_rollback,
+                        },
+                    )),
+                )],
+                &plan,
+                &parent_desktop_results(&plan),
+            ),
+            Err("lifecycle_private_projection_event_drift".to_string())
+        );
+    }
+
+    #[test]
+    fn unrepresented_worker_pipe_etw_and_current_user_claims_never_complete_projection() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let mut export = valid_export(&plan, &receipts);
+        let entry = export
+            .private_evidence
+            .iter_mut()
+            .find(|entry| entry.receipt.name == "initial-state.private.json")
+            .expect("initial entry");
+        let raw = raw_machine(&entry.machine);
+        entry.machine.named_pipe = Some(SanitizedNamedPipeSnapshot {
+            server_process_id: 999,
+        });
+        entry.machine.etw_session = Some(healthy_etw(
+            &plan.final_candidate.service_sha256,
+            &test_service_instance_id(999, 999),
+        ));
+        export.current_user_retention.settings.after_uninstall =
+            Observation::Present(SanitizedDigestSnapshot {
+                size: 99,
+                sha256: "f".repeat(64),
+            });
+
+        assert_eq!(
+            compare_machine_projection(&raw, &entry.machine, &plan),
+            Ok(())
+        );
+        assert_eq!(
+            require_complete_raw_projection_authority(),
+            Err("lifecycle_private_projection_raw_authority_incomplete".to_string())
+        );
+    }
+
+    #[test]
+    fn projection_rejects_hostile_private_paths_and_export_leakage() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let initial = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "initial-state.private.json")
+            .expect("initial entry");
+        for hostile in [
+            r"C:\Users\albert\private.txt",
+            r"\\server\share\BatCave",
+            r"C:\Program Files\BatCave Monitor\..\secret",
+            r"C:\Program Files\BatCave Monitor\file.exe:stream",
+            r"C:\Program Files\BatCave Monitor\NUL",
+            r"C:\ProgramData\BatCaveLifecycleProof-v1-secret",
+        ] {
+            let mut raw = raw_machine(&initial.machine);
+            raw.machine.install_root = Observation::Present(DirectorySnapshot {
+                identity: super::super::native::FileIdentity {
+                    volume_serial: 1,
+                    file_index: 2,
+                },
+                final_path: hostile.to_string(),
+            });
+            assert!(
+                compare_machine_projection(&raw, &initial.machine, &plan).is_err(),
+                "{hostile}"
+            );
+        }
+
+        for leaked in [
+            br#"{"path":"C:\\Users\\albert\\private.txt"}"#.as_slice(),
+            br#"{"path":"\\\\server\\share\\private.txt"}"#.as_slice(),
+            br#"{"root":"BatCaveLifecycleProof-v1-secret"}"#.as_slice(),
+        ] {
+            assert_eq!(
+                reject_private_path_leakage(leaked),
+                Err("lifecycle_private_projection_path_leak".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn projection_manifest_rejects_missing_extra_duplicate_tampered_and_reused_files() {
+        let receipts = success_receipts();
+        let identities = (0..receipts.len())
+            .map(|index| super::super::native::FileIdentity {
+                volume_serial: 1,
+                file_index: index as u64 + 1,
+            })
+            .collect::<Vec<_>>();
+        let sanitized_receipt = EvidenceReceipt {
+            name: "windows-lifecycle-proof.sanitized.json".to_string(),
+            size: 1,
+            sha256: "b".repeat(64),
+        };
+        let sanitized_identity = super::super::native::FileIdentity {
+            volume_serial: 1,
+            file_index: 100,
+        };
+        let entries = receipts
+            .iter()
+            .zip(&identities)
+            .map(|(receipt, identity)| (receipt, *identity))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_projection_manifest_parts(&entries, (&sanitized_receipt, sanitized_identity)),
+            Ok(())
+        );
+        assert!(validate_projection_manifest_parts(
+            &entries[..entries.len() - 1],
+            (&sanitized_receipt, sanitized_identity)
+        )
+        .is_err());
+
+        let mut duplicate_receipts = receipts.clone();
+        duplicate_receipts[1] = duplicate_receipts[0].clone();
+        let duplicate_entries = duplicate_receipts
+            .iter()
+            .zip(&identities)
+            .map(|(receipt, identity)| (receipt, *identity))
+            .collect::<Vec<_>>();
+        assert!(validate_projection_manifest_parts(
+            &duplicate_entries,
+            (&sanitized_receipt, sanitized_identity)
+        )
+        .is_err());
+
+        let mut reused = entries.clone();
+        reused[1].1 = reused[0].1;
+        assert!(validate_projection_manifest_parts(
+            &reused,
+            (&sanitized_receipt, sanitized_identity)
+        )
+        .is_err());
+        assert!(
+            validate_projection_manifest_parts(&entries, (&sanitized_receipt, entries[0].1))
+                .is_err()
+        );
+
+        let mut tampered_receipts = receipts.clone();
+        tampered_receipts[0].sha256 = "not-a-digest".to_string();
+        let tampered_entries = tampered_receipts
+            .iter()
+            .zip(&identities)
+            .map(|(receipt, identity)| (receipt, *identity))
+            .collect::<Vec<_>>();
+        assert!(validate_projection_manifest_parts(
+            &tampered_entries,
+            (&sanitized_receipt, sanitized_identity)
+        )
+        .is_err());
+
+        let mut extra = entries.clone();
+        extra.push((&sanitized_receipt, sanitized_identity));
+        assert!(validate_projection_manifest_parts(
+            &extra,
+            (&sanitized_receipt, sanitized_identity)
+        )
+        .is_err());
     }
 
     fn roots() -> Vec<SanitizationRoot> {
@@ -3378,6 +4236,136 @@ mod tests {
         .is_err());
     }
 
+    fn raw_machine(machine: &SanitizedMachineSnapshot) -> ElevatedMachineSnapshot {
+        ElevatedMachineSnapshot {
+            machine: super::super::native::PreflightSnapshot {
+                service: raw_observation(&machine.service, |service| ServiceSnapshot {
+                    state: service.state,
+                    process_id: service.process_id,
+                    process_started_at_100ns: service.process_started_at_100ns,
+                    win32_exit_code: service.win32_exit_code,
+                    service_specific_exit_code: service.service_specific_exit_code,
+                }),
+                install_root: raw_observation(&machine.install_root, raw_directory),
+                monitor: raw_observation(&machine.monitor, raw_file),
+                service_binary: raw_observation(&machine.service_binary, raw_file),
+                uninstaller: raw_observation(&machine.uninstaller, raw_file),
+                legacy_cli: raw_observation(&machine.legacy_cli, raw_file),
+                uninstall_registry: raw_observation(&machine.uninstall_registry, |registry| {
+                    RegistrySnapshot {
+                        view: if registry.view == "32" {
+                            RegistryView::Registry32
+                        } else {
+                            RegistryView::Registry64
+                        },
+                        install_location: raw_path(&registry.install_location),
+                    }
+                }),
+                product_processes: raw_observation(&machine.product_processes, |processes| {
+                    processes
+                        .iter()
+                        .map(|process| ProcessSnapshot {
+                            process_id: process.process_id,
+                            parent_process_id: 0,
+                            executable_name: process.executable_name.clone(),
+                            executable_path: process.executable_path.as_ref().map(raw_path),
+                        })
+                        .collect()
+                }),
+            },
+            product_data_root: raw_observation(&machine.product_data_root, raw_directory),
+            service_data_root: raw_observation(&machine.service_data_root, raw_directory),
+            current_user_data_root: Observation::Unknown(
+                "lifecycle_current_user_root_parent_authority_missing".to_string(),
+            ),
+            installed_boundaries: raw_observation(&machine.installed_boundaries, raw_boundaries),
+        }
+    }
+
+    fn raw_observation<T, U>(
+        observation: &Observation<T>,
+        map: impl FnOnce(&T) -> U,
+    ) -> Observation<U> {
+        match observation {
+            Observation::Present(value) => Observation::Present(map(value)),
+            Observation::Absent => Observation::Absent,
+            Observation::Unknown(reason) => Observation::Unknown(reason.clone()),
+        }
+    }
+
+    fn raw_file(file: &SanitizedFileSnapshot) -> FileSnapshot {
+        FileSnapshot {
+            size: file.size,
+            sha256: file.sha256.clone(),
+            identity: super::super::native::FileIdentity {
+                volume_serial: file.volume_serial,
+                file_index: file.file_index,
+            },
+        }
+    }
+
+    fn raw_directory(directory: &SanitizedDirectorySnapshot) -> DirectorySnapshot {
+        DirectorySnapshot {
+            identity: super::super::native::FileIdentity {
+                volume_serial: directory.volume_serial,
+                file_index: directory.file_index,
+            },
+            final_path: raw_path(&directory.final_path),
+        }
+    }
+
+    fn raw_boundaries(boundaries: &SanitizedBoundarySnapshot) -> InstalledBoundariesForProof {
+        InstalledBoundariesForProof {
+            service_dacl_sha256: boundaries.service_dacl_sha256.clone(),
+            service_aces: boundaries.service_aces.iter().map(raw_ace).collect(),
+            service_data_root_dacl_sha256: boundaries.service_data_root_dacl_sha256.clone(),
+            service_data_root: SecurityPolicyForProof {
+                owner: raw_principal(boundaries.service_data_root_owner),
+                dacl_protected: boundaries.service_data_root_dacl_protected,
+                reparse: boundaries.service_data_root_reparse,
+                aces: boundaries
+                    .service_data_root_aces
+                    .iter()
+                    .map(raw_ace)
+                    .collect(),
+            },
+        }
+    }
+
+    fn raw_ace(ace: &SanitizedAceSnapshot) -> AcePolicyForProof {
+        AcePolicyForProof {
+            principal: raw_principal(ace.principal),
+            allow: ace.allow,
+            inherit_only: ace.inherit_only,
+            object_inherit: ace.object_inherit,
+            container_inherit: ace.container_inherit,
+            mask: ace.mask,
+        }
+    }
+
+    fn raw_principal(principal: SanitizedPrincipal) -> SecurityPrincipalForProof {
+        match principal {
+            SanitizedPrincipal::LocalSystem => SecurityPrincipalForProof::LocalSystem,
+            SanitizedPrincipal::Administrators => SecurityPrincipalForProof::Administrators,
+            SanitizedPrincipal::InteractiveUsers => SecurityPrincipalForProof::InteractiveUsers,
+            SanitizedPrincipal::CollectorService => SecurityPrincipalForProof::CollectorService,
+        }
+    }
+
+    fn raw_termination(event: &SanitizedServiceCrashEvent) -> TerminatedServiceForProof {
+        TerminatedServiceForProof {
+            target: ServiceTerminationTargetForProof {
+                process_id: event.process_id,
+                process_started_at_100ns: event.process_started_at_100ns,
+                image_path: raw_path(&event.image_path),
+                image_sha256: event.image_sha256.clone(),
+            },
+            process_exit_code: event.process_exit_code,
+            win32_exit_code: event.win32_exit_code,
+            service_specific_exit_code: event.service_specific_exit_code,
+        }
+    }
+
     fn success_receipts() -> Vec<EvidenceReceipt> {
         SUCCESS_PRIVATE_EVIDENCE_LEAVES
             .iter()
@@ -3650,6 +4638,9 @@ mod tests {
     fn raw_path(path: &LogicalPath) -> String {
         let root = match path.root {
             LogicalRoot::Install => r"C:\Program Files\BatCave Monitor",
+            LogicalRoot::ProductData => r"C:\ProgramData\BatCaveMonitor",
+            LogicalRoot::ServiceData => r"C:\ProgramData\BatCaveMonitor\Service",
+            LogicalRoot::CurrentUserData => r"C:\Users\proof\AppData\Local\BatCaveMonitor",
             LogicalRoot::WebViewRuntime => {
                 r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application"
             }

@@ -137,6 +137,20 @@ pub(super) struct PrivateSuccessPacket {
     payload: PrivateSuccessPayload,
 }
 
+impl PrivateSuccessPacket {
+    pub(super) fn payload(&self) -> &PrivateSuccessPayload {
+        &self.payload
+    }
+}
+
+#[cfg(test)]
+pub(super) fn packet_for_test(payload: PrivateSuccessPayload) -> PrivateSuccessPacket {
+    PrivateSuccessPacket {
+        schema_version: PRIVATE_SUCCESS_SCHEMA.to_string(),
+        payload,
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
@@ -154,22 +168,22 @@ pub(super) enum PrivateSuccessPayload {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PrivateDesktopPayload {
-    machine: ElevatedMachineSnapshot,
-    result: DesktopPhaseResult,
+    pub(super) machine: ElevatedMachineSnapshot,
+    pub(super) result: DesktopPhaseResult,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PrivateServiceCrashPayload {
-    machine: ElevatedMachineSnapshot,
-    termination: TerminatedServiceForProof,
+    pub(super) machine: ElevatedMachineSnapshot,
+    pub(super) termination: TerminatedServiceForProof,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PrivateUpgradeRollbackPayload {
-    machine: ElevatedMachineSnapshot,
-    rollback: FailedUpgradeRollbackForProof,
+    pub(super) machine: ElevatedMachineSnapshot,
+    pub(super) rollback: FailedUpgradeRollbackForProof,
 }
 
 pub(super) fn write_machine_packet(

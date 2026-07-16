@@ -272,12 +272,12 @@ fn run_parent() -> Result<i32, String> {
                     .ok_or_else(|| "lifecycle_sanitized_export_missing".to_string())?;
                 let sanitized_evidence_guard =
                     native::verify_evidence_receipt(evidence_root_guard, sanitized_export)?;
-                evidence::validate_sanitized_export_bytes_with_parent_results(
-                    &sanitized_evidence_guard.read_all_exact("sanitized_export")?,
+                evidence::validate_verified_private_projection(
+                    &private_evidence_guards,
+                    &sanitized_evidence_guard,
                     &preflight.plan,
                     &preflight.source_commit_sha,
                     &preflight.controller.sha256_hex(),
-                    &result.private_evidence,
                     &desktop_results,
                 )?;
                 revalidate_preflight_artifacts(&preflight)?;

@@ -176,6 +176,29 @@ pub(crate) struct OwnedFile {
     identity: FileIdentity,
 }
 
+pub(crate) struct VerifiedEvidenceFile {
+    receipt: EvidenceReceipt,
+    file: OwnedFile,
+}
+
+impl VerifiedEvidenceFile {
+    pub(crate) fn receipt(&self) -> &EvidenceReceipt {
+        &self.receipt
+    }
+
+    pub(crate) fn identity(&self) -> FileIdentity {
+        self.file.identity()
+    }
+
+    pub(crate) fn read_all_exact(&self, label: &str) -> Result<Vec<u8>, String> {
+        self.file.read_all_exact(label)
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        self.file.revalidate()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
 pub(crate) enum ProcessTerminal {
@@ -1733,16 +1756,20 @@ pub(crate) fn open_protected_evidence_root(
 pub(crate) fn verify_evidence_receipt(
     root: &ProtectedEvidenceRoot,
     receipt: &EvidenceReceipt,
-) -> Result<OwnedFile, String> {
+) -> Result<VerifiedEvidenceFile, String> {
     if !valid_evidence_name(&receipt.name) || receipt.size == 0 {
         return Err("lifecycle_failure_evidence_receipt_invalid".to_string());
     }
-    OwnedFile::open(
+    let file = OwnedFile::open(
         &root.root.join(&receipt.name),
         receipt.size,
         &receipt.sha256,
         "failure_evidence",
-    )
+    )?;
+    Ok(VerifiedEvidenceFile {
+        receipt: receipt.clone(),
+        file,
+    })
 }
 
 fn evidence_receipt(name: &str, payload: &[u8]) -> EvidenceReceipt {
@@ -3129,6 +3156,13 @@ mod tests {
         assert_eq!(receipt.sha256.len(), 64);
         let guard =
             verify_evidence_receipt(scratch.evidence(), &receipt).expect("exact bytes must verify");
+        assert_eq!(guard.receipt(), &receipt);
+        assert_eq!(
+            guard
+                .read_all_exact("verified_receipt")
+                .expect("read exact"),
+            payload
+        );
         drop(guard);
 
         fs::write(scratch.root.join(name), br#"{"reason":"forged"}"#)
