@@ -14,6 +14,12 @@ Every release artifact contains the offline-capable Windows NSIS installer, Wind
 
 On Windows, `batcave-monitor-cli.exe` is a standalone release asset for benchmarks and automation; it is not an NSIS-installed product component. The per-machine installer owns the desktop and collector service binaries only. Upgrade and uninstall recognize the single historical CLI payload by its exact size and SHA-256, remove those bytes through the verified open file handle, and reject any different object at that fixed path as untrusted residue.
 
+## Windows collector privilege migration
+
+The collector-service cutover removes the launch-time elevated-helper mode, its `set_admin_mode` command and persisted preference, helper IPC and snapshot contracts, and the `elevated_helper` runtime source. Protected Windows collection now comes only from the authenticated installed collector service or an already-elevated desktop process. Missing, stopped, incompatible, or unauthorized service states remain visible and fall back to standard-access collection.
+
+Upgrade startup performs bounded migration cleanup for historically shipped helper artifacts under the current user's `BatCaveMonitor\elevated-helper` directory. It removes only the known files and valid run-directory shapes, preserves unknown or unsafe entries, and never follows reparse points or recursively deletes an untrusted tree. Source validation and packaging prove the retired path is absent from the new build; installed upgrade, restart, multi-user, rollback, and uninstall behavior still require native Windows lifecycle evidence before release acceptance.
+
 ## Platform support and proof
 
 The [platform capabilities matrix](platform-capabilities.md) is the canonical human view of supported release profiles; the [version 1 platform support contract](evidence/releases/platform-support-contract.v1.json) is the machine authority. `declared` records the intended host, architecture, runtime, and package boundary. `source_enforced` records that repository configuration, hosted builds, metadata, and extraction-only package checks agree with that boundary. Every current profile still has `native_oldest_supported: pending`, so none of those checks proves installation or runtime behavior on its oldest-supported host.
