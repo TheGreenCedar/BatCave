@@ -42,6 +42,8 @@ pub(super) fn run_parent_desktop_phase(
         phase,
         disposition: DesktopPhaseDisposition::Failed,
         process_tree_settled: true,
+        observation: None,
+        failure_reason: Some("lifecycle_desktop_phase_not_implemented".to_string()),
     })
 }
 
@@ -862,8 +864,8 @@ fn failed(
         completed_stage,
         failure: Some(failure),
         process_tree_settled,
-        private_evidence_complete: false,
-        sanitized_export_complete: false,
+        private_evidence: Vec::new(),
+        sanitized_export: None,
     }
 }
 

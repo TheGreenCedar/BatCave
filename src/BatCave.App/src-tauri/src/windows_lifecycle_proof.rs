@@ -1,11 +1,14 @@
+#[allow(dead_code)] // The fail-closed export contract is wired by the remaining lifecycle stages.
+mod evidence;
 mod lifecycle;
 mod native;
 
 use crate::windows_lifecycle_proof_contract::{
-    message_sha256, parse_plan, plan_sha256, validate_envelope, validate_locator, validate_nonce,
-    validate_sha256, ClosedRequest, DesktopPhaseDisposition, DesktopPhaseResult, Envelope,
-    EvidenceReceipt, LifecycleStage, ParentMessage, ProofPlan, SequenceGate, WorkerFailureKind,
-    WorkerMessage, WorkerResult, PROTOCOL_SCHEMA,
+    message_sha256, parse_plan, plan_sha256, validate_desktop_phase_result, validate_envelope,
+    validate_locator, validate_nonce, validate_sha256, ClosedRequest, DesktopPhase,
+    DesktopPhaseDisposition, DesktopPhaseResult, Envelope, EvidenceReceipt, LifecycleStage,
+    ParentMessage, ProofPlan, SequenceGate, WorkerFailureKind, WorkerMessage, WorkerResult,
+    PROTOCOL_SCHEMA, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
 };
 use native::{OwnedFile, PipeConnection, PreflightSnapshot};
 use serde::Serialize;
@@ -13,13 +16,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(45 * 60);
-const DESKTOP_PHASES: [crate::windows_lifecycle_proof_contract::DesktopPhase; 6] = [
-    crate::windows_lifecycle_proof_contract::DesktopPhase::FinalPrimary,
-    crate::windows_lifecycle_proof_contract::DesktopPhase::BaselinePrimary,
-    crate::windows_lifecycle_proof_contract::DesktopPhase::BaselineSecondInstance,
-    crate::windows_lifecycle_proof_contract::DesktopPhase::FinalMissingService,
-    crate::windows_lifecycle_proof_contract::DesktopPhase::FinalStoppedService,
-    crate::windows_lifecycle_proof_contract::DesktopPhase::FinalIncompatibleService,
+const DESKTOP_PHASES: [DesktopPhase; 6] = [
+    DesktopPhase::FinalPrimary,
+    DesktopPhase::BaselinePrimary,
+    DesktopPhase::BaselineSecondInstance,
+    DesktopPhase::FinalMissingService,
+    DesktopPhase::FinalStoppedService,
+    DesktopPhase::FinalIncompatibleService,
 ];
 
 #[derive(Debug)]
@@ -40,6 +43,9 @@ struct ControllerOutcome {
     failure_evidence_verified: Option<bool>,
     evidence_error: Option<String>,
     parent_followup_error: Option<String>,
+    private_evidence: Option<Vec<EvidenceReceipt>>,
+    sanitized_export: Option<EvidenceReceipt>,
+    success_evidence_verified: Option<bool>,
     profile: Option<String>,
     controller_source_commit_sha: Option<String>,
     evidence_root: Option<String>,
@@ -72,6 +78,9 @@ pub(crate) fn run() -> i32 {
                 failure_evidence_verified: None,
                 evidence_error: None,
                 parent_followup_error: None,
+                private_evidence: None,
+                sanitized_export: None,
+                success_evidence_verified: None,
                 profile: None,
                 controller_source_commit_sha: None,
                 evidence_root: None,
@@ -96,6 +105,9 @@ fn dispatch(entry: Entry) -> Result<i32, String> {
                 failure_evidence_verified: None,
                 evidence_error: None,
                 parent_followup_error: None,
+                private_evidence: None,
+                sanitized_export: None,
+                success_evidence_verified: None,
                 profile: Some(preflight.plan.profile),
                 controller_source_commit_sha: Some(preflight.source_commit_sha),
                 evidence_root: None,
@@ -163,6 +175,7 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
 fn run_parent() -> Result<i32, String> {
     let preflight = parent_preflight()?;
     lifecycle::require_controller_ready()?;
+    evidence::require_private_evidence_projection_ready()?;
     let locator = native::random_hex(crate::windows_lifecycle_proof_contract::LOCATOR_HEX_LENGTH)?;
     let nonce = native::random_hex(crate::windows_lifecycle_proof_contract::NONCE_HEX_LENGTH)?;
     let mut pipe = native::create_parent_pipe(&locator)?;
@@ -183,6 +196,7 @@ fn run_parent() -> Result<i32, String> {
 
     let mut evidence_root = None;
     let mut desktop_phase_index = 0;
+    let mut desktop_results = Vec::with_capacity(DESKTOP_PHASES.len());
     loop {
         let envelope: Envelope<WorkerMessage> = pipe.read_json(SESSION_TIMEOUT)?;
         validate_envelope(&envelope, &nonce, &mut gate)?;
@@ -213,12 +227,16 @@ fn run_parent() -> Result<i32, String> {
                     phase,
                     disposition: DesktopPhaseDisposition::Failed,
                     process_tree_settled: false,
+                    observation: None,
+                    failure_reason: Some("lifecycle_desktop_phase_runner_failed".to_string()),
                 });
+                validate_requested_desktop_phase_result(phase, &result, &preflight.plan)?;
+                desktop_results.push(result.clone());
                 send_parent_message(
                     &mut pipe,
                     &nonce,
                     &mut gate,
-                    ParentMessage::DesktopPhaseComplete(result),
+                    ParentMessage::DesktopPhaseComplete(Box::new(result)),
                 )?;
                 desktop_phase_index += 1;
             }
@@ -236,6 +254,30 @@ fn run_parent() -> Result<i32, String> {
                 if exit_code != 0 {
                     return Err("lifecycle_worker_exit_mismatch".to_string());
                 }
+                let evidence_root_value = evidence_root
+                    .as_deref()
+                    .ok_or_else(|| "lifecycle_evidence_root_missing".to_string())?;
+                let mut private_evidence_guards = Vec::with_capacity(result.private_evidence.len());
+                for receipt in &result.private_evidence {
+                    private_evidence_guards.push(native::verify_evidence_receipt(
+                        evidence_root_value,
+                        receipt,
+                    )?);
+                }
+                let sanitized_export = result
+                    .sanitized_export
+                    .as_ref()
+                    .ok_or_else(|| "lifecycle_sanitized_export_missing".to_string())?;
+                let sanitized_evidence_guard =
+                    native::verify_evidence_receipt(evidence_root_value, sanitized_export)?;
+                evidence::validate_sanitized_export_bytes_with_parent_results(
+                    &sanitized_evidence_guard.read_all_exact("sanitized_export")?,
+                    &preflight.plan,
+                    &preflight.source_commit_sha,
+                    &preflight.controller.sha256_hex(),
+                    &result.private_evidence,
+                    &desktop_results,
+                )?;
                 print_json(&ControllerOutcome {
                     disposition: "passed",
                     reason: None,
@@ -245,6 +287,9 @@ fn run_parent() -> Result<i32, String> {
                     failure_evidence_verified: None,
                     evidence_error: None,
                     parent_followup_error: None,
+                    private_evidence: Some(result.private_evidence.clone()),
+                    sanitized_export: result.sanitized_export.clone(),
+                    success_evidence_verified: Some(true),
                     profile: Some(preflight.plan.profile),
                     controller_source_commit_sha: Some(preflight.source_commit_sha),
                     evidence_root,
@@ -295,6 +340,9 @@ fn run_parent() -> Result<i32, String> {
                     failure_evidence_verified,
                     evidence_error: failure.evidence_error.clone(),
                     parent_followup_error,
+                    private_evidence: None,
+                    sanitized_export: None,
+                    success_evidence_verified: None,
                     profile: Some(preflight.plan.profile),
                     controller_source_commit_sha: Some(preflight.source_commit_sha),
                     evidence_root,
@@ -304,6 +352,17 @@ fn run_parent() -> Result<i32, String> {
             }
         }
     }
+}
+
+fn validate_requested_desktop_phase_result(
+    requested_phase: DesktopPhase,
+    result: &DesktopPhaseResult,
+    plan: &ProofPlan,
+) -> Result<(), String> {
+    if result.phase != requested_phase {
+        return Err("lifecycle_desktop_phase_result_mismatch".to_string());
+    }
+    validate_desktop_phase_result(result, plan)
 }
 
 fn settle_reported_worker_failure(
@@ -493,17 +552,19 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
     if !disposition_matches {
         return Err("lifecycle_worker_disposition_invalid".to_string());
     }
-    if expected_success && (!result.private_evidence_complete || !result.sanitized_export_complete)
-    {
-        return Err("lifecycle_worker_evidence_incomplete".to_string());
-    }
     if expected_success {
-        if !result.process_tree_settled {
+        if !result.process_tree_settled
+            || result.completed_stage != Some(LifecycleStage::FinalUninstall)
+            || result.private_evidence.is_empty()
+            || result.private_evidence.len() > 64
+            || result.sanitized_export.is_none()
+            || !valid_success_evidence_receipts(result)
+        {
             return Err("lifecycle_worker_result_invalid".to_string());
         }
         return Ok(());
     }
-    if result.private_evidence_complete || result.sanitized_export_complete {
+    if !result.private_evidence.is_empty() || result.sanitized_export.is_some() {
         return Err("lifecycle_worker_failure_evidence_state_invalid".to_string());
     }
     let failure = result
@@ -553,6 +614,44 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
         return Err("lifecycle_worker_failure_shape_invalid".to_string());
     }
     Ok(())
+}
+
+fn valid_success_evidence_receipts(result: &WorkerResult) -> bool {
+    let mut names = std::collections::BTreeSet::new();
+    if result.private_evidence.iter().any(|receipt| {
+        receipt.size == 0
+            || receipt.size > 8 * 1024 * 1024
+            || !receipt.name.ends_with(".private.json")
+            || !valid_evidence_leaf(&receipt.name)
+            || validate_sha256(&receipt.sha256, "private_evidence").is_err()
+            || !names.insert(receipt.name.as_str())
+    }) {
+        return false;
+    }
+    if names
+        != SUCCESS_PRIVATE_EVIDENCE_LEAVES
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    {
+        return false;
+    }
+    result.sanitized_export.as_ref().is_some_and(|receipt| {
+        receipt.name == "windows-lifecycle-proof.sanitized.json"
+            && receipt.size > 0
+            && receipt.size <= 8 * 1024 * 1024
+            && validate_sha256(&receipt.sha256, "sanitized_export").is_ok()
+            && names.insert(receipt.name.as_str())
+    })
+}
+
+fn valid_evidence_leaf(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && !value.starts_with('.')
+        && !value.contains("..")
 }
 
 fn mutation_failure_binding(
@@ -640,15 +739,31 @@ mod tests {
     }
 
     #[test]
-    fn worker_result_requires_matching_disposition_and_settlement() {
-        let passed = WorkerResult {
-            disposition: WorkerDisposition::Passed,
-            completed_stage: None,
-            failure: None,
-            process_tree_settled: true,
-            private_evidence_complete: true,
-            sanitized_export_complete: true,
+    fn parent_rejects_a_valid_result_for_the_wrong_requested_desktop_phase() {
+        let plan = parse_plan().expect("plan");
+        let result = DesktopPhaseResult {
+            phase: DesktopPhase::BaselinePrimary,
+            disposition: DesktopPhaseDisposition::Failed,
+            process_tree_settled: false,
+            observation: None,
+            failure_reason: Some("lifecycle_desktop_phase_runner_failed".to_string()),
         };
+
+        assert!(validate_requested_desktop_phase_result(
+            DesktopPhase::BaselinePrimary,
+            &result,
+            &plan
+        )
+        .is_ok());
+        assert_eq!(
+            validate_requested_desktop_phase_result(DesktopPhase::FinalPrimary, &result, &plan),
+            Err("lifecycle_desktop_phase_result_mismatch".to_string())
+        );
+    }
+
+    #[test]
+    fn worker_result_requires_matching_disposition_and_settlement() {
+        let passed = success_result();
         assert!(validate_worker_result(&passed, true).is_ok());
 
         let mut forged = passed;
@@ -656,6 +771,46 @@ mod tests {
         assert_eq!(
             validate_worker_result(&forged, true),
             Err("lifecycle_worker_disposition_invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn worker_success_requires_unique_fixed_private_and_sanitized_receipts() {
+        let passed = success_result();
+        assert!(validate_worker_result(&passed, true).is_ok());
+
+        let mut incomplete = passed.clone();
+        incomplete.private_evidence.pop();
+        assert_eq!(
+            validate_worker_result(&incomplete, true),
+            Err("lifecycle_worker_result_invalid".to_string())
+        );
+
+        let mut duplicate = passed.clone();
+        duplicate
+            .private_evidence
+            .push(duplicate.private_evidence[0].clone());
+        assert_eq!(
+            validate_worker_result(&duplicate, true),
+            Err("lifecycle_worker_result_invalid".to_string())
+        );
+
+        let mut injected = passed.clone();
+        injected.private_evidence[0].name = "../initial-state.private.json".to_string();
+        assert_eq!(
+            validate_worker_result(&injected, true),
+            Err("lifecycle_worker_result_invalid".to_string())
+        );
+
+        let mut wrong_export = passed;
+        wrong_export
+            .sanitized_export
+            .as_mut()
+            .expect("sanitized")
+            .name = "sanitized.json".to_string();
+        assert_eq!(
+            validate_worker_result(&wrong_export, true),
+            Err("lifecycle_worker_result_invalid".to_string())
         );
     }
 
@@ -791,14 +946,28 @@ mod tests {
         failed_result_at(LifecycleStage::InitialState, failure)
     }
 
+    fn success_result() -> WorkerResult {
+        WorkerResult {
+            disposition: WorkerDisposition::Passed,
+            completed_stage: Some(LifecycleStage::FinalUninstall),
+            failure: None,
+            process_tree_settled: true,
+            private_evidence: SUCCESS_PRIVATE_EVIDENCE_LEAVES
+                .iter()
+                .map(|name| evidence_receipt(name))
+                .collect(),
+            sanitized_export: Some(evidence_receipt("windows-lifecycle-proof.sanitized.json")),
+        }
+    }
+
     fn failed_result_at(completed_stage: LifecycleStage, failure: WorkerFailure) -> WorkerResult {
         WorkerResult {
             disposition: WorkerDisposition::Failed,
             completed_stage: Some(completed_stage),
             failure: Some(failure),
             process_tree_settled: true,
-            private_evidence_complete: false,
-            sanitized_export_complete: false,
+            private_evidence: Vec::new(),
+            sanitized_export: None,
         }
     }
 
