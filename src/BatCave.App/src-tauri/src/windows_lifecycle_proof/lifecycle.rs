@@ -1,8 +1,10 @@
 use super::native::{
-    capture_elevated_machine_snapshot, open_installed_uninstaller,
-    require_allowlisted_elevated_preflight, require_elevated_installed_candidate,
-    require_elevated_total_product_absence, ElevatedMachineSnapshot, ExecuteFailure, OwnedFile,
-    PipeConnection, ProcessTerminal, ProcessTerminalSnapshot, ProtectedEvidenceRoot,
+    capture_elevated_machine_snapshot, open_allowlisted_legacy_cli, open_installed_service,
+    open_installed_uninstaller, parse_sha256, require_allowlisted_elevated_preflight,
+    require_elevated_crashed_candidate, require_elevated_installed_candidate,
+    require_elevated_stopped_candidate, require_elevated_total_product_absence,
+    ElevatedMachineSnapshot, ExecuteFailure, OwnedFile, PipeConnection, ProcessTerminal,
+    ProcessTerminalSnapshot, ProtectedEvidenceRoot,
 };
 use crate::windows_lifecycle_proof_contract::{
     DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult, LifecycleStage, ProofPlan,
@@ -16,9 +18,12 @@ const CONTROLLER_READY: bool = false;
 const MUTATION_FAILURE_SCHEMA: &str = "batcave.windows-lifecycle.mutation-failure.v1";
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const UNINSTALLER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const SERVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const FINAL_REPAIR_ARGUMENTS: &str = "/S /UPDATE";
 const BASELINE_INSTALL_ARGUMENTS: &str = "/S";
 const DIRECT_UNINSTALL_ARGUMENTS: &str = r"/S _?=C:\Program Files\BatCave Monitor";
+const SERVICE_STOP_ARGUMENTS: &str = "--provision prepare-upgrade";
+const SERVICE_START_ARGUMENTS: &str = "--provision install";
 
 pub(super) fn require_controller_ready() -> Result<(), String> {
     if CONTROLLER_READY {
@@ -94,6 +99,27 @@ fn execute_worker_inner(
         })?;
     require_allowlisted_elevated_preflight(&initial, plan)
         .map_err(|failure| (None, controller_failure(failure), true))?;
+
+    let historical_cli = open_allowlisted_legacy_cli(plan).map_err(|failure| {
+        (
+            Some(LifecycleStage::InitialState),
+            controller_failure(failure),
+            true,
+        )
+    })?;
+    let _historical_cli_copy = historical_cli
+        .copy_to(
+            &evidence.root().join("historical-cli.exe"),
+            "historical_cli_copy",
+        )
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::InitialState),
+                controller_failure(failure),
+                true,
+            )
+        })?;
+    drop(historical_cli);
 
     let final_copy = final_candidate
         .copy_to(
@@ -227,7 +253,214 @@ fn execute_worker_inner(
                 true,
             )
         })?;
-    Ok(LifecycleStage::BaselineInstall)
+
+    let baseline_service = open_installed_service(&plan.baseline).map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineInstall),
+            controller_failure(failure),
+            true,
+        )
+    })?;
+    let baseline_restart_stopped = execute_mutation(
+        evidence,
+        "baseline-restart-failure.private.json",
+        LifecycleStage::BaselineRestart,
+        &baseline_install_state,
+        &baseline_service,
+        SERVICE_STOP_ARGUMENTS,
+        SERVICE_OPERATION_TIMEOUT,
+        "baseline_restart_stop",
+        "lifecycle_baseline_restart_stop_failed",
+        |snapshot| {
+            require_elevated_stopped_candidate(
+                snapshot,
+                &plan.baseline,
+                false,
+                "baseline_restart_stop",
+            )
+        },
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::BaselineInstall), failure, settled))?;
+    evidence
+        .write_json_new(
+            "baseline-restart-stopped-state.private.json",
+            &baseline_restart_stopped,
+        )
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::BaselineInstall),
+                evidence_write_failure(
+                    "lifecycle_baseline_restart_stopped_evidence_incomplete",
+                    failure,
+                ),
+                true,
+            )
+        })?;
+    let baseline_restart_state = execute_mutation(
+        evidence,
+        "baseline-restart-failure.private.json",
+        LifecycleStage::BaselineRestart,
+        &baseline_restart_stopped,
+        &baseline_service,
+        SERVICE_START_ARGUMENTS,
+        SERVICE_OPERATION_TIMEOUT,
+        "baseline_restart_start",
+        "lifecycle_baseline_restart_start_failed",
+        |snapshot| {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.baseline,
+                false,
+                "baseline_restart_start",
+            )
+        },
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::BaselineInstall), failure, settled))?;
+    evidence
+        .write_json_new(
+            "baseline-restart-state.private.json",
+            &baseline_restart_state,
+        )
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::BaselineRestart),
+                evidence_write_failure("lifecycle_baseline_restart_evidence_incomplete", failure),
+                true,
+            )
+        })?;
+
+    require_running_service(&baseline_restart_state, "baseline_crash_before").map_err(
+        |failure| {
+            (
+                Some(LifecycleStage::BaselineRestart),
+                controller_failure(failure),
+                true,
+            )
+        },
+    )?;
+    let expected_service_sha256 = parse_sha256(&plan.baseline.service_sha256, "baseline_service")
+        .map_err(|failure| {
+        (
+            Some(LifecycleStage::BaselineRestart),
+            controller_failure(failure),
+            true,
+        )
+    })?;
+    let termination =
+        match crate::collector_service::windows_provisioner::terminate_running_service_for_proof(
+            expected_service_sha256,
+        ) {
+            Ok(termination) => termination,
+            Err(failure) => {
+                let failure = write_service_crash_failure(
+                    evidence,
+                    "baseline-crash-recovery-failure.private.json",
+                    LifecycleStage::BaselineCrashRecovery,
+                    &baseline_restart_state,
+                    &failure.reason,
+                    failure.service_settled,
+                    ServiceCrashMutationObservation::Failed(&failure),
+                );
+                let process_tree_settled = failure.kind != WorkerFailureKind::ProcessSettlement;
+                return Err((
+                    Some(LifecycleStage::BaselineRestart),
+                    failure,
+                    process_tree_settled,
+                ));
+            }
+        };
+    let baseline_crashed_state = capture_elevated_machine_snapshot();
+    if let Err(reason) = require_elevated_crashed_candidate(
+        &baseline_crashed_state,
+        &plan.baseline,
+        false,
+        "baseline_crash",
+    ) {
+        let failure = write_service_crash_failure(
+            evidence,
+            "baseline-crash-recovery-failure.private.json",
+            LifecycleStage::BaselineCrashRecovery,
+            &baseline_restart_state,
+            &reason,
+            true,
+            ServiceCrashMutationObservation::Terminated(&termination),
+        );
+        return Err((Some(LifecycleStage::BaselineRestart), failure, true));
+    }
+    let crashed = ServiceCrashState {
+        termination,
+        machine: &baseline_crashed_state,
+    };
+    evidence
+        .write_json_new("baseline-crashed-state.private.json", &crashed)
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::BaselineRestart),
+                evidence_write_failure("lifecycle_baseline_crashed_evidence_incomplete", failure),
+                true,
+            )
+        })?;
+    let baseline_crash_recovery_state = execute_mutation(
+        evidence,
+        "baseline-crash-recovery-failure.private.json",
+        LifecycleStage::BaselineCrashRecovery,
+        &baseline_crashed_state,
+        &baseline_service,
+        SERVICE_START_ARGUMENTS,
+        SERVICE_OPERATION_TIMEOUT,
+        "baseline_crash_recovery",
+        "lifecycle_baseline_crash_recovery_failed",
+        |snapshot| {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.baseline,
+                false,
+                "baseline_crash_recovery",
+            )?;
+            require_running_service(snapshot, "baseline_crash_recovery").map(|_| ())
+        },
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::BaselineRestart), failure, settled))?;
+    evidence
+        .write_json_new(
+            "baseline-crash-recovery-state.private.json",
+            &baseline_crash_recovery_state,
+        )
+        .map_err(|failure| {
+            (
+                Some(LifecycleStage::BaselineCrashRecovery),
+                evidence_write_failure(
+                    "lifecycle_baseline_crash_recovery_evidence_incomplete",
+                    failure,
+                ),
+                true,
+            )
+        })?;
+    Ok(LifecycleStage::BaselineCrashRecovery)
+}
+
+#[derive(Serialize)]
+struct ServiceCrashState<'a> {
+    termination: crate::collector_service::windows_provisioner::TerminatedServiceForProof,
+    machine: &'a ElevatedMachineSnapshot,
+}
+
+#[derive(Serialize)]
+struct ServiceCrashFailurePacket<'a> {
+    schema_version: &'static str,
+    attempted_stage: LifecycleStage,
+    reason: &'a str,
+    service_settled: bool,
+    mutation: ServiceCrashMutationObservation<'a>,
+    machine_before_mutation: &'a ElevatedMachineSnapshot,
+    machine_after_attempt: ElevatedMachineSnapshot,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "outcome", content = "observation")]
+enum ServiceCrashMutationObservation<'a> {
+    Failed(&'a crate::collector_service::windows_provisioner::ServiceTerminationFailure),
+    Terminated(&'a crate::collector_service::windows_provisioner::TerminatedServiceForProof),
 }
 
 #[derive(Serialize)]
@@ -363,6 +596,60 @@ fn mutation_terminal_failure(unsuccessful_reason: &str, terminal: &ProcessTermin
     }
 }
 
+fn require_running_service<'a>(
+    snapshot: &'a ElevatedMachineSnapshot,
+    label: &str,
+) -> Result<&'a super::native::ServiceSnapshot, String> {
+    match &snapshot.machine.service {
+        crate::windows_lifecycle_proof_contract::Observation::Present(service)
+            if service.state == windows_sys::Win32::System::Services::SERVICE_RUNNING
+                && service.process_id != 0 =>
+        {
+            Ok(service)
+        }
+        _ => Err(format!("lifecycle_{label}_service_not_running")),
+    }
+}
+
+fn write_service_crash_failure(
+    evidence: &ProtectedEvidenceRoot,
+    evidence_name: &'static str,
+    attempted_stage: LifecycleStage,
+    before: &ElevatedMachineSnapshot,
+    reason: &str,
+    service_settled: bool,
+    mutation: ServiceCrashMutationObservation<'_>,
+) -> WorkerFailure {
+    let packet = ServiceCrashFailurePacket {
+        schema_version: MUTATION_FAILURE_SCHEMA,
+        attempted_stage,
+        reason,
+        service_settled,
+        mutation,
+        machine_before_mutation: before,
+        machine_after_attempt: capture_elevated_machine_snapshot(),
+    };
+    let (receipt, evidence_error) = match evidence.write_json_new(evidence_name, &packet) {
+        Ok(receipt) => (Some(receipt), None),
+        Err(error) => (None, Some(error)),
+    };
+    WorkerFailure {
+        kind: if service_settled {
+            if receipt.is_some() {
+                WorkerFailureKind::Mutation
+            } else {
+                WorkerFailureKind::EvidenceWrite
+            }
+        } else {
+            WorkerFailureKind::ProcessSettlement
+        },
+        attempted_stage: Some(attempted_stage),
+        reason: reason.to_string(),
+        evidence: receipt,
+        evidence_error,
+    }
+}
+
 fn controller_failure(reason: String) -> WorkerFailure {
     WorkerFailure {
         kind: WorkerFailureKind::Controller,
@@ -410,6 +697,12 @@ mod tests {
         );
         assert!(DIRECT_UNINSTALL_ARGUMENTS.ends_with(r"BatCave Monitor"));
         assert!(!DIRECT_UNINSTALL_ARGUMENTS.contains('"'));
+    }
+
+    #[test]
+    fn service_lifecycle_uses_only_production_provisioner_verbs() {
+        assert_eq!(SERVICE_STOP_ARGUMENTS, "--provision prepare-upgrade");
+        assert_eq!(SERVICE_START_ARGUMENTS, "--provision install");
     }
 
     #[test]

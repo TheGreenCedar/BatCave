@@ -1041,6 +1041,36 @@ pub(crate) fn open_installed_uninstaller(candidate: &Candidate) -> Result<OwnedF
     )
 }
 
+pub(crate) fn open_installed_service(candidate: &Candidate) -> Result<OwnedFile, String> {
+    let service = OwnedFile::open_unchecked(Path::new(SERVICE_PATH), "installed_service")?;
+    if service.sha256_hex() != candidate.service_sha256 {
+        return Err("lifecycle_installed_service_identity_mismatch".to_string());
+    }
+    Ok(service)
+}
+
+pub(crate) fn open_allowlisted_legacy_cli(plan: &ProofPlan) -> Result<OwnedFile, String> {
+    let legacy = OwnedFile::open_unchecked(Path::new(LEGACY_CLI_PATH), "allowlisted_legacy_cli")?;
+    if legacy.sha256_hex() != plan.allowlisted_start.legacy_cli_sha256 {
+        return Err("lifecycle_allowlisted_legacy_cli_identity_mismatch".to_string());
+    }
+    Ok(legacy)
+}
+
+pub(crate) fn parse_sha256(value: &str, label: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 {
+        return Err(format!("lifecycle_{label}_sha256_invalid"));
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high =
+            hex_nibble(pair[0]).ok_or_else(|| format!("lifecycle_{label}_sha256_invalid"))?;
+        let low = hex_nibble(pair[1]).ok_or_else(|| format!("lifecycle_{label}_sha256_invalid"))?;
+        digest[index] = (high << 4) | low;
+    }
+    Ok(digest)
+}
+
 pub(crate) fn require_allowlisted_parent_preflight(
     snapshot: &PreflightSnapshot,
     plan: &ProofPlan,
@@ -1166,6 +1196,106 @@ pub(crate) fn require_elevated_installed_candidate(
         expect_legacy_cli_absent,
         label,
     )?;
+    require_present(
+        &snapshot.installed_boundaries,
+        &format!("{label}_installed_boundaries"),
+    )?;
+    require_present(
+        &snapshot.product_data_root,
+        &format!("{label}_product_data_root"),
+    )?;
+    require_present(
+        &snapshot.service_data_root,
+        &format!("{label}_service_data_root"),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn require_elevated_stopped_candidate(
+    snapshot: &ElevatedMachineSnapshot,
+    candidate: &Candidate,
+    expect_legacy_cli_absent: bool,
+    label: &str,
+) -> Result<(), String> {
+    require_elevated_stopped_candidate_inner(
+        snapshot,
+        candidate,
+        expect_legacy_cli_absent,
+        true,
+        label,
+    )
+}
+
+pub(crate) fn require_elevated_crashed_candidate(
+    snapshot: &ElevatedMachineSnapshot,
+    candidate: &Candidate,
+    expect_legacy_cli_absent: bool,
+    label: &str,
+) -> Result<(), String> {
+    require_elevated_stopped_candidate_inner(
+        snapshot,
+        candidate,
+        expect_legacy_cli_absent,
+        false,
+        label,
+    )
+}
+
+fn require_elevated_stopped_candidate_inner(
+    snapshot: &ElevatedMachineSnapshot,
+    candidate: &Candidate,
+    expect_legacy_cli_absent: bool,
+    require_clean_exit: bool,
+    label: &str,
+) -> Result<(), String> {
+    let service = require_present(&snapshot.machine.service, label)?;
+    if service.state != windows_sys::Win32::System::Services::SERVICE_STOPPED
+        || service.process_id != 0
+        || (require_clean_exit
+            && (service.win32_exit_code != 0 || service.service_specific_exit_code != 0))
+        || (!require_clean_exit
+            && service.win32_exit_code == 0
+            && service.service_specific_exit_code == 0)
+    {
+        return Err(format!(
+            "lifecycle_{label}_service_not_{}stopped",
+            if require_clean_exit { "cleanly_" } else { "" }
+        ));
+    }
+    require_fixed_install_root(&snapshot.machine.install_root, label)?;
+    require_file_hash(
+        &snapshot.machine.monitor,
+        &candidate.monitor_sha256,
+        &format!("{label}_monitor"),
+    )?;
+    require_file_hash(
+        &snapshot.machine.service_binary,
+        &candidate.service_sha256,
+        &format!("{label}_service"),
+    )?;
+    require_file_size_and_hash(
+        &snapshot.machine.uninstaller,
+        candidate.uninstaller_size,
+        &candidate.uninstaller_sha256,
+        &format!("{label}_uninstaller"),
+    )?;
+    if expect_legacy_cli_absent {
+        require_absent(&snapshot.machine.legacy_cli, &format!("{label}_legacy_cli"))?;
+    }
+    let registry = require_present(
+        &snapshot.machine.uninstall_registry,
+        &format!("{label}_uninstall_registry"),
+    )?;
+    if !is_fixed_install_location(&registry.install_location) {
+        return Err(format!("lifecycle_{label}_install_location_invalid"));
+    }
+    let processes = require_present(
+        &snapshot.machine.product_processes,
+        &format!("{label}_product_processes"),
+    )?;
+    if !processes.is_empty() {
+        return Err(format!("lifecycle_{label}_process_residue"));
+    }
     require_present(
         &snapshot.installed_boundaries,
         &format!("{label}_installed_boundaries"),
@@ -2076,6 +2206,14 @@ fn hex_digest(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
+}
+
 fn create_event(reason: &str) -> Result<OwnedHandle, String> {
     let handle =
         unsafe { windows_sys::Win32::System::Threading::CreateEventW(null(), 1, 0, null()) };
@@ -2489,6 +2627,22 @@ mod tests {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
         }
+    }
+
+    #[test]
+    fn sha256_parser_accepts_only_canonical_lower_hex() {
+        let value = "01".repeat(32);
+        let parsed = parse_sha256(&value, "fixture").expect("canonical digest");
+        assert_eq!(parsed[0], 1);
+        assert_eq!(parsed[31], 1);
+        assert_eq!(
+            parse_sha256(&"A1".repeat(32), "fixture"),
+            Err("lifecycle_fixture_sha256_invalid".to_string())
+        );
+        assert_eq!(
+            parse_sha256("00", "fixture"),
+            Err("lifecycle_fixture_sha256_invalid".to_string())
+        );
     }
 
     #[test]

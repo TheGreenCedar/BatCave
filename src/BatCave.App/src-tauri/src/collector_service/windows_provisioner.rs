@@ -152,6 +152,52 @@ pub(crate) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
     native::data_roots_for_proof()
 }
 
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct ServiceTerminationTargetForProof {
+    pub(crate) process_id: u32,
+    pub(crate) process_started_at_100ns: u64,
+    pub(crate) image_path: String,
+    pub(crate) image_sha256: String,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct ServiceTerminationObservationForProof {
+    pub(crate) service_state: Option<u32>,
+    pub(crate) service_process_id: Option<u32>,
+    pub(crate) win32_exit_code: Option<u32>,
+    pub(crate) service_specific_exit_code: Option<u32>,
+    pub(crate) lifecycle_marker_settled: bool,
+    pub(crate) process_exited: bool,
+    pub(crate) process_exit_code: Option<u32>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct TerminatedServiceForProof {
+    pub(crate) target: ServiceTerminationTargetForProof,
+    pub(crate) process_exit_code: u32,
+    pub(crate) win32_exit_code: u32,
+    pub(crate) service_specific_exit_code: u32,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct ServiceTerminationFailure {
+    pub(crate) reason: String,
+    pub(crate) service_settled: bool,
+    pub(crate) target: Option<ServiceTerminationTargetForProof>,
+    pub(crate) terminal_observation: Option<ServiceTerminationObservationForProof>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn terminate_running_service_for_proof(
+    expected_sha256: [u8; 32],
+) -> Result<TerminatedServiceForProof, Box<ServiceTerminationFailure>> {
+    native::terminate_running_service_for_proof(expected_sha256)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PrincipalClass {
     LocalSystem,
@@ -336,7 +382,7 @@ mod native {
             ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ALL_ASSIGNED,
             ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
             ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SERVICE_NOT_ACTIVE, ERROR_SHARING_VIOLATION,
-            ERROR_SUCCESS, HANDLE, LUID, WAIT_OBJECT_0,
+            ERROR_SUCCESS, HANDLE, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Security::{
             AclSizeInformation, AdjustTokenPrivileges,
@@ -386,8 +432,9 @@ mod native {
                 SERVICE_WIN32_OWN_PROCESS,
             },
             Threading::{
-                GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
-                WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+                GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken,
+                QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
             },
         },
         UI::Shell::{
@@ -2132,6 +2179,199 @@ mod native {
     pub(super) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
         let roots = fixed_roots()?;
         Ok((roots.product, roots.service))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn terminate_running_service_for_proof(
+        expected_sha256: [u8; 32],
+    ) -> Result<TerminatedServiceForProof, Box<ServiceTerminationFailure>> {
+        let before_mutation = |reason| {
+            Box::new(ServiceTerminationFailure {
+                reason,
+                service_settled: true,
+                target: None,
+                terminal_observation: None,
+            })
+        };
+        require_elevated().map_err(before_mutation)?;
+        if expected_sha256 == [0; 32] {
+            return Err(before_mutation(
+                "collector_service_proof_digest_invalid".to_string(),
+            ));
+        }
+        let service_path =
+            expected_service_path(&known_folder(CSIDL_PROGRAM_FILES).map_err(before_mutation)?);
+        let manager = open_manager(SC_MANAGER_CONNECT).map_err(before_mutation)?;
+        let service = open_service(
+            &manager,
+            SERVICE_QUERY_STATUS
+                | windows_sys::Win32::System::Services::SERVICE_QUERY_CONFIG
+                | READ_CONTROL,
+        )
+        .map_err(before_mutation)?
+        .ok_or_else(|| before_mutation("collector_service_proof_service_missing".to_string()))?;
+        validate_service_contract(&service, &service_path).map_err(before_mutation)?;
+        let status = query_service_status(&service).map_err(before_mutation)?;
+        if status.dwCurrentState != SERVICE_RUNNING || status.dwProcessId == 0 {
+            return Err(before_mutation(
+                "collector_service_proof_service_not_running".to_string(),
+            ));
+        }
+        validate_running_service_image(
+            &service,
+            &service_path,
+            expected_sha256,
+            status.dwProcessId,
+        )
+        .map_err(before_mutation)?;
+        let process = OwnedHandle::new(
+            unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE_ACCESS,
+                    0,
+                    status.dwProcessId,
+                )
+            },
+            "collector_service_proof_process_open_failed",
+        )
+        .map_err(before_mutation)?;
+        let process_started_at_100ns =
+            crate::collector_service::windows_transport::process_started_at(process.raw())
+                .map_err(|error| {
+                    before_mutation(format!(
+                        "collector_service_proof_process_time_failed:{error}"
+                    ))
+                })?;
+        let current = query_service_status(&service).map_err(before_mutation)?;
+        if current.dwCurrentState != SERVICE_RUNNING
+            || current.dwProcessId != status.dwProcessId
+            || unsafe { WaitForSingleObject(process.raw(), 0) } != WAIT_TIMEOUT
+        {
+            return Err(before_mutation(
+                "collector_service_proof_process_generation_changed".to_string(),
+            ));
+        }
+        let mut process_path = vec![0_u16; 32_768];
+        let mut process_path_length = process_path.len() as u32;
+        if unsafe {
+            QueryFullProcessImageNameW(
+                process.raw(),
+                0,
+                process_path.as_mut_ptr(),
+                &mut process_path_length,
+            )
+        } == 0
+        {
+            return Err(before_mutation(last_error(
+                "collector_service_proof_process_path_failed",
+            )));
+        }
+        process_path.truncate(process_path_length as usize);
+        let process_path =
+            strip_verbatim_disk_prefix(PathBuf::from(OsString::from_wide(&process_path)));
+        if !fixed_path_eq(&process_path, &service_path) {
+            return Err(before_mutation(
+                "collector_service_proof_process_path_invalid".to_string(),
+            ));
+        }
+        let target = ServiceTerminationTargetForProof {
+            process_id: status.dwProcessId,
+            process_started_at_100ns,
+            image_path: process_path.to_string_lossy().into_owned(),
+            image_sha256: expected_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        };
+        if unsafe { TerminateProcess(process.raw(), 1) } == 0 {
+            return Err(termination_failure(
+                last_error("collector_service_proof_terminate_failed"),
+                &target,
+                &service,
+                &process,
+                false,
+            ));
+        }
+        wait_service_state(&service, SERVICE_STOPPED, SERVICE_OPERATION_TIMEOUT)
+            .map_err(|reason| termination_failure(reason, &target, &service, &process, false))?;
+        prove_service_lifecycle_settled(true)
+            .map_err(|reason| termination_failure(reason, &target, &service, &process, false))?;
+        wait_service_process_exit(&process)
+            .map_err(|reason| termination_failure(reason, &target, &service, &process, true))?;
+        let mut process_exit_code = 0_u32;
+        if unsafe { GetExitCodeProcess(process.raw(), &mut process_exit_code) } == 0 {
+            return Err(termination_failure(
+                last_error("collector_service_proof_process_exit_query_failed"),
+                &target,
+                &service,
+                &process,
+                true,
+            ));
+        }
+        if process_exit_code != 1 {
+            return Err(termination_failure(
+                "collector_service_proof_process_exit_code_invalid".to_string(),
+                &target,
+                &service,
+                &process,
+                true,
+            ));
+        }
+        let stopped = query_service_status(&service)
+            .map_err(|reason| termination_failure(reason, &target, &service, &process, true))?;
+        if stopped.dwCurrentState != SERVICE_STOPPED || stopped.dwProcessId != 0 {
+            return Err(termination_failure(
+                "collector_service_proof_crash_settlement_unproven".to_string(),
+                &target,
+                &service,
+                &process,
+                true,
+            ));
+        }
+        Ok(TerminatedServiceForProof {
+            target,
+            process_exit_code,
+            win32_exit_code: stopped.dwWin32ExitCode,
+            service_specific_exit_code: stopped.dwServiceSpecificExitCode,
+        })
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn termination_failure(
+        reason: String,
+        target: &ServiceTerminationTargetForProof,
+        service: &OwnedScHandle,
+        process: &OwnedHandle,
+        lifecycle_marker_settled: bool,
+    ) -> Box<ServiceTerminationFailure> {
+        let service_status = query_service_status(service).ok();
+        let process_exited = unsafe { WaitForSingleObject(process.raw(), 0) } == WAIT_OBJECT_0;
+        let process_exit_code = process_exited.then(|| {
+            let mut exit_code = 0_u32;
+            (unsafe { GetExitCodeProcess(process.raw(), &mut exit_code) } != 0).then_some(exit_code)
+        });
+        let terminal_observation = ServiceTerminationObservationForProof {
+            service_state: service_status.as_ref().map(|status| status.dwCurrentState),
+            service_process_id: service_status.as_ref().map(|status| status.dwProcessId),
+            win32_exit_code: service_status.as_ref().map(|status| status.dwWin32ExitCode),
+            service_specific_exit_code: service_status
+                .as_ref()
+                .map(|status| status.dwServiceSpecificExitCode),
+            lifecycle_marker_settled,
+            process_exited,
+            process_exit_code: process_exit_code.flatten(),
+        };
+        let service_stopped = matches!(
+            service_status,
+            Some(status)
+                if status.dwCurrentState == SERVICE_STOPPED && status.dwProcessId == 0
+        );
+        Box::new(ServiceTerminationFailure {
+            reason,
+            service_settled: lifecycle_marker_settled && process_exited && service_stopped,
+            target: Some(target.clone()),
+            terminal_observation: Some(terminal_observation),
+        })
     }
 
     struct QueriedServiceConfig {

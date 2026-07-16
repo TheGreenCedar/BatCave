@@ -519,6 +519,12 @@ fn mutation_failure_binding(
         (LifecycleStage::BaselineInstall, Some(LifecycleStage::InitialUninstall)) => {
             Some("baseline-install-failure.private.json")
         }
+        (LifecycleStage::BaselineRestart, Some(LifecycleStage::BaselineInstall)) => {
+            Some("baseline-restart-failure.private.json")
+        }
+        (LifecycleStage::BaselineCrashRecovery, Some(LifecycleStage::BaselineRestart)) => {
+            Some("baseline-crash-recovery-failure.private.json")
+        }
         _ => None,
     }
 }
@@ -680,10 +686,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lifecycle_mutation_failures_bind_their_exact_stage_and_leaf() {
+        for (attempted, completed, leaf) in [
+            (
+                LifecycleStage::FinalRepair,
+                LifecycleStage::InitialState,
+                "final-repair-failure.private.json",
+            ),
+            (
+                LifecycleStage::InitialUninstall,
+                LifecycleStage::FinalRepair,
+                "initial-uninstall-failure.private.json",
+            ),
+            (
+                LifecycleStage::BaselineInstall,
+                LifecycleStage::InitialUninstall,
+                "baseline-install-failure.private.json",
+            ),
+            (
+                LifecycleStage::BaselineRestart,
+                LifecycleStage::BaselineInstall,
+                "baseline-restart-failure.private.json",
+            ),
+            (
+                LifecycleStage::BaselineCrashRecovery,
+                LifecycleStage::BaselineRestart,
+                "baseline-crash-recovery-failure.private.json",
+            ),
+        ] {
+            let result = failed_result_at(
+                completed,
+                WorkerFailure {
+                    kind: WorkerFailureKind::Mutation,
+                    attempted_stage: Some(attempted),
+                    reason: "mutation_failed".to_string(),
+                    evidence: Some(evidence_receipt(leaf)),
+                    evidence_error: None,
+                },
+            );
+            assert!(validate_worker_result(&result, false).is_ok(), "{leaf}");
+        }
+    }
+
     fn failed_result(failure: WorkerFailure) -> WorkerResult {
+        failed_result_at(LifecycleStage::InitialState, failure)
+    }
+
+    fn failed_result_at(completed_stage: LifecycleStage, failure: WorkerFailure) -> WorkerResult {
         WorkerResult {
             disposition: WorkerDisposition::Failed,
-            completed_stage: Some(LifecycleStage::InitialState),
+            completed_stage: Some(completed_stage),
             failure: Some(failure),
             process_tree_settled: true,
             private_evidence_complete: false,
