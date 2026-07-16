@@ -67,6 +67,7 @@ struct ParentPreflight {
     final_candidate: OwnedFile,
     incompatible_service_fixture: OwnedFile,
     rollback_failing_service_fixture: OwnedFile,
+    parent_current_user: native::ParentCurrentUserAuthorityGuard,
     snapshot: PreflightSnapshot,
     source_commit_sha: String,
 }
@@ -81,6 +82,101 @@ enum UnverifiedAbortSettlement {
 struct ProtocolGates {
     outbound: SequenceGate,
     inbound: SequenceGate,
+}
+
+#[derive(Default)]
+struct ParentCurrentUserRetentionState {
+    before_uninstall: Option<native::ParentCurrentUserObjectsGuard>,
+    after_uninstall: Option<native::ParentCurrentUserObjectsGuard>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParentRetentionCheckpointAction {
+    None,
+    CaptureBefore,
+    CaptureAfter,
+}
+
+fn parent_retention_checkpoint_action(
+    stage: LifecycleStage,
+    has_before: bool,
+    has_after: bool,
+) -> Result<ParentRetentionCheckpointAction, String> {
+    match stage {
+        LifecycleStage::FinalFallbackStates if has_before || has_after => {
+            Err("lifecycle_parent_user_before_uninstall_replayed".to_string())
+        }
+        LifecycleStage::FinalFallbackStates => Ok(ParentRetentionCheckpointAction::CaptureBefore),
+        LifecycleStage::FinalUninstall if !has_before => {
+            Err("lifecycle_parent_user_before_uninstall_missing".to_string())
+        }
+        LifecycleStage::FinalUninstall if has_after => {
+            Err("lifecycle_parent_user_after_uninstall_replayed".to_string())
+        }
+        LifecycleStage::FinalUninstall => Ok(ParentRetentionCheckpointAction::CaptureAfter),
+        _ => Ok(ParentRetentionCheckpointAction::None),
+    }
+}
+
+impl ParentCurrentUserRetentionState {
+    fn capture_checkpoint(
+        &mut self,
+        stage: LifecycleStage,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<(), String> {
+        match parent_retention_checkpoint_action(
+            stage,
+            self.before_uninstall.is_some(),
+            self.after_uninstall.is_some(),
+        )? {
+            ParentRetentionCheckpointAction::CaptureBefore => {
+                self.before_uninstall = Some(native::capture_parent_current_user_objects(root)?);
+            }
+            ParentRetentionCheckpointAction::CaptureAfter => {
+                let before = self
+                    .before_uninstall
+                    .as_ref()
+                    .ok_or_else(|| "lifecycle_parent_user_before_uninstall_missing".to_string())?;
+                before.revalidate()?;
+                let after = native::capture_parent_current_user_objects(root)?;
+                native::validate_parent_current_user_objects_preserved(
+                    before.authority(),
+                    after.authority(),
+                )?;
+                self.after_uninstall = Some(after);
+            }
+            ParentRetentionCheckpointAction::None => {}
+        }
+        Ok(())
+    }
+
+    fn complete(
+        &self,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<
+        (
+            &native::ParentCurrentUserObjects,
+            &native::ParentCurrentUserObjects,
+        ),
+        String,
+    > {
+        root.revalidate()?;
+        let before = self
+            .before_uninstall
+            .as_ref()
+            .ok_or_else(|| "lifecycle_parent_user_before_uninstall_missing".to_string())?;
+        let after = self
+            .after_uninstall
+            .as_ref()
+            .ok_or_else(|| "lifecycle_parent_user_after_uninstall_missing".to_string())?;
+        before.revalidate()?;
+        after.revalidate()?;
+        native::validate_parent_current_user_objects_preserved(
+            before.authority(),
+            after.authority(),
+        )?;
+        Ok((before.authority(), after.authority()))
+    }
 }
 
 impl ProtocolGates {
@@ -325,6 +421,7 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
         "rollback_failing_service_fixture",
     )?;
     let controller_binding = native::current_controller_binding(&controller)?;
+    let parent_current_user = native::capture_parent_current_user_authority()?;
     let snapshot = native::capture_parent_preflight(&plan, &[controller_binding])?;
     Ok(ParentPreflight {
         plan,
@@ -334,6 +431,7 @@ fn parent_preflight() -> Result<ParentPreflight, String> {
         final_candidate,
         incompatible_service_fixture,
         rollback_failing_service_fixture,
+        parent_current_user,
         snapshot,
         source_commit_sha,
     })
@@ -365,6 +463,7 @@ fn run_parent() -> Result<i32, String> {
     let mut last_checkpoint = None;
     let mut desktop_phase_index = 0;
     let mut desktop_results = Vec::with_capacity(DESKTOP_PHASES.len());
+    let mut current_user_retention = ParentCurrentUserRetentionState::default();
     let session = (|| -> Result<i32, String> {
         loop {
             let envelope: Envelope<WorkerMessage> = pipe.read_json(SESSION_TIMEOUT)?;
@@ -393,6 +492,10 @@ fn run_parent() -> Result<i32, String> {
                     {
                         return Err("lifecycle_checkpoint_invalid".to_string());
                     }
+                    current_user_retention.capture_checkpoint(
+                        checkpoint.completed_stage,
+                        &preflight.parent_current_user,
+                    )?;
                     send_parent_message(
                         &mut pipe,
                         &nonce,
@@ -455,6 +558,8 @@ fn run_parent() -> Result<i32, String> {
                         .ok_or_else(|| "lifecycle_sanitized_export_missing".to_string())?;
                     let sanitized_evidence_guard =
                         native::verify_evidence_receipt(evidence_root_guard, sanitized_export)?;
+                    let (before_uninstall, after_uninstall) =
+                        current_user_retention.complete(&preflight.parent_current_user)?;
                     evidence::validate_verified_private_projection(
                         &private_evidence_guards,
                         &sanitized_evidence_guard,
@@ -462,6 +567,11 @@ fn run_parent() -> Result<i32, String> {
                         &preflight.source_commit_sha,
                         &preflight.controller.sha256_hex(),
                         &desktop_results,
+                        evidence::ParentCurrentUserProjection {
+                            authority: preflight.parent_current_user.authority(),
+                            before_uninstall,
+                            after_uninstall,
+                        },
                     )?;
                     revalidate_preflight_artifacts(&preflight)?;
                     send_parent_message(
@@ -977,7 +1087,8 @@ fn revalidate_preflight_artifacts(preflight: &ParentPreflight) -> Result<(), Str
     preflight.baseline.revalidate()?;
     preflight.final_candidate.revalidate()?;
     preflight.incompatible_service_fixture.revalidate()?;
-    preflight.rollback_failing_service_fixture.revalidate()
+    preflight.rollback_failing_service_fixture.revalidate()?;
+    preflight.parent_current_user.revalidate()
 }
 
 fn restoration_evidence(restoration: &RestorationOutcome) -> Option<&EvidenceReceipt> {
@@ -1700,6 +1811,36 @@ mod tests {
             "hostile.exe".to_string(),
         ])
         .is_err());
+    }
+
+    #[test]
+    fn retention_capture_is_bound_only_to_the_two_authenticated_checkpoints() {
+        assert_eq!(
+            parent_retention_checkpoint_action(LifecycleStage::FinalRestart, false, false),
+            Ok(ParentRetentionCheckpointAction::None)
+        );
+        assert_eq!(
+            parent_retention_checkpoint_action(LifecycleStage::FinalFallbackStates, false, false,),
+            Ok(ParentRetentionCheckpointAction::CaptureBefore)
+        );
+        assert_eq!(
+            parent_retention_checkpoint_action(LifecycleStage::FinalUninstall, true, false),
+            Ok(ParentRetentionCheckpointAction::CaptureAfter)
+        );
+        assert!(parent_retention_checkpoint_action(
+            LifecycleStage::FinalFallbackStates,
+            true,
+            false,
+        )
+        .is_err());
+        assert!(
+            parent_retention_checkpoint_action(LifecycleStage::FinalUninstall, false, false,)
+                .is_err()
+        );
+        assert!(
+            parent_retention_checkpoint_action(LifecycleStage::FinalUninstall, true, true,)
+                .is_err()
+        );
     }
 
     #[test]
