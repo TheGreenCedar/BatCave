@@ -391,10 +391,12 @@ mod tests {
         match platform {
             RuntimePlatform::Windows => {}
             RuntimePlatform::Linux => {
+                snapshot.environment.admin_mode_available = false;
                 snapshot.environment.process_elevation = RuntimeProcessElevation::NotApplicable;
                 snapshot.environment.install_kind = RuntimeInstallKind::Appimage;
                 snapshot.environment.data_directory =
                     Some("/home/test/.local/share/BatCaveMonitor".to_string());
+                snapshot.admin_mode.state = RuntimeAdminModeState::Unavailable;
                 let partial = quality(MetricQuality::Partial, MetricSource::Procfs)
                     .with_limitation(
                         MetricLimitationCode::AccessDenied,
@@ -937,6 +939,17 @@ mod tests {
         assert_eq!(
             validate_envelope(&healthy_without_persistence),
             Err("protocol_persistence_nonempty_state_invalid".to_string())
+        );
+
+        let mut standard_local_process = envelope.clone();
+        let ProtocolEvent::RuntimeSnapshot(payload) = &mut standard_local_process.event else {
+            unreachable!()
+        };
+        payload.privileged_collection.state = PrivilegedCollectionStateV3::Active;
+        payload.privileged_collection.source = PrivilegedCollectionSourceV3::LocalProcess;
+        assert_eq!(
+            validate_envelope(&standard_local_process),
+            Err("protocol_local_process_elevation_invalid".to_string())
         );
 
         let mut service_without_identity = envelope.clone();

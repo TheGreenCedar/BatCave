@@ -700,6 +700,15 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
     {
         return Err("protocol_privileged_collection_state_source_invalid".to_string());
     }
+    if matches!(
+        privileged.source,
+        PrivilegedCollectionSourceV3::LocalProcess
+    ) && !matches!(
+        payload.environment.process_elevation,
+        RuntimeProcessElevationV3::Elevated
+    ) {
+        return Err("protocol_local_process_elevation_invalid".to_string());
+    }
     if privileged
         .last_success_at_ms
         .is_some_and(|value| value > JS_MAX_SAFE_INTEGER || value > payload.health.evaluated_at_ms)

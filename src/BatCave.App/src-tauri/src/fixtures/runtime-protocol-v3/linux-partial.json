@@ -24,7 +24,7 @@
         }
       },
       "privileged_collection": {
-        "state": "standard_only",
+        "state": "unavailable",
         "source": "none",
         "preference": "standard_only",
         "detail": null,

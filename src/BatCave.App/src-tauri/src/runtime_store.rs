@@ -44,6 +44,9 @@ use crate::{
     telemetry::{now_ms, TelemetrySampleProvenance},
 };
 
+#[cfg(windows)]
+use crate::contracts::RuntimeProcessElevation;
+
 #[cfg(test)]
 const SETTINGS_FILE: &str = "settings.json";
 #[cfg(test)]
@@ -1024,6 +1027,8 @@ struct RuntimeStore {
     last_sample_provenance: Option<TelemetrySampleProvenance>,
     // A failed load may hide original bytes. Only a user mutation may replace them with defaults.
     settings_rewrite_blocked: bool,
+    #[cfg(windows)]
+    legacy_helper_migration_pending: bool,
     persistence_flushed: bool,
 }
 
@@ -1056,6 +1061,8 @@ impl RuntimeStore {
     ) -> Self {
         let provenance = RuntimeProvenance::detect(&base_dir);
         let mut warnings = VecDeque::new();
+        #[cfg(windows)]
+        let mut legacy_helper_migration_pending = true;
         if let Some(warning) = provenance.privilege_warning() {
             push_startup_warning(
                 &mut persistence,
@@ -1120,6 +1127,25 @@ impl RuntimeStore {
                 (RuntimeSettings::default(), true)
             }
         };
+        #[cfg(windows)]
+        {
+            match run_legacy_helper_migration(
+                &base_dir,
+                &mut persistence,
+                provenance.environment().process_elevation,
+                clock.now_ms(),
+            ) {
+                Ok(()) => legacy_helper_migration_pending = false,
+                Err(error) => push_startup_warning(
+                    &mut persistence,
+                    &mut warnings,
+                    0,
+                    clock.now_ms(),
+                    "persistence",
+                    error,
+                ),
+            }
+        }
         let mut warm_cache = match persistence
             .load_json::<WarmCache>(UserStorageComponent::WarmCache, clock.now_ms())
         {
@@ -1214,6 +1240,8 @@ impl RuntimeStore {
             sampled_at_ms: None,
             last_sample_provenance: None,
             settings_rewrite_blocked,
+            #[cfg(windows)]
+            legacy_helper_migration_pending,
             persistence_flushed: false,
         }
     }
@@ -1808,14 +1836,62 @@ impl RuntimeStore {
         if self.persistence.health().state != RuntimePersistenceState::Healthy {
             return;
         }
+        #[cfg(windows)]
+        self.retry_legacy_helper_migration();
+        if self.persistence.health().state != RuntimePersistenceState::Healthy {
+            return;
+        }
         let recovered = self
             .warnings
             .iter()
-            .filter(|warning| warning.category == "persistence")
+            .filter(|warning| {
+                warning.category == "persistence"
+                    && !warning.message.starts_with("legacy_helper_migration_")
+            })
             .map(|warning| warning.key.clone())
             .collect::<Vec<_>>();
         for key in recovered {
             self.clear_warning(&key);
+        }
+    }
+
+    #[cfg(windows)]
+    fn retry_legacy_helper_migration(&mut self) {
+        if !self.legacy_helper_migration_pending
+            || legacy_helper_migration_deferred_reason(
+                self.provenance.environment().process_elevation,
+            )
+            .is_some()
+        {
+            return;
+        }
+
+        let base_dir = self.persistence.runtime_directory().to_path_buf();
+        let result = run_legacy_helper_migration(
+            &base_dir,
+            &mut self.persistence,
+            self.provenance.environment().process_elevation,
+            self.clock.now_ms(),
+        );
+        match result {
+            Ok(()) => {
+                self.legacy_helper_migration_pending = false;
+                let recovered = self
+                    .warnings
+                    .iter()
+                    .filter(|warning| {
+                        warning.category == "persistence"
+                            && warning.message.starts_with("legacy_helper_migration_")
+                    })
+                    .map(|warning| warning.key.clone())
+                    .collect::<Vec<_>>();
+                for key in recovered {
+                    self.clear_warning(&key);
+                }
+            }
+            Err(error) => {
+                self.add_warning("persistence", error);
+            }
         }
     }
 
@@ -1854,6 +1930,50 @@ impl Drop for RuntimeStore {
 
 fn warning_degrades_health(category: &str) -> bool {
     matches!(category, "collector" | "admin_mode" | "persistence")
+}
+
+#[cfg(windows)]
+fn legacy_helper_migration_deferred_reason(
+    process_elevation: RuntimeProcessElevation,
+) -> Option<&'static str> {
+    match process_elevation {
+        RuntimeProcessElevation::Standard => None,
+        RuntimeProcessElevation::Elevated => {
+            Some("legacy_helper_migration_deferred_elevated_process")
+        }
+        RuntimeProcessElevation::Unknown | RuntimeProcessElevation::NotApplicable => {
+            Some("legacy_helper_migration_deferred_unverified_process_elevation")
+        }
+    }
+}
+
+#[cfg(windows)]
+fn run_legacy_helper_migration(
+    base_dir: &std::path::Path,
+    persistence: &mut RuntimePersistenceCoordinator,
+    process_elevation: RuntimeProcessElevation,
+    now_ms: u64,
+) -> Result<(), String> {
+    let presence_error = match crate::legacy_helper_migration::legacy_state_present(base_dir) {
+        Ok(false) => return Ok(()),
+        Ok(true) => None,
+        Err(error) => Some(error),
+    };
+    if let Some(reason) = legacy_helper_migration_deferred_reason(process_elevation) {
+        return Err(reason.to_string());
+    }
+    persistence
+        .verify_current_user_root(now_ms)
+        .map_err(|failure| {
+            format!(
+                "legacy_helper_migration_root_verification_failed:{}",
+                RuntimePersistenceCoordinator::failure_message(&failure)
+            )
+        })?;
+    if let Some(error) = presence_error {
+        return Err(error);
+    }
+    crate::legacy_helper_migration::remove_legacy_artifacts(base_dir).map(|_| ())
 }
 
 #[derive(Debug, Clone)]
@@ -3456,6 +3576,9 @@ fn push_warning(
 fn warning_key(category: &str, message: &str) -> String {
     if category == "admin_mode" {
         return "admin_mode".to_string();
+    }
+    if category == "persistence" && message.starts_with("legacy_helper_migration_") {
+        return "persistence.legacy_helper_migration".to_string();
     }
 
     let code = message
@@ -5782,6 +5905,155 @@ mod tests {
         let encoded = serde_json::to_value(settings).expect("settings serialize");
         assert!(encoded.get("admin_mode_requested").is_none());
         assert!(encoded.get("admin_mode_enabled").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_removes_legacy_helper_artifacts_after_root_verification() {
+        let base_dir = runtime_test_dir("legacy-helper-migration");
+        let helper_root = base_dir.join("elevated-helper");
+        let run_dir = helper_root.join(format!("run-{}", "d".repeat(64)));
+        fs::create_dir_all(&run_dir).expect("legacy helper run directory creates");
+        fs::write(run_dir.join("snapshot.json"), "legacy").expect("legacy snapshot writes");
+        fs::write(run_dir.join("stop.signal"), "stop").expect("legacy stop signal writes");
+
+        let _store = RuntimeStore::from_base_dir(base_dir.clone());
+
+        assert!(!helper_root.exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_legacy_helper_migration_survives_persistence_success_until_retry_succeeds() {
+        let base_dir = runtime_test_dir("legacy-helper-migration-retry");
+        let helper_root = base_dir.join("elevated-helper");
+        let rejected_artifact = helper_root.join("snapshot.json");
+        fs::create_dir_all(&rejected_artifact).expect("unexpected artifact directory creates");
+
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        assert!(store.legacy_helper_migration_pending);
+        assert!(store.warnings.iter().any(|warning| {
+            warning
+                .message
+                .starts_with("legacy_helper_migration_type_rejected")
+        }));
+
+        store
+            .persist_settings(SettingsWriteIntent::UserMutation)
+            .expect("routine persistence succeeds");
+        assert!(store.legacy_helper_migration_pending);
+        assert!(store.warnings.iter().any(|warning| {
+            warning
+                .message
+                .starts_with("legacy_helper_migration_type_rejected")
+        }));
+        let diagnostics = fs::read_to_string(base_dir.join("diagnostics.jsonl"))
+            .expect("migration failure diagnostic remains readable");
+        assert_eq!(
+            diagnostics
+                .matches("legacy_helper_migration_type_rejected")
+                .count(),
+            1,
+            "an unchanged migration failure must not churn diagnostics"
+        );
+
+        fs::remove_dir(&rejected_artifact).expect("unexpected artifact directory removes");
+        fs::write(helper_root.join("stop.signal"), "legacy").expect("known legacy artifact writes");
+        store
+            .persist_settings(SettingsWriteIntent::UserMutation)
+            .expect("persistence triggers successful migration retry");
+
+        assert!(!store.legacy_helper_migration_pending);
+        assert!(!helper_root.exists());
+        assert!(!store
+            .warnings
+            .iter()
+            .any(|warning| { warning.message.starts_with("legacy_helper_migration_") }));
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn invalid_current_user_root_keeps_legacy_helper_migration_pending() {
+        let base_dir = runtime_test_dir("legacy-helper-invalid-root-link");
+        let target_dir = runtime_test_dir("legacy-helper-invalid-root-target");
+        let helper_root = target_dir.join("elevated-helper");
+        fs::create_dir_all(&helper_root).expect("legacy helper target creates");
+        fs::write(helper_root.join("stop.signal"), "legacy")
+            .expect("legacy helper artifact writes");
+        std::os::windows::fs::symlink_dir(&target_dir, &base_dir)
+            .expect("invalid reparse root fixture creates");
+
+        let store = RuntimeStore::from_base_dir(base_dir.clone());
+
+        assert!(store.legacy_helper_migration_pending);
+        assert!(store.warnings.iter().any(|warning| {
+            warning
+                .message
+                .starts_with("legacy_helper_migration_root_verification_failed")
+        }));
+        assert!(helper_root.join("stop.signal").exists());
+        drop(store);
+        let _ = fs::remove_dir(base_dir);
+        let _ = fs::remove_dir_all(target_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_helper_migration_requires_confirmed_standard_process() {
+        assert_eq!(
+            legacy_helper_migration_deferred_reason(RuntimeProcessElevation::Standard),
+            None
+        );
+        assert_eq!(
+            legacy_helper_migration_deferred_reason(RuntimeProcessElevation::Elevated),
+            Some("legacy_helper_migration_deferred_elevated_process")
+        );
+        for elevation in [
+            RuntimeProcessElevation::Unknown,
+            RuntimeProcessElevation::NotApplicable,
+        ] {
+            assert_eq!(
+                legacy_helper_migration_deferred_reason(elevation),
+                Some("legacy_helper_migration_deferred_unverified_process_elevation")
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn elevated_legacy_helper_migration_warns_only_when_legacy_state_exists() {
+        let base_dir = runtime_test_dir("legacy-helper-elevated-presence");
+        fs::create_dir_all(&base_dir).expect("current-user root creates");
+        let mut persistence =
+            RuntimePersistenceCoordinator::for_current_user_directory(base_dir.clone(), now_ms());
+
+        assert_eq!(
+            run_legacy_helper_migration(
+                &base_dir,
+                &mut persistence,
+                RuntimeProcessElevation::Elevated,
+                now_ms(),
+            ),
+            Ok(())
+        );
+
+        let helper_root = base_dir.join("elevated-helper");
+        fs::create_dir_all(&helper_root).expect("legacy helper root creates");
+        fs::write(helper_root.join("stop.signal"), "legacy")
+            .expect("legacy helper artifact writes");
+        assert_eq!(
+            run_legacy_helper_migration(
+                &base_dir,
+                &mut persistence,
+                RuntimeProcessElevation::Elevated,
+                now_ms(),
+            ),
+            Err("legacy_helper_migration_deferred_elevated_process".to_string())
+        );
+        assert!(helper_root.join("stop.signal").exists());
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]

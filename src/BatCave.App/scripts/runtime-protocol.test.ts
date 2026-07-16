@@ -456,6 +456,11 @@ test("reader rejects descriptor, value, and membership corruption", () => {
   payload(activeWithoutSource).privileged_collection.state = "active";
   assertMismatch(activeWithoutSource, "state and source are inconsistent");
 
+  const standardLocalProcess = structuredClone(windows);
+  payload(standardLocalProcess).privileged_collection.state = "active";
+  payload(standardLocalProcess).privileged_collection.source = "local_process";
+  assertMismatch(standardLocalProcess, "requires an elevated process");
+
   const futureWarning = structuredClone(windows);
   payload(futureWarning).warnings[0].publication_seq = payload(futureWarning).publication_seq + 1;
   assertMismatch(futureWarning, "warnings are malformed");

@@ -67,10 +67,7 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
     },
     admin_mode: {
       state: legacyAdminState(payload.privileged_collection.state),
-      source: legacyPrivilegedSource(
-        payload.privileged_collection.source,
-        payload.environment.process_elevation,
-      ),
+      source: legacyPrivilegedSource(payload.privileged_collection.source),
       detail: payload.privileged_collection.detail,
       last_success_at_ms: payload.privileged_collection.last_success_at_ms,
       collector_service: payload.privileged_collection.collector_service
@@ -132,11 +129,8 @@ function legacyAdminState(
 
 function legacyPrivilegedSource(
   source: RuntimeSnapshotPayloadV3["privileged_collection"]["source"],
-  processElevation: RuntimeSnapshotPayloadV3["environment"]["process_elevation"],
 ): RuntimeSnapshot["admin_mode"]["source"] {
-  if (source === "local_process") {
-    return processElevation === "elevated" ? "current_process" : "none";
-  }
+  if (source === "local_process") return "current_process";
   return source;
 }
 

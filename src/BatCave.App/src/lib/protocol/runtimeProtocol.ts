@@ -401,6 +401,11 @@ function validatePayload(input: unknown): string | null {
     (payload.privileged_collection.source !== "none")
   )
     return "Privileged collection state and source are inconsistent.";
+  if (
+    payload.privileged_collection.source === "local_process" &&
+    payload.environment.process_elevation !== "elevated"
+  )
+    return "Local-process privileged source requires an elevated process.";
   const collectorServiceError = validateCollectorService(
     payload.privileged_collection,
     payload.health,

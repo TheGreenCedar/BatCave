@@ -5,6 +5,8 @@ mod collector_engine;
 #[cfg_attr(not(test), allow(dead_code))]
 mod collector_service;
 mod contracts;
+#[cfg(any(windows, test))]
+mod legacy_helper_migration;
 #[cfg(any(target_os = "linux", test))]
 mod linux_network;
 #[cfg(any(target_os = "linux", test))]

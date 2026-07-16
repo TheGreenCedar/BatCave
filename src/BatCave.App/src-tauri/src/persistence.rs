@@ -1217,6 +1217,14 @@ impl RuntimePersistenceCoordinator {
         }
     }
 
+    #[cfg(windows)]
+    pub(crate) fn verify_current_user_root(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<(), PersistenceFailure> {
+        self.revalidate_root(UserStorageComponent::Settings, now_ms)
+    }
+
     pub(crate) fn record_diagnostic<T: Serialize>(
         &mut self,
         event: &T,

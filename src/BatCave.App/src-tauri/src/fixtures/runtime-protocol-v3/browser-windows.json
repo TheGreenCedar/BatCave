@@ -26,7 +26,7 @@
       "privileged_collection": {
         "state": "standard_only",
         "source": "none",
-        "preference": "standard_only",
+        "preference": "best_available",
         "detail": null,
         "last_success_at_ms": null,
         "collector_service": null
