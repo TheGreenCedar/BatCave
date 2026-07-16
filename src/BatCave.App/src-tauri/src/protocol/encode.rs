@@ -101,7 +101,7 @@ fn encode_snapshot_with_identity(
         privileged_collection: RuntimePrivilegedCollectionV3 {
             state: admin_state(snapshot.admin_mode.state),
             source: privileged_source(snapshot.admin_mode.source),
-            preference: if snapshot.settings.admin_mode_requested {
+            preference: if snapshot.environment.admin_mode_available {
                 PrivilegedCollectionPreferenceV3::BestAvailable
             } else {
                 PrivilegedCollectionPreferenceV3::StandardOnly
@@ -1298,9 +1298,7 @@ fn admin_state(value: RuntimeAdminModeState) -> PrivilegedCollectionStateV3 {
 fn privileged_source(value: RuntimePrivilegedSource) -> PrivilegedCollectionSourceV3 {
     match value {
         RuntimePrivilegedSource::None => PrivilegedCollectionSourceV3::None,
-        RuntimePrivilegedSource::CurrentProcess | RuntimePrivilegedSource::ElevatedHelper => {
-            PrivilegedCollectionSourceV3::LocalProcess
-        }
+        RuntimePrivilegedSource::CurrentProcess => PrivilegedCollectionSourceV3::LocalProcess,
         RuntimePrivilegedSource::CollectorService => PrivilegedCollectionSourceV3::CollectorService,
     }
 }

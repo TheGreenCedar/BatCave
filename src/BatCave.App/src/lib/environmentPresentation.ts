@@ -62,14 +62,12 @@ export function privilegedCollectionLabel(
           : "Current process";
       }
       return blockedProcessCount > 0
-        ? `Elevated helper active, ${blockedProcessCount} blocked`
-        : "Elevated helper active";
+        ? `Privileged collection active, ${blockedProcessCount} blocked`
+        : "Privileged collection active";
     case "recovering":
-      return "Helper recovering; standard monitoring current";
+      return "Privileged collection recovering; standard monitoring current";
     case "failed":
-      return adminMode.source === "elevated_helper"
-        ? "Helper unavailable; retry available"
-        : "Inactive";
+      return "Inactive";
     case "unavailable":
       return "Not available";
     default:
@@ -86,19 +84,17 @@ export function privilegedCollectionNote(adminMode: RuntimeAdminModeStatus): str
     case "active":
       return adminMode.source === "current_process"
         ? "Protected fields come from the manually elevated current process."
-        : "Protected fields come from the local elevated helper; the parent app keeps its original token.";
+        : "Protected fields come from the installed collector; the app keeps its original token.";
     case "recovering":
-      return "The helper is recovering; current values use standard monitoring.";
+      return "Privileged collection is recovering; current values use standard monitoring.";
     case "failed":
-      return adminMode.source === "elevated_helper"
-        ? "The elevation request did not complete. Standard monitoring remains available."
-        : "Privileged collection is inactive because the current process token could not be read.";
+      return "Privileged collection is inactive; standard monitoring remains available.";
     case "requesting":
-      return "Windows owns the in-flight elevation decision. Standard monitoring remains available.";
+      return "Privileged collection is connecting; standard monitoring remains available.";
     case "unavailable":
       return "Privileged collection is unavailable on this platform.";
     default:
-      return "Protected fields remain unavailable until the local helper is enabled.";
+      return "Protected fields require the installed collector service or an elevated current process.";
   }
 }
 
@@ -106,8 +102,6 @@ export function privilegedSourceLabel(source: RuntimePrivilegedSource): string {
   switch (source) {
     case "current_process":
       return "Current process";
-    case "elevated_helper":
-      return "Local elevated helper";
     case "collector_service":
       return "Installed collector service";
     default:
@@ -155,31 +149,4 @@ function collectorServiceNote(service: RuntimeCollectorServiceStatus): string {
     case "failed":
       return "The collector service failed; standard monitoring remains current.";
   }
-}
-
-export interface PrivilegedCollectionAction {
-  label: string;
-  enabled: boolean;
-}
-
-export function privilegedCollectionAction(
-  available: boolean,
-  adminMode: RuntimeAdminModeStatus,
-): PrivilegedCollectionAction | null {
-  if (
-    !available ||
-    adminMode.collector_service != null ||
-    adminMode.source === "current_process" ||
-    adminMode.state === "requesting" ||
-    adminMode.state === "unavailable"
-  ) {
-    return null;
-  }
-  if (adminMode.state === "active" || adminMode.state === "recovering") {
-    return { label: "Disable helper", enabled: false };
-  }
-  if (adminMode.state === "failed" && adminMode.source === "elevated_helper") {
-    return { label: "Retry helper", enabled: true };
-  }
-  return { label: "Enable helper", enabled: true };
 }

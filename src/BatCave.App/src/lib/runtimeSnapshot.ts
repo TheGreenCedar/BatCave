@@ -41,8 +41,6 @@ export function makeEmptySnapshot(
     },
     settings: {
       query: makeDefaultRuntimeQuery(),
-      admin_mode_requested: false,
-      admin_mode_enabled: false,
       metric_window_seconds: 60,
       sample_interval_ms: 1000,
       paused: false,

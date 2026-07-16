@@ -5,8 +5,6 @@ mod collector_engine;
 #[cfg_attr(not(test), allow(dead_code))]
 mod collector_service;
 mod contracts;
-#[cfg_attr(not(windows), allow(dead_code))]
-mod elevation;
 #[cfg(any(target_os = "linux", test))]
 mod linux_network;
 #[cfg(any(target_os = "linux", test))]
@@ -59,9 +57,7 @@ pub fn run_collector_service() -> i32 {
 }
 
 fn run_cli(args: &[String]) -> Option<i32> {
-    elevation::run_cli(args)
-        .or_else(|| persistence_proof::run_cli(args))
-        .or_else(|| benchmark::run_cli(args))
+    persistence_proof::run_cli(args).or_else(|| benchmark::run_cli(args))
 }
 
 #[tauri::command(async)]
@@ -136,14 +132,6 @@ fn set_sample_interval(
     sample_interval_ms: u32,
 ) -> Result<ProtocolEnvelope, String> {
     protocol::encode_snapshot(state.set_sample_interval(sample_interval_ms)?)
-}
-
-#[tauri::command(async)]
-fn set_admin_mode(
-    state: tauri::State<'_, RuntimeState>,
-    enabled: bool,
-) -> Result<ProtocolEnvelope, String> {
-    protocol::encode_snapshot(state.set_admin_mode(enabled)?)
 }
 
 #[tauri::command(async)]
@@ -230,7 +218,6 @@ pub fn run() -> Result<(), String> {
             resume_runtime,
             set_process_query,
             set_sample_interval,
-            set_admin_mode,
             set_ui_preferences,
             get_process_icons
         ])
@@ -277,21 +264,6 @@ mod tests {
             Ok(())
         );
         assert_eq!(validate_process_icon_request("", |_| Ok(false)), Ok(()));
-    }
-
-    #[test]
-    fn helper_cli_is_dispatched_before_the_desktop_runtime() {
-        assert_eq!(
-            run_cli(&["--elevated-helper".to_string()]),
-            Some(2),
-            "a malformed helper invocation must be handled as helper CLI"
-        );
-        assert_eq!(
-            run_cli(&["--elevated-helper-launcher".to_string()]),
-            Some(2),
-            "a malformed launcher invocation must be handled as helper CLI"
-        );
-        assert_eq!(run_cli(&[]), None);
     }
 
     #[test]

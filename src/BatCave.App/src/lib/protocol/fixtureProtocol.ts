@@ -351,7 +351,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
     privileged_collection: {
       state: fixturePrivilegedState(snapshot.admin_mode.state),
       source: fixturePrivilegedSource(snapshot),
-      preference: snapshot.settings.admin_mode_requested
+      preference: snapshot.environment.admin_mode_available
         ? ("best_available" as const)
         : ("standard_only" as const),
       detail: snapshot.admin_mode.detail,

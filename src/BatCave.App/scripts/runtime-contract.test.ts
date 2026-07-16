@@ -16,18 +16,13 @@ import {
 import {
   collectorServiceStateLabel,
   installKindLabel,
-  privilegedCollectionAction,
   privilegedCollectionLabel,
   privilegedCollectionNote,
   privilegedSourceLabel,
   processElevationLabel,
 } from "../src/lib/environmentPresentation.ts";
 import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
-import {
-  hasNewRuntimeSample,
-  shouldApplyRuntimePublication,
-  shouldPollRuntime,
-} from "../src/lib/runtimeSnapshot.ts";
+import { hasNewRuntimeSample } from "../src/lib/runtimeSnapshot.ts";
 import {
   dispatchAutomaticRuntimeHydration,
   planAutomaticRuntimeFocusHydration,
@@ -300,41 +295,6 @@ test("degraded first-snapshot hydration dispatches only the runtime-only query",
   ]);
 });
 
-test("paused native lifecycle publications stay visible without advancing history", () => {
-  const requesting = {
-    ...canonicalSnapshot,
-    publication_seq: 10,
-    sample_seq: 7,
-    sampled_at_ms: 1_783_944_000_000,
-    settings: { ...canonicalSnapshot.settings, paused: true },
-    admin_mode: {
-      state: "requesting",
-      source: "elevated_helper",
-      detail: null,
-      last_success_at_ms: null,
-    },
-    processes: [process({ pid: "10", name: "standard.exe" })],
-  };
-  const active = {
-    ...requesting,
-    publication_seq: 11,
-    admin_mode: {
-      state: "active",
-      source: "elevated_helper",
-      detail: null,
-      last_success_at_ms: 1_783_944_001_000,
-    },
-  };
-
-  assert.equal(shouldPollRuntime(true, true), true);
-  assert.equal(shouldPollRuntime(true, false), false);
-  assert.equal(shouldApplyRuntimePublication(requesting, active), true);
-  assert.equal(hasNewRuntimeSample(requesting, active), false);
-  assert.equal(active.admin_mode.state, "active");
-  assert.equal(active.sampled_at_ms, requesting.sampled_at_ms);
-  assert.deepEqual(active.processes, requesting.processes);
-});
-
 test("shared fixture exposes the preview environment and stable empty arrays", () => {
   assert.deepEqual(canonicalSnapshot.environment, {
     platform: "windows",
@@ -379,7 +339,7 @@ test("provenance fixtures keep package and privilege copy deterministic", () => 
   assert.ok(unavailable);
   assert.equal(
     privilegedCollectionNote(unavailable.admin_mode),
-    "Privileged collection is inactive because the current process token could not be read.",
+    "Privileged collection is inactive; standard monitoring remains available.",
   );
 });
 
@@ -397,44 +357,7 @@ test("Windows binaries and test executables embed the Common-Controls manifest",
   assert.match(tauriBuildScript, /cargo:rustc-link-arg=\/MANIFESTINPUT:/);
 });
 
-test("requesting elevation waits for the Windows decision", () => {
-  const requesting = provenanceFixtures.find(
-    (fixture) => fixture.name === "windows_helper_requesting",
-  );
-  assert.ok(requesting);
-  assert.equal(privilegedCollectionLabel(requesting.admin_mode), "Waiting for Windows");
-  assert.equal(
-    privilegedCollectionNote(requesting.admin_mode),
-    "Windows owns the in-flight elevation decision. Standard monitoring remains available.",
-  );
-  assert.equal(privilegedCollectionAction(true, requesting.admin_mode), null);
-});
-
-test("helper actions cover enable, disable, and retry without touching an elevated parent", () => {
-  const fixture = (name: string) => {
-    const match = provenanceFixtures.find((candidate) => candidate.name === name);
-    assert.ok(match);
-    return match;
-  };
-  assert.deepEqual(
-    privilegedCollectionAction(true, fixture("windows_portable_standard").admin_mode),
-    { label: "Enable helper", enabled: true },
-  );
-  assert.deepEqual(
-    privilegedCollectionAction(true, fixture("windows_standard_with_helper_active").admin_mode),
-    { label: "Disable helper", enabled: false },
-  );
-  assert.deepEqual(
-    privilegedCollectionAction(true, fixture("windows_elevation_denied").admin_mode),
-    { label: "Retry helper", enabled: true },
-  );
-  assert.equal(
-    privilegedCollectionAction(true, fixture("windows_installed_elevated").admin_mode),
-    null,
-  );
-});
-
-test("collector-service states stay explicit and never expose helper actions", () => {
+test("collector-service states stay explicit", () => {
   const expectedLabels: Record<RuntimeCollectorServiceState, string> = {
     not_installed: "Collector service not installed",
     stopped: "Collector service stopped",
@@ -460,7 +383,6 @@ test("collector-service states stay explicit and never expose helper actions", (
 
     assert.equal(collectorServiceStateLabel(status), expectedLabel);
     assert.equal(privilegedCollectionLabel(mode), expectedLabel);
-    assert.equal(privilegedCollectionAction(true, mode), null);
     assert.match(
       privilegedCollectionNote(mode),
       state === "active" ? /standard token/ : /standard monitoring remains current/,

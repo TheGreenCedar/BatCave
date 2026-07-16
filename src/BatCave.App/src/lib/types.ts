@@ -94,11 +94,7 @@ export interface RuntimeAdminModeStatus {
 export type RuntimeCollectorServiceState = CollectorServiceStateV3;
 export type RuntimeCollectorServiceStatus = CollectorServiceStatusV3;
 
-export type RuntimePrivilegedSource =
-  | "none"
-  | "current_process"
-  | "elevated_helper"
-  | "collector_service";
+export type RuntimePrivilegedSource = "none" | "current_process" | "collector_service";
 
 export type RuntimeTelemetrySource =
   | "tauri_runtime"
@@ -359,8 +355,6 @@ export interface RuntimeQuery {
 
 export interface RuntimeSettings {
   query: RuntimeQuery;
-  admin_mode_requested: boolean;
-  admin_mode_enabled: boolean;
   metric_window_seconds: number;
   sample_interval_ms: number;
   paused: boolean;

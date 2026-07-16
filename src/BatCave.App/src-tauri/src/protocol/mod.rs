@@ -660,9 +660,7 @@ mod tests {
         let mut elevated = fixture_for(RuntimePlatform::Windows);
         elevated.environment.process_elevation = RuntimeProcessElevation::Elevated;
         elevated.admin_mode.state = RuntimeAdminModeState::Active;
-        elevated.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        elevated.settings.admin_mode_requested = true;
-        elevated.settings.admin_mode_enabled = true;
+        elevated.admin_mode.source = RuntimePrivilegedSource::CurrentProcess;
         update_or_assert(
             &fixture_dir.join("windows-elevated.json"),
             json_with_newline(&encode_fixture(elevated, RuntimeArchitectureV3::X86_64)),

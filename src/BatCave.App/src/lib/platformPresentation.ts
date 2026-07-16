@@ -13,7 +13,6 @@ export interface PlatformPresentation {
   handlesLabel: string;
   privilegedAccessLabel: string;
   privilegedAccessDescription: string;
-  adminRequestLabel: string;
 }
 
 const presentations: Record<RuntimePlatform, PlatformPresentation> = {
@@ -24,8 +23,7 @@ const presentations: Record<RuntimePlatform, PlatformPresentation> = {
     handlesLabel: "Handles",
     privilegedAccessLabel: "Administrator access",
     privilegedAccessDescription:
-      "Protected fields can come from the local elevated helper while the parent app keeps its current token.",
-    adminRequestLabel: "Waiting for Windows",
+      "Protected fields can come from the installed collector service while the app keeps its current token.",
   },
   linux: {
     platformName: "Linux",
@@ -35,7 +33,6 @@ const presentations: Record<RuntimePlatform, PlatformPresentation> = {
     privilegedAccessLabel: "Privileged access",
     privilegedAccessDescription:
       "Elevated collection is unavailable; BatCave keeps standard-access metrics current.",
-    adminRequestLabel: "Waiting for approval",
   },
   macos: {
     platformName: "macOS",
@@ -45,7 +42,6 @@ const presentations: Record<RuntimePlatform, PlatformPresentation> = {
     privilegedAccessLabel: "Privileged access",
     privilegedAccessDescription:
       "BatCave monitors macOS with standard local access and marks protected fields unavailable.",
-    adminRequestLabel: "Waiting for approval",
   },
   fixture: {
     platformName: "Fixture",
@@ -54,7 +50,6 @@ const presentations: Record<RuntimePlatform, PlatformPresentation> = {
     handlesLabel: "Handles",
     privilegedAccessLabel: "Privileged access",
     privilegedAccessDescription: "Fixture telemetry does not request elevated access.",
-    adminRequestLabel: "Waiting for approval",
   },
 };
 

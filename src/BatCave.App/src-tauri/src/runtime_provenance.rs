@@ -59,10 +59,6 @@ impl RuntimeProvenance {
         &self.environment
     }
 
-    pub(crate) fn process_is_elevated(&self) -> bool {
-        self.process_elevation == ProcessElevation::Elevated
-    }
-
     pub(crate) fn privilege_warning(&self) -> Option<&str> {
         match &self.process_elevation {
             ProcessElevation::Unavailable(detail) => Some(detail),
@@ -653,7 +649,6 @@ mod tests {
             process_elevation: ProcessElevation::Standard,
         };
 
-        assert!(elevated.process_is_elevated());
         assert_eq!(
             elevated.admin_mode_status().state,
             RuntimeAdminModeState::Active
@@ -666,7 +661,6 @@ mod tests {
             elevated.environment().process_elevation,
             RuntimeProcessElevation::Elevated
         );
-        assert!(!standard.process_is_elevated());
         assert_eq!(
             standard.admin_mode_status().state,
             RuntimeAdminModeState::Off
@@ -692,7 +686,6 @@ mod tests {
             ),
         };
 
-        assert!(!provenance.process_is_elevated());
         assert_eq!(
             provenance.privilege_warning(),
             Some("process_token_elevation_failed error=5")

@@ -24,7 +24,6 @@
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
     installKindLabel,
-    privilegedCollectionAction,
     privilegedCollectionLabel,
     privilegedCollectionNote,
     processElevationLabel,
@@ -103,7 +102,6 @@
     refreshRuntime,
     runtimeMutationAllowed,
     setRuntimePaused,
-    setRuntimeAdminMode,
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
     setRuntimeUiPreferences,
@@ -776,17 +774,6 @@
       applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
     } catch (error) {
       commandError = runtimeCommandError(error, "Unable to change sampling cadence.");
-    }
-  }
-
-  async function setAdminMode(enabled: boolean): Promise<void> {
-    if (!runtimeMutationAllowed(protocolMismatch)) return;
-    if (runtimeMode() !== "native") return;
-
-    try {
-      applyNativeSnapshot(await setRuntimeAdminMode(invoke, enabled));
-    } catch (error) {
-      commandError = runtimeCommandError(error, "Unable to change privileged collection.");
     }
   }
 
@@ -1918,17 +1905,12 @@
     processStatus={processElevationLabel(snapshot.environment)}
     {adminStatus}
     adminNote={privilegedCollectionNote(snapshot.admin_mode)}
-    adminAction={privilegedCollectionAction(
-      snapshot.environment.admin_mode_available,
-      snapshot.admin_mode,
-    )}
     dataDirectory={snapshot.environment.data_directory}
     {presentation}
     onClose={() => (settingsOpen = false)}
     onTheme={setTheme}
     onPollInterval={(interval) => void setPollInterval(interval)}
     onHistoryLimit={setHistoryPointLimit}
-    onAdminMode={(enabled) => void setAdminMode(enabled)}
     {updateStatus}
     {updateMessage}
     onCheckForUpdates={() => void checkForStableUpdate()}

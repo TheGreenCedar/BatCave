@@ -1,7 +1,6 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
-    env,
     panic::AssertUnwindSafe,
     path::PathBuf,
     sync::{
@@ -16,11 +15,12 @@ use std::{
 #[cfg(test)]
 use serde::de::DeserializeOwned;
 #[cfg(test)]
+use std::env;
+#[cfg(test)]
 use std::fs;
 #[cfg(test)]
 use std::path::Path;
 
-use crate::elevation::{ElevatedHelperClient, ElevatedPoll};
 use crate::{
     collector_engine::{
         CollectorCadence, CollectorEngine, CollectorEngineConfig, CollectorEngineHandle,
@@ -138,7 +138,6 @@ enum EngineControl {
     Resume(SnapshotReply),
     SetQuery(RuntimeQuery, QueryWriteIntent, SnapshotReply),
     SetSampleInterval(u32, SnapshotReply),
-    SetAdminMode(bool, SnapshotReply),
     SetUiPreferences(RuntimeUiPreferences, SnapshotReply),
     Shutdown,
 }
@@ -326,10 +325,6 @@ impl RuntimeState {
 
     pub fn set_sample_interval(&self, sample_interval_ms: u32) -> Result<RuntimeSnapshot, String> {
         self.request_snapshot(|reply| EngineControl::SetSampleInterval(sample_interval_ms, reply))
-    }
-
-    pub fn set_admin_mode(&self, enabled: bool) -> Result<RuntimeSnapshot, String> {
-        self.request_snapshot(|reply| EngineControl::SetAdminMode(enabled, reply))
     }
 
     pub fn set_ui_preferences(
@@ -553,7 +548,6 @@ fn sampling_engine_loop(
                 match collector.refresh_now() {
                     Ok(publication) => match apply_collector_publication(
                         store,
-                        collector,
                         published,
                         &mut last_collector_revision,
                         publication,
@@ -612,7 +606,6 @@ fn sampling_engine_loop(
                 match collector.resume() {
                     Ok(publication) => match apply_collector_publication(
                         store,
-                        collector,
                         published,
                         &mut last_collector_revision,
                         publication,
@@ -652,11 +645,6 @@ fn sampling_engine_loop(
                 store.set_sample_interval(normalized);
                 reply_with_publication(reply, store, published);
             }
-            Ok(EngineControl::SetAdminMode(enabled, reply)) => {
-                store.note_heartbeat();
-                store.set_admin_mode(enabled, collector);
-                reply_with_publication(reply, store, published);
-            }
             Ok(EngineControl::SetUiPreferences(preferences, reply)) => {
                 store.note_heartbeat();
                 store.set_ui_preferences(preferences);
@@ -690,19 +678,11 @@ fn apply_latest_collector_publication(
     if publication.revision <= *last_collector_revision {
         return Ok(());
     }
-    apply_collector_publication(
-        store,
-        collector,
-        published,
-        last_collector_revision,
-        publication,
-    )
-    .map(|_| ())
+    apply_collector_publication(store, published, last_collector_revision, publication).map(|_| ())
 }
 
 fn apply_collector_publication(
     store: &mut RuntimeStore,
-    collector: &CollectorEngineHandle,
     published: &Arc<RwLock<PublishedRuntime>>,
     last_collector_revision: &mut u64,
     publication: Arc<CollectorPublication>,
@@ -720,9 +700,7 @@ fn apply_collector_publication(
 
     let publication_started = match &publication.event {
         CollectorEvent::PausedHeartbeat => {
-            if !store.progress_paused_elevated_helper(collector) {
-                store.publish_snapshot_only(None);
-            }
+            store.publish_snapshot_only(None);
             publish_store(store, published);
             return Ok(None);
         }
@@ -730,12 +708,11 @@ fn apply_collector_publication(
             (**sample).clone(),
             publication.collection_latency_ms,
             completed_at_ms,
-            collector,
         ),
         CollectorEvent::Unavailable(error) => {
             store.record_collection_latency_ms(publication.collection_latency_ms);
             let publication_started = Instant::now();
-            store.publish_collector_unavailable(error.clone(), collector);
+            store.publish_collector_unavailable(error.clone());
             publication_started
         }
         CollectorEvent::Fatal { code, message } => {
@@ -854,7 +831,6 @@ fn fatal_control_loop(receiver: &Receiver<EngineControl>, shutdown_requested: &A
             }
             EngineControl::SetQuery(_, _, reply)
             | EngineControl::SetSampleInterval(_, reply)
-            | EngineControl::SetAdminMode(_, reply)
             | EngineControl::SetUiPreferences(_, reply) => {
                 let _ = reply.send(Err("runtime_engine_fatal".to_string()));
             }
@@ -1017,31 +993,14 @@ enum SettingsWriteIntent {
     UserMutation,
 }
 
-trait ProcessNetworkControl {
-    fn process_network_ready(&self) -> Result<bool, String>;
-    fn retry_process_network(&self) -> Result<(), String>;
-}
-
-impl ProcessNetworkControl for CollectorEngineHandle {
-    fn process_network_ready(&self) -> Result<bool, String> {
-        CollectorEngineHandle::process_network_ready(self)
-    }
-
-    fn retry_process_network(&self) -> Result<(), String> {
-        CollectorEngineHandle::retry_process_network(self)
-    }
-}
-
 struct RuntimeStore {
     clock: Arc<MonotonicWireClock>,
-    base_dir: PathBuf,
     persistence: RuntimePersistenceCoordinator,
     provenance: RuntimeProvenance,
     settings: RuntimeSettings,
     // Runtime-only shaping can differ from the last user-authored query.
     durable_query: RuntimeQuery,
     admin_mode: RuntimeAdminModeStatus,
-    elevated: Option<ElevatedHelperClient>,
     snapshot: RuntimeSnapshot,
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
@@ -1063,25 +1022,9 @@ struct RuntimeStore {
     sample_seq: u64,
     sampled_at_ms: Option<u64>,
     last_sample_provenance: Option<TelemetrySampleProvenance>,
-    elevated_helper_rows_published: bool,
-    last_verified_elevated_frame: Option<VerifiedElevatedFrame>,
-    process_access_baseline_dirty: bool,
     // A failed load may hide original bytes. Only a user mutation may replace them with defaults.
     settings_rewrite_blocked: bool,
     persistence_flushed: bool,
-}
-
-struct VerifiedElevatedFrame {
-    rows: Vec<ProcessSample>,
-    warnings: Vec<String>,
-    collects_process_network: bool,
-}
-
-struct ElevatedTransition {
-    poll: Option<ElevatedPoll>,
-    collects_process_network: bool,
-    access_changed: bool,
-    publish: bool,
 }
 
 impl RuntimeStore {
@@ -1111,7 +1054,6 @@ impl RuntimeStore {
         clock: Arc<MonotonicWireClock>,
         mut persistence: RuntimePersistenceCoordinator,
     ) -> Self {
-        ElevatedHelperClient::remove_stale_artifacts(&base_dir);
         let provenance = RuntimeProvenance::detect(&base_dir);
         let mut warnings = VecDeque::new();
         if let Some(warning) = provenance.privilege_warning() {
@@ -1178,7 +1120,6 @@ impl RuntimeStore {
                 (RuntimeSettings::default(), true)
             }
         };
-        let settings_requested_admin = settings.admin_mode_requested;
         let mut warm_cache = match persistence
             .load_json::<WarmCache>(UserStorageComponent::WarmCache, clock.now_ms())
         {
@@ -1202,24 +1143,8 @@ impl RuntimeStore {
             }
         };
         let publication_seq = warm_cache.seq;
-        let mut settings = normalize_settings(settings);
-        settings.admin_mode_enabled = provenance.process_is_elevated();
-        if settings_requested_admin {
-            warm_cache.rows.clear();
-            if let Err(failure) =
-                persistence.remove(UserStorageComponent::WarmCache, clock.now_ms())
-            {
-                push_startup_persistence_failure(
-                    &mut persistence,
-                    &mut warnings,
-                    publication_seq,
-                    clock.now_ms(),
-                    &failure,
-                );
-            }
-        } else {
-            warm_cache.rows = hold_process_rates(warm_cache.rows);
-        }
+        let settings = normalize_settings(settings);
+        warm_cache.rows = hold_process_rates(warm_cache.rows);
         let admin_mode = provenance.admin_mode_status();
         let engine_state = if settings.paused {
             RuntimeEngineState::Paused
@@ -1262,13 +1187,11 @@ impl RuntimeStore {
 
         Self {
             clock,
-            base_dir,
             persistence,
             provenance,
             settings,
             durable_query,
             admin_mode,
-            elevated: None,
             snapshot,
             warnings,
             previous_totals: None,
@@ -1290,9 +1213,6 @@ impl RuntimeStore {
             sample_seq: 0,
             sampled_at_ms: None,
             last_sample_provenance: None,
-            elevated_helper_rows_published: false,
-            last_verified_elevated_frame: None,
-            process_access_baseline_dirty: false,
             settings_rewrite_blocked,
             persistence_flushed: false,
         }
@@ -1314,67 +1234,6 @@ impl RuntimeStore {
         self.settings.paused = paused;
         if paused {
             self.live_process_snapshot = false;
-        }
-        let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
-        self.publish_snapshot_only(None);
-        self.snapshot.clone()
-    }
-
-    fn set_admin_mode(
-        &mut self,
-        enabled: bool,
-        collector: &dyn ProcessNetworkControl,
-    ) -> RuntimeSnapshot {
-        let enabled = enabled && self.provenance.environment().admin_mode_available;
-        let had_privileged_session = self.settings.admin_mode_requested
-            || self.settings.admin_mode_enabled
-            || self.elevated.is_some()
-            || self.elevated_helper_rows_published
-            || self.last_verified_elevated_frame.is_some()
-            || self.process_access_baseline_dirty;
-        if enabled && self.provenance.process_is_elevated() {
-            self.settings.admin_mode_requested = false;
-            self.settings.admin_mode_enabled = true;
-            self.admin_mode = self.provenance.admin_mode_status();
-            self.clear_warning("admin_mode");
-        } else if enabled {
-            self.settings.admin_mode_requested = true;
-            self.settings.admin_mode_enabled = false;
-            self.admin_mode.state = RuntimeAdminModeState::Requesting;
-            self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-            self.admin_mode.detail = None;
-            self.clear_warning("admin_mode");
-            if self.elevated.is_none() {
-                let collect_process_network = !collector.process_network_ready().unwrap_or(false);
-                match ElevatedHelperClient::start(&self.base_dir, collect_process_network) {
-                    Ok(client) => self.elevated = Some(client),
-                    Err(error) => self.fail_admin_mode(error, collector),
-                }
-            }
-        } else {
-            self.settings.admin_mode_requested = false;
-            self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
-            self.elevated_helper_rows_published = false;
-            self.last_verified_elevated_frame = None;
-            self.admin_mode = self.provenance.admin_mode_status();
-            self.clear_warning("admin_mode");
-            if let Some(mut client) = self.elevated.take() {
-                if let Err(error) = client.stop() {
-                    self.add_warning("admin_mode", error);
-                    self.elevated = Some(client);
-                }
-            }
-            let _ = collector.retry_process_network();
-            if had_privileged_session {
-                self.previous_processes.clear();
-                self.previous_totals = None;
-                self.live_process_snapshot = false;
-            }
-            self.process_access_baseline_dirty = false;
-            let _ = self.purge_warm_cache();
-            if self.elevated.is_none() {
-                ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
-            }
         }
         let _ = self.persist_settings(SettingsWriteIntent::UserMutation);
         self.publish_snapshot_only(None);
@@ -1410,175 +1269,11 @@ impl RuntimeStore {
         self.snapshot.clone()
     }
 
-    fn progress_paused_elevated_helper(&mut self, collector: &dyn ProcessNetworkControl) -> bool {
-        let transition = self.advance_elevated_helper(self.clock.now_ms(), collector);
-        if transition.publish {
-            self.publish_snapshot_only(None);
-        }
-        transition.publish
-    }
-
-    fn advance_elevated_helper(
-        &mut self,
-        success_at_ms: u64,
-        collector: &dyn ProcessNetworkControl,
-    ) -> ElevatedTransition {
-        let before_requested = self.settings.admin_mode_requested;
-        let before_enabled = self.settings.admin_mode_enabled;
-        let before_status = self.admin_mode.clone();
-        let mut poll = None;
-        let mut collects_process_network = false;
-        let mut poll_error = None;
-
-        if self.settings.admin_mode_requested {
-            if let Some(elevated) = &mut self.elevated {
-                collects_process_network = elevated.collects_process_network();
-                match elevated.poll_rows() {
-                    Ok(next) => poll = Some(next),
-                    Err(error) => poll_error = Some(error),
-                }
-            } else {
-                self.settings.admin_mode_enabled = false;
-            }
-        }
-
-        match &poll {
-            Some(ElevatedPoll::Fresh { rows, warnings }) => {
-                self.settings.admin_mode_enabled = true;
-                self.admin_mode.state = RuntimeAdminModeState::Active;
-                self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-                self.admin_mode.detail = None;
-                self.admin_mode.last_success_at_ms = Some(success_at_ms);
-                self.last_verified_elevated_frame = Some(VerifiedElevatedFrame {
-                    rows: rows.clone(),
-                    warnings: warnings.clone(),
-                    collects_process_network,
-                });
-                self.clear_warning("admin_mode");
-            }
-            Some(ElevatedPoll::Held { .. }) => {
-                self.settings.admin_mode_enabled = true;
-                self.admin_mode.state = RuntimeAdminModeState::Active;
-                self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-                self.admin_mode.detail = None;
-            }
-            Some(ElevatedPoll::Recovering(detail)) => {
-                self.settings.admin_mode_enabled = false;
-                self.last_verified_elevated_frame = None;
-                self.admin_mode.state = RuntimeAdminModeState::Recovering;
-                self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-                self.admin_mode.detail = Some(detail.clone());
-            }
-            Some(ElevatedPoll::Pending) => {
-                self.settings.admin_mode_enabled = false;
-                self.last_verified_elevated_frame = None;
-                self.admin_mode.state = RuntimeAdminModeState::Requesting;
-                self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-                self.admin_mode.detail = None;
-            }
-            None => {}
-        }
-
-        if let Some(error) = poll_error {
-            self.settings.admin_mode_requested = false;
-            let mut failure = error;
-            if let Some(mut client) = self.elevated.take() {
-                if let Err(stop_error) = client.stop() {
-                    failure = format!("{failure};admin_mode_cleanup_failed:{stop_error}");
-                    self.elevated = Some(client);
-                }
-            }
-            self.fail_admin_mode(failure, collector);
-        }
-
-        let access_changed = before_enabled != self.settings.admin_mode_enabled;
-        if access_changed {
-            self.process_access_baseline_dirty = true;
-        }
-        let state_changed = before_requested != self.settings.admin_mode_requested
-            || access_changed
-            || before_status != self.admin_mode;
-        let publish = state_changed || matches!(&poll, Some(ElevatedPoll::Fresh { .. }));
-
-        ElevatedTransition {
-            poll,
-            collects_process_network,
-            access_changed,
-            publish,
-        }
-    }
-
-    fn apply_elevated_process_transition(
-        &mut self,
-        transition: ElevatedTransition,
-        sample_processes: &mut Vec<ProcessSample>,
-        process_rows_fresh: &mut bool,
-        active_collector_warnings: &mut Vec<String>,
-    ) {
-        if transition.access_changed || self.process_access_baseline_dirty {
-            self.previous_processes.clear();
-            self.live_process_snapshot = false;
-            self.process_access_baseline_dirty = false;
-        }
-
-        if !self.settings.admin_mode_requested {
-            self.elevated_helper_rows_published = false;
-            return;
-        }
-
-        match transition.poll {
-            Some(ElevatedPoll::Fresh { mut rows, warnings }) => {
-                merge_main_network_attribution(sample_processes, &mut rows);
-                *sample_processes = rows;
-                self.elevated_helper_rows_published = true;
-                self.last_verified_elevated_frame = None;
-                if transition.collects_process_network {
-                    active_collector_warnings.retain(|warning| {
-                        warning_key("collector", warning) != "collector.network_attribution"
-                    });
-                }
-                active_collector_warnings.extend(warnings);
-            }
-            Some(ElevatedPoll::Held { warnings }) => {
-                if let Some(mut frame) = self.last_verified_elevated_frame.take() {
-                    merge_main_network_attribution(sample_processes, &mut frame.rows);
-                    *sample_processes = frame.rows;
-                    self.elevated_helper_rows_published = true;
-                    if frame.collects_process_network {
-                        active_collector_warnings.retain(|warning| {
-                            warning_key("collector", warning) != "collector.network_attribution"
-                        });
-                    }
-                    active_collector_warnings.extend(frame.warnings);
-                } else if self.elevated_helper_rows_published {
-                    *sample_processes = self.previous_processes.clone();
-                    *process_rows_fresh = false;
-                    if transition.collects_process_network {
-                        active_collector_warnings.retain(|warning| {
-                            warning_key("collector", warning) != "collector.network_attribution"
-                        });
-                    }
-                } else {
-                    self.settings.admin_mode_enabled = false;
-                    self.admin_mode.state = RuntimeAdminModeState::Recovering;
-                    self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-                    self.admin_mode.detail =
-                        Some("admin_mode_waiting_for_fresh_snapshot".to_string());
-                }
-                active_collector_warnings.extend(warnings);
-            }
-            Some(ElevatedPoll::Recovering(_) | ElevatedPoll::Pending) | None => {
-                self.elevated_helper_rows_published = false;
-            }
-        }
-    }
-
     fn apply_raw_sample(
         &mut self,
         sample: crate::telemetry::TelemetrySample,
         raw_collection_latency_ms: f64,
         completed_at_ms: u64,
-        collector: &dyn ProcessNetworkControl,
     ) -> Instant {
         let processing_started = Instant::now();
         let source_provenance = sample.source_provenance.clone();
@@ -1610,7 +1305,7 @@ impl RuntimeStore {
         self.live_process_snapshot = false;
         self.collector_state = Some(sample.collector_state);
 
-        let mut active_collector_warnings = sample.warnings;
+        let active_collector_warnings = sample.warnings;
 
         let elapsed_seconds = self
             .previous_totals
@@ -1622,22 +1317,9 @@ impl RuntimeStore {
             .unwrap_or(1.0)
             .max(0.5);
         let mut system = sample.system;
-        let mut sample_processes = sample.processes;
-        let mut process_rows_fresh = true;
-        if service_active {
-            self.stop_superseded_elevated_helper(&mut active_collector_warnings);
-            self.settings.admin_mode_enabled = true;
-        } else {
-            let elevated_transition = self.advance_elevated_helper(completed_at_ms, collector);
-            self.apply_elevated_process_transition(
-                elevated_transition,
-                &mut sample_processes,
-                &mut process_rows_fresh,
-                &mut active_collector_warnings,
-            );
-        }
-        if !service_active && !self.settings.admin_mode_requested {
-            self.settings.admin_mode_enabled = self.provenance.process_is_elevated();
+        let sample_processes = sample.processes;
+        let process_rows_fresh = true;
+        if !service_active {
             if self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
                 && self.admin_mode.state == RuntimeAdminModeState::Active
             {
@@ -1767,7 +1449,6 @@ impl RuntimeStore {
             self.previous_totals = None;
             self.previous_processes.clear();
             self.live_process_snapshot = false;
-            self.process_access_baseline_dirty = false;
         }
 
         let service_active = status.state == RuntimeCollectorServiceState::Active;
@@ -1780,43 +1461,12 @@ impl RuntimeStore {
             || self.admin_mode.source == RuntimePrivilegedSource::None
         {
             let last_success_at_ms = self.admin_mode.last_success_at_ms;
-            self.settings.admin_mode_enabled = false;
             self.admin_mode = self.provenance.admin_mode_status();
             self.admin_mode.detail = status.detail.clone();
             self.admin_mode.last_success_at_ms = last_success_at_ms;
         }
         self.admin_mode.collector_service = Some(status);
         service_active
-    }
-
-    fn stop_superseded_elevated_helper(&mut self, warnings: &mut Vec<String>) {
-        if let Some(mut elevated) = self.elevated.take() {
-            if let Err(error) = elevated.stop() {
-                warnings.push(format!(
-                    "collector_service_helper_transition_cleanup_failed:{error}"
-                ));
-                self.elevated = Some(elevated);
-            }
-        }
-        self.elevated_helper_rows_published = false;
-        self.last_verified_elevated_frame = None;
-        self.process_access_baseline_dirty = false;
-    }
-
-    fn fail_admin_mode(&mut self, error: String, collector: &dyn ProcessNetworkControl) {
-        if self.elevated_helper_rows_published {
-            self.process_access_baseline_dirty = true;
-        }
-        self.settings.admin_mode_requested = false;
-        self.settings.admin_mode_enabled = false;
-        self.elevated_helper_rows_published = false;
-        self.last_verified_elevated_frame = None;
-        self.admin_mode.state = RuntimeAdminModeState::Failed;
-        self.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        self.admin_mode.detail = Some(error.clone());
-        self.add_warning("admin_mode", error);
-        let _ = collector.retry_process_network();
-        let _ = self.persist_settings(SettingsWriteIntent::Automatic);
     }
 
     fn publish_snapshot_only(&mut self, warning: Option<(&str, String)>) {
@@ -1879,19 +1529,9 @@ impl RuntimeStore {
         self.refresh_snapshot_health();
     }
 
-    fn publish_collector_unavailable(
-        &mut self,
-        error: String,
-        collector: &dyn ProcessNetworkControl,
-    ) {
+    fn publish_collector_unavailable(&mut self, error: String) {
         self.collector_state = Some(RuntimeCollectorState::Unavailable);
         self.live_process_snapshot = false;
-        let transition = self.advance_elevated_helper(self.clock.now_ms(), collector);
-        if transition.access_changed || self.process_access_baseline_dirty {
-            self.previous_processes.clear();
-            self.elevated_helper_rows_published = false;
-            self.process_access_baseline_dirty = false;
-        }
         self.publish_snapshot_only(Some(("collector", error)));
     }
 
@@ -2081,8 +1721,6 @@ impl RuntimeStore {
         }
         let mut persisted = self.settings.clone();
         persisted.query = self.durable_query.clone();
-        persisted.admin_mode_requested = false;
-        persisted.admin_mode_enabled = false;
         match self.persistence.write_json(
             UserStorageComponent::Settings,
             &persisted,
@@ -2110,7 +1748,7 @@ impl RuntimeStore {
     }
 
     fn persist_warm_cache(&mut self) -> Result<(), String> {
-        if self.settings.admin_mode_enabled {
+        if self.admin_mode.state == RuntimeAdminModeState::Active {
             return Ok(());
         }
         let cache = WarmCache {
@@ -2188,7 +1826,7 @@ impl RuntimeStore {
             if let Err(error) = self.persist_settings(SettingsWriteIntent::Automatic) {
                 errors.push(error);
             }
-            let cache_result = if self.settings.admin_mode_enabled {
+            let cache_result = if self.admin_mode.state == RuntimeAdminModeState::Active {
                 self.purge_warm_cache()
             } else {
                 self.persist_warm_cache()
@@ -2196,15 +1834,6 @@ impl RuntimeStore {
             if let Err(error) = cache_result {
                 errors.push(error);
             }
-        }
-        if let Some(mut client) = self.elevated.take() {
-            if let Err(error) = client.stop() {
-                errors.push(error);
-                self.elevated = Some(client);
-            }
-        }
-        if self.elevated.is_none() {
-            ElevatedHelperClient::remove_stale_artifacts(&self.base_dir);
         }
         if errors.is_empty() {
             Ok(())
@@ -2563,35 +2192,6 @@ fn derive_iokit_disk_rates(
     );
     if let Some(quality) = system.quality.as_mut() {
         quality.disk = Some(pending);
-    }
-}
-
-fn merge_main_network_attribution(main: &[ProcessSample], elevated: &mut [ProcessSample]) {
-    let by_identity = main
-        .iter()
-        .map(|process| ((process.pid.as_str(), process.start_time_ms), process))
-        .collect::<HashMap<_, _>>();
-    for process in elevated {
-        let already_native = process.network_received_bps.is_some()
-            && process.network_transmitted_bps.is_some()
-            && process
-                .quality
-                .as_ref()
-                .and_then(|quality| quality.network.as_ref())
-                .is_some_and(|quality| quality.quality == MetricQuality::Native);
-        if already_native {
-            continue;
-        }
-        let Some(main) = by_identity.get(&(process.pid.as_str(), process.start_time_ms)) else {
-            continue;
-        };
-        process.network_received_bps = main.network_received_bps;
-        process.network_transmitted_bps = main.network_transmitted_bps;
-        let main_quality = main
-            .quality
-            .as_ref()
-            .and_then(|quality| quality.network.clone());
-        process.quality.get_or_insert_with(Default::default).network = main_quality;
     }
 }
 
@@ -3633,8 +3233,6 @@ fn group_attention_label(detail: &GroupDetail, access_limited: bool) -> String {
 fn normalize_settings(settings: RuntimeSettings) -> RuntimeSettings {
     RuntimeSettings {
         query: normalize_query(settings.query),
-        admin_mode_requested: false,
-        admin_mode_enabled: false,
         metric_window_seconds: settings.metric_window_seconds.clamp(15, 600),
         sample_interval_ms: settings.sample_interval_ms.clamp(500, 5_000),
         paused: settings.paused,
@@ -3648,6 +3246,8 @@ fn migrate_runtime_settings(
     let object = value
         .as_object()
         .ok_or_else(|| "settings schema must be a JSON object".to_string())?;
+    let retires_admin_mode =
+        object.contains_key("admin_mode_requested") || object.contains_key("admin_mode_enabled");
     let unknown_field = object.keys().find(|field| {
         !matches!(
             field.as_str(),
@@ -3720,7 +3320,11 @@ fn migrate_runtime_settings(
             _ => return Err("legacy UI preferences are incomplete".to_string()),
         }
     }
-    Ok(JsonMigration::Current(settings))
+    Ok(if retires_admin_mode {
+        JsonMigration::Migrated(settings)
+    } else {
+        JsonMigration::Current(settings)
+    })
 }
 
 fn valid_ui_preferences(preferences: &RuntimeUiPreferences) -> bool {
@@ -3970,12 +3574,14 @@ fn read_json<T: DeserializeOwned>(path: &PathBuf) -> Result<T, Option<String>> {
     })
 }
 
+#[cfg(test)]
 pub(crate) fn default_base_dir() -> PathBuf {
     platform_data_dir()
         .unwrap_or_else(env::temp_dir)
         .join("BatCaveMonitor")
 }
 
+#[cfg(test)]
 fn platform_data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -4018,28 +3624,10 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use crate::contracts::{RuntimeInstallKind, RuntimePlatform};
-    use crate::elevation::{
-        HELPER_LAUNCHER_EXIT_FAILED, HELPER_LAUNCHER_EXIT_NO_CHILD,
-        HELPER_LAUNCHER_EXIT_SETTLED_FAILURE,
-    };
     use std::sync::{
         atomic::{AtomicUsize, Ordering as TestOrdering},
         Barrier,
     };
-
-    struct NoopProcessNetworkControl;
-
-    impl ProcessNetworkControl for NoopProcessNetworkControl {
-        fn process_network_ready(&self) -> Result<bool, String> {
-            Ok(false)
-        }
-
-        fn retry_process_network(&self) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
-    static NOOP_PROCESS_NETWORK_CONTROL: NoopProcessNetworkControl = NoopProcessNetworkControl;
 
     enum FakeOutcome {
         Sample,
@@ -4160,7 +3748,6 @@ mod tests {
             Arc::new(|| {}),
         )
         .expect("manual collector engine starts");
-        let collector = collector_engine.handle();
         let published = Arc::new(RwLock::new(PublishedRuntime {
             snapshot: Arc::new(store.snapshot.clone()),
             process_exe_authoritative: false,
@@ -4190,7 +3777,6 @@ mod tests {
 
         apply_collector_publication(
             &mut store,
-            &collector,
             &published,
             &mut last_collector_revision,
             publication(1, first_completed, 1_000),
@@ -4201,7 +3787,6 @@ mod tests {
         let second_completed = first_completed + Duration::from_secs(1);
         apply_collector_publication(
             &mut store,
-            &collector,
             &published,
             &mut last_collector_revision,
             publication(2, second_completed, 2_000),
@@ -6172,36 +5757,8 @@ mod tests {
     }
 
     #[test]
-    fn elevated_rows_inherit_main_network_only_for_exact_identity() {
-        let mut main = sample("10", "Main", 0.0);
-        main.start_time_ms = 100;
-        main.network_received_bps = Some(4_096);
-        main.network_transmitted_bps = Some(2_048);
-        main.quality = Some(ProcessMetricQuality {
-            network: Some(MetricQualityInfo::new(
-                MetricQuality::Native,
-                MetricSource::Etw,
-            )),
-            ..ProcessMetricQuality::default()
-        });
-        let mut matching = sample("10", "Elevated", 0.0);
-        matching.start_time_ms = 100;
-        let mut reused_pid = matching.clone();
-        reused_pid.start_time_ms = 200;
-        let mut elevated = vec![matching, reused_pid];
-
-        merge_main_network_attribution(&[main], &mut elevated);
-
-        assert_eq!(elevated[0].network_received_bps, Some(4_096));
-        assert_eq!(elevated[0].network_transmitted_bps, Some(2_048));
-        assert_eq!(elevated[1].network_received_bps, None);
-    }
-
-    #[test]
-    fn settings_normalization_clears_effective_admin_and_clamps_ranges() {
+    fn settings_normalization_clamps_ranges() {
         let settings = normalize_settings(RuntimeSettings {
-            admin_mode_requested: true,
-            admin_mode_enabled: true,
             metric_window_seconds: 1,
             sample_interval_ms: 1,
             query: RuntimeQuery {
@@ -6214,12 +5771,25 @@ mod tests {
             ui_preferences: None,
         });
 
-        assert!(!settings.admin_mode_requested);
-        assert!(!settings.admin_mode_enabled);
         assert_eq!(settings.metric_window_seconds, 15);
         assert_eq!(settings.query.filter_text, "code");
         assert_eq!(settings.query.focus_mode, ProcessFocusMode::Attention);
         assert_eq!(settings.query.limit, 20_000);
+    }
+
+    #[test]
+    fn legacy_admin_settings_are_discarded_and_not_rewritten() {
+        let migrated = migrate_runtime_settings(serde_json::json!({
+            "admin_mode_requested": true,
+            "admin_mode_enabled": true
+        }))
+        .expect("legacy admin settings migrate");
+        let JsonMigration::Migrated(settings) = migrated else {
+            panic!("legacy admin settings must be rewritten");
+        };
+        let encoded = serde_json::to_value(settings).expect("settings serialize");
+        assert!(encoded.get("admin_mode_requested").is_none());
+        assert!(encoded.get("admin_mode_enabled").is_none());
     }
 
     #[test]
@@ -6296,51 +5866,6 @@ mod tests {
     }
 
     #[cfg(not(windows))]
-    #[test]
-    fn unsupported_admin_request_remains_disabled() {
-        let base_dir = runtime_test_dir("admin-unsupported");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-
-        let snapshot = store.set_admin_mode(true, &NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert!(!snapshot.settings.admin_mode_requested);
-        assert!(!snapshot.settings.admin_mode_enabled);
-        assert!(!snapshot.environment.admin_mode_available);
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn standard_parent_and_active_helper_remain_distinct() {
-        let base_dir = runtime_test_dir("admin-helper-source");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.admin_mode = RuntimeAdminModeStatus {
-            state: RuntimeAdminModeState::Active,
-            source: RuntimePrivilegedSource::ElevatedHelper,
-            detail: None,
-            last_success_at_ms: Some(7),
-            collector_service: None,
-        };
-
-        store.publish_snapshot_only(None);
-
-        assert_eq!(
-            store.snapshot.environment.process_elevation,
-            RuntimeProcessElevation::Standard
-        );
-        assert_eq!(
-            store.snapshot.admin_mode.source,
-            RuntimePrivilegedSource::ElevatedHelper
-        );
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Active
-        );
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
     #[test]
     fn collector_service_transition_is_visible_and_resets_source_baselines() {
         let base_dir = runtime_test_dir("collector-service-transition");
@@ -6452,7 +5977,6 @@ mod tests {
                 service_sample(1, first_source_sampled_at_ms, 10_000),
                 1.0,
                 10_000,
-                &NOOP_PROCESS_NETWORK_CONTROL,
             );
             let first_publication_seq = store.publication_seq;
             let first_sample_seq = store.sample_seq;
@@ -6462,7 +5986,6 @@ mod tests {
                 service_sample(1, first_source_sampled_at_ms, 10_000),
                 1.0,
                 10_500,
-                &NOOP_PROCESS_NETWORK_CONTROL,
             );
 
             assert_eq!(store.publication_seq, first_publication_seq + 1);
@@ -6483,7 +6006,6 @@ mod tests {
                 service_sample(2, first_source_sampled_at_ms + 1_000, 11_000),
                 1.0,
                 11_000,
-                &NOOP_PROCESS_NETWORK_CONTROL,
             );
 
             assert_eq!(store.sample_seq, first_sample_seq + 1);
@@ -6541,7 +6063,6 @@ mod tests {
             },
             1.0,
             sampled_at_ms,
-            &NOOP_PROCESS_NETWORK_CONTROL,
         );
 
         let encoded = crate::protocol::encode_snapshot(store.snapshot.clone())
@@ -6672,7 +6193,6 @@ mod tests {
                 },
                 1.0,
                 sampled_at_ms,
-                &NOOP_PROCESS_NETWORK_CONTROL,
             );
 
             let encoded = crate::protocol::encode_snapshot(store.snapshot.clone())
@@ -6699,603 +6219,6 @@ mod tests {
             );
             let _ = fs::remove_dir_all(base_dir);
         }
-    }
-
-    #[test]
-    fn elevated_parent_uses_current_process_without_starting_helper() {
-        let base_dir = runtime_test_dir("admin-current-process-source");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Elevated);
-
-        let snapshot = store.set_admin_mode(true, &NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert_eq!(
-            snapshot.environment.process_elevation,
-            RuntimeProcessElevation::Elevated
-        );
-        assert_eq!(
-            snapshot.admin_mode.source,
-            RuntimePrivilegedSource::CurrentProcess
-        );
-        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Active);
-        assert!(snapshot.settings.admin_mode_enabled);
-        assert!(!snapshot.settings.admin_mode_requested);
-        assert!(store.elevated.is_none());
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn paused_accepted_helper_progresses_from_pending_to_active_without_sampling() {
-        let base_dir = runtime_test_dir("paused-admin-accepted");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        seed_paused_snapshot(&mut store);
-        queue_scripted_helper(
-            &mut store,
-            vec![
-                Ok(ElevatedPoll::Pending),
-                Ok(ElevatedPoll::Fresh {
-                    rows: vec![sample("90", "Elevated", 0.0)],
-                    warnings: Vec::new(),
-                }),
-            ],
-        );
-        let sample_seq = store.snapshot.sample_seq;
-        let sampled_at_ms = store.snapshot.sampled_at_ms;
-        let processes =
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
-
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Requesting
-        );
-        assert_eq!(
-            store.snapshot.admin_mode.source,
-            RuntimePrivilegedSource::ElevatedHelper
-        );
-        assert!(!store.snapshot.settings.admin_mode_enabled);
-        assert!(store.elevated.is_some());
-        assert_eq!(store.snapshot.sample_seq, sample_seq);
-        assert_eq!(store.snapshot.sampled_at_ms, sampled_at_ms);
-        assert_eq!(
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize"),
-            processes
-        );
-
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Active
-        );
-        assert_eq!(
-            store.snapshot.admin_mode.source,
-            RuntimePrivilegedSource::ElevatedHelper
-        );
-        assert!(store.snapshot.admin_mode.last_success_at_ms.is_some());
-        assert!(store.snapshot.settings.admin_mode_enabled);
-        assert_eq!(store.snapshot.sample_seq, sample_seq);
-        assert_eq!(store.snapshot.sampled_at_ms, sampled_at_ms);
-        assert_eq!(
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize"),
-            processes
-        );
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn paused_active_helper_drains_ongoing_frames_without_replacing_processes() {
-        let base_dir = runtime_test_dir("paused-admin-ongoing");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        seed_paused_snapshot(&mut store);
-        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
-            &base_dir.join("scripted-helper"),
-            vec![
-                Ok(ElevatedPoll::Fresh {
-                    rows: vec![sample("90", "ElevatedOne", 0.0)],
-                    warnings: Vec::new(),
-                }),
-                Ok(ElevatedPoll::Fresh {
-                    rows: vec![sample("91", "ElevatedTwo", 0.0)],
-                    warnings: Vec::new(),
-                }),
-            ],
-        ));
-        store.settings.admin_mode_requested = true;
-        store.admin_mode.state = RuntimeAdminModeState::Requesting;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.publish_snapshot_only(None);
-        let sample_seq = store.snapshot.sample_seq;
-        let sampled_at_ms = store.snapshot.sampled_at_ms;
-        let processes =
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
-
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-        let first_publication = store.snapshot.publication_seq;
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert!(store.snapshot.publication_seq > first_publication);
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Active
-        );
-        assert!(store.snapshot.settings.admin_mode_enabled);
-        assert_eq!(store.snapshot.sample_seq, sample_seq);
-        assert_eq!(store.snapshot.sampled_at_ms, sampled_at_ms);
-        assert_eq!(
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize"),
-            processes
-        );
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn paused_helper_recovering_publishes_state_without_sampling() {
-        let base_dir = runtime_test_dir("paused-admin-recovering");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        seed_paused_snapshot(&mut store);
-        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
-            &base_dir.join("scripted-helper"),
-            vec![
-                Ok(ElevatedPoll::Fresh {
-                    rows: vec![sample("90", "Elevated", 0.0)],
-                    warnings: Vec::new(),
-                }),
-                Ok(ElevatedPoll::Recovering(
-                    "temporary helper collector failure".to_string(),
-                )),
-            ],
-        ));
-        store.settings.admin_mode_requested = true;
-        store.admin_mode.state = RuntimeAdminModeState::Requesting;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.publish_snapshot_only(None);
-        let sample_seq = store.snapshot.sample_seq;
-        let sampled_at_ms = store.snapshot.sampled_at_ms;
-        let processes =
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
-
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Recovering
-        );
-        assert_eq!(
-            store.snapshot.admin_mode.detail.as_deref(),
-            Some("temporary helper collector failure")
-        );
-        assert!(!store.snapshot.settings.admin_mode_enabled);
-        assert_eq!(store.snapshot.sample_seq, sample_seq);
-        assert_eq!(store.snapshot.sampled_at_ms, sampled_at_ms);
-        assert_eq!(
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize"),
-            processes
-        );
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn paused_fresh_frame_is_published_on_resumed_held_then_replaced_by_fresh() {
-        let base_dir = runtime_test_dir("paused-admin-resume-held");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        seed_paused_snapshot(&mut store);
-        let mut paused_elevated = sample("90", "Protected", 0.0);
-        paused_elevated.memory_bytes = 900;
-        queue_scripted_helper(
-            &mut store,
-            vec![
-                Ok(ElevatedPoll::Pending),
-                Ok(ElevatedPoll::Fresh {
-                    rows: vec![paused_elevated],
-                    warnings: vec!["helper_access_limited".to_string()],
-                }),
-                Ok(ElevatedPoll::Held {
-                    warnings: vec!["current_held_warning".to_string()],
-                }),
-                Ok(ElevatedPoll::Fresh {
-                    rows: vec![sample("91", "ResumedElevated", 0.0)],
-                    warnings: Vec::new(),
-                }),
-            ],
-        );
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-        let paused_sample_seq = store.snapshot.sample_seq;
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Active
-        );
-        assert_eq!(store.snapshot.processes[0].name, "Standard");
-        assert!(!store.elevated_helper_rows_published);
-        assert!(store.last_verified_elevated_frame.is_some());
-
-        let mut resumed_standard = sample("90", "Protected", 0.0);
-        resumed_standard.memory_bytes = 100;
-        resumed_standard.network_received_bps = Some(2_048);
-        let held_snapshot =
-            publish_scripted_sample(&mut store, vec![resumed_standard], 1_783_944_001_000);
-
-        assert_eq!(
-            held_snapshot.admin_mode.state,
-            RuntimeAdminModeState::Active
-        );
-        assert_eq!(
-            held_snapshot.admin_mode.source,
-            RuntimePrivilegedSource::ElevatedHelper
-        );
-        assert_eq!(held_snapshot.processes[0].name, "Protected");
-        assert_eq!(held_snapshot.processes[0].memory_bytes, 900);
-        assert_eq!(held_snapshot.processes[0].network_received_bps, Some(2_048));
-        assert!(held_snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.message == "helper_access_limited"));
-        assert!(held_snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.message == "current_held_warning"));
-        assert_eq!(held_snapshot.sample_seq, paused_sample_seq + 1);
-        assert!(store.elevated_helper_rows_published);
-        assert!(store.last_verified_elevated_frame.is_none());
-
-        let fresh_snapshot = publish_scripted_sample(
-            &mut store,
-            vec![sample("20", "ResumedStandard", 0.0)],
-            1_783_944_002_000,
-        );
-
-        assert_eq!(
-            fresh_snapshot.admin_mode.state,
-            RuntimeAdminModeState::Active
-        );
-        assert_eq!(fresh_snapshot.processes[0].name, "ResumedElevated");
-        assert_eq!(fresh_snapshot.sample_seq, paused_sample_seq + 2);
-        assert!(store.elevated_helper_rows_published);
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn held_without_verified_helper_rows_cannot_claim_active_standard_rows() {
-        let base_dir = runtime_test_dir("admin-held-without-frame");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
-            &base_dir.join("scripted-helper"),
-            vec![Ok(ElevatedPoll::Held {
-                warnings: Vec::new(),
-            })],
-        ));
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = false;
-        store.admin_mode.state = RuntimeAdminModeState::Requesting;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-
-        let snapshot = publish_scripted_sample(
-            &mut store,
-            vec![sample("20", "ResumedStandard", 0.0)],
-            1_783_944_004_000,
-        );
-
-        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Recovering);
-        assert_eq!(
-            snapshot.admin_mode.detail.as_deref(),
-            Some("admin_mode_waiting_for_fresh_snapshot")
-        );
-        assert!(!snapshot.settings.admin_mode_enabled);
-        assert_eq!(snapshot.processes[0].name, "ResumedStandard");
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn paused_fresh_frame_supersedes_previously_published_helper_rows() {
-        let base_dir = runtime_test_dir("admin-paused-newer-frame");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        store.settings.paused = true;
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.admin_mode.state = RuntimeAdminModeState::Active;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.previous_processes = vec![sample("80", "OlderElevated", 0.0)];
-        store.elevated_helper_rows_published = true;
-        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
-            &base_dir.join("scripted-helper"),
-            vec![
-                Ok(ElevatedPoll::Fresh {
-                    rows: vec![sample("90", "NewerElevated", 0.0)],
-                    warnings: Vec::new(),
-                }),
-                Ok(ElevatedPoll::Held {
-                    warnings: Vec::new(),
-                }),
-            ],
-        ));
-        store.publish_snapshot_only(None);
-
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-        assert_eq!(store.snapshot.processes[0].name, "OlderElevated");
-        let snapshot = publish_scripted_sample(
-            &mut store,
-            vec![sample("20", "ResumedStandard", 0.0)],
-            1_783_944_005_000,
-        );
-
-        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Active);
-        assert_eq!(snapshot.processes[0].name, "NewerElevated");
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn paused_helper_failure_fails_closed_without_replacing_processes() {
-        let base_dir = runtime_test_dir("paused-admin-failure");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        seed_paused_snapshot(&mut store);
-        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
-            &base_dir.join("scripted-helper"),
-            vec![Err("admin_mode_snapshot_timeout".to_string())],
-        ));
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.admin_mode.state = RuntimeAdminModeState::Active;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.publish_snapshot_only(None);
-        let sample_seq = store.snapshot.sample_seq;
-        let processes =
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize");
-
-        store.progress_paused_elevated_helper(&NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert_eq!(
-            store.snapshot.admin_mode.state,
-            RuntimeAdminModeState::Failed
-        );
-        assert_eq!(
-            store.snapshot.admin_mode.source,
-            RuntimePrivilegedSource::ElevatedHelper
-        );
-        assert!(!store.snapshot.settings.admin_mode_requested);
-        assert!(!store.snapshot.settings.admin_mode_enabled);
-        assert!(store.elevated.is_none());
-        assert_eq!(store.snapshot.sample_seq, sample_seq);
-        assert_eq!(
-            serde_json::to_value(&store.snapshot.processes).expect("processes serialize"),
-            processes
-        );
-        assert!(store.process_access_baseline_dirty);
-
-        let transition =
-            store.advance_elevated_helper(1_783_944_003_000, &NOOP_PROCESS_NETWORK_CONTROL);
-        let mut resumed_rows = vec![sample("20", "ResumedStandard", 0.0)];
-        let mut rows_fresh = true;
-        let mut warnings = Vec::new();
-        store.apply_elevated_process_transition(
-            transition,
-            &mut resumed_rows,
-            &mut rows_fresh,
-            &mut warnings,
-        );
-        assert!(store.previous_processes.is_empty());
-        assert!(!store.process_access_baseline_dirty);
-        assert_eq!(resumed_rows[0].name, "ResumedStandard");
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn pre_child_admin_denial_releases_session_for_retry() {
-        let base_dir = runtime_test_dir("admin-pre-child-denial");
-        let helper_dir = base_dir.join("scripted-helper");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
-            &helper_dir,
-            HELPER_LAUNCHER_EXIT_NO_CHILD,
-            false,
-        ));
-        store.settings.admin_mode_requested = true;
-        store.admin_mode.state = RuntimeAdminModeState::Requesting;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-
-        let transition =
-            store.advance_elevated_helper(1_783_944_006_000, &NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert!(transition.publish);
-        assert!(!store.settings.admin_mode_requested);
-        assert!(!store.settings.admin_mode_enabled);
-        assert!(
-            store.elevated.is_none(),
-            "denial must permit a fresh request"
-        );
-        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
-        assert_eq!(
-            store.admin_mode.detail.as_deref(),
-            Some("admin_mode_launch_failed_or_cancelled")
-        );
-        assert_eq!(
-            store
-                .warnings
-                .iter()
-                .filter(|warning| warning.category == "admin_mode")
-                .map(|warning| warning.message.as_str())
-                .collect::<Vec<_>>(),
-            vec!["admin_mode_launch_failed_or_cancelled"]
-        );
-        assert!(!helper_dir.join("snapshot.json").exists());
-        assert!(!helper_dir.join("snapshot.json.tmp").exists());
-        assert!(!helper_dir.join("stop.signal").exists());
-        assert!(!helper_dir.join("accepted.signal").exists());
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn post_child_admin_failure_retains_ownership_and_combined_diagnostic() {
-        let base_dir = runtime_test_dir("admin-post-child-failure");
-        let helper_dir = base_dir.join("scripted-helper");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
-            &helper_dir,
-            HELPER_LAUNCHER_EXIT_FAILED,
-            true,
-        ));
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.admin_mode.state = RuntimeAdminModeState::Active;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-
-        let transition =
-            store.advance_elevated_helper(1_783_944_007_000, &NOOP_PROCESS_NETWORK_CONTROL);
-        let failure = "admin_mode_helper_exited:launcher_code=1;admin_mode_cleanup_failed:\
-admin_mode_launcher_exit_failed:code=1";
-
-        assert!(transition.publish);
-        assert!(!store.settings.admin_mode_requested);
-        assert!(!store.settings.admin_mode_enabled);
-        assert!(
-            store.elevated.is_some(),
-            "unsettled child ownership is retained"
-        );
-        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
-        assert_eq!(store.admin_mode.detail.as_deref(), Some(failure));
-        assert_eq!(
-            store
-                .warnings
-                .iter()
-                .filter(|warning| warning.category == "admin_mode")
-                .map(|warning| warning.message.as_str())
-                .collect::<Vec<_>>(),
-            vec![failure]
-        );
-        assert!(helper_dir.join("snapshot.json").exists());
-        assert!(helper_dir.join("stop.signal").exists());
-        assert!(helper_dir.join("accepted.signal").exists());
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn settled_post_child_admin_failure_releases_session_for_retry() {
-        let base_dir = runtime_test_dir("admin-settled-post-child-failure");
-        let helper_dir = base_dir.join("scripted-helper");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
-            &helper_dir,
-            HELPER_LAUNCHER_EXIT_SETTLED_FAILURE,
-            true,
-        ));
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.admin_mode.state = RuntimeAdminModeState::Active;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-
-        let transition =
-            store.advance_elevated_helper(1_783_944_008_000, &NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert!(transition.publish);
-        assert!(!store.settings.admin_mode_requested);
-        assert!(!store.settings.admin_mode_enabled);
-        assert!(
-            store.elevated.is_none(),
-            "settled child failure must permit a fresh request"
-        );
-        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
-        assert_eq!(
-            store.admin_mode.detail.as_deref(),
-            Some("admin_mode_helper_exited:launcher_code=3")
-        );
-        assert_eq!(
-            store
-                .warnings
-                .iter()
-                .filter(|warning| warning.category == "admin_mode")
-                .map(|warning| warning.message.as_str())
-                .collect::<Vec<_>>(),
-            vec!["admin_mode_helper_exited:launcher_code=3"]
-        );
-        assert!(!helper_dir.join("snapshot.json").exists());
-        assert!(!helper_dir.join("stop.signal").exists());
-        assert!(!helper_dir.join("accepted.signal").exists());
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn paused_disable_retains_unsettled_post_child_session() {
-        let base_dir = runtime_test_dir("paused-admin-disable-unsettled");
-        let helper_dir = base_dir.join("scripted-helper");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        seed_paused_snapshot(&mut store);
-        store.elevated = Some(ElevatedHelperClient::scripted_launcher_exit_for_test(
-            &helper_dir,
-            HELPER_LAUNCHER_EXIT_FAILED,
-            true,
-        ));
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.admin_mode.state = RuntimeAdminModeState::Active;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-
-        let snapshot = store.set_admin_mode(false, &NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert!(!snapshot.settings.admin_mode_requested);
-        assert!(!snapshot.settings.admin_mode_enabled);
-        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Off);
-        assert!(
-            store.elevated.is_some(),
-            "unsettled child ownership must survive disable"
-        );
-        assert_eq!(
-            snapshot
-                .warnings
-                .iter()
-                .filter(|warning| warning.category == "admin_mode")
-                .map(|warning| warning.message.as_str())
-                .collect::<Vec<_>>(),
-            vec!["admin_mode_launcher_exit_failed:code=1"]
-        );
-        assert!(helper_dir.join("snapshot.json").exists());
-        assert!(helper_dir.join("stop.signal").exists());
-        assert!(helper_dir.join("accepted.signal").exists());
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn disabling_active_helper_while_paused_stops_and_purges_privileged_rows() {
-        let base_dir = runtime_test_dir("paused-admin-disable");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        seed_paused_snapshot(&mut store);
-        store.elevated = Some(ElevatedHelperClient::scripted_for_test(
-            &base_dir.join("scripted-helper"),
-            vec![Ok(ElevatedPoll::Pending)],
-        ));
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.admin_mode.state = RuntimeAdminModeState::Active;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.publish_snapshot_only(None);
-        let sample_seq = store.snapshot.sample_seq;
-        let sampled_at_ms = store.snapshot.sampled_at_ms;
-
-        let snapshot = store.set_admin_mode(false, &NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert!(snapshot.settings.paused);
-        assert!(!snapshot.settings.admin_mode_requested);
-        assert!(!snapshot.settings.admin_mode_enabled);
-        assert_eq!(snapshot.admin_mode.state, RuntimeAdminModeState::Off);
-        assert_eq!(snapshot.admin_mode.source, RuntimePrivilegedSource::None);
-        assert!(store.elevated.is_none());
-        assert!(snapshot.processes.is_empty());
-        assert_eq!(snapshot.sample_seq, sample_seq);
-        assert_eq!(snapshot.sampled_at_ms, sampled_at_ms);
-        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[cfg(target_os = "macos")]
@@ -7327,80 +6250,6 @@ admin_mode_launcher_exit_failed:code=1";
             .join("Library")
             .join("Application Support");
         assert_eq!(default_base_dir(), expected_root.join("BatCaveMonitor"));
-    }
-
-    #[test]
-    fn admin_failure_clears_requested_and_enabled_state() {
-        let base_dir = runtime_test_dir("admin-failure");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-
-        store.fail_admin_mode(
-            "admin_mode_launch_failed_or_cancelled".to_string(),
-            &NOOP_PROCESS_NETWORK_CONTROL,
-        );
-
-        assert!(!store.settings.admin_mode_requested);
-        assert!(!store.settings.admin_mode_enabled);
-        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Failed);
-        assert_eq!(
-            store.admin_mode.source,
-            RuntimePrivilegedSource::ElevatedHelper
-        );
-        assert_eq!(
-            store.admin_mode.detail.as_deref(),
-            Some("admin_mode_launch_failed_or_cancelled")
-        );
-        assert!(store
-            .warnings
-            .back()
-            .is_some_and(|warning| warning.message == "admin_mode_launch_failed_or_cancelled"));
-        let persisted = read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE))
-            .expect("settings read succeeds");
-        assert!(!persisted.admin_mode_requested);
-        assert!(!persisted.admin_mode_enabled);
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn persisted_admin_request_is_session_only_and_drops_warm_cache() {
-        let base_dir = runtime_test_dir("admin-startup");
-        let helper_dir = base_dir.join("elevated-helper");
-        fs::create_dir_all(&base_dir).expect("test dir exists");
-        fs::create_dir_all(&helper_dir).expect("helper dir exists");
-        fs::write(
-            base_dir.join(SETTINGS_FILE),
-            serde_json::to_string(&RuntimeSettings {
-                admin_mode_requested: true,
-                ..RuntimeSettings::default()
-            })
-            .expect("settings serialize"),
-        )
-        .expect("settings fixture writes");
-        fs::write(
-            base_dir.join(WARM_CACHE_FILE),
-            serde_json::to_string(&WarmCache {
-                seq: 7,
-                rows: vec![sample("10", "Elevated", 0.0)],
-            })
-            .expect("cache serializes"),
-        )
-        .expect("cache fixture writes");
-        fs::write(helper_dir.join("snapshot.json"), "{}").expect("snapshot fixture writes");
-        fs::write(helper_dir.join("snapshot.json.tmp"), "{}").expect("temp fixture writes");
-        fs::write(helper_dir.join("stop.signal"), "stop").expect("stop fixture writes");
-
-        let store = RuntimeStore::from_base_dir(base_dir.clone());
-
-        assert!(!store.settings.admin_mode_requested);
-        assert!(store.previous_processes.is_empty());
-        assert!(store.snapshot.processes.is_empty());
-        assert!(!base_dir.join(WARM_CACHE_FILE).exists());
-        assert!(!helper_dir.join("snapshot.json").exists());
-        assert!(!helper_dir.join("snapshot.json.tmp").exists());
-        assert!(!helper_dir.join("stop.signal").exists());
-        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -7462,59 +6311,11 @@ admin_mode_launcher_exit_failed:code=1";
     }
 
     #[test]
-    fn disabling_admin_mode_purges_cached_rows_and_warm_cache() {
-        let base_dir = runtime_test_dir("admin-disable");
-        let helper_dir = base_dir.join("elevated-helper");
-        fs::create_dir_all(&base_dir).expect("test dir exists");
-        fs::create_dir_all(&helper_dir).expect("helper dir exists");
-        fs::write(base_dir.join(WARM_CACHE_FILE), "{}").expect("cache fixture writes");
-        fs::write(helper_dir.join("snapshot.json"), "{}").expect("snapshot fixture writes");
-        fs::write(helper_dir.join("snapshot.json.tmp"), "{}").expect("temp fixture writes");
-        fs::write(helper_dir.join("stop.signal"), "stop").expect("stop fixture writes");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = true;
-        store.previous_processes = vec![sample("10", "Elevated", 0.0)];
-        fs::write(helper_dir.join("snapshot.json"), "{}").expect("snapshot fixture rewrites");
-        fs::write(helper_dir.join("snapshot.json.tmp"), "{}").expect("temp fixture rewrites");
-        fs::write(helper_dir.join("stop.signal"), "stop").expect("stop fixture rewrites");
-
-        let snapshot = store.set_admin_mode(false, &NOOP_PROCESS_NETWORK_CONTROL);
-
-        assert!(!snapshot.settings.admin_mode_requested);
-        assert!(store.previous_processes.is_empty());
-        assert!(snapshot.processes.is_empty());
-        assert!(!base_dir.join(WARM_CACHE_FILE).exists());
-        assert!(!helper_dir.join("snapshot.json").exists());
-        assert!(!helper_dir.join("snapshot.json.tmp").exists());
-        assert!(!helper_dir.join("stop.signal").exists());
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn admin_pending_status_does_not_degrade_without_warning() {
-        let base_dir = runtime_test_dir("admin-pending");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = false;
-        store.admin_mode.state = RuntimeAdminModeState::Requesting;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.warnings.clear();
-
-        let health = store.build_health(0, 0.0, 0);
-
-        assert!(!health.degraded);
-        assert_eq!(health.collector_warnings, 0);
-        assert!(health.status_summary.contains("Windows approval"));
-        let _ = fs::remove_dir_all(base_dir);
-    }
-
-    #[test]
-    fn warm_cache_is_not_written_while_admin_mode_is_enabled() {
+    fn warm_cache_is_not_written_during_privileged_collection() {
         let base_dir = runtime_test_dir("admin-cache-skip");
         fs::create_dir_all(&base_dir).expect("test dir exists");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.settings.admin_mode_enabled = true;
+        store.admin_mode.state = RuntimeAdminModeState::Active;
         store.previous_processes = vec![sample("10", "Elevated", 0.0)];
         store.publication_seq = 10;
 
@@ -7542,12 +6343,7 @@ admin_mode_launcher_exit_failed:code=1";
         assert!(store.snapshot.health.degraded);
         assert!(store.snapshot.health.status_summary.contains("persistence"));
         assert_eq!(store.engine_state, RuntimeEngineState::Starting);
-        let expected_settings = RuntimeSettings {
-            admin_mode_enabled: store.provenance.process_is_elevated(),
-            ..RuntimeSettings::default()
-        };
-        assert_eq!(store.settings, expected_settings);
-        assert!(!store.settings.admin_mode_requested);
+        assert_eq!(store.settings, RuntimeSettings::default());
         assert!(store
             .warnings
             .iter()
@@ -7750,7 +6546,7 @@ admin_mode_launcher_exit_failed:code=1";
             .collect()
             .expect("a valid raw sample is available");
         let sample_ts_ms = store.clock.now_ms();
-        store.apply_raw_sample(sample, 0.0, sample_ts_ms, &NOOP_PROCESS_NETWORK_CONTROL);
+        store.apply_raw_sample(sample, 0.0, sample_ts_ms);
         fs::remove_dir_all(&base_dir).expect("verified root is removed for invalidation");
         fs::write(&base_dir, "not a directory").expect("invalid root fixture writes");
 
@@ -7818,7 +6614,6 @@ admin_mode_launcher_exit_failed:code=1";
         let base_dir = runtime_test_dir("shutdown-persistence-flush");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         // This fixture proves the standard-user cache flush path independently of the host token.
-        store.settings.admin_mode_enabled = false;
         store.settings.ui_preferences = Some(RuntimeUiPreferences {
             theme: "ember".to_string(),
             history_point_limit: 180,
@@ -7838,8 +6633,6 @@ admin_mode_launcher_exit_failed:code=1";
         let cache =
             read_json::<WarmCache>(&base_dir.join(WARM_CACHE_FILE)).expect("warm cache persisted");
         assert_eq!(settings.ui_preferences, store.settings.ui_preferences);
-        assert!(!settings.admin_mode_requested);
-        assert!(!settings.admin_mode_enabled);
         assert_eq!(cache.seq, 12);
         assert_eq!(cache.rows.len(), 1);
         assert_eq!(cache.rows[0].name, "Cached");
@@ -7857,7 +6650,7 @@ admin_mode_launcher_exit_failed:code=1";
             .collect()
             .expect("a valid raw sample is available");
         let sample_ts_ms = store.clock.now_ms();
-        store.apply_raw_sample(sample, 0.0, sample_ts_ms, &NOOP_PROCESS_NETWORK_CONTROL);
+        store.apply_raw_sample(sample, 0.0, sample_ts_ms);
 
         let persistence = store.persistence.health();
         assert_eq!(persistence.state, RuntimePersistenceState::Healthy);
@@ -7945,50 +6738,6 @@ admin_mode_launcher_exit_failed:code=1";
             threads: metric(),
             handles: metric(),
         })
-    }
-
-    fn seed_paused_snapshot(store: &mut RuntimeStore) {
-        store.settings.paused = true;
-        store.sample_seq = 7;
-        store.sampled_at_ms = Some(1_783_944_000_000);
-        store.previous_processes = vec![sample("10", "Standard", 1.0)];
-        store.publish_snapshot_only(None);
-    }
-
-    fn queue_scripted_helper(store: &mut RuntimeStore, polls: Vec<Result<ElevatedPoll, String>>) {
-        let client =
-            ElevatedHelperClient::scripted_for_test(&store.base_dir.join("scripted-helper"), polls);
-        store.settings.admin_mode_requested = true;
-        store.settings.admin_mode_enabled = false;
-        store.admin_mode.state = RuntimeAdminModeState::Requesting;
-        store.admin_mode.source = RuntimePrivilegedSource::ElevatedHelper;
-        store.elevated = Some(client);
-        store.publish_snapshot_only(None);
-    }
-
-    fn publish_scripted_sample(
-        store: &mut RuntimeStore,
-        mut rows: Vec<ProcessSample>,
-        sampled_at_ms: u64,
-    ) -> RuntimeSnapshot {
-        store.settings.paused = false;
-        let transition =
-            store.advance_elevated_helper(sampled_at_ms, &NOOP_PROCESS_NETWORK_CONTROL);
-        let mut rows_fresh = true;
-        let mut warnings = Vec::new();
-        store.apply_elevated_process_transition(
-            transition,
-            &mut rows,
-            &mut rows_fresh,
-            &mut warnings,
-        );
-        store.sync_collector_warnings(warnings);
-        store.previous_processes = rows;
-        store.live_process_snapshot = rows_fresh;
-        store.sample_seq = store.sample_seq.saturating_add(1);
-        store.sampled_at_ms = Some(sampled_at_ms);
-        store.publish_snapshot_only(None);
-        store.snapshot.clone()
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {

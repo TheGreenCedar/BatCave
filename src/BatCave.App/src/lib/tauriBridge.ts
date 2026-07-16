@@ -108,13 +108,6 @@ export function setRuntimeSampleInterval(
   return invokeRuntimeMutationSnapshot(invoke, "set_sample_interval", { sampleIntervalMs });
 }
 
-export function setRuntimeAdminMode(
-  invoke: RuntimeInvoke,
-  enabled: boolean,
-): Promise<RuntimeSnapshot> {
-  return invokeRuntimeMutationSnapshot(invoke, "set_admin_mode", { enabled });
-}
-
 export function setRuntimeUiPreferences(
   invoke: RuntimeInvoke,
   preferences: RuntimeUiPreferencesV3,

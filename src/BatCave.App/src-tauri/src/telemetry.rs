@@ -82,11 +82,6 @@ impl TelemetryCollector {
     }
 
     #[cfg(windows)]
-    pub(crate) fn for_elevated_helper(process_network: bool) -> Self {
-        Self::new_with_process_network(process_network)
-    }
-
-    #[cfg(windows)]
     pub(crate) fn for_collector_service(monitor: NetworkAttributionMonitor) -> Self {
         let mut collector = Self::new_with_process_network(false);
         *collector
@@ -1311,15 +1306,6 @@ mod tests {
             .message
             .expect("message exists")
             .contains("Native process memory counters were denied"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn elevated_helper_does_not_start_a_second_etw_monitor() {
-        let collector = TelemetryCollector::for_elevated_helper(false);
-        let state = collector.network_attribution.lock().unwrap();
-
-        assert!(matches!(&*state, NetworkAttributionState::Disabled));
     }
 
     #[cfg(windows)]

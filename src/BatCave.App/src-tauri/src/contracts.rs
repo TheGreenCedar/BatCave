@@ -140,7 +140,6 @@ pub enum RuntimeProcessElevation {
 pub enum RuntimePrivilegedSource {
     None,
     CurrentProcess,
-    ElevatedHelper,
     CollectorService,
 }
 
@@ -583,10 +582,6 @@ pub struct RuntimeWarning {
 pub struct RuntimeSettings {
     #[serde(default)]
     pub query: RuntimeQuery,
-    #[serde(default)]
-    pub admin_mode_requested: bool,
-    #[serde(default)]
-    pub admin_mode_enabled: bool,
     #[serde(default = "default_metric_window_seconds")]
     pub metric_window_seconds: u32,
     #[serde(default = "default_sample_interval_ms")]
@@ -769,8 +764,6 @@ impl Default for RuntimeSettings {
     fn default() -> Self {
         Self {
             query: RuntimeQuery::default(),
-            admin_mode_requested: false,
-            admin_mode_enabled: false,
             metric_window_seconds: default_metric_window_seconds(),
             sample_interval_ms: default_sample_interval_ms(),
             paused: false,
@@ -867,8 +860,8 @@ mod tests {
             json!("standard")
         );
         assert_eq!(
-            serde_json::to_value(RuntimePrivilegedSource::ElevatedHelper).unwrap(),
-            json!("elevated_helper")
+            serde_json::to_value(RuntimePrivilegedSource::CollectorService).unwrap(),
+            json!("collector_service")
         );
     }
 
@@ -884,13 +877,13 @@ mod tests {
             environment: RuntimeEnvironment {
                 platform: RuntimePlatform::Windows,
                 admin_mode_available: true,
-                process_elevation: RuntimeProcessElevation::Standard,
+                process_elevation: RuntimeProcessElevation::Elevated,
                 install_kind: RuntimeInstallKind::Nsis,
                 data_directory: Some("C:\\Users\\test\\BatCaveMonitor".to_string()),
             },
             admin_mode: RuntimeAdminModeStatus {
-                state: RuntimeAdminModeState::Requesting,
-                source: RuntimePrivilegedSource::ElevatedHelper,
+                state: RuntimeAdminModeState::Active,
+                source: RuntimePrivilegedSource::CurrentProcess,
                 detail: None,
                 last_success_at_ms: None,
                 collector_service: None,
@@ -903,8 +896,6 @@ mod tests {
                     sort_direction: SortDirection::Asc,
                     limit: 25,
                 },
-                admin_mode_requested: true,
-                admin_mode_enabled: false,
                 metric_window_seconds: 30,
                 sample_interval_ms: 1_000,
                 paused: true,
@@ -1057,13 +1048,13 @@ mod tests {
                 "environment": {
                     "platform": "windows",
                     "admin_mode_available": true,
-                    "process_elevation": "standard",
+                    "process_elevation": "elevated",
                     "install_kind": "nsis",
                     "data_directory": "C:\\Users\\test\\BatCaveMonitor"
                 },
                 "admin_mode": {
-                    "state": "requesting",
-                    "source": "elevated_helper",
+                    "state": "active",
+                    "source": "current_process",
                     "detail": null,
                     "last_success_at_ms": null
                 },
@@ -1075,8 +1066,6 @@ mod tests {
                         "sort_direction": "asc",
                         "limit": 25
                     },
-                    "admin_mode_requested": true,
-                    "admin_mode_enabled": false,
                     "metric_window_seconds": 30,
                     "sample_interval_ms": 1000,
                     "paused": true
@@ -1277,8 +1266,6 @@ mod tests {
                 sort_direction: SortDirection::Asc,
                 limit: 100,
             },
-            admin_mode_requested: false,
-            admin_mode_enabled: false,
             metric_window_seconds: 15,
             sample_interval_ms: 1_000,
             paused: false,
@@ -1297,8 +1284,6 @@ mod tests {
                     "sort_direction": "asc",
                     "limit": 100
                 },
-                "admin_mode_requested": false,
-                "admin_mode_enabled": false,
                 "metric_window_seconds": 15,
                 "sample_interval_ms": 1000,
                 "paused": false
@@ -1322,8 +1307,6 @@ mod tests {
         assert_eq!(settings.query.sort_column, SortColumn::CpuPct);
         assert_eq!(settings.query.sort_direction, SortDirection::Desc);
         assert_eq!(settings.query.limit, 5000);
-        assert!(!settings.admin_mode_requested);
-        assert!(!settings.admin_mode_enabled);
         assert_eq!(settings.metric_window_seconds, 60);
         assert!(!settings.paused);
     }

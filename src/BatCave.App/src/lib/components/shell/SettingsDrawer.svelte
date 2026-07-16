@@ -1,6 +1,5 @@
 <script lang="ts">
   import { X } from "phosphor-svelte";
-  import type { PrivilegedCollectionAction } from "../../environmentPresentation";
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
   import { formatInterval } from "../../format";
   import { platformPresentation, type PlatformPresentation } from "../../platformPresentation";
@@ -17,8 +16,7 @@
   export let runtimeMutationsDisabled = false;
   export let processStatus = "Standard token";
   export let adminStatus = "Off";
-  export let adminNote = "Protected fields remain unavailable until the local helper is enabled.";
-  export let adminAction: PrivilegedCollectionAction | null = null;
+  export let adminNote = "Protected fields require the installed collector service or an elevated current process.";
   export let dataDirectory: string | null = null;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
   export let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
@@ -27,7 +25,6 @@
   export let onTheme: (theme: ThemePreference) => void;
   export let onPollInterval: (interval: number) => void;
   export let onHistoryLimit: (limit: number) => void;
-  export let onAdminMode: (enabled: boolean) => void = () => {};
   export let onCheckForUpdates: () => void = () => {};
   export let onInstallUpdate: () => void = () => {};
   export let onResetHistory: () => void = () => {};
@@ -173,11 +170,6 @@
                 <strong>Privileged collection</strong>
                 <span>{adminStatus}</span>
               </div>
-              {#if adminAction}
-                <button type="button" disabled={runtimeMutationsDisabled} onclick={() => onAdminMode(adminAction.enabled)}>
-                  {adminAction.label}
-                </button>
-              {/if}
             </div>
             <p class="setting-note">{adminNote}</p>
           </section>

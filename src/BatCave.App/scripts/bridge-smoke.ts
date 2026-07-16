@@ -6,7 +6,6 @@ import {
   refreshRuntime,
   runtimeMutationAllowed,
   setRuntimePaused,
-  setRuntimeAdminMode,
   setRuntimeProcessQuery,
   setRuntimeSampleInterval,
   setRuntimeUiPreferences,
@@ -60,8 +59,6 @@ function snapshot(seq: number) {
         sort_direction: "desc",
         limit: 5000,
       },
-      admin_mode_requested: false,
-      admin_mode_enabled: false,
       metric_window_seconds: 60,
       sample_interval_ms: 1000,
       paused: false,
@@ -159,8 +156,6 @@ await setRuntimePaused(invoke, true);
 await setRuntimePaused(invoke, false);
 await refreshRuntime(invoke);
 await setRuntimeSampleInterval(invoke, 2000);
-await setRuntimeAdminMode(invoke, true);
-await setRuntimeAdminMode(invoke, false);
 await setRuntimeProcessQuery(invoke, {
   filter_text: "chrome",
   focus_mode: "io",
@@ -189,8 +184,6 @@ assert.deepEqual(
     ["resume_runtime", undefined],
     ["refresh_now", undefined],
     ["set_sample_interval", { sampleIntervalMs: 2000 }],
-    ["set_admin_mode", { enabled: true }],
-    ["set_admin_mode", { enabled: false }],
     [
       "set_process_query",
       {
@@ -233,7 +226,6 @@ const orderedMutations = [
   setRuntimePaused(orderedInvoke, true),
   setRuntimePaused(orderedInvoke, false),
   setRuntimeSampleInterval(orderedInvoke, 500),
-  setRuntimeAdminMode(orderedInvoke, true),
   setRuntimeProcessQuery(
     orderedInvoke,
     {
@@ -251,7 +243,6 @@ const orderedCommands = [
   "pause_runtime",
   "resume_runtime",
   "set_sample_interval",
-  "set_admin_mode",
   "set_process_query",
   "set_ui_preferences",
 ];

@@ -84,8 +84,6 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
     },
     settings: {
       query: { ...payload.settings.query },
-      admin_mode_requested: payload.privileged_collection.preference === "best_available",
-      admin_mode_enabled: payload.privileged_collection.state === "active",
       metric_window_seconds: payload.settings.metric_window_seconds,
       sample_interval_ms: payload.settings.effective_sample_interval_ms,
       paused: payload.settings.collection_paused,
@@ -137,7 +135,7 @@ function legacyPrivilegedSource(
   processElevation: RuntimeSnapshotPayloadV3["environment"]["process_elevation"],
 ): RuntimeSnapshot["admin_mode"]["source"] {
   if (source === "local_process") {
-    return processElevation === "elevated" ? "current_process" : "elevated_helper";
+    return processElevation === "elevated" ? "current_process" : "none";
   }
   return source;
 }
