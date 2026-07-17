@@ -197,6 +197,8 @@ pub(crate) struct ElevatedMachineSnapshot {
     pub(crate) etw_session: Observation<EtwSessionProofSnapshot>,
     pub(crate) etw_owner_lock: RuntimeLockObservation,
     pub(crate) service_lifecycle_lock: RuntimeLockObservation,
+    pub(crate) service_install_residue:
+        crate::collector_service::windows_provisioner::ServiceInstallResidueForProof,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1997,6 +1999,11 @@ pub(crate) fn capture_elevated_machine_snapshot(
         Ok(None) => Observation::Absent,
         Err(reason) => Observation::Unknown(reason),
     };
+    // The production observer retains all roots and matching leaves only for
+    // this bounded read. Its handles are dropped here before any later stage
+    // can mutate service or install state.
+    let mut service_install_residue =
+        crate::collector_service::windows_provisioner::observe_service_install_residue_for_proof();
     if !same_service_generation(&machine.service, &observe_service()) {
         let reason = "lifecycle_runtime_service_changed_during_capture".to_string();
         named_pipe = Observation::Unknown(reason.clone());
@@ -2006,6 +2013,10 @@ pub(crate) fn capture_elevated_machine_snapshot(
             reason: reason.clone(),
         };
         service_lifecycle_lock = RuntimeLockObservation::Unknown { reason };
+        let reason = "lifecycle_residue_service_changed_during_capture".to_string();
+        service_install_residue.service_registry_key = Observation::Unknown(reason.clone());
+        service_install_residue.service_data = Observation::Unknown(reason.clone());
+        service_install_residue.install = Observation::Unknown(reason);
     }
     ElevatedMachineSnapshot {
         machine,
@@ -2018,6 +2029,7 @@ pub(crate) fn capture_elevated_machine_snapshot(
         etw_session,
         etw_owner_lock,
         service_lifecycle_lock,
+        service_install_residue,
     }
 }
 

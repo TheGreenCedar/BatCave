@@ -252,6 +252,122 @@ pub(crate) struct InstalledBoundariesForProof {
 #[cfg(feature = "private-windows-lifecycle-proof")]
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct ResidueFileForProof {
+    pub(crate) path: String,
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
+    pub(crate) volume_serial: u32,
+    pub(crate) file_index: u64,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceRegistryKeyForProof {
+    pub(crate) last_failure: crate::windows_lifecycle_proof_contract::Observation<String>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceDataResidueForProof {
+    pub(crate) volume_serial: u32,
+    pub(crate) file_index: u64,
+    pub(crate) upgrade_transaction_journal:
+        crate::windows_lifecycle_proof_contract::Observation<ResidueFileForProof>,
+    pub(crate) atomic_temporary_files: Vec<ResidueFileForProof>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstallResidueForProof {
+    pub(crate) volume_serial: u32,
+    pub(crate) file_index: u64,
+    pub(crate) staged_service_images: Vec<ResidueFileForProof>,
+    pub(crate) rollback_service_images: Vec<ResidueFileForProof>,
+    pub(crate) atomic_temporary_files: Vec<ResidueFileForProof>,
+    pub(crate) rollback_execution_marker:
+        crate::windows_lifecycle_proof_contract::Observation<ResidueFileForProof>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceInstallResidueForProof {
+    pub(crate) service_registry_key:
+        crate::windows_lifecycle_proof_contract::Observation<ServiceRegistryKeyForProof>,
+    pub(crate) service_data:
+        crate::windows_lifecycle_proof_contract::Observation<ServiceDataResidueForProof>,
+    pub(crate) install:
+        crate::windows_lifecycle_proof_contract::Observation<InstallResidueForProof>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResidueKindForProof {
+    Journal,
+    ServiceDataAtomic,
+    Staged,
+    Rollback,
+    InstallAtomic,
+    RollbackExecutionMarker,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn observe_service_install_residue_for_proof() -> ServiceInstallResidueForProof {
+    native::observe_service_install_residue_for_proof()
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn service_data_atomic_temp_name_for_proof(name: &str) -> bool {
+    native::is_owned_atomic_temp_name(name)
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn install_staged_name_for_proof(name: &str) -> bool {
+    is_staged_upgrade_name(name)
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn install_rollback_name_for_proof(name: &str) -> bool {
+    native::rollback_digest_from_name(name).is_some()
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn install_atomic_temp_name_for_proof(name: &str) -> bool {
+    native::install_atomic_temp_name_for_proof(name)
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn rollback_execution_marker_name_for_proof() -> &'static str {
+    PRIVATE_ROLLBACK_MARKER_NAME
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn residue_size_valid_for_proof(kind: ResidueKindForProof, size: u64) -> bool {
+    let kind = match kind {
+        ResidueKindForProof::Journal => native::ProofResidueKind::Journal,
+        ResidueKindForProof::ServiceDataAtomic => native::ProofResidueKind::ServiceDataAtomic,
+        ResidueKindForProof::Staged => native::ProofResidueKind::Staged,
+        ResidueKindForProof::Rollback => native::ProofResidueKind::Rollback,
+        ResidueKindForProof::InstallAtomic => native::ProofResidueKind::InstallAtomic,
+        ResidueKindForProof::RollbackExecutionMarker => {
+            native::ProofResidueKind::RollbackExecutionMarker
+        }
+    };
+    native::proof_residue_size_valid(kind, size)
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn residue_set_bounds_valid_for_proof(count: usize, total_bytes: u64) -> bool {
+    count <= native::PROOF_RESIDUE_MAX_MATCHED_CHILDREN
+        && total_bytes <= native::PROOF_RESIDUE_MAX_TOTAL_BYTES
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ServiceTerminationTargetForProof {
     pub(crate) process_id: u32,
     pub(crate) process_started_at_100ns: u64,
@@ -2341,6 +2457,734 @@ mod native {
     pub(super) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
         let roots = fixed_roots()?;
         Ok((roots.product, roots.service))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_RESIDUE_MAX_DIRECT_CHILDREN: usize = 256;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) const PROOF_RESIDUE_MAX_MATCHED_CHILDREN: usize = 64;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) const PROOF_RESIDUE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) enum ProofResidueKind {
+        Journal,
+        ServiceDataAtomic,
+        Staged,
+        Rollback,
+        InstallAtomic,
+        RollbackExecutionMarker,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    struct PinnedProofResidueFile {
+        snapshot: ResidueFileForProof,
+        path: PathBuf,
+        handle: OwnedHandle,
+        allow_service_writer: bool,
+        dacl_sha256: String,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl PinnedProofResidueFile {
+        fn revalidate(&self, principals: &SecurityPrincipals) -> Result<(), String> {
+            let info = file_information(
+                self.handle.raw(),
+                "collector_service_proof_residue_revalidate_info_failed",
+            )?;
+            if !proof_residue_file_information_valid(&info)
+                || info.dwVolumeSerialNumber != self.snapshot.volume_serial
+                || ((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))
+                    != self.snapshot.file_index
+                || file_size(&info) != self.snapshot.size
+                || !fixed_path_eq(
+                    &final_path(
+                        &self.handle,
+                        "collector_service_proof_residue_revalidate_path_failed",
+                    )?,
+                    &self.path,
+                )
+            {
+                return Err("collector_service_proof_residue_identity_changed".to_string());
+            }
+            validate_no_untrusted_writer(
+                self.handle.raw(),
+                principals,
+                self.allow_service_writer,
+                self.allow_service_writer,
+            )
+            .map_err(|_| "collector_service_proof_residue_acl_changed".to_string())?;
+            let (_, dacl_sha256) = security_policy_with_dacl_sha256(self.handle.raw(), principals)
+                .map_err(|_| "collector_service_proof_residue_acl_changed".to_string())?;
+            if dacl_sha256 != self.dacl_sha256 {
+                return Err("collector_service_proof_residue_acl_changed".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn install_atomic_temp_name_for_proof(name: &str) -> bool {
+        if name == "batcave-collector-service.rollback.tmp" {
+            return true;
+        }
+        atomic_temp_base(name).is_some_and(|base| {
+            is_staged_upgrade_name(base) || rollback_digest_from_name(base).is_some()
+        })
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn classify_service_data_residue_name_for_proof(
+        name: &str,
+    ) -> Result<Option<ProofResidueKind>, String> {
+        if name == UPGRADE_JOURNAL_FILE_NAME {
+            return Ok(Some(ProofResidueKind::Journal));
+        }
+        if is_owned_atomic_temp_name(name) {
+            return Ok(Some(ProofResidueKind::ServiceDataAtomic));
+        }
+        let lowercase = name.to_ascii_lowercase();
+        if lowercase == UPGRADE_JOURNAL_FILE_NAME || is_owned_atomic_temp_name(&lowercase) {
+            return Err("collector_service_proof_residue_name_noncanonical".to_string());
+        }
+        Ok(None)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn classify_install_residue_name_for_proof(
+        name: &str,
+    ) -> Result<Option<ProofResidueKind>, String> {
+        let classified = if is_staged_upgrade_name(name) {
+            Some(ProofResidueKind::Staged)
+        } else if rollback_digest_from_name(name).is_some() {
+            Some(ProofResidueKind::Rollback)
+        } else if install_atomic_temp_name_for_proof(name) {
+            Some(ProofResidueKind::InstallAtomic)
+        } else if name == PRIVATE_ROLLBACK_MARKER_NAME {
+            Some(ProofResidueKind::RollbackExecutionMarker)
+        } else {
+            None
+        };
+        if classified.is_some() {
+            return Ok(classified);
+        }
+        let lowercase = name.to_ascii_lowercase();
+        if is_staged_upgrade_name(&lowercase)
+            || rollback_digest_from_name(&lowercase).is_some()
+            || install_atomic_temp_name_for_proof(&lowercase)
+            || lowercase == PRIVATE_ROLLBACK_MARKER_NAME
+        {
+            return Err("collector_service_proof_residue_name_noncanonical".to_string());
+        }
+        Ok(None)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn proof_residue_file_information_valid(info: &BY_HANDLE_FILE_INFORMATION) -> bool {
+        info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == 0
+            && info.nNumberOfLinks == 1
+            && ((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)) != 0
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn proof_residue_size_valid(kind: ProofResidueKind, size: u64) -> bool {
+        let maximum = match kind {
+            ProofResidueKind::Journal | ProofResidueKind::ServiceDataAtomic => {
+                UPGRADE_JOURNAL_MAX_BYTES as u64
+            }
+            ProofResidueKind::Staged
+            | ProofResidueKind::Rollback
+            | ProofResidueKind::InstallAtomic => PRIVATE_ROLLBACK_FIXTURE_MAX_BYTES as u64,
+            ProofResidueKind::RollbackExecutionMarker => 1024,
+        };
+        (1..=maximum).contains(&size)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn reserve_proof_residue_bytes(remaining: &mut u64, size: u64) -> bool {
+        let Some(next) = remaining.checked_sub(size) else {
+            return false;
+        };
+        *remaining = next;
+        true
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn proof_residue_match_count_valid(current: usize) -> bool {
+        current < PROOF_RESIDUE_MAX_MATCHED_CHILDREN
+    }
+
+    #[cfg(all(test, feature = "private-windows-lifecycle-proof"))]
+    pub(super) fn proof_residue_file_has_single_link_for_test(path: &Path) -> Result<bool, String> {
+        let file = open_file(path, "collector_service_proof_residue_test_open_failed")?;
+        Ok(proof_residue_file_information_valid(&file_information(
+            file.raw(),
+            "collector_service_proof_residue_test_info_failed",
+        )?))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn observe_service_install_residue_for_proof() -> ServiceInstallResidueForProof {
+        ServiceInstallResidueForProof {
+            service_registry_key: observe_service_registry_key_for_proof(),
+            service_data: match observe_service_data_residue_for_proof() {
+                Ok(value) => value,
+                Err(reason) => {
+                    crate::windows_lifecycle_proof_contract::Observation::Unknown(reason)
+                }
+            },
+            install: match observe_install_residue_for_proof() {
+                Ok(value) => value,
+                Err(reason) => {
+                    crate::windows_lifecycle_proof_contract::Observation::Unknown(reason)
+                }
+            },
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn observe_service_registry_key_for_proof(
+    ) -> crate::windows_lifecycle_proof_contract::Observation<ServiceRegistryKeyForProof> {
+        use crate::windows_lifecycle_proof_contract::Observation;
+
+        let open = || -> Result<Option<OwnedRegistryKey>, String> {
+            let path = wide(SERVICE_REGISTRY_PATH);
+            let mut key = ptr::null_mut();
+            let status = unsafe {
+                RegOpenKeyExW(
+                    HKEY_LOCAL_MACHINE,
+                    path.as_ptr(),
+                    0,
+                    KEY_QUERY_VALUE | windows_sys::Win32::System::Registry::KEY_WOW64_64KEY,
+                    &mut key,
+                )
+            };
+            if status == 0 {
+                Ok(Some(OwnedRegistryKey(key)))
+            } else if is_missing_path_error(status) {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "collector_service_proof_service_registry_open_failed:{status}"
+                ))
+            }
+        };
+
+        let Some(key) = (match open() {
+            Ok(key) => key,
+            Err(reason) => return Observation::Unknown(reason),
+        }) else {
+            return match open() {
+                Ok(None) => Observation::Absent,
+                Ok(Some(_)) => Observation::Unknown(
+                    "collector_service_proof_service_registry_appeared".to_string(),
+                ),
+                Err(reason) => Observation::Unknown(reason),
+            };
+        };
+        let first = match read_optional_registry_string_for_proof(key.0, SERVICE_FAILURE_VALUE) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let second = match read_optional_registry_string_for_proof(key.0, SERVICE_FAILURE_VALUE) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let reopened = match open() {
+            Ok(Some(key)) => key,
+            Ok(None) => {
+                return Observation::Unknown(
+                    "collector_service_proof_service_registry_disappeared".to_string(),
+                )
+            }
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let third = match read_optional_registry_string_for_proof(reopened.0, SERVICE_FAILURE_VALUE)
+        {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        if first != second || second != third {
+            return Observation::Unknown(
+                "collector_service_proof_service_registry_changed".to_string(),
+            );
+        }
+        Observation::Present(ServiceRegistryKeyForProof {
+            last_failure: first.map_or(Observation::Absent, Observation::Present),
+        })
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn read_optional_registry_string_for_proof(
+        key: windows_sys::Win32::System::Registry::HKEY,
+        value_name: &str,
+    ) -> Result<Option<String>, String> {
+        let name = wide(value_name);
+        let mut value_type = 0_u32;
+        let mut bytes = 0_u32;
+        let status = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                ptr::null_mut(),
+                &mut value_type,
+                ptr::null_mut(),
+                &mut bytes,
+            )
+        };
+        if status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        if status != 0
+            || value_type != REG_SZ
+            || !(2..=64 * 1024).contains(&bytes)
+            || !bytes.is_multiple_of(2)
+        {
+            return Err(format!(
+                "collector_service_proof_service_registry_value_query_failed:{status}"
+            ));
+        }
+        let mut value = vec![0_u16; bytes as usize / size_of::<u16>()];
+        let status = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                ptr::null_mut(),
+                &mut value_type,
+                value.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if status != 0 || value_type != REG_SZ || !bytes.is_multiple_of(2) {
+            return Err(format!(
+                "collector_service_proof_service_registry_value_read_failed:{status}"
+            ));
+        }
+        value.truncate(bytes as usize / size_of::<u16>());
+        while value.last() == Some(&0) {
+            value.pop();
+        }
+        let value = String::from_utf16(&value).map_err(|_| {
+            "collector_service_proof_service_registry_value_utf16_invalid".to_string()
+        })?;
+        if value.is_empty() {
+            return Err("collector_service_proof_service_registry_value_empty".to_string());
+        }
+        Ok(Some(value))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn observe_service_data_residue_for_proof() -> Result<
+        crate::windows_lifecycle_proof_contract::Observation<ServiceDataResidueForProof>,
+        String,
+    > {
+        use crate::windows_lifecycle_proof_contract::Observation;
+
+        let roots = fixed_roots()?;
+        let principals = SecurityPrincipals::load_with_service()?;
+        let _program_data = open_directory(
+            &roots.program_data,
+            "collector_service_proof_programdata_open_failed",
+        )?;
+        let Some(_product) =
+            open_optional_product_root_for_proof(&roots.product, false, &principals)?
+        else {
+            return if open_optional_product_root_for_proof(&roots.product, false, &principals)?
+                .is_none()
+            {
+                Ok(Observation::Absent)
+            } else {
+                Err("collector_service_proof_product_root_appeared".to_string())
+            };
+        };
+        let Some(service) =
+            open_optional_product_root_for_proof(&roots.service, true, &principals)?
+        else {
+            return if open_optional_product_root_for_proof(&roots.service, true, &principals)?
+                .is_none()
+            {
+                Ok(Observation::Absent)
+            } else {
+                Err("collector_service_proof_service_root_appeared".to_string())
+            };
+        };
+        let info = file_information(
+            service.raw(),
+            "collector_service_proof_service_residue_root_info_failed",
+        )?;
+        let files = capture_residue_files_for_proof(
+            &roots.service,
+            &service,
+            &principals,
+            true,
+            classify_service_data_residue_name_for_proof,
+        )?;
+        let mut journal = Observation::Absent;
+        let mut atomic_temporary_files = Vec::new();
+        for (kind, file) in files {
+            match kind {
+                ProofResidueKind::Journal => journal = Observation::Present(file),
+                ProofResidueKind::ServiceDataAtomic => atomic_temporary_files.push(file),
+                _ => unreachable!("service-data classifier returned install residue"),
+            }
+        }
+        Ok(Observation::Present(ServiceDataResidueForProof {
+            volume_serial: info.dwVolumeSerialNumber,
+            file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            upgrade_transaction_journal: journal,
+            atomic_temporary_files,
+        }))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn observe_install_residue_for_proof(
+    ) -> Result<crate::windows_lifecycle_proof_contract::Observation<InstallResidueForProof>, String>
+    {
+        use crate::windows_lifecycle_proof_contract::Observation;
+
+        let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
+        let _program_files = open_directory(
+            &program_files,
+            "collector_service_proof_program_files_open_failed",
+        )?;
+        let install_path = program_files.join(PRODUCT_DIRECTORY_NAME);
+        let principals = SecurityPrincipals::load_base()?;
+        let Some(install) = open_optional_install_root_for_proof(&install_path, &principals)?
+        else {
+            return if open_optional_install_root_for_proof(&install_path, &principals)?.is_none() {
+                Ok(Observation::Absent)
+            } else {
+                Err("collector_service_proof_install_root_appeared".to_string())
+            };
+        };
+        let info = file_information(
+            install.raw(),
+            "collector_service_proof_install_residue_root_info_failed",
+        )?;
+        let files = capture_residue_files_for_proof(
+            &install_path,
+            &install,
+            &principals,
+            false,
+            classify_install_residue_name_for_proof,
+        )?;
+        let mut staged_service_images = Vec::new();
+        let mut rollback_service_images = Vec::new();
+        let mut atomic_temporary_files = Vec::new();
+        let mut rollback_execution_marker = Observation::Absent;
+        for (kind, file) in files {
+            match kind {
+                ProofResidueKind::Staged => staged_service_images.push(file),
+                ProofResidueKind::Rollback => rollback_service_images.push(file),
+                ProofResidueKind::InstallAtomic => atomic_temporary_files.push(file),
+                ProofResidueKind::RollbackExecutionMarker => {
+                    rollback_execution_marker = Observation::Present(file)
+                }
+                _ => unreachable!("install classifier returned service-data residue"),
+            }
+        }
+        Ok(Observation::Present(InstallResidueForProof {
+            volume_serial: info.dwVolumeSerialNumber,
+            file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            staged_service_images,
+            rollback_service_images,
+            atomic_temporary_files,
+            rollback_execution_marker,
+        }))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn open_optional_product_root_for_proof(
+        path: &Path,
+        service_leaf: bool,
+        principals: &SecurityPrincipals,
+    ) -> Result<Option<OwnedHandle>, String> {
+        let Some(handle) = open_optional_directory_for_proof(path)? else {
+            return Ok(None);
+        };
+        let policy = security_policy(handle.raw(), principals)?;
+        validate_product_root_policy(&policy, service_leaf)?;
+        Ok(Some(handle))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn open_optional_install_root_for_proof(
+        path: &Path,
+        principals: &SecurityPrincipals,
+    ) -> Result<Option<OwnedHandle>, String> {
+        let Some(handle) = open_optional_directory_for_proof(path)? else {
+            return Ok(None);
+        };
+        validate_no_untrusted_writer(handle.raw(), principals, false, false)?;
+        Ok(Some(handle))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn open_optional_directory_for_proof(path: &Path) -> Result<Option<OwnedHandle>, String> {
+        let path_wide = wide_path(path);
+        let raw = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                FILE_READ_ATTRIBUTES | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if raw.is_null() || raw == (-1_isize as HANDLE) {
+            let error = unsafe { GetLastError() };
+            return if is_missing_path_error(error) {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "collector_service_proof_residue_root_open_failed:{error}"
+                ))
+            };
+        }
+        let handle = OwnedHandle(raw);
+        let info = file_information(
+            handle.raw(),
+            "collector_service_proof_residue_root_info_failed",
+        )?;
+        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+            || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || !fixed_path_eq(
+                &final_path(&handle, "collector_service_proof_residue_root_path_failed")?,
+                path,
+            )
+        {
+            return Err("collector_service_proof_residue_root_identity_invalid".to_string());
+        }
+        Ok(Some(handle))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn capture_residue_files_for_proof(
+        root_path: &Path,
+        root: &OwnedHandle,
+        principals: &SecurityPrincipals,
+        allow_service_writer: bool,
+        classify: impl Fn(&str) -> Result<Option<ProofResidueKind>, String>,
+    ) -> Result<Vec<(ProofResidueKind, ResidueFileForProof)>, String> {
+        let root_info = file_information(
+            root.raw(),
+            "collector_service_proof_residue_root_capture_info_failed",
+        )?;
+        let (_, root_dacl_sha256) = security_policy_with_dacl_sha256(root.raw(), principals)?;
+        revalidate_residue_root_path_for_proof(
+            root_path,
+            &root_info,
+            &root_dacl_sha256,
+            principals,
+            allow_service_writer,
+        )?;
+        let before = enumerate_direct_children_for_proof(root_path)?;
+        let mut pinned = Vec::new();
+        let mut remaining_bytes = PROOF_RESIDUE_MAX_TOTAL_BYTES;
+        for name in &before {
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(kind) = classify(name)? else {
+                continue;
+            };
+            if !proof_residue_match_count_valid(pinned.len()) {
+                return Err("collector_service_proof_residue_match_set_too_large".to_string());
+            }
+            pinned.push((
+                kind,
+                open_residue_file_for_proof(
+                    &root_path.join(name),
+                    principals,
+                    allow_service_writer,
+                    kind,
+                    &mut remaining_bytes,
+                )?,
+            ));
+        }
+        revalidate_residue_root_path_for_proof(
+            root_path,
+            &root_info,
+            &root_dacl_sha256,
+            principals,
+            allow_service_writer,
+        )?;
+        if enumerate_direct_children_for_proof(root_path)? != before {
+            return Err("collector_service_proof_residue_enumeration_changed".to_string());
+        }
+        revalidate_residue_root_path_for_proof(
+            root_path,
+            &root_info,
+            &root_dacl_sha256,
+            principals,
+            allow_service_writer,
+        )?;
+        validate_no_untrusted_writer(
+            root.raw(),
+            principals,
+            allow_service_writer,
+            allow_service_writer,
+        )
+        .map_err(|_| "collector_service_proof_residue_root_acl_changed".to_string())?;
+        let after_root_info = file_information(
+            root.raw(),
+            "collector_service_proof_residue_root_revalidate_info_failed",
+        )?;
+        let (_, after_root_dacl_sha256) = security_policy_with_dacl_sha256(root.raw(), principals)
+            .map_err(|_| "collector_service_proof_residue_root_acl_changed".to_string())?;
+        if after_root_info.dwFileAttributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+            != FILE_ATTRIBUTE_DIRECTORY
+            || after_root_info.dwVolumeSerialNumber != root_info.dwVolumeSerialNumber
+            || after_root_info.nFileIndexHigh != root_info.nFileIndexHigh
+            || after_root_info.nFileIndexLow != root_info.nFileIndexLow
+            || after_root_dacl_sha256 != root_dacl_sha256
+            || !fixed_path_eq(
+                &final_path(
+                    root,
+                    "collector_service_proof_residue_root_revalidate_path_failed",
+                )?,
+                root_path,
+            )
+        {
+            return Err("collector_service_proof_residue_root_identity_changed".to_string());
+        }
+        for (_, file) in &pinned {
+            file.revalidate(principals)?;
+        }
+        Ok(pinned
+            .into_iter()
+            .map(|(kind, file)| (kind, file.snapshot))
+            .collect())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn revalidate_residue_root_path_for_proof(
+        root_path: &Path,
+        expected_info: &BY_HANDLE_FILE_INFORMATION,
+        expected_dacl_sha256: &str,
+        principals: &SecurityPrincipals,
+        allow_service_writer: bool,
+    ) -> Result<(), String> {
+        let root = open_optional_directory_for_proof(root_path)?
+            .ok_or_else(|| "collector_service_proof_residue_root_disappeared".to_string())?;
+        validate_no_untrusted_writer(
+            root.raw(),
+            principals,
+            allow_service_writer,
+            allow_service_writer,
+        )?;
+        let info = file_information(
+            root.raw(),
+            "collector_service_proof_residue_root_reopen_info_failed",
+        )?;
+        let (_, dacl_sha256) = security_policy_with_dacl_sha256(root.raw(), principals)?;
+        if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+            != FILE_ATTRIBUTE_DIRECTORY
+            || info.dwVolumeSerialNumber != expected_info.dwVolumeSerialNumber
+            || info.nFileIndexHigh != expected_info.nFileIndexHigh
+            || info.nFileIndexLow != expected_info.nFileIndexLow
+            || dacl_sha256 != expected_dacl_sha256
+            || !fixed_path_eq(
+                &final_path(
+                    &root,
+                    "collector_service_proof_residue_root_reopen_path_failed",
+                )?,
+                root_path,
+            )
+        {
+            return Err("collector_service_proof_residue_root_path_changed".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn enumerate_direct_children_for_proof(root: &Path) -> Result<Vec<OsString>, String> {
+        let mut names = Vec::new();
+        for entry in fs::read_dir(root)
+            .map_err(|error| format!("collector_service_proof_residue_enumerate_failed:{error}"))?
+        {
+            let entry = entry
+                .map_err(|error| format!("collector_service_proof_residue_entry_failed:{error}"))?;
+            if names.len() == PROOF_RESIDUE_MAX_DIRECT_CHILDREN {
+                return Err("collector_service_proof_residue_enumeration_too_large".to_string());
+            }
+            names.push(entry.file_name());
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn open_residue_file_for_proof(
+        path: &Path,
+        principals: &SecurityPrincipals,
+        allow_service_writer: bool,
+        kind: ProofResidueKind,
+        remaining_bytes: &mut u64,
+    ) -> Result<PinnedProofResidueFile, String> {
+        let path_wide = wide_path(path);
+        let handle = OwnedHandle::new(
+            unsafe {
+                CreateFileW(
+                    path_wide.as_ptr(),
+                    GENERIC_READ | READ_CONTROL | FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut(),
+                )
+            },
+            "collector_service_proof_residue_file_open_failed",
+        )?;
+        let info = file_information(
+            handle.raw(),
+            "collector_service_proof_residue_file_info_failed",
+        )?;
+        if !proof_residue_file_information_valid(&info)
+            || !fixed_path_eq(
+                &final_path(&handle, "collector_service_proof_residue_file_path_failed")?,
+                path,
+            )
+        {
+            return Err("collector_service_proof_residue_file_identity_invalid".to_string());
+        }
+        validate_no_untrusted_writer(
+            handle.raw(),
+            principals,
+            allow_service_writer,
+            allow_service_writer,
+        )?;
+        let (_, dacl_sha256) = security_policy_with_dacl_sha256(handle.raw(), principals)?;
+        let size = file_size(&info);
+        if !proof_residue_size_valid(kind, size) {
+            return Err("collector_service_proof_residue_file_size_invalid".to_string());
+        }
+        if !reserve_proof_residue_bytes(remaining_bytes, size) {
+            return Err("collector_service_proof_residue_total_size_invalid".to_string());
+        }
+        let sha256 = digest_hex(&hash_open_file(handle.raw(), size)?);
+        let path_string = path
+            .to_str()
+            .ok_or_else(|| "collector_service_proof_residue_file_path_utf16_invalid".to_string())?
+            .to_string();
+        Ok(PinnedProofResidueFile {
+            snapshot: ResidueFileForProof {
+                path: path_string,
+                size,
+                sha256,
+                volume_serial: info.dwVolumeSerialNumber,
+                file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            },
+            path: path.to_path_buf(),
+            handle,
+            allow_service_writer,
+            dacl_sha256,
+        })
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -5214,6 +6058,18 @@ mod tests {
             native::atomic_temp_base(&format!("{rollback}.123.456.tmp")),
             Some(rollback.as_str())
         );
+        #[cfg(feature = "private-windows-lifecycle-proof")]
+        {
+            assert!(native::install_atomic_temp_name_for_proof(
+                "batcave-collector-service.rollback.tmp"
+            ));
+            assert!(native::install_atomic_temp_name_for_proof(&format!(
+                "{rollback}.123.456.tmp"
+            )));
+            assert!(native::install_atomic_temp_name_for_proof(
+                "batcave-collector-service.0.2.0.staged.exe.123.456.tmp"
+            ));
+        }
         for name in [
             "batcave-collector-service.ab.rollback.exe",
             "batcave-collector-service.zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.rollback.exe",
@@ -5221,6 +6077,94 @@ mod tests {
             "batcave-collector-service.ab.rollback.exe.pid.1.tmp",
         ] {
             assert_eq!(native::rollback_digest_from_name(name), None, "{name}");
+        }
+        #[cfg(feature = "private-windows-lifecycle-proof")]
+        for name in [
+            "batcave-collector-service.rollback.tmp.extra",
+            "batcave-collector-service.0.2.0.staged.exe.tmp",
+            "batcave-collector-service.0.2.0.staged.exe.pid.1.tmp",
+            "other.123.456.tmp",
+            "batcave-rollback-fixture-ran.v1",
+        ] {
+            assert!(!native::install_atomic_temp_name_for_proof(name), "{name}");
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[test]
+    fn proof_residue_rejects_hardlinks_and_oversize_matching_leaves() {
+        let directory = std::env::temp_dir().join(format!(
+            "batcave-proof-residue-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).expect("temp directory");
+        let original = directory.join("installer-upgrade.v1.json");
+        let alias = directory.join("installer-upgrade.v1.json.alias");
+        std::fs::write(&original, b"{}").expect("fixture");
+        std::fs::hard_link(&original, &alias).expect("hard link");
+        assert_eq!(
+            native::proof_residue_file_has_single_link_for_test(&original),
+            Ok(false)
+        );
+        std::fs::remove_file(&alias).expect("hard-link cleanup");
+        std::fs::remove_file(&original).expect("fixture cleanup");
+        std::fs::remove_dir(&directory).expect("temp directory cleanup");
+
+        assert!(native::proof_residue_size_valid(
+            native::ProofResidueKind::Journal,
+            16 * 1024
+        ));
+        assert!(!native::proof_residue_size_valid(
+            native::ProofResidueKind::Journal,
+            16 * 1024 + 1
+        ));
+        assert!(!native::proof_residue_size_valid(
+            native::ProofResidueKind::Staged,
+            PRIVATE_ROLLBACK_FIXTURE_MAX_BYTES as u64 + 1
+        ));
+        assert!(!native::proof_residue_size_valid(
+            native::ProofResidueKind::RollbackExecutionMarker,
+            1025
+        ));
+        assert!(native::proof_residue_match_count_valid(
+            native::PROOF_RESIDUE_MAX_MATCHED_CHILDREN - 1
+        ));
+        assert!(!native::proof_residue_match_count_valid(
+            native::PROOF_RESIDUE_MAX_MATCHED_CHILDREN
+        ));
+        let mut remaining = native::PROOF_RESIDUE_MAX_TOTAL_BYTES;
+        assert!(native::reserve_proof_residue_bytes(
+            &mut remaining,
+            native::PROOF_RESIDUE_MAX_TOTAL_BYTES
+        ));
+        assert_eq!(remaining, 0);
+        assert!(!native::reserve_proof_residue_bytes(&mut remaining, 1));
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[test]
+    fn proof_residue_case_aliases_fail_closed_instead_of_appearing_absent() {
+        for name in [
+            "INSTALLER-UPGRADE.V1.JSON",
+            "Installer-Upgrade.v1.json.41.1.tmp",
+            "ETW-LEASE.V1.JSON.41.1.TMP",
+        ] {
+            assert!(native::classify_service_data_residue_name_for_proof(name).is_err());
+        }
+        let digest = "ab".repeat(32);
+        for name in [
+            "BATCAVE-COLLECTOR-SERVICE.0.2.0.STAGED.EXE".to_string(),
+            format!("BATCAVE-COLLECTOR-SERVICE.{digest}.ROLLBACK.EXE"),
+            "BATCAVE-COLLECTOR-SERVICE.0.2.0.STAGED.EXE.41.1.TMP".to_string(),
+            format!("BATCAVE-COLLECTOR-SERVICE.{digest}.ROLLBACK.EXE.41.1.TMP"),
+            "BATCAVE-COLLECTOR-SERVICE.ROLLBACK.TMP".to_string(),
+            "BATCAVE-ROLLBACK-FIXTURE-RAN.V1".to_string(),
+        ] {
+            assert!(native::classify_install_residue_name_for_proof(&name).is_err());
         }
     }
 

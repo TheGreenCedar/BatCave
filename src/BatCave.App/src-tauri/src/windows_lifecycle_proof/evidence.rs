@@ -12,8 +12,10 @@ use crate::collector_service::etw_lease::{
     EtwLeasePhase, EtwLeaseV1, EtwSessionIdentityV1, ETW_LEASE_SCHEMA_VERSION,
 };
 use crate::collector_service::windows_provisioner::{
-    AcePolicyForProof, InstalledBoundariesForProof, RuntimeLockObservation,
-    SecurityPrincipalForProof, TerminatedServiceForProof, SERVICE_LIFECYCLE_LOCK_FILE_NAME,
+    AcePolicyForProof, InstallResidueForProof, InstalledBoundariesForProof, ResidueFileForProof,
+    ResidueKindForProof, RuntimeLockObservation, SecurityPrincipalForProof,
+    ServiceDataResidueForProof, ServiceInstallResidueForProof, ServiceRegistryKeyForProof,
+    TerminatedServiceForProof, SERVICE_LIFECYCLE_LOCK_FILE_NAME,
 };
 #[cfg(test)]
 use crate::windows_lifecycle_proof_contract::DesktopPhaseObservation;
@@ -565,11 +567,11 @@ pub(super) fn validate_verified_private_projection(
         parent_current_user.after_uninstall,
     )?;
 
-    // Raw machine authority currently stops after installed boundaries plus the
-    // runtime fields above. Service registry; journal/staged/rollback/temp/failure
-    // residue; product registration, autostart, shortcuts, helper residue, and the
-    // sentinel still need raw authority, as do the remaining lifecycle stages and
-    // parent-owned export writer, before this terminal stop can be removed.
+    // Raw machine authority now includes the service registry and the protected
+    // service/install transaction residue projected above. Product registration,
+    // autostart, shortcuts, helper residue, and the sentinel still need raw
+    // authority, as do the remaining lifecycle stages and parent-owned export
+    // writer, before this terminal stop can be removed.
     require_complete_raw_projection_authority()
 }
 
@@ -786,7 +788,8 @@ fn compare_machine_projection(
         &project_boundaries_observation(&raw.installed_boundaries)?,
         &sanitized.installed_boundaries,
     )?;
-    compare_runtime_projection(raw, sanitized)
+    compare_runtime_projection(raw, sanitized)?;
+    compare_service_install_residue_projection(raw, sanitized, &roots)
 }
 
 fn compare_runtime_projection(
@@ -828,6 +831,371 @@ fn compare_runtime_projection(
         return Err("lifecycle_private_projection_machine_drift".to_string());
     }
     Ok(())
+}
+
+fn compare_service_install_residue_projection(
+    raw: &ElevatedMachineSnapshot,
+    sanitized: &SanitizedMachineSnapshot,
+    roots: &[SanitizationRoot],
+) -> Result<(), String> {
+    validate_raw_residue_identity_set(&raw.service_install_residue)?;
+    let service_registry_key =
+        project_service_registry_key(&raw.service_install_residue.service_registry_key)?;
+    let (upgrade_transaction_journal, service_atomic_temporary_files) =
+        project_service_data_residue(
+            &raw.service_install_residue.service_data,
+            &raw.service_data_root,
+            roots,
+        )?;
+    let install_residue = project_install_residue(
+        &raw.service_install_residue.install,
+        &raw.machine.install_root,
+        roots,
+    )?;
+    let mut atomic_temporary_files = service_atomic_temporary_files;
+    atomic_temporary_files.extend(install_residue.atomic_temporary_files);
+    let sort_files = |files: &mut Vec<SanitizedPathFileSnapshot>| {
+        files.sort_by(|left, right| {
+            (&left.path.root, &left.path.relative_leaf)
+                .cmp(&(&right.path.root, &right.path.relative_leaf))
+        });
+    };
+    let mut sanitized_staged = sanitized.staged_service_images.clone();
+    let mut sanitized_rollback = sanitized.rollback_service_images.clone();
+    let mut sanitized_atomic = sanitized.atomic_temporary_files.clone();
+    sort_files(&mut sanitized_staged);
+    sort_files(&mut sanitized_rollback);
+    sort_files(&mut sanitized_atomic);
+    sort_files(&mut atomic_temporary_files);
+    if sanitized.service_registry_key != service_registry_key
+        || sanitized.upgrade_transaction_journal != upgrade_transaction_journal
+        || sanitized_staged != install_residue.staged_service_images
+        || sanitized_rollback != install_residue.rollback_service_images
+        || sanitized_atomic != atomic_temporary_files
+        || sanitized.failure_marker != install_residue.rollback_execution_marker
+    {
+        return Err("lifecycle_private_projection_machine_drift".to_string());
+    }
+    Ok(())
+}
+
+fn validate_raw_residue_identity_set(raw: &ServiceInstallResidueForProof) -> Result<(), String> {
+    let mut identities = BTreeSet::new();
+    let mut validate = |file: &ResidueFileForProof, root_volume: u32| {
+        if file.volume_serial != root_volume
+            || file.file_index == 0
+            || !identities.insert((file.volume_serial, file.file_index))
+        {
+            Err("lifecycle_private_projection_residue_identity_invalid".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    if let Observation::Present(service_data) = &raw.service_data {
+        if let Observation::Present(journal) = &service_data.upgrade_transaction_journal {
+            validate(journal, service_data.volume_serial)?;
+        }
+        for file in &service_data.atomic_temporary_files {
+            validate(file, service_data.volume_serial)?;
+        }
+    }
+    if let Observation::Present(install) = &raw.install {
+        for file in install
+            .staged_service_images
+            .iter()
+            .chain(&install.rollback_service_images)
+            .chain(&install.atomic_temporary_files)
+        {
+            validate(file, install.volume_serial)?;
+        }
+        if let Observation::Present(marker) = &install.rollback_execution_marker {
+            validate(marker, install.volume_serial)?;
+        }
+    }
+    Ok(())
+}
+
+struct ProjectedInstallResidue {
+    staged_service_images: Vec<SanitizedPathFileSnapshot>,
+    rollback_service_images: Vec<SanitizedPathFileSnapshot>,
+    atomic_temporary_files: Vec<SanitizedPathFileSnapshot>,
+    rollback_execution_marker: Option<SanitizedPathFileSnapshot>,
+}
+
+fn project_service_registry_key(
+    raw: &Observation<ServiceRegistryKeyForProof>,
+) -> Result<Option<LogicalPath>, String> {
+    match raw {
+        Observation::Absent => Ok(None),
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        Observation::Present(registry) => {
+            match &registry.last_failure {
+                Observation::Absent => {}
+                Observation::Present(value)
+                    if !value.is_empty()
+                        && value.encode_utf16().count() <= 32 * 1024
+                        && !value.chars().any(|character| character == '\0') => {}
+                Observation::Present(_) => {
+                    return Err("lifecycle_private_projection_service_failure_invalid".to_string())
+                }
+                Observation::Unknown(_) => {
+                    return Err("lifecycle_private_projection_observation_unknown".to_string())
+                }
+            }
+            Ok(Some(LogicalPath {
+                root: LogicalRoot::Hklm,
+                relative_leaf: "system/currentcontrolset/services/batcavecollector".to_string(),
+            }))
+        }
+    }
+}
+
+fn project_service_data_residue(
+    raw: &Observation<ServiceDataResidueForProof>,
+    raw_root: &Observation<DirectorySnapshot>,
+    roots: &[SanitizationRoot],
+) -> Result<
+    (
+        Option<SanitizedPathFileSnapshot>,
+        Vec<SanitizedPathFileSnapshot>,
+    ),
+    String,
+> {
+    match raw {
+        Observation::Absent => {
+            if !matches!(raw_root, Observation::Absent) {
+                return Err("lifecycle_private_projection_residue_root_mismatch".to_string());
+            }
+            Ok((None, Vec::new()))
+        }
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        Observation::Present(residue) => {
+            require_residue_root_identity(raw_root, residue.volume_serial, residue.file_index)?;
+            let journal_raw = residue.upgrade_transaction_journal.as_present();
+            let total_bytes = residue
+                .atomic_temporary_files
+                .iter()
+                .chain(journal_raw)
+                .try_fold(0_u64, |total, file| total.checked_add(file.size))
+                .ok_or_else(|| {
+                    "lifecycle_private_projection_residue_total_size_invalid".to_string()
+                })?;
+            if !crate::collector_service::windows_provisioner::residue_set_bounds_valid_for_proof(
+                residue.atomic_temporary_files.len() + usize::from(journal_raw.is_some()),
+                total_bytes,
+            ) {
+                return Err("lifecycle_private_projection_residue_total_size_invalid".to_string());
+            }
+            let journal = match &residue.upgrade_transaction_journal {
+                Observation::Absent => None,
+                Observation::Unknown(_) => {
+                    return Err("lifecycle_private_projection_observation_unknown".to_string())
+                }
+                Observation::Present(file) => {
+                    if !crate::collector_service::windows_provisioner::residue_size_valid_for_proof(
+                        ResidueKindForProof::Journal,
+                        file.size,
+                    ) {
+                        return Err(
+                            "lifecycle_private_projection_residue_file_size_invalid".to_string()
+                        );
+                    }
+                    let file = project_residue_file(file, roots)?;
+                    if file.path.root != LogicalRoot::ServiceData
+                        || file.path.relative_leaf != "installer-upgrade.v1.json"
+                    {
+                        return Err(
+                            "lifecycle_private_projection_upgrade_journal_invalid".to_string()
+                        );
+                    }
+                    Some(file)
+                }
+            };
+            let atomic = project_residue_file_set(
+                &residue.atomic_temporary_files,
+                roots,
+                LogicalRoot::ServiceData,
+                crate::collector_service::windows_provisioner::service_data_atomic_temp_name_for_proof,
+                ResidueKindForProof::ServiceDataAtomic,
+            )?;
+            Ok((journal, atomic))
+        }
+    }
+}
+
+fn project_install_residue(
+    raw: &Observation<InstallResidueForProof>,
+    raw_root: &Observation<DirectorySnapshot>,
+    roots: &[SanitizationRoot],
+) -> Result<ProjectedInstallResidue, String> {
+    match raw {
+        Observation::Absent => {
+            if !matches!(raw_root, Observation::Absent) {
+                return Err("lifecycle_private_projection_residue_root_mismatch".to_string());
+            }
+            Ok(ProjectedInstallResidue {
+                staged_service_images: Vec::new(),
+                rollback_service_images: Vec::new(),
+                atomic_temporary_files: Vec::new(),
+                rollback_execution_marker: None,
+            })
+        }
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        Observation::Present(residue) => {
+            require_residue_root_identity(raw_root, residue.volume_serial, residue.file_index)?;
+            let marker_raw = residue.rollback_execution_marker.as_present();
+            let total_bytes = residue
+                .staged_service_images
+                .iter()
+                .chain(&residue.rollback_service_images)
+                .chain(&residue.atomic_temporary_files)
+                .chain(marker_raw)
+                .try_fold(0_u64, |total, file| total.checked_add(file.size))
+                .ok_or_else(|| {
+                    "lifecycle_private_projection_residue_total_size_invalid".to_string()
+                })?;
+            let count = residue.staged_service_images.len()
+                + residue.rollback_service_images.len()
+                + residue.atomic_temporary_files.len()
+                + usize::from(marker_raw.is_some());
+            if !crate::collector_service::windows_provisioner::residue_set_bounds_valid_for_proof(
+                count,
+                total_bytes,
+            ) {
+                return Err("lifecycle_private_projection_residue_total_size_invalid".to_string());
+            }
+            let staged = project_residue_file_set(
+                &residue.staged_service_images,
+                roots,
+                LogicalRoot::Install,
+                crate::collector_service::windows_provisioner::install_staged_name_for_proof,
+                ResidueKindForProof::Staged,
+            )?;
+            let rollback = project_residue_file_set(
+                &residue.rollback_service_images,
+                roots,
+                LogicalRoot::Install,
+                crate::collector_service::windows_provisioner::install_rollback_name_for_proof,
+                ResidueKindForProof::Rollback,
+            )?;
+            let atomic = project_residue_file_set(
+                &residue.atomic_temporary_files,
+                roots,
+                LogicalRoot::Install,
+                crate::collector_service::windows_provisioner::install_atomic_temp_name_for_proof,
+                ResidueKindForProof::InstallAtomic,
+            )?;
+            let marker = match &residue.rollback_execution_marker {
+                Observation::Absent => None,
+                Observation::Unknown(_) => {
+                    return Err("lifecycle_private_projection_observation_unknown".to_string())
+                }
+                Observation::Present(file) => {
+                    if !crate::collector_service::windows_provisioner::residue_size_valid_for_proof(
+                        ResidueKindForProof::RollbackExecutionMarker,
+                        file.size,
+                    ) {
+                        return Err(
+                            "lifecycle_private_projection_residue_file_size_invalid".to_string()
+                        );
+                    }
+                    let file = project_residue_file(file, roots)?;
+                    if file.path.root != LogicalRoot::Install
+                        || file.path.relative_leaf
+                            != crate::collector_service::windows_provisioner::rollback_execution_marker_name_for_proof()
+                    {
+                        return Err(
+                            "lifecycle_private_projection_rollback_marker_invalid".to_string(),
+                        );
+                    }
+                    Some(file)
+                }
+            };
+            Ok(ProjectedInstallResidue {
+                staged_service_images: staged,
+                rollback_service_images: rollback,
+                atomic_temporary_files: atomic,
+                rollback_execution_marker: marker,
+            })
+        }
+    }
+}
+
+fn require_residue_root_identity(
+    root: &Observation<DirectorySnapshot>,
+    volume_serial: u32,
+    file_index: u64,
+) -> Result<(), String> {
+    match root {
+        Observation::Present(root)
+            if root.identity.volume_serial == volume_serial
+                && root.identity.file_index == file_index =>
+        {
+            Ok(())
+        }
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        _ => Err("lifecycle_private_projection_residue_root_mismatch".to_string()),
+    }
+}
+
+fn project_residue_file_set(
+    raw: &[ResidueFileForProof],
+    roots: &[SanitizationRoot],
+    expected_root: LogicalRoot,
+    valid_name: impl Fn(&str) -> bool,
+    kind: ResidueKindForProof,
+) -> Result<Vec<SanitizedPathFileSnapshot>, String> {
+    if raw.len() > 64 {
+        return Err("lifecycle_private_projection_residue_set_invalid".to_string());
+    }
+    let mut projected = Vec::with_capacity(raw.len());
+    let mut paths = BTreeSet::new();
+    for file in raw {
+        if !crate::collector_service::windows_provisioner::residue_size_valid_for_proof(
+            kind, file.size,
+        ) {
+            return Err("lifecycle_private_projection_residue_file_size_invalid".to_string());
+        }
+        let file = project_residue_file(file, roots)?;
+        if file.path.root != expected_root
+            || file.path.relative_leaf.contains('/')
+            || file.path.relative_leaf.contains('\\')
+            || !valid_name(&file.path.relative_leaf)
+            || !paths.insert(file.path.relative_leaf.to_ascii_lowercase())
+        {
+            return Err("lifecycle_private_projection_residue_set_invalid".to_string());
+        }
+        projected.push(file);
+    }
+    projected.sort_by(|left, right| left.path.relative_leaf.cmp(&right.path.relative_leaf));
+    Ok(projected)
+}
+
+fn project_residue_file(
+    raw: &ResidueFileForProof,
+    roots: &[SanitizationRoot],
+) -> Result<SanitizedPathFileSnapshot, String> {
+    validate_sha256(&raw.sha256, "private_projection_residue")?;
+    if raw.size == 0 || raw.volume_serial == 0 || raw.file_index == 0 {
+        return Err("lifecycle_private_projection_residue_file_invalid".to_string());
+    }
+    Ok(SanitizedPathFileSnapshot {
+        path: sanitize_path(&raw.path, roots)?,
+        file: SanitizedFileSnapshot {
+            size: raw.size,
+            sha256: raw.sha256.clone(),
+            volume_serial: raw.volume_serial,
+            file_index: raw.file_index,
+        },
+    })
 }
 
 fn project_named_pipe(
@@ -1906,14 +2274,22 @@ fn validate_machine_snapshot(machine: &SanitizedMachineSnapshot) -> Result<(), S
         validate_nonroot_logical_path(path)?;
     }
     if let Some(file) = &machine.upgrade_transaction_journal {
-        validate_path_file(file, Some(LogicalRoot::Install))?;
+        validate_path_file(file, Some(LogicalRoot::ServiceData))?;
     }
     for files in [
         &machine.staged_service_images,
         &machine.rollback_service_images,
-        &machine.atomic_temporary_files,
     ] {
         validate_path_file_set(files, Some(LogicalRoot::Install))?;
+    }
+    validate_path_file_set(&machine.atomic_temporary_files, None)?;
+    if machine.atomic_temporary_files.iter().any(|file| {
+        !matches!(
+            file.path.root,
+            LogicalRoot::ServiceData | LogicalRoot::Install
+        )
+    }) {
+        return Err("lifecycle_sanitized_atomic_temp_root_invalid".to_string());
     }
     if let Some(file) = &machine.failure_marker {
         validate_path_file(file, Some(LogicalRoot::Install))?;
@@ -3442,6 +3818,7 @@ mod tests {
             "etw_session",
             "etw_owner_lock",
             "service_lifecycle_lock",
+            "service_install_residue",
         ] {
             let mut missing = value.clone();
             missing
@@ -3465,6 +3842,320 @@ mod tests {
             .expect("named pipe value")
             .insert("unexpected".to_string(), serde_json::json!(true));
         assert!(serde_json::from_value::<ElevatedMachineSnapshot>(unknown_nested).is_err());
+    }
+
+    #[test]
+    fn raw_service_install_residue_projects_exact_v2_semantics_and_rejects_hostile_drift() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let mut machine = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("running entry")
+            .machine
+            .clone();
+        machine.upgrade_transaction_journal = Some(path_file(
+            LogicalRoot::ServiceData,
+            "installer-upgrade.v1.json",
+            "1",
+        ));
+        machine.staged_service_images.push(path_file(
+            LogicalRoot::Install,
+            "batcave-collector-service.0.2.0.staged.exe",
+            "2",
+        ));
+        machine.rollback_service_images.push(path_file(
+            LogicalRoot::Install,
+            &format!("batcave-collector-service.{}.rollback.exe", "3".repeat(64)),
+            "3",
+        ));
+        machine.atomic_temporary_files = vec![
+            path_file(
+                LogicalRoot::ServiceData,
+                "installer-upgrade.v1.json.41.1.tmp",
+                "4",
+            ),
+            path_file(
+                LogicalRoot::Install,
+                "batcave-collector-service.rollback.tmp",
+                "5",
+            ),
+        ];
+        machine.failure_marker = Some(path_file(
+            LogicalRoot::Install,
+            "batcave-rollback-fixture-ran.v1",
+            "6",
+        ));
+        machine
+            .upgrade_transaction_journal
+            .as_mut()
+            .expect("journal")
+            .file
+            .file_index = 20;
+        machine.staged_service_images[0].file.file_index = 21;
+        machine.rollback_service_images[0].file.file_index = 22;
+        machine.atomic_temporary_files[0].file.file_index = 23;
+        machine.atomic_temporary_files[1].file.file_index = 24;
+        machine
+            .failure_marker
+            .as_mut()
+            .expect("marker")
+            .file
+            .file_index = 25;
+        let raw = raw_machine(&machine);
+        assert_eq!(
+            compare_machine_projection(&raw, &machine, &plan, &parent_current_user()),
+            Ok(())
+        );
+
+        let sanitized = serde_json::to_value(&machine).expect("sanitized machine");
+        assert!(sanitized.get("failure_marker").is_some());
+        assert!(sanitized.get("rollback_execution_marker").is_none());
+        assert_eq!(SANITIZED_SCHEMA, "batcave_windows_lifecycle_sanitized_v2");
+
+        let assert_rejected = |raw: ElevatedMachineSnapshot| {
+            assert!(
+                compare_machine_projection(&raw, &machine, &plan, &parent_current_user()).is_err()
+            );
+        };
+        for field in 0..3 {
+            let mut hostile = raw.clone();
+            match field {
+                0 => {
+                    hostile.service_install_residue.service_registry_key =
+                        Observation::Unknown("registry_unknown".to_string())
+                }
+                1 => {
+                    hostile.service_install_residue.service_data =
+                        Observation::Unknown("service_data_unknown".to_string())
+                }
+                2 => {
+                    hostile.service_install_residue.install =
+                        Observation::Unknown("install_unknown".to_string())
+                }
+                _ => unreachable!(),
+            }
+            assert_rejected(hostile);
+        }
+
+        let mut unknown_last_failure = raw.clone();
+        let Observation::Present(registry) = &mut unknown_last_failure
+            .service_install_residue
+            .service_registry_key
+        else {
+            panic!("service registry");
+        };
+        registry.last_failure = Observation::Unknown("failure_unknown".to_string());
+        assert_rejected(unknown_last_failure);
+
+        let mut root_identity = raw.clone();
+        let Observation::Present(service_data) =
+            &mut root_identity.service_install_residue.service_data
+        else {
+            panic!("service data");
+        };
+        service_data.file_index += 1;
+        assert_rejected(root_identity);
+
+        let mut wrong_journal_root = raw.clone();
+        let Observation::Present(service_data) =
+            &mut wrong_journal_root.service_install_residue.service_data
+        else {
+            panic!("service data");
+        };
+        let Observation::Present(journal) = &mut service_data.upgrade_transaction_journal else {
+            panic!("journal");
+        };
+        journal.path = raw_path(&logical_path(
+            LogicalRoot::Install,
+            "installer-upgrade.v1.json",
+        ));
+        assert_rejected(wrong_journal_root);
+
+        let mut mixed_case_journal = raw.clone();
+        let Observation::Present(service_data) =
+            &mut mixed_case_journal.service_install_residue.service_data
+        else {
+            panic!("service data");
+        };
+        let Observation::Present(journal) = &mut service_data.upgrade_transaction_journal else {
+            panic!("journal");
+        };
+        journal.path = raw_path(&logical_path(
+            LogicalRoot::ServiceData,
+            "INSTALLER-UPGRADE.V1.JSON",
+        ));
+        assert_rejected(mixed_case_journal);
+
+        let mut classifier_spoof = raw.clone();
+        let Observation::Present(install) = &mut classifier_spoof.service_install_residue.install
+        else {
+            panic!("install residue");
+        };
+        install.staged_service_images[0].path = raw_path(&logical_path(
+            LogicalRoot::Install,
+            "batcave-collector-service..staged.exe",
+        ));
+        assert_rejected(classifier_spoof);
+
+        let mut marker_unknown = raw.clone();
+        let Observation::Present(install) = &mut marker_unknown.service_install_residue.install
+        else {
+            panic!("install residue");
+        };
+        install.rollback_execution_marker = Observation::Unknown("marker_unknown".to_string());
+        assert_rejected(marker_unknown);
+
+        let mut mixed_case_marker = raw.clone();
+        let Observation::Present(install) = &mut mixed_case_marker.service_install_residue.install
+        else {
+            panic!("install residue");
+        };
+        let Observation::Present(marker) = &mut install.rollback_execution_marker else {
+            panic!("marker");
+        };
+        marker.path = raw_path(&logical_path(
+            LogicalRoot::Install,
+            "BATCAVE-ROLLBACK-FIXTURE-RAN.V1",
+        ));
+        assert_rejected(mixed_case_marker);
+
+        let mut wrong_volume = raw.clone();
+        let Observation::Present(install) = &mut wrong_volume.service_install_residue.install
+        else {
+            panic!("install residue");
+        };
+        install.staged_service_images[0].volume_serial += 1;
+        assert_eq!(
+            compare_machine_projection(&wrong_volume, &machine, &plan, &parent_current_user()),
+            Err("lifecycle_private_projection_residue_identity_invalid".to_string())
+        );
+
+        let mut cross_root_identity_reuse = raw.clone();
+        let journal_identity = {
+            let Observation::Present(service_data) = &cross_root_identity_reuse
+                .service_install_residue
+                .service_data
+            else {
+                panic!("service data");
+            };
+            let Observation::Present(journal) = &service_data.upgrade_transaction_journal else {
+                panic!("journal");
+            };
+            (journal.volume_serial, journal.file_index)
+        };
+        let Observation::Present(install) =
+            &mut cross_root_identity_reuse.service_install_residue.install
+        else {
+            panic!("install residue");
+        };
+        install.staged_service_images[0].volume_serial = journal_identity.0;
+        install.staged_service_images[0].file_index = journal_identity.1;
+        assert_eq!(
+            compare_machine_projection(
+                &cross_root_identity_reuse,
+                &machine,
+                &plan,
+                &parent_current_user(),
+            ),
+            Err("lifecycle_private_projection_residue_identity_invalid".to_string())
+        );
+
+        let mut oversize_journal = raw.clone();
+        let Observation::Present(service_data) =
+            &mut oversize_journal.service_install_residue.service_data
+        else {
+            panic!("service data");
+        };
+        let Observation::Present(journal) = &mut service_data.upgrade_transaction_journal else {
+            panic!("journal");
+        };
+        journal.size = 16 * 1024 + 1;
+        assert_eq!(
+            compare_machine_projection(&oversize_journal, &machine, &plan, &parent_current_user(),),
+            Err("lifecycle_private_projection_residue_file_size_invalid".to_string())
+        );
+
+        let mut oversize_marker = raw.clone();
+        let Observation::Present(install) = &mut oversize_marker.service_install_residue.install
+        else {
+            panic!("install residue");
+        };
+        let Observation::Present(marker) = &mut install.rollback_execution_marker else {
+            panic!("marker");
+        };
+        marker.size = 1025;
+        assert_eq!(
+            compare_machine_projection(&oversize_marker, &machine, &plan, &parent_current_user()),
+            Err("lifecycle_private_projection_residue_file_size_invalid".to_string())
+        );
+
+        let staged = |index: usize, size: u64| ResidueFileForProof {
+            path: format!(
+                r"C:\Program Files\BatCave Monitor\batcave-collector-service.0.2.{index}.staged.exe"
+            ),
+            size,
+            sha256: format!("{:064x}", index + 1),
+            volume_serial: 1,
+            file_index: 100 + index as u64,
+        };
+        let mut too_many = raw.clone();
+        let Observation::Present(install) = &mut too_many.service_install_residue.install else {
+            panic!("install residue");
+        };
+        install.staged_service_images = (0..65).map(|index| staged(index, 1)).collect();
+        install.rollback_service_images.clear();
+        install.atomic_temporary_files.clear();
+        install.rollback_execution_marker = Observation::Absent;
+        assert_eq!(
+            compare_machine_projection(&too_many, &machine, &plan, &parent_current_user()),
+            Err("lifecycle_private_projection_residue_total_size_invalid".to_string())
+        );
+
+        let mut aggregate_overflow = raw.clone();
+        let Observation::Present(install) = &mut aggregate_overflow.service_install_residue.install
+        else {
+            panic!("install residue");
+        };
+        install.staged_service_images = (0..5)
+            .map(|index| staged(index, 64 * 1024 * 1024))
+            .collect();
+        install.rollback_service_images.clear();
+        install.atomic_temporary_files.clear();
+        install.rollback_execution_marker = Observation::Absent;
+        assert_eq!(
+            compare_machine_projection(
+                &aggregate_overflow,
+                &machine,
+                &plan,
+                &parent_current_user(),
+            ),
+            Err("lifecycle_private_projection_residue_total_size_invalid".to_string())
+        );
+
+        let mut unknown_nested = serde_json::to_value(&raw).expect("raw machine");
+        unknown_nested["service_install_residue"]
+            .as_object_mut()
+            .expect("residue object")
+            .insert("unexpected".to_string(), serde_json::json!(true));
+        assert!(serde_json::from_value::<ElevatedMachineSnapshot>(unknown_nested).is_err());
+    }
+
+    #[test]
+    fn service_failure_projection_uses_the_observer_utf16_bound() {
+        let valid = ServiceRegistryKeyForProof {
+            last_failure: Observation::Present("é".repeat(32_768)),
+        };
+        assert!(project_service_registry_key(&Observation::Present(valid)).is_ok());
+        let invalid = ServiceRegistryKeyForProof {
+            last_failure: Observation::Present("é".repeat(32_769)),
+        };
+        assert_eq!(
+            project_service_registry_key(&Observation::Present(invalid)),
+            Err("lifecycle_private_projection_service_failure_invalid".to_string())
+        );
     }
 
     #[test]
@@ -4902,6 +5593,79 @@ mod tests {
             } else {
                 RuntimeLockObservation::Absent {}
             },
+            service_install_residue: raw_service_install_residue(machine),
+        }
+    }
+
+    fn raw_service_install_residue(
+        machine: &SanitizedMachineSnapshot,
+    ) -> ServiceInstallResidueForProof {
+        ServiceInstallResidueForProof {
+            service_registry_key: if machine.service_registry_key.is_some() {
+                Observation::Present(ServiceRegistryKeyForProof {
+                    last_failure: Observation::Absent,
+                })
+            } else {
+                Observation::Absent
+            },
+            service_data: match &machine.service_data_root {
+                Observation::Present(root) => Observation::Present(ServiceDataResidueForProof {
+                    volume_serial: root.volume_serial,
+                    file_index: root.file_index,
+                    upgrade_transaction_journal: machine
+                        .upgrade_transaction_journal
+                        .as_ref()
+                        .map(raw_residue_file)
+                        .map_or(Observation::Absent, Observation::Present),
+                    atomic_temporary_files: machine
+                        .atomic_temporary_files
+                        .iter()
+                        .filter(|file| file.path.root == LogicalRoot::ServiceData)
+                        .map(raw_residue_file)
+                        .collect(),
+                }),
+                Observation::Absent => Observation::Absent,
+                Observation::Unknown(reason) => Observation::Unknown(reason.clone()),
+            },
+            install: match &machine.install_root {
+                Observation::Present(root) => Observation::Present(InstallResidueForProof {
+                    volume_serial: root.volume_serial,
+                    file_index: root.file_index,
+                    staged_service_images: machine
+                        .staged_service_images
+                        .iter()
+                        .map(raw_residue_file)
+                        .collect(),
+                    rollback_service_images: machine
+                        .rollback_service_images
+                        .iter()
+                        .map(raw_residue_file)
+                        .collect(),
+                    atomic_temporary_files: machine
+                        .atomic_temporary_files
+                        .iter()
+                        .filter(|file| file.path.root == LogicalRoot::Install)
+                        .map(raw_residue_file)
+                        .collect(),
+                    rollback_execution_marker: machine
+                        .failure_marker
+                        .as_ref()
+                        .map(raw_residue_file)
+                        .map_or(Observation::Absent, Observation::Present),
+                }),
+                Observation::Absent => Observation::Absent,
+                Observation::Unknown(reason) => Observation::Unknown(reason.clone()),
+            },
+        }
+    }
+
+    fn raw_residue_file(file: &SanitizedPathFileSnapshot) -> ResidueFileForProof {
+        ResidueFileForProof {
+            path: raw_path(&file.path),
+            size: file.file.size,
+            sha256: file.file.sha256.clone(),
+            volume_serial: file.file.volume_serial,
+            file_index: file.file.file_index,
         }
     }
 
