@@ -12,10 +12,11 @@ use crate::collector_service::etw_lease::{
     EtwLeasePhase, EtwLeaseV1, EtwSessionIdentityV1, ETW_LEASE_SCHEMA_VERSION,
 };
 use crate::collector_service::windows_provisioner::{
-    AcePolicyForProof, InstallResidueForProof, InstalledBoundariesForProof, ResidueFileForProof,
+    AcePolicyForProof, InstallResidueForProof, InstalledBoundariesForProof,
+    MachineRegistrationForProof, ProductRegistrationKeyForProof, ResidueFileForProof,
     ResidueKindForProof, RuntimeLockObservation, SecurityPrincipalForProof,
     ServiceDataResidueForProof, ServiceInstallResidueForProof, ServiceRegistryKeyForProof,
-    TerminatedServiceForProof, SERVICE_LIFECYCLE_LOCK_FILE_NAME,
+    ShortcutForProof, TerminatedServiceForProof, SERVICE_LIFECYCLE_LOCK_FILE_NAME,
 };
 #[cfg(test)]
 use crate::windows_lifecycle_proof_contract::DesktopPhaseObservation;
@@ -447,6 +448,16 @@ pub(super) fn sanitize_path(
     })
 }
 
+fn absolute_path_eq(left: &str, right: &str) -> bool {
+    match (
+        normalize_absolute_windows_path(left),
+        normalize_absolute_windows_path(right),
+    ) {
+        (Ok(left), Ok(right)) => left.eq_ignore_ascii_case(&right),
+        _ => false,
+    }
+}
+
 pub(super) fn validate_sanitized_export_bytes(
     bytes: &[u8],
     plan: &ProofPlan,
@@ -567,9 +578,9 @@ pub(super) fn validate_verified_private_projection(
         parent_current_user.after_uninstall,
     )?;
 
-    // Raw machine authority now includes the service registry and the protected
-    // service/install transaction residue projected above. Product registration,
-    // autostart, shortcuts, helper residue, and the sentinel still need raw
+    // Raw machine authority now also includes the exact machine product key and
+    // the point-in-time public/common shortcut observations projected above.
+    // Autostart, helper residue, and the sentinel still need parent-user raw
     // authority, as do the remaining lifecycle stages and parent-owned export
     // writer, before this terminal stop can be removed.
     require_complete_raw_projection_authority()
@@ -789,7 +800,163 @@ fn compare_machine_projection(
         &sanitized.installed_boundaries,
     )?;
     compare_runtime_projection(raw, sanitized)?;
-    compare_service_install_residue_projection(raw, sanitized, &roots)
+    compare_service_install_residue_projection(raw, sanitized, &roots)?;
+    compare_machine_registration_projection(raw, sanitized, &roots)
+}
+
+fn compare_machine_registration_projection(
+    raw: &ElevatedMachineSnapshot,
+    sanitized: &SanitizedMachineSnapshot,
+    roots: &[SanitizationRoot],
+) -> Result<(), String> {
+    validate_registration_identity_set(raw)?;
+    let product_key = project_product_registration(&raw.machine_registration)?;
+    let public_shortcut = project_shortcut(
+        &raw.machine_registration.public_desktop_shortcut,
+        LogicalRoot::PublicDesktop,
+        roots,
+    )?;
+    let common_shortcut = project_shortcut(
+        &raw.machine_registration.common_start_menu_shortcut,
+        LogicalRoot::CommonStartMenu,
+        roots,
+    )?;
+    if sanitized.machine_product_key != product_key
+        || sanitized.public_desktop_shortcut != public_shortcut
+        || sanitized.common_start_menu_shortcut != common_shortcut
+    {
+        return Err("lifecycle_private_projection_machine_drift".to_string());
+    }
+    Ok(())
+}
+
+fn project_product_registration(
+    raw: &MachineRegistrationForProof,
+) -> Result<Option<LogicalPath>, String> {
+    match (&raw.product_key_64, &raw.product_key_32) {
+        (Observation::Absent, Observation::Absent) => Ok(None),
+        (Observation::Present(key), Observation::Absent) => {
+            validate_product_registration_key(key)?;
+            Ok(Some(LogicalPath {
+                root: LogicalRoot::Hklm,
+                relative_leaf: "software/batcave/batcave monitor".to_string(),
+            }))
+        }
+        (Observation::Unknown(_), _) | (_, Observation::Unknown(_)) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        _ => Err("lifecycle_private_projection_product_registration_invalid".to_string()),
+    }
+}
+
+fn validate_product_registration_key(key: &ProductRegistrationKeyForProof) -> Result<(), String> {
+    if !key
+        .final_key_path
+        .eq_ignore_ascii_case(r"\REGISTRY\MACHINE\SOFTWARE\batcave\BatCave Monitor")
+        || !absolute_path_eq(&key.install_root, r"C:\Program Files\BatCave Monitor")
+        || key.value_names != [String::new()]
+        || !key.subkey_names.is_empty()
+        || key.default_value_type != 1
+        || key.last_write_time_100ns == 0
+        || !matches!(
+            key.owner,
+            SecurityPrincipalForProof::LocalSystem
+                | SecurityPrincipalForProof::Administrators
+                | SecurityPrincipalForProof::TrustedInstaller
+        )
+    {
+        return Err("lifecycle_private_projection_product_registration_invalid".to_string());
+    }
+    validate_sha256(
+        &key.dacl_sha256,
+        "private_projection_product_registration_dacl",
+    )
+}
+
+fn project_shortcut(
+    raw: &Observation<ShortcutForProof>,
+    expected_root: LogicalRoot,
+    roots: &[SanitizationRoot],
+) -> Result<Option<SanitizedShortcutSnapshot>, String> {
+    match raw {
+        Observation::Absent => Ok(None),
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        Observation::Present(shortcut) => {
+            validate_sha256(&shortcut.sha256, "private_projection_shortcut")?;
+            validate_sha256(&shortcut.dacl_sha256, "private_projection_shortcut_dacl")?;
+            let path = sanitize_path(&shortcut.path, roots)?;
+            let target = sanitize_path(&shortcut.target, roots)?;
+            if shortcut.size == 0
+                || shortcut.size > 1024 * 1024
+                || shortcut.volume_serial == 0
+                || shortcut.file_index == 0
+                || path.root != expected_root
+                || path.relative_leaf != "BatCave Monitor.lnk"
+                || target.root != LogicalRoot::Install
+                || !target
+                    .relative_leaf
+                    .eq_ignore_ascii_case("batcave-monitor.exe")
+                || !shortcut.arguments.is_empty()
+                || !shortcut.icon_path.is_empty()
+                || shortcut.icon_index != 0
+                || !absolute_path_eq(
+                    &shortcut.working_directory,
+                    r"C:\Program Files\BatCave Monitor",
+                )
+                || shortcut.show_command != 1
+                || shortcut.hotkey != 0
+                || !shortcut.description.is_empty()
+                || shortcut.app_user_model_id != "dev.batcave.monitor"
+                || (expected_root == LogicalRoot::CommonStartMenu
+                    && !matches!(
+                        shortcut.owner,
+                        SecurityPrincipalForProof::LocalSystem
+                            | SecurityPrincipalForProof::Administrators
+                            | SecurityPrincipalForProof::TrustedInstaller
+                    ))
+            {
+                return Err("lifecycle_private_projection_shortcut_invalid".to_string());
+            }
+            Ok(Some(SanitizedShortcutSnapshot {
+                path,
+                target,
+                sha256: shortcut.sha256.clone(),
+            }))
+        }
+    }
+}
+
+fn validate_registration_identity_set(raw: &ElevatedMachineSnapshot) -> Result<(), String> {
+    let mut identities = BTreeSet::new();
+    for shortcut in [
+        &raw.machine_registration.public_desktop_shortcut,
+        &raw.machine_registration.common_start_menu_shortcut,
+    ] {
+        if let Observation::Present(shortcut) = shortcut {
+            if !identities.insert((shortcut.volume_serial, shortcut.file_index)) {
+                return Err(
+                    "lifecycle_private_projection_registration_identity_invalid".to_string()
+                );
+            }
+        }
+    }
+    for file in [
+        &raw.machine.monitor,
+        &raw.machine.service_binary,
+        &raw.machine.uninstaller,
+        &raw.machine.legacy_cli,
+    ] {
+        if let Observation::Present(file) = file {
+            if identities.contains(&(file.identity.volume_serial, file.identity.file_index)) {
+                return Err(
+                    "lifecycle_private_projection_registration_identity_invalid".to_string()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn compare_runtime_projection(
@@ -1373,6 +1540,11 @@ fn projection_roots() -> Result<Vec<SanitizationRoot>, String> {
         SanitizationRoot::new(
             LogicalRoot::WebViewRuntime,
             r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application",
+        )?,
+        SanitizationRoot::new(LogicalRoot::PublicDesktop, r"C:\Users\Public\Desktop")?,
+        SanitizationRoot::new(
+            LogicalRoot::CommonStartMenu,
+            r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs",
         )?,
     ])
 }
@@ -3165,10 +3337,9 @@ fn installed_registration_valid(
             "system/currentcontrolset/services/batcavecollector",
         )
     });
-    let product_key_valid = machine
-        .machine_product_key
-        .as_ref()
-        .is_some_and(|path| logical_leaf_eq(path, LogicalRoot::Hklm, "software/batcavemonitor"));
+    let product_key_valid = machine.machine_product_key.as_ref().is_some_and(|path| {
+        logical_leaf_eq(path, LogicalRoot::Hklm, "software/batcave/batcave monitor")
+    });
     let autostart_valid = machine.hkcu_autostart.as_ref().is_some_and(|autostart| {
         logical_leaf_eq(
             &autostart.key,
@@ -3819,6 +3990,7 @@ mod tests {
             "etw_owner_lock",
             "service_lifecycle_lock",
             "service_install_residue",
+            "machine_registration",
         ] {
             let mut missing = value.clone();
             missing
@@ -4139,6 +4311,156 @@ mod tests {
         unknown_nested["service_install_residue"]
             .as_object_mut()
             .expect("residue object")
+            .insert("unexpected".to_string(), serde_json::json!(true));
+        assert!(serde_json::from_value::<ElevatedMachineSnapshot>(unknown_nested).is_err());
+    }
+
+    #[test]
+    fn raw_machine_registration_projects_exact_v2_semantics_and_rejects_hostile_drift() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let machine = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("running entry")
+            .machine
+            .clone();
+        let raw = raw_machine(&machine);
+        let assert_rejected = |raw: ElevatedMachineSnapshot| {
+            assert!(
+                compare_machine_projection(&raw, &machine, &plan, &parent_current_user()).is_err()
+            );
+        };
+        assert_eq!(
+            compare_machine_projection(&raw, &machine, &plan, &parent_current_user()),
+            Ok(())
+        );
+        assert_eq!(SANITIZED_SCHEMA, "batcave_windows_lifecycle_sanitized_v2");
+
+        let mut unknown_product = raw.clone();
+        unknown_product.machine_registration.product_key_64 =
+            Observation::Unknown("product_unknown".to_string());
+        assert_rejected(unknown_product);
+
+        let mut unexpected_32_view = raw.clone();
+        unexpected_32_view.machine_registration.product_key_32 = unexpected_32_view
+            .machine_registration
+            .product_key_64
+            .clone();
+        assert_rejected(unexpected_32_view);
+
+        for mutation in 0..7 {
+            let mut hostile = raw.clone();
+            let Observation::Present(product) = &mut hostile.machine_registration.product_key_64
+            else {
+                panic!("product key");
+            };
+            match mutation {
+                0 => product.final_key_path.push_str("\\spoof"),
+                1 => product.install_root.push_str("\\spoof"),
+                2 => product.value_names.push("named".to_string()),
+                3 => product.subkey_names.push("child".to_string()),
+                4 => product.last_write_time_100ns = 0,
+                5 => product.dacl_sha256 = "not-a-digest".to_string(),
+                6 => product.owner = SecurityPrincipalForProof::InteractiveUsers,
+                _ => unreachable!(),
+            }
+            assert_rejected(hostile);
+        }
+
+        let mut unknown_public = raw.clone();
+        unknown_public.machine_registration.public_desktop_shortcut =
+            Observation::Unknown("public_unknown".to_string());
+        assert_rejected(unknown_public);
+
+        for mutation in 0..11 {
+            let mut hostile = raw.clone();
+            let Observation::Present(shortcut) =
+                &mut hostile.machine_registration.public_desktop_shortcut
+            else {
+                panic!("public shortcut");
+            };
+            match mutation {
+                0 => shortcut.path.push_str(".spoof"),
+                1 => shortcut.target.push_str(".spoof"),
+                2 => shortcut.arguments = "--spoof".to_string(),
+                3 => shortcut.icon_path = r"C:\spoof.ico".to_string(),
+                4 => shortcut.icon_index = 1,
+                5 => shortcut.working_directory.push_str("\\spoof"),
+                6 => shortcut.show_command = 0,
+                7 => shortcut.hotkey = 1,
+                8 => shortcut.description = "spoof".to_string(),
+                9 => shortcut.app_user_model_id = "spoof".to_string(),
+                10 => shortcut.dacl_sha256 = "not-a-digest".to_string(),
+                _ => unreachable!(),
+            }
+            assert_rejected(hostile);
+        }
+
+        let mut common_untrusted_owner = raw.clone();
+        let Observation::Present(shortcut) = &mut common_untrusted_owner
+            .machine_registration
+            .common_start_menu_shortcut
+        else {
+            panic!("common shortcut");
+        };
+        shortcut.owner = SecurityPrincipalForProof::InteractiveUsers;
+        assert_rejected(common_untrusted_owner);
+
+        let mut shortcut_collision = raw.clone();
+        let public_identity = {
+            let Observation::Present(shortcut) = &shortcut_collision
+                .machine_registration
+                .public_desktop_shortcut
+            else {
+                panic!("public shortcut");
+            };
+            (shortcut.volume_serial, shortcut.file_index)
+        };
+        let Observation::Present(shortcut) = &mut shortcut_collision
+            .machine_registration
+            .common_start_menu_shortcut
+        else {
+            panic!("common shortcut");
+        };
+        shortcut.volume_serial = public_identity.0;
+        shortcut.file_index = public_identity.1;
+        assert_eq!(
+            compare_machine_projection(
+                &shortcut_collision,
+                &machine,
+                &plan,
+                &parent_current_user(),
+            ),
+            Err("lifecycle_private_projection_registration_identity_invalid".to_string())
+        );
+
+        let mut binary_collision = raw.clone();
+        let monitor_identity = binary_collision
+            .machine
+            .monitor
+            .as_present()
+            .expect("monitor")
+            .identity;
+        let Observation::Present(shortcut) = &mut binary_collision
+            .machine_registration
+            .public_desktop_shortcut
+        else {
+            panic!("public shortcut");
+        };
+        shortcut.volume_serial = monitor_identity.volume_serial;
+        shortcut.file_index = monitor_identity.file_index;
+        assert_eq!(
+            compare_machine_projection(&binary_collision, &machine, &plan, &parent_current_user()),
+            Err("lifecycle_private_projection_registration_identity_invalid".to_string())
+        );
+
+        let mut unknown_nested = serde_json::to_value(&raw).expect("raw machine");
+        unknown_nested["machine_registration"]
+            .as_object_mut()
+            .expect("registration object")
             .insert("unexpected".to_string(), serde_json::json!(true));
         assert!(serde_json::from_value::<ElevatedMachineSnapshot>(unknown_nested).is_err());
     }
@@ -5594,6 +5916,59 @@ mod tests {
                 RuntimeLockObservation::Absent {}
             },
             service_install_residue: raw_service_install_residue(machine),
+            machine_registration: raw_machine_registration(machine),
+        }
+    }
+
+    fn raw_machine_registration(machine: &SanitizedMachineSnapshot) -> MachineRegistrationForProof {
+        MachineRegistrationForProof {
+            product_key_64: if machine.machine_product_key.is_some() {
+                Observation::Present(ProductRegistrationKeyForProof {
+                    final_key_path: r"\REGISTRY\MACHINE\SOFTWARE\batcave\BatCave Monitor"
+                        .to_string(),
+                    install_root: r"C:\Program Files\BatCave Monitor".to_string(),
+                    value_names: vec![String::new()],
+                    subkey_names: Vec::new(),
+                    default_value_type: 1,
+                    last_write_time_100ns: 1,
+                    owner: SecurityPrincipalForProof::LocalSystem,
+                    dacl_sha256: "7".repeat(64),
+                })
+            } else {
+                Observation::Absent
+            },
+            product_key_32: Observation::Absent,
+            public_desktop_shortcut: machine
+                .public_desktop_shortcut
+                .as_ref()
+                .map(|shortcut| raw_shortcut(shortcut, 900))
+                .map_or(Observation::Absent, Observation::Present),
+            common_start_menu_shortcut: machine
+                .common_start_menu_shortcut
+                .as_ref()
+                .map(|shortcut| raw_shortcut(shortcut, 901))
+                .map_or(Observation::Absent, Observation::Present),
+        }
+    }
+
+    fn raw_shortcut(shortcut: &SanitizedShortcutSnapshot, file_index: u64) -> ShortcutForProof {
+        ShortcutForProof {
+            path: raw_path(&shortcut.path),
+            target: raw_path(&shortcut.target),
+            arguments: String::new(),
+            icon_path: String::new(),
+            icon_index: 0,
+            working_directory: r"C:\Program Files\BatCave Monitor".to_string(),
+            show_command: 1,
+            hotkey: 0,
+            description: String::new(),
+            app_user_model_id: "dev.batcave.monitor".to_string(),
+            owner: SecurityPrincipalForProof::LocalSystem,
+            dacl_sha256: "8".repeat(64),
+            size: 128,
+            sha256: shortcut.sha256.clone(),
+            volume_serial: 1,
+            file_index,
         }
     }
 
@@ -6080,6 +6455,8 @@ mod tests {
             LogicalRoot::ProductData => r"C:\ProgramData\BatCaveMonitor",
             LogicalRoot::ServiceData => r"C:\ProgramData\BatCaveMonitor\Service",
             LogicalRoot::CurrentUserData => r"C:\Users\proof\AppData\Local\BatCaveMonitor",
+            LogicalRoot::PublicDesktop => r"C:\Users\Public\Desktop",
+            LogicalRoot::CommonStartMenu => r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs",
             LogicalRoot::WebViewRuntime => {
                 r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application"
             }
@@ -6453,7 +6830,10 @@ mod tests {
             rollback_service_images: Vec::new(),
             atomic_temporary_files: Vec::new(),
             failure_marker: None,
-            machine_product_key: Some(logical_path(LogicalRoot::Hklm, "software/batcavemonitor")),
+            machine_product_key: Some(logical_path(
+                LogicalRoot::Hklm,
+                "software/batcave/batcave monitor",
+            )),
             hkcu_autostart: Some(SanitizedRegistryValueSnapshot {
                 key: logical_path(
                     LogicalRoot::Hkcu,

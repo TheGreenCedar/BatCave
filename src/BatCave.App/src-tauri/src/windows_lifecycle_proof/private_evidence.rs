@@ -702,6 +702,13 @@ mod tests {
                         },
                     ),
                 },
+            machine_registration:
+                crate::collector_service::windows_provisioner::MachineRegistrationForProof {
+                    product_key_64: Observation::Absent,
+                    product_key_32: Observation::Absent,
+                    public_desktop_shortcut: Observation::Absent,
+                    common_start_menu_shortcut: Observation::Absent,
+                },
         }
     }
 }

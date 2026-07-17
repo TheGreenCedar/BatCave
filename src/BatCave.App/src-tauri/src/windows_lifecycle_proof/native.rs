@@ -199,6 +199,8 @@ pub(crate) struct ElevatedMachineSnapshot {
     pub(crate) service_lifecycle_lock: RuntimeLockObservation,
     pub(crate) service_install_residue:
         crate::collector_service::windows_provisioner::ServiceInstallResidueForProof,
+    pub(crate) machine_registration:
+        crate::collector_service::windows_provisioner::MachineRegistrationForProof,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2004,6 +2006,11 @@ pub(crate) fn capture_elevated_machine_snapshot(
     // can mutate service or install state.
     let mut service_install_residue =
         crate::collector_service::windows_provisioner::observe_service_install_residue_for_proof();
+    // Public Desktop is intentionally only a point-in-time observation. Every
+    // machine snapshot captures it again; no handle or ACL claim survives this
+    // bounded elevated read.
+    let mut machine_registration =
+        crate::collector_service::windows_provisioner::observe_machine_registration_for_proof();
     if !same_service_generation(&machine.service, &observe_service()) {
         let reason = "lifecycle_runtime_service_changed_during_capture".to_string();
         named_pipe = Observation::Unknown(reason.clone());
@@ -2017,6 +2024,11 @@ pub(crate) fn capture_elevated_machine_snapshot(
         service_install_residue.service_registry_key = Observation::Unknown(reason.clone());
         service_install_residue.service_data = Observation::Unknown(reason.clone());
         service_install_residue.install = Observation::Unknown(reason);
+        let reason = "lifecycle_registration_service_changed_during_capture".to_string();
+        machine_registration.product_key_64 = Observation::Unknown(reason.clone());
+        machine_registration.product_key_32 = Observation::Unknown(reason.clone());
+        machine_registration.public_desktop_shortcut = Observation::Unknown(reason.clone());
+        machine_registration.common_start_menu_shortcut = Observation::Unknown(reason);
     }
     ElevatedMachineSnapshot {
         machine,
@@ -2030,6 +2042,7 @@ pub(crate) fn capture_elevated_machine_snapshot(
         etw_owner_lock,
         service_lifecycle_lock,
         service_install_residue,
+        machine_registration,
     }
 }
 
