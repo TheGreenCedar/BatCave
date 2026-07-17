@@ -3680,17 +3680,31 @@ pub(crate) fn cleanup_parent_current_user_legacy_residue(
 }
 
 #[cfg(test)]
-pub(crate) fn exercise_isolated_parent_current_user_residue_cleanup() -> Result<(), String> {
-    let token = standard_token_evidence()?;
+fn isolated_parent_test_context() -> Result<(ParentCurrentUserAuthority, PathBuf), String> {
+    require_no_thread_token()?;
+    let (token_handle, token) = current_primary_token()?;
+    if token.session_id == 0 || token.sid.is_empty() || token.sid_string.is_empty() {
+        return Err("lifecycle_test_parent_token_identity_invalid".to_string());
+    }
+    let profile_path = profile_directory_for_token(&token_handle)?;
+    let profile = OwnedDirectory::open(&profile_path, "test_parent_profile")?;
+    let local_app_data_path = local_app_data_for_token(&token_handle)?;
+    let local_app_data = OwnedDirectory::open(&local_app_data_path, "test_parent_local_app_data")?;
     let authority = ParentCurrentUserAuthority {
         user_sid: token.sid_string,
+        session_id: token.session_id,
+        logon_luid: token.logon_luid,
+        profile: profile.snapshot(),
+        local_app_data: local_app_data.snapshot(),
         ..tests::parent_current_user_authority()
     };
-    let temporary = PathBuf::from(
-        std::env::var_os("LOCALAPPDATA")
-            .ok_or_else(|| "lifecycle_test_local_app_data_missing".to_string())?,
-    )
-    .join(format!(
+    Ok((authority, local_app_data.path))
+}
+
+#[cfg(test)]
+pub(crate) fn exercise_isolated_parent_current_user_residue_cleanup() -> Result<(), String> {
+    let (authority, local_app_data) = isolated_parent_test_context()?;
+    let temporary = local_app_data.join(format!(
         "BatCave-parent-terminal-{}-{}",
         std::process::id(),
         random_hex(8)?
@@ -6533,14 +6547,8 @@ mod tests {
 
     #[test]
     fn helper_observer_rejects_links_escape_overflow_and_releases_capture_handles() {
-        let token = standard_token_evidence().expect("standard test token");
-        let authority = ParentCurrentUserAuthority {
-            user_sid: token.sid_string,
-            ..parent_current_user_authority()
-        };
-        let local_app_data = PathBuf::from(
-            std::env::var_os("LOCALAPPDATA").expect("runtime LocalAppData directory"),
-        );
+        let (authority, local_app_data) =
+            isolated_parent_test_context().expect("isolated parent test context");
         let temporary = local_app_data.join(format!(
             "BatCave-parent-helper-{}-{}",
             std::process::id(),
@@ -6611,13 +6619,10 @@ mod tests {
 
     #[test]
     fn parent_seed_partial_failures_restore_exact_filesystem_and_isolated_run_key() {
-        let token = standard_token_evidence().expect("standard test token");
-        let authority = ParentCurrentUserAuthority {
-            user_sid: token.sid_string,
-            ..parent_current_user_authority()
-        };
+        let (authority, local_app_data) =
+            isolated_parent_test_context().expect("isolated parent test context");
         for failure_after in 1..=12 {
-            let temporary = parent_seed_test_root();
+            let temporary = parent_seed_test_root(&local_app_data);
             fs::create_dir(&temporary).expect("test root");
             let adapter = IsolatedParentRunKeyAdapter::create().expect("isolated Run key");
             let key = adapter
@@ -6664,13 +6669,10 @@ mod tests {
 
     #[test]
     fn parent_seed_cleanup_supports_success_preexisting_directories_and_rerun() {
-        let token = standard_token_evidence().expect("standard test token");
-        let authority = ParentCurrentUserAuthority {
-            user_sid: token.sid_string,
-            ..parent_current_user_authority()
-        };
+        let (authority, local_app_data) =
+            isolated_parent_test_context().expect("isolated parent test context");
         for preexisting_directories in [false, true] {
-            let temporary = parent_seed_test_root();
+            let temporary = parent_seed_test_root(&local_app_data);
             fs::create_dir(&temporary).expect("test root");
             for _ in 0..2 {
                 let mut transaction =
@@ -6703,12 +6705,9 @@ mod tests {
 
     #[test]
     fn parent_seed_cleanup_preserves_changed_and_unexpected_data() {
-        let token = standard_token_evidence().expect("standard test token");
-        let authority = ParentCurrentUserAuthority {
-            user_sid: token.sid_string,
-            ..parent_current_user_authority()
-        };
-        let temporary = parent_seed_test_root();
+        let (authority, local_app_data) =
+            isolated_parent_test_context().expect("isolated parent test context");
+        let temporary = parent_seed_test_root(&local_app_data);
         fs::create_dir(&temporary).expect("test root");
         let mut transaction = parent_seed_test_transaction(&temporary, &authority, false);
         let mut completed = 0;
@@ -6747,13 +6746,12 @@ mod tests {
         fs::remove_dir(&temporary).expect("test root cleanup");
     }
 
-    fn parent_seed_test_root() -> PathBuf {
-        PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("runtime LocalAppData directory"))
-            .join(format!(
-                "BatCave-parent-seed-{}-{}",
-                std::process::id(),
-                random_hex(8).expect("nonce")
-            ))
+    fn parent_seed_test_root(local_app_data: &Path) -> PathBuf {
+        local_app_data.join(format!(
+            "BatCave-parent-seed-{}-{}",
+            std::process::id(),
+            random_hex(8).expect("nonce")
+        ))
     }
 
     pub(super) fn parent_seed_test_transaction(
