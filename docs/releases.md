@@ -46,6 +46,8 @@ The private feature now also contains the standard-token desktop runner. Desktop
 
 Because the NSIS postinstall hook runs after package files and registration are written, a rejected service candidate can temporarily leave the new desktop package beside the restored old service. That state is recoverable rather than successful: protocol version checks keep the desktop on its visible standard-access fallback, the retained recovery controller supports installer retry, the compatibility alias supports future uninstallers that contain the lookup, and final uninstall verifies that the machine-wide installer-location key is absent without deleting declared current-user state. Native fault injection must still prove this mixed-version recovery path.
 
+Windows proof builds can now export the exact post-sign NSIS uninstaller bytes through an opt-in `BATCAVE_UNINSTALLER_EXPORT_PATH`; a failed export fails the build, avoiding an extra install merely to discover the plan-bound uninstaller identity.
+
 Residue enumeration is capped per root at 256 direct children, 64 classified leaves, and 256 MiB of classified bytes, with tighter per-kind caps. Hardlinks, noncanonical case aliases, and count/byte overflow fail as `Unknown` before an unbounded hash can begin.
 
 ## Platform support and proof
