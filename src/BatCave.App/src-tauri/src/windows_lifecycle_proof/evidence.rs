@@ -2,7 +2,8 @@
 use super::native::NamedPipeSnapshot;
 use super::native::{
     DirectorySnapshot, ElevatedMachineSnapshot, FileSnapshot, ParentCurrentUserAuthority,
-    ParentCurrentUserObjects, ProcessSnapshot, RegistrySnapshot, RegistryView, ServiceSnapshot,
+    ParentCurrentUserCapturePoint, ParentCurrentUserObjects, ParentCurrentUserResidueTimeline,
+    ParentHelperFileSnapshot, ProcessSnapshot, RegistrySnapshot, RegistryView, ServiceSnapshot,
     VerifiedEvidenceFile,
 };
 use super::private_evidence::{
@@ -529,10 +530,12 @@ pub(super) fn validate_sanitized_export_bytes_with_parent_results(
     validate_parent_desktop_results(&packet.private_evidence, parent_desktop_results, plan)
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct ParentCurrentUserProjection<'a> {
     pub(super) authority: &'a ParentCurrentUserAuthority,
     pub(super) before_uninstall: &'a ParentCurrentUserObjects,
     pub(super) after_uninstall: &'a ParentCurrentUserObjects,
+    pub(super) residue_timeline: &'a ParentCurrentUserResidueTimeline,
 }
 
 pub(super) fn validate_verified_private_projection(
@@ -573,16 +576,12 @@ pub(super) fn validate_verified_private_projection(
         &private_packets,
         plan,
         parent_desktop_results,
-        parent_current_user.authority,
-        parent_current_user.before_uninstall,
-        parent_current_user.after_uninstall,
+        parent_current_user,
     )?;
 
-    // Raw machine authority now also includes the exact machine product key and
-    // the point-in-time public/common shortcut observations projected above.
-    // Autostart, helper residue, and the sentinel still need parent-user raw
-    // authority, as do the remaining lifecycle stages and parent-owned export
-    // writer, before this terminal stop can be removed.
+    // Raw authority now also covers the authenticated standard parent's HKCU
+    // autostart and bounded helper-residue timeline. Remaining lifecycle stages
+    // and the parent-owned export writer still keep this terminal stop closed.
     require_complete_raw_projection_authority()
 }
 
@@ -665,9 +664,7 @@ fn compare_verified_projection(
     private_packets: &[(&EvidenceReceipt, PrivateSuccessPacket)],
     plan: &ProofPlan,
     parent_desktop_results: &[DesktopPhaseResult],
-    parent_current_user: &ParentCurrentUserAuthority,
-    before_uninstall: &ParentCurrentUserObjects,
-    after_uninstall: &ParentCurrentUserObjects,
+    parent_current_user: ParentCurrentUserProjection<'_>,
 ) -> Result<(), String> {
     let by_name = export
         .private_evidence
@@ -732,12 +729,18 @@ fn compare_verified_projection(
                 &rollback.machine
             }
         };
-        compare_machine_projection(machine, &entry.machine, plan, parent_current_user)?;
+        compare_machine_projection(machine, &entry.machine, plan, parent_current_user.authority)?;
+        compare_parent_current_user_residue_projection(
+            &receipt.name,
+            &entry.machine,
+            parent_current_user.residue_timeline,
+            parent_current_user.authority,
+        )?;
     }
     compare_parent_current_user_retention(
         &export.current_user_retention,
-        before_uninstall,
-        after_uninstall,
+        parent_current_user.before_uninstall,
+        parent_current_user.after_uninstall,
     )?;
     Ok(())
 }
@@ -802,6 +805,200 @@ fn compare_machine_projection(
     compare_runtime_projection(raw, sanitized)?;
     compare_service_install_residue_projection(raw, sanitized, &roots)?;
     compare_machine_registration_projection(raw, sanitized, &roots)
+}
+
+fn parent_residue_capture_point(
+    receipt_name: &str,
+) -> Result<ParentCurrentUserCapturePoint, String> {
+    let point = match receipt_name {
+        "initial-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::InitialState)
+        }
+        "final-repair-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::FinalRepair)
+        }
+        "final-primary-desktop.private.json" => {
+            ParentCurrentUserCapturePoint::DesktopComplete(DesktopPhase::FinalPrimary)
+        }
+        "initial-uninstall-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::InitialUninstall)
+        }
+        "baseline-install-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::BaselineInstall)
+        }
+        "baseline-primary-desktop.private.json" => {
+            ParentCurrentUserCapturePoint::DesktopComplete(DesktopPhase::BaselinePrimary)
+        }
+        "baseline-second-instance-desktop.private.json" => {
+            ParentCurrentUserCapturePoint::DesktopComplete(DesktopPhase::BaselineSecondInstance)
+        }
+        "baseline-restart-stopped-state.private.json" | "baseline-restart-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::BaselineRestart)
+        }
+        "baseline-crashed-state.private.json" | "baseline-crash-recovery-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::BaselineCrashRecovery)
+        }
+        "baseline-rollback-recovery-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::BaselineRollbackRecovery)
+        }
+        "legacy-residue-seeded-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::LegacyResidueSeeded)
+        }
+        "final-upgrade-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::FinalUpgrade)
+        }
+        "final-restart-stopped-state.private.json" | "final-restart-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::FinalRestart)
+        }
+        "final-crashed-state.private.json" | "final-crash-recovery-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::FinalCrashRecovery)
+        }
+        "final-missing-service-state.private.json" => {
+            ParentCurrentUserCapturePoint::FinalMissingServiceBeforeDesktop
+        }
+        "final-missing-service-desktop.private.json"
+        | "final-missing-service-restored-state.private.json" => {
+            ParentCurrentUserCapturePoint::DesktopComplete(DesktopPhase::FinalMissingService)
+        }
+        "final-stopped-service-state.private.json"
+        | "final-stopped-service-desktop.private.json"
+        | "final-stopped-service-restored-state.private.json" => {
+            ParentCurrentUserCapturePoint::DesktopComplete(DesktopPhase::FinalStoppedService)
+        }
+        "final-incompatible-service-state.private.json"
+        | "final-incompatible-service-desktop.private.json" => {
+            ParentCurrentUserCapturePoint::DesktopComplete(DesktopPhase::FinalIncompatibleService)
+        }
+        "final-incompatible-service-restored-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::FinalFallbackStates)
+        }
+        "final-uninstall-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::FinalUninstall)
+        }
+        _ => return Err("lifecycle_parent_user_residue_receipt_invalid".to_string()),
+    };
+    Ok(point)
+}
+
+fn compare_parent_current_user_residue_projection(
+    receipt_name: &str,
+    sanitized: &SanitizedMachineSnapshot,
+    timeline: &ParentCurrentUserResidueTimeline,
+    authority: &ParentCurrentUserAuthority,
+) -> Result<(), String> {
+    let raw = timeline.get(parent_residue_capture_point(receipt_name)?)?;
+    if !super::native::valid_parent_run_key_owner(&raw.hkcu_run.owner_sid, &authority.user_sid) {
+        return Err("lifecycle_parent_user_run_projection_owner_invalid".to_string());
+    }
+    let expected_autostart = match &raw.hkcu_run.batcave_monitor {
+        Observation::Absent => None,
+        Observation::Present(value)
+            if value.value_type == 1 && value.value == super::native::exact_parent_run_value() =>
+        {
+            Some(SanitizedRegistryValueSnapshot {
+                key: LogicalPath {
+                    root: LogicalRoot::Hkcu,
+                    relative_leaf: "software/microsoft/windows/currentversion/run".to_string(),
+                },
+                value_name: "BatCave Monitor".to_string(),
+                target: LogicalPath {
+                    root: LogicalRoot::Install,
+                    relative_leaf: "batcave-monitor.exe".to_string(),
+                },
+            })
+        }
+        Observation::Present(_) => {
+            return Err("lifecycle_parent_user_run_projection_invalid".to_string());
+        }
+        Observation::Unknown(_) => {
+            return Err("lifecycle_parent_user_run_projection_unknown".to_string());
+        }
+    };
+    if raw.hkcu_run.dacl_sha256.len() != 64
+        || raw.hkcu_run.manifest_sha256.len() != 64
+        || sanitized.hkcu_autostart != expected_autostart
+    {
+        return Err("lifecycle_parent_user_run_projection_drift".to_string());
+    }
+
+    let (known, sentinel) = match &raw.helper {
+        Observation::Absent => (BTreeMap::new(), None),
+        Observation::Unknown(_) => {
+            return Err("lifecycle_parent_user_helper_projection_unknown".to_string());
+        }
+        Observation::Present(helper) => {
+            if helper.unexpected_entry_count != 0
+                || helper.root_owner_sid != authority.user_sid
+                || helper.root_dacl_sha256.len() != 64
+                || helper.manifest_sha256.len() != 64
+            {
+                return Err("lifecycle_parent_user_helper_projection_invalid".to_string());
+            }
+            let mut known = BTreeMap::new();
+            for file in &helper.known_files {
+                let projected = project_parent_helper_file(file, &authority.user_sid)?;
+                if known
+                    .insert(projected.path.relative_leaf.clone(), projected)
+                    .is_some()
+                {
+                    return Err("lifecycle_parent_user_helper_projection_invalid".to_string());
+                }
+            }
+            let sentinel = match &helper.sentinel {
+                Observation::Absent => None,
+                Observation::Present(file) => {
+                    Some(project_parent_helper_file(file, &authority.user_sid)?)
+                }
+                Observation::Unknown(_) => {
+                    return Err("lifecycle_parent_user_helper_projection_unknown".to_string());
+                }
+            };
+            (known, sentinel)
+        }
+    };
+    let sanitized_known = sanitized
+        .known_retired_helper_artifacts
+        .iter()
+        .cloned()
+        .map(|file| (file.path.relative_leaf.clone(), file))
+        .collect::<BTreeMap<_, _>>();
+    if sanitized_known.len() != sanitized.known_retired_helper_artifacts.len()
+        || known != sanitized_known
+        || sentinel != sanitized.unknown_helper_sentinel
+    {
+        return Err("lifecycle_parent_user_helper_projection_drift".to_string());
+    }
+    Ok(())
+}
+
+fn project_parent_helper_file(
+    raw: &ParentHelperFileSnapshot,
+    parent_sid: &str,
+) -> Result<SanitizedPathFileSnapshot, String> {
+    if raw.relative_leaf.is_empty()
+        || raw.owner_sid != parent_sid
+        || raw.dacl_sha256.len() != 64
+        || raw.file.size == 0
+        || raw.file.identity.volume_serial == 0
+        || raw.file.identity.file_index == 0
+        || validate_sha256(&raw.file.sha256, "parent_helper_projection").is_err()
+    {
+        return Err("lifecycle_parent_user_helper_projection_invalid".to_string());
+    }
+    let path = LogicalPath {
+        root: LogicalRoot::CurrentUserData,
+        relative_leaf: raw.relative_leaf.clone(),
+    };
+    validate_logical_path(&path)?;
+    Ok(SanitizedPathFileSnapshot {
+        path,
+        file: SanitizedFileSnapshot {
+            size: raw.file.size,
+            sha256: raw.file.sha256.clone(),
+            volume_serial: raw.file.identity.volume_serial,
+            file_index: raw.file.identity.file_index,
+        },
+    })
 }
 
 fn compare_machine_registration_projection(
@@ -1823,10 +2020,14 @@ fn validate_sanitized_private_evidence(
         let entry = by_name
             .get(leaf)
             .ok_or_else(|| "lifecycle_sanitized_export_manifest_incomplete".to_string())?;
-        let is_legacy_seed = *leaf == "legacy-residue-seeded-state.private.json";
+        let expects_known_retired_helpers = (12..=18).contains(&index);
         let has_known_retired_helpers = !entry.machine.known_retired_helper_artifacts.is_empty();
-        if is_legacy_seed != has_known_retired_helpers {
+        if expects_known_retired_helpers != has_known_retired_helpers {
             return Err("lifecycle_sanitized_legacy_helper_lifetime_invalid".to_string());
+        }
+        let expects_hkcu_autostart = (12..=26).contains(&index);
+        if expects_hkcu_autostart != entry.machine.hkcu_autostart.is_some() {
+            return Err("lifecycle_sanitized_hkcu_autostart_lifetime_invalid".to_string());
         }
         if index < 12 {
             if entry.machine.unknown_helper_sentinel.is_some() {
@@ -2979,11 +3180,10 @@ fn validate_stage_machine_assertion(
                 final_artifacts(plan),
                 ServiceExpectation::Running,
             )?;
-            if !matches!(machine.legacy_cli, Observation::Absent)
-                || !machine.known_retired_helper_artifacts.is_empty()
-            {
+            if !matches!(machine.legacy_cli, Observation::Absent) {
                 return Err("lifecycle_sanitized_upgrade_cleanup_invalid".to_string());
             }
+            validate_known_helper_seed(machine)?;
             validate_unknown_helper_sentinel(machine)
         }
         SanitizedEvidenceAssertion::FinalStopped => {
@@ -3169,7 +3369,6 @@ fn validate_installed_machine(
         || !matches!(machine.uninstall_registry, Observation::Present(_))
         || machine.service_registry_key.is_none()
         || machine.machine_product_key.is_none()
-        || machine.hkcu_autostart.is_none()
         || machine.public_desktop_shortcut.is_none()
         || machine.common_start_menu_shortcut.is_none()
         || !matches!(machine.installed_boundaries, Observation::Present(_))
@@ -3263,7 +3462,6 @@ fn validate_desktop_only_machine(
         })
         || !matches!(machine.uninstall_registry, Observation::Present(_))
         || machine.machine_product_key.is_none()
-        || machine.hkcu_autostart.is_none()
         || machine.public_desktop_shortcut.is_none()
         || machine.common_start_menu_shortcut.is_none()
         || !matches!(machine.installed_boundaries, Observation::Absent)
@@ -3340,18 +3538,6 @@ fn installed_registration_valid(
     let product_key_valid = machine.machine_product_key.as_ref().is_some_and(|path| {
         logical_leaf_eq(path, LogicalRoot::Hklm, "software/batcave/batcave monitor")
     });
-    let autostart_valid = machine.hkcu_autostart.as_ref().is_some_and(|autostart| {
-        logical_leaf_eq(
-            &autostart.key,
-            LogicalRoot::Hkcu,
-            "software/microsoft/windows/currentversion/run",
-        ) && autostart.value_name == "BatCave Monitor"
-            && logical_leaf_eq(
-                &autostart.target,
-                LogicalRoot::Install,
-                "batcave-monitor.exe",
-            )
-    });
     let public_shortcut_valid = machine
         .public_desktop_shortcut
         .as_ref()
@@ -3384,7 +3570,6 @@ fn installed_registration_valid(
     uninstall_registry_valid
         && (!require_service_key || service_key_valid)
         && product_key_valid
-        && autostart_valid
         && public_shortcut_valid
         && start_menu_shortcut_valid
 }
@@ -3937,6 +4122,33 @@ mod tests {
     }
 
     #[test]
+    fn private_worker_packet_excludes_parent_current_user_raw_authority() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let entry = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "legacy-residue-seeded-state.private.json")
+            .expect("seeded entry");
+        let packet = packet_for_test(PrivateSuccessPayload::Machine(raw_machine(&entry.machine)));
+        let json = serde_json::to_string(&packet).expect("private packet json");
+        for forbidden in [
+            "S-1-5-21-1",
+            "user_sid",
+            "hkcu_run",
+            "local_app_data",
+            "unknown-sentinel.bin",
+            r"C:\Users\proof",
+        ] {
+            assert!(
+                !json.contains(forbidden),
+                "private packet leaked {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn verified_projection_derives_representable_machine_semantics() {
         let plan = parse_plan().expect("plan");
         let receipts = success_receipts();
@@ -3954,9 +4166,7 @@ mod tests {
                 &[(&entry.receipt, packet)],
                 &plan,
                 &parent_desktop_results(&plan),
-                &parent_current_user(),
-                &parent_user_objects(),
-                &parent_user_objects(),
+                parent_current_user_projection(&export),
             ),
             Ok(())
         );
@@ -3964,6 +4174,68 @@ mod tests {
             require_complete_raw_projection_authority(),
             Err("lifecycle_private_projection_raw_authority_incomplete".to_string())
         );
+    }
+
+    #[test]
+    fn initial_residue_projection_is_independent_and_enforces_run_owner_matrix() {
+        assert_eq!(
+            parent_residue_capture_point("initial-state.private.json"),
+            Ok(ParentCurrentUserCapturePoint::Checkpoint(
+                LifecycleStage::InitialState
+            ))
+        );
+        assert_eq!(
+            parent_residue_capture_point("final-repair-state.private.json"),
+            Ok(ParentCurrentUserCapturePoint::Checkpoint(
+                LifecycleStage::FinalRepair
+            ))
+        );
+
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let initial = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "initial-state.private.json")
+            .expect("initial entry");
+        let authority = parent_current_user();
+        for owner in [&authority.user_sid, "S-1-5-18", "S-1-5-32-544"] {
+            let mut snapshot = parent_residue_snapshot(&initial.machine);
+            snapshot.hkcu_run.owner_sid = owner.to_string();
+            let mut timeline = ParentCurrentUserResidueTimeline::default();
+            timeline
+                .insert(
+                    ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::InitialState),
+                    snapshot,
+                )
+                .expect("initial parent capture");
+            assert_eq!(
+                compare_parent_current_user_residue_projection(
+                    "initial-state.private.json",
+                    &initial.machine,
+                    &timeline,
+                    &authority,
+                ),
+                Ok(())
+            );
+        }
+        let mut snapshot = parent_residue_snapshot(&initial.machine);
+        snapshot.hkcu_run.owner_sid = "S-1-5-11".to_string();
+        let mut timeline = ParentCurrentUserResidueTimeline::default();
+        timeline
+            .insert(
+                ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::InitialState),
+                snapshot,
+            )
+            .expect("initial parent capture");
+        assert!(compare_parent_current_user_residue_projection(
+            "initial-state.private.json",
+            &initial.machine,
+            &timeline,
+            &authority,
+        )
+        .is_err());
     }
 
     #[test]
@@ -4702,9 +4974,7 @@ mod tests {
                 )],
                 &plan,
                 &parent_desktop_results(&plan),
-                &parent_current_user(),
-                &parent_user_objects(),
-                &parent_user_objects(),
+                parent_current_user_projection(&original),
             ),
             Err("lifecycle_private_projection_machine_drift".to_string())
         );
@@ -4722,9 +4992,7 @@ mod tests {
             )],
             &plan,
             &parent_desktop_results(&plan),
-            &parent_current_user(),
-            &parent_user_objects(),
-            &parent_user_objects(),
+            parent_current_user_projection(&original),
         )
         .is_err());
     }
@@ -4802,9 +5070,7 @@ mod tests {
                 )],
                 &plan,
                 &parent,
-                &parent_current_user(),
-                &parent_user_objects(),
-                &parent_user_objects(),
+                parent_current_user_projection(&export),
             ),
             Err("lifecycle_private_projection_parent_desktop_drift".to_string())
         );
@@ -4833,9 +5099,7 @@ mod tests {
                 )],
                 &plan,
                 &parent_desktop_results(&plan),
-                &parent_current_user(),
-                &parent_user_objects(),
-                &parent_user_objects(),
+                parent_current_user_projection(&export),
             ),
             Err("lifecycle_private_projection_event_drift".to_string())
         );
@@ -4871,9 +5135,7 @@ mod tests {
                 )],
                 &plan,
                 &parent_desktop_results(&plan),
-                &parent_current_user(),
-                &parent_user_objects(),
-                &parent_user_objects(),
+                parent_current_user_projection(&export),
             ),
             Err("lifecycle_private_projection_event_drift".to_string())
         );
@@ -6085,6 +6347,115 @@ mod tests {
         }
     }
 
+    fn parent_current_user_projection(
+        export: &SanitizedExportPacket,
+    ) -> ParentCurrentUserProjection<'static> {
+        ParentCurrentUserProjection {
+            authority: Box::leak(Box::new(parent_current_user())),
+            before_uninstall: Box::leak(Box::new(parent_user_objects())),
+            after_uninstall: Box::leak(Box::new(parent_user_objects())),
+            residue_timeline: Box::leak(Box::new(parent_residue_timeline(export))),
+        }
+    }
+
+    fn parent_residue_timeline(export: &SanitizedExportPacket) -> ParentCurrentUserResidueTimeline {
+        let mut timeline = ParentCurrentUserResidueTimeline::default();
+        let mut captured = BTreeSet::new();
+        for entry in &export.private_evidence {
+            let point = parent_residue_capture_point(&entry.receipt.name).expect("capture point");
+            if captured.insert(point) {
+                timeline
+                    .insert(point, parent_residue_snapshot(&entry.machine))
+                    .expect("unique capture point");
+            }
+        }
+        let rollback = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "legacy-residue-seeded-state.private.json")
+            .expect("seeded entry");
+        timeline
+            .insert(
+                ParentCurrentUserCapturePoint::BaselineRollbackRecoverySeeded,
+                parent_residue_snapshot(&rollback.machine),
+            )
+            .expect("seeded capture");
+        timeline
+    }
+
+    fn parent_residue_snapshot(
+        machine: &SanitizedMachineSnapshot,
+    ) -> super::super::native::ParentCurrentUserResidueSnapshot {
+        let hkcu_value = machine
+            .hkcu_autostart
+            .as_ref()
+            .map(|_| super::super::native::ParentRunValueSnapshot {
+                value_type: 1,
+                value: super::super::native::exact_parent_run_value().to_string(),
+            })
+            .map_or(Observation::Absent, Observation::Present);
+        let helper = if machine.known_retired_helper_artifacts.is_empty()
+            && machine.unknown_helper_sentinel.is_none()
+        {
+            Observation::Absent
+        } else {
+            Observation::Present(super::super::native::ParentHelperManifestSnapshot {
+                root: DirectorySnapshot {
+                    identity: super::super::native::FileIdentity {
+                        volume_serial: 1,
+                        file_index: 400,
+                    },
+                    final_path: r"C:\Users\proof\AppData\Local\BatCaveMonitor\elevated-helper"
+                        .to_string(),
+                },
+                root_owner_sid: "S-1-5-21-1".to_string(),
+                root_dacl_sha256: "d".repeat(64),
+                known_files: machine
+                    .known_retired_helper_artifacts
+                    .iter()
+                    .map(parent_helper_snapshot)
+                    .collect(),
+                sentinel: machine
+                    .unknown_helper_sentinel
+                    .as_ref()
+                    .map(parent_helper_snapshot)
+                    .map_or(Observation::Absent, Observation::Present),
+                unexpected_entry_count: 0,
+                manifest_sha256: "e".repeat(64),
+            })
+        };
+        super::super::native::ParentCurrentUserResidueSnapshot {
+            hkcu_run: super::super::native::ParentRunKeySnapshot {
+                final_key_path:
+                    r"\REGISTRY\USER\S-1-5-21-1\Software\Microsoft\Windows\CurrentVersion\Run"
+                        .to_string(),
+                owner_sid: "S-1-5-21-1".to_string(),
+                dacl_sha256: "c".repeat(64),
+                last_write_time_100ns: 1,
+                value_count: u32::from(machine.hkcu_autostart.is_some()),
+                manifest_sha256: "b".repeat(64),
+                batcave_monitor: hkcu_value,
+            },
+            helper,
+        }
+    }
+
+    fn parent_helper_snapshot(file: &SanitizedPathFileSnapshot) -> ParentHelperFileSnapshot {
+        ParentHelperFileSnapshot {
+            relative_leaf: file.path.relative_leaf.clone(),
+            file: FileSnapshot {
+                size: file.file.size,
+                sha256: file.file.sha256.clone(),
+                identity: super::super::native::FileIdentity {
+                    volume_serial: file.file.volume_serial,
+                    file_index: file.file.file_index,
+                },
+            },
+            owner_sid: "S-1-5-21-1".to_string(),
+            dacl_sha256: "a".repeat(64),
+        }
+    }
+
     fn parent_user_file(hash_digit: &str, file_index: u64) -> Observation<FileSnapshot> {
         Observation::Present(FileSnapshot {
             size: 1,
@@ -6679,7 +7050,55 @@ mod tests {
                 .lease
                 .install_id = [2; 16];
         }
+        apply_parent_current_user_residue_fixture(receipt_name, &mut machine);
         machine
+    }
+
+    fn apply_parent_current_user_residue_fixture(
+        receipt_name: &str,
+        machine: &mut SanitizedMachineSnapshot,
+    ) {
+        let seeded_known = matches!(
+            receipt_name,
+            "legacy-residue-seeded-state.private.json"
+                | "final-upgrade-state.private.json"
+                | "final-restart-stopped-state.private.json"
+                | "final-restart-state.private.json"
+                | "final-crashed-state.private.json"
+                | "final-crash-recovery-state.private.json"
+                | "final-missing-service-state.private.json"
+        );
+        let seeded_cleaned = matches!(
+            receipt_name,
+            "final-missing-service-desktop.private.json"
+                | "final-missing-service-restored-state.private.json"
+                | "final-stopped-service-state.private.json"
+                | "final-stopped-service-desktop.private.json"
+                | "final-stopped-service-restored-state.private.json"
+                | "final-incompatible-service-state.private.json"
+                | "final-incompatible-service-desktop.private.json"
+                | "final-incompatible-service-restored-state.private.json"
+        );
+        let final_uninstall = receipt_name == "final-uninstall-state.private.json";
+        machine.hkcu_autostart =
+            (seeded_known || seeded_cleaned).then(|| SanitizedRegistryValueSnapshot {
+                key: logical_path(
+                    LogicalRoot::Hkcu,
+                    "software/microsoft/windows/currentversion/run",
+                ),
+                value_name: "BatCave Monitor".to_string(),
+                target: logical_path(LogicalRoot::Install, "batcave-monitor.exe"),
+            });
+        machine.known_retired_helper_artifacts = if seeded_known {
+            KNOWN_RETIRED_HELPER_LEAVES
+                .iter()
+                .map(|leaf| known_helper_path_file(leaf))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        machine.unknown_helper_sentinel =
+            (seeded_known || seeded_cleaned || final_uninstall).then(unknown_sentinel);
     }
 
     fn test_generation_for_receipt(receipt_name: &str) -> Option<(u32, u64, u64)> {
