@@ -36,6 +36,10 @@ Var BatCaveServiceUpgrade
   !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\${BATCAVE_SERVICE_BINARY}" "${VERB}" "${DESCRIPTION}"
 !macroend
 
+!macro BATCAVE_RETIRE_SHARED_SHORTCUTS IMAGE
+  !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "${IMAGE}" "--provision retire-installer-shortcuts" "Retire legacy shared BatCave shortcuts"
+!macroend
+
 !macro BATCAVE_DEFINE_ASSERT_SERVICE_FUNCTION PREFIX
 Function ${PREFIX}BatCaveAssertServiceOwnedOrMissing
   StrCpy $R9 "0"
@@ -77,12 +81,21 @@ FunctionEnd
 
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro BATCAVE_REQUIRE_FIXED_INSTALL_DIR
+  ; Tauri CLI 2.11.4 uses this installer-owned switch for both the Common
+  ; Programs and Public Desktop shortcuts. Its Wix migration path bypasses
+  ; NoShortcutMode, but the prior Wix uninstall is complete before PREINSTALL,
+  ; so clear that shortcut-only bypass as well. BatCave owns neither surface.
+  StrCpy $NoShortcutMode 1
+  StrCpy $WixMode 0
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   Call BatCaveAssertServiceOwnedOrMissing
   StrCpy $BatCaveServiceUpgrade $R9
   ${If} $R9 == "1"
     SetOutPath "$INSTDIR"
     File /a "/oname=batcave-collector-service.recovery.exe" "..\..\batcave-collector-service.exe"
+    ; Preflight while the prior verified service generation is running. The
+    ; provisioner repeats this after recovering any interrupted transaction.
+    !insertmacro BATCAVE_RETIRE_SHARED_SHORTCUTS "$INSTDIR\batcave-collector-service.recovery.exe"
     !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.recovery.exe" "--provision prepare-upgrade-staged" "Prepare ${BATCAVE_SERVICE_NAME} upgrade"
     Goto service_upgrade_prepared
 service_upgrade_prepared:
@@ -95,6 +108,13 @@ service_upgrade_prepared:
   ${If} $BatCaveServiceUpgrade == "1"
     IfFileExists "$INSTDIR\batcave-collector-service.recovery.exe" 0 missing_staged_service_binary
     !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.recovery.exe" "--provision commit-upgrade-staged" "Commit ${BATCAVE_SERVICE_NAME} upgrade"
+    ; Retain the verified recovery controller through the rollback-coupled
+    ; final gate. The stable install verb repeats it before finalization.
+    !insertmacro BATCAVE_RETIRE_SHARED_SHORTCUTS "$INSTDIR\batcave-collector-service.recovery.exe"
+  ${Else}
+    ; A fresh install retires before service creation. The install verb repeats
+    ; this gate and rolls a new service back if a link is recreated.
+    !insertmacro BATCAVE_RETIRE_SHARED_SHORTCUTS "$INSTDIR\${BATCAVE_SERVICE_BINARY}"
   ${EndIf}
   !insertmacro BATCAVE_EXEC_SERVICE_VERB "--provision install" "Install ${BATCAVE_SERVICE_NAME}"
   Goto service_install_complete
@@ -108,6 +128,9 @@ service_install_complete:
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro BATCAVE_REQUIRE_FIXED_INSTALL_DIR
+  ; The native retirement gate owns the only shared-shortcut deletion. Keep the
+  ; stock uninstaller from reopening either shared path after that gate.
+  StrCpy $NoShortcutMode 1
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   Call un.BatCaveAssertServiceOwnedOrMissing
   IfFileExists "$INSTDIR\batcave-collector-service.recovery.exe" use_recovery_uninstall_service_binary 0
@@ -115,12 +138,14 @@ service_install_complete:
   Goto use_stable_uninstall_service_binary
 
 use_recovery_uninstall_service_binary:
+  !insertmacro BATCAVE_RETIRE_SHARED_SHORTCUTS "$INSTDIR\batcave-collector-service.recovery.exe"
   !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.recovery.exe" "--provision uninstall-staged" "Uninstall ${BATCAVE_SERVICE_NAME} through the recovery controller"
   Delete "$INSTDIR\batcave-collector-service.recovery.exe"
   IfFileExists "$INSTDIR\batcave-collector-service.recovery.exe" staged_uninstall_service_binary_present 0
   Goto service_uninstall_complete
 
 use_legacy_staged_uninstall_service_binary:
+  !insertmacro BATCAVE_RETIRE_SHARED_SHORTCUTS "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe"
   !insertmacro BATCAVE_EXEC_SERVICE_IMAGE_VERB "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" "--provision uninstall-staged" "Uninstall ${BATCAVE_SERVICE_NAME} through the compatibility controller"
   Delete "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe"
   IfFileExists "$INSTDIR\batcave-collector-service.${VERSION}.staged.exe" staged_uninstall_service_binary_present 0
@@ -128,6 +153,7 @@ use_legacy_staged_uninstall_service_binary:
 
 use_stable_uninstall_service_binary:
   IfFileExists "$INSTDIR\${BATCAVE_SERVICE_BINARY}" 0 missing_uninstall_service_binary
+  !insertmacro BATCAVE_RETIRE_SHARED_SHORTCUTS "$INSTDIR\${BATCAVE_SERVICE_BINARY}"
   !insertmacro BATCAVE_EXEC_SERVICE_VERB "--provision uninstall" "Uninstall ${BATCAVE_SERVICE_NAME}"
   Goto service_uninstall_complete
 

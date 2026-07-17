@@ -16,6 +16,7 @@ use super::{
 const PROVISION_SWITCH: &str = "--provision";
 const PRODUCT_DIRECTORY_NAME: &str = "BatCave Monitor";
 const SERVICE_EXECUTABLE_NAME: &str = "batcave-collector-service.exe";
+const MONITOR_EXECUTABLE_NAME: &str = "batcave-monitor.exe";
 const LEGACY_WINDOWS_CLI_NAME: &str = "batcave-monitor-cli.exe";
 const SERVICE_ACCOUNT: &str = "LocalSystem";
 const SERVICE_OWNER_MARKER: &str = "dev.batcave.monitor/service-v1";
@@ -84,8 +85,25 @@ enum ProvisionVerb {
     PrepareUpgradeStaged,
     CommitUpgradeStaged,
     Install,
+    RetireInstallerShortcuts,
     Uninstall,
     UninstallStaged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstallerControllerKind {
+    Stable,
+    Staged,
+}
+
+fn installer_controller_kind(name: &str) -> Result<InstallerControllerKind, String> {
+    if name == SERVICE_EXECUTABLE_NAME {
+        Ok(InstallerControllerKind::Stable)
+    } else if is_staged_upgrade_name(name) {
+        Ok(InstallerControllerKind::Staged)
+    } else {
+        Err("installer_shortcut_controller_name_invalid".to_string())
+    }
 }
 
 pub(crate) fn run_cli(args: &[String]) -> Option<i32> {
@@ -95,6 +113,7 @@ pub(crate) fn run_cli(args: &[String]) -> Option<i32> {
             "prepare-upgrade-staged" => ProvisionVerb::PrepareUpgradeStaged,
             "commit-upgrade-staged" => ProvisionVerb::CommitUpgradeStaged,
             "install" => ProvisionVerb::Install,
+            "retire-installer-shortcuts" => ProvisionVerb::RetireInstallerShortcuts,
             "uninstall" => ProvisionVerb::Uninstall,
             "uninstall-staged" => ProvisionVerb::UninstallStaged,
             _ => {
@@ -128,6 +147,7 @@ fn run_verb(verb: ProvisionVerb) -> Result<(), String> {
         ProvisionVerb::PrepareUpgradeStaged => native::prepare_upgrade_staged(),
         ProvisionVerb::CommitUpgradeStaged => native::commit_upgrade_staged(),
         ProvisionVerb::Install => native::install(),
+        ProvisionVerb::RetireInstallerShortcuts => native::retire_installer_shortcuts(),
         ProvisionVerb::Uninstall => native::uninstall(),
         ProvisionVerb::UninstallStaged => native::uninstall_staged(),
     }
@@ -1906,6 +1926,55 @@ mod native {
         sid_string(&sid_from_string(SERVICE_SID)?)
     }
 
+    pub(super) fn retire_installer_shortcuts() -> Result<(), String> {
+        require_elevated()?;
+        let controller = verify_current_installer_controller()?;
+        let result = retire_shortcuts_with_controller(&controller);
+        let install_directory = controller.install_directory()?.to_path_buf();
+        drop(controller);
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => fail_shortcut_retirement_with_upgrade_recovery(error, &install_directory),
+        }
+    }
+
+    fn retire_shortcuts_with_controller(controller: &VerifiedServiceImage) -> Result<(), String> {
+        let monitor_path = controller
+            .install_directory()?
+            .join(MONITOR_EXECUTABLE_NAME);
+        super::super::windows_shortcut_retirement::retire_shared_legacy_shortcuts(&monitor_path)
+    }
+
+    fn fail_shortcut_retirement_with_upgrade_recovery(
+        error: String,
+        install_directory: &Path,
+    ) -> Result<(), String> {
+        let mut journal = match read_upgrade_journal() {
+            Ok(Some(journal)) => journal,
+            Ok(None) => return Err(error),
+            Err(recovery) => {
+                return Err(format!(
+                    "{error};collector_service_upgrade_rollback_failed:{recovery}"
+                ))
+            }
+        };
+        let stable = install_directory.join(SERVICE_EXECUTABLE_NAME);
+        let recovery = (|| {
+            let manager = open_manager(SC_MANAGER_CONNECT)?;
+            let service = open_service(&manager, SERVICE_ALL_ACCESS)?
+                .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
+            validate_service_contract(&service, &stable)?;
+            let _protected_root = open_protected_etw_lease_root()?;
+            rollback_upgrade(&mut journal, &service, &stable)
+        })();
+        match recovery {
+            Ok(()) => Err(error),
+            Err(recovery) => Err(format!(
+                "{error};collector_service_upgrade_rollback_failed:{recovery}"
+            )),
+        }
+    }
+
     pub(super) fn prepare_upgrade() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
@@ -1939,13 +2008,27 @@ mod native {
         validate_service_contract(service, stable)?;
         let _protected_root = open_protected_etw_lease_root()?;
         let prepared = resume_upgrade_transaction(staged, stable, service)?;
+        let prior_digest = trusted_file_digest(stable, "collector_service_stable_image")?;
+        ensure_service_generation_ready(service, stable, prior_digest)?;
+        retire_shortcuts_with_controller(staged)?;
         ensure_uninstaller_compatibility_alias(staged)?;
-        settle_service_for_replacement(service)?;
-        if prepared {
-            Ok(())
-        } else {
-            prepare_upgrade_transaction(staged, stable)
+        let result = (|| {
+            settle_service_for_replacement(service)?;
+            if prepared {
+                Ok(())
+            } else {
+                prepare_upgrade_transaction(staged, stable)
+            }
+        })();
+        if let Err(error) = result {
+            return match ensure_service_generation_ready(service, stable, prior_digest) {
+                Ok(()) => Err(error),
+                Err(restart) => Err(format!(
+                    "{error};collector_service_upgrade_restart_failed:{restart}"
+                )),
+            };
         }
+        Ok(())
     }
 
     pub(super) fn commit_upgrade_staged() -> Result<(), String> {
@@ -1966,7 +2049,9 @@ mod native {
         let action = upgrade_resume_action(&journal, &stable, staged.path())?;
         match action {
             UpgradeResumeAction::CommitCandidate | UpgradeResumeAction::ReusePreparedSameImage => {
-                commit_upgrade_candidate(&mut journal, &service, &stable)
+                commit_upgrade_candidate(&mut journal, &service, &stable, || {
+                    retire_shortcuts_with_controller(&staged)
+                })
             }
             UpgradeResumeAction::FinalizeVerified => Ok(()),
             UpgradeResumeAction::ReusePrepared | UpgradeResumeAction::RetryRollback => {
@@ -1984,6 +2069,11 @@ mod native {
             let _protected_root = open_protected_etw_lease_root()?;
             start_service_and_wait(&service)?;
             validate_service_contract(&service, image.path())?;
+            if let Err(error) = retire_shortcuts_with_controller(&image) {
+                let install_directory = image.install_directory()?.to_path_buf();
+                drop(image);
+                return fail_shortcut_retirement_with_upgrade_recovery(error, &install_directory);
+            }
             finalize_upgrade_transaction(&image)?;
             retire_legacy_cli(&image)?;
             return retire_staged_upgrade_image(&image);
@@ -1998,7 +2088,8 @@ mod native {
             provision_roots(&mut roots_created)?;
             validate_service_contract(&service, image.path())?;
             start_service_and_wait(&service)?;
-            validate_service_contract(&service, image.path())
+            validate_service_contract(&service, image.path())?;
+            retire_shortcuts_with_controller(&image)
         })();
         if let Err(error) = install_result {
             if let Err(rollback) = rollback_new_install(
@@ -2106,10 +2197,13 @@ mod native {
         }
         match upgrade_resume_action(&journal, stable, staged.path())? {
             UpgradeResumeAction::ReusePrepared | UpgradeResumeAction::ReusePreparedSameImage => {
+                ensure_service_generation_ready(service, stable, journal.old_digest)?;
                 Ok(true)
             }
             UpgradeResumeAction::CommitCandidate => {
-                commit_upgrade_candidate(&mut journal, service, stable)?;
+                commit_upgrade_candidate(&mut journal, service, stable, || {
+                    retire_shortcuts_with_controller(staged)
+                })?;
                 finalize_verified_upgrade(stable, staged.path(), &journal)?;
                 Ok(false)
             }
@@ -2123,6 +2217,14 @@ mod native {
                         return Ok(true);
                     }
                     return Err(error);
+                }
+                if let Err(error) = retire_shortcuts_with_controller(staged) {
+                    return match rollback_upgrade(&mut journal, service, stable) {
+                        Ok(()) => Err(error),
+                        Err(rollback) => Err(format!(
+                            "{error};collector_service_upgrade_rollback_failed:{rollback}"
+                        )),
+                    };
                 }
                 finalize_verified_upgrade(stable, staged.path(), &journal)?;
                 Ok(false)
@@ -2231,6 +2333,7 @@ mod native {
         journal: &mut UpgradeJournalV1,
         service: &OwnedScHandle,
         stable: &Path,
+        final_gate: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         settle_service_for_replacement(service)?;
         journal.phase = UpgradePhase::CandidateInstalled;
@@ -2240,7 +2343,8 @@ mod native {
             validate_service_contract(service, stable)?;
             validate_running_service_image(service, stable, journal.new_digest, process_id)?;
             journal.phase = UpgradePhase::Verified;
-            write_upgrade_journal(journal)
+            write_upgrade_journal(journal)?;
+            final_gate()
         })();
         if let Err(error) = result {
             return match rollback_upgrade(journal, service, stable) {
@@ -2279,16 +2383,7 @@ mod native {
         service: &OwnedScHandle,
         stable: &Path,
     ) -> Result<(), String> {
-        let result = (|| {
-            let status = query_service_status(service)?;
-            let process_id = if status.dwCurrentState == SERVICE_RUNNING {
-                status.dwProcessId
-            } else {
-                start_upgrade_service_generation(service, false)?
-            };
-            validate_service_contract(service, stable)?;
-            validate_running_service_image(service, stable, journal.new_digest, process_id)
-        })();
+        let result = ensure_service_generation_ready(service, stable, journal.new_digest);
         if let Err(error) = result {
             return match rollback_upgrade(journal, service, stable) {
                 Ok(()) => Err(error),
@@ -2298,6 +2393,21 @@ mod native {
             };
         }
         Ok(())
+    }
+
+    fn ensure_service_generation_ready(
+        service: &OwnedScHandle,
+        stable: &Path,
+        expected_digest: [u8; 32],
+    ) -> Result<(), String> {
+        let status = query_service_status(service)?;
+        let process_id = if status.dwCurrentState == SERVICE_RUNNING {
+            status.dwProcessId
+        } else {
+            start_upgrade_service_generation(service, false)?
+        };
+        validate_service_contract(service, stable)?;
+        validate_running_service_image(service, stable, expected_digest, process_id)
     }
 
     fn finalize_upgrade_transaction(image: &VerifiedServiceImage) -> Result<(), String> {
@@ -4513,16 +4623,16 @@ mod native {
             {
                 return Err("collector_service_proof_candidate_action_invalid".to_string());
             }
-            let candidate_failure = match commit_upgrade_candidate(&mut journal, &service, &stable)
-            {
-                Ok(()) => {
-                    rollback_upgrade(&mut journal, &service, &stable)?;
-                    return Err(
-                        "collector_service_proof_candidate_unexpectedly_started".to_string()
-                    );
-                }
-                Err(failure) => failure,
-            };
+            let candidate_failure =
+                match commit_upgrade_candidate(&mut journal, &service, &stable, || Ok(())) {
+                    Ok(()) => {
+                        rollback_upgrade(&mut journal, &service, &stable)?;
+                        return Err(
+                            "collector_service_proof_candidate_unexpectedly_started".to_string()
+                        );
+                    }
+                    Err(failure) => failure,
+                };
             let execution_marker_sha256 =
                 verify_and_retire_rollback_execution_marker(&install_directory, true)?;
 
@@ -6521,6 +6631,25 @@ mod native {
         fn path(&self) -> &Path {
             &self.path
         }
+
+        fn install_directory(&self) -> Result<&Path, String> {
+            self.path
+                .parent()
+                .ok_or_else(|| "collector_service_install_directory_missing".to_string())
+        }
+    }
+
+    fn verify_current_installer_controller() -> Result<VerifiedServiceImage, String> {
+        let current = std::env::current_exe()
+            .map_err(|error| format!("collector_service_executable_path_failed:{error}"))?;
+        let name = current
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "installer_shortcut_controller_name_invalid".to_string())?;
+        match installer_controller_kind(name)? {
+            InstallerControllerKind::Stable => verify_current_binary_path(),
+            InstallerControllerKind::Staged => verify_current_staged_binary_path(),
+        }
     }
 
     fn verify_current_binary_path() -> Result<VerifiedServiceImage, String> {
@@ -7044,6 +7173,38 @@ mod tests {
             native::configured_service_sid().expect("configured service SID"),
             "S-1-5-80-729049718-3519104438-3277487564-1168609684-1739013119"
         );
+    }
+
+    #[test]
+    fn shortcut_controller_authority_accepts_only_stable_recovery_or_semver_staged_images() {
+        assert_eq!(
+            installer_controller_kind(SERVICE_EXECUTABLE_NAME),
+            Ok(InstallerControllerKind::Stable)
+        );
+        for name in [
+            "batcave-collector-service.recovery.exe",
+            "batcave-collector-service.0.2.0.staged.exe",
+            "batcave-collector-service.0.2.0-rc.2+build.7.staged.exe",
+        ] {
+            assert_eq!(
+                installer_controller_kind(name),
+                Ok(InstallerControllerKind::Staged),
+                "{name}"
+            );
+        }
+        for name in [
+            "batcave-monitor.exe",
+            "BATCAVE-COLLECTOR-SERVICE.EXE",
+            "batcave-collector-service.staged.exe",
+            "batcave-collector-service.01.2.3.staged.exe",
+            r"..\batcave-collector-service.recovery.exe",
+        ] {
+            assert_eq!(
+                installer_controller_kind(name),
+                Err("installer_shortcut_controller_name_invalid".to_string()),
+                "{name}"
+            );
+        }
     }
 
     #[test]

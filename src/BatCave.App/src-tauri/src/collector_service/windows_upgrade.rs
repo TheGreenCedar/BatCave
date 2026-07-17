@@ -252,6 +252,20 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_prepared_transaction_resumes_from_the_prior_verified_digest() {
+        let prepared = journal(UpgradePhase::Prepared);
+        assert_eq!(
+            decide_upgrade_resume(
+                &prepared,
+                prepared.old_digest,
+                prepared.new_digest,
+                prepared.old_digest,
+            ),
+            Ok(UpgradeResumeAction::ReusePrepared)
+        );
+    }
+
+    #[test]
     fn journal_rejects_unbound_names_and_zero_identities() {
         for name in [
             "",
