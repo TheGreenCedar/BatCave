@@ -133,12 +133,23 @@ try {
             exit $LASTEXITCODE
         }
 
-        cargo build --manifest-path "$cargoManifest" --bin batcave-collector-service
+        $runtimeBuildArgs = @("build", "--manifest-path", $cargoManifest, "--bin", "batcave-collector-service")
+        if (-not $BenchmarkGate.IsPresent) {
+            $runtimeBuildArgs += @("--bin", "batcave-monitor-cli")
+        }
+        & cargo @runtimeBuildArgs
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
         $collectorServiceExecutable = Join-Path $appRoot "src-tauri/target/debug/batcave-collector-service.exe"
         Assert-CollectorServiceReleaseMetadata -Path $collectorServiceExecutable
+        if (-not $BenchmarkGate.IsPresent) {
+            $benchmarkExecutable = Join-Path $appRoot "src-tauri/target/debug/batcave-monitor-cli.exe"
+            if (-not (Test-Path -LiteralPath $benchmarkExecutable -PathType Leaf)) {
+                throw "Prebuilt benchmark executable not found: $benchmarkExecutable"
+            }
+            $benchmarkBinarySha256 = (Get-FileHash -LiteralPath $benchmarkExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
 
         if ($BenchmarkGate.IsPresent) {
             Run-Step "Owned-engine live-command p95 regression gate" {
@@ -177,7 +188,7 @@ try {
                 Push-Location $repoRoot
                 try {
                     $benchmarkScript = Join-Path $repoRoot "scripts/run-benchmark.ps1"
-                    & $benchmarkScript -BenchmarkHost core -Platform $BenchmarkPlatform -WarmupTicks 0 -Ticks 2 -SleepMs 1000 -Repeats 1 -Strict -MaxP95Ms 10000 -DevBuild
+                    & $benchmarkScript -BenchmarkHost core -Platform $BenchmarkPlatform -WarmupTicks 0 -Ticks 2 -SleepMs 1000 -Repeats 1 -Strict -MaxP95Ms 10000 -DevBuild -PrebuiltBinarySha256 $benchmarkBinarySha256
                 }
                 finally {
                     Pop-Location
