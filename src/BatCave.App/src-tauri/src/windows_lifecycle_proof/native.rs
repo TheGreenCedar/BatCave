@@ -43,6 +43,11 @@ use windows_sys::Win32::Security::{
     OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_ELEVATION,
     TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
 };
+#[cfg(test)]
+use windows_sys::Win32::Security::{
+    DuplicateTokenEx, RevertToSelf, SecurityImpersonation, SetTokenInformation, TokenImpersonation,
+    TokenOwner, TOKEN_ADJUST_DEFAULT, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_OWNER,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
     SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -85,6 +90,8 @@ use windows_sys::Win32::System::Services::{
 use windows_sys::Win32::System::SystemInformation::{
     GetSystemDirectoryW, GetSystemWindowsDirectoryW,
 };
+#[cfg(test)]
+use windows_sys::Win32::System::Threading::SetThreadToken;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetCurrentProcess, GetCurrentThread, GetExitCodeProcess, GetProcessId,
     GetProcessTimes, OpenProcess, OpenProcessToken, OpenThreadToken, QueryFullProcessImageNameW,
@@ -3680,7 +3687,87 @@ pub(crate) fn cleanup_parent_current_user_legacy_residue(
 }
 
 #[cfg(test)]
-fn isolated_parent_test_context() -> Result<(ParentCurrentUserAuthority, PathBuf), String> {
+struct IsolatedParentTestContext {
+    authority: ParentCurrentUserAuthority,
+    local_app_data: PathBuf,
+    _owner_token: TestParentOwnerTokenGuard,
+}
+
+#[cfg(test)]
+struct TestParentOwnerTokenGuard {
+    _token: OwnedHandle,
+}
+
+#[cfg(test)]
+impl TestParentOwnerTokenGuard {
+    fn impersonate() -> Result<Self, String> {
+        let mut process_token = null_mut();
+        if unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_QUERY | TOKEN_DUPLICATE,
+                &mut process_token,
+            )
+        } == 0
+        {
+            return Err("lifecycle_test_parent_token_open_failed".to_string());
+        }
+        let process_token = OwnedHandle(process_token);
+        let user = token_user_information(process_token.raw())?;
+        let token_user = unsafe { &*(user.as_ptr().cast::<TOKEN_USER>()) };
+        if token_user.User.Sid.is_null() || unsafe { IsValidSid(token_user.User.Sid) } == 0 {
+            return Err("lifecycle_test_parent_token_sid_invalid".to_string());
+        }
+        let mut owner_token = null_mut();
+        if unsafe {
+            DuplicateTokenEx(
+                process_token.raw(),
+                TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_IMPERSONATE,
+                null(),
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut owner_token,
+            )
+        } == 0
+            || owner_token.is_null()
+        {
+            return Err("lifecycle_test_parent_token_duplicate_failed".to_string());
+        }
+        let owner_token = OwnedHandle(owner_token);
+        let owner = TOKEN_OWNER {
+            Owner: token_user.User.Sid,
+        };
+        if unsafe {
+            SetTokenInformation(
+                owner_token.raw(),
+                TokenOwner,
+                (&raw const owner).cast(),
+                size_of::<TOKEN_OWNER>() as u32,
+            )
+        } == 0
+        {
+            return Err("lifecycle_test_parent_token_owner_failed".to_string());
+        }
+        if unsafe { SetThreadToken(null(), owner_token.raw()) } == 0 {
+            return Err("lifecycle_test_parent_token_impersonation_failed".to_string());
+        }
+        Ok(Self {
+            _token: owner_token,
+        })
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestParentOwnerTokenGuard {
+    fn drop(&mut self) {
+        if unsafe { RevertToSelf() } == 0 {
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(test)]
+fn isolated_parent_test_context() -> Result<IsolatedParentTestContext, String> {
     require_no_thread_token()?;
     let (token_handle, token) = current_primary_token()?;
     if token.session_id == 0 || token.sid.is_empty() || token.sid_string.is_empty() {
@@ -3698,13 +3785,18 @@ fn isolated_parent_test_context() -> Result<(ParentCurrentUserAuthority, PathBuf
         local_app_data: local_app_data.snapshot(),
         ..tests::parent_current_user_authority()
     };
-    Ok((authority, local_app_data.path))
+    let owner_token = TestParentOwnerTokenGuard::impersonate()?;
+    Ok(IsolatedParentTestContext {
+        authority,
+        local_app_data: local_app_data.path,
+        _owner_token: owner_token,
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn exercise_isolated_parent_current_user_residue_cleanup() -> Result<(), String> {
-    let (authority, local_app_data) = isolated_parent_test_context()?;
-    let temporary = local_app_data.join(format!(
+    let context = isolated_parent_test_context()?;
+    let temporary = context.local_app_data.join(format!(
         "BatCave-parent-terminal-{}-{}",
         std::process::id(),
         random_hex(8)?
@@ -3713,15 +3805,21 @@ pub(crate) fn exercise_isolated_parent_current_user_residue_cleanup() -> Result<
         .map_err(|_| "lifecycle_test_parent_terminal_root_create_failed".to_string())?;
     let adapter = IsolatedParentRunKeyAdapter::create()?;
     let key = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
-    let prior_run = capture_parent_run_key_once(&key, &authority, &adapter)?;
+    let prior_run = capture_parent_run_key_once(&key, &context.authority, &adapter)?;
     drop(key);
-    let mut transaction = tests::parent_seed_test_transaction(&temporary, &authority, false);
+    let mut transaction =
+        tests::parent_seed_test_transaction(&temporary, &context.authority, false);
     transaction.prior.hkcu_run = prior_run.clone();
     let mut completed_mutations = 0;
-    seed_parent_helper_tree(&mut transaction, &authority, None, &mut completed_mutations)?;
+    seed_parent_helper_tree(
+        &mut transaction,
+        &context.authority,
+        None,
+        &mut completed_mutations,
+    )?;
     seed_parent_run_value(
         &mut transaction,
-        &authority,
+        &context.authority,
         &adapter,
         None,
         &mut completed_mutations,
@@ -3738,14 +3836,14 @@ pub(crate) fn exercise_isolated_parent_current_user_residue_cleanup() -> Result<
         return Err("lifecycle_test_parent_terminal_filesystem_seed_missing".to_string());
     }
     let key = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
-    let seeded_run = capture_parent_run_key_once(&key, &authority, &adapter)?;
+    let seeded_run = capture_parent_run_key_once(&key, &context.authority, &adapter)?;
     drop(key);
     if !is_exact_parent_run_value(&seeded_run.batcave_monitor) {
         return Err("lifecycle_test_parent_terminal_run_seed_missing".to_string());
     }
 
-    cleanup_parent_run_value(&transaction, &authority, &adapter)?;
-    let blocked = cleanup_parent_seed_filesystem(&transaction, &authority);
+    cleanup_parent_run_value(&transaction, &context.authority, &adapter)?;
+    let blocked = cleanup_parent_seed_filesystem(&transaction, &context.authority);
     if !blocked.is_empty() {
         return Err(format!(
             "lifecycle_test_parent_terminal_filesystem_cleanup_blocked:{}",
@@ -3753,7 +3851,7 @@ pub(crate) fn exercise_isolated_parent_current_user_residue_cleanup() -> Result<
         ));
     }
     let key = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
-    let restored_run = capture_parent_run_key_once(&key, &authority, &adapter)?;
+    let restored_run = capture_parent_run_key_once(&key, &context.authority, &adapter)?;
     if !parent_run_matches_cleanup_baseline(&restored_run, &prior_run)
         || transaction.helper_root_path.exists()
     {
@@ -6547,9 +6645,8 @@ mod tests {
 
     #[test]
     fn helper_observer_rejects_links_escape_overflow_and_releases_capture_handles() {
-        let (authority, local_app_data) =
-            isolated_parent_test_context().expect("isolated parent test context");
-        let temporary = local_app_data.join(format!(
+        let context = isolated_parent_test_context().expect("isolated parent test context");
+        let temporary = context.local_app_data.join(format!(
             "BatCave-parent-helper-{}-{}",
             std::process::id(),
             random_hex(8).expect("nonce")
@@ -6565,25 +6662,25 @@ mod tests {
             "test_parent_helper_root",
         )
         .expect("open helper root");
-        let first = capture_parent_helper_manifest_once(&helper_root, &authority)
+        let first = capture_parent_helper_manifest_once(&helper_root, &context.authority)
             .expect("first helper capture");
         assert_eq!(first.snapshot.known_files.len(), 1);
 
         fs::write(&known_path, b"changed").expect("change fixture");
-        let second = capture_parent_helper_manifest_once(&helper_root, &authority)
+        let second = capture_parent_helper_manifest_once(&helper_root, &context.authority)
             .expect("second helper capture");
         assert_ne!(first, second, "content churn must alter the manifest");
 
         let unexpected_path = helper_root_path.join("unexpected.bin");
         fs::write(&unexpected_path, b"unexpected").expect("unexpected fixture");
-        let unexpected = capture_parent_helper_manifest_once(&helper_root, &authority)
+        let unexpected = capture_parent_helper_manifest_once(&helper_root, &context.authority)
             .expect("bounded unexpected capture");
         assert_eq!(unexpected.snapshot.unexpected_entry_count, 1);
         fs::remove_file(&unexpected_path).expect("unexpected cleanup");
 
         fs::write(&known_path, vec![0_u8; HELPER_MAX_FILE_BYTES as usize + 1])
             .expect("overflow fixture");
-        assert!(capture_parent_helper_manifest_once(&helper_root, &authority).is_err());
+        assert!(capture_parent_helper_manifest_once(&helper_root, &context.authority).is_err());
         fs::write(&known_path, helper_fixture_bytes(known_leaf)).expect("restore known fixture");
 
         let outside = temporary.join("outside.bin");
@@ -6592,19 +6689,19 @@ mod tests {
             &outside,
             &helper_root,
             "outside.bin",
-            &authority,
+            &context.authority,
             HELPER_MAX_FILE_BYTES,
         )
         .is_err());
 
         let hardlink = helper_root_path.join("accepted.signal");
         fs::hard_link(&known_path, &hardlink).expect("hardlink fixture");
-        assert!(capture_parent_helper_manifest_once(&helper_root, &authority).is_err());
+        assert!(capture_parent_helper_manifest_once(&helper_root, &context.authority).is_err());
         fs::remove_file(&hardlink).expect("hardlink cleanup");
 
         let reparse = helper_root_path.join("stop.signal");
         if std::os::windows::fs::symlink_file(&outside, &reparse).is_ok() {
-            assert!(capture_parent_helper_manifest_once(&helper_root, &authority).is_err());
+            assert!(capture_parent_helper_manifest_once(&helper_root, &context.authority).is_err());
             fs::remove_file(&reparse).expect("reparse cleanup");
         }
 
@@ -6619,32 +6716,32 @@ mod tests {
 
     #[test]
     fn parent_seed_partial_failures_restore_exact_filesystem_and_isolated_run_key() {
-        let (authority, local_app_data) =
-            isolated_parent_test_context().expect("isolated parent test context");
+        let context = isolated_parent_test_context().expect("isolated parent test context");
         for failure_after in 1..=12 {
-            let temporary = parent_seed_test_root(&local_app_data);
+            let temporary = parent_seed_test_root(&context.local_app_data);
             fs::create_dir(&temporary).expect("test root");
             let adapter = IsolatedParentRunKeyAdapter::create().expect("isolated Run key");
             let key = adapter
                 .open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)
                 .expect("open isolated Run key");
-            let prior_run = capture_parent_run_key_once(&key, &authority, &adapter)
+            let prior_run = capture_parent_run_key_once(&key, &context.authority, &adapter)
                 .expect("capture isolated Run baseline");
             drop(key);
-            let mut transaction = parent_seed_test_transaction(&temporary, &authority, false);
+            let mut transaction =
+                parent_seed_test_transaction(&temporary, &context.authority, false);
             transaction.prior.hkcu_run = prior_run.clone();
             let mut completed = 0;
             assert_eq!(
                 (|| {
                     seed_parent_helper_tree(
                         &mut transaction,
-                        &authority,
+                        &context.authority,
                         Some(failure_after),
                         &mut completed,
                     )?;
                     seed_parent_run_value(
                         &mut transaction,
-                        &authority,
+                        &context.authority,
                         &adapter,
                         Some(failure_after),
                         &mut completed,
@@ -6653,14 +6750,14 @@ mod tests {
                 Err("lifecycle_parent_user_seed_injected_failure".to_string())
             );
             assert_eq!(transaction.run_value_created, failure_after == 12);
-            cleanup_parent_run_value(&transaction, &authority, &adapter)
+            cleanup_parent_run_value(&transaction, &context.authority, &adapter)
                 .expect("restore isolated Run value");
-            assert!(cleanup_parent_seed_filesystem(&transaction, &authority).is_empty());
+            assert!(cleanup_parent_seed_filesystem(&transaction, &context.authority).is_empty());
             assert!(!transaction.helper_root_path.exists());
             let key = adapter
                 .open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)
                 .expect("reopen isolated Run key");
-            let restored = capture_parent_run_key_once(&key, &authority, &adapter)
+            let restored = capture_parent_run_key_once(&key, &context.authority, &adapter)
                 .expect("capture restored Run key");
             assert!(parent_run_matches_cleanup_baseline(&restored, &prior_run));
             fs::remove_dir(&temporary).expect("test root cleanup");
@@ -6669,19 +6766,23 @@ mod tests {
 
     #[test]
     fn parent_seed_cleanup_supports_success_preexisting_directories_and_rerun() {
-        let (authority, local_app_data) =
-            isolated_parent_test_context().expect("isolated parent test context");
+        let context = isolated_parent_test_context().expect("isolated parent test context");
         for preexisting_directories in [false, true] {
-            let temporary = parent_seed_test_root(&local_app_data);
+            let temporary = parent_seed_test_root(&context.local_app_data);
             fs::create_dir(&temporary).expect("test root");
             for _ in 0..2 {
-                let mut transaction =
-                    parent_seed_test_transaction(&temporary, &authority, preexisting_directories);
+                let mut transaction = parent_seed_test_transaction(
+                    &temporary,
+                    &context.authority,
+                    preexisting_directories,
+                );
                 let mut completed = 0;
-                seed_parent_helper_tree(&mut transaction, &authority, None, &mut completed)
+                seed_parent_helper_tree(&mut transaction, &context.authority, None, &mut completed)
                     .expect("seed helper tree");
                 assert_eq!(completed, if preexisting_directories { 9 } else { 11 });
-                assert!(cleanup_parent_seed_filesystem(&transaction, &authority).is_empty());
+                assert!(
+                    cleanup_parent_seed_filesystem(&transaction, &context.authority).is_empty()
+                );
                 if preexisting_directories {
                     assert!(transaction.helper_root_path.is_dir());
                     assert!(transaction.run_root_path.is_dir());
@@ -6705,19 +6806,18 @@ mod tests {
 
     #[test]
     fn parent_seed_cleanup_preserves_changed_and_unexpected_data() {
-        let (authority, local_app_data) =
-            isolated_parent_test_context().expect("isolated parent test context");
-        let temporary = parent_seed_test_root(&local_app_data);
+        let context = isolated_parent_test_context().expect("isolated parent test context");
+        let temporary = parent_seed_test_root(&context.local_app_data);
         fs::create_dir(&temporary).expect("test root");
-        let mut transaction = parent_seed_test_transaction(&temporary, &authority, false);
+        let mut transaction = parent_seed_test_transaction(&temporary, &context.authority, false);
         let mut completed = 0;
-        seed_parent_helper_tree(&mut transaction, &authority, None, &mut completed)
+        seed_parent_helper_tree(&mut transaction, &context.authority, None, &mut completed)
             .expect("seed helper tree");
         let sentinel = transaction.helper_root_path.join(HELPER_SENTINEL_NAME);
         fs::write(&sentinel, b"hostile changed sentinel").expect("change sentinel");
         let unexpected = transaction.helper_root_path.join("unexpected.bin");
         fs::write(&unexpected, b"preserve me").expect("unexpected file");
-        let blocked = cleanup_parent_seed_filesystem(&transaction, &authority);
+        let blocked = cleanup_parent_seed_filesystem(&transaction, &context.authority);
         assert!(blocked
             .iter()
             .any(|reason| reason.contains("cleanup_file_changed")));
