@@ -18,12 +18,18 @@ use crate::windows_lifecycle_proof_contract::{
     ProofPlan, RestorationOutcome, SequenceGate, WorkerAbort, WorkerCheckpoint, WorkerDisposition,
     WorkerFailure, WorkerFailureKind, WorkerMessage, WorkerResult,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
 const CONTROLLER_READY: bool = false;
 const MUTATION_FAILURE_SCHEMA: &str = "batcave.windows-lifecycle.mutation-failure.v1";
+const RESTORATION_SCHEMA: &str = "batcave.windows-lifecycle.restoration.v1";
+const RESTORATION_PENDING: &str = "lifecycle_restoration_pending_stage_validation";
+pub(super) const STAGE_RESTORATION_TARGET_INVALID: &str =
+    "lifecycle_stage_restoration_target_invalid";
+pub(super) const STAGE_RESTORATION_EVIDENCE_FAILED: &str =
+    "lifecycle_stage_restoration_evidence_failed";
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const UNINSTALLER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const SERVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
@@ -317,6 +323,9 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
     if let Err(failure) = require_controller_ready() {
         return failed(None, None, None, controller_failure(failure), true);
     }
+    let plan = context.plan;
+    let evidence = context.evidence;
+    let controller_bindings = context.controller_bindings;
     let evidence_identity = context.evidence.identity();
     let mut last_authenticated_checkpoint = None;
     let result = execute_worker_inner(context, &mut last_authenticated_checkpoint);
@@ -326,23 +335,27 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
             last_authenticated_checkpoint,
             private_evidence,
         ),
-        Err(failure) => failed(
-            failure.completed_stage,
-            last_authenticated_checkpoint,
-            failure.abort_reason.map(|reason| WorkerAbort {
-                reason,
+        Err(mut failure) => {
+            complete_failure_restoration(&mut failure, plan, evidence, controller_bindings);
+            failed(
+                failure.completed_stage,
                 last_authenticated_checkpoint,
-                evidence_root_identity: evidence_identity,
-            }),
-            failure.failure,
-            failure.process_tree_settled,
-        ),
+                failure.abort_reason.map(|reason| WorkerAbort {
+                    reason,
+                    last_authenticated_checkpoint,
+                    evidence_root_identity: evidence_identity,
+                }),
+                failure.failure,
+                failure.process_tree_settled,
+            )
+        }
     }
 }
 
 pub(super) fn abort_after_result(
     original: &WorkerResult,
     reason: AbortReason,
+    plan: &ProofPlan,
     evidence: &ProtectedEvidenceRoot,
     controller_bindings: &[PeerBinding],
 ) -> WorkerResult {
@@ -353,13 +366,14 @@ pub(super) fn abort_after_result(
         .completed_stage
         .unwrap_or(LifecycleStage::InitialState);
     let last_authenticated_checkpoint = original.last_authenticated_checkpoint;
-    let failure = parent_abort_execution_failure(
+    let mut failure = parent_abort_execution_failure(
         stage,
         reason,
         last_authenticated_checkpoint,
         evidence,
         controller_bindings,
     );
+    complete_failure_restoration(&mut failure, plan, evidence, controller_bindings);
     failed(
         failure.completed_stage,
         last_authenticated_checkpoint,
@@ -1971,12 +1985,7 @@ fn parent_abort_execution_failure(
             reason: super::parent_abort_reason(reason).to_string(),
             evidence: failure_evidence,
             evidence_error,
-            restoration: Box::new(parent_abort_restoration(
-                completed_stage,
-                reason,
-                evidence,
-                controller_bindings,
-            )),
+            restoration: Box::new(restoration_pending()),
         },
         process_tree_settled: true,
         abort_reason: Some(reason),
@@ -2021,44 +2030,6 @@ fn parent_abort_execution_failure_for_desktop(
     }
 }
 
-fn parent_abort_restoration(
-    completed_stage: LifecycleStage,
-    reason: AbortReason,
-    evidence: &ProtectedEvidenceRoot,
-    controller_bindings: &[PeerBinding],
-) -> RestorationOutcome {
-    if completed_stage == LifecycleStage::InitialState {
-        return RestorationOutcome::NotRequired;
-    }
-    let restoration_reason = "lifecycle_parent_abort_restoration_not_reviewed".to_string();
-    let packet = ParentAbortRestorationPacket {
-        schema_version: MUTATION_FAILURE_SCHEMA,
-        reason,
-        completed_stage,
-        restoration_reason: &restoration_reason,
-        machine_after_attempt: capture_elevated_machine_snapshot(controller_bindings),
-    };
-    let Some(restoration_leaf) = super::restoration_leaf_for_stage(completed_stage) else {
-        return RestorationOutcome::Failed {
-            reason: restoration_reason,
-            evidence: None,
-            evidence_error: Some("lifecycle_parent_abort_restoration_leaf_missing".to_string()),
-        };
-    };
-    match evidence.write_json_new(restoration_leaf, &packet) {
-        Ok(receipt) => RestorationOutcome::Failed {
-            reason: restoration_reason,
-            evidence: Some(receipt),
-            evidence_error: None,
-        },
-        Err(error) => RestorationOutcome::Failed {
-            reason: restoration_reason,
-            evidence: None,
-            evidence_error: Some(error),
-        },
-    }
-}
-
 #[derive(Serialize)]
 struct ParentAbortFailurePacket {
     schema_version: &'static str,
@@ -2067,15 +2038,6 @@ struct ParentAbortFailurePacket {
     last_authenticated_checkpoint: Option<WorkerCheckpoint>,
     evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity,
     process_tree_settled: bool,
-    machine_after_attempt: ElevatedMachineSnapshot,
-}
-
-#[derive(Serialize)]
-struct ParentAbortRestorationPacket<'a> {
-    schema_version: &'static str,
-    reason: AbortReason,
-    completed_stage: LifecycleStage,
-    restoration_reason: &'a str,
     machine_after_attempt: ElevatedMachineSnapshot,
 }
 
@@ -2104,9 +2066,30 @@ struct ServiceStateFailurePacket<'a> {
 struct StageRestorationPacket<'a> {
     schema_version: &'static str,
     stage: LifecycleStage,
+    target_stage: LifecycleStage,
+    method: RestorationMethod,
     restored: bool,
     reason: Option<&'a str>,
     machine_after_attempt: &'a ElevatedMachineSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RestorationMethod {
+    ObservedTargetState,
+    ProvisionerTransaction,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedStageRestorationPacket {
+    schema_version: String,
+    stage: LifecycleStage,
+    target_stage: LifecycleStage,
+    method: RestorationMethod,
+    restored: bool,
+    reason: Option<String>,
+    machine_after_attempt: ElevatedMachineSnapshot,
 }
 
 #[derive(Serialize)]
@@ -2223,7 +2206,7 @@ fn execute_mutation(
                 reason,
                 evidence: Some(Box::new(receipt)),
                 evidence_error: None,
-                restoration: Box::new(restoration_not_reviewed()),
+                restoration: Box::new(restoration_pending()),
             },
             true,
         )),
@@ -2234,7 +2217,7 @@ fn execute_mutation(
                 reason,
                 evidence: None,
                 evidence_error: Some(error),
-                restoration: Box::new(restoration_not_reviewed()),
+                restoration: Box::new(restoration_pending()),
             },
             true,
         )),
@@ -2340,7 +2323,7 @@ fn write_service_crash_failure(
         evidence: receipt.map(Box::new),
         evidence_error,
         restoration: Box::new(if service_settled {
-            restoration_not_reviewed()
+            restoration_pending()
         } else {
             RestorationOutcome::BlockedUnsettled
         }),
@@ -2382,7 +2365,7 @@ fn write_upgrade_rollback_failure(
         evidence: receipt.map(Box::new),
         evidence_error,
         restoration: Box::new(if service_settled {
-            restoration_not_reviewed()
+            restoration_pending()
         } else {
             RestorationOutcome::BlockedUnsettled
         }),
@@ -2422,14 +2405,11 @@ fn finish_fallback_transaction(
         };
     }
     let restoration_error = match restoration {
-        ServiceStateRestorationOutcome::Restored => require_elevated_installed_candidate(
-            &restored,
-            &plan.final_candidate,
-            true,
-            "fallback_restoration",
-        )
-        .err()
-        .map(|reason| (reason, true)),
+        ServiceStateRestorationOutcome::Restored => {
+            validate_restoration_target(LifecycleStage::FinalCrashRecovery, &restored, plan)
+                .err()
+                .map(|reason| (reason, true))
+        }
         ServiceStateRestorationOutcome::Failed(failure) => {
             Some((failure.reason, failure.service_settled))
         }
@@ -2475,8 +2455,10 @@ fn record_fallback_restoration(
     let name = "final-fallback-states-restoration.private.json";
     failure.failure.attempted_stage = Some(stage);
     let packet = StageRestorationPacket {
-        schema_version: MUTATION_FAILURE_SCHEMA,
+        schema_version: RESTORATION_SCHEMA,
         stage,
+        target_stage: LifecycleStage::FinalCrashRecovery,
+        method: RestorationMethod::ProvisionerTransaction,
         restored: reason.is_none(),
         reason,
         machine_after_attempt: machine,
@@ -2557,13 +2539,8 @@ fn service_state_execution_failure(
         abort_reason: None,
     };
     if service_settled {
-        let restoration_error = require_elevated_installed_candidate(
-            &after,
-            &plan.final_candidate,
-            true,
-            "fallback_failure_restoration",
-        )
-        .err();
+        let restoration_error =
+            validate_restoration_target(LifecycleStage::FinalCrashRecovery, &after, plan).err();
         record_fallback_restoration(&mut failure, restoration_error.as_deref(), &after, evidence);
     }
     failure
@@ -2577,6 +2554,278 @@ struct UpgradeRollbackFailurePacket<'a> {
     service_settled: bool,
     machine_before_mutation: &'a ElevatedMachineSnapshot,
     machine_after_attempt: ElevatedMachineSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestorationTarget {
+    InitialAllowlisted,
+    ProductAbsent,
+    BaselineRunningClean,
+    BaselineRunningWithLegacyCli,
+    FinalRunningClean,
+}
+
+fn restoration_target_for_stage(stage: LifecycleStage) -> RestorationTarget {
+    match stage {
+        LifecycleStage::InitialState => RestorationTarget::InitialAllowlisted,
+        LifecycleStage::FinalRepair
+        | LifecycleStage::FinalUpgrade
+        | LifecycleStage::FinalRestart
+        | LifecycleStage::FinalCrashRecovery
+        | LifecycleStage::FinalFallbackStates => RestorationTarget::FinalRunningClean,
+        LifecycleStage::InitialUninstall | LifecycleStage::FinalUninstall => {
+            RestorationTarget::ProductAbsent
+        }
+        LifecycleStage::BaselineInstall
+        | LifecycleStage::BaselineRestart
+        | LifecycleStage::BaselineCrashRecovery
+        | LifecycleStage::BaselineRollbackRecovery => RestorationTarget::BaselineRunningClean,
+        LifecycleStage::LegacyResidueSeeded => RestorationTarget::BaselineRunningWithLegacyCli,
+    }
+}
+
+fn complete_failure_restoration(
+    failure: &mut WorkerExecutionFailure,
+    plan: &ProofPlan,
+    evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
+) {
+    if !failure.process_tree_settled
+        || failure.failure.kind == WorkerFailureKind::ProcessSettlement
+        || matches!(
+            failure.failure.restoration.as_ref(),
+            RestorationOutcome::BlockedUnsettled
+                | RestorationOutcome::Restored { .. }
+                | RestorationOutcome::Failed { .. }
+        )
+        || matches!(
+            failure.failure.restoration.as_ref(),
+            RestorationOutcome::BlockedUntrusted { reason } if reason != RESTORATION_PENDING
+        )
+    {
+        return;
+    }
+
+    let Some(target_stage) = failure.completed_stage else {
+        *failure.failure.restoration = if failure.failure.attempted_stage.is_none() {
+            RestorationOutcome::NotRequired
+        } else {
+            RestorationOutcome::BlockedUntrusted {
+                reason: "lifecycle_stage_restoration_target_missing".to_string(),
+            }
+        };
+        return;
+    };
+    let restoration_required = failure.failure.kind == WorkerFailureKind::Mutation
+        || failure.failure.attempted_stage.is_some()
+        || target_stage != LifecycleStage::InitialState;
+    if !restoration_required {
+        *failure.failure.restoration = RestorationOutcome::NotRequired;
+        return;
+    }
+
+    let evidence_stage = failure.failure.attempted_stage.unwrap_or(target_stage);
+    let machine_after_attempt = capture_elevated_machine_snapshot(controller_bindings);
+    *failure.failure.restoration = record_observed_stage_restoration(
+        evidence_stage,
+        target_stage,
+        &machine_after_attempt,
+        plan,
+        evidence,
+    );
+}
+
+fn record_observed_stage_restoration(
+    evidence_stage: LifecycleStage,
+    target_stage: LifecycleStage,
+    machine_after_attempt: &ElevatedMachineSnapshot,
+    plan: &ProofPlan,
+    evidence: &ProtectedEvidenceRoot,
+) -> RestorationOutcome {
+    let validation_error =
+        validate_restoration_target(target_stage, machine_after_attempt, plan).err();
+    let packet = StageRestorationPacket {
+        schema_version: RESTORATION_SCHEMA,
+        stage: evidence_stage,
+        target_stage,
+        method: RestorationMethod::ObservedTargetState,
+        restored: validation_error.is_none(),
+        reason: validation_error.as_deref(),
+        machine_after_attempt,
+    };
+    let Some(restoration_leaf) = super::restoration_leaf_for_stage(evidence_stage) else {
+        return RestorationOutcome::Failed {
+            reason: STAGE_RESTORATION_EVIDENCE_FAILED.to_string(),
+            evidence: None,
+            evidence_error: Some("lifecycle_stage_restoration_leaf_missing".to_string()),
+        };
+    };
+    match evidence.write_json_new(restoration_leaf, &packet) {
+        Ok(receipt) if validation_error.is_none() => {
+            RestorationOutcome::Restored { evidence: receipt }
+        }
+        Ok(receipt) => RestorationOutcome::Failed {
+            reason: STAGE_RESTORATION_TARGET_INVALID.to_string(),
+            evidence: Some(receipt),
+            evidence_error: None,
+        },
+        Err(error) => RestorationOutcome::Failed {
+            reason: if validation_error.is_some() {
+                STAGE_RESTORATION_TARGET_INVALID
+            } else {
+                STAGE_RESTORATION_EVIDENCE_FAILED
+            }
+            .to_string(),
+            evidence: None,
+            evidence_error: Some(error),
+        },
+    }
+}
+
+pub(super) fn validate_restoration_target(
+    stage: LifecycleStage,
+    snapshot: &ElevatedMachineSnapshot,
+    plan: &ProofPlan,
+) -> Result<(), String> {
+    match restoration_target_for_stage(stage) {
+        RestorationTarget::InitialAllowlisted => {
+            require_allowlisted_elevated_preflight(snapshot, plan)?;
+            super::evidence::validate_restoration_machine_authority(
+                snapshot,
+                super::evidence::RestorationAuthorityExpectation::AllowlistedStopped,
+            )
+        }
+        RestorationTarget::ProductAbsent => {
+            require_elevated_total_product_absence(snapshot, "stage_restoration_absence")?;
+            super::evidence::validate_restoration_machine_authority(
+                snapshot,
+                super::evidence::RestorationAuthorityExpectation::ProductAbsent,
+            )
+        }
+        RestorationTarget::BaselineRunningClean => {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.baseline,
+                false,
+                "stage_restoration_baseline",
+            )?;
+            require_legacy_cli_absent(snapshot, "stage_restoration_baseline")?;
+            super::evidence::validate_restoration_machine_authority(
+                snapshot,
+                super::evidence::RestorationAuthorityExpectation::BaselineRunning,
+            )
+        }
+        RestorationTarget::BaselineRunningWithLegacyCli => {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.baseline,
+                false,
+                "stage_restoration_legacy_seeded",
+            )?;
+            require_legacy_cli_hash(
+                snapshot,
+                &plan.allowlisted_start.legacy_cli_sha256,
+                "stage_restoration_legacy_seeded",
+            )?;
+            super::evidence::validate_restoration_machine_authority(
+                snapshot,
+                super::evidence::RestorationAuthorityExpectation::BaselineRunning,
+            )
+        }
+        RestorationTarget::FinalRunningClean => {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.final_candidate,
+                true,
+                "stage_restoration_final",
+            )?;
+            super::evidence::validate_restoration_machine_authority(
+                snapshot,
+                super::evidence::RestorationAuthorityExpectation::FinalRunning,
+            )
+        }
+    }
+}
+
+pub(super) fn validate_stage_restoration_packet(
+    bytes: &[u8],
+    expected_stage: LifecycleStage,
+    expected_target_stage: LifecycleStage,
+    provisioner_transaction: bool,
+    restoration: &RestorationOutcome,
+    plan: &ProofPlan,
+) -> Result<(), String> {
+    let packet: OwnedStageRestorationPacket = serde_json::from_slice(bytes)
+        .map_err(|_| "lifecycle_stage_restoration_packet_invalid".to_string())?;
+    let expected_method = if provisioner_transaction {
+        RestorationMethod::ProvisionerTransaction
+    } else {
+        RestorationMethod::ObservedTargetState
+    };
+    if packet.schema_version != RESTORATION_SCHEMA
+        || packet.stage != expected_stage
+        || packet.target_stage != expected_target_stage
+        || packet.method != expected_method
+    {
+        return Err("lifecycle_stage_restoration_packet_binding_invalid".to_string());
+    }
+
+    let target_validation =
+        validate_restoration_target(packet.target_stage, &packet.machine_after_attempt, plan);
+    match restoration {
+        RestorationOutcome::Restored { .. }
+            if packet.restored && packet.reason.is_none() && target_validation.is_ok() =>
+        {
+            Ok(())
+        }
+        RestorationOutcome::Failed {
+            reason,
+            evidence: Some(_),
+            evidence_error: None,
+        } if !packet.restored
+            && packet
+                .reason
+                .as_deref()
+                .is_some_and(|value| !value.is_empty() && value.len() <= 192) =>
+        {
+            match expected_method {
+                RestorationMethod::ObservedTargetState => {
+                    let target_error = target_validation.err().ok_or_else(|| {
+                        "lifecycle_stage_restoration_packet_claim_invalid".to_string()
+                    })?;
+                    if reason == STAGE_RESTORATION_TARGET_INVALID
+                        && packet.reason.as_deref() == Some(target_error.as_str())
+                    {
+                        Ok(())
+                    } else {
+                        Err("lifecycle_stage_restoration_packet_claim_invalid".to_string())
+                    }
+                }
+                RestorationMethod::ProvisionerTransaction => {
+                    if reason == "lifecycle_fallback_restoration_failed" {
+                        Ok(())
+                    } else {
+                        Err("lifecycle_stage_restoration_packet_claim_invalid".to_string())
+                    }
+                }
+            }
+        }
+        _ => Err("lifecycle_stage_restoration_packet_claim_invalid".to_string()),
+    }
+}
+
+fn require_legacy_cli_absent(
+    snapshot: &ElevatedMachineSnapshot,
+    label: &str,
+) -> Result<(), String> {
+    if matches!(
+        snapshot.machine.legacy_cli,
+        crate::windows_lifecycle_proof_contract::Observation::Absent
+    ) {
+        Ok(())
+    } else {
+        Err(format!("lifecycle_{label}_legacy_cli_not_absent"))
+    }
 }
 
 fn controller_failure(reason: String) -> WorkerFailure {
@@ -2597,13 +2846,13 @@ fn evidence_write_failure(reason: &str, evidence_error: String) -> WorkerFailure
         reason: reason.to_string(),
         evidence: None,
         evidence_error: Some(evidence_error),
-        restoration: Box::new(restoration_not_reviewed()),
+        restoration: Box::new(restoration_pending()),
     }
 }
 
-fn restoration_not_reviewed() -> RestorationOutcome {
+fn restoration_pending() -> RestorationOutcome {
     RestorationOutcome::BlockedUntrusted {
-        reason: "lifecycle_restoration_not_reviewed".to_string(),
+        reason: RESTORATION_PENDING.to_string(),
     }
 }
 
@@ -2627,32 +2876,9 @@ fn failed(
     completed_stage: Option<LifecycleStage>,
     last_authenticated_checkpoint: Option<WorkerCheckpoint>,
     abort: Option<WorkerAbort>,
-    mut failure: WorkerFailure,
+    failure: WorkerFailure,
     process_tree_settled: bool,
 ) -> WorkerResult {
-    if process_tree_settled
-        && matches!(
-            failure.kind,
-            WorkerFailureKind::EvidenceWrite | WorkerFailureKind::Controller
-        )
-    {
-        let restoration_required = failure
-            .attempted_stage
-            .or(completed_stage)
-            .is_some_and(|stage| stage != LifecycleStage::InitialState);
-        if restoration_required && failure.restoration.as_ref() == &RestorationOutcome::NotRequired
-        {
-            failure.restoration = Box::new(restoration_not_reviewed());
-        } else if !restoration_required
-            && matches!(
-                failure.restoration.as_ref(),
-                RestorationOutcome::BlockedUntrusted { reason }
-                    if reason == "lifecycle_restoration_not_reviewed"
-            )
-        {
-            failure.restoration = Box::new(RestorationOutcome::NotRequired);
-        }
-    }
     WorkerResult {
         disposition: WorkerDisposition::Failed,
         completed_stage,
@@ -2929,62 +3155,43 @@ mod tests {
     }
 
     #[test]
-    fn failure_restoration_is_normalized_from_completed_mutation_state() {
-        let before_mutation = failed(
-            None,
-            None,
-            None,
-            evidence_write_failure("initial_evidence_failed", "write_failed".to_string()),
-            true,
-        );
-        assert_eq!(
-            before_mutation
-                .failure
-                .expect("failure")
-                .restoration
-                .as_ref(),
-            &RestorationOutcome::NotRequired
-        );
-
-        let after_mutation = failed(
-            Some(LifecycleStage::FinalRepair),
-            None,
-            None,
-            controller_failure("controller_failed".to_string()),
-            true,
-        );
-        assert!(matches!(
-            after_mutation
-                .failure
-                .expect("failure")
-                .restoration
-                .as_ref(),
-            RestorationOutcome::BlockedUntrusted { reason }
-                if reason == "lifecycle_restoration_not_reviewed"
-        ));
-
-        let final_failure = failed(
-            Some(LifecycleStage::FinalUninstall),
-            Some(WorkerCheckpoint {
-                completed_stage: LifecycleStage::FinalUninstall,
-                evidence_root_identity:
-                    crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
-                        volume_serial: 1,
-                        file_index: 1,
-                    },
-            }),
-            None,
-            controller_failure("controller_failed".to_string()),
-            true,
-        );
-        assert!(matches!(
-            final_failure
-                .failure
-                .expect("failure")
-                .restoration
-                .as_ref(),
-            RestorationOutcome::BlockedUntrusted { reason }
-                if reason == "lifecycle_restoration_not_reviewed"
-        ));
+    fn stage_restoration_target_matrix_is_exhaustive_and_stable() {
+        for stage in [
+            LifecycleStage::InitialState,
+            LifecycleStage::FinalRepair,
+            LifecycleStage::InitialUninstall,
+            LifecycleStage::BaselineInstall,
+            LifecycleStage::BaselineRestart,
+            LifecycleStage::BaselineCrashRecovery,
+            LifecycleStage::BaselineRollbackRecovery,
+            LifecycleStage::LegacyResidueSeeded,
+            LifecycleStage::FinalUpgrade,
+            LifecycleStage::FinalRestart,
+            LifecycleStage::FinalCrashRecovery,
+            LifecycleStage::FinalFallbackStates,
+            LifecycleStage::FinalUninstall,
+        ] {
+            let expected = match stage {
+                LifecycleStage::InitialState => RestorationTarget::InitialAllowlisted,
+                LifecycleStage::InitialUninstall | LifecycleStage::FinalUninstall => {
+                    RestorationTarget::ProductAbsent
+                }
+                LifecycleStage::BaselineInstall
+                | LifecycleStage::BaselineRestart
+                | LifecycleStage::BaselineCrashRecovery
+                | LifecycleStage::BaselineRollbackRecovery => {
+                    RestorationTarget::BaselineRunningClean
+                }
+                LifecycleStage::LegacyResidueSeeded => {
+                    RestorationTarget::BaselineRunningWithLegacyCli
+                }
+                LifecycleStage::FinalRepair
+                | LifecycleStage::FinalUpgrade
+                | LifecycleStage::FinalRestart
+                | LifecycleStage::FinalCrashRecovery
+                | LifecycleStage::FinalFallbackStates => RestorationTarget::FinalRunningClean,
+            };
+            assert_eq!(restoration_target_for_stage(stage), expected, "{stage:?}");
+        }
     }
 }

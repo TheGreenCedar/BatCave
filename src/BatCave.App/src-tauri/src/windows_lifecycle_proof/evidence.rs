@@ -1297,6 +1297,14 @@ struct ProjectedMachineRegistration {
     common_start_menu_shortcut: Option<SanitizedShortcutSnapshot>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RestorationAuthorityExpectation {
+    AllowlistedStopped,
+    BaselineRunning,
+    FinalRunning,
+    ProductAbsent,
+}
+
 fn project_machine_registration_projection(
     raw: &ElevatedMachineSnapshot,
     roots: &[SanitizationRoot],
@@ -1541,6 +1549,71 @@ fn project_service_install_residue_projection(
         atomic_temporary_files,
         failure_marker: install_residue.rollback_execution_marker,
     })
+}
+
+pub(super) fn validate_restoration_machine_authority(
+    raw: &ElevatedMachineSnapshot,
+    expectation: RestorationAuthorityExpectation,
+) -> Result<(), String> {
+    let service = project_service_projection(
+        &raw.machine.service,
+        &raw.machine.service_binary,
+        &raw.installed_boundaries,
+    )?;
+    let runtime = project_runtime_projection(raw)?;
+    let roots = projection_roots()?;
+    let residue = project_service_install_residue_projection(raw, &roots)?;
+    let registration = project_machine_registration_projection(raw, &roots)?;
+    let boundaries = project_boundaries_observation(&raw.installed_boundaries)?;
+
+    validate_observation(&service, validate_service_snapshot)?;
+    validate_observation(&boundaries, validate_installed_boundaries)?;
+    if let Some(etw) = &runtime.etw_session {
+        validate_etw_observation(etw)?;
+        let service = service
+            .as_present()
+            .ok_or_else(|| "lifecycle_stage_restoration_etw_service_missing".to_string())?;
+        if etw.lease.service_generation != sha256_digest16(&service.image_sha256)? {
+            return Err("lifecycle_stage_restoration_etw_generation_invalid".to_string());
+        }
+    }
+
+    let runtime_present = runtime.named_pipe.is_some()
+        && runtime.etw_session.is_some()
+        && runtime.etw_lease_file.is_some()
+        && runtime.etw_owner_lock.is_some()
+        && runtime.service_lifecycle_lock.is_some();
+    let runtime_absent = runtime.named_pipe.is_none()
+        && runtime.etw_session.is_none()
+        && runtime.etw_lease_file.is_none()
+        && runtime.etw_owner_lock.is_none()
+        && runtime.service_lifecycle_lock.is_none();
+    let transaction_residue_absent = residue.upgrade_transaction_journal.is_none()
+        && residue.staged_service_images.is_empty()
+        && residue.rollback_service_images.is_empty()
+        && residue.atomic_temporary_files.is_empty()
+        && residue.failure_marker.is_none();
+    let (installed, expect_runtime, expect_shortcuts) = match expectation {
+        RestorationAuthorityExpectation::AllowlistedStopped => (true, false, true),
+        RestorationAuthorityExpectation::BaselineRunning => (true, true, true),
+        RestorationAuthorityExpectation::FinalRunning => (true, true, false),
+        RestorationAuthorityExpectation::ProductAbsent => (false, false, false),
+    };
+    let registration_matches = registration.machine_product_key.is_some() == installed
+        && registration.public_desktop_shortcut.is_some() == expect_shortcuts
+        && registration.common_start_menu_shortcut.is_some() == expect_shortcuts;
+    let residue_matches =
+        residue.service_registry_key.is_some() == installed && transaction_residue_absent;
+    let runtime_matches = if expect_runtime {
+        runtime_present
+    } else {
+        runtime_absent
+    };
+    if registration_matches && residue_matches && runtime_matches {
+        Ok(())
+    } else {
+        Err("lifecycle_stage_restoration_authority_invalid".to_string())
+    }
 }
 
 fn validate_raw_residue_identity_set(raw: &ServiceInstallResidueForProof) -> Result<(), String> {
@@ -5155,6 +5228,200 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn restoration_authority_requires_exact_runtime_residue_and_registration_profiles() {
+        let plan = parse_plan().expect("plan");
+        let baseline = raw_machine(&installed_machine(
+            baseline_artifacts(&plan),
+            ServiceExpectation::Running,
+            false,
+        ));
+        assert!(validate_restoration_machine_authority(
+            &baseline,
+            RestorationAuthorityExpectation::BaselineRunning,
+        )
+        .is_ok());
+        assert!(validate_restoration_machine_authority(
+            &baseline,
+            RestorationAuthorityExpectation::FinalRunning,
+        )
+        .is_err());
+
+        let final_running = raw_machine(&installed_machine(
+            final_artifacts(&plan),
+            ServiceExpectation::Running,
+            true,
+        ));
+        assert!(validate_restoration_machine_authority(
+            &final_running,
+            RestorationAuthorityExpectation::FinalRunning,
+        )
+        .is_ok());
+
+        let allowlisted_stopped = raw_machine(&installed_machine(
+            allowlisted_artifacts(&plan),
+            ServiceExpectation::Stopped {
+                win32_exit_code: plan.allowlisted_start.win32_exit_code,
+                service_specific_exit_code: plan.allowlisted_start.service_specific_exit_code,
+            },
+            false,
+        ));
+        assert!(validate_restoration_machine_authority(
+            &allowlisted_stopped,
+            RestorationAuthorityExpectation::AllowlistedStopped,
+        )
+        .is_ok());
+
+        let absent = raw_machine(&absent_machine(true));
+        assert!(validate_restoration_machine_authority(
+            &absent,
+            RestorationAuthorityExpectation::ProductAbsent,
+        )
+        .is_ok());
+
+        let mut unknown_runtime = final_running.clone();
+        unknown_runtime.named_pipe = Observation::Unknown("pipe_unknown".to_string());
+        assert!(validate_restoration_machine_authority(
+            &unknown_runtime,
+            RestorationAuthorityExpectation::FinalRunning,
+        )
+        .is_err());
+
+        let mut released_lock = baseline.clone();
+        released_lock.etw_owner_lock = RuntimeLockObservation::Released {};
+        assert!(validate_restoration_machine_authority(
+            &released_lock,
+            RestorationAuthorityExpectation::BaselineRunning,
+        )
+        .is_err());
+
+        let mut etw_loss = baseline.clone();
+        let Observation::Present(session) = &mut etw_loss.etw_session else {
+            panic!("ETW session");
+        };
+        session.events_lost = 1;
+        assert!(validate_restoration_machine_authority(
+            &etw_loss,
+            RestorationAuthorityExpectation::BaselineRunning,
+        )
+        .is_err());
+
+        let mut generation_drift = baseline.clone();
+        let Observation::Present(lease) = &mut generation_drift.etw_lease else {
+            panic!("ETW lease");
+        };
+        lease.service_generation[0] ^= 1;
+        assert!(validate_restoration_machine_authority(
+            &generation_drift,
+            RestorationAuthorityExpectation::BaselineRunning,
+        )
+        .is_err());
+
+        let mut invalid_boundaries = baseline.clone();
+        let Observation::Present(boundaries) = &mut invalid_boundaries.installed_boundaries else {
+            panic!("installed boundaries");
+        };
+        boundaries.service_aces.clear();
+        assert!(validate_restoration_machine_authority(
+            &invalid_boundaries,
+            RestorationAuthorityExpectation::BaselineRunning,
+        )
+        .is_err());
+
+        let mut stale_registration = final_running;
+        stale_registration
+            .machine_registration
+            .public_desktop_shortcut = baseline.machine_registration.public_desktop_shortcut;
+        assert!(validate_restoration_machine_authority(
+            &stale_registration,
+            RestorationAuthorityExpectation::FinalRunning,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn restoration_packet_is_typed_bound_and_fail_closed() {
+        let plan = parse_plan().expect("plan");
+        let mut machine = raw_machine(&installed_machine(
+            final_artifacts(&plan),
+            ServiceExpectation::Running,
+            true,
+        ));
+        machine.machine.product_processes = Observation::Present(vec![ProcessSnapshot {
+            process_id: 55,
+            parent_process_id: 0,
+            executable_name: "batcave-collector-service.exe".to_string(),
+            executable_path: Some(
+                r"C:\Program Files\BatCave Monitor\batcave-collector-service.exe".to_string(),
+            ),
+        }]);
+        let restoration = crate::windows_lifecycle_proof_contract::RestorationOutcome::Restored {
+            evidence: EvidenceReceipt {
+                name: "final-repair-restoration.private.json".to_string(),
+                size: 1,
+                sha256: "a".repeat(64),
+            },
+        };
+        assert_eq!(
+            super::super::lifecycle::validate_restoration_target(
+                LifecycleStage::FinalRepair,
+                &machine,
+                &plan,
+            ),
+            Ok(())
+        );
+        let packet = serde_json::json!({
+            "schema_version": "batcave.windows-lifecycle.restoration.v1",
+            "stage": LifecycleStage::FinalRepair,
+            "target_stage": LifecycleStage::FinalRepair,
+            "method": "observed_target_state",
+            "restored": true,
+            "reason": null,
+            "machine_after_attempt": machine,
+        });
+        let validate = |packet: &serde_json::Value| {
+            super::super::lifecycle::validate_stage_restoration_packet(
+                &serde_json::to_vec(packet).expect("packet"),
+                LifecycleStage::FinalRepair,
+                LifecycleStage::FinalRepair,
+                false,
+                &restoration,
+                &plan,
+            )
+        };
+        assert_eq!(validate(&packet), Ok(()));
+
+        let mut wrong_method = packet.clone();
+        wrong_method["method"] = serde_json::json!("provisioner_transaction");
+        assert_eq!(
+            validate(&wrong_method),
+            Err("lifecycle_stage_restoration_packet_binding_invalid".to_string())
+        );
+
+        let mut false_claim = packet.clone();
+        false_claim["restored"] = serde_json::json!(false);
+        false_claim["reason"] = serde_json::json!("hostile_claim");
+        assert_eq!(
+            validate(&false_claim),
+            Err("lifecycle_stage_restoration_packet_claim_invalid".to_string())
+        );
+
+        let mut untrusted_snapshot = packet.clone();
+        untrusted_snapshot["machine_after_attempt"]["named_pipe"] =
+            serde_json::json!({ "state": "absent" });
+        assert_eq!(
+            validate(&untrusted_snapshot),
+            Err("lifecycle_stage_restoration_packet_claim_invalid".to_string())
+        );
+
+        let mut unknown_field = packet;
+        unknown_field["unexpected"] = serde_json::json!(true);
+        assert_eq!(
+            validate(&unknown_field),
+            Err("lifecycle_stage_restoration_packet_invalid".to_string())
+        );
     }
 
     #[test]
