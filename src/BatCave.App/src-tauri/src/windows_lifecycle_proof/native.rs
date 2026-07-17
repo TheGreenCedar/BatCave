@@ -1281,13 +1281,58 @@ impl OwnedFile {
                     .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
             }
         };
-        Ok(OwnedFile {
-            path,
-            handle: target_file,
-            size: self.size,
-            sha256: self.sha256,
-            identity,
-        })
+        let mut bridge = match OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&path)
+        {
+            Ok(bridge) => bridge,
+            Err(_) => {
+                let error = format!("lifecycle_{label}_handoff_open_failed");
+                let cleanup = mark_handle_for_delete(&target_file, label);
+                drop(target_file);
+                return Err(cleanup
+                    .err()
+                    .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
+            }
+        };
+        let bridge_validation = (|| -> Result<(), String> {
+            let metadata = bridge
+                .metadata()
+                .map_err(|_| format!("lifecycle_{label}_handoff_metadata_failed"))?;
+            let information = file_information(&bridge)
+                .map_err(|_| format!("lifecycle_{label}_handoff_identity_failed"))?;
+            let bridge_path = final_path(&bridge)
+                .map_err(|_| format!("lifecycle_{label}_handoff_final_path_failed"))?;
+            if !metadata.is_file()
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                || metadata.len() != self.size
+                || information.identity != identity
+                || information.number_of_links != 1
+                || bridge_path != path
+                || digest_handle(&mut bridge)
+                    .map_err(|_| format!("lifecycle_{label}_handoff_hash_failed"))?
+                    != self.sha256
+            {
+                return Err(format!("lifecycle_{label}_handoff_identity_mismatch"));
+            }
+            Ok(())
+        })();
+        if let Err(error) = bridge_validation {
+            let cleanup = mark_handle_for_delete(&target_file, label);
+            drop(bridge);
+            drop(target_file);
+            return Err(cleanup
+                .err()
+                .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
+        }
+        drop(target_file);
+        let target = OwnedFile::open(&path, self.size, &self.sha256_hex(), label)?;
+        if target.identity != identity || target.path != path {
+            return Err(format!("lifecycle_{label}_handoff_identity_mismatch"));
+        }
+        Ok(target)
     }
 
     pub(crate) fn read_all_exact(&self, label: &str) -> Result<Vec<u8>, String> {
@@ -1840,7 +1885,10 @@ impl SuspendedChild {
             )
         } == 0
         {
-            return Err(format!("lifecycle_{label}_process_create_failed"));
+            return Err(format!(
+                "lifecycle_{label}_process_create_failed:{}",
+                unsafe { GetLastError() }
+            ));
         }
         Ok(Self {
             process: OwnedHandle(information.hProcess),
@@ -7735,6 +7783,31 @@ mod tests {
             b"installed"
         );
         assert!(OpenOptions::new().write(true).open(&target_path).is_err());
+    }
+
+    #[test]
+    fn owned_file_copy_executes_while_retaining_the_validated_target() {
+        let scratch = ScratchEvidence::new("owned-file-copy-execute");
+        let source = OwnedFile::open_current_executable().expect("owned test executable");
+        let target_path = scratch.root.join("copied-test.exe");
+        let target = source
+            .copy_to(&target_path, "copy_execute")
+            .expect("copy test executable");
+
+        let outcome = target
+            .execute(
+                scratch.evidence(),
+                "--ignored --exact windows_lifecycle_proof::native::tests::fixed_nonzero_child --nocapture",
+                Duration::from_secs(30),
+                "copied_nonzero_child",
+            )
+            .expect("copied child settlement");
+
+        assert!(matches!(
+            outcome.terminal.terminal,
+            ProcessTerminal::Exited { exit_code: 23 }
+        ));
+        target.revalidate().expect("retained copied executable");
     }
 
     #[test]
