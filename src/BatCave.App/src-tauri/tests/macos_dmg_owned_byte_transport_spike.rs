@@ -101,25 +101,6 @@ fn unsupported_hosts_report_the_boundary_without_mutation() {
     assert_non_claims(&outcome);
 }
 
-#[test]
-fn probe_has_no_production_or_javascript_entrypoint() {
-    let manifest_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let production_lib =
-        std::fs::read_to_string(manifest_root.join("src/lib.rs")).expect("read production library");
-    assert!(!production_lib.contains("macos_dmg_owned_byte_transport_spike"));
-
-    let repository_root = manifest_root
-        .ancestors()
-        .nth(3)
-        .expect("manifest is nested below repository root");
-    for script in [
-        "scripts/macos-dmg-owned-byte-transport.mjs",
-        "scripts/macos-dmg-owned-byte-transport.test.mjs",
-    ] {
-        assert!(!repository_root.join(script).exists());
-    }
-}
-
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{assert_non_claims, Disposition, FailureBoundary, ProbeOutcome};

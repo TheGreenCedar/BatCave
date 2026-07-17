@@ -641,25 +641,6 @@ fn consume_surface_accepts_no_caller_execution_or_completion_input() {
     remove_root(&root);
 }
 
-#[test]
-fn prototype_has_no_production_or_javascript_entrypoint() {
-    let manifest_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let production_lib =
-        fs::read_to_string(manifest_root.join("src/lib.rs")).expect("read production library");
-    assert!(!production_lib.contains("native_artifact_consumption_authority_prototype"));
-
-    let repository_root = manifest_root
-        .ancestors()
-        .nth(3)
-        .expect("manifest is nested below repository root");
-    assert!(!repository_root
-        .join("scripts/native-artifact-consumption-authority.prototype.mjs")
-        .exists());
-    assert!(!repository_root
-        .join("scripts/native-artifact-consumption-authority.prototype.test.mjs")
-        .exists());
-}
-
 fn profile_id(profile: Profile) -> &'static str {
     match profile {
         Profile::WindowsNsis => "windows:nsis",

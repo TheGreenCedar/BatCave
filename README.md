@@ -22,7 +22,7 @@ This is a public preview. It is useful now, honest about what it cannot see, and
 
 ![BatCave Monitor dismissible compact detail drawer in the dark Cave theme](docs/images/batcave-monitor-remediation-narrow-detail-cave.png)
 
-Screenshots show the native Tauri app with live Windows telemetry. Browser fixture screenshots are layout-only and should not be used as product proof.
+Screenshots show the native Tauri app with live Windows telemetry. Browser fixture screenshots are layout-only and should not be used as product proof. Keep only captures linked from product documentation under `docs/images`; store transient or superseded captures under the ignored `artifacts/` tree.
 
 ## What It Shows
 
