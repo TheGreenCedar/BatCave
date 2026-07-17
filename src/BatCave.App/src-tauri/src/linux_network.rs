@@ -1592,7 +1592,7 @@ mod tests {
     #[test]
     fn killed_child_transitions_to_failed_before_any_zero_sample() {
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg("sleep 60");
+        command.arg("-c").arg("exec sleep 60");
         let mut monitor = LinuxNetworkAttributionMonitor::spawn(command).unwrap();
         monitor.child.kill().unwrap();
         monitor.child.wait().unwrap();
