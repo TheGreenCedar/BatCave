@@ -1588,26 +1588,49 @@ pub(super) fn validate_restoration_machine_authority(
         && runtime.etw_lease_file.is_none()
         && runtime.etw_owner_lock.is_none()
         && runtime.service_lifecycle_lock.is_none();
+    let runtime_stopped = runtime.named_pipe.is_none()
+        && runtime.etw_session.is_none()
+        && runtime.etw_lease_file.is_some()
+        && runtime.etw_owner_lock.is_some()
+        && runtime.service_lifecycle_lock.is_some()
+        && matches!(
+            &raw.etw_lease,
+            Observation::Present(lease) if lease.phase == EtwLeasePhase::Stopping
+        )
+        && matches!(raw.etw_owner_lock, RuntimeLockObservation::Released {})
+        && matches!(
+            raw.service_lifecycle_lock,
+            RuntimeLockObservation::Released {}
+        );
     let transaction_residue_absent = residue.upgrade_transaction_journal.is_none()
         && residue.staged_service_images.is_empty()
         && residue.rollback_service_images.is_empty()
         && residue.atomic_temporary_files.is_empty()
         && residue.failure_marker.is_none();
     let (installed, expect_runtime, expect_shortcuts) = match expectation {
-        RestorationAuthorityExpectation::AllowlistedStopped => (true, false, true),
-        RestorationAuthorityExpectation::BaselineRunning => (true, true, true),
-        RestorationAuthorityExpectation::FinalRunning => (true, true, false),
-        RestorationAuthorityExpectation::ProductAbsent => (false, false, false),
+        RestorationAuthorityExpectation::AllowlistedStopped => (true, false, None),
+        RestorationAuthorityExpectation::BaselineRunning => (true, true, Some(true)),
+        RestorationAuthorityExpectation::FinalRunning => (true, true, Some(false)),
+        RestorationAuthorityExpectation::ProductAbsent => (false, false, Some(false)),
     };
-    let registration_matches = registration.machine_product_key.is_some() == installed
-        && registration.public_desktop_shortcut.is_some() == expect_shortcuts
-        && registration.common_start_menu_shortcut.is_some() == expect_shortcuts;
+    let shortcuts_match = match expect_shortcuts {
+        Some(expected) => {
+            registration.public_desktop_shortcut.is_some() == expected
+                && registration.common_start_menu_shortcut.is_some() == expected
+        }
+        None => {
+            registration.public_desktop_shortcut.is_some()
+                == registration.common_start_menu_shortcut.is_some()
+        }
+    };
+    let registration_matches =
+        registration.machine_product_key.is_some() == installed && shortcuts_match;
     let residue_matches =
         residue.service_registry_key.is_some() == installed && transaction_residue_absent;
-    let runtime_matches = if expect_runtime {
-        runtime_present
-    } else {
-        runtime_absent
+    let runtime_matches = match expectation {
+        RestorationAuthorityExpectation::AllowlistedStopped => runtime_absent || runtime_stopped,
+        _ if expect_runtime => runtime_present,
+        _ => runtime_absent,
     };
     if registration_matches && residue_matches && runtime_matches {
         Ok(())
@@ -1971,6 +1994,22 @@ fn project_etw_session(
 ) -> Result<Option<SanitizedEtwObservation>, String> {
     match (lease, session) {
         (Observation::Absent, Observation::Absent) => Ok(None),
+        (Observation::Present(lease), Observation::Absent)
+            if lease.phase == EtwLeasePhase::Stopping =>
+        {
+            let Observation::Present(service) = service else {
+                return Err("lifecycle_private_projection_etw_service_missing".to_string());
+            };
+            if service.state != windows_sys::Win32::System::Services::SERVICE_STOPPED
+                || service.process_id != 0
+                || !matches!(pipe, Observation::Absent)
+                || owner_lock_held
+                || process_lock_held
+            {
+                return Err("lifecycle_private_projection_etw_identity_mismatch".to_string());
+            }
+            Ok(None)
+        }
         (Observation::Unknown(_), _) | (_, Observation::Unknown(_)) => {
             Err("lifecycle_private_projection_observation_unknown".to_string())
         }
@@ -5270,6 +5309,68 @@ mod tests {
             RestorationAuthorityExpectation::AllowlistedStopped,
         )
         .is_ok());
+
+        let mut allowlisted_with_stopping_lease = allowlisted_stopped.clone();
+        let mut stopping_lease = healthy_etw(
+            &plan.allowlisted_start.service_sha256,
+            &test_service_instance_id(55, 7),
+        )
+        .lease;
+        stopping_lease.phase = EtwLeasePhase::Stopping;
+        allowlisted_with_stopping_lease.etw_lease = Observation::Present(stopping_lease);
+        allowlisted_with_stopping_lease.etw_owner_lock = RuntimeLockObservation::Released {};
+        allowlisted_with_stopping_lease.service_lifecycle_lock =
+            RuntimeLockObservation::Released {};
+        assert!(validate_restoration_machine_authority(
+            &allowlisted_with_stopping_lease,
+            RestorationAuthorityExpectation::AllowlistedStopped,
+        )
+        .is_ok());
+
+        let mut active_lease_without_session = allowlisted_with_stopping_lease.clone();
+        let Observation::Present(lease) = &mut active_lease_without_session.etw_lease else {
+            panic!("stopping lease");
+        };
+        lease.phase = EtwLeasePhase::Active;
+        assert!(validate_restoration_machine_authority(
+            &active_lease_without_session,
+            RestorationAuthorityExpectation::AllowlistedStopped,
+        )
+        .is_err());
+
+        let mut partial_stopped_runtime = allowlisted_with_stopping_lease.clone();
+        partial_stopped_runtime.service_lifecycle_lock = RuntimeLockObservation::Absent {};
+        assert!(validate_restoration_machine_authority(
+            &partial_stopped_runtime,
+            RestorationAuthorityExpectation::AllowlistedStopped,
+        )
+        .is_err());
+
+        let mut allowlisted_after_retirement = allowlisted_stopped.clone();
+        allowlisted_after_retirement
+            .machine_registration
+            .public_desktop_shortcut = Observation::Absent;
+        allowlisted_after_retirement
+            .machine_registration
+            .common_start_menu_shortcut = Observation::Absent;
+        assert!(validate_restoration_machine_authority(
+            &allowlisted_after_retirement,
+            RestorationAuthorityExpectation::AllowlistedStopped,
+        )
+        .is_ok());
+
+        let mut partial_shortcut_retirement = allowlisted_after_retirement;
+        partial_shortcut_retirement
+            .machine_registration
+            .public_desktop_shortcut = allowlisted_stopped
+            .machine_registration
+            .public_desktop_shortcut
+            .clone();
+        assert!(validate_restoration_machine_authority(
+            &partial_shortcut_retirement,
+            RestorationAuthorityExpectation::AllowlistedStopped,
+        )
+        .is_err());
 
         let absent = raw_machine(&absent_machine(true));
         assert!(validate_restoration_machine_authority(

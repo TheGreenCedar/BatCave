@@ -6527,9 +6527,17 @@ fn build_fixed_environment_block(
     evidence: &Path,
     command_processor: &Path,
 ) -> Result<Vec<u16>, String> {
+    let windows_text = windows
+        .to_str()
+        .ok_or_else(|| "lifecycle_child_windows_path_invalid".to_string())?;
+    let system_drive = windows_text
+        .get(..2)
+        .filter(|drive| drive.as_bytes().get(1) == Some(&b':'))
+        .ok_or_else(|| "lifecycle_child_windows_path_invalid".to_string())?;
     let entries = [
         ("ComSpec", command_processor),
         ("Path", system),
+        ("SystemDrive", Path::new(system_drive)),
         ("SystemRoot", windows),
         ("TEMP", evidence),
         ("TMP", evidence),
@@ -7853,11 +7861,25 @@ mod tests {
             [
                 r"ComSpec=C:\Windows\System32\cmd.exe",
                 r"Path=C:\Windows\System32",
+                r"SystemDrive=C:",
                 r"SystemRoot=C:\Windows",
                 r"TEMP=C:\ProgramData\BatCaveLifecycleProof-v1-test",
                 r"TMP=C:\ProgramData\BatCaveLifecycleProof-v1-test",
                 r"WINDIR=C:\Windows",
             ]
+        );
+    }
+
+    #[test]
+    fn child_environment_rejects_a_windows_path_without_a_drive_root() {
+        assert_eq!(
+            build_fixed_environment_block(
+                Path::new(r"\\server\Windows\System32"),
+                Path::new(r"\\server\Windows"),
+                Path::new(r"C:\ProgramData\BatCaveLifecycleProof-v1-test"),
+                Path::new(r"\\server\Windows\System32\cmd.exe"),
+            ),
+            Err("lifecycle_child_windows_path_invalid".to_string())
         );
     }
 

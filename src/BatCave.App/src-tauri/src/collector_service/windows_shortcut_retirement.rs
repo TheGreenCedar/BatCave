@@ -27,7 +27,7 @@ use windows_sys::{
                 StructuredStorage::{PropVariantClear, PropVariantToStringAlloc, PROPVARIANT},
                 CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
             },
-            Variant::VT_LPWSTR,
+            Variant::{VT_BSTR, VT_LPWSTR},
         },
         UI::Shell::{
             FOLDERID_CommonPrograms, FOLDERID_PublicDesktop, SHCreateMemStream,
@@ -661,7 +661,7 @@ fn property_string(store: &ComPtr, key: &PROPERTYKEY, context: &str) -> Result<S
         unsafe { PropVariantClear(&mut value) };
         return Err(format!("{context}_read_failed:{result:#010x}"));
     }
-    let text = if unsafe { value.Anonymous.Anonymous.vt } != VT_LPWSTR {
+    let text = if !matches!(unsafe { value.Anonymous.Anonymous.vt }, VT_BSTR | VT_LPWSTR) {
         Err(format!("{context}_type_invalid"))
     } else {
         let mut raw = ptr::null_mut();
@@ -832,6 +832,14 @@ mod tests {
     }
 
     fn write_test_shortcut(path: &Path, contract: &ShortcutContract) -> Result<(), String> {
+        write_test_shortcut_with_app_id_type(path, contract, VT_LPWSTR)
+    }
+
+    fn write_test_shortcut_with_app_id_type(
+        path: &Path,
+        contract: &ShortcutContract,
+        app_id_type: u16,
+    ) -> Result<(), String> {
         let _apartment = ComApartment::initialize()?;
         let mut raw = ptr::null_mut();
         require_hresult(
@@ -891,18 +899,32 @@ mod tests {
         let property_store = shell.query(&IID_PROPERTY_STORE, "test_shortcut_store_failed")?;
         let mut app_id = wide_text(&contract.app_user_model_id);
         let mut value = PROPVARIANT::default();
-        value.Anonymous.Anonymous.vt = VT_LPWSTR;
-        value.Anonymous.Anonymous.Anonymous.pwszVal = app_id.as_mut_ptr();
-        require_hresult(
-            unsafe {
-                (property_store.property_store().set_value)(
-                    property_store.0,
-                    &PKEY_APP_USER_MODEL_ID,
-                    &value,
-                )
-            },
-            "test_shortcut_app_id_failed",
-        )?;
+        value.Anonymous.Anonymous.vt = app_id_type;
+        let app_id_bstr = if app_id_type == VT_BSTR {
+            let allocated =
+                unsafe { windows_sys::Win32::Foundation::SysAllocString(app_id.as_ptr()) };
+            if allocated.is_null() {
+                return Err("test_shortcut_app_id_allocation_failed".to_string());
+            }
+            value.Anonymous.Anonymous.Anonymous.bstrVal = allocated;
+            Some(allocated)
+        } else if app_id_type == VT_LPWSTR {
+            value.Anonymous.Anonymous.Anonymous.pwszVal = app_id.as_mut_ptr();
+            None
+        } else {
+            return Err("test_shortcut_app_id_type_invalid".to_string());
+        };
+        let set_result = unsafe {
+            (property_store.property_store().set_value)(
+                property_store.0,
+                &PKEY_APP_USER_MODEL_ID,
+                &value,
+            )
+        };
+        if let Some(app_id_bstr) = app_id_bstr {
+            unsafe { windows_sys::Win32::Foundation::SysFreeString(app_id_bstr) };
+        }
+        require_hresult(set_result, "test_shortcut_app_id_failed")?;
         require_hresult(
             unsafe { (property_store.property_store().commit)(property_store.0) },
             "test_shortcut_store_commit_failed",
@@ -1103,30 +1125,34 @@ mod tests {
 
     #[test]
     fn native_com_roundtrip_deletes_only_the_exact_validated_link_handle() {
-        let root = tempfile::tempdir().expect("create shortcut fixture root");
-        let shortcut_path = canonical_fixture_root(&root).join(SHORTCUT_NAME);
-        write_test_shortcut(&shortcut_path, &exact_contract()).expect("write exact shortcut");
+        for (variant_name, app_id_type) in [("lpwstr", VT_LPWSTR), ("bstr", VT_BSTR)] {
+            let root = tempfile::tempdir().expect("create shortcut fixture root");
+            let shortcut_path =
+                canonical_fixture_root(&root).join(format!("{variant_name}-{SHORTCUT_NAME}"));
+            write_test_shortcut_with_app_id_type(&shortcut_path, &exact_contract(), app_id_type)
+                .expect("write exact shortcut");
 
-        let shortcut = PinnedShortcut::open(&shortcut_path)
-            .expect("open exact shortcut")
-            .expect("exact shortcut present");
-        assert_eq!(
-            read_shortcut_contract(&shortcut.bytes).expect("read exact shortcut bytes"),
-            exact_contract()
-        );
-        shortcut
-            .validate_contract(&relocated_monitor_path())
-            .expect("validate exact shortcut");
-        shortcut.revalidate().expect("revalidate exact shortcut");
-        shortcut.mark_for_deletion().expect("mark exact shortcut");
-        drop(shortcut);
+            let shortcut = PinnedShortcut::open(&shortcut_path)
+                .expect("open exact shortcut")
+                .expect("exact shortcut present");
+            assert_eq!(
+                read_shortcut_contract(&shortcut.bytes).expect("read exact shortcut bytes"),
+                exact_contract()
+            );
+            shortcut
+                .validate_contract(&relocated_monitor_path())
+                .expect("validate exact shortcut");
+            shortcut.revalidate().expect("revalidate exact shortcut");
+            shortcut.mark_for_deletion().expect("mark exact shortcut");
+            drop(shortcut);
 
-        assert!(
-            PinnedShortcut::open(&shortcut_path)
-                .expect("reopen deleted shortcut")
-                .is_none(),
-            "the exact original name must be absent after the validated handle closes"
-        );
+            assert!(
+                PinnedShortcut::open(&shortcut_path)
+                    .expect("reopen deleted shortcut")
+                    .is_none(),
+                "the exact original name must be absent after the validated handle closes"
+            );
+        }
     }
 
     #[test]
