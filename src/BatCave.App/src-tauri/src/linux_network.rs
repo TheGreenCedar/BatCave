@@ -1578,7 +1578,7 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
-            .arg("printf 'BATCAVE_NETWORK_INTERVAL\\n'; sleep 60");
+            .arg("printf 'BATCAVE_NETWORK_INTERVAL\\n'; exec sleep 60");
         let mut monitor = LinuxNetworkAttributionMonitor::spawn(command).unwrap();
 
         monitor.shutdown().expect("owned resources stop");

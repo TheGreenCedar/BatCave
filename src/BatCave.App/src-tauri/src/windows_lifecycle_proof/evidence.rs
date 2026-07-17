@@ -1,6 +1,7 @@
 use super::native::{
-    DirectorySnapshot, ElevatedMachineSnapshot, FileSnapshot, ProcessSnapshot, RegistrySnapshot,
-    RegistryView, ServiceSnapshot, VerifiedEvidenceFile,
+    DirectorySnapshot, ElevatedMachineSnapshot, FileSnapshot, ParentCurrentUserAuthority,
+    ParentCurrentUserObjects, ProcessSnapshot, RegistrySnapshot, RegistryView, ServiceSnapshot,
+    VerifiedEvidenceFile,
 };
 use super::private_evidence::{
     parse_private_success_packet, PrivateSuccessPacket, PrivateSuccessPayload,
@@ -106,7 +107,7 @@ struct SanitizedExportPacket {
     process_tree_settled: bool,
     private_evidence: Vec<SanitizedPrivateEvidence>,
     final_product_absent: bool,
-    current_user_data_preserved: bool,
+    declared_current_user_objects_preserved: bool,
     current_user_retention: SanitizedCurrentUserRetention,
 }
 
@@ -138,7 +139,7 @@ enum SanitizedEvidenceAssertion {
     FinalRecovered,
     FinalMissingService,
     FinalIncompatibleRunning,
-    FinalUninstalledPreservingCurrentUserData,
+    FinalUninstalledPreservingDeclaredCurrentUserObjects,
     DesktopPhase,
 }
 
@@ -462,7 +463,7 @@ pub(super) fn validate_sanitized_export_bytes(
         || packet.completed_stage != LifecycleStage::FinalUninstall
         || !packet.process_tree_settled
         || !packet.final_product_absent
-        || !packet.current_user_data_preserved
+        || !packet.declared_current_user_objects_preserved
     {
         return Err("lifecycle_sanitized_export_shape_invalid".to_string());
     }
@@ -513,6 +514,12 @@ pub(super) fn validate_sanitized_export_bytes_with_parent_results(
     validate_parent_desktop_results(&packet.private_evidence, parent_desktop_results, plan)
 }
 
+pub(super) struct ParentCurrentUserProjection<'a> {
+    pub(super) authority: &'a ParentCurrentUserAuthority,
+    pub(super) before_uninstall: &'a ParentCurrentUserObjects,
+    pub(super) after_uninstall: &'a ParentCurrentUserObjects,
+}
+
 pub(super) fn validate_verified_private_projection(
     private_files: &[VerifiedEvidenceFile],
     sanitized_file: &VerifiedEvidenceFile,
@@ -520,6 +527,7 @@ pub(super) fn validate_verified_private_projection(
     controller_source_commit_sha: &str,
     controller_sha256: &str,
     parent_desktop_results: &[DesktopPhaseResult],
+    parent_current_user: ParentCurrentUserProjection<'_>,
 ) -> Result<(), String> {
     validate_verified_projection_manifest(private_files, sanitized_file)?;
     let expected_receipts = private_files
@@ -545,7 +553,15 @@ pub(super) fn validate_verified_private_projection(
     )?;
     let packet: SanitizedExportPacket = serde_json::from_slice(&sanitized_bytes)
         .map_err(|_| "lifecycle_sanitized_export_json_invalid".to_string())?;
-    compare_verified_projection(&packet, &private_packets, plan, parent_desktop_results)?;
+    compare_verified_projection(
+        &packet,
+        &private_packets,
+        plan,
+        parent_desktop_results,
+        parent_current_user.authority,
+        parent_current_user.before_uninstall,
+        parent_current_user.after_uninstall,
+    )?;
 
     // The current raw packet deliberately does not claim the standard-parent
     // current-user root, pipe ownership, ETW/lock/loss state, or the remaining
@@ -633,6 +649,9 @@ fn compare_verified_projection(
     private_packets: &[(&EvidenceReceipt, PrivateSuccessPacket)],
     plan: &ProofPlan,
     parent_desktop_results: &[DesktopPhaseResult],
+    parent_current_user: &ParentCurrentUserAuthority,
+    before_uninstall: &ParentCurrentUserObjects,
+    after_uninstall: &ParentCurrentUserObjects,
 ) -> Result<(), String> {
     let by_name = export
         .private_evidence
@@ -697,8 +716,13 @@ fn compare_verified_projection(
                 &rollback.machine
             }
         };
-        compare_machine_projection(machine, &entry.machine, plan)?;
+        compare_machine_projection(machine, &entry.machine, plan, parent_current_user)?;
     }
+    compare_parent_current_user_retention(
+        &export.current_user_retention,
+        before_uninstall,
+        after_uninstall,
+    )?;
     Ok(())
 }
 
@@ -706,6 +730,7 @@ fn compare_machine_projection(
     raw: &ElevatedMachineSnapshot,
     sanitized: &SanitizedMachineSnapshot,
     _plan: &ProofPlan,
+    parent_current_user: &ParentCurrentUserAuthority,
 ) -> Result<(), String> {
     let roots = projection_roots()?;
     compare_service_projection(
@@ -751,9 +776,82 @@ fn compare_machine_projection(
         &sanitized.service_data_root,
     )?;
     compare_observation(
+        &project_parent_current_user_directory(parent_current_user)?,
+        &sanitized.current_user_data_root,
+    )?;
+    compare_observation(
         &project_boundaries_observation(&raw.installed_boundaries)?,
         &sanitized.installed_boundaries,
     )
+}
+
+fn project_parent_current_user_directory(
+    authority: &ParentCurrentUserAuthority,
+) -> Result<Observation<SanitizedDirectorySnapshot>, String> {
+    project_observation(&authority.data_root, |directory| {
+        if !directory
+            .final_path
+            .eq_ignore_ascii_case(&authority.resolved_data_root)
+        {
+            return Err("lifecycle_parent_user_data_root_drift".to_string());
+        }
+        Ok(SanitizedDirectorySnapshot {
+            volume_serial: directory.identity.volume_serial,
+            file_index: directory.identity.file_index,
+            final_path: LogicalPath {
+                root: LogicalRoot::CurrentUserData,
+                relative_leaf: String::new(),
+            },
+        })
+    })
+}
+
+fn compare_parent_current_user_retention(
+    sanitized: &SanitizedCurrentUserRetention,
+    before: &ParentCurrentUserObjects,
+    after: &ParentCurrentUserObjects,
+) -> Result<(), String> {
+    for (object, leaf, before, after) in [
+        (
+            &sanitized.settings,
+            RETAINED_SETTINGS_LEAF,
+            &before.settings,
+            &after.settings,
+        ),
+        (
+            &sanitized.cache,
+            RETAINED_CACHE_LEAF,
+            &before.cache,
+            &after.cache,
+        ),
+        (
+            &sanitized.diagnostics,
+            RETAINED_DIAGNOSTICS_LEAF,
+            &before.diagnostics,
+            &after.diagnostics,
+        ),
+    ] {
+        if object.path.root != LogicalRoot::CurrentUserData
+            || object.path.relative_leaf != leaf
+            || object.before_uninstall != project_parent_user_digest(before)?
+            || object.after_uninstall != project_parent_user_digest(after)?
+        {
+            return Err("lifecycle_parent_user_retention_drift".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn project_parent_user_digest(
+    observation: &Observation<FileSnapshot>,
+) -> Result<Observation<SanitizedDigestSnapshot>, String> {
+    project_observation(observation, |file| {
+        validate_sha256(&file.sha256, "parent_user_object")?;
+        Ok(SanitizedDigestSnapshot {
+            size: file.size,
+            sha256: file.sha256.clone(),
+        })
+    })
 }
 
 fn projection_roots() -> Result<Vec<SanitizationRoot>, String> {
@@ -2096,7 +2194,7 @@ fn assertion_for_leaf(value: &str) -> SanitizedEvidenceAssertion {
             SanitizedEvidenceAssertion::FinalIncompatibleRunning
         }
         "final-uninstall-state.private.json" => {
-            SanitizedEvidenceAssertion::FinalUninstalledPreservingCurrentUserData
+            SanitizedEvidenceAssertion::FinalUninstalledPreservingDeclaredCurrentUserObjects
         }
         _ => unreachable!("fixed success evidence leaf"),
     }
@@ -2212,7 +2310,7 @@ fn validate_stage_machine_assertion(
             )?;
             require_legacy_cli(machine, None)
         }
-        SanitizedEvidenceAssertion::FinalUninstalledPreservingCurrentUserData => {
+        SanitizedEvidenceAssertion::FinalUninstalledPreservingDeclaredCurrentUserObjects => {
             validate_product_absence(machine, true)
         }
         SanitizedEvidenceAssertion::DesktopPhase => Ok(()),
@@ -3150,6 +3248,9 @@ mod tests {
                 &[(&entry.receipt, packet)],
                 &plan,
                 &parent_desktop_results(&plan),
+                &parent_current_user(),
+                &parent_user_objects(),
+                &parent_user_objects(),
             ),
             Ok(())
         );
@@ -3190,6 +3291,9 @@ mod tests {
                 )],
                 &plan,
                 &parent_desktop_results(&plan),
+                &parent_current_user(),
+                &parent_user_objects(),
+                &parent_user_objects(),
             ),
             Err("lifecycle_private_projection_machine_drift".to_string())
         );
@@ -3207,6 +3311,9 @@ mod tests {
             )],
             &plan,
             &parent_desktop_results(&plan),
+            &parent_current_user(),
+            &parent_user_objects(),
+            &parent_user_objects(),
         )
         .is_err());
     }
@@ -3230,7 +3337,7 @@ mod tests {
             let mut hostile = raw.clone();
             hostile.machine.service_binary = missing_binary;
             assert_eq!(
-                compare_machine_projection(&hostile, &entry.machine, &plan),
+                compare_machine_projection(&hostile, &entry.machine, &plan, &parent_current_user(),),
                 Err("lifecycle_private_projection_service_file_missing".to_string())
             );
         }
@@ -3242,7 +3349,7 @@ mod tests {
             let mut hostile = raw.clone();
             hostile.installed_boundaries = missing_boundaries;
             assert_eq!(
-                compare_machine_projection(&hostile, &entry.machine, &plan),
+                compare_machine_projection(&hostile, &entry.machine, &plan, &parent_current_user(),),
                 Err("lifecycle_private_projection_service_boundary_missing".to_string())
             );
         }
@@ -3284,6 +3391,9 @@ mod tests {
                 )],
                 &plan,
                 &parent,
+                &parent_current_user(),
+                &parent_user_objects(),
+                &parent_user_objects(),
             ),
             Err("lifecycle_private_projection_parent_desktop_drift".to_string())
         );
@@ -3312,6 +3422,9 @@ mod tests {
                 )],
                 &plan,
                 &parent_desktop_results(&plan),
+                &parent_current_user(),
+                &parent_user_objects(),
+                &parent_user_objects(),
             ),
             Err("lifecycle_private_projection_event_drift".to_string())
         );
@@ -3347,13 +3460,16 @@ mod tests {
                 )],
                 &plan,
                 &parent_desktop_results(&plan),
+                &parent_current_user(),
+                &parent_user_objects(),
+                &parent_user_objects(),
             ),
             Err("lifecycle_private_projection_event_drift".to_string())
         );
     }
 
     #[test]
-    fn unrepresented_worker_pipe_etw_and_current_user_claims_never_complete_projection() {
+    fn unrepresented_worker_pipe_and_etw_claims_never_complete_projection() {
         let plan = parse_plan().expect("plan");
         let receipts = success_receipts();
         let mut export = valid_export(&plan, &receipts);
@@ -3377,8 +3493,16 @@ mod tests {
             });
 
         assert_eq!(
-            compare_machine_projection(&raw, &entry.machine, &plan),
+            compare_machine_projection(&raw, &entry.machine, &plan, &parent_current_user()),
             Ok(())
+        );
+        assert_eq!(
+            compare_parent_current_user_retention(
+                &export.current_user_retention,
+                &parent_user_objects(),
+                &parent_user_objects(),
+            ),
+            Err("lifecycle_parent_user_retention_drift".to_string())
         );
         assert_eq!(
             require_complete_raw_projection_authority(),
@@ -3413,7 +3537,8 @@ mod tests {
                 final_path: hostile.to_string(),
             });
             assert!(
-                compare_machine_projection(&raw, &initial.machine, &plan).is_err(),
+                compare_machine_projection(&raw, &initial.machine, &plan, &parent_current_user(),)
+                    .is_err(),
                 "{hostile}"
             );
         }
@@ -4282,6 +4407,58 @@ mod tests {
         }
     }
 
+    fn parent_current_user() -> ParentCurrentUserAuthority {
+        ParentCurrentUserAuthority {
+            user_sid: "S-1-5-21-1".to_string(),
+            session_id: 1,
+            logon_luid: super::super::native::LogonLuid {
+                low_part: 2,
+                high_part: 0,
+            },
+            profile: DirectorySnapshot {
+                identity: super::super::native::FileIdentity {
+                    volume_serial: 1,
+                    file_index: 10,
+                },
+                final_path: r"C:\Users\proof".to_string(),
+            },
+            local_app_data: DirectorySnapshot {
+                identity: super::super::native::FileIdentity {
+                    volume_serial: 1,
+                    file_index: 11,
+                },
+                final_path: r"C:\Users\proof\AppData\Local".to_string(),
+            },
+            resolved_data_root: r"C:\Users\proof\AppData\Local\BatCaveMonitor".to_string(),
+            data_root: Observation::Present(DirectorySnapshot {
+                identity: super::super::native::FileIdentity {
+                    volume_serial: 1,
+                    file_index: 1,
+                },
+                final_path: r"C:\Users\proof\AppData\Local\BatCaveMonitor".to_string(),
+            }),
+        }
+    }
+
+    fn parent_user_objects() -> ParentCurrentUserObjects {
+        ParentCurrentUserObjects {
+            settings: parent_user_file("a", 20),
+            cache: parent_user_file("b", 21),
+            diagnostics: parent_user_file("c", 22),
+        }
+    }
+
+    fn parent_user_file(hash_digit: &str, file_index: u64) -> Observation<FileSnapshot> {
+        Observation::Present(FileSnapshot {
+            size: 1,
+            sha256: hash_digit.repeat(64),
+            identity: super::super::native::FileIdentity {
+                volume_serial: 1,
+                file_index,
+            },
+        })
+    }
+
     fn raw_observation<T, U>(
         observation: &Observation<T>,
         map: impl FnOnce(&T) -> U,
@@ -4454,7 +4631,7 @@ mod tests {
                 })
                 .collect(),
             final_product_absent: true,
-            current_user_data_preserved: true,
+            declared_current_user_objects_preserved: true,
             current_user_retention: retention(receipts),
         }
     }
@@ -4841,7 +5018,7 @@ mod tests {
                     ServiceExpectation::Running,
                     true,
                 ),
-                SanitizedEvidenceAssertion::FinalUninstalledPreservingCurrentUserData => {
+                SanitizedEvidenceAssertion::FinalUninstalledPreservingDeclaredCurrentUserObjects => {
                     absent_machine(true)
                 }
                 SanitizedEvidenceAssertion::DesktopPhase => unreachable!("handled above"),

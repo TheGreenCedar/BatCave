@@ -19,9 +19,10 @@ use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_BROKEN_PIPE, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_MORE_FILES, ERROR_PATH_NOT_FOUND,
-    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS,
-    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_MORE_FILES, ERROR_NO_TOKEN,
+    ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SERVICE_DOES_NOT_EXIST,
+    ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, TRUE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -31,15 +32,16 @@ use windows_sys::Win32::Security::Cryptography::{
 };
 use windows_sys::Win32::Security::{
     GetLengthSid, GetTokenInformation, IsValidSid, TokenElevation, TokenElevationType,
-    TokenElevationTypeFull, TokenSessionId, TokenUser, SECURITY_ATTRIBUTES, TOKEN_ELEVATION,
-    TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_USER,
+    TokenElevationTypeFull, TokenSessionId, TokenStatistics, TokenUser, SECURITY_ATTRIBUTES,
+    TOKEN_ELEVATION, TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SYNCHRONIZE,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SYNCHRONIZE,
 };
+use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -68,14 +70,16 @@ use windows_sys::Win32::System::SystemInformation::{
     GetSystemDirectoryW, GetSystemWindowsDirectoryW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes,
-    OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, ResumeThread, TerminateProcess,
-    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+    CreateProcessW, GetCurrentProcess, GetCurrentThread, GetExitCodeProcess, GetProcessId,
+    GetProcessTimes, OpenProcess, OpenProcessToken, OpenThreadToken, QueryFullProcessImageNameW,
+    ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    STARTUPINFOW,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::UI::Shell::{
-    GetUserProfileDirectoryW, ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    FOLDERID_LocalAppData, GetUserProfileDirectoryW, SHGetKnownFolderPath, ShellExecuteExW,
+    SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SW_HIDE,
@@ -178,6 +182,61 @@ pub(crate) struct ElevatedMachineSnapshot {
     pub(crate) current_user_data_root: Observation<DirectorySnapshot>,
     pub(crate) installed_boundaries:
         Observation<crate::collector_service::windows_provisioner::InstalledBoundariesForProof>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParentCurrentUserAuthority {
+    pub(crate) user_sid: String,
+    pub(crate) session_id: u32,
+    pub(crate) logon_luid: LogonLuid,
+    pub(crate) profile: DirectorySnapshot,
+    pub(crate) local_app_data: DirectorySnapshot,
+    pub(crate) resolved_data_root: String,
+    pub(crate) data_root: Observation<DirectorySnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LogonLuid {
+    pub(crate) low_part: u32,
+    pub(crate) high_part: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParentCurrentUserObjects {
+    pub(crate) settings: Observation<FileSnapshot>,
+    pub(crate) cache: Observation<FileSnapshot>,
+    pub(crate) diagnostics: Observation<FileSnapshot>,
+}
+
+pub(crate) struct ParentCurrentUserAuthorityGuard {
+    authority: ParentCurrentUserAuthority,
+    token: OwnedHandle,
+    profile: OwnedDirectory,
+    local_app_data: OwnedDirectory,
+    data_root: OwnedDirectory,
+}
+
+pub(crate) struct ParentCurrentUserObjectsGuard {
+    authority: ParentCurrentUserObjects,
+    settings: Option<ParentObservedFile>,
+    cache: Option<ParentObservedFile>,
+    diagnostics: Option<ParentObservedFile>,
+}
+
+struct OwnedDirectory {
+    path: PathBuf,
+    handle: File,
+    identity: FileIdentity,
+}
+
+struct ParentObservedFile {
+    path: PathBuf,
+    parent_path: PathBuf,
+    parent_identity: FileIdentity,
+    handle: File,
+    size: u64,
+    sha256: [u8; 32],
+    identity: FileIdentity,
 }
 
 pub(crate) struct OwnedFile {
@@ -284,13 +343,238 @@ impl FixedLaunchContext {
         {
             return Err("lifecycle_desktop_working_directory_changed".to_string());
         }
-        let profile = current_user_profile_directory(parent_token)?;
+        let (profile, local_app_data) = current_user_directories(parent_token)?;
         let system = system_directory()?;
         let windows = windows_directory()?;
         Ok(Self {
-            environment: build_desktop_environment_block(&profile, &system, &windows)?,
+            environment: build_desktop_environment_block(
+                &profile,
+                &local_app_data,
+                &system,
+                &windows,
+            )?,
             current_directory: wide(current_directory.as_os_str()),
         })
+    }
+}
+
+impl OwnedDirectory {
+    fn open(path: &Path, label: &str) -> Result<Self, String> {
+        Self::open_with_delete_sharing(path, label, true)
+    }
+
+    fn open_without_delete_sharing(path: &Path, label: &str) -> Result<Self, String> {
+        Self::open_with_delete_sharing(path, label, false)
+    }
+
+    fn open_with_delete_sharing(
+        path: &Path,
+        label: &str,
+        share_delete: bool,
+    ) -> Result<Self, String> {
+        let (normalized, mut component_handles) = open_no_follow_directory_components(path, label)?;
+        let handle = if share_delete {
+            open_directory_handle(
+                &normalized,
+                label,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            )?
+        } else {
+            component_handles
+                .pop()
+                .ok_or_else(|| format!("lifecycle_{label}_component_missing"))?
+        };
+        let metadata = handle
+            .metadata()
+            .map_err(|_| format!("lifecycle_{label}_metadata_failed"))?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("lifecycle_{label}_type_invalid"));
+        }
+        let information =
+            file_information(&handle).map_err(|_| format!("lifecycle_{label}_identity_failed"))?;
+        let final_path =
+            final_path(&handle).map_err(|_| format!("lifecycle_{label}_path_failed"))?;
+        if !paths_equal(&final_path, &normalized) {
+            return Err(format!("lifecycle_{label}_path_changed"));
+        }
+        Ok(Self {
+            path: final_path,
+            handle,
+            identity: information.identity,
+        })
+    }
+
+    fn snapshot(&self) -> DirectorySnapshot {
+        DirectorySnapshot {
+            identity: self.identity,
+            final_path: self.path.to_string_lossy().into_owned(),
+        }
+    }
+
+    fn revalidate(&self) -> Result<(), String> {
+        let metadata = self
+            .handle
+            .metadata()
+            .map_err(|_| "lifecycle_parent_user_directory_metadata_failed".to_string())?;
+        let information = file_information(&self.handle)
+            .map_err(|_| "lifecycle_parent_user_directory_identity_failed".to_string())?;
+        let path = final_path(&self.handle)
+            .map_err(|_| "lifecycle_parent_user_directory_path_failed".to_string())?;
+        let reopened = Self::open(&self.path, "parent_user_directory_reopen")?;
+        if !metadata.is_dir()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || information.identity != self.identity
+            || path != self.path
+            || reopened.identity != self.identity
+            || reopened.path != self.path
+        {
+            return Err("lifecycle_parent_user_directory_changed".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl ParentObservedFile {
+    fn open(path: &Path, expected_parent: &OwnedDirectory, label: &str) -> Result<Self, String> {
+        let requested_parent = path
+            .parent()
+            .ok_or_else(|| format!("lifecycle_{label}_parent_missing"))?;
+        if !paths_equal(requested_parent, &expected_parent.path) {
+            return Err(format!("lifecycle_{label}_parent_changed"));
+        }
+        let mut handle = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|_| format!("lifecycle_{label}_open_failed"))?;
+        let metadata = handle
+            .metadata()
+            .map_err(|_| format!("lifecycle_{label}_metadata_failed"))?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("lifecycle_{label}_type_invalid"));
+        }
+        let information =
+            file_information(&handle).map_err(|_| format!("lifecycle_{label}_identity_failed"))?;
+        if information.number_of_links != 1 {
+            return Err(format!("lifecycle_{label}_link_count_invalid"));
+        }
+        let sha256 =
+            digest_handle(&mut handle).map_err(|_| format!("lifecycle_{label}_hash_failed"))?;
+        let path = final_path(&handle).map_err(|_| format!("lifecycle_{label}_path_failed"))?;
+        if !path
+            .parent()
+            .is_some_and(|observed| paths_equal(observed, &expected_parent.path))
+        {
+            return Err(format!("lifecycle_{label}_parent_changed"));
+        }
+        Ok(Self {
+            path,
+            parent_path: expected_parent.path.clone(),
+            parent_identity: expected_parent.identity,
+            handle,
+            size: metadata.len(),
+            sha256,
+            identity: information.identity,
+        })
+    }
+
+    fn snapshot(&self) -> FileSnapshot {
+        FileSnapshot {
+            size: self.size,
+            sha256: hex_digest(&self.sha256),
+            identity: self.identity,
+        }
+    }
+
+    fn revalidate(&self) -> Result<(), String> {
+        let mut duplicate = self
+            .handle
+            .try_clone()
+            .map_err(|_| "lifecycle_parent_user_file_clone_failed".to_string())?;
+        let metadata = duplicate
+            .metadata()
+            .map_err(|_| "lifecycle_parent_user_file_metadata_failed".to_string())?;
+        let information = file_information(&duplicate)
+            .map_err(|_| "lifecycle_parent_user_file_identity_failed".to_string())?;
+        let path = final_path(&duplicate)
+            .map_err(|_| "lifecycle_parent_user_file_path_failed".to_string())?;
+        let sha256 = digest_handle(&mut duplicate)
+            .map_err(|_| "lifecycle_parent_user_file_hash_failed".to_string())?;
+        let parent = OwnedDirectory::open_without_delete_sharing(
+            &self.parent_path,
+            "parent_user_file_parent_reopen",
+        )?;
+        if parent.identity != self.parent_identity {
+            return Err("lifecycle_parent_user_file_parent_changed".to_string());
+        }
+        let reopened = Self::open(&self.path, &parent, "parent_user_file_reopen")?;
+        if metadata.len() != self.size
+            || information.identity != self.identity
+            || information.number_of_links != 1
+            || path != self.path
+            || sha256 != self.sha256
+            || reopened.identity != self.identity
+            || reopened.size != self.size
+            || reopened.sha256 != self.sha256
+            || reopened.path != self.path
+        {
+            return Err("lifecycle_parent_user_file_changed".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl ParentCurrentUserAuthorityGuard {
+    pub(crate) fn authority(&self) -> &ParentCurrentUserAuthority {
+        &self.authority
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        validate_parent_current_user_authority(&self.authority)?;
+        let token = standard_token_evidence()?;
+        let retained_token = token_evidence(&self.token)?;
+        if token.sid_string != self.authority.user_sid
+            || token.session_id != self.authority.session_id
+            || token.logon_luid != self.authority.logon_luid
+            || retained_token != token
+        {
+            return Err("lifecycle_parent_user_token_changed".to_string());
+        }
+        let profile_path = profile_directory_for_token(&self.token)?;
+        if !profile_path
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&self.authority.profile.final_path)
+        {
+            return Err("lifecycle_parent_user_profile_changed".to_string());
+        }
+        self.profile.revalidate()?;
+        let local_app_data = local_app_data_for_token(&self.token)?;
+        if !local_app_data
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&self.authority.local_app_data.final_path)
+        {
+            return Err("lifecycle_parent_local_app_data_changed".to_string());
+        }
+        self.local_app_data.revalidate()?;
+        self.data_root.revalidate()?;
+        Ok(())
+    }
+}
+
+impl ParentCurrentUserObjectsGuard {
+    pub(crate) fn authority(&self) -> &ParentCurrentUserObjects {
+        &self.authority
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        for file in [&self.settings, &self.cache, &self.diagnostics]
+            .into_iter()
+            .flatten()
+        {
+            file.revalidate()?;
+        }
+        Ok(())
     }
 }
 
@@ -1294,7 +1578,12 @@ pub(crate) fn current_process_elevated() -> Result<bool, String> {
 }
 
 fn standard_token_evidence() -> Result<TokenEvidence, String> {
-    let token = current_token()?;
+    standard_primary_token().map(|(_, token)| token)
+}
+
+fn standard_primary_token() -> Result<(OwnedHandle, TokenEvidence), String> {
+    require_no_thread_token()?;
+    let (handle, token) = current_primary_token()?;
     if token.elevated
         || token.elevation_type == TokenElevationTypeFull
         || token.session_id == 0
@@ -1302,7 +1591,20 @@ fn standard_token_evidence() -> Result<TokenEvidence, String> {
     {
         Err("lifecycle_parent_must_use_standard_token".to_string())
     } else {
-        Ok(token)
+        Ok((handle, token))
+    }
+}
+
+fn require_no_thread_token() -> Result<(), String> {
+    let mut token = null_mut();
+    if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &mut token) } != 0 {
+        drop(OwnedHandle(token));
+        return Err("lifecycle_parent_thread_token_present".to_string());
+    }
+    if unsafe { GetLastError() } == ERROR_NO_TOKEN {
+        Ok(())
+    } else {
+        Err("lifecycle_parent_thread_token_probe_failed".to_string())
     }
 }
 
@@ -1347,6 +1649,67 @@ pub(crate) fn canonical_real_directory(path: &Path, label: &str) -> Result<PathB
     Ok(normalized)
 }
 
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+fn open_directory_handle(path: &Path, label: &str, share_mode: u32) -> Result<File, String> {
+    let handle = OpenOptions::new()
+        .read(true)
+        .share_mode(share_mode)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|_| format!("lifecycle_{label}_component_open_failed"))?;
+    let metadata = handle
+        .metadata()
+        .map_err(|_| format!("lifecycle_{label}_component_metadata_failed"))?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("lifecycle_{label}_component_reparse_rejected"));
+    }
+    Ok(handle)
+}
+
+fn open_no_follow_directory_components(
+    path: &Path,
+    label: &str,
+) -> Result<(PathBuf, Vec<File>), String> {
+    let normalized =
+        crate::collector_service::windows_provisioner::strip_verbatim_disk_prefix(path.into());
+    let value = normalized.to_string_lossy();
+    let bytes = value.as_bytes();
+    if bytes.len() < 3
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || !matches!(bytes[2], b'\\' | b'/')
+        || value.starts_with(r"\\")
+        || normalized.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(format!("lifecycle_{label}_path_invalid"));
+    }
+    let mut ancestors = normalized.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+    let mut handles = Vec::with_capacity(ancestors.len());
+    for component in ancestors.into_iter().filter(|ancestor| ancestor.has_root()) {
+        let handle = open_directory_handle(component, label, FILE_SHARE_READ | FILE_SHARE_WRITE)?;
+        let observed =
+            final_path(&handle).map_err(|_| format!("lifecycle_{label}_component_path_failed"))?;
+        if !paths_equal(&observed, component) {
+            return Err(format!("lifecycle_{label}_component_path_changed"));
+        }
+        handles.push(handle);
+    }
+    if handles.is_empty() {
+        return Err(format!("lifecycle_{label}_component_missing"));
+    }
+    Ok((normalized, handles))
+}
+
 pub(crate) fn require_clean_exact_head(repo_root: &Path, expected: &str) -> Result<(), String> {
     let head = git_output(repo_root, &["rev-parse", "HEAD"], "head")?;
     if head != expected {
@@ -1370,6 +1733,200 @@ pub(crate) fn capture_parent_preflight(
     let snapshot = capture_machine_snapshot(controller_bindings);
     require_allowlisted_parent_preflight(&snapshot, plan)?;
     Ok(snapshot)
+}
+
+pub(crate) fn capture_parent_current_user_authority(
+) -> Result<ParentCurrentUserAuthorityGuard, String> {
+    let (token_handle, token) = standard_primary_token()?;
+    let profile_path = profile_directory_for_token(&token_handle)?;
+    let profile = OwnedDirectory::open(&profile_path, "parent_user_profile")?;
+    if !profile
+        .path
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&profile_path.to_string_lossy())
+    {
+        return Err("lifecycle_parent_user_profile_path_changed".to_string());
+    }
+    let local_app_data_path = local_app_data_for_token(&token_handle)?;
+    let local_app_data = OwnedDirectory::open(&local_app_data_path, "parent_user_local_app_data")?;
+    let runtime_local_app_data_path = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "lifecycle_parent_runtime_local_app_data_missing".to_string())?;
+    let runtime_local_app_data = OwnedDirectory::open(
+        &runtime_local_app_data_path,
+        "parent_user_runtime_local_app_data",
+    )?;
+    if runtime_local_app_data.identity != local_app_data.identity
+        || !runtime_local_app_data
+            .path
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&local_app_data.path.to_string_lossy())
+    {
+        return Err("lifecycle_parent_runtime_local_app_data_mismatch".to_string());
+    }
+    let resolved = crate::persistence::resolve_current_user_root(
+        crate::persistence::StoragePlatform::Windows,
+        &crate::persistence::CurrentUserEnvironment {
+            local_app_data: Some(local_app_data.path.clone()),
+            xdg_data_home: None,
+            home: None,
+        },
+    )
+    .map_err(|_| "lifecycle_parent_user_data_root_resolve_failed".to_string())?;
+    let resolved_data_root = resolved.directory.to_string_lossy().into_owned();
+    let data_root_guard = OwnedDirectory::open(&resolved.directory, "parent_user_data_root")?;
+    if !paths_equal(&data_root_guard.path, &resolved.directory) {
+        return Err("lifecycle_parent_user_data_root_path_changed".to_string());
+    }
+    let data_root = Observation::Present(data_root_guard.snapshot());
+    let authority = ParentCurrentUserAuthority {
+        user_sid: token.sid_string.clone(),
+        session_id: token.session_id,
+        logon_luid: token.logon_luid,
+        profile: profile.snapshot(),
+        local_app_data: local_app_data.snapshot(),
+        resolved_data_root,
+        data_root,
+    };
+    validate_parent_current_user_authority(&authority)?;
+    Ok(ParentCurrentUserAuthorityGuard {
+        authority,
+        token: token_handle,
+        profile,
+        local_app_data,
+        data_root: data_root_guard,
+    })
+}
+
+fn validate_parent_current_user_authority(
+    authority: &ParentCurrentUserAuthority,
+) -> Result<(), String> {
+    if authority.user_sid.is_empty()
+        || authority.session_id == 0
+        || (authority.logon_luid.low_part == 0 && authority.logon_luid.high_part == 0)
+        || authority.profile.identity.volume_serial == 0
+        || authority.profile.identity.file_index == 0
+        || authority.local_app_data.identity.volume_serial == 0
+        || authority.local_app_data.identity.file_index == 0
+    {
+        return Err("lifecycle_parent_user_authority_identity_invalid".to_string());
+    }
+    let expected_root = Path::new(&authority.local_app_data.final_path).join("BatCaveMonitor");
+    if !authority
+        .local_app_data
+        .final_path
+        .to_ascii_lowercase()
+        .starts_with(&(authority.profile.final_path.to_ascii_lowercase() + r"\"))
+        || !authority
+            .resolved_data_root
+            .eq_ignore_ascii_case(&expected_root.to_string_lossy())
+        || !matches!(authority.data_root, Observation::Present(_))
+        || matches!(
+            &authority.data_root,
+            Observation::Present(root)
+                if !root.final_path.eq_ignore_ascii_case(&authority.resolved_data_root)
+                    || root.identity.volume_serial == 0
+                    || root.identity.file_index == 0
+        )
+    {
+        return Err("lifecycle_parent_user_authority_path_invalid".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn capture_parent_current_user_objects(
+    root: &ParentCurrentUserAuthorityGuard,
+) -> Result<ParentCurrentUserObjectsGuard, String> {
+    root.revalidate()?;
+    let data_root = Path::new(&root.authority.resolved_data_root);
+    let checkpoint_root =
+        OwnedDirectory::open_without_delete_sharing(data_root, "parent_user_checkpoint_data_root")?;
+    let Observation::Present(expected_root) = &root.authority.data_root else {
+        return Err("lifecycle_parent_user_data_root_missing".to_string());
+    };
+    if checkpoint_root.snapshot() != *expected_root
+        || checkpoint_root.identity != root.data_root.identity
+    {
+        return Err("lifecycle_parent_user_data_root_changed".to_string());
+    }
+    let (settings, settings_guard) = retain_parent_user_file(
+        &data_root.join("settings.json"),
+        &checkpoint_root,
+        "parent_user_settings",
+    )?;
+    let (cache, cache_guard) = retain_parent_user_file(
+        &data_root.join("warm-cache.json"),
+        &checkpoint_root,
+        "parent_user_cache",
+    )?;
+    let (diagnostics, diagnostics_guard) = retain_parent_user_file(
+        &data_root.join("diagnostics.jsonl"),
+        &checkpoint_root,
+        "parent_user_diagnostics",
+    )?;
+    checkpoint_root.revalidate()?;
+    root.data_root.revalidate()?;
+    let authority = ParentCurrentUserObjects {
+        settings,
+        cache,
+        diagnostics,
+    };
+    require_parent_current_user_objects_present(&authority)?;
+    Ok(ParentCurrentUserObjectsGuard {
+        authority,
+        settings: settings_guard,
+        cache: cache_guard,
+        diagnostics: diagnostics_guard,
+    })
+}
+
+pub(crate) fn validate_parent_current_user_objects_preserved(
+    before: &ParentCurrentUserObjects,
+    after: &ParentCurrentUserObjects,
+) -> Result<(), String> {
+    require_parent_current_user_objects_present(before)?;
+    require_parent_current_user_objects_present(after)?;
+    if before.settings != after.settings
+        || before.cache != after.cache
+        || before.diagnostics != after.diagnostics
+    {
+        return Err("lifecycle_parent_user_objects_not_preserved".to_string());
+    }
+    Ok(())
+}
+
+fn require_parent_current_user_objects_present(
+    objects: &ParentCurrentUserObjects,
+) -> Result<(), String> {
+    if [&objects.settings, &objects.cache, &objects.diagnostics]
+        .into_iter()
+        .all(|observation| matches!(observation, Observation::Present(_)))
+    {
+        Ok(())
+    } else {
+        Err("lifecycle_parent_user_objects_missing".to_string())
+    }
+}
+
+fn retain_parent_user_file(
+    path: &Path,
+    parent: &OwnedDirectory,
+    label: &str,
+) -> Result<(Observation<FileSnapshot>, Option<ParentObservedFile>), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok((Observation::Absent, None))
+        }
+        Err(error) => Err(format!(
+            "lifecycle_{label}_metadata_failed:{}",
+            error.raw_os_error().unwrap_or_default()
+        )),
+        Ok(_) => {
+            let file = ParentObservedFile::open(path, parent, label)?;
+            let snapshot = file.snapshot();
+            Ok((Observation::Present(snapshot), Some(file)))
+        }
+    }
 }
 
 pub(crate) fn capture_machine_snapshot(controller_bindings: &[PeerBinding]) -> PreflightSnapshot {
@@ -2871,17 +3428,28 @@ fn read_registry_string(key: HKEY, name: &str) -> Result<String, String> {
     String::from_utf16(&buffer).map_err(|_| "registry_value_utf16_invalid".to_string())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TokenEvidence {
     sid: Vec<u8>,
     sid_string: String,
     session_id: u32,
+    logon_luid: LogonLuid,
     elevated: bool,
     elevation_type: TOKEN_ELEVATION_TYPE,
 }
 
 fn current_token() -> Result<TokenEvidence, String> {
-    token_for_process(unsafe { GetCurrentProcess() })
+    current_primary_token().map(|(_, token)| token)
+}
+
+fn current_primary_token() -> Result<(OwnedHandle, TokenEvidence), String> {
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err("lifecycle_process_token_open_failed".to_string());
+    }
+    let token = OwnedHandle(token);
+    let evidence = token_evidence(&token)?;
+    Ok((token, evidence))
 }
 
 fn token_for_process(process: HANDLE) -> Result<TokenEvidence, String> {
@@ -2906,14 +3474,38 @@ fn token_evidence(token: &OwnedHandle) -> Result<TokenEvidence, String> {
         .to_vec();
     let sid_string = sid_string(token_user.User.Sid)?;
     let session_id = token_session_id(token.raw())?;
+    let logon_luid = token_logon_luid(token.raw())?;
     let elevated = token_is_elevated(token.raw())?;
     let elevation_type = token_elevation_type(token.raw())?;
     Ok(TokenEvidence {
         sid,
         sid_string,
         session_id,
+        logon_luid,
         elevated,
         elevation_type,
+    })
+}
+
+fn token_logon_luid(token: HANDLE) -> Result<LogonLuid, String> {
+    let mut statistics: TOKEN_STATISTICS = unsafe { zeroed() };
+    let mut returned = 0;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenStatistics,
+            (&mut statistics as *mut TOKEN_STATISTICS).cast(),
+            size_of::<TOKEN_STATISTICS>() as u32,
+            &mut returned,
+        )
+    } == 0
+        || returned < size_of::<TOKEN_STATISTICS>() as u32
+    {
+        return Err("lifecycle_token_statistics_failed".to_string());
+    }
+    Ok(LogonLuid {
+        low_part: statistics.AuthenticationId.LowPart,
+        high_part: statistics.AuthenticationId.HighPart,
     })
 }
 
@@ -3417,20 +4009,40 @@ fn build_fixed_environment_block(
     Ok(block)
 }
 
-fn current_user_profile_directory(expected_token: &TokenEvidence) -> Result<PathBuf, String> {
-    let mut token = null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err("lifecycle_desktop_profile_token_open_failed".to_string());
-    }
-    let token = OwnedHandle(token);
-    let observed_token = token_evidence(&token)?;
+fn current_user_directories(expected_token: &TokenEvidence) -> Result<(PathBuf, PathBuf), String> {
+    require_no_thread_token()?;
+    let (token, observed_token) = current_primary_token()?;
     if observed_token.sid != expected_token.sid
         || observed_token.session_id != expected_token.session_id
+        || observed_token.logon_luid != expected_token.logon_luid
         || observed_token.elevated
         || observed_token.elevation_type != expected_token.elevation_type
     {
         return Err("lifecycle_desktop_profile_token_changed".to_string());
     }
+    let profile_path = profile_directory_for_token(&token)?;
+    let profile = OwnedDirectory::open(&profile_path, "desktop_profile")?;
+    if !paths_equal(&profile.path, &profile_path) {
+        return Err("lifecycle_desktop_profile_path_changed".to_string());
+    }
+    let local_app_data = local_app_data_for_token(&token)?;
+    let token_directory = OwnedDirectory::open(&local_app_data, "desktop_local_app_data")?;
+    let runtime_path = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "lifecycle_desktop_runtime_local_app_data_missing".to_string())?;
+    let runtime_directory = OwnedDirectory::open(&runtime_path, "desktop_runtime_local_app_data")?;
+    if token_directory.identity != runtime_directory.identity
+        || !token_directory
+            .path
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&runtime_directory.path.to_string_lossy())
+    {
+        return Err("lifecycle_desktop_runtime_local_app_data_mismatch".to_string());
+    }
+    Ok((profile.path, token_directory.path))
+}
+
+fn profile_directory_for_token(token: &OwnedHandle) -> Result<PathBuf, String> {
     let mut required = 0;
     unsafe {
         GetUserProfileDirectoryW(token.raw(), null_mut(), &mut required);
@@ -3446,11 +4058,34 @@ fn current_user_profile_directory(expected_token: &TokenEvidence) -> Result<Path
         buffer.pop();
     }
     let profile = PathBuf::from(OsString::from_wide(&buffer));
-    canonical_real_directory(&profile, "desktop_profile")
+    Ok(profile)
+}
+
+fn local_app_data_for_token(token: &OwnedHandle) -> Result<PathBuf, String> {
+    let mut value = null_mut();
+    let result =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, token.raw(), &mut value) };
+    if result < 0 || value.is_null() {
+        return Err("lifecycle_parent_local_app_data_query_failed".to_string());
+    }
+    let mut length = 0_usize;
+    while unsafe { *value.add(length) } != 0 {
+        length += 1;
+        if length > WINDOWS_PATH_BUFFER_SIZE {
+            unsafe { CoTaskMemFree(value.cast()) };
+            return Err("lifecycle_parent_local_app_data_path_invalid".to_string());
+        }
+    }
+    let path = PathBuf::from(OsString::from_wide(unsafe {
+        std::slice::from_raw_parts(value, length)
+    }));
+    unsafe { CoTaskMemFree(value.cast()) };
+    Ok(path)
 }
 
 fn build_desktop_environment_block(
     profile: &Path,
+    local_app_data: &Path,
     system: &Path,
     windows: &Path,
 ) -> Result<Vec<u16>, String> {
@@ -3475,9 +4110,11 @@ fn build_desktop_environment_block(
         .get(..2)
         .filter(|drive| drive.as_bytes().get(1) == Some(&b':'))
         .ok_or_else(|| "lifecycle_desktop_windows_path_invalid".to_string())?;
-    let local_app_data = Path::new(profile).join("AppData").join("Local");
+    let local_app_data = local_app_data
+        .to_str()
+        .ok_or_else(|| "lifecycle_desktop_local_app_data_utf16_invalid".to_string())?;
     let roaming_app_data = Path::new(profile).join("AppData").join("Roaming");
-    let temp = local_app_data.join("Temp");
+    let temp = Path::new(local_app_data).join("Temp");
     let command_processor = Path::new(system).join("cmd.exe");
     let path = format!("{system};{windows}");
     let entries = [
@@ -3486,10 +4123,7 @@ fn build_desktop_environment_block(
         ("ComSpec", command_processor.to_string_lossy().into_owned()),
         ("HOMEDRIVE", home_drive.to_string()),
         ("HOMEPATH", home_path.to_string()),
-        (
-            "LOCALAPPDATA",
-            local_app_data.to_string_lossy().into_owned(),
-        ),
+        ("LOCALAPPDATA", local_app_data.to_string()),
         ("OS", "Windows_NT".to_string()),
         ("PATH", path),
         ("PATHEXT", ".COM;.EXE;.BAT;.CMD".to_string()),
@@ -3704,6 +4338,182 @@ mod tests {
             parse_sha256("00", "fixture"),
             Err("lifecycle_fixture_sha256_invalid".to_string())
         );
+    }
+
+    #[test]
+    fn parent_current_user_authority_rejects_token_profile_and_root_drift() {
+        let authority = parent_current_user_authority();
+        assert_eq!(validate_parent_current_user_authority(&authority), Ok(()));
+
+        let mut token_drift = authority.clone();
+        token_drift.logon_luid.low_part = 0;
+        token_drift.logon_luid.high_part = 0;
+        assert_eq!(
+            validate_parent_current_user_authority(&token_drift),
+            Err("lifecycle_parent_user_authority_identity_invalid".to_string())
+        );
+
+        let mut profile_drift = authority.clone();
+        profile_drift.local_app_data.final_path = r"D:\Other\AppData\Local".to_string();
+        assert_eq!(
+            validate_parent_current_user_authority(&profile_drift),
+            Err("lifecycle_parent_user_authority_path_invalid".to_string())
+        );
+
+        let mut root_drift = authority.clone();
+        root_drift.data_root = Observation::Present(DirectorySnapshot {
+            identity: FileIdentity {
+                volume_serial: 1,
+                file_index: 4,
+            },
+            final_path: r"C:\Users\proof\AppData\Local\Other".to_string(),
+        });
+        assert_eq!(
+            validate_parent_current_user_authority(&root_drift),
+            Err("lifecycle_parent_user_authority_path_invalid".to_string())
+        );
+
+        let mut unknown = authority;
+        unknown.data_root = Observation::Unknown("access_denied".to_string());
+        assert_eq!(
+            validate_parent_current_user_authority(&unknown),
+            Err("lifecycle_parent_user_authority_path_invalid".to_string())
+        );
+
+        let mut missing = parent_current_user_authority();
+        missing.data_root = Observation::Absent;
+        assert_eq!(
+            validate_parent_current_user_authority(&missing),
+            Err("lifecycle_parent_user_authority_path_invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn parent_current_user_objects_reject_altered_present_values() {
+        let before = parent_current_user_objects();
+        assert_eq!(
+            validate_parent_current_user_objects_preserved(&before, &before),
+            Ok(())
+        );
+
+        let mut identity_drift = before.clone();
+        let Observation::Present(settings) = &mut identity_drift.settings else {
+            panic!("settings");
+        };
+        settings.identity.file_index += 1;
+        assert_eq!(
+            validate_parent_current_user_objects_preserved(&before, &identity_drift),
+            Err("lifecycle_parent_user_objects_not_preserved".to_string())
+        );
+
+        let mut digest_drift = before.clone();
+        let Observation::Present(cache) = &mut digest_drift.cache else {
+            panic!("cache");
+        };
+        cache.sha256 = "f".repeat(64);
+        assert_eq!(
+            validate_parent_current_user_objects_preserved(&before, &digest_drift),
+            Err("lifecycle_parent_user_objects_not_preserved".to_string())
+        );
+
+        let mut missing = before.clone();
+        missing.diagnostics = Observation::Absent;
+        assert!(validate_parent_current_user_objects_preserved(&before, &missing).is_err());
+
+        let absent = ParentCurrentUserObjects {
+            settings: Observation::Absent,
+            cache: Observation::Absent,
+            diagnostics: Observation::Absent,
+        };
+        assert!(validate_parent_current_user_objects_preserved(&absent, &absent).is_err());
+
+        let mut unknown = before.clone();
+        unknown.settings = Observation::Unknown("access_denied".to_string());
+        assert!(validate_parent_current_user_objects_preserved(&before, &unknown).is_err());
+    }
+
+    #[test]
+    fn checkpoint_root_pin_blocks_rename_but_leaf_observation_does_not() {
+        let canonical_temp =
+            crate::collector_service::windows_provisioner::strip_verbatim_disk_prefix(
+                fs::canonicalize(std::env::temp_dir()).expect("canonical temp directory"),
+            );
+        let temporary = canonical_temp.join(format!(
+            "BatCave-parent-user-pin-{}-{}",
+            std::process::id(),
+            random_hex(8).expect("nonce")
+        ));
+        fs::create_dir(&temporary).expect("temporary directory");
+        let root = temporary.join("root");
+        let renamed = temporary.join("renamed");
+        fs::create_dir(&root).expect("root");
+        let leaf = root.join("settings.json");
+        fs::write(&leaf, b"settings").expect("leaf");
+
+        let checkpoint_root =
+            OwnedDirectory::open_without_delete_sharing(&root, "test_checkpoint_root")
+                .expect("checkpoint root");
+        let observed = ParentObservedFile::open(&leaf, &checkpoint_root, "test_checkpoint_leaf")
+            .expect("observed leaf");
+        assert!(fs::rename(&root, &renamed).is_err());
+
+        drop(checkpoint_root);
+        fs::remove_file(&leaf).expect("leaf delete remains shared");
+        assert!(observed.revalidate().is_err());
+        fs::rename(&root, &renamed).expect("root rename after checkpoint pin drops");
+        fs::remove_dir(&renamed).expect("renamed root cleanup");
+        fs::remove_dir(&temporary).expect("temporary directory cleanup");
+    }
+
+    fn parent_current_user_authority() -> ParentCurrentUserAuthority {
+        ParentCurrentUserAuthority {
+            user_sid: "S-1-5-21-1".to_string(),
+            session_id: 1,
+            logon_luid: LogonLuid {
+                low_part: 2,
+                high_part: 0,
+            },
+            profile: DirectorySnapshot {
+                identity: FileIdentity {
+                    volume_serial: 1,
+                    file_index: 1,
+                },
+                final_path: r"C:\Users\proof".to_string(),
+            },
+            local_app_data: DirectorySnapshot {
+                identity: FileIdentity {
+                    volume_serial: 1,
+                    file_index: 2,
+                },
+                final_path: r"C:\Users\proof\AppData\Local".to_string(),
+            },
+            resolved_data_root: r"C:\Users\proof\AppData\Local\BatCaveMonitor".to_string(),
+            data_root: Observation::Present(DirectorySnapshot {
+                identity: FileIdentity {
+                    volume_serial: 1,
+                    file_index: 3,
+                },
+                final_path: r"C:\Users\proof\AppData\Local\BatCaveMonitor".to_string(),
+            }),
+        }
+    }
+
+    fn parent_current_user_objects() -> ParentCurrentUserObjects {
+        let file = |file_index| {
+            Observation::Present(FileSnapshot {
+                size: 1,
+                sha256: "a".repeat(64),
+                identity: FileIdentity {
+                    volume_serial: 1,
+                    file_index,
+                },
+            })
+        };
+        ParentCurrentUserObjects {
+            settings: file(10),
+            cache: file(11),
+            diagnostics: file(12),
+        }
     }
 
     #[test]
@@ -4005,6 +4815,7 @@ mod tests {
     fn desktop_environment_is_profile_bound_and_does_not_inherit_process_controls() {
         let block = build_desktop_environment_block(
             Path::new(r"D:\Users\proof-user"),
+            Path::new(r"E:\Redirected\Local"),
             Path::new(r"C:\Windows\System32"),
             Path::new(r"C:\Windows"),
         )
@@ -4023,14 +4834,14 @@ mod tests {
                 r"ComSpec=C:\Windows\System32\cmd.exe",
                 r"HOMEDRIVE=D:",
                 r"HOMEPATH=\Users\proof-user",
-                r"LOCALAPPDATA=D:\Users\proof-user\AppData\Local",
+                r"LOCALAPPDATA=E:\Redirected\Local",
                 r"OS=Windows_NT",
                 r"PATH=C:\Windows\System32;C:\Windows",
                 r"PATHEXT=.COM;.EXE;.BAT;.CMD",
                 r"SystemDrive=C:",
                 r"SystemRoot=C:\Windows",
-                r"TEMP=D:\Users\proof-user\AppData\Local\Temp",
-                r"TMP=D:\Users\proof-user\AppData\Local\Temp",
+                r"TEMP=E:\Redirected\Local\Temp",
+                r"TMP=E:\Redirected\Local\Temp",
                 r"USERPROFILE=D:\Users\proof-user",
                 r"windir=C:\Windows",
             ]
