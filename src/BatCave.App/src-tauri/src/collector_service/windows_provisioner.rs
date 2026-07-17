@@ -20,6 +20,7 @@ const LEGACY_WINDOWS_CLI_NAME: &str = "batcave-monitor-cli.exe";
 const SERVICE_ACCOUNT: &str = "LocalSystem";
 const SERVICE_OWNER_MARKER: &str = "dev.batcave.monitor/service-v1";
 const SERVICE_FAILURE_VALUE: &str = "BatCaveLastFailure";
+pub(crate) const SERVICE_LIFECYCLE_LOCK_FILE_NAME: &str = "process-owner.v1.lock";
 const SERVICE_TYPE_OWN_PROCESS: u32 = 0x10;
 const ERROR_FILE_NOT_FOUND_CODE: u32 = 2;
 const ERROR_PATH_NOT_FOUND_CODE: u32 = 3;
@@ -176,6 +177,32 @@ pub(crate) fn observe_installed_boundaries_for_proof(
 #[cfg(feature = "private-windows-lifecycle-proof")]
 pub(crate) fn data_roots_for_proof() -> Result<(PathBuf, PathBuf), String> {
     native::data_roots_for_proof()
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub(crate) enum RuntimeLockObservation {
+    Absent {},
+    Released {},
+    Held {},
+    Unknown { reason: String },
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProtectedRuntimeFilesForProof {
+    pub(crate) etw_lease: super::etw_lease::ReadOnlyEtwLeaseObservation,
+    pub(crate) etw_owner_lock: RuntimeLockObservation,
+    pub(crate) service_lifecycle_lock: RuntimeLockObservation,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn observe_protected_runtime_files_for_proof(
+    expected_volume_serial: u32,
+    expected_file_index: u64,
+) -> Result<ProtectedRuntimeFilesForProof, String> {
+    native::observe_protected_runtime_files_for_proof(expected_volume_serial, expected_file_index)
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -483,11 +510,6 @@ mod native {
         time::{Duration, Instant},
     };
 
-    #[cfg(feature = "private-windows-lifecycle-proof")]
-    use windows_sys::Win32::{
-        Foundation::WAIT_TIMEOUT,
-        System::Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
-    };
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, GetLastError, LocalFree, SetLastError, ERROR_ALREADY_EXISTS,
@@ -552,7 +574,14 @@ mod native {
             SHGetFolderPathW, CSIDL_COMMON_APPDATA, CSIDL_PROGRAM_FILES, SHGFP_TYPE_CURRENT,
         },
     };
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    use windows_sys::Win32::{
+        Foundation::{ERROR_LOCK_VIOLATION, WAIT_TIMEOUT},
+        System::Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
+    };
 
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    use crate::collector_service::etw_lease::observe_lease_read_only_for_proof;
     use crate::collector_service::etw_lease::{ETW_LEASE_FILE_NAME, ETW_OWNER_LOCK_FILE_NAME};
 
     const SECURITY_DESCRIPTOR_REVISION_1: u32 = 1;
@@ -576,7 +605,6 @@ mod native {
     const UPGRADE_JOURNAL_MAX_BYTES: usize = 16 * 1024;
     const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
     const SERVICE_QUERY_STATUS_MASK: u32 = 0x0000_0004;
-    const SERVICE_LIFECYCLE_FILE_NAME: &str = "process-owner.v1.lock";
     const SERVICE_LIFECYCLE_PROBE_ACCESS: u32 =
         FILE_READ_ATTRIBUTES | FILE_WRITE_DATA | READ_CONTROL;
     const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
@@ -891,7 +919,7 @@ mod native {
     pub(super) fn acquire_service_lifecycle_marker() -> Result<ServiceLifecycleMarker, String> {
         let root = open_protected_etw_lease_root()?;
         let roots = fixed_roots()?;
-        let path = wide_path(&roots.service.join(SERVICE_LIFECYCLE_FILE_NAME));
+        let path = wide_path(&roots.service.join(SERVICE_LIFECYCLE_LOCK_FILE_NAME));
         let file = OwnedHandle::new(
             unsafe {
                 CreateFileW(
@@ -975,7 +1003,7 @@ mod native {
 
     fn try_open_service_lifecycle_file() -> Result<LifecycleFileProbe, String> {
         let roots = fixed_roots()?;
-        let path = wide_path(&roots.service.join(SERVICE_LIFECYCLE_FILE_NAME));
+        let path = wide_path(&roots.service.join(SERVICE_LIFECYCLE_LOCK_FILE_NAME));
         let file = unsafe {
             CreateFileW(
                 path.as_ptr(),
@@ -3453,7 +3481,7 @@ mod native {
         for leaf in [
             ETW_LEASE_FILE_NAME,
             ETW_OWNER_LOCK_FILE_NAME,
-            SERVICE_LIFECYCLE_FILE_NAME,
+            SERVICE_LIFECYCLE_LOCK_FILE_NAME,
             UPGRADE_JOURNAL_FILE_NAME,
         ] {
             let path = roots.service.join(leaf);
@@ -3644,6 +3672,387 @@ mod native {
         };
         unsafe { ProtectedEtwLeaseRoot::from_platform_verified(roots.service, install_id, guard) }
             .map_err(|error| format!("collector_service_protected_root_invalid:{error:?}"))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn observe_protected_runtime_files_for_proof(
+        expected_volume_serial: u32,
+        expected_file_index: u64,
+    ) -> Result<ProtectedRuntimeFilesForProof, String> {
+        let roots = fixed_roots()?;
+        let principals = SecurityPrincipals::load_with_service()?;
+        let program_data = open_directory(
+            &roots.program_data,
+            "collector_service_proof_programdata_open_failed",
+        )?;
+        let product = open_and_verify_root(&roots.product, false, &principals)?;
+        let service = open_and_verify_root(&roots.service, true, &principals)?;
+        let service_identity = file_information(
+            service.raw(),
+            "collector_service_proof_service_root_identity_failed",
+        )?;
+        if service_identity.dwVolumeSerialNumber != expected_volume_serial
+            || ((u64::from(service_identity.nFileIndexHigh) << 32)
+                | u64::from(service_identity.nFileIndexLow))
+                != expected_file_index
+        {
+            return Err("collector_service_proof_service_root_identity_mismatch".to_string());
+        }
+        let lease_path = roots.service.join(ETW_LEASE_FILE_NAME);
+        let lease_security = verify_optional_leaf(&lease_path, &principals)?;
+        let lease_identity = optional_leaf_identity_for_proof(
+            lease_security.as_ref(),
+            "collector_service_proof_lease_identity_failed",
+        )?;
+        let owner_lock_path = roots.service.join(ETW_OWNER_LOCK_FILE_NAME);
+        let owner_lock_security = verify_optional_leaf(&owner_lock_path, &principals)?;
+        let lifecycle_lock_path = roots.service.join(SERVICE_LIFECYCLE_LOCK_FILE_NAME);
+        let lifecycle_lock_security = verify_optional_leaf(&lifecycle_lock_path, &principals)?;
+
+        let mut etw_lease = observe_lease_read_only_for_proof(&lease_path, lease_identity);
+        match verify_optional_leaf(&lease_path, &principals).and_then(|handle| {
+            optional_leaf_identity_for_proof(
+                handle.as_ref(),
+                "collector_service_proof_lease_revalidate_identity_failed",
+            )
+        }) {
+            Ok(revalidated_identity) if revalidated_identity == lease_identity => {}
+            Ok(_) => {
+                etw_lease = super::super::etw_lease::ReadOnlyEtwLeaseObservation::Unknown(
+                    "etw_lease_proof_identity_changed_after_observation".to_string(),
+                );
+            }
+            Err(reason) => {
+                etw_lease = super::super::etw_lease::ReadOnlyEtwLeaseObservation::Unknown(format!(
+                    "etw_lease_proof_revalidate_failed:{reason}"
+                ));
+            }
+        }
+
+        let observation = ProtectedRuntimeFilesForProof {
+            etw_lease,
+            etw_owner_lock: observe_runtime_lock_for_proof(
+                &owner_lock_path,
+                owner_lock_security.as_ref(),
+                "etw_owner",
+            ),
+            service_lifecycle_lock: observe_runtime_lock_for_proof(
+                &lifecycle_lock_path,
+                lifecycle_lock_security.as_ref(),
+                "service_lifecycle",
+            ),
+        };
+
+        let revalidated = open_and_verify_root(&roots.service, true, &principals)?;
+        let revalidated_identity = file_information(
+            revalidated.raw(),
+            "collector_service_proof_service_root_revalidate_failed",
+        )?;
+        if !same_file_identity(&service_identity, &revalidated_identity) {
+            return Err("collector_service_proof_service_root_changed".to_string());
+        }
+        drop((
+            lifecycle_lock_security,
+            owner_lock_security,
+            lease_security,
+            revalidated,
+            service,
+            product,
+            program_data,
+        ));
+        Ok(observation)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn observe_runtime_lock_for_proof(
+        path: &Path,
+        validated_leaf: Option<&OwnedHandle>,
+        label: &str,
+    ) -> RuntimeLockObservation {
+        let initial_identity = match optional_leaf_identity_for_proof(
+            validated_leaf,
+            "collector_service_proof_runtime_lock_pin_identity_failed",
+        ) {
+            Ok(identity) => identity,
+            Err(reason) => {
+                return RuntimeLockObservation::Unknown {
+                    reason: format!("collector_service_proof_{label}_lock_untrusted:{reason}"),
+                };
+            }
+        };
+        let path = wide_path(path);
+        let file = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                FILE_WRITE_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        let probe = if !file.is_null() && file != (-1_isize as HANDLE) {
+            let file = OwnedHandle(file);
+            match file_information(
+                file.raw(),
+                "collector_service_proof_runtime_lock_info_failed",
+            ) {
+                Ok(info) => RuntimeLockProbeForProof::Opened(file_identity_tuple(&info)),
+                Err(reason) => RuntimeLockProbeForProof::Failed(reason),
+            }
+        } else {
+            match unsafe { GetLastError() } {
+                error if is_missing_path_error(error) => RuntimeLockProbeForProof::Missing,
+                ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION => {
+                    RuntimeLockProbeForProof::Contended
+                }
+                error => RuntimeLockProbeForProof::Failed(error.to_string()),
+            }
+        };
+        classify_runtime_lock_observation(initial_identity, probe, label)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    enum RuntimeLockProbeForProof {
+        Missing,
+        Contended,
+        Opened((u32, u64)),
+        Failed(String),
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn classify_runtime_lock_observation(
+        initial_identity: Option<(u32, u64)>,
+        probe: RuntimeLockProbeForProof,
+        label: &str,
+    ) -> RuntimeLockObservation {
+        match (initial_identity, probe) {
+            (None, RuntimeLockProbeForProof::Missing) => RuntimeLockObservation::Absent {},
+            (Some(_), RuntimeLockProbeForProof::Contended) => RuntimeLockObservation::Held {},
+            (Some(initial), RuntimeLockProbeForProof::Opened(probe)) if initial == probe => {
+                RuntimeLockObservation::Released {}
+            }
+            (None, RuntimeLockProbeForProof::Opened(_)) => RuntimeLockObservation::Unknown {
+                reason: format!("collector_service_proof_{label}_lock_appeared"),
+            },
+            (None, RuntimeLockProbeForProof::Contended) => RuntimeLockObservation::Unknown {
+                reason: format!("collector_service_proof_{label}_lock_contended_after_absence"),
+            },
+            (Some(_), RuntimeLockProbeForProof::Missing) => RuntimeLockObservation::Unknown {
+                reason: format!("collector_service_proof_{label}_lock_disappeared"),
+            },
+            (Some(_), RuntimeLockProbeForProof::Opened(_)) => RuntimeLockObservation::Unknown {
+                reason: format!("collector_service_proof_{label}_lock_identity_changed"),
+            },
+            (_, RuntimeLockProbeForProof::Failed(reason)) => RuntimeLockObservation::Unknown {
+                reason: format!("collector_service_proof_{label}_lock_probe_failed:{reason}"),
+            },
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn optional_leaf_identity_for_proof(
+        handle: Option<&OwnedHandle>,
+        context: &str,
+    ) -> Result<Option<(u32, u64)>, String> {
+        handle
+            .map(|handle| {
+                file_information(handle.raw(), context).map(|info| file_identity_tuple(&info))
+            })
+            .transpose()
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn file_identity_tuple(info: &BY_HANDLE_FILE_INFORMATION) -> (u32, u64) {
+        (
+            info.dwVolumeSerialNumber,
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        )
+    }
+
+    #[cfg(all(test, feature = "private-windows-lifecycle-proof"))]
+    mod proof_runtime_observation_tests {
+        use super::*;
+
+        #[test]
+        fn lock_transition_classification_is_fail_closed() {
+            let identity = (7, 11);
+            assert_eq!(
+                classify_runtime_lock_observation(None, RuntimeLockProbeForProof::Missing, "test",),
+                RuntimeLockObservation::Absent {}
+            );
+            assert_eq!(
+                classify_runtime_lock_observation(
+                    Some(identity),
+                    RuntimeLockProbeForProof::Contended,
+                    "test",
+                ),
+                RuntimeLockObservation::Held {}
+            );
+            assert_eq!(
+                classify_runtime_lock_observation(
+                    Some(identity),
+                    RuntimeLockProbeForProof::Opened(identity),
+                    "test",
+                ),
+                RuntimeLockObservation::Released {}
+            );
+            for observation in [
+                classify_runtime_lock_observation(
+                    None,
+                    RuntimeLockProbeForProof::Opened(identity),
+                    "test",
+                ),
+                classify_runtime_lock_observation(
+                    None,
+                    RuntimeLockProbeForProof::Contended,
+                    "test",
+                ),
+                classify_runtime_lock_observation(
+                    Some(identity),
+                    RuntimeLockProbeForProof::Missing,
+                    "test",
+                ),
+                classify_runtime_lock_observation(
+                    Some(identity),
+                    RuntimeLockProbeForProof::Opened((7, 12)),
+                    "test",
+                ),
+            ] {
+                assert!(matches!(
+                    observation,
+                    RuntimeLockObservation::Unknown { .. }
+                ));
+            }
+        }
+
+        #[test]
+        fn metadata_pin_does_not_take_ownership_and_write_probe_detects_owner() {
+            let root = std::env::temp_dir().join(format!(
+                "batcave-proof-lock-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time")
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).expect("lock fixture root");
+            let path = root.join("runtime.lock");
+            std::fs::write(&path, b"lock").expect("lock fixture");
+            let path_wide = wide_path(&path);
+            let pin = OwnedHandle::new(
+                unsafe {
+                    CreateFileW(
+                        path_wide.as_ptr(),
+                        FILE_READ_ATTRIBUTES | READ_CONTROL,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_FLAG_OPEN_REPARSE_POINT,
+                        ptr::null_mut(),
+                    )
+                },
+                "proof lock pin",
+            )
+            .expect("metadata pin opens");
+            let identity = file_identity_tuple(
+                &file_information(pin.raw(), "proof lock pin identity").expect("pin identity"),
+            );
+            let owner = OwnedHandle::new(
+                unsafe {
+                    CreateFileW(
+                        path_wide.as_ptr(),
+                        FILE_WRITE_DATA,
+                        0,
+                        ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_FLAG_OPEN_REPARSE_POINT,
+                        ptr::null_mut(),
+                    )
+                },
+                "proof lock owner",
+            )
+            .expect("metadata pin must not block a real owner");
+            let pin_against_owner = OwnedHandle::new(
+                unsafe {
+                    CreateFileW(
+                        path_wide.as_ptr(),
+                        FILE_READ_ATTRIBUTES | READ_CONTROL,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_FLAG_OPEN_REPARSE_POINT,
+                        ptr::null_mut(),
+                    )
+                },
+                "proof lock pin against owner",
+            )
+            .expect("metadata pin must open against a real owner");
+            assert_eq!(
+                file_identity_tuple(
+                    &file_information(
+                        pin_against_owner.raw(),
+                        "proof lock pin against owner identity",
+                    )
+                    .expect("pin against owner identity"),
+                ),
+                identity
+            );
+            let contended = unsafe {
+                CreateFileW(
+                    path_wide.as_ptr(),
+                    FILE_WRITE_DATA,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut(),
+                )
+            };
+            assert!(contended.is_null() || contended == (-1_isize as HANDLE));
+            assert!(matches!(
+                unsafe { GetLastError() },
+                ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION
+            ));
+            drop(pin_against_owner);
+            drop(owner);
+            let released = OwnedHandle::new(
+                unsafe {
+                    CreateFileW(
+                        path_wide.as_ptr(),
+                        FILE_WRITE_DATA,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_FLAG_OPEN_REPARSE_POINT,
+                        ptr::null_mut(),
+                    )
+                },
+                "proof lock released probe",
+            )
+            .expect("released probe opens");
+            assert_eq!(
+                file_identity_tuple(
+                    &file_information(released.raw(), "proof lock released identity")
+                        .expect("released identity"),
+                ),
+                identity
+            );
+            drop((released, pin));
+            std::fs::remove_file(path).expect("lock fixture cleanup");
+            std::fs::remove_dir(root).expect("lock fixture root cleanup");
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn same_file_identity(
+        left: &BY_HANDLE_FILE_INFORMATION,
+        right: &BY_HANDLE_FILE_INFORMATION,
+    ) -> bool {
+        left.dwVolumeSerialNumber == right.dwVolumeSerialNumber
+            && left.nFileIndexHigh == right.nFileIndexHigh
+            && left.nFileIndexLow == right.nFileIndexLow
     }
 
     fn retain_verified_leaf(name: &str) -> bool {

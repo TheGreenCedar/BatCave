@@ -6,6 +6,16 @@ use std::collections::HashMap;
 use crate::collector_service::etw_lease::{EtwSessionIdentityV1, EtwSessionObservation};
 use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
 
+#[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EtwSessionProofSnapshot {
+    pub(crate) identity: EtwSessionIdentityV1,
+    pub(crate) events_lost: u64,
+    pub(crate) log_buffers_lost: u64,
+    pub(crate) realtime_buffers_lost: u64,
+}
+
 #[cfg(any(windows, test))]
 const ETW_CONSUMER_STALL_MS: u64 = 5_000;
 
@@ -199,6 +209,11 @@ impl NetworkAttributionMonitor {
         WindowsNetworkAttributionMonitor::observe_session()
     }
 
+    #[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+    pub(crate) fn observe_session_for_proof() -> Result<Option<EtwSessionProofSnapshot>, String> {
+        WindowsNetworkAttributionMonitor::observe_session_for_proof()
+    }
+
     #[cfg(windows)]
     pub(crate) fn stop_session_if_exact(expected: &EtwSessionIdentityV1) -> Result<(), String> {
         WindowsNetworkAttributionMonitor::stop_session_if_exact(expected)
@@ -370,6 +385,8 @@ mod windows_impl {
         },
     };
 
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    use super::EtwSessionProofSnapshot;
     use super::{
         apply_network_event, classify_direction, first_matching_property, rate_map_from_deltas,
         EtwHealthSnapshot, EtwQualityDecision, EtwQualityTracker, EtwSessionStatistics,
@@ -481,6 +498,35 @@ mod windows_impl {
                 Ok(None) => EtwSessionObservation::Absent,
                 Err(_) => EtwSessionObservation::QueryUnavailable,
             }
+        }
+
+        #[cfg(feature = "private-windows-lifecycle-proof")]
+        pub fn observe_session_for_proof() -> Result<Option<EtwSessionProofSnapshot>, String> {
+            let Some((identity, trace_handle)) = query_service_session()
+                .map_err(|error| format!("network_attribution_proof_query_failed:{error}"))?
+            else {
+                return Ok(None);
+            };
+            if trace_handle == 0 {
+                return Err("network_attribution_proof_trace_handle_missing".to_string());
+            }
+            let statistics = query_trace_statistics(
+                trace_handle,
+                &wide(COLLECTOR_SERVICE_SESSION.name),
+                COLLECTOR_SERVICE_SESSION.logger_guid,
+                &identity,
+            )?;
+            let revalidated = query_service_session()
+                .map_err(|error| format!("network_attribution_proof_requery_failed:{error}"))?;
+            if revalidated.as_ref() != Some(&(identity.clone(), trace_handle)) {
+                return Err("network_attribution_proof_session_changed".to_string());
+            }
+            Ok(Some(EtwSessionProofSnapshot {
+                identity,
+                events_lost: statistics.events_lost,
+                log_buffers_lost: statistics.log_buffers_lost,
+                realtime_buffers_lost: statistics.realtime_buffers_lost,
+            }))
         }
 
         pub fn stop_session_if_exact(expected: &EtwSessionIdentityV1) -> Result<(), String> {

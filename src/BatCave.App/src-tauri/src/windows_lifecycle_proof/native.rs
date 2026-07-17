@@ -1,8 +1,11 @@
+use crate::collector_service::etw_lease::{EtwLeaseV1, ReadOnlyEtwLeaseObservation};
+use crate::collector_service::windows_provisioner::RuntimeLockObservation;
 use crate::windows_lifecycle_proof_contract::{
     Candidate, DesktopCollectorRuntimeObservation, DesktopFileObservation,
     DesktopProcessObservation, DesktopServiceProcessObservation, EvidenceReceipt,
     EvidenceRootIdentity, Observation, ProofPlan,
 };
+use crate::windows_network::{EtwSessionProofSnapshot, NetworkAttributionMonitor};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -175,6 +178,13 @@ pub(crate) struct PreflightSnapshot {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct NamedPipeSnapshot {
+    pub(crate) server_process_id: u32,
+    pub(crate) server_process_started_at_100ns: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ElevatedMachineSnapshot {
     pub(crate) machine: PreflightSnapshot,
     pub(crate) product_data_root: Observation<DirectorySnapshot>,
@@ -182,6 +192,11 @@ pub(crate) struct ElevatedMachineSnapshot {
     pub(crate) current_user_data_root: Observation<DirectorySnapshot>,
     pub(crate) installed_boundaries:
         Observation<crate::collector_service::windows_provisioner::InstalledBoundariesForProof>,
+    pub(crate) named_pipe: Observation<NamedPipeSnapshot>,
+    pub(crate) etw_lease: Observation<EtwLeaseV1>,
+    pub(crate) etw_session: Observation<EtwSessionProofSnapshot>,
+    pub(crate) etw_owner_lock: RuntimeLockObservation,
+    pub(crate) service_lifecycle_lock: RuntimeLockObservation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1946,6 +1961,7 @@ pub(crate) fn capture_elevated_machine_snapshot(
     controller_bindings: &[PeerBinding],
 ) -> ElevatedMachineSnapshot {
     let machine = capture_machine_snapshot(controller_bindings);
+    let mut named_pipe = observe_named_pipe_for_proof(&machine.service);
     let (product_data_root, service_data_root) =
         match crate::collector_service::windows_provisioner::data_roots_for_proof() {
             Ok((product, service)) => (
@@ -1974,13 +1990,134 @@ pub(crate) fn capture_elevated_machine_snapshot(
         Observation::Absent => Observation::Absent,
         Observation::Unknown(reason) => Observation::Unknown(reason.clone()),
     };
+    let (mut etw_lease, mut etw_owner_lock, mut service_lifecycle_lock) =
+        observe_protected_runtime_for_proof(&service_data_root);
+    let mut etw_session = match NetworkAttributionMonitor::observe_session_for_proof() {
+        Ok(Some(session)) => Observation::Present(session),
+        Ok(None) => Observation::Absent,
+        Err(reason) => Observation::Unknown(reason),
+    };
+    if !same_service_generation(&machine.service, &observe_service()) {
+        let reason = "lifecycle_runtime_service_changed_during_capture".to_string();
+        named_pipe = Observation::Unknown(reason.clone());
+        etw_lease = Observation::Unknown(reason.clone());
+        etw_session = Observation::Unknown(reason.clone());
+        etw_owner_lock = RuntimeLockObservation::Unknown {
+            reason: reason.clone(),
+        };
+        service_lifecycle_lock = RuntimeLockObservation::Unknown { reason };
+    }
     ElevatedMachineSnapshot {
         machine,
         product_data_root,
         service_data_root,
         current_user_data_root,
         installed_boundaries,
+        named_pipe,
+        etw_lease,
+        etw_session,
+        etw_owner_lock,
+        service_lifecycle_lock,
     }
+}
+
+fn same_service_generation(
+    before: &Observation<ServiceSnapshot>,
+    after: &Observation<ServiceSnapshot>,
+) -> bool {
+    match (before, after) {
+        (Observation::Absent, Observation::Absent) => true,
+        (Observation::Present(before), Observation::Present(after)) => {
+            before.state == after.state
+                && before.process_id == after.process_id
+                && before.process_started_at_100ns == after.process_started_at_100ns
+        }
+        _ => false,
+    }
+}
+
+fn observe_named_pipe_for_proof(
+    service_before: &Observation<ServiceSnapshot>,
+) -> Observation<NamedPipeSnapshot> {
+    let peer = crate::collector_service::windows_client::observe_verified_service_peer_for_proof(
+        Path::new(MONITOR_PATH),
+        Path::new(SERVICE_PATH),
+    );
+    let service_after = observe_service();
+    if service_before != &service_after {
+        return Observation::Unknown("lifecycle_named_pipe_scm_changed".to_string());
+    }
+    match (service_before, peer) {
+        (Observation::Present(service), Ok(Some(peer)))
+            if service.state == SERVICE_RUNNING
+                && service.process_id == peer.process_id()
+                && service.process_started_at_100ns == Some(peer.process_started_at()) =>
+        {
+            Observation::Present(NamedPipeSnapshot {
+                server_process_id: peer.process_id(),
+                server_process_started_at_100ns: peer.process_started_at(),
+            })
+        }
+        (Observation::Present(_), Ok(Some(_))) => {
+            Observation::Unknown("lifecycle_named_pipe_service_identity_mismatch".to_string())
+        }
+        (Observation::Absent, Ok(Some(_))) => {
+            Observation::Unknown("lifecycle_named_pipe_service_missing".to_string())
+        }
+        (Observation::Absent | Observation::Present(_), Ok(None)) => Observation::Absent,
+        (Observation::Unknown(reason), _) => Observation::Unknown(reason.clone()),
+        (_, Err(reason)) => Observation::Unknown(reason),
+    }
+}
+
+fn observe_protected_runtime_for_proof(
+    service_data_root: &Observation<DirectorySnapshot>,
+) -> (
+    Observation<EtwLeaseV1>,
+    RuntimeLockObservation,
+    RuntimeLockObservation,
+) {
+    match service_data_root {
+        Observation::Absent => (
+            Observation::Absent,
+            RuntimeLockObservation::Absent {},
+            RuntimeLockObservation::Absent {},
+        ),
+        Observation::Unknown(reason) => unknown_runtime_authority(reason.clone()),
+        Observation::Present(root) => {
+            match crate::collector_service::windows_provisioner::observe_protected_runtime_files_for_proof(
+                root.identity.volume_serial,
+                root.identity.file_index,
+            ) {
+                Ok(runtime) => (
+                    match runtime.etw_lease {
+                        ReadOnlyEtwLeaseObservation::Absent => Observation::Absent,
+                        ReadOnlyEtwLeaseObservation::Present(lease) => Observation::Present(lease),
+                        ReadOnlyEtwLeaseObservation::Unknown(reason) => Observation::Unknown(reason),
+                    },
+                    runtime.etw_owner_lock,
+                    runtime.service_lifecycle_lock,
+                ),
+                Err(reason) => unknown_runtime_authority(reason),
+            }
+        }
+    }
+}
+
+fn unknown_runtime_authority(
+    reason: String,
+) -> (
+    Observation<EtwLeaseV1>,
+    RuntimeLockObservation,
+    RuntimeLockObservation,
+) {
+    (
+        Observation::Unknown(reason.clone()),
+        RuntimeLockObservation::Unknown {
+            reason: reason.clone(),
+        },
+        RuntimeLockObservation::Unknown { reason },
+    )
 }
 
 pub(crate) fn open_installed_uninstaller(candidate: &Candidate) -> Result<OwnedFile, String> {
@@ -4311,6 +4448,41 @@ mod tests {
             drop(self.evidence.take());
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn service_generation_capture_rejects_state_pid_start_and_unknown_drift() {
+        let service = |state, process_id, started_at| {
+            Observation::Present(ServiceSnapshot {
+                state,
+                process_id,
+                process_started_at_100ns: started_at,
+                win32_exit_code: 0,
+                service_specific_exit_code: 0,
+            })
+        };
+        let running = service(SERVICE_RUNNING, 42, Some(99));
+        assert!(same_service_generation(&running, &running));
+        assert!(!same_service_generation(
+            &running,
+            &service(SERVICE_RUNNING + 1, 42, Some(99))
+        ));
+        assert!(!same_service_generation(
+            &running,
+            &service(SERVICE_RUNNING, 43, Some(99))
+        ));
+        assert!(!same_service_generation(
+            &running,
+            &service(SERVICE_RUNNING, 42, Some(100))
+        ));
+        assert!(same_service_generation(
+            &Observation::Absent,
+            &Observation::Absent
+        ));
+        assert!(!same_service_generation(
+            &Observation::Unknown("query_failed".to_string()),
+            &Observation::Unknown("query_failed".to_string())
+        ));
     }
 
     #[test]

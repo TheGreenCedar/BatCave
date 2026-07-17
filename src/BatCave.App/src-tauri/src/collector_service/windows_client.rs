@@ -25,6 +25,9 @@ use windows_sys::Win32::{
     },
 };
 
+#[cfg(feature = "private-windows-lifecycle-proof")]
+use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+
 use super::{
     authorization::VerifiedServicePeer,
     client::{ClientFailure, ClientFailureKind, ClientTransport},
@@ -220,6 +223,49 @@ pub(crate) fn verified_service_peer_for_proof(
     WindowsServiceTransport::connect_with_expectation(Some(&expectation))
         .map(|transport| transport.peer)
         .map_err(|failure| failure.detail)
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn observe_verified_service_peer_for_proof(
+    desktop_path: &Path,
+    service_path: &Path,
+) -> Result<Option<VerifiedServicePeer>, String> {
+    let pipe_name = wide(PIPE_NAME);
+    if unsafe { WaitNamedPipeW(pipe_name.as_ptr(), CONNECT_TIMEOUT_MS) } == 0 {
+        let error = unsafe { GetLastError() };
+        return if error == ERROR_FILE_NOT_FOUND {
+            Ok(None)
+        } else {
+            Err(format!("collector_service_proof_pipe_wait_failed:{error}"))
+        };
+    }
+    let desktop_file_identity = proof_file_identity(desktop_path, "desktop")?;
+    let service_file_identity = proof_file_identity(service_path, "service")?;
+    verified_service_peer_for_proof(
+        desktop_path,
+        desktop_file_identity,
+        service_path,
+        service_file_identity,
+    )
+    .map(Some)
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+fn proof_file_identity(path: &Path, label: &str) -> Result<[u8; 32], String> {
+    let path = wide(&path.to_string_lossy());
+    let file = OwnedHandle::new(unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    })
+    .ok_or_else(|| format!("collector_service_proof_{label}_open_failed"))?;
+    file_identity(file.raw())
 }
 
 impl ClientTransport for WindowsServiceTransport {

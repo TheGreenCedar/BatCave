@@ -14,6 +14,18 @@ pub(crate) const ETW_LEASE_FILE_NAME: &str = "etw-lease.v1.json";
 pub(crate) const ETW_OWNER_LOCK_FILE_NAME: &str = "etw-owner.v1.lock";
 const ETW_LEASE_MAX_BYTES: usize = 16 * 1024;
 
+#[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+const ETW_LEASE_PROOF_SHARE_MODE: u32 = windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
+    | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+
+#[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReadOnlyEtwLeaseObservation {
+    Absent,
+    Present(EtwLeaseV1),
+    Unknown(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EtwLeasePhase {
@@ -130,6 +142,144 @@ impl ProtectedEtwLeaseRoot {
     pub(crate) fn install_id(&self) -> [u8; 16] {
         self.install_id
     }
+}
+
+#[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+pub(crate) fn observe_lease_read_only_for_proof(
+    path: &Path,
+    expected_identity: Option<(u32, u64)>,
+) -> ReadOnlyEtwLeaseObservation {
+    use std::os::windows::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    fn identity(file: &File) -> Option<(u32, u64)> {
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) } == 0 {
+            return None;
+        }
+        Some((
+            information.dwVolumeSerialNumber,
+            (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+        ))
+    }
+
+    let open = || {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(ETW_LEASE_PROOF_SHARE_MODE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    };
+    let mut file = match open() {
+        Ok(_) if expected_identity.is_none() => {
+            return ReadOnlyEtwLeaseObservation::Unknown(
+                "etw_lease_proof_appeared_after_validation".to_string(),
+            );
+        }
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound && expected_identity.is_none() =>
+        {
+            return ReadOnlyEtwLeaseObservation::Absent;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ReadOnlyEtwLeaseObservation::Unknown(
+                "etw_lease_proof_disappeared_after_validation".to_string(),
+            );
+        }
+        Err(error) => {
+            return ReadOnlyEtwLeaseObservation::Unknown(format!(
+                "etw_lease_proof_open_failed:{}",
+                error.raw_os_error().unwrap_or_default()
+            ));
+        }
+    };
+    let before = match file.metadata() {
+        Ok(metadata)
+            if metadata.is_file()
+                && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 =>
+        {
+            metadata
+        }
+        _ => {
+            return ReadOnlyEtwLeaseObservation::Unknown(
+                "etw_lease_proof_type_invalid".to_string(),
+            );
+        }
+    };
+    let Some(before_identity) = identity(&file) else {
+        return ReadOnlyEtwLeaseObservation::Unknown(
+            "etw_lease_proof_identity_missing".to_string(),
+        );
+    };
+    if Some(before_identity) != expected_identity {
+        return ReadOnlyEtwLeaseObservation::Unknown(
+            "etw_lease_proof_identity_mismatch".to_string(),
+        );
+    }
+    let mut bytes = Vec::new();
+    if file
+        .by_ref()
+        .take((ETW_LEASE_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return ReadOnlyEtwLeaseObservation::Unknown("etw_lease_proof_read_failed".to_string());
+    }
+    if bytes.len() > ETW_LEASE_MAX_BYTES {
+        return ReadOnlyEtwLeaseObservation::Unknown(
+            "etw_lease_proof_payload_too_large".to_string(),
+        );
+    }
+    let after = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            return ReadOnlyEtwLeaseObservation::Unknown(
+                "etw_lease_proof_revalidate_failed".to_string(),
+            );
+        }
+    };
+    if identity(&file) != Some(before_identity) || after.len() != before.len() {
+        return ReadOnlyEtwLeaseObservation::Unknown(
+            "etw_lease_proof_changed_during_read".to_string(),
+        );
+    }
+    let lease = match serde_json::from_slice::<EtwLeaseV1>(&bytes) {
+        Ok(lease) if lease_is_well_formed(&lease) => lease,
+        _ => {
+            return ReadOnlyEtwLeaseObservation::Unknown(
+                "etw_lease_proof_payload_invalid".to_string(),
+            );
+        }
+    };
+    let reopened = match open() {
+        Ok(file) => file,
+        Err(_) => {
+            return ReadOnlyEtwLeaseObservation::Unknown(
+                "etw_lease_proof_reopen_failed".to_string(),
+            );
+        }
+    };
+    let reopened_metadata = match reopened.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            return ReadOnlyEtwLeaseObservation::Unknown(
+                "etw_lease_proof_reopen_identity_failed".to_string(),
+            );
+        }
+    };
+    if identity(&reopened) != Some(before_identity) || reopened_metadata.len() != before.len() {
+        return ReadOnlyEtwLeaseObservation::Unknown(
+            "etw_lease_proof_replaced_during_read".to_string(),
+        );
+    }
+    ReadOnlyEtwLeaseObservation::Present(lease)
 }
 
 #[derive(Debug, Clone)]
@@ -811,6 +961,95 @@ mod tests {
 
         write_private_fixture(&store.path, &vec![b'x'; ETW_LEASE_MAX_BYTES + 1]);
         assert_eq!(observed(&store, &authority), EtwLeaseObservation::Corrupt);
+        cleanup_store(&root_path);
+    }
+
+    #[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+    #[test]
+    fn read_only_proof_observer_bounds_parses_and_distinguishes_absence() {
+        let (root_path, _root, store) = test_store("read-only-proof");
+        assert_eq!(
+            observe_lease_read_only_for_proof(&store.path, None),
+            ReadOnlyEtwLeaseObservation::Absent
+        );
+
+        let expected = lease(EtwLeasePhase::Active);
+        write_private_fixture(
+            &store.path,
+            &serde_json::to_vec(&expected).expect("lease serializes"),
+        );
+        let identity = {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            };
+
+            let file = File::open(&store.path).expect("lease opens");
+            let mut information = BY_HANDLE_FILE_INFORMATION::default();
+            assert_ne!(
+                unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) },
+                0
+            );
+            (
+                information.dwVolumeSerialNumber,
+                (u64::from(information.nFileIndexHigh) << 32)
+                    | u64::from(information.nFileIndexLow),
+            )
+        };
+        assert_eq!(
+            observe_lease_read_only_for_proof(&store.path, Some(identity)),
+            ReadOnlyEtwLeaseObservation::Present(expected)
+        );
+
+        assert!(matches!(
+            observe_lease_read_only_for_proof(&store.path, None),
+            ReadOnlyEtwLeaseObservation::Unknown(_)
+        ));
+
+        write_private_fixture(&store.path, b"not-json");
+        assert!(matches!(
+            observe_lease_read_only_for_proof(&store.path, Some(identity)),
+            ReadOnlyEtwLeaseObservation::Unknown(_)
+        ));
+        write_private_fixture(&store.path, &vec![b'x'; ETW_LEASE_MAX_BYTES + 1]);
+        assert!(matches!(
+            observe_lease_read_only_for_proof(&store.path, Some(identity)),
+            ReadOnlyEtwLeaseObservation::Unknown(_)
+        ));
+        cleanup_store(&root_path);
+    }
+
+    #[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
+    #[test]
+    fn read_only_proof_observer_share_mode_blocks_same_length_in_place_writes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::{
+            Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION},
+            Storage::FileSystem::{
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            },
+        };
+
+        let (root_path, _root, store) = test_store("read-only-proof-writer");
+        write_private_fixture(&store.path, b"same-length");
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(ETW_LEASE_PROOF_SHARE_MODE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&store.path)
+            .expect("proof reader opens");
+        let error = std::fs::OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&store.path)
+            .expect_err("in-place writer must conflict with proof reader");
+        assert!(matches!(
+            error.raw_os_error(),
+            Some(code)
+                if code == ERROR_SHARING_VIOLATION as i32
+                    || code == ERROR_LOCK_VIOLATION as i32
+        ));
+        drop(reader);
         cleanup_store(&root_path);
     }
 

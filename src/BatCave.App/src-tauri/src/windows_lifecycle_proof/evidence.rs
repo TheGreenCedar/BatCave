@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::native::NamedPipeSnapshot;
 use super::native::{
     DirectorySnapshot, ElevatedMachineSnapshot, FileSnapshot, ParentCurrentUserAuthority,
     ParentCurrentUserObjects, ProcessSnapshot, RegistrySnapshot, RegistryView, ServiceSnapshot,
@@ -10,8 +12,8 @@ use crate::collector_service::etw_lease::{
     EtwLeasePhase, EtwLeaseV1, EtwSessionIdentityV1, ETW_LEASE_SCHEMA_VERSION,
 };
 use crate::collector_service::windows_provisioner::{
-    AcePolicyForProof, InstalledBoundariesForProof, SecurityPrincipalForProof,
-    TerminatedServiceForProof,
+    AcePolicyForProof, InstalledBoundariesForProof, RuntimeLockObservation,
+    SecurityPrincipalForProof, TerminatedServiceForProof, SERVICE_LIFECYCLE_LOCK_FILE_NAME,
 };
 #[cfg(test)]
 use crate::windows_lifecycle_proof_contract::DesktopPhaseObservation;
@@ -563,10 +565,11 @@ pub(super) fn validate_verified_private_projection(
         parent_current_user.after_uninstall,
     )?;
 
-    // The current raw packet deliberately does not claim the standard-parent
-    // current-user root, pipe ownership, ETW/lock/loss state, or the remaining
-    // stage artifacts. Those fields must be added to raw capture before a
-    // complete sanitized packet can be derived without trusting worker claims.
+    // Raw machine authority currently stops after installed boundaries plus the
+    // runtime fields above. Service registry; journal/staged/rollback/temp/failure
+    // residue; product registration, autostart, shortcuts, helper residue, and the
+    // sentinel still need raw authority, as do the remaining lifecycle stages and
+    // parent-owned export writer, before this terminal stop can be removed.
     require_complete_raw_projection_authority()
 }
 
@@ -782,7 +785,144 @@ fn compare_machine_projection(
     compare_observation(
         &project_boundaries_observation(&raw.installed_boundaries)?,
         &sanitized.installed_boundaries,
-    )
+    )?;
+    compare_runtime_projection(raw, sanitized)
+}
+
+fn compare_runtime_projection(
+    raw: &ElevatedMachineSnapshot,
+    sanitized: &SanitizedMachineSnapshot,
+) -> Result<(), String> {
+    let named_pipe = project_named_pipe(&raw.named_pipe, &raw.machine.service)?;
+    let etw_owner_lock = project_runtime_lock(
+        &raw.etw_owner_lock,
+        crate::collector_service::etw_lease::ETW_OWNER_LOCK_FILE_NAME,
+    )?;
+    let service_lifecycle_lock = project_runtime_lock(
+        &raw.service_lifecycle_lock,
+        SERVICE_LIFECYCLE_LOCK_FILE_NAME,
+    )?;
+    let etw_lease_file = match &raw.etw_lease {
+        Observation::Present(_) => Some(service_data_path(
+            crate::collector_service::etw_lease::ETW_LEASE_FILE_NAME,
+        )),
+        Observation::Absent => None,
+        Observation::Unknown(_) => {
+            return Err("lifecycle_private_projection_observation_unknown".to_string());
+        }
+    };
+    let etw_session = project_etw_session(
+        &raw.etw_lease,
+        &raw.etw_session,
+        &raw.machine.service,
+        &raw.named_pipe,
+        matches!(raw.etw_owner_lock, RuntimeLockObservation::Held {}),
+        matches!(raw.service_lifecycle_lock, RuntimeLockObservation::Held {}),
+    )?;
+    if sanitized.named_pipe != named_pipe
+        || sanitized.etw_session != etw_session
+        || sanitized.etw_lease_file != etw_lease_file
+        || sanitized.etw_owner_lock != etw_owner_lock
+        || sanitized.service_lifecycle_lock != service_lifecycle_lock
+    {
+        return Err("lifecycle_private_projection_machine_drift".to_string());
+    }
+    Ok(())
+}
+
+fn project_named_pipe(
+    raw: &Observation<super::native::NamedPipeSnapshot>,
+    service: &Observation<ServiceSnapshot>,
+) -> Result<Option<SanitizedNamedPipeSnapshot>, String> {
+    match raw {
+        Observation::Absent => Ok(None),
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        Observation::Present(pipe) => {
+            let Observation::Present(service) = service else {
+                return Err("lifecycle_private_projection_pipe_service_missing".to_string());
+            };
+            if service.state != 4
+                || service.process_id != pipe.server_process_id
+                || service.process_started_at_100ns != Some(pipe.server_process_started_at_100ns)
+            {
+                return Err("lifecycle_private_projection_pipe_service_mismatch".to_string());
+            }
+            Ok(Some(SanitizedNamedPipeSnapshot {
+                server_process_id: pipe.server_process_id,
+            }))
+        }
+    }
+}
+
+fn project_etw_session(
+    lease: &Observation<EtwLeaseV1>,
+    session: &Observation<crate::windows_network::EtwSessionProofSnapshot>,
+    service: &Observation<ServiceSnapshot>,
+    pipe: &Observation<super::native::NamedPipeSnapshot>,
+    owner_lock_held: bool,
+    process_lock_held: bool,
+) -> Result<Option<SanitizedEtwObservation>, String> {
+    match (lease, session) {
+        (Observation::Absent, Observation::Absent) => Ok(None),
+        (Observation::Unknown(_), _) | (_, Observation::Unknown(_)) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+        (Observation::Present(lease), Observation::Present(session)) => {
+            let Observation::Present(service) = service else {
+                return Err("lifecycle_private_projection_etw_service_missing".to_string());
+            };
+            let Observation::Present(pipe) = pipe else {
+                return Err("lifecycle_private_projection_etw_pipe_missing".to_string());
+            };
+            if lease.phase != EtwLeasePhase::Active
+                || lease.session != session.identity
+                || service.state != 4
+                || service.process_id != lease.controller.process_id
+                || service.process_started_at_100ns != Some(lease.controller.process_started_at)
+                || pipe.server_process_id != lease.controller.process_id
+                || pipe.server_process_started_at_100ns != lease.controller.process_started_at
+            {
+                return Err("lifecycle_private_projection_etw_identity_mismatch".to_string());
+            }
+            let buffers_lost = session
+                .log_buffers_lost
+                .checked_add(session.realtime_buffers_lost)
+                .ok_or_else(|| "lifecycle_private_projection_etw_loss_overflow".to_string())?;
+            Ok(Some(SanitizedEtwObservation {
+                lease: lease.clone(),
+                observed_session: session.identity.clone(),
+                owner_lock_held,
+                process_lock_held,
+                events_lost: session.events_lost,
+                buffers_lost,
+            }))
+        }
+        _ => Err("lifecycle_private_projection_etw_presence_mismatch".to_string()),
+    }
+}
+
+fn project_runtime_lock(
+    observation: &RuntimeLockObservation,
+    leaf: &str,
+) -> Result<Option<LogicalPath>, String> {
+    match observation {
+        RuntimeLockObservation::Held {} | RuntimeLockObservation::Released {} => {
+            Ok(Some(service_data_path(leaf)))
+        }
+        RuntimeLockObservation::Absent {} => Ok(None),
+        RuntimeLockObservation::Unknown { .. } => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+    }
+}
+
+fn service_data_path(leaf: &str) -> LogicalPath {
+    LogicalPath {
+        root: LogicalRoot::ServiceData,
+        relative_leaf: leaf.to_string(),
+    }
 }
 
 fn project_parent_current_user_directory(
@@ -1264,7 +1404,7 @@ fn validate_desktop_machine_runtime(
     Ok(())
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ServiceGeneration {
     process_id: u32,
     started_at_100ns: u64,
@@ -1280,6 +1420,7 @@ fn validate_lifecycle_continuity(
     let mut run_etw_identity = None;
     let mut pre_uninstall_install_id = None;
     let mut post_reinstall_install_id = None;
+    let mut service_instance_generations = BTreeMap::new();
     let mut post_uninstall_epoch = false;
     for receipt_name in SUCCESS_PRIVATE_EVIDENCE_LEAVES {
         let entry = required_entry(entries, receipt_name)?;
@@ -1308,9 +1449,27 @@ fn validate_lifecycle_continuity(
                 return Err("lifecycle_sanitized_etw_install_epoch_drift".to_string());
             }
         }
+        if entry
+            .machine
+            .service
+            .as_present()
+            .is_some_and(|service| service.state == 4)
+        {
+            let generation = running_generation(&entry.machine)?;
+            if service_instance_generations
+                .insert(generation.service_instance_id, generation.clone())
+                .is_some_and(|prior| prior != generation)
+            {
+                return Err("lifecycle_sanitized_generation_continuity_invalid".to_string());
+            }
+        }
         if receipt_name == "initial-uninstall-state.private.json" {
             post_uninstall_epoch = true;
         }
+    }
+    match (pre_uninstall_install_id, post_reinstall_install_id) {
+        (Some(before), Some(after)) if before != after => {}
+        _ => return Err("lifecycle_sanitized_etw_install_epoch_invalid".to_string()),
     }
     for (state, desktop) in [
         (
@@ -3261,6 +3420,245 @@ mod tests {
     }
 
     #[test]
+    fn raw_runtime_authority_roundtrips_and_requires_every_nested_field() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let running = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("running entry");
+        let raw = raw_machine(&running.machine);
+        let value = serde_json::to_value(&raw).expect("raw machine");
+        assert_eq!(
+            serde_json::from_value::<ElevatedMachineSnapshot>(value.clone())
+                .expect("raw roundtrip"),
+            raw
+        );
+        for field in [
+            "named_pipe",
+            "etw_lease",
+            "etw_session",
+            "etw_owner_lock",
+            "service_lifecycle_lock",
+        ] {
+            let mut missing = value.clone();
+            missing
+                .as_object_mut()
+                .expect("machine object")
+                .remove(field);
+            assert!(
+                serde_json::from_value::<ElevatedMachineSnapshot>(missing).is_err(),
+                "{field}"
+            );
+        }
+        let mut unknown_lock = value.clone();
+        unknown_lock["etw_owner_lock"]
+            .as_object_mut()
+            .expect("lock object")
+            .insert("unexpected".to_string(), serde_json::json!(true));
+        assert!(serde_json::from_value::<ElevatedMachineSnapshot>(unknown_lock).is_err());
+        let mut unknown_nested = value;
+        unknown_nested["named_pipe"]["value"]
+            .as_object_mut()
+            .expect("named pipe value")
+            .insert("unexpected".to_string(), serde_json::json!(true));
+        assert!(serde_json::from_value::<ElevatedMachineSnapshot>(unknown_nested).is_err());
+    }
+
+    #[test]
+    fn sanitized_named_pipe_keeps_v2_shape_without_process_start_time() {
+        assert_eq!(SANITIZED_SCHEMA, "batcave_windows_lifecycle_sanitized_v2");
+        let pipe = SanitizedNamedPipeSnapshot {
+            server_process_id: 41,
+        };
+        assert_eq!(
+            serde_json::to_value(&pipe).expect("pipe serializes"),
+            serde_json::json!({ "server_process_id": 41 })
+        );
+        assert!(
+            serde_json::from_value::<SanitizedNamedPipeSnapshot>(serde_json::json!({
+                "server_process_id": 41,
+                "server_process_started_at_100ns": 4100
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn raw_runtime_authority_projects_running_and_stopped_snapshots() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        for name in [
+            "final-repair-state.private.json",
+            "final-stopped-service-state.private.json",
+        ] {
+            let entry = export
+                .private_evidence
+                .iter()
+                .find(|entry| entry.receipt.name == name)
+                .expect("machine entry");
+            assert_eq!(
+                compare_machine_projection(
+                    &raw_machine(&entry.machine),
+                    &entry.machine,
+                    &plan,
+                    &parent_current_user(),
+                ),
+                Ok(()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_runtime_authority_rejects_identity_presence_loss_and_unknown_drift() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let export = valid_export(&plan, &receipts);
+        let machine = &export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("running entry")
+            .machine;
+        let assert_rejected = |raw: ElevatedMachineSnapshot| {
+            assert!(
+                compare_machine_projection(&raw, machine, &plan, &parent_current_user(),).is_err()
+            );
+        };
+
+        let mut pipe_pid = raw_machine(machine);
+        let Observation::Present(pipe) = &mut pipe_pid.named_pipe else {
+            panic!("pipe");
+        };
+        pipe.server_process_id += 1;
+        assert_rejected(pipe_pid);
+
+        let mut pipe_start = raw_machine(machine);
+        let Observation::Present(pipe) = &mut pipe_start.named_pipe else {
+            panic!("pipe");
+        };
+        pipe.server_process_started_at_100ns += 1;
+        assert_rejected(pipe_start);
+
+        let mut lease_controller = raw_machine(machine);
+        let Observation::Present(lease) = &mut lease_controller.etw_lease else {
+            panic!("lease");
+        };
+        lease.controller.process_started_at += 1;
+        assert_rejected(lease_controller);
+
+        let mut session_identity = raw_machine(machine);
+        let Observation::Present(session) = &mut session_identity.etw_session else {
+            panic!("session");
+        };
+        session.identity.configuration_digest[0] ^= 1;
+        assert_rejected(session_identity);
+
+        let mut missing_session = raw_machine(machine);
+        missing_session.etw_session = Observation::Absent;
+        assert_rejected(missing_session);
+
+        let mut loss = raw_machine(machine);
+        let Observation::Present(session) = &mut loss.etw_session else {
+            panic!("session");
+        };
+        session.events_lost = 1;
+        assert_rejected(loss);
+
+        let mut finite_log_loss = raw_machine(machine);
+        let Observation::Present(session) = &mut finite_log_loss.etw_session else {
+            panic!("session");
+        };
+        session.log_buffers_lost = 1;
+        assert_rejected(finite_log_loss);
+
+        let mut finite_realtime_loss = raw_machine(machine);
+        let Observation::Present(session) = &mut finite_realtime_loss.etw_session else {
+            panic!("session");
+        };
+        session.realtime_buffers_lost = 1;
+        assert_rejected(finite_realtime_loss);
+
+        let mut overflow = raw_machine(machine);
+        let Observation::Present(session) = &mut overflow.etw_session else {
+            panic!("session");
+        };
+        session.log_buffers_lost = u64::MAX;
+        session.realtime_buffers_lost = 1;
+        assert_eq!(
+            compare_machine_projection(&overflow, machine, &plan, &parent_current_user()),
+            Err("lifecycle_private_projection_etw_loss_overflow".to_string())
+        );
+
+        for unknown in [0, 1, 2, 3, 4] {
+            let mut raw = raw_machine(machine);
+            match unknown {
+                0 => raw.named_pipe = Observation::Unknown("pipe_unknown".to_string()),
+                1 => raw.etw_lease = Observation::Unknown("lease_unknown".to_string()),
+                2 => raw.etw_session = Observation::Unknown("session_unknown".to_string()),
+                3 => {
+                    raw.etw_owner_lock = RuntimeLockObservation::Unknown {
+                        reason: "lock_unknown".to_string(),
+                    }
+                }
+                4 => {
+                    raw.service_lifecycle_lock = RuntimeLockObservation::Unknown {
+                        reason: "lifecycle_lock_unknown".to_string(),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert_rejected(raw);
+        }
+
+        let mut sanitized_loss = machine.clone();
+        sanitized_loss
+            .etw_session
+            .as_mut()
+            .expect("sanitized ETW")
+            .events_lost = 1;
+        assert_eq!(
+            validate_machine_snapshot(&sanitized_loss),
+            Err("lifecycle_sanitized_etw_invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn runtime_lock_projection_distinguishes_held_released_absent_and_unknown() {
+        let path = service_data_path(crate::collector_service::etw_lease::ETW_OWNER_LOCK_FILE_NAME);
+        for observation in [
+            RuntimeLockObservation::Held {},
+            RuntimeLockObservation::Released {},
+        ] {
+            assert_eq!(
+                project_runtime_lock(
+                    &observation,
+                    crate::collector_service::etw_lease::ETW_OWNER_LOCK_FILE_NAME,
+                ),
+                Ok(Some(path.clone()))
+            );
+        }
+        assert_eq!(
+            project_runtime_lock(
+                &RuntimeLockObservation::Absent {},
+                crate::collector_service::etw_lease::ETW_OWNER_LOCK_FILE_NAME,
+            ),
+            Ok(None)
+        );
+        assert!(project_runtime_lock(
+            &RuntimeLockObservation::Unknown {
+                reason: "lock_unknown".to_string(),
+            },
+            crate::collector_service::etw_lease::ETW_OWNER_LOCK_FILE_NAME,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn verified_projection_rejects_worker_sanitized_drift_and_swapped_machine_payloads() {
         let plan = parse_plan().expect("plan");
         let receipts = success_receipts();
@@ -3469,7 +3867,7 @@ mod tests {
     }
 
     #[test]
-    fn unrepresented_worker_pipe_and_etw_claims_never_complete_projection() {
+    fn worker_pipe_and_etw_claims_must_match_raw_runtime_authority() {
         let plan = parse_plan().expect("plan");
         let receipts = success_receipts();
         let mut export = valid_export(&plan, &receipts);
@@ -3494,7 +3892,7 @@ mod tests {
 
         assert_eq!(
             compare_machine_projection(&raw, &entry.machine, &plan, &parent_current_user()),
-            Ok(())
+            Err("lifecycle_private_projection_machine_drift".to_string())
         );
         assert_eq!(
             compare_parent_current_user_retention(
@@ -3920,6 +4318,35 @@ mod tests {
         )
         .is_err());
 
+        for (name, owner_lock) in [
+            ("final-stopped-service-state.private.json", true),
+            ("baseline-crashed-state.private.json", false),
+        ] {
+            let mut runtime_lock_residue = valid_export(&plan, &receipts);
+            let machine = &mut runtime_lock_residue
+                .private_evidence
+                .iter_mut()
+                .find(|entry| entry.receipt.name == name)
+                .expect("stopped or crashed state")
+                .machine;
+            if owner_lock {
+                machine.etw_owner_lock = Some(service_data_path(
+                    crate::collector_service::etw_lease::ETW_OWNER_LOCK_FILE_NAME,
+                ));
+            } else {
+                machine.service_lifecycle_lock =
+                    Some(service_data_path(SERVICE_LIFECYCLE_LOCK_FILE_NAME));
+            }
+            assert!(validate_sanitized_export_bytes(
+                &serde_json::to_vec(&runtime_lock_residue).expect("runtime lock residue"),
+                &plan,
+                &"c".repeat(40),
+                &"d".repeat(64),
+                &receipts,
+            )
+            .is_err());
+        }
+
         let mut retention_drift = valid_export(&plan, &receipts);
         retention_drift
             .current_user_retention
@@ -4304,8 +4731,8 @@ mod tests {
         replayed_generation
             .private_evidence
             .iter_mut()
-            .find(|entry| entry.receipt.name == "final-restart-state.private.json")
-            .expect("final restart")
+            .find(|entry| entry.receipt.name == "final-crash-recovery-state.private.json")
+            .expect("non-adjacent final recovery")
             .machine
             .etw_session
             .as_mut()
@@ -4320,6 +4747,41 @@ mod tests {
             &receipts,
         )
         .is_err());
+
+        let mut reused_install_epoch = valid_export(&plan, &receipts);
+        let pre_uninstall_install_id = reused_install_epoch
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("pre-uninstall state")
+            .machine
+            .etw_session
+            .as_ref()
+            .expect("pre-uninstall ETW")
+            .lease
+            .install_id;
+        let mut post_uninstall_epoch = false;
+        for entry in &mut reused_install_epoch.private_evidence {
+            if entry.receipt.name == "initial-uninstall-state.private.json" {
+                post_uninstall_epoch = true;
+                continue;
+            }
+            if post_uninstall_epoch {
+                if let Some(etw) = &mut entry.machine.etw_session {
+                    etw.lease.install_id = pre_uninstall_install_id;
+                }
+            }
+        }
+        assert_eq!(
+            validate_sanitized_export_bytes(
+                &serde_json::to_vec(&reused_install_epoch).expect("reused install epoch"),
+                &plan,
+                &"c".repeat(40),
+                &"d".repeat(64),
+                &receipts,
+            ),
+            Err("lifecycle_sanitized_etw_install_epoch_invalid".to_string())
+        );
 
         let mut weakened_boundary = valid_export(&plan, &receipts);
         let Observation::Present(boundary) = &mut weakened_boundary
@@ -4404,6 +4866,42 @@ mod tests {
                 "lifecycle_current_user_root_parent_authority_missing".to_string(),
             ),
             installed_boundaries: raw_observation(&machine.installed_boundaries, raw_boundaries),
+            named_pipe: match &machine.named_pipe {
+                Some(pipe) => Observation::Present(NamedPipeSnapshot {
+                    server_process_id: pipe.server_process_id,
+                    server_process_started_at_100ns: machine
+                        .service
+                        .as_present()
+                        .and_then(|service| service.process_started_at_100ns)
+                        .expect("running service start time"),
+                }),
+                None => Observation::Absent,
+            },
+            etw_lease: match &machine.etw_session {
+                Some(etw) => Observation::Present(etw.lease.clone()),
+                None => Observation::Absent,
+            },
+            etw_session: match &machine.etw_session {
+                Some(etw) => {
+                    Observation::Present(crate::windows_network::EtwSessionProofSnapshot {
+                        identity: etw.observed_session.clone(),
+                        events_lost: etw.events_lost,
+                        log_buffers_lost: etw.buffers_lost,
+                        realtime_buffers_lost: 0,
+                    })
+                }
+                None => Observation::Absent,
+            },
+            etw_owner_lock: if machine.etw_owner_lock.is_some() {
+                RuntimeLockObservation::Held {}
+            } else {
+                RuntimeLockObservation::Absent {}
+            },
+            service_lifecycle_lock: if machine.service_lifecycle_lock.is_some() {
+                RuntimeLockObservation::Held {}
+            } else {
+                RuntimeLockObservation::Absent {}
+            },
         }
     }
 
