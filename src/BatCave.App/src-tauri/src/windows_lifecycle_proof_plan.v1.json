@@ -13,20 +13,20 @@
     "uninstaller_sha256": "82b5f1b80f7fe695b31696b04d00d03e21b100e17bc45181b3b7c0710a6b5f05"
   },
   "final_candidate": {
-    "source_commit_sha": "16662c0a31cb5ccfd5232a383a6e37ff5d3c9126",
+    "source_commit_sha": "9b582a55c0a626560de659e247eb138617baac99",
     "installer_relative_path": "artifacts/windows-lifecycle-proof/final-installer.exe",
-    "installer_size": 210447664,
-    "installer_sha256": "adc87ee628802c93e1e8bba99ba4f42b7e6c507e1638c96ddba03b3de947b575",
-    "monitor_sha256": "45050eb803eb29d0531fa153b74a830465802017219970f76662eee69496beac",
-    "service_sha256": "6576b8132a465d64c04362ca8e45dca30b8b7892ed72236a003f1fa8e42d8f6f",
+    "installer_size": 210448128,
+    "installer_sha256": "bc26d7f1f5b0bf3f9b5c20774f9b16bbdd66b224060efcdbb7383f20a45903ec",
+    "monitor_sha256": "bbaa2b684dea3324ce11a083706215a6cd366d29e9bed8b76f3e4f0fefdeb202",
+    "service_sha256": "3e34afab451003d5ea1653506dacdba67c749f3583d07d83b2dd772e11937d3f",
     "uninstaller_size": 83152,
     "uninstaller_sha256": "fc9093ba3b1880820c14bf03b39a1d94b965ab730e757780f68552da34fbfc8c"
   },
   "incompatible_service_fixture": {
-    "build_source_commit_sha": "16662c0a31cb5ccfd5232a383a6e37ff5d3c9126",
+    "build_source_commit_sha": "9b582a55c0a626560de659e247eb138617baac99",
     "relative_path": "artifacts/windows-lifecycle-proof/incompatible-service.exe",
     "size": 1597952,
-    "sha256": "bb0ee5630a6db4100c6c5f2773bca99ef334aca3535ec6edfc4006bdd0059595",
+    "sha256": "a19687d87054a21ac8c2f17bec3562d4f840c654776c975626f9418aa2e55447",
     "product_version": "0.2.0-rc.3",
     "behavior": "incompatible_release"
   },
