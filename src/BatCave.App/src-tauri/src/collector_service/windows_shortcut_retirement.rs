@@ -920,6 +920,12 @@ mod tests {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    fn canonical_fixture_root(root: &tempfile::TempDir) -> PathBuf {
+        strip_verbatim_path_prefix(
+            fs::canonicalize(root.path()).expect("canonicalize shortcut fixture root"),
+        )
+    }
+
     fn relocated_monitor_path() -> PathBuf {
         PathBuf::from(r"D:\Apps\BatCave Monitor\batcave-monitor.exe")
     }
@@ -1098,7 +1104,7 @@ mod tests {
     #[test]
     fn native_com_roundtrip_deletes_only_the_exact_validated_link_handle() {
         let root = tempfile::tempdir().expect("create shortcut fixture root");
-        let shortcut_path = root.path().join(SHORTCUT_NAME);
+        let shortcut_path = canonical_fixture_root(&root).join(SHORTCUT_NAME);
         write_test_shortcut(&shortcut_path, &exact_contract()).expect("write exact shortcut");
 
         let shortcut = PinnedShortcut::open(&shortcut_path)
@@ -1126,7 +1132,8 @@ mod tests {
     #[test]
     fn hostile_contract_and_hardlink_are_rejected_without_deletion() {
         let root = tempfile::tempdir().expect("create hostile shortcut fixture root");
-        let hostile_path = root.path().join("hostile.lnk");
+        let root_path = canonical_fixture_root(&root);
+        let hostile_path = root_path.join("hostile.lnk");
         write_test_shortcut(
             &hostile_path,
             &ShortcutContract {
@@ -1148,8 +1155,8 @@ mod tests {
             "a foreign contract must be preserved"
         );
 
-        let valid_path = root.path().join("hardlinked.lnk");
-        let alias_path = root.path().join("hardlinked-alias.lnk");
+        let valid_path = root_path.join("hardlinked.lnk");
+        let alias_path = root_path.join("hardlinked-alias.lnk");
         write_test_shortcut(&valid_path, &exact_contract()).expect("write hardlink fixture");
         fs::hard_link(&valid_path, &alias_path).expect("create hardlink alias");
         assert_eq!(
@@ -1163,7 +1170,7 @@ mod tests {
     #[test]
     fn recreated_hostile_collision_is_detected_and_preserved_by_the_repeated_gate() {
         let root = tempfile::tempdir().expect("create recreated shortcut fixture root");
-        let shortcut_path = root.path().join(SHORTCUT_NAME);
+        let shortcut_path = canonical_fixture_root(&root).join(SHORTCUT_NAME);
         write_test_shortcut(&shortcut_path, &exact_contract()).expect("write original shortcut");
         let original = PinnedShortcut::open(&shortcut_path)
             .expect("open original shortcut")
@@ -1193,8 +1200,9 @@ mod tests {
     #[test]
     fn reparse_shortcut_is_rejected_without_touching_its_target_when_supported() {
         let root = tempfile::tempdir().expect("create reparse fixture root");
-        let target = root.path().join("target.lnk");
-        let reparse = root.path().join("reparse.lnk");
+        let root_path = canonical_fixture_root(&root);
+        let target = root_path.join("target.lnk");
+        let reparse = root_path.join("reparse.lnk");
         write_test_shortcut(&target, &exact_contract()).expect("write reparse target");
         if symlink_file(&target, &reparse).is_err() {
             return;
