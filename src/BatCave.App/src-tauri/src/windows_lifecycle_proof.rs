@@ -863,19 +863,7 @@ impl AbortResultTracker {
         } else if restoration_stage == LifecycleStage::InitialState {
             failure.restoration.as_ref() == &RestorationOutcome::NotRequired
         } else {
-            matches!(
-                failure.restoration.as_ref(),
-                RestorationOutcome::Failed {
-                    reason,
-                    evidence,
-                    evidence_error,
-                } if reason == "lifecycle_parent_abort_restoration_not_reviewed"
-                    && (evidence.is_some() != evidence_error.is_some())
-                    && evidence.as_ref().is_none_or(|receipt| {
-                        restoration_leaf_for_stage(restoration_stage)
-                            == Some(receipt.name.as_str())
-                    })
-            )
+            valid_settled_stage_restoration(failure.restoration.as_ref(), restoration_stage)
         };
         if result.completed_stage != Some(expected.completed_stage)
             || failure.kind != WorkerFailureKind::ParentAbort
@@ -1305,12 +1293,12 @@ fn run_parent() -> Result<i32, String> {
                                 receipt,
                             )?);
                         }
-                        if let Some(receipt) = restoration_evidence(failure.restoration.as_ref()) {
-                            restoration_evidence_guard = Some(native::verify_evidence_receipt(
-                                evidence_root_guard,
-                                receipt,
-                            )?);
-                        }
+                        restoration_evidence_guard = verify_restoration_evidence_packet(
+                            evidence_root_guard,
+                            &result,
+                            failure,
+                            &preflight.plan,
+                        )?;
                         revalidate_preflight_artifacts(&preflight)?;
                         if !terminate_without_ack {
                             send_parent_message(
@@ -1463,10 +1451,9 @@ fn validate_failed_desktop_worker_result(
     let settlement_matches = if crossed.attempted_stage.is_none() {
         result.process_tree_settled == desktop.process_tree_settled
             && if desktop.process_tree_settled {
-                matches!(
+                valid_settled_stage_restoration(
                     failure.restoration.as_ref(),
-                    RestorationOutcome::BlockedUntrusted { reason }
-                        if reason == "lifecycle_restoration_not_reviewed"
+                    crossed.completed_stage,
                 )
             } else {
                 failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
@@ -1741,9 +1728,8 @@ fn abort_parent_session(
             if let Some(receipt) = &failure.evidence {
                 failure_evidence_guard = Some(native::verify_evidence_receipt(root, receipt)?);
             }
-            if let Some(receipt) = restoration_evidence(failure.restoration.as_ref()) {
-                restoration_evidence_guard = Some(native::verify_evidence_receipt(root, receipt)?);
-            }
+            restoration_evidence_guard =
+                verify_restoration_evidence_packet(root, &result, failure, &preflight.plan)?;
             revalidate_preflight_artifacts(preflight)?;
             if !unsettled_abort {
                 send_parent_message(
@@ -2102,6 +2088,41 @@ fn restoration_evidence(restoration: &RestorationOutcome) -> Option<&EvidenceRec
     }
 }
 
+fn verify_restoration_evidence_packet(
+    root: &native::ProtectedEvidenceRoot,
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+    plan: &ProofPlan,
+) -> Result<Option<native::VerifiedEvidenceFile>, String> {
+    let Some(receipt) = restoration_evidence(failure.restoration.as_ref()) else {
+        return Ok(None);
+    };
+    let guard = native::verify_evidence_receipt(root, receipt)?;
+    let bytes = guard.read_all_exact("restoration_evidence_packet")?;
+    let stage = restoration_stage(result, failure)
+        .ok_or_else(|| "lifecycle_stage_restoration_packet_stage_missing".to_string())?;
+    let provisioner_transaction = failure.attempted_stage
+        == Some(LifecycleStage::FinalFallbackStates)
+        && result.completed_stage == Some(LifecycleStage::FinalCrashRecovery);
+    let target_stage = if provisioner_transaction {
+        LifecycleStage::FinalCrashRecovery
+    } else {
+        result
+            .completed_stage
+            .ok_or_else(|| "lifecycle_stage_restoration_packet_target_missing".to_string())?
+    };
+    lifecycle::validate_stage_restoration_packet(
+        &bytes,
+        stage,
+        target_stage,
+        provisioner_transaction,
+        failure.restoration.as_ref(),
+        plan,
+    )?;
+    guard.revalidate()?;
+    Ok(Some(guard))
+}
+
 fn run_worker(locator: &str) -> Result<i32, String> {
     lifecycle::require_controller_ready()?;
     let plan = parse_plan()?;
@@ -2188,6 +2209,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
             let abort = lifecycle::abort_after_result(
                 &result,
                 abort_reason_for_parent_error(&reason),
+                &plan,
                 &evidence,
                 &controller_bindings,
             );
@@ -2206,6 +2228,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
             let abort = lifecycle::abort_after_result(
                 &result,
                 AbortReason::ProtocolViolation,
+                &plan,
                 &evidence,
                 &controller_bindings,
             );
@@ -2217,7 +2240,7 @@ fn run_worker(locator: &str) -> Result<i32, String> {
         let abort = if result.abort.is_some_and(|abort| abort.reason == reason) {
             result
         } else {
-            lifecycle::abort_after_result(&result, reason, &evidence, &controller_bindings)
+            lifecycle::abort_after_result(&result, reason, &plan, &evidence, &controller_bindings)
         };
         send_abort_result_and_wait_for_acceptance(&mut pipe, &nonce, &mut gates, abort)?;
         return Ok(1);
@@ -2556,6 +2579,11 @@ fn validate_required_restoration(
             if evidence.is_some() == evidence_error.is_some() {
                 return Err("lifecycle_worker_restoration_failure_shape_invalid".to_string());
             }
+            if reason == lifecycle::STAGE_RESTORATION_EVIDENCE_FAILED
+                && (evidence.is_some() || evidence_error.is_none())
+            {
+                return Err("lifecycle_worker_restoration_failure_shape_invalid".to_string());
+            }
             if let Some(receipt) = evidence {
                 validate_restoration_receipt(receipt, expected_name, failure.evidence.as_deref())?;
             }
@@ -2858,6 +2886,40 @@ fn valid_settled_fallback_restoration(restoration: &RestorationOutcome) -> bool 
             }
             _ => false,
         },
+        RestorationOutcome::NotRequired
+        | RestorationOutcome::BlockedUnsettled
+        | RestorationOutcome::BlockedUntrusted { .. } => false,
+    }
+}
+
+fn valid_settled_stage_restoration(
+    restoration: &RestorationOutcome,
+    stage: LifecycleStage,
+) -> bool {
+    let Some(expected_leaf) = restoration_leaf_for_stage(stage) else {
+        return false;
+    };
+    match restoration {
+        RestorationOutcome::Restored { evidence } => evidence.name == expected_leaf,
+        RestorationOutcome::Failed {
+            reason,
+            evidence,
+            evidence_error,
+        } => {
+            let shape_valid = match reason.as_str() {
+                lifecycle::STAGE_RESTORATION_TARGET_INVALID => {
+                    evidence.is_some() != evidence_error.is_some()
+                }
+                lifecycle::STAGE_RESTORATION_EVIDENCE_FAILED => {
+                    evidence.is_none() && evidence_error.is_some()
+                }
+                _ => false,
+            };
+            shape_valid
+                && evidence
+                    .as_ref()
+                    .is_none_or(|receipt| receipt.name == expected_leaf)
+        }
         RestorationOutcome::NotRequired
         | RestorationOutcome::BlockedUnsettled
         | RestorationOutcome::BlockedUntrusted { .. } => false,
@@ -3534,7 +3596,9 @@ mod tests {
                     .to_string(),
                 evidence: None,
                 evidence_error: None,
-                restoration: restoration_not_reviewed(),
+                restoration: Box::new(RestorationOutcome::Restored {
+                    evidence: evidence_receipt("final-repair-restoration.private.json"),
+                }),
             },
         );
         assert!(validate_failed_desktop_worker_result(&primary_desktop, &primary_result).is_ok());
@@ -3838,7 +3902,7 @@ mod tests {
                 "final-repair-failure.private.json",
             ))),
             evidence_error: None,
-            restoration: restoration_not_reviewed(),
+            restoration: restoration_blocked_untrusted(),
         });
         let expected_abort = WorkerAbort {
             reason: AbortReason::ReceiptValidation,
@@ -3930,7 +3994,7 @@ mod tests {
                 "final-repair-failure.private.json",
             ))),
             evidence_error: None,
-            restoration: restoration_not_reviewed(),
+            restoration: restoration_blocked_untrusted(),
         });
         let mut replay = AbortResultTracker::new(None);
         assert_eq!(
@@ -4055,7 +4119,7 @@ mod tests {
                     "final-repair-failure.private.json",
                 ))),
                 evidence_error: None,
-                restoration: restoration_not_reviewed(),
+                restoration: restoration_blocked_untrusted(),
             },
             WorkerFailure {
                 kind: WorkerFailureKind::EvidenceWrite,
@@ -4305,7 +4369,7 @@ mod tests {
         let failure = legacy_restoration.failure.as_mut().expect("failure");
         failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
         *failure.restoration = RestorationOutcome::Failed {
-            reason: "lifecycle_parent_abort_restoration_not_reviewed".to_string(),
+            reason: lifecycle::STAGE_RESTORATION_TARGET_INVALID.to_string(),
             evidence: Some(evidence_receipt(
                 "final-fallback-states-restoration.private.json",
             )),
@@ -4334,7 +4398,7 @@ mod tests {
         let failure = wrong_pair.failure.as_mut().expect("failure");
         failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
         *failure.restoration = RestorationOutcome::Failed {
-            reason: "lifecycle_parent_abort_restoration_not_reviewed".to_string(),
+            reason: lifecycle::STAGE_RESTORATION_TARGET_INVALID.to_string(),
             evidence: Some(evidence_receipt(
                 "final-fallback-states-restoration.private.json",
             )),
@@ -4367,7 +4431,7 @@ mod tests {
                 ))),
                 evidence_error: None,
                 restoration: Box::new(RestorationOutcome::Failed {
-                    reason: "lifecycle_parent_abort_restoration_not_reviewed".to_string(),
+                    reason: lifecycle::STAGE_RESTORATION_TARGET_INVALID.to_string(),
                     evidence: Some(evidence_receipt("final-repair-restoration.private.json")),
                     evidence_error: None,
                 }),
@@ -4398,11 +4462,21 @@ mod tests {
 
         let failure = result.failure.as_mut().expect("failure");
         *failure.restoration = RestorationOutcome::Failed {
-            reason: "lifecycle_parent_abort_restoration_not_reviewed".to_string(),
+            reason: lifecycle::STAGE_RESTORATION_EVIDENCE_FAILED.to_string(),
             evidence: None,
             evidence_error: Some("lifecycle_evidence_create_failed".to_string()),
         };
         assert!(validate_worker_result(&result, false).is_ok());
+
+        *result.failure.as_mut().expect("failure").restoration = RestorationOutcome::Failed {
+            reason: lifecycle::STAGE_RESTORATION_EVIDENCE_FAILED.to_string(),
+            evidence: Some(evidence_receipt("final-repair-restoration.private.json")),
+            evidence_error: None,
+        };
+        assert_eq!(
+            validate_worker_result(&result, false),
+            Err("lifecycle_worker_restoration_failure_shape_invalid".to_string())
+        );
     }
 
     #[test]
@@ -4490,7 +4564,7 @@ mod tests {
                 "final-repair-failure.private.json",
             ))),
             evidence_error: None,
-            restoration: restoration_not_reviewed(),
+            restoration: restoration_blocked_untrusted(),
         });
         assert!(validate_worker_result(&mutation, false).is_ok());
 
@@ -4588,7 +4662,7 @@ mod tests {
             reason: "mutation_failed".to_string(),
             evidence: None,
             evidence_error: None,
-            restoration: restoration_not_reviewed(),
+            restoration: restoration_blocked_untrusted(),
         });
         assert_eq!(
             validate_worker_result(&forged_mutation, false),
@@ -4652,7 +4726,7 @@ mod tests {
                 "baseline-install-failure.private.json",
             ))),
             evidence_error: None,
-            restoration: restoration_not_reviewed(),
+            restoration: restoration_blocked_untrusted(),
         });
         assert_eq!(
             validate_worker_result(&forged_leaf, false),
@@ -4709,7 +4783,7 @@ mod tests {
                     evidence: None,
                     evidence_error: (kind == WorkerFailureKind::EvidenceWrite)
                         .then(|| "write_failed".to_string()),
-                    restoration: restoration_not_reviewed(),
+                    restoration: restoration_blocked_untrusted(),
                 },
             );
             assert!(validate_worker_result(&valid_after_mutation, false).is_ok());
@@ -4814,7 +4888,7 @@ mod tests {
                     reason: "mutation_failed".to_string(),
                     evidence: Some(Box::new(evidence_receipt(leaf))),
                     evidence_error: None,
-                    restoration: restoration_not_reviewed(),
+                    restoration: restoration_blocked_untrusted(),
                 },
             );
             assert!(validate_worker_result(&result, false).is_ok(), "{leaf}");
@@ -4838,7 +4912,7 @@ mod tests {
                 reason: "lifecycle_final_repair_evidence_incomplete".to_string(),
                 evidence: None,
                 evidence_error: Some("lifecycle_evidence_create_failed".to_string()),
-                restoration: restoration_not_reviewed(),
+                restoration: restoration_blocked_untrusted(),
             },
         );
         evidence_write.last_authenticated_checkpoint = Some(initial_checkpoint);
@@ -4853,7 +4927,7 @@ mod tests {
                 reason: "lifecycle_controller_forward_drift".to_string(),
                 evidence: None,
                 evidence_error: None,
-                restoration: restoration_not_reviewed(),
+                restoration: restoration_blocked_untrusted(),
             },
         );
         forged_controller.last_authenticated_checkpoint = Some(initial_checkpoint);
@@ -4875,7 +4949,7 @@ mod tests {
                 reason: "lifecycle_initial_uninstall_evidence_incomplete".to_string(),
                 evidence: None,
                 evidence_error: Some("lifecycle_evidence_create_failed".to_string()),
-                restoration: restoration_not_reviewed(),
+                restoration: restoration_blocked_untrusted(),
             },
         );
         post_desktop_evidence_write.last_authenticated_checkpoint = Some(final_repair_checkpoint);
@@ -4932,7 +5006,7 @@ mod tests {
                     reason: "lifecycle_mutation_failed".to_string(),
                     evidence: Some(Box::new(evidence_receipt(leaf))),
                     evidence_error: None,
-                    restoration: restoration_not_reviewed(),
+                    restoration: restoration_blocked_untrusted(),
                 },
             );
             assert!(
@@ -4980,12 +5054,10 @@ mod tests {
         let restoration = if completed_stage == LifecycleStage::InitialState {
             RestorationOutcome::NotRequired
         } else {
-            RestorationOutcome::Failed {
-                reason: "lifecycle_parent_abort_restoration_not_reviewed".to_string(),
-                evidence: Some(evidence_receipt(
+            RestorationOutcome::Restored {
+                evidence: evidence_receipt(
                     restoration_leaf_for_stage(completed_stage).expect("restoration leaf"),
-                )),
-                evidence_error: None,
+                ),
             }
         };
         WorkerResult {
@@ -5012,9 +5084,9 @@ mod tests {
         }
     }
 
-    fn restoration_not_reviewed() -> Box<RestorationOutcome> {
+    fn restoration_blocked_untrusted() -> Box<RestorationOutcome> {
         Box::new(RestorationOutcome::BlockedUntrusted {
-            reason: "lifecycle_restoration_not_reviewed".to_string(),
+            reason: "lifecycle_restoration_target_untrusted".to_string(),
         })
     }
 
