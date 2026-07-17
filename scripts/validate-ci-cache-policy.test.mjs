@@ -2,21 +2,75 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-const validationWorkflow = fs.readFileSync(
-  new URL("../.github/workflows/validation.yml", import.meta.url),
-  "utf8",
-);
+const workflowDirectory = new URL("../.github/workflows/", import.meta.url);
 
-function validationJob(name) {
-  const match = validationWorkflow.match(
+function readWorkflow(name) {
+  return fs.readFileSync(new URL(name, workflowDirectory), "utf8");
+}
+
+const validationWorkflow = readWorkflow("validation.yml");
+const bundlesWorkflow = readWorkflow("bundles.yml");
+const releaseWorkflow = readWorkflow("release.yml");
+const workflowSources = fs
+  .readdirSync(workflowDirectory)
+  .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
+  .map((name) => [name, readWorkflow(name)]);
+
+function workflowJob(workflow, name) {
+  const match = workflow.match(
     new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, "m"),
   );
-  assert.ok(match, `validation workflow job ${name} must exist`);
+  assert.ok(match, `workflow job ${name} must exist`);
   return match[0];
 }
 
 const trustedMainSave =
   "save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}";
+
+function actionStep(job, action) {
+  const match = job.match(
+    new RegExp(
+      `^      - uses: (${action.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}@[0-9a-f]{40})[^\\n]*\\n[\\s\\S]*?(?=^      - |(?![\\s\\S]))`,
+      "m",
+    ),
+  );
+  assert.ok(match, `${action} step must exist`);
+  return { reference: match[1], source: match[0] };
+}
+
+function actionInput(step, name, fallback = undefined) {
+  const match = step.source.match(new RegExp(`^          ${name}: (.+)$`, "m"));
+  if (fallback === undefined) {
+    assert.ok(match, `${name} input must exist on ${step.reference}`);
+  }
+  return match?.[1] ?? fallback;
+}
+
+function jobRunner(job) {
+  const match = job.match(/^    runs-on: (.+)$/m);
+  assert.ok(match, "job runner must exist");
+  return match[1];
+}
+
+function toolchainSignature(job) {
+  const step = actionStep(job, "dtolnay/rust-toolchain");
+  return {
+    action: step.reference,
+    toolchain: actionInput(step, "toolchain", ""),
+    targets: actionInput(step, "targets", ""),
+  };
+}
+
+function cacheSignature(job) {
+  const step = actionStep(job, "Swatinem/rust-cache");
+  return {
+    action: step.reference,
+    sharedKey: actionInput(step, "shared-key"),
+    workspaces: actionInput(step, "workspaces"),
+    workspaceCrates: actionInput(step, "cache-workspace-crates", "false"),
+    saveIf: actionInput(step, "save-if"),
+  };
+}
 
 test("keeps required pull-request validation restore-only", () => {
   assert.match(
@@ -26,53 +80,82 @@ test("keeps required pull-request validation restore-only", () => {
   assert.match(validationWorkflow, /^permissions:\n  contents: read$/m);
 
   for (const name of ["windows", "linux", "macos"]) {
-    const job = validationJob(name);
-    assert.doesNotMatch(job, /^    if:/m, `${name} must remain a required pull-request job`);
-    assert.match(job, new RegExp(trustedMainSave.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    const job = workflowJob(validationWorkflow, name);
+    const cache = cacheSignature(job);
+    assert.doesNotMatch(job, /^    if:/m, `${name} must remain an unconditional PR job`);
+    assert.equal(cache.workspaceCrates, "false");
+    assert.equal(cache.saveIf, trustedMainSave.slice("save-if: ".length));
   }
 
-  assert.equal(validationWorkflow.split(trustedMainSave).length - 1, 4);
-  assert.doesNotMatch(validationWorkflow, /cache-on-failure|cache-workspace-crates:\s*true/);
+  assert.equal(validationWorkflow.split(trustedMainSave).length - 1, 3);
+  assert.doesNotMatch(validationWorkflow, /linux-package-cache-seed|--bundle-only/);
 });
 
-test("uses the cache family and toolchains consumed by current validation", () => {
-  assert.equal(
-    validationWorkflow.match(
-      /shared-key: batcave-validation-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}/g,
-    )?.length,
-    3,
-  );
-  assert.equal(
-    validationWorkflow.match(
-      /Swatinem\/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4/g,
-    )?.length,
-    4,
-  );
-  assert.equal(validationWorkflow.match(/toolchain: 1\.97\.1/g)?.length, 2);
-  assert.match(validationJob("linux"), /^    runs-on: ubuntu-22\.04$/m);
-
-  const actionReferences = [...validationWorkflow.matchAll(/^\s*- uses: (\S+)/gm)].map(
-    ([, reference]) => reference,
-  );
-  assert.ok(actionReferences.length > 0);
-  for (const reference of actionReferences) {
-    assert.match(reference, /@[0-9a-f]{40}$/u, `${reference} must use an immutable commit`);
+test("pins every external action and rejects unsafe cache modes", () => {
+  let actionCount = 0;
+  for (const [name, source] of workflowSources) {
+    const references = [...source.matchAll(/^\s*(?:-\s*)?uses:\s+(\S+)/gm)].map(
+      ([, reference]) => reference,
+    );
+    actionCount += references.length;
+    for (const reference of references) {
+      if (!reference.startsWith("./")) {
+        assert.match(
+          reference,
+          /@[0-9a-f]{40}$/u,
+          `${name}: ${reference} must use an immutable commit`,
+        );
+      }
+    }
+    assert.doesNotMatch(source, /cache-on-failure|cache-workspace-crates:\s*true/);
   }
+  assert.ok(actionCount > 0);
 });
 
-test("seeds the package dependency graph only on trusted main pushes", () => {
-  const job = validationJob("linux-package-cache-seed");
-  assert.match(job, /^    name: Linux package cache seed$/m);
-  assert.match(
-    job,
-    /^    if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'$/m,
+test("uses one trusted Linux package seed and restore-only releases", () => {
+  const bundle = workflowJob(bundlesWorkflow, "linux");
+  const release = workflowJob(releaseWorkflow, "linux");
+  const bundleCache = cacheSignature(bundle);
+  const releaseCache = cacheSignature(release);
+
+  assert.match(bundlesWorkflow, /^permissions:\n  contents: read$/m);
+  assert.equal(jobRunner(bundle), "ubuntu-22.04");
+  assert.equal(jobRunner(release), jobRunner(bundle));
+  assert.deepEqual(toolchainSignature(release), toolchainSignature(bundle));
+  assert.equal(releaseCache.action, bundleCache.action);
+  assert.equal(releaseCache.sharedKey, bundleCache.sharedKey);
+  assert.equal(releaseCache.workspaces, bundleCache.workspaces);
+  assert.equal(releaseCache.workspaceCrates, bundleCache.workspaceCrates);
+  assert.match(bundle, /bash scripts\/validate-tauri\.sh --bundle-only/);
+  assert.equal(bundle.match(/validate-tauri\.sh --bundle-only/g)?.length, 1);
+  assert.equal(
+    bundleCache.sharedKey,
+    "batcave-package-release-${{ runner.os }}-${{ runner.arch }}",
   );
-  assert.match(
-    job,
-    /^          shared-key: batcave-package-release-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}$/m,
-  );
-  assert.match(job, /^          cache-workspace-crates: false$/m);
-  assert.match(job, /^          save-if: .*refs\/heads\/main.*$/m);
-  assert.match(job, /bash scripts\/validate-tauri\.sh --bundle-only/);
-  assert.doesNotMatch(job, /cargo test|pull_request/);
+  assert.equal(bundleCache.workspaceCrates, "false");
+  assert.equal(bundleCache.saveIf, trustedMainSave.slice("save-if: ".length));
+  assert.equal(releaseCache.saveIf, "false");
+});
+
+test("shares dependency-only bundle caches without release writes", () => {
+  for (const name of ["windows", "macos"]) {
+    const bundle = workflowJob(bundlesWorkflow, name);
+    const release = workflowJob(releaseWorkflow, name);
+    const bundleCache = cacheSignature(bundle);
+    const releaseCache = cacheSignature(release);
+
+    assert.equal(jobRunner(release), jobRunner(bundle));
+    assert.deepEqual(toolchainSignature(release), toolchainSignature(bundle));
+    assert.equal(releaseCache.action, bundleCache.action);
+    assert.equal(releaseCache.sharedKey, bundleCache.sharedKey);
+    assert.equal(releaseCache.workspaces, bundleCache.workspaces);
+    assert.equal(releaseCache.workspaceCrates, bundleCache.workspaceCrates);
+    assert.equal(
+      bundleCache.sharedKey,
+      "batcave-bundle-release-${{ runner.os }}-${{ runner.arch }}",
+    );
+    assert.equal(bundleCache.workspaceCrates, "false");
+    assert.equal(bundleCache.saveIf, trustedMainSave.slice("save-if: ".length));
+    assert.equal(releaseCache.saveIf, "false");
+  }
 });
