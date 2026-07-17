@@ -8005,17 +8005,18 @@ mod tests {
         let output = fs::read_to_string(&scratch.output).expect("child environment output");
         let lines = output.lines().collect::<Vec<_>>();
         assert_eq!(
-            lines[..6],
+            lines[..7],
             [
                 format!("ComSpec={}", system.join("cmd.exe").display()),
                 format!("Path={}", system.display()),
+                format!("SystemDrive={}", &windows.display().to_string()[..2]),
                 format!("SystemRoot={}", windows.display()),
                 format!("TEMP={}", scratch.root.display()),
                 format!("TMP={}", scratch.root.display()),
                 format!("WINDIR={}", windows.display()),
             ]
         );
-        assert!(lines[6].eq_ignore_ascii_case(&scratch.root.to_string_lossy()));
+        assert!(lines[7].eq_ignore_ascii_case(&scratch.root.to_string_lossy()));
     }
 
     #[test]
