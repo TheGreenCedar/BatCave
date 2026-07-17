@@ -9,8 +9,8 @@ use crate::windows_lifecycle_proof_contract::{
     message_sha256, parse_plan, plan_sha256, validate_desktop_phase_result, validate_envelope,
     validate_locator, validate_nonce, validate_sha256, AbortReason, ClosedRequest, DesktopPhase,
     DesktopPhaseDisposition, DesktopPhaseResult, Envelope, EvidenceReceipt, LifecycleStage,
-    ParentMessage, ProofPlan, RestorationOutcome, SequenceGate, WorkerAbort, WorkerCheckpoint,
-    WorkerFailureKind, WorkerMessage, WorkerResult, PROTOCOL_SCHEMA,
+    Observation, ParentMessage, ProofPlan, RestorationOutcome, SequenceGate, WorkerAbort,
+    WorkerCheckpoint, WorkerFailureKind, WorkerMessage, WorkerResult, PROTOCOL_SCHEMA,
     SUCCESS_PRIVATE_EVIDENCE_LEAVES,
 };
 use native::{OwnedFile, PipeConnection, PreflightSnapshot};
@@ -177,6 +177,449 @@ impl ParentCurrentUserRetentionState {
         )?;
         Ok((before.authority(), after.authority()))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParentResidueExpectation {
+    Clean,
+    SeededKnownHelpers,
+    SeededHelpersRemoved,
+    FinalUninstalled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParentResidueCleanupAction {
+    Nothing,
+    Cleanup,
+    BlockedUnsettled,
+}
+
+fn parent_residue_cleanup_action(
+    has_transaction: bool,
+    worker_tree_settled: bool,
+) -> ParentResidueCleanupAction {
+    match (has_transaction, worker_tree_settled) {
+        (false, _) => ParentResidueCleanupAction::Nothing,
+        (true, true) => ParentResidueCleanupAction::Cleanup,
+        (true, false) => ParentResidueCleanupAction::BlockedUnsettled,
+    }
+}
+
+fn finalize_parent_residue_terminal<T>(
+    transaction: &mut Option<T>,
+    worker_tree_settled: bool,
+    cleanup: impl FnOnce(&mut T) -> Result<(), String>,
+) -> Result<(), String> {
+    match parent_residue_cleanup_action(transaction.is_some(), worker_tree_settled) {
+        ParentResidueCleanupAction::Nothing => return Ok(()),
+        ParentResidueCleanupAction::BlockedUnsettled => {
+            return Err("lifecycle_parent_user_cleanup_blocked_unsettled".to_string());
+        }
+        ParentResidueCleanupAction::Cleanup => {}
+    }
+    let pending = transaction
+        .as_mut()
+        .ok_or_else(|| "lifecycle_parent_user_cleanup_transaction_missing".to_string())?;
+    cleanup(pending)?;
+    *transaction = None;
+    Ok(())
+}
+
+#[derive(Default)]
+struct ParentCurrentUserResidueState {
+    timeline: native::ParentCurrentUserResidueTimeline,
+    sentinel_anchor: Option<native::ParentHelperFileSnapshot>,
+    run_key_anchor: Option<(String, String, String)>,
+    helper_root_anchor: Option<(native::FileIdentity, String, String)>,
+    seed_transaction: Option<native::ParentCurrentUserResidueTransaction>,
+}
+
+impl ParentCurrentUserResidueState {
+    fn capture_checkpoint(
+        &mut self,
+        stage: LifecycleStage,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<(), String> {
+        let expectation = match stage {
+            LifecycleStage::InitialState
+            | LifecycleStage::FinalRepair
+            | LifecycleStage::InitialUninstall
+            | LifecycleStage::BaselineInstall
+            | LifecycleStage::BaselineRestart
+            | LifecycleStage::BaselineCrashRecovery
+            | LifecycleStage::BaselineRollbackRecovery => ParentResidueExpectation::Clean,
+            LifecycleStage::LegacyResidueSeeded
+            | LifecycleStage::FinalUpgrade
+            | LifecycleStage::FinalRestart
+            | LifecycleStage::FinalCrashRecovery => ParentResidueExpectation::SeededKnownHelpers,
+            LifecycleStage::FinalFallbackStates => ParentResidueExpectation::SeededHelpersRemoved,
+            LifecycleStage::FinalUninstall => ParentResidueExpectation::FinalUninstalled,
+        };
+        let snapshot = native::capture_parent_current_user_residue(root)?;
+        validate_parent_residue_snapshot(
+            &snapshot,
+            expectation,
+            root.authority(),
+            self.sentinel_anchor.as_ref(),
+        )?;
+        self.validate_authority_anchors(&snapshot)?;
+        self.timeline.insert(
+            native::ParentCurrentUserCapturePoint::Checkpoint(stage),
+            snapshot,
+        )?;
+        if stage == LifecycleStage::BaselineRollbackRecovery {
+            if self.seed_transaction.is_some() {
+                return Err("lifecycle_parent_user_seed_transaction_replayed".to_string());
+            }
+            match native::seed_parent_current_user_legacy_residue(root) {
+                Ok(transaction) => self.seed_transaction = Some(transaction),
+                Err(mut failure) => {
+                    if let Some(transaction) = failure.transaction.take() {
+                        self.seed_transaction = Some(*transaction);
+                    }
+                    return Err(failure.reason);
+                }
+            }
+            let seeded = native::capture_parent_current_user_residue(root)?;
+            validate_parent_residue_snapshot(
+                &seeded,
+                ParentResidueExpectation::SeededKnownHelpers,
+                root.authority(),
+                None,
+            )?;
+            self.validate_authority_anchors(&seeded)?;
+            self.sentinel_anchor = Some(parent_residue_sentinel(&seeded)?.clone());
+            self.timeline.insert(
+                native::ParentCurrentUserCapturePoint::BaselineRollbackRecoverySeeded,
+                seeded,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn capture_before_desktop(
+        &mut self,
+        phase: DesktopPhase,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<(), String> {
+        if phase != DesktopPhase::FinalMissingService {
+            return Ok(());
+        }
+        let snapshot = native::capture_parent_current_user_residue(root)?;
+        validate_parent_residue_snapshot(
+            &snapshot,
+            ParentResidueExpectation::SeededKnownHelpers,
+            root.authority(),
+            self.sentinel_anchor.as_ref(),
+        )?;
+        self.validate_authority_anchors(&snapshot)?;
+        self.timeline.insert(
+            native::ParentCurrentUserCapturePoint::FinalMissingServiceBeforeDesktop,
+            snapshot,
+        )
+    }
+
+    fn capture_desktop_complete(
+        &mut self,
+        phase: DesktopPhase,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<(), String> {
+        let expectation = match phase {
+            DesktopPhase::FinalPrimary
+            | DesktopPhase::BaselinePrimary
+            | DesktopPhase::BaselineSecondInstance => ParentResidueExpectation::Clean,
+            DesktopPhase::FinalMissingService
+            | DesktopPhase::FinalStoppedService
+            | DesktopPhase::FinalIncompatibleService => {
+                ParentResidueExpectation::SeededHelpersRemoved
+            }
+        };
+        let snapshot = native::capture_parent_current_user_residue(root)?;
+        validate_parent_residue_snapshot(
+            &snapshot,
+            expectation,
+            root.authority(),
+            self.sentinel_anchor.as_ref(),
+        )?;
+        self.validate_authority_anchors(&snapshot)?;
+        self.timeline.insert(
+            native::ParentCurrentUserCapturePoint::DesktopComplete(phase),
+            snapshot,
+        )
+    }
+
+    fn complete(
+        &self,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<&native::ParentCurrentUserResidueTimeline, String> {
+        root.revalidate()?;
+        for stage in [
+            LifecycleStage::InitialState,
+            LifecycleStage::FinalRepair,
+            LifecycleStage::InitialUninstall,
+            LifecycleStage::BaselineInstall,
+            LifecycleStage::BaselineRestart,
+            LifecycleStage::BaselineCrashRecovery,
+            LifecycleStage::BaselineRollbackRecovery,
+            LifecycleStage::LegacyResidueSeeded,
+            LifecycleStage::FinalUpgrade,
+            LifecycleStage::FinalRestart,
+            LifecycleStage::FinalCrashRecovery,
+            LifecycleStage::FinalFallbackStates,
+            LifecycleStage::FinalUninstall,
+        ] {
+            self.timeline
+                .get(native::ParentCurrentUserCapturePoint::Checkpoint(stage))?;
+        }
+        self.timeline
+            .get(native::ParentCurrentUserCapturePoint::BaselineRollbackRecoverySeeded)?;
+        self.timeline
+            .get(native::ParentCurrentUserCapturePoint::FinalMissingServiceBeforeDesktop)?;
+        for phase in DESKTOP_PHASES {
+            self.timeline
+                .get(native::ParentCurrentUserCapturePoint::DesktopComplete(
+                    phase,
+                ))?;
+        }
+        Ok(&self.timeline)
+    }
+
+    fn cleanup_after_worker_settlement(
+        &mut self,
+        root: &native::ParentCurrentUserAuthorityGuard,
+        worker_tree_settled: bool,
+    ) -> Result<(), String> {
+        finalize_parent_residue_terminal(
+            &mut self.seed_transaction,
+            worker_tree_settled,
+            |transaction| native::cleanup_parent_current_user_legacy_residue(root, transaction),
+        )
+    }
+
+    fn validate_authority_anchors(
+        &mut self,
+        snapshot: &native::ParentCurrentUserResidueSnapshot,
+    ) -> Result<(), String> {
+        let run_key = (
+            snapshot.hkcu_run.final_key_path.clone(),
+            snapshot.hkcu_run.owner_sid.clone(),
+            snapshot.hkcu_run.dacl_sha256.clone(),
+        );
+        if self
+            .run_key_anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor != &run_key)
+        {
+            return Err("lifecycle_parent_user_run_key_authority_changed".to_string());
+        }
+        self.run_key_anchor.get_or_insert(run_key);
+
+        if let Observation::Present(helper) = &snapshot.helper {
+            let root = (
+                helper.root.identity,
+                helper.root_owner_sid.clone(),
+                helper.root_dacl_sha256.clone(),
+            );
+            if self
+                .helper_root_anchor
+                .as_ref()
+                .is_some_and(|anchor| anchor != &root)
+            {
+                return Err("lifecycle_parent_user_helper_root_authority_changed".to_string());
+            }
+            self.helper_root_anchor.get_or_insert(root);
+        }
+        Ok(())
+    }
+}
+
+trait ParentResidueTerminalCleanup {
+    type Authority;
+
+    fn cleanup_parent_residue(
+        &mut self,
+        authority: &Self::Authority,
+        worker_tree_settled: bool,
+    ) -> Result<(), String>;
+
+    fn cleanup_success(&mut self, authority: &Self::Authority) -> Result<(), String> {
+        self.cleanup_parent_residue(authority, true)
+    }
+
+    fn cleanup_worker_failure(&mut self, authority: &Self::Authority) -> Option<String> {
+        self.cleanup_parent_residue(authority, true).err()
+    }
+
+    fn cleanup_authenticated_abort(&mut self, authority: &Self::Authority) -> Option<String> {
+        self.cleanup_parent_residue(authority, true).err()
+    }
+
+    fn cleanup_last_resort_abort(
+        &mut self,
+        authority: &Self::Authority,
+        worker_tree_settled: bool,
+        followup_error: &mut String,
+    ) {
+        if let Err(error) = self.cleanup_parent_residue(authority, worker_tree_settled) {
+            *followup_error = append_parent_followup_error(followup_error, &error);
+        }
+    }
+}
+
+impl ParentResidueTerminalCleanup for ParentCurrentUserResidueState {
+    type Authority = native::ParentCurrentUserAuthorityGuard;
+
+    fn cleanup_parent_residue(
+        &mut self,
+        authority: &Self::Authority,
+        worker_tree_settled: bool,
+    ) -> Result<(), String> {
+        self.cleanup_after_worker_settlement(authority, worker_tree_settled)
+    }
+}
+
+fn parent_residue_sentinel(
+    snapshot: &native::ParentCurrentUserResidueSnapshot,
+) -> Result<&native::ParentHelperFileSnapshot, String> {
+    match &snapshot.helper {
+        Observation::Present(helper) => match &helper.sentinel {
+            Observation::Present(sentinel) => Ok(sentinel),
+            Observation::Absent | Observation::Unknown(_) => {
+                Err("lifecycle_parent_user_helper_sentinel_missing".to_string())
+            }
+        },
+        Observation::Absent | Observation::Unknown(_) => {
+            Err("lifecycle_parent_user_helper_manifest_missing".to_string())
+        }
+    }
+}
+
+fn validate_parent_residue_snapshot(
+    snapshot: &native::ParentCurrentUserResidueSnapshot,
+    expectation: ParentResidueExpectation,
+    authority: &native::ParentCurrentUserAuthority,
+    sentinel_anchor: Option<&native::ParentHelperFileSnapshot>,
+) -> Result<(), String> {
+    if !native::valid_parent_run_key_owner(&snapshot.hkcu_run.owner_sid, &authority.user_sid)
+        || snapshot.hkcu_run.final_key_path.is_empty()
+        || validate_sha256(&snapshot.hkcu_run.dacl_sha256, "parent_user_run_dacl").is_err()
+        || validate_sha256(
+            &snapshot.hkcu_run.manifest_sha256,
+            "parent_user_run_manifest",
+        )
+        .is_err()
+        || snapshot.hkcu_run.last_write_time_100ns == 0
+    {
+        return Err("lifecycle_parent_user_run_key_authority_invalid".to_string());
+    }
+    let expects_run = !matches!(
+        expectation,
+        ParentResidueExpectation::Clean | ParentResidueExpectation::FinalUninstalled
+    );
+    match (&snapshot.hkcu_run.batcave_monitor, expects_run) {
+        (Observation::Absent, false) => {}
+        (Observation::Present(value), true)
+            if snapshot.hkcu_run.value_count != 0
+                && value.value_type == 1
+                && value.value == native::exact_parent_run_value() => {}
+        (Observation::Unknown(_), _) => {
+            return Err("lifecycle_parent_user_run_value_unknown".to_string());
+        }
+        _ => return Err("lifecycle_parent_user_run_value_timeline_invalid".to_string()),
+    }
+    let expected_known = matches!(expectation, ParentResidueExpectation::SeededKnownHelpers);
+    let expects_sentinel = !matches!(expectation, ParentResidueExpectation::Clean);
+    match &snapshot.helper {
+        Observation::Unknown(_) => {
+            return Err("lifecycle_parent_user_helper_observation_unknown".to_string());
+        }
+        Observation::Absent if !expected_known && !expects_sentinel => return Ok(()),
+        Observation::Absent => {
+            return Err("lifecycle_parent_user_helper_manifest_missing".to_string());
+        }
+        Observation::Present(helper) => {
+            if helper.root_owner_sid != authority.user_sid
+                || helper.root.identity.volume_serial == 0
+                || helper.root.identity.file_index == 0
+                || validate_sha256(&helper.root_dacl_sha256, "parent_user_helper_root_dacl")
+                    .is_err()
+                || validate_sha256(&helper.manifest_sha256, "parent_user_helper_manifest").is_err()
+                || helper.unexpected_entry_count != 0
+            {
+                return Err("lifecycle_parent_user_helper_manifest_invalid".to_string());
+            }
+            let expected_leaves = native::expected_helper_leaves();
+            if expected_known {
+                if helper.known_files.len() != expected_leaves.len() {
+                    return Err("lifecycle_parent_user_helper_known_set_invalid".to_string());
+                }
+                for expected_leaf in expected_leaves {
+                    let file = helper
+                        .known_files
+                        .iter()
+                        .find(|file| file.relative_leaf == expected_leaf)
+                        .ok_or_else(|| {
+                            "lifecycle_parent_user_helper_known_set_invalid".to_string()
+                        })?;
+                    let expected = native::expected_parent_helper_fixture_snapshot(&expected_leaf)?;
+                    if file.file.size != expected.0
+                        || file.file.sha256 != expected.1
+                        || file.owner_sid != authority.user_sid
+                        || validate_sha256(&file.dacl_sha256, "parent_user_helper_fixture_dacl")
+                            .is_err()
+                    {
+                        return Err("lifecycle_parent_user_helper_fixture_invalid".to_string());
+                    }
+                }
+            } else if !helper.known_files.is_empty() {
+                return Err("lifecycle_parent_user_helper_cleanup_incomplete".to_string());
+            }
+            match (&helper.sentinel, expects_sentinel) {
+                (Observation::Absent, false) => {}
+                (Observation::Present(sentinel), true) => {
+                    let expected = native::expected_parent_helper_sentinel_snapshot();
+                    if sentinel.relative_leaf != "elevated-helper/unknown-sentinel.bin"
+                        || sentinel.file.size != expected.0
+                        || sentinel.file.sha256 != expected.1
+                        || sentinel.owner_sid != authority.user_sid
+                        || validate_sha256(
+                            &sentinel.dacl_sha256,
+                            "parent_user_helper_sentinel_dacl",
+                        )
+                        .is_err()
+                        || sentinel_anchor.is_some_and(|anchor| anchor != sentinel)
+                    {
+                        return Err("lifecycle_parent_user_helper_sentinel_changed".to_string());
+                    }
+                }
+                (Observation::Unknown(_), _) => {
+                    return Err("lifecycle_parent_user_helper_sentinel_unknown".to_string());
+                }
+                _ => {
+                    return Err(
+                        "lifecycle_parent_user_helper_sentinel_timeline_invalid".to_string()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn checkpoint_acceptance_after_parent_capture(
+    checkpoint: WorkerCheckpoint,
+    capture: Result<(), String>,
+) -> Result<ParentMessage, String> {
+    capture?;
+    Ok(ParentMessage::CheckpointAccepted(checkpoint))
+}
+
+fn desktop_completion_after_parent_capture(
+    result: DesktopPhaseResult,
+    capture: Result<(), String>,
+) -> Result<ParentMessage, String> {
+    capture?;
+    Ok(ParentMessage::DesktopPhaseComplete(Box::new(result)))
 }
 
 impl ProtocolGates {
@@ -464,6 +907,7 @@ fn run_parent() -> Result<i32, String> {
     let mut desktop_phase_index = 0;
     let mut desktop_results = Vec::with_capacity(DESKTOP_PHASES.len());
     let mut current_user_retention = ParentCurrentUserRetentionState::default();
+    let mut current_user_residue = ParentCurrentUserResidueState::default();
     let session = (|| -> Result<i32, String> {
         loop {
             let envelope: Envelope<WorkerMessage> = pipe.read_json(SESSION_TIMEOUT)?;
@@ -496,12 +940,16 @@ fn run_parent() -> Result<i32, String> {
                         checkpoint.completed_stage,
                         &preflight.parent_current_user,
                     )?;
-                    send_parent_message(
-                        &mut pipe,
-                        &nonce,
-                        &mut gates.outbound,
-                        ParentMessage::CheckpointAccepted(checkpoint),
+                    // This is intentionally the final fallible observation before the ACK.
+                    // A failed current-user capture returns without acknowledging the worker.
+                    let acceptance = checkpoint_acceptance_after_parent_capture(
+                        checkpoint,
+                        current_user_residue.capture_checkpoint(
+                            checkpoint.completed_stage,
+                            &preflight.parent_current_user,
+                        ),
                     )?;
+                    send_parent_message(&mut pipe, &nonce, &mut gates.outbound, acceptance)?;
                     last_checkpoint = Some(checkpoint);
                 }
                 WorkerMessage::RunDesktopPhase(phase) => {
@@ -511,6 +959,8 @@ fn run_parent() -> Result<i32, String> {
                     if DESKTOP_PHASES.get(desktop_phase_index) != Some(&phase) {
                         return Err("lifecycle_desktop_phase_order_invalid".to_string());
                     }
+                    current_user_residue
+                        .capture_before_desktop(phase, &preflight.parent_current_user)?;
                     let result = lifecycle::run_parent_desktop_phase(
                         phase,
                         &preflight.repo_root,
@@ -525,12 +975,14 @@ fn run_parent() -> Result<i32, String> {
                     });
                     validate_requested_desktop_phase_result(phase, &result, &preflight.plan)?;
                     desktop_results.push(result.clone());
-                    send_parent_message(
-                        &mut pipe,
-                        &nonce,
-                        &mut gates.outbound,
-                        ParentMessage::DesktopPhaseComplete(Box::new(result)),
+                    // Capture after the standard-parent launch and immediately before the
+                    // authenticated completion message; no helper file handle survives this call.
+                    let completion = desktop_completion_after_parent_capture(
+                        result,
+                        current_user_residue
+                            .capture_desktop_complete(phase, &preflight.parent_current_user),
                     )?;
+                    send_parent_message(&mut pipe, &nonce, &mut gates.outbound, completion)?;
                     desktop_phase_index += 1;
                 }
                 WorkerMessage::ResultReady(result) if result.failure.is_none() => {
@@ -560,6 +1012,8 @@ fn run_parent() -> Result<i32, String> {
                         native::verify_evidence_receipt(evidence_root_guard, sanitized_export)?;
                     let (before_uninstall, after_uninstall) =
                         current_user_retention.complete(&preflight.parent_current_user)?;
+                    let residue_timeline =
+                        current_user_residue.complete(&preflight.parent_current_user)?;
                     evidence::validate_verified_private_projection(
                         &private_evidence_guards,
                         &sanitized_evidence_guard,
@@ -571,6 +1025,7 @@ fn run_parent() -> Result<i32, String> {
                             authority: preflight.parent_current_user.authority(),
                             before_uninstall,
                             after_uninstall,
+                            residue_timeline,
                         },
                     )?;
                     revalidate_preflight_artifacts(&preflight)?;
@@ -585,6 +1040,7 @@ fn run_parent() -> Result<i32, String> {
                     if exit_code != 0 {
                         return Err("lifecycle_worker_exit_mismatch".to_string());
                     }
+                    current_user_residue.cleanup_success(&preflight.parent_current_user)?;
                     let evidence_root_value =
                         Some(evidence_root_guard.root().to_string_lossy().into_owned());
                     print_json(&ControllerOutcome {
@@ -631,6 +1087,7 @@ fn run_parent() -> Result<i32, String> {
                     let expected_exit_code = u32::from(result.abort.is_some());
                     let mut evidence_guard = None;
                     let mut restoration_evidence_guard = None;
+                    let mut cleanup_error = None;
                     let followup = (|| -> Result<(), String> {
                         let evidence_root_guard = evidence_root
                             .as_ref()
@@ -664,6 +1121,8 @@ fn run_parent() -> Result<i32, String> {
                             }
                             revalidate_preflight_artifacts(&preflight)?;
                         }
+                        cleanup_error = current_user_residue
+                            .cleanup_worker_failure(&preflight.parent_current_user);
                         Ok(())
                     })();
                     let failure_evidence_verified =
@@ -672,7 +1131,7 @@ fn run_parent() -> Result<i32, String> {
                         restoration_evidence(failure.restoration.as_ref())
                             .map(|_| restoration_evidence_guard.is_some());
                     let parent_followup_error = match followup {
-                        Ok(()) => None,
+                        Ok(()) => cleanup_error,
                         Err(reason) if !terminate_without_ack => {
                             return abort_parent_session(
                                 &mut pipe,
@@ -680,6 +1139,7 @@ fn run_parent() -> Result<i32, String> {
                                 &mut gates,
                                 &mut worker,
                                 &preflight,
+                                &mut current_user_residue,
                                 evidence_root.as_ref(),
                                 last_checkpoint,
                                 Some((*result).clone()),
@@ -728,6 +1188,7 @@ fn run_parent() -> Result<i32, String> {
             &mut gates,
             &mut worker,
             &preflight,
+            &mut current_user_residue,
             evidence_root.as_ref(),
             last_checkpoint,
             None,
@@ -783,6 +1244,7 @@ fn abort_parent_session(
     gates: &mut ProtocolGates,
     worker: &mut native::ElevatedProcess,
     preflight: &ParentPreflight,
+    current_user_residue: &mut ParentCurrentUserResidueState,
     evidence_root: Option<&native::ProtectedEvidenceRoot>,
     last_checkpoint: Option<WorkerCheckpoint>,
     original_result: Option<WorkerResult>,
@@ -792,6 +1254,7 @@ fn abort_parent_session(
     let mut tracker = AbortResultTracker::new(original_result);
     let mut failure_evidence_guard = None;
     let mut restoration_evidence_guard = None;
+    let mut cleanup_error = None;
     let abort_sent = send_parent_message(
         pipe,
         nonce,
@@ -897,6 +1360,8 @@ fn abort_parent_session(
                 }
                 revalidate_preflight_artifacts(preflight)?;
             }
+            cleanup_error =
+                current_user_residue.cleanup_authenticated_abort(&preflight.parent_current_user);
             Ok(result)
         })();
         match followup {
@@ -907,9 +1372,19 @@ fn abort_parent_session(
                     .failure
                     .as_ref()
                     .ok_or_else(|| "lifecycle_parent_abort_failure_missing".to_string())?;
+                let parent_followup_error = match (preserved_failure, cleanup_error.as_deref()) {
+                    (true, Some(cleanup)) => {
+                        Some(append_parent_followup_error(&parent_error, cleanup))
+                    }
+                    (true, None) => Some(parent_error.clone()),
+                    (false, Some(cleanup)) => Some(cleanup.to_string()),
+                    (false, None) => None,
+                };
                 print_json(&ControllerOutcome {
                     disposition: if preserved_failure {
                         "worker_failure_followup_failed"
+                    } else if cleanup_error.is_some() {
+                        "parent_abort_cleanup_blocked"
                     } else {
                         "parent_aborted"
                     },
@@ -932,7 +1407,7 @@ fn abort_parent_session(
                         failure.restoration.as_ref(),
                     )
                     .map(|_| restoration_evidence_guard.is_some()),
-                    parent_followup_error: preserved_failure.then_some(parent_error.clone()),
+                    parent_followup_error,
                     private_evidence: None,
                     sanitized_export: None,
                     success_evidence_verified: None,
@@ -953,26 +1428,57 @@ fn abort_parent_session(
     } else {
         "lifecycle_parent_abort_send_failed".to_string()
     };
-    let restoration = match worker.wait_without_termination(Duration::from_secs(30)) {
-        Ok(Some(_)) => unverified_abort_restoration(UnverifiedAbortSettlement::WorkerExited),
-        Ok(None) => match worker.terminate_and_settle() {
-            Ok(()) => unverified_abort_restoration(UnverifiedAbortSettlement::ForcedSettled),
+    let (restoration, worker_settled) = match worker
+        .wait_without_termination(Duration::from_secs(30))
+    {
+        Ok(Some(_)) => match worker.terminate_and_settle() {
+            Ok(()) => (
+                unverified_abort_restoration(UnverifiedAbortSettlement::WorkerExited),
+                true,
+            ),
             Err(error) => {
                 followup_error = append_parent_followup_error(&followup_error, &error);
-                unverified_abort_restoration(UnverifiedAbortSettlement::ForcedUnsettled)
+                (
+                    unverified_abort_restoration(UnverifiedAbortSettlement::ForcedUnsettled),
+                    false,
+                )
+            }
+        },
+        Ok(None) => match worker.terminate_and_settle() {
+            Ok(()) => (
+                unverified_abort_restoration(UnverifiedAbortSettlement::ForcedSettled),
+                true,
+            ),
+            Err(error) => {
+                followup_error = append_parent_followup_error(&followup_error, &error);
+                (
+                    unverified_abort_restoration(UnverifiedAbortSettlement::ForcedUnsettled),
+                    false,
+                )
             }
         },
         Err(error) => {
             followup_error = append_parent_followup_error(&followup_error, &error);
             match worker.terminate_and_settle() {
-                Ok(()) => unverified_abort_restoration(UnverifiedAbortSettlement::ForcedSettled),
+                Ok(()) => (
+                    unverified_abort_restoration(UnverifiedAbortSettlement::ForcedSettled),
+                    true,
+                ),
                 Err(error) => {
                     followup_error = append_parent_followup_error(&followup_error, &error);
-                    unverified_abort_restoration(UnverifiedAbortSettlement::ForcedUnsettled)
+                    (
+                        unverified_abort_restoration(UnverifiedAbortSettlement::ForcedUnsettled),
+                        false,
+                    )
                 }
             }
         }
     };
+    current_user_residue.cleanup_last_resort_abort(
+        &preflight.parent_current_user,
+        worker_settled,
+        &mut followup_error,
+    );
     if let Err(error) = revalidate_preflight_artifacts(preflight) {
         followup_error = append_parent_followup_error(&followup_error, &error);
     }
@@ -1844,6 +2350,403 @@ mod tests {
     }
 
     #[test]
+    fn parent_current_user_capture_failure_withholds_authenticated_acknowledgement() {
+        let checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::FinalRepair,
+            evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 1,
+                file_index: 2,
+            },
+        };
+        assert_eq!(
+            checkpoint_acceptance_after_parent_capture(
+                checkpoint,
+                Err("hostile_parent_capture_failed".to_string()),
+            ),
+            Err("hostile_parent_capture_failed".to_string())
+        );
+        assert_eq!(
+            checkpoint_acceptance_after_parent_capture(checkpoint, Ok(())),
+            Ok(ParentMessage::CheckpointAccepted(checkpoint))
+        );
+
+        let desktop = DesktopPhaseResult {
+            phase: DesktopPhase::FinalMissingService,
+            disposition: DesktopPhaseDisposition::Passed,
+            process_tree_settled: true,
+            observation: None,
+            failure_reason: None,
+        };
+        assert_eq!(
+            desktop_completion_after_parent_capture(
+                desktop.clone(),
+                Err("hostile_parent_capture_failed".to_string()),
+            ),
+            Err("hostile_parent_capture_failed".to_string())
+        );
+        assert_eq!(
+            desktop_completion_after_parent_capture(desktop.clone(), Ok(())),
+            Ok(ParentMessage::DesktopPhaseComplete(Box::new(desktop)))
+        );
+    }
+
+    #[test]
+    fn production_terminal_routes_are_wired_once_in_their_bounded_contexts() {
+        let source = include_str!("windows_lifecycle_proof.rs").replace("\r\n", "\n");
+        let (production, _) = source
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .expect("production/test source boundary");
+
+        fn bounded<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            assert_eq!(
+                source.matches(start).count(),
+                1,
+                "bounded context start must be unique: {start}"
+            );
+            assert_eq!(
+                source.matches(end).count(),
+                1,
+                "bounded context end must be unique: {end}"
+            );
+            let tail = source.split_once(start).expect("bounded context start").1;
+            tail.split_once(end).expect("bounded context end").0
+        }
+
+        let success_arm = bounded(
+            production,
+            "                WorkerMessage::ResultReady(result) if result.failure.is_none() => {",
+            "                WorkerMessage::ResultReady(result) => {",
+        );
+        let success_terminal = bounded(
+            success_arm,
+            "                    let exit_code = worker.wait(Duration::from_secs(30))?;",
+            "                    let evidence_root_value =",
+        );
+
+        let worker_failure_arm = bounded(
+            production,
+            "                WorkerMessage::ResultReady(result) => {",
+            "    match session {",
+        );
+        let worker_failure_terminal = bounded(
+            worker_failure_arm,
+            "                        if !terminate_without_ack {",
+            "                        Ok(())\n                    })();",
+        );
+
+        let abort_function = bounded(
+            production,
+            "fn abort_parent_session(",
+            "fn abort_reason_for_parent_error(",
+        );
+        let authenticated_abort_terminal = bounded(
+            abort_function,
+            "            if !unsettled_abort {",
+            "            Ok(result)\n        })();\n        match followup {",
+        );
+        let last_resort_abort_terminal = bounded(
+            abort_function,
+            "    let (restoration, worker_settled) = match worker",
+            "    if let Err(error) = revalidate_preflight_artifacts(preflight) {",
+        );
+
+        let routes = [
+            (".cleanup_success(", success_terminal),
+            (".cleanup_worker_failure(", worker_failure_terminal),
+            (
+                ".cleanup_authenticated_abort(",
+                authenticated_abort_terminal,
+            ),
+            (".cleanup_last_resort_abort(", last_resort_abort_terminal),
+        ];
+        for (expected_index, (invocation, context)) in routes.iter().enumerate() {
+            assert_eq!(
+                production.matches(invocation).count(),
+                1,
+                "production route must have one invocation: {invocation}"
+            );
+            for (actual_index, (candidate, _)) in routes.iter().enumerate() {
+                assert_eq!(
+                    context.matches(candidate).count(),
+                    usize::from(actual_index == expected_index),
+                    "terminal route invocation is missing, duplicated, or swapped: {candidate}"
+                );
+            }
+        }
+    }
+
+    struct IsolatedParentResidueTerminal {
+        transaction: Option<()>,
+    }
+
+    impl IsolatedParentResidueTerminal {
+        fn pending() -> Self {
+            Self {
+                transaction: Some(()),
+            }
+        }
+
+        fn assert_restored(&self) {
+            assert!(
+                self.transaction.is_none(),
+                "terminal retained residue authority"
+            );
+        }
+    }
+
+    impl ParentResidueTerminalCleanup for IsolatedParentResidueTerminal {
+        type Authority = ();
+
+        fn cleanup_parent_residue(
+            &mut self,
+            _authority: &Self::Authority,
+            worker_tree_settled: bool,
+        ) -> Result<(), String> {
+            finalize_parent_residue_terminal(&mut self.transaction, worker_tree_settled, |_| {
+                native::exercise_isolated_parent_current_user_residue_cleanup()
+            })
+        }
+    }
+
+    #[test]
+    fn success_terminal_route_restores_filesystem_and_isolated_run_key() {
+        let mut residue = IsolatedParentResidueTerminal::pending();
+        residue.cleanup_success(&()).expect("success cleanup");
+        residue.assert_restored();
+    }
+
+    #[test]
+    fn worker_failure_terminal_route_restores_filesystem_and_isolated_run_key() {
+        let mut residue = IsolatedParentResidueTerminal::pending();
+        assert_eq!(residue.cleanup_worker_failure(&()), None);
+        residue.assert_restored();
+    }
+
+    #[test]
+    fn authenticated_abort_terminal_route_restores_filesystem_and_isolated_run_key() {
+        let mut residue = IsolatedParentResidueTerminal::pending();
+        assert_eq!(residue.cleanup_authenticated_abort(&()), None);
+        residue.assert_restored();
+    }
+
+    #[test]
+    fn last_resort_abort_terminal_route_restores_filesystem_and_isolated_run_key() {
+        let mut residue = IsolatedParentResidueTerminal::pending();
+        let mut followup_error = "authenticated_abort_failed".to_string();
+        residue.cleanup_last_resort_abort(&(), true, &mut followup_error);
+        assert_eq!(followup_error, "authenticated_abort_failed");
+        residue.assert_restored();
+    }
+
+    #[test]
+    fn parent_residue_terminal_cleanup_is_absence_and_settlement_gated() {
+        let mut absent = None::<()>;
+        finalize_parent_residue_terminal(&mut absent, false, |_| {
+            panic!("an absent transaction must not invoke cleanup")
+        })
+        .expect("absent transaction is already restored");
+
+        let mut unsettled = Some(());
+        assert_eq!(
+            finalize_parent_residue_terminal(&mut unsettled, false, |_| {
+                panic!("an unsettled worker must not invoke cleanup")
+            }),
+            Err("lifecycle_parent_user_cleanup_blocked_unsettled".to_string())
+        );
+        assert!(unsettled.is_some(), "unsettled authority must be retained");
+    }
+
+    #[test]
+    fn parent_current_user_residue_timeline_rejects_unknown_and_hostile_drift() {
+        let authority = parent_current_user_authority_for_test();
+        let clean = parent_residue_snapshot_for_test(false, false, false);
+        validate_parent_residue_snapshot(&clean, ParentResidueExpectation::Clean, &authority, None)
+            .expect("clean baseline");
+        for allowed_owner in [&authority.user_sid, "S-1-5-18", "S-1-5-32-544"] {
+            let mut owned = clean.clone();
+            owned.hkcu_run.owner_sid = allowed_owner.to_string();
+            validate_parent_residue_snapshot(
+                &owned,
+                ParentResidueExpectation::Clean,
+                &authority,
+                None,
+            )
+            .expect("allowed Run-key owner");
+        }
+        for rejected_owner in ["S-1-3-4", "S-1-5-11", "S-1-5-32-545", "S-1-5-21-2"] {
+            let mut owned = clean.clone();
+            owned.hkcu_run.owner_sid = rejected_owner.to_string();
+            assert!(validate_parent_residue_snapshot(
+                &owned,
+                ParentResidueExpectation::Clean,
+                &authority,
+                None,
+            )
+            .is_err());
+        }
+
+        let seeded = parent_residue_snapshot_for_test(true, true, true);
+        validate_parent_residue_snapshot(
+            &seeded,
+            ParentResidueExpectation::SeededKnownHelpers,
+            &authority,
+            None,
+        )
+        .expect("seeded fixtures");
+        let anchor = parent_residue_sentinel(&seeded).expect("sentinel").clone();
+
+        let cleaned = parent_residue_snapshot_for_test(true, false, true);
+        validate_parent_residue_snapshot(
+            &cleaned,
+            ParentResidueExpectation::SeededHelpersRemoved,
+            &authority,
+            Some(&anchor),
+        )
+        .expect("post-launch cleanup");
+
+        let final_uninstalled = parent_residue_snapshot_for_test(false, false, true);
+        validate_parent_residue_snapshot(
+            &final_uninstalled,
+            ParentResidueExpectation::FinalUninstalled,
+            &authority,
+            Some(&anchor),
+        )
+        .expect("final uninstall");
+
+        let mut authority_state = ParentCurrentUserResidueState::default();
+        authority_state
+            .validate_authority_anchors(&clean)
+            .expect("initial Run authority");
+        authority_state
+            .validate_authority_anchors(&seeded)
+            .expect("seeded helper authority");
+        let mut run_owner_drift = seeded.clone();
+        run_owner_drift.hkcu_run.owner_sid = "S-1-5-18".to_string();
+        assert!(authority_state
+            .validate_authority_anchors(&run_owner_drift)
+            .is_err());
+        let mut run_acl_drift = seeded.clone();
+        run_acl_drift.hkcu_run.dacl_sha256 = "1".repeat(64);
+        assert!(authority_state
+            .validate_authority_anchors(&run_acl_drift)
+            .is_err());
+        let mut helper_acl_drift = seeded.clone();
+        let Observation::Present(helper) = &mut helper_acl_drift.helper else {
+            panic!("helper manifest");
+        };
+        helper.root_dacl_sha256 = "2".repeat(64);
+        assert!(authority_state
+            .validate_authority_anchors(&helper_acl_drift)
+            .is_err());
+
+        let mut wrong_type = seeded.clone();
+        let Observation::Present(value) = &mut wrong_type.hkcu_run.batcave_monitor else {
+            panic!("seeded run value");
+        };
+        value.value_type = 2;
+        assert!(validate_parent_residue_snapshot(
+            &wrong_type,
+            ParentResidueExpectation::SeededKnownHelpers,
+            &authority,
+            None,
+        )
+        .is_err());
+
+        let mut wrong_value = seeded.clone();
+        let Observation::Present(value) = &mut wrong_value.hkcu_run.batcave_monitor else {
+            panic!("seeded run value");
+        };
+        value.value.push_str(" --hostile");
+        assert!(validate_parent_residue_snapshot(
+            &wrong_value,
+            ParentResidueExpectation::SeededKnownHelpers,
+            &authority,
+            None,
+        )
+        .is_err());
+
+        let mut hostile_acl = seeded.clone();
+        hostile_acl.hkcu_run.dacl_sha256 = "not-a-digest".to_string();
+        assert!(validate_parent_residue_snapshot(
+            &hostile_acl,
+            ParentResidueExpectation::SeededKnownHelpers,
+            &authority,
+            None,
+        )
+        .is_err());
+
+        let mut enumeration_drift = seeded.clone();
+        enumeration_drift.hkcu_run.value_count = 0;
+        assert!(validate_parent_residue_snapshot(
+            &enumeration_drift,
+            ParentResidueExpectation::SeededKnownHelpers,
+            &authority,
+            None,
+        )
+        .is_err());
+
+        let mut unknown = seeded.clone();
+        unknown.hkcu_run.batcave_monitor = Observation::Unknown("hostile".to_string());
+        assert!(validate_parent_residue_snapshot(
+            &unknown,
+            ParentResidueExpectation::SeededKnownHelpers,
+            &authority,
+            None,
+        )
+        .is_err());
+
+        let mut unexpected = seeded.clone();
+        let Observation::Present(helper) = &mut unexpected.helper else {
+            panic!("helper manifest");
+        };
+        helper.unexpected_entry_count = 1;
+        assert!(validate_parent_residue_snapshot(
+            &unexpected,
+            ParentResidueExpectation::SeededKnownHelpers,
+            &authority,
+            None,
+        )
+        .is_err());
+
+        let mut sentinel_drift = cleaned.clone();
+        let Observation::Present(helper) = &mut sentinel_drift.helper else {
+            panic!("helper manifest");
+        };
+        let Observation::Present(sentinel) = &mut helper.sentinel else {
+            panic!("sentinel");
+        };
+        sentinel.file.identity.file_index += 1;
+        assert!(validate_parent_residue_snapshot(
+            &sentinel_drift,
+            ParentResidueExpectation::SeededHelpersRemoved,
+            &authority,
+            Some(&anchor),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn worker_messages_exclude_parent_current_user_raw_authority() {
+        let worker = WorkerMessage::Checkpoint(WorkerCheckpoint {
+            completed_stage: LifecycleStage::FinalRepair,
+            evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 1,
+                file_index: 2,
+            },
+        });
+        let json = serde_json::to_string(&worker).expect("worker json");
+        for forbidden in [
+            "user_sid",
+            "hkcu_run",
+            "local_app_data",
+            "unknown-sentinel.bin",
+            r"C:\Users",
+        ] {
+            assert!(!json.contains(forbidden), "worker leaked {forbidden}");
+        }
+    }
+
+    #[test]
     fn parent_rejects_a_valid_result_for_the_wrong_requested_desktop_phase() {
         let plan = parse_plan().expect("plan");
         let result = DesktopPhaseResult {
@@ -1911,6 +2814,39 @@ mod tests {
             next_lifecycle_stage(Some(LifecycleStage::FinalUninstall)),
             None
         );
+
+        let legal = [
+            LifecycleStage::InitialState,
+            LifecycleStage::FinalRepair,
+            LifecycleStage::InitialUninstall,
+            LifecycleStage::BaselineInstall,
+            LifecycleStage::BaselineRestart,
+            LifecycleStage::BaselineCrashRecovery,
+            LifecycleStage::BaselineRollbackRecovery,
+            LifecycleStage::LegacyResidueSeeded,
+            LifecycleStage::FinalUpgrade,
+            LifecycleStage::FinalRestart,
+            LifecycleStage::FinalCrashRecovery,
+            LifecycleStage::FinalFallbackStates,
+            LifecycleStage::FinalUninstall,
+        ];
+        let mut previous = None;
+        for stage in legal {
+            assert_eq!(next_lifecycle_stage(previous), Some(stage));
+            let checkpoint = WorkerCheckpoint {
+                completed_stage: stage,
+                evidence_root_identity: root,
+            };
+            assert!(valid_checkpoint_transition(
+                previous.map(|completed_stage| WorkerCheckpoint {
+                    completed_stage,
+                    evidence_root_identity: root,
+                }),
+                checkpoint,
+            ));
+            previous = Some(stage);
+        }
+        assert_eq!(next_lifecycle_stage(previous), None);
     }
 
     #[test]
@@ -2785,6 +3721,132 @@ mod tests {
             process_tree_settled: true,
             private_evidence: Vec::new(),
             sanitized_export: None,
+        }
+    }
+
+    fn parent_current_user_authority_for_test() -> native::ParentCurrentUserAuthority {
+        native::ParentCurrentUserAuthority {
+            user_sid: "S-1-5-21-1".to_string(),
+            session_id: 1,
+            logon_luid: native::LogonLuid {
+                low_part: 1,
+                high_part: 0,
+            },
+            profile: native::DirectorySnapshot {
+                identity: native::FileIdentity {
+                    volume_serial: 1,
+                    file_index: 1,
+                },
+                final_path: r"C:\Users\proof".to_string(),
+            },
+            local_app_data: native::DirectorySnapshot {
+                identity: native::FileIdentity {
+                    volume_serial: 1,
+                    file_index: 2,
+                },
+                final_path: r"C:\Users\proof\AppData\Local".to_string(),
+            },
+            resolved_data_root: r"C:\Users\proof\AppData\Local\BatCaveMonitor".to_string(),
+            data_root: Observation::Present(native::DirectorySnapshot {
+                identity: native::FileIdentity {
+                    volume_serial: 1,
+                    file_index: 3,
+                },
+                final_path: r"C:\Users\proof\AppData\Local\BatCaveMonitor".to_string(),
+            }),
+        }
+    }
+
+    fn parent_residue_snapshot_for_test(
+        run_present: bool,
+        known_helpers: bool,
+        sentinel_present: bool,
+    ) -> native::ParentCurrentUserResidueSnapshot {
+        let authority = parent_current_user_authority_for_test();
+        let known_files = if known_helpers {
+            native::expected_helper_leaves()
+                .into_iter()
+                .enumerate()
+                .map(|(index, relative_leaf)| {
+                    let expected = native::expected_parent_helper_fixture_snapshot(&relative_leaf)
+                        .expect("fixture");
+                    native::ParentHelperFileSnapshot {
+                        relative_leaf,
+                        file: native::FileSnapshot {
+                            size: expected.0,
+                            sha256: expected.1,
+                            identity: native::FileIdentity {
+                                volume_serial: 1,
+                                file_index: 100 + index as u64,
+                            },
+                        },
+                        owner_sid: authority.user_sid.clone(),
+                        dacl_sha256: "a".repeat(64),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let sentinel = if sentinel_present {
+            let expected = native::expected_parent_helper_sentinel_snapshot();
+            Observation::Present(native::ParentHelperFileSnapshot {
+                relative_leaf: "elevated-helper/unknown-sentinel.bin".to_string(),
+                file: native::FileSnapshot {
+                    size: expected.0,
+                    sha256: expected.1,
+                    identity: native::FileIdentity {
+                        volume_serial: 1,
+                        file_index: 200,
+                    },
+                },
+                owner_sid: authority.user_sid.clone(),
+                dacl_sha256: "b".repeat(64),
+            })
+        } else {
+            Observation::Absent
+        };
+        let helper = if known_helpers || sentinel_present {
+            Observation::Present(native::ParentHelperManifestSnapshot {
+                root: native::DirectorySnapshot {
+                    identity: native::FileIdentity {
+                        volume_serial: 1,
+                        file_index: 50,
+                    },
+                    final_path: r"C:\Users\proof\AppData\Local\BatCaveMonitor\elevated-helper"
+                        .to_string(),
+                },
+                root_owner_sid: authority.user_sid.clone(),
+                root_dacl_sha256: "c".repeat(64),
+                known_files,
+                sentinel,
+                unexpected_entry_count: 0,
+                manifest_sha256: "d".repeat(64),
+            })
+        } else {
+            Observation::Absent
+        };
+        native::ParentCurrentUserResidueSnapshot {
+            hkcu_run: native::ParentRunKeySnapshot {
+                final_key_path: format!(
+                    r"\REGISTRY\USER\{}\Software\Microsoft\Windows\CurrentVersion\Run",
+                    authority.user_sid
+                ),
+                owner_sid: authority.user_sid,
+                dacl_sha256: "e".repeat(64),
+                last_write_time_100ns: 1,
+                value_count: u32::from(run_present),
+                manifest_sha256: "f".repeat(64),
+                batcave_monitor: if run_present {
+                    Observation::Present(native::ParentRunValueSnapshot {
+                        value_type: 1,
+                        value: native::exact_parent_run_value().to_string(),
+                    })
+                } else {
+                    Observation::Absent
+                },
+            },
+            helper,
         }
     }
 

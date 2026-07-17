@@ -1,14 +1,14 @@
 use crate::collector_service::etw_lease::{EtwLeaseV1, ReadOnlyEtwLeaseObservation};
 use crate::collector_service::windows_provisioner::RuntimeLockObservation;
 use crate::windows_lifecycle_proof_contract::{
-    Candidate, DesktopCollectorRuntimeObservation, DesktopFileObservation,
+    Candidate, DesktopCollectorRuntimeObservation, DesktopFileObservation, DesktopPhase,
     DesktopProcessObservation, DesktopServiceProcessObservation, EvidenceReceipt,
-    EvidenceRootIdentity, Observation, ProofPlan,
+    EvidenceRootIdentity, LifecycleStage, Observation, ProofPlan,
 };
 use crate::windows_network::{EtwSessionProofSnapshot, NetworkAttributionMonitor};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{c_void, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -20,29 +20,36 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
+use windows_sys::Wdk::System::Registry::{KeyNameInformation, NtQueryKey};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_BROKEN_PIPE, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_MORE_FILES, ERROR_NO_TOKEN,
-    ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SERVICE_DOES_NOT_EXIST,
-    ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, TRUE, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_MORE_FILES, ERROR_NO_MORE_ITEMS,
+    ERROR_NO_TOKEN, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+    ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE, TRUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+    SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::Cryptography::{
     BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
 };
 use windows_sys::Win32::Security::{
-    GetLengthSid, GetTokenInformation, IsValidSid, TokenElevation, TokenElevationType,
-    TokenElevationTypeFull, TokenSessionId, TokenStatistics, TokenUser, SECURITY_ATTRIBUTES,
-    TOKEN_ELEVATION, TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
+    AclSizeInformation, GetAce, GetAclInformation, GetLengthSid, GetSecurityDescriptorDacl,
+    GetSecurityDescriptorOwner, GetTokenInformation, IsValidSid, TokenElevation,
+    TokenElevationType, TokenElevationTypeFull, TokenSessionId, TokenStatistics, TokenUser,
+    ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_ELEVATION,
+    TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE,
+    CreateFileW, FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SYNCHRONIZE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, READ_CONTROL,
+    SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -61,8 +68,14 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
-    KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_EXPAND_SZ, REG_SZ,
+    RegCloseKey, RegDeleteValueW, RegEnumValueW, RegGetKeySecurity, RegOpenCurrentUser,
+    RegOpenKeyExW, RegQueryInfoKeyW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE,
+    KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY,
+    KEY_WOW64_64KEY, REG_EXPAND_SZ, REG_SZ,
+};
+#[cfg(test)]
+use windows_sys::Win32::System::Registry::{
+    RegCreateKeyExW, RegDeleteKeyW, KEY_WRITE, REG_CREATED_NEW_KEY, REG_OPTION_NON_VOLATILE,
 };
 use windows_sys::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
@@ -107,6 +120,51 @@ const DESKTOP_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const DESKTOP_PROCESS_STABLE_INTERVAL: Duration = Duration::from_millis(50);
 const DESKTOP_PROCESS_STABLE_SNAPSHOTS: usize = 3;
 const WINDOWS_PATH_BUFFER_SIZE: usize = 32_768;
+const HKCU_RUN_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const HKCU_RUN_VALUE: &str = "BatCave Monitor";
+const EXACT_HKCU_RUN_VALUE: &str = r#""C:\Program Files\BatCave Monitor\batcave-monitor.exe""#;
+const HELPER_ROOT_LEAVES: [&str; 4] = [
+    "snapshot.json",
+    "snapshot.json.tmp",
+    "stop.signal",
+    "accepted.signal",
+];
+const HELPER_PROOF_RUN_NAME: &str =
+    "run-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const HELPER_SENTINEL_NAME: &str = "unknown-sentinel.bin";
+const HELPER_MAX_ENTRIES: usize = 64;
+const HELPER_MAX_FILE_BYTES: u64 = 1024 * 1024;
+const HELPER_MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+const HKCU_MAX_VALUES: u32 = 256;
+const HKCU_MAX_VALUE_NAME_CHARS: u32 = 1024;
+const HKCU_MAX_VALUE_BYTES: u32 = 64 * 1024;
+const HKCU_MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+const INHERIT_ONLY_ACE: u8 = 0x08;
+const GENERIC_WRITE_ACCESS: u32 = 0x4000_0000;
+const GENERIC_ALL_ACCESS: u32 = 0x1000_0000;
+const DELETE_ACCESS: u32 = 0x0001_0000;
+const WRITE_DAC_ACCESS: u32 = 0x0004_0000;
+const WRITE_OWNER_ACCESS: u32 = 0x0008_0000;
+const PARENT_FILE_WRITE_MASK: u32 = 0x0000_0002
+    | 0x0000_0004
+    | 0x0000_0010
+    | 0x0000_0100
+    | 0x0000_0040
+    | DELETE_ACCESS
+    | WRITE_DAC_ACCESS
+    | WRITE_OWNER_ACCESS
+    | GENERIC_WRITE_ACCESS
+    | GENERIC_ALL_ACCESS;
+const PARENT_REGISTRY_WRITE_MASK: u32 = 0x0000_0002
+    | 0x0000_0004
+    | 0x0000_0020
+    | DELETE_ACCESS
+    | WRITE_DAC_ACCESS
+    | WRITE_OWNER_ACCESS
+    | GENERIC_WRITE_ACCESS
+    | GENERIC_ALL_ACCESS;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -227,6 +285,109 @@ pub(crate) struct ParentCurrentUserObjects {
     pub(crate) diagnostics: Observation<FileSnapshot>,
 }
 
+// These observations deliberately do not implement Serialize or Deserialize. They are
+// standard-parent authority only and must never become worker or private-evidence fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParentCurrentUserResidueSnapshot {
+    pub(crate) hkcu_run: ParentRunKeySnapshot,
+    pub(crate) helper: Observation<ParentHelperManifestSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParentRunKeySnapshot {
+    pub(crate) final_key_path: String,
+    pub(crate) owner_sid: String,
+    pub(crate) dacl_sha256: String,
+    pub(crate) last_write_time_100ns: u64,
+    pub(crate) value_count: u32,
+    pub(crate) manifest_sha256: String,
+    pub(crate) batcave_monitor: Observation<ParentRunValueSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParentRunValueSnapshot {
+    pub(crate) value_type: u32,
+    pub(crate) value: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParentHelperFileSnapshot {
+    pub(crate) relative_leaf: String,
+    pub(crate) file: FileSnapshot,
+    pub(crate) owner_sid: String,
+    pub(crate) dacl_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParentHelperManifestSnapshot {
+    pub(crate) root: DirectorySnapshot,
+    pub(crate) root_owner_sid: String,
+    pub(crate) root_dacl_sha256: String,
+    pub(crate) known_files: Vec<ParentHelperFileSnapshot>,
+    pub(crate) sentinel: Observation<ParentHelperFileSnapshot>,
+    pub(crate) unexpected_entry_count: u32,
+    pub(crate) manifest_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ParentCurrentUserCapturePoint {
+    Checkpoint(LifecycleStage),
+    BaselineRollbackRecoverySeeded,
+    FinalMissingServiceBeforeDesktop,
+    DesktopComplete(DesktopPhase),
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ParentCurrentUserResidueTimeline {
+    entries: BTreeMap<ParentCurrentUserCapturePoint, ParentCurrentUserResidueSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ParentTrackedDirectorySnapshot {
+    directory: DirectorySnapshot,
+    owner_sid: String,
+    dacl_sha256: String,
+}
+
+pub(crate) struct ParentCurrentUserResidueTransaction {
+    prior: ParentCurrentUserResidueSnapshot,
+    helper_root_path: PathBuf,
+    run_root_path: PathBuf,
+    helper_root_before: Observation<ParentTrackedDirectorySnapshot>,
+    run_root_before: Observation<ParentTrackedDirectorySnapshot>,
+    helper_root_created: Option<ParentTrackedDirectorySnapshot>,
+    run_root_created: Option<ParentTrackedDirectorySnapshot>,
+    created_files: Vec<ParentHelperFileSnapshot>,
+    run_value_created: bool,
+}
+
+pub(crate) struct ParentCurrentUserResidueSeedFailure {
+    pub(crate) reason: String,
+    pub(crate) transaction: Option<Box<ParentCurrentUserResidueTransaction>>,
+}
+
+impl ParentCurrentUserResidueTimeline {
+    pub(crate) fn insert(
+        &mut self,
+        point: ParentCurrentUserCapturePoint,
+        snapshot: ParentCurrentUserResidueSnapshot,
+    ) -> Result<(), String> {
+        if self.entries.insert(point, snapshot).is_some() {
+            return Err("lifecycle_parent_user_residue_capture_duplicate".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn get(
+        &self,
+        point: ParentCurrentUserCapturePoint,
+    ) -> Result<&ParentCurrentUserResidueSnapshot, String> {
+        self.entries
+            .get(&point)
+            .ok_or_else(|| "lifecycle_parent_user_residue_capture_missing".to_string())
+    }
+}
+
 pub(crate) struct ParentCurrentUserAuthorityGuard {
     authority: ParentCurrentUserAuthority,
     token: OwnedHandle,
@@ -256,6 +417,157 @@ struct ParentObservedFile {
     size: u64,
     sha256: [u8; 32],
     identity: FileIdentity,
+}
+
+struct ParentRegistryKey(HKEY);
+
+impl ParentRegistryKey {
+    fn raw(&self) -> HKEY {
+        self.0
+    }
+}
+
+impl Drop for ParentRegistryKey {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                RegCloseKey(self.0);
+            }
+        }
+    }
+}
+
+trait ParentRunKeyAdapter {
+    fn open(&self, access: u32) -> Result<ParentRegistryKey, String>;
+
+    fn expected_final_path(&self, authority: &ParentCurrentUserAuthority) -> String;
+}
+
+struct CurrentUserRunKeyAdapter;
+
+impl ParentRunKeyAdapter for CurrentUserRunKeyAdapter {
+    fn open(&self, access: u32) -> Result<ParentRegistryKey, String> {
+        open_parent_run_key(access)
+    }
+
+    fn expected_final_path(&self, authority: &ParentCurrentUserAuthority) -> String {
+        format!(r"\REGISTRY\USER\{}\{}", authority.user_sid, HKCU_RUN_PATH)
+    }
+}
+
+#[cfg(test)]
+struct IsolatedParentRunKeyAdapter {
+    subkey_path: String,
+    final_key_path: String,
+}
+
+#[cfg(test)]
+impl IsolatedParentRunKeyAdapter {
+    fn create() -> Result<Self, String> {
+        let subkey_path = format!(
+            r"Software\BatCaveLifecycleProofTest-{}-{}",
+            std::process::id(),
+            random_hex(8)?
+        );
+        let mut current_user = null_mut();
+        let status = unsafe { RegOpenCurrentUser(KEY_READ | KEY_WRITE, &mut current_user) };
+        if status != ERROR_SUCCESS || current_user.is_null() {
+            return Err(format!(
+                "lifecycle_test_parent_user_hive_open_failed:{status}"
+            ));
+        }
+        let current_user = ParentRegistryKey(current_user);
+        let path = wide(&subkey_path);
+        let mut key = null_mut();
+        let mut disposition = 0_u32;
+        let status = unsafe {
+            RegCreateKeyExW(
+                current_user.raw(),
+                path.as_ptr(),
+                0,
+                null_mut(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_READ | KEY_WRITE,
+                null(),
+                &mut key,
+                &mut disposition,
+            )
+        };
+        if status != ERROR_SUCCESS || key.is_null() || disposition != REG_CREATED_NEW_KEY {
+            if !key.is_null() {
+                unsafe { RegCloseKey(key) };
+            }
+            return Err(format!(
+                "lifecycle_test_parent_user_run_key_create_failed:{status}"
+            ));
+        }
+        let key = ParentRegistryKey(key);
+        let final_key_path = query_parent_registry_key_path(key.raw())?;
+        Ok(Self {
+            subkey_path,
+            final_key_path,
+        })
+    }
+}
+
+#[cfg(test)]
+impl ParentRunKeyAdapter for IsolatedParentRunKeyAdapter {
+    fn open(&self, access: u32) -> Result<ParentRegistryKey, String> {
+        let mut current_user = null_mut();
+        let status = unsafe { RegOpenCurrentUser(access, &mut current_user) };
+        if status != ERROR_SUCCESS || current_user.is_null() {
+            return Err(format!(
+                "lifecycle_test_parent_user_hive_open_failed:{status}"
+            ));
+        }
+        let current_user = ParentRegistryKey(current_user);
+        let path = wide(&self.subkey_path);
+        let mut key = null_mut();
+        let status =
+            unsafe { RegOpenKeyExW(current_user.raw(), path.as_ptr(), 0, access, &mut key) };
+        if status != ERROR_SUCCESS || key.is_null() {
+            return Err(format!(
+                "lifecycle_test_parent_user_run_key_open_failed:{status}"
+            ));
+        }
+        Ok(ParentRegistryKey(key))
+    }
+
+    fn expected_final_path(&self, _authority: &ParentCurrentUserAuthority) -> String {
+        self.final_key_path.clone()
+    }
+}
+
+#[cfg(test)]
+impl Drop for IsolatedParentRunKeyAdapter {
+    fn drop(&mut self) {
+        let mut current_user = null_mut();
+        let status = unsafe { RegOpenCurrentUser(KEY_WRITE, &mut current_user) };
+        if status != ERROR_SUCCESS || current_user.is_null() {
+            return;
+        }
+        let current_user = ParentRegistryKey(current_user);
+        let path = wide(&self.subkey_path);
+        unsafe {
+            RegDeleteKeyW(current_user.raw(), path.as_ptr());
+        }
+    }
+}
+
+struct ParentSecurityInfo {
+    descriptor: PSECURITY_DESCRIPTOR,
+    owner: PSID,
+    dacl: *mut windows_sys::Win32::Security::ACL,
+}
+
+impl Drop for ParentSecurityInfo {
+    fn drop(&mut self) {
+        if !self.descriptor.is_null() {
+            unsafe {
+                LocalFree(self.descriptor.cast());
+            }
+        }
+    }
 }
 
 pub(crate) struct OwnedFile {
@@ -386,6 +698,33 @@ impl OwnedDirectory {
         Self::open_with_delete_sharing(path, label, false)
     }
 
+    fn open_for_cleanup(path: &Path, label: &str) -> Result<Self, String> {
+        let (normalized, mut component_handles) = open_no_follow_directory_components(path, label)?;
+        drop(
+            component_handles
+                .pop()
+                .ok_or_else(|| format!("lifecycle_{label}_component_missing"))?,
+        );
+        let handle = open_directory_handle_with_access(
+            &normalized,
+            label,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            Some(GENERIC_READ | DELETE_ACCESS),
+        )?;
+        let information =
+            file_information(&handle).map_err(|_| format!("lifecycle_{label}_identity_failed"))?;
+        let final_path =
+            final_path(&handle).map_err(|_| format!("lifecycle_{label}_path_failed"))?;
+        if !paths_equal(&final_path, &normalized) {
+            return Err(format!("lifecycle_{label}_path_changed"));
+        }
+        Ok(Self {
+            path: final_path,
+            handle,
+            identity: information.identity,
+        })
+    }
+
     fn open_with_delete_sharing(
         path: &Path,
         label: &str,
@@ -451,20 +790,73 @@ impl OwnedDirectory {
         }
         Ok(())
     }
+
+    fn delete_on_close(self, label: &str) -> Result<(), String> {
+        mark_handle_for_delete(&self.handle, label)?;
+        drop(self);
+        Ok(())
+    }
 }
 
 impl ParentObservedFile {
     fn open(path: &Path, expected_parent: &OwnedDirectory, label: &str) -> Result<Self, String> {
+        Self::open_with_bound(path, expected_parent, label, None)
+    }
+
+    fn open_bounded(
+        path: &Path,
+        expected_parent: &OwnedDirectory,
+        label: &str,
+        maximum_bytes: u64,
+    ) -> Result<Self, String> {
+        Self::open_with_bound(path, expected_parent, label, Some(maximum_bytes))
+    }
+
+    fn open_for_cleanup(
+        path: &Path,
+        expected_parent: &OwnedDirectory,
+        label: &str,
+    ) -> Result<Self, String> {
+        Self::open_with_access(
+            path,
+            expected_parent,
+            label,
+            None,
+            Some(GENERIC_READ | DELETE_ACCESS),
+        )
+    }
+
+    fn open_with_bound(
+        path: &Path,
+        expected_parent: &OwnedDirectory,
+        label: &str,
+        maximum_bytes: Option<u64>,
+    ) -> Result<Self, String> {
+        Self::open_with_access(path, expected_parent, label, maximum_bytes, None)
+    }
+
+    fn open_with_access(
+        path: &Path,
+        expected_parent: &OwnedDirectory,
+        label: &str,
+        maximum_bytes: Option<u64>,
+        access_mode: Option<u32>,
+    ) -> Result<Self, String> {
         let requested_parent = path
             .parent()
             .ok_or_else(|| format!("lifecycle_{label}_parent_missing"))?;
         if !paths_equal(requested_parent, &expected_parent.path) {
             return Err(format!("lifecycle_{label}_parent_changed"));
         }
-        let mut handle = OpenOptions::new()
+        let mut options = OpenOptions::new();
+        options
             .read(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        if let Some(access_mode) = access_mode {
+            options.access_mode(access_mode);
+        }
+        let mut handle = options
             .open(path)
             .map_err(|_| format!("lifecycle_{label}_open_failed"))?;
         let metadata = handle
@@ -472,6 +864,9 @@ impl ParentObservedFile {
             .map_err(|_| format!("lifecycle_{label}_metadata_failed"))?;
         if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(format!("lifecycle_{label}_type_invalid"));
+        }
+        if maximum_bytes.is_some_and(|maximum| metadata.len() > maximum) {
+            return Err(format!("lifecycle_{label}_size_invalid"));
         }
         let information =
             file_information(&handle).map_err(|_| format!("lifecycle_{label}_identity_failed"))?;
@@ -496,6 +891,12 @@ impl ParentObservedFile {
             sha256,
             identity: information.identity,
         })
+    }
+
+    fn delete_on_close(self, label: &str) -> Result<(), String> {
+        mark_handle_for_delete(&self.handle, label)?;
+        drop(self);
+        Ok(())
     }
 
     fn snapshot(&self) -> FileSnapshot {
@@ -542,6 +943,22 @@ impl ParentObservedFile {
         }
         Ok(())
     }
+}
+
+fn mark_handle_for_delete(handle: &File, label: &str) -> Result<(), String> {
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    if unsafe {
+        SetFileInformationByHandle(
+            handle.as_raw_handle() as HANDLE,
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(format!("lifecycle_{label}_delete_failed"));
+    }
+    Ok(())
 }
 
 impl ParentCurrentUserAuthorityGuard {
@@ -1673,11 +2090,21 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
         .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
-fn open_directory_handle(path: &Path, label: &str, share_mode: u32) -> Result<File, String> {
-    let handle = OpenOptions::new()
+fn open_directory_handle_with_access(
+    path: &Path,
+    label: &str,
+    share_mode: u32,
+    access_mode: Option<u32>,
+) -> Result<File, String> {
+    let mut options = OpenOptions::new();
+    options
         .read(true)
         .share_mode(share_mode)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    if let Some(access_mode) = access_mode {
+        options.access_mode(access_mode);
+    }
+    let handle = options
         .open(path)
         .map_err(|_| format!("lifecycle_{label}_component_open_failed"))?;
     let metadata = handle
@@ -1687,6 +2114,10 @@ fn open_directory_handle(path: &Path, label: &str, share_mode: u32) -> Result<Fi
         return Err(format!("lifecycle_{label}_component_reparse_rejected"));
     }
     Ok(handle)
+}
+
+fn open_directory_handle(path: &Path, label: &str, share_mode: u32) -> Result<File, String> {
+    open_directory_handle_with_access(path, label, share_mode, None)
 }
 
 fn open_no_follow_directory_components(
@@ -1946,6 +2377,1380 @@ fn retain_parent_user_file(
             Ok((Observation::Present(snapshot), Some(file)))
         }
     }
+}
+
+impl ParentSecurityInfo {
+    fn read(handle: HANDLE, label: &str) -> Result<Self, String> {
+        let mut owner = null_mut();
+        let mut dacl = null_mut();
+        let mut descriptor = null_mut();
+        let status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS || descriptor.is_null() || owner.is_null() || dacl.is_null() {
+            if !descriptor.is_null() {
+                unsafe {
+                    LocalFree(descriptor.cast());
+                }
+            }
+            return Err(format!("lifecycle_{label}_security_failed:{status}"));
+        }
+        Ok(Self {
+            descriptor,
+            owner,
+            dacl,
+        })
+    }
+}
+
+fn parent_security_snapshot(
+    handle: HANDLE,
+    label: &str,
+    parent_sid: &str,
+) -> Result<(String, String), String> {
+    let security = ParentSecurityInfo::read(handle, label)?;
+    let owner = sid_string(security.owner.cast())?;
+    let acl_size = unsafe { (*security.dacl).AclSize as usize };
+    if !(size_of::<windows_sys::Win32::Security::ACL>()..=64 * 1024).contains(&acl_size) {
+        return Err(format!("lifecycle_{label}_dacl_size_invalid"));
+    }
+    validate_parent_dacl_writers(security.dacl, parent_sid, PARENT_FILE_WRITE_MASK, label)?;
+    let bytes = unsafe { std::slice::from_raw_parts(security.dacl.cast::<u8>(), acl_size) };
+    Ok((owner, hex_digest(&Sha256::digest(bytes))))
+}
+
+fn registry_security_snapshot(
+    key: HKEY,
+    label: &str,
+    parent_sid: &str,
+) -> Result<(String, String), String> {
+    let information = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let mut required = 0_u32;
+    let status = unsafe { RegGetKeySecurity(key, information, null_mut(), &mut required) };
+    if status != ERROR_INSUFFICIENT_BUFFER || !(1..=64 * 1024).contains(&required) {
+        return Err(format!("lifecycle_{label}_security_size_failed:{status}"));
+    }
+    let mut buffer = vec![0_u64; (required as usize).div_ceil(size_of::<u64>())];
+    let descriptor = buffer.as_mut_ptr().cast();
+    let status = unsafe { RegGetKeySecurity(key, information, descriptor, &mut required) };
+    if status != ERROR_SUCCESS {
+        return Err(format!("lifecycle_{label}_security_failed:{status}"));
+    }
+    let mut owner = null_mut();
+    let mut owner_defaulted = 0_i32;
+    if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted) } == 0
+        || owner.is_null()
+    {
+        return Err(format!("lifecycle_{label}_owner_invalid"));
+    }
+    let mut dacl_present = 0_i32;
+    let mut dacl_defaulted = 0_i32;
+    let mut dacl = null_mut();
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+        || dacl_present == 0
+        || dacl.is_null()
+    {
+        return Err(format!("lifecycle_{label}_dacl_invalid"));
+    }
+    let acl_size = unsafe { (*dacl).AclSize as usize };
+    if !(size_of::<windows_sys::Win32::Security::ACL>()..=64 * 1024).contains(&acl_size) {
+        return Err(format!("lifecycle_{label}_dacl_size_invalid"));
+    }
+    validate_parent_dacl_writers(dacl, parent_sid, PARENT_REGISTRY_WRITE_MASK, label)?;
+    let dacl_bytes = unsafe { std::slice::from_raw_parts(dacl.cast::<u8>(), acl_size) };
+    Ok((
+        sid_string(owner.cast())?,
+        hex_digest(&Sha256::digest(dacl_bytes)),
+    ))
+}
+
+fn validate_parent_dacl_writers(
+    dacl: *mut windows_sys::Win32::Security::ACL,
+    parent_sid: &str,
+    write_mask: u32,
+    label: &str,
+) -> Result<(), String> {
+    let mut information = ACL_SIZE_INFORMATION::default();
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+    {
+        return Err(format!("lifecycle_{label}_acl_info_failed"));
+    }
+    for index in 0..information.AceCount {
+        let mut raw = null_mut();
+        if unsafe { GetAce(dacl, index, &mut raw) } == 0 || raw.is_null() {
+            return Err(format!("lifecycle_{label}_ace_read_failed"));
+        }
+        let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+        if ace.Header.AceType == ACCESS_DENIED_ACE_TYPE
+            || ace.Header.AceFlags & INHERIT_ONLY_ACE != 0
+        {
+            continue;
+        }
+        if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE {
+            return Err(format!("lifecycle_{label}_ace_type_invalid"));
+        }
+        if ace.Mask & write_mask == 0 {
+            continue;
+        }
+        let sid = sid_string((&ace.SidStart as *const u32).cast_mut().cast())?;
+        if !valid_parent_dacl_writer(&sid, parent_sid) {
+            return Err(format!("lifecycle_{label}_untrusted_writer"));
+        }
+    }
+    Ok(())
+}
+
+fn valid_parent_dacl_writer(writer_sid: &str, parent_sid: &str) -> bool {
+    writer_sid.eq_ignore_ascii_case(parent_sid)
+        || matches!(writer_sid, "S-1-5-18" | "S-1-5-32-544" | "S-1-3-4")
+}
+
+pub(crate) fn valid_parent_run_key_owner(owner_sid: &str, parent_sid: &str) -> bool {
+    owner_sid.eq_ignore_ascii_case(parent_sid) || matches!(owner_sid, "S-1-5-18" | "S-1-5-32-544")
+}
+
+fn open_parent_run_key(access: u32) -> Result<ParentRegistryKey, String> {
+    let mut current_user = null_mut();
+    let status = unsafe { RegOpenCurrentUser(access, &mut current_user) };
+    if status != ERROR_SUCCESS || current_user.is_null() {
+        return Err(format!(
+            "lifecycle_parent_user_run_hive_open_failed:{status}"
+        ));
+    }
+    let current_user = ParentRegistryKey(current_user);
+    let path = wide(HKCU_RUN_PATH);
+    let mut key = null_mut();
+    let status = unsafe { RegOpenKeyExW(current_user.raw(), path.as_ptr(), 0, access, &mut key) };
+    if status != ERROR_SUCCESS || key.is_null() {
+        return Err(format!(
+            "lifecycle_parent_user_run_key_open_failed:{status}"
+        ));
+    }
+    Ok(ParentRegistryKey(key))
+}
+
+fn query_parent_registry_key_path(key: HKEY) -> Result<String, String> {
+    let mut required = 0_u32;
+    unsafe {
+        NtQueryKey(key.cast(), KeyNameInformation, null_mut(), 0, &mut required);
+    }
+    if !(6..=8 * 1024).contains(&required) {
+        return Err("lifecycle_parent_user_run_key_path_size_invalid".to_string());
+    }
+    let mut buffer = vec![0_u32; (required as usize).div_ceil(size_of::<u32>())];
+    let status = unsafe {
+        NtQueryKey(
+            key.cast(),
+            KeyNameInformation,
+            buffer.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "lifecycle_parent_user_run_key_path_query_failed:{status:#010x}"
+        ));
+    }
+    let bytes =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer.len() * 4) };
+    let name_bytes = u32::from_ne_bytes(
+        bytes
+            .get(..4)
+            .ok_or_else(|| "lifecycle_parent_user_run_key_path_invalid".to_string())?
+            .try_into()
+            .map_err(|_| "lifecycle_parent_user_run_key_path_invalid".to_string())?,
+    ) as usize;
+    if name_bytes == 0 || name_bytes & 1 != 0 || name_bytes + 4 > required as usize {
+        return Err("lifecycle_parent_user_run_key_path_invalid".to_string());
+    }
+    let wide = bytes[4..4 + name_bytes]
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&wide).map_err(|_| "lifecycle_parent_user_run_key_path_invalid".to_string())
+}
+
+fn parse_parent_run_value(bytes: &[u8], value_type: u32) -> Result<String, String> {
+    if value_type != REG_SZ || bytes.len() < 2 || bytes.len() & 1 != 0 {
+        return Err("lifecycle_parent_user_run_value_type_invalid".to_string());
+    }
+    let wide = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    let Some((&0, text)) = wide.split_last() else {
+        return Err("lifecycle_parent_user_run_value_invalid".to_string());
+    };
+    if text.contains(&0) {
+        return Err("lifecycle_parent_user_run_value_invalid".to_string());
+    }
+    String::from_utf16(text).map_err(|_| "lifecycle_parent_user_run_value_invalid".to_string())
+}
+
+fn capture_parent_run_key_once(
+    key: &ParentRegistryKey,
+    authority: &ParentCurrentUserAuthority,
+    adapter: &impl ParentRunKeyAdapter,
+) -> Result<ParentRunKeySnapshot, String> {
+    let final_key_path = query_parent_registry_key_path(key.raw())?;
+    let expected_path = adapter.expected_final_path(authority);
+    if !final_key_path.eq_ignore_ascii_case(&expected_path) {
+        return Err("lifecycle_parent_user_run_key_path_changed".to_string());
+    }
+    let mut subkey_count = 0_u32;
+    let mut value_count = 0_u32;
+    let mut maximum_value_name = 0_u32;
+    let mut maximum_value_bytes = 0_u32;
+    let mut security_descriptor_bytes = 0_u32;
+    let mut last_write = windows_sys::Win32::Foundation::FILETIME::default();
+    let status = unsafe {
+        RegQueryInfoKeyW(
+            key.raw(),
+            null_mut(),
+            null_mut(),
+            null(),
+            &mut subkey_count,
+            null_mut(),
+            null_mut(),
+            &mut value_count,
+            &mut maximum_value_name,
+            &mut maximum_value_bytes,
+            &mut security_descriptor_bytes,
+            &mut last_write,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "lifecycle_parent_user_run_key_info_failed:{status}"
+        ));
+    }
+    if subkey_count != 0
+        || value_count > HKCU_MAX_VALUES
+        || maximum_value_name > HKCU_MAX_VALUE_NAME_CHARS
+        || maximum_value_bytes > HKCU_MAX_VALUE_BYTES
+        || security_descriptor_bytes == 0
+        || security_descriptor_bytes > 64 * 1024
+    {
+        return Err("lifecycle_parent_user_run_key_bounds_invalid".to_string());
+    }
+    let (owner_sid, dacl_sha256) =
+        registry_security_snapshot(key.raw(), "parent_user_run_key", &authority.user_sid)?;
+    if !valid_parent_run_key_owner(&owner_sid, &authority.user_sid) {
+        return Err("lifecycle_parent_user_run_key_owner_invalid".to_string());
+    }
+    let mut entries = BTreeMap::new();
+    let mut batcave_monitor = Observation::Absent;
+    let name_capacity = maximum_value_name.max(1) as usize + 1;
+    let data_capacity = maximum_value_bytes.max(2) as usize;
+    for index in 0..value_count {
+        let mut name = vec![0_u16; name_capacity];
+        let mut name_chars = name.len() as u32;
+        let mut value_type = 0_u32;
+        let mut data = vec![0_u8; data_capacity];
+        let mut data_bytes = data.len() as u32;
+        let status = unsafe {
+            RegEnumValueW(
+                key.raw(),
+                index,
+                name.as_mut_ptr(),
+                &mut name_chars,
+                null(),
+                &mut value_type,
+                data.as_mut_ptr(),
+                &mut data_bytes,
+            )
+        };
+        if status != ERROR_SUCCESS
+            || name_chars as usize >= name.len()
+            || data_bytes as usize > data.len()
+        {
+            return Err(format!(
+                "lifecycle_parent_user_run_value_enumeration_failed:{status}"
+            ));
+        }
+        let value_name = String::from_utf16(&name[..name_chars as usize])
+            .map_err(|_| "lifecycle_parent_user_run_value_name_invalid".to_string())?;
+        let normalized = value_name.to_ascii_lowercase();
+        if entries.contains_key(&normalized) {
+            return Err("lifecycle_parent_user_run_value_duplicate".to_string());
+        }
+        data.truncate(data_bytes as usize);
+        if value_name.eq_ignore_ascii_case(HKCU_RUN_VALUE) {
+            batcave_monitor = Observation::Present(ParentRunValueSnapshot {
+                value_type,
+                value: parse_parent_run_value(&data, value_type)?,
+            });
+        }
+        let mut digest = Sha256::new();
+        digest.update(value_name.as_bytes());
+        digest.update(value_type.to_le_bytes());
+        digest.update(&data);
+        entries.insert(normalized, hex_digest(&digest.finalize()));
+    }
+    let mut terminal_name = vec![0_u16; name_capacity];
+    let mut terminal_name_chars = terminal_name.len() as u32;
+    let mut terminal_type = 0_u32;
+    let mut terminal_data = vec![0_u8; data_capacity];
+    let mut terminal_data_bytes = terminal_data.len() as u32;
+    let terminal = unsafe {
+        RegEnumValueW(
+            key.raw(),
+            value_count,
+            terminal_name.as_mut_ptr(),
+            &mut terminal_name_chars,
+            null(),
+            &mut terminal_type,
+            terminal_data.as_mut_ptr(),
+            &mut terminal_data_bytes,
+        )
+    };
+    if terminal != ERROR_NO_MORE_ITEMS {
+        return Err("lifecycle_parent_user_run_value_count_changed".to_string());
+    }
+    let manifest = entries
+        .iter()
+        .map(|(name, digest)| format!("{name}\0{digest}\n"))
+        .collect::<String>();
+    if manifest.len() > HKCU_MAX_MANIFEST_BYTES {
+        return Err("lifecycle_parent_user_run_manifest_overflow".to_string());
+    }
+    Ok(ParentRunKeySnapshot {
+        final_key_path,
+        owner_sid,
+        dacl_sha256,
+        last_write_time_100ns: (u64::from(last_write.dwHighDateTime) << 32)
+            | u64::from(last_write.dwLowDateTime),
+        value_count,
+        manifest_sha256: hex_digest(&Sha256::digest(manifest.as_bytes())),
+        batcave_monitor,
+    })
+}
+
+fn capture_parent_run_key(
+    root: &ParentCurrentUserAuthorityGuard,
+) -> Result<ParentRunKeySnapshot, String> {
+    root.revalidate()?;
+    let adapter = CurrentUserRunKeyAdapter;
+    let key = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
+    let first = capture_parent_run_key_once(&key, &root.authority, &adapter)?;
+    let second = capture_parent_run_key_once(&key, &root.authority, &adapter)?;
+    let reopened = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
+    let third = capture_parent_run_key_once(&reopened, &root.authority, &adapter)?;
+    root.revalidate()?;
+    if first != second || second != third {
+        return Err("lifecycle_parent_user_run_key_changed_during_capture".to_string());
+    }
+    Ok(first)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ParentHelperCapture {
+    snapshot: ParentHelperManifestSnapshot,
+    manifest_records: Vec<String>,
+}
+
+fn helper_fixture_bytes(relative_leaf: &str) -> Vec<u8> {
+    format!("batcave_windows_lifecycle_known_helper_fixture_v1:{relative_leaf}\n").into_bytes()
+}
+
+fn helper_sentinel_bytes() -> &'static [u8] {
+    b"batcave_windows_lifecycle_unknown_helper_sentinel_v1\n"
+}
+
+pub(crate) fn expected_parent_helper_fixture_snapshot(
+    relative_leaf: &str,
+) -> Result<(u64, String), String> {
+    if !expected_helper_leaves()
+        .iter()
+        .any(|leaf| leaf == relative_leaf)
+    {
+        return Err("lifecycle_parent_user_helper_leaf_invalid".to_string());
+    }
+    let bytes = helper_fixture_bytes(relative_leaf);
+    Ok((bytes.len() as u64, hex_digest(&Sha256::digest(&bytes))))
+}
+
+pub(crate) fn expected_parent_helper_sentinel_snapshot() -> (u64, String) {
+    let bytes = helper_sentinel_bytes();
+    (bytes.len() as u64, hex_digest(&Sha256::digest(bytes)))
+}
+
+pub(crate) fn expected_helper_leaves() -> Vec<String> {
+    let mut leaves = HELPER_ROOT_LEAVES
+        .iter()
+        .map(|name| format!("elevated-helper/{name}"))
+        .collect::<Vec<_>>();
+    leaves.extend(
+        HELPER_ROOT_LEAVES
+            .iter()
+            .map(|name| format!("elevated-helper/{HELPER_PROOF_RUN_NAME}/{name}")),
+    );
+    leaves.sort();
+    leaves
+}
+
+fn capture_parent_helper_file(
+    path: &Path,
+    parent: &OwnedDirectory,
+    relative_leaf: &str,
+    authority: &ParentCurrentUserAuthority,
+    maximum_bytes: u64,
+) -> Result<ParentHelperFileSnapshot, String> {
+    let observed = ParentObservedFile::open_bounded(
+        path,
+        parent,
+        "parent_user_helper_file",
+        maximum_bytes.min(HELPER_MAX_FILE_BYTES),
+    )?;
+    let (owner_sid, dacl_sha256) = parent_security_snapshot(
+        observed.handle.as_raw_handle() as HANDLE,
+        "parent_user_helper_file",
+        &authority.user_sid,
+    )?;
+    if !owner_sid.eq_ignore_ascii_case(&authority.user_sid) {
+        return Err("lifecycle_parent_user_helper_file_owner_invalid".to_string());
+    }
+    Ok(ParentHelperFileSnapshot {
+        relative_leaf: relative_leaf.replace('\\', "/"),
+        file: observed.snapshot(),
+        owner_sid,
+        dacl_sha256,
+    })
+}
+
+fn capture_parent_helper_directory_record(
+    directory: &OwnedDirectory,
+    relative_leaf: &str,
+    authority: &ParentCurrentUserAuthority,
+) -> Result<String, String> {
+    let (owner_sid, dacl_sha256) = parent_security_snapshot(
+        directory.handle.as_raw_handle() as HANDLE,
+        "parent_user_helper_directory",
+        &authority.user_sid,
+    )?;
+    if !owner_sid.eq_ignore_ascii_case(&authority.user_sid) {
+        return Err("lifecycle_parent_user_helper_directory_owner_invalid".to_string());
+    }
+    Ok(format!(
+        "d\0{}\0{}:{}\0{}\0{}",
+        relative_leaf.replace('\\', "/"),
+        directory.identity.volume_serial,
+        directory.identity.file_index,
+        owner_sid,
+        dacl_sha256
+    ))
+}
+
+fn capture_parent_helper_manifest_once(
+    helper_root: &OwnedDirectory,
+    authority: &ParentCurrentUserAuthority,
+) -> Result<ParentHelperCapture, String> {
+    let (root_owner_sid, root_dacl_sha256) = parent_security_snapshot(
+        helper_root.handle.as_raw_handle() as HANDLE,
+        "parent_user_helper_root",
+        &authority.user_sid,
+    )?;
+    if !root_owner_sid.eq_ignore_ascii_case(&authority.user_sid) {
+        return Err("lifecycle_parent_user_helper_root_owner_invalid".to_string());
+    }
+    let expected = expected_helper_leaves();
+    let mut known_files = Vec::new();
+    let mut sentinel = Observation::Absent;
+    let mut unexpected_entry_count = 0_u32;
+    let mut records = vec![format!(
+        "root\0{}:{}\0{}\0{}",
+        helper_root.identity.volume_serial,
+        helper_root.identity.file_index,
+        root_owner_sid,
+        root_dacl_sha256
+    )];
+    let mut total_bytes = 0_u64;
+    let mut entry_count = 0_usize;
+    let mut run_root = None;
+    let mut root_entries = fs::read_dir(&helper_root.path)
+        .map_err(|_| "lifecycle_parent_user_helper_enumeration_failed".to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "lifecycle_parent_user_helper_enumeration_failed".to_string())?;
+    root_entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+    for entry in root_entries {
+        entry_count += 1;
+        if entry_count > HELPER_MAX_ENTRIES {
+            return Err("lifecycle_parent_user_helper_entry_overflow".to_string());
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "lifecycle_parent_user_helper_name_invalid".to_string())?;
+        if name.contains(['/', '\\']) || matches!(name.as_str(), "." | "..") {
+            return Err("lifecycle_parent_user_helper_name_invalid".to_string());
+        }
+        let path = helper_root.path.join(&name);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|_| "lifecycle_parent_user_helper_metadata_failed".to_string())?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("lifecycle_parent_user_helper_reparse_rejected".to_string());
+        }
+        if name.eq_ignore_ascii_case(HELPER_PROOF_RUN_NAME) {
+            if !metadata.is_dir() || run_root.is_some() {
+                return Err("lifecycle_parent_user_helper_run_type_invalid".to_string());
+            }
+            let directory =
+                OwnedDirectory::open_without_delete_sharing(&path, "parent_user_helper_run_root")?;
+            records.push(capture_parent_helper_directory_record(
+                &directory,
+                HELPER_PROOF_RUN_NAME,
+                authority,
+            )?);
+            run_root = Some(directory);
+            continue;
+        }
+        if !metadata.is_file() {
+            let directory = OwnedDirectory::open_without_delete_sharing(
+                &path,
+                "parent_user_helper_unexpected_directory",
+            )?;
+            records.push(capture_parent_helper_directory_record(
+                &directory, &name, authority,
+            )?);
+            unexpected_entry_count = unexpected_entry_count.saturating_add(1);
+            continue;
+        }
+        let relative_leaf = format!("elevated-helper/{name}");
+        let file = capture_parent_helper_file(
+            &path,
+            helper_root,
+            &relative_leaf,
+            authority,
+            HELPER_MAX_TOTAL_BYTES.saturating_sub(total_bytes),
+        )?;
+        total_bytes = total_bytes
+            .checked_add(file.file.size)
+            .ok_or_else(|| "lifecycle_parent_user_helper_total_overflow".to_string())?;
+        records.push(format!(
+            "f\0{}\0{}\0{}\0{}:{}\0{}\0{}",
+            file.relative_leaf,
+            file.file.size,
+            file.file.sha256,
+            file.file.identity.volume_serial,
+            file.file.identity.file_index,
+            file.owner_sid,
+            file.dacl_sha256
+        ));
+        if name.eq_ignore_ascii_case(HELPER_SENTINEL_NAME) {
+            sentinel = Observation::Present(file);
+        } else if HELPER_ROOT_LEAVES
+            .iter()
+            .any(|expected| name.eq_ignore_ascii_case(expected))
+        {
+            known_files.push(file);
+        } else {
+            unexpected_entry_count = unexpected_entry_count.saturating_add(1);
+        }
+    }
+    if let Some(run_root) = &run_root {
+        let mut run_entries = fs::read_dir(&run_root.path)
+            .map_err(|_| "lifecycle_parent_user_helper_run_enumeration_failed".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "lifecycle_parent_user_helper_run_enumeration_failed".to_string())?;
+        run_entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+        for entry in run_entries {
+            entry_count += 1;
+            if entry_count > HELPER_MAX_ENTRIES {
+                return Err("lifecycle_parent_user_helper_entry_overflow".to_string());
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "lifecycle_parent_user_helper_name_invalid".to_string())?;
+            if name.contains(['/', '\\']) || matches!(name.as_str(), "." | "..") {
+                return Err("lifecycle_parent_user_helper_name_invalid".to_string());
+            }
+            let relative_leaf = format!("elevated-helper/{HELPER_PROOF_RUN_NAME}/{name}");
+            let path = run_root.path.join(&name);
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|_| "lifecycle_parent_user_helper_metadata_failed".to_string())?;
+            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err("lifecycle_parent_user_helper_run_entry_type_invalid".to_string());
+            }
+            let file = capture_parent_helper_file(
+                &path,
+                run_root,
+                &relative_leaf,
+                authority,
+                HELPER_MAX_TOTAL_BYTES.saturating_sub(total_bytes),
+            )?;
+            total_bytes = total_bytes
+                .checked_add(file.file.size)
+                .ok_or_else(|| "lifecycle_parent_user_helper_total_overflow".to_string())?;
+            records.push(format!(
+                "f\0{}\0{}\0{}\0{}:{}\0{}\0{}",
+                file.relative_leaf,
+                file.file.size,
+                file.file.sha256,
+                file.file.identity.volume_serial,
+                file.file.identity.file_index,
+                file.owner_sid,
+                file.dacl_sha256
+            ));
+            if HELPER_ROOT_LEAVES
+                .iter()
+                .any(|expected| name.eq_ignore_ascii_case(expected))
+            {
+                known_files.push(file);
+            } else {
+                unexpected_entry_count = unexpected_entry_count.saturating_add(1);
+            }
+        }
+    }
+    if total_bytes > HELPER_MAX_TOTAL_BYTES {
+        return Err("lifecycle_parent_user_helper_total_overflow".to_string());
+    }
+    known_files.sort_by(|left, right| left.relative_leaf.cmp(&right.relative_leaf));
+    if known_files
+        .iter()
+        .map(|file| file.relative_leaf.as_str())
+        .any(|leaf| !expected.iter().any(|expected| expected == leaf))
+    {
+        return Err("lifecycle_parent_user_helper_known_set_invalid".to_string());
+    }
+    records.sort();
+    let manifest = records.join("\n");
+    if manifest.len() > HKCU_MAX_MANIFEST_BYTES {
+        return Err("lifecycle_parent_user_helper_manifest_overflow".to_string());
+    }
+    Ok(ParentHelperCapture {
+        snapshot: ParentHelperManifestSnapshot {
+            root: helper_root.snapshot(),
+            root_owner_sid,
+            root_dacl_sha256,
+            known_files,
+            sentinel,
+            unexpected_entry_count,
+            manifest_sha256: hex_digest(&Sha256::digest(manifest.as_bytes())),
+        },
+        manifest_records: records,
+    })
+}
+
+fn capture_parent_helper_manifest(
+    root: &ParentCurrentUserAuthorityGuard,
+) -> Result<Observation<ParentHelperManifestSnapshot>, String> {
+    root.revalidate()?;
+    let helper_path = Path::new(&root.authority.resolved_data_root).join("elevated-helper");
+    let first_metadata = fs::symlink_metadata(&helper_path);
+    let first = match first_metadata {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "lifecycle_parent_user_helper_root_metadata_failed:{}",
+                error.raw_os_error().unwrap_or_default()
+            ));
+        }
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err("lifecycle_parent_user_helper_root_type_invalid".to_string());
+            }
+            let helper_root = OwnedDirectory::open_without_delete_sharing(
+                &helper_path,
+                "parent_user_helper_root",
+            )?;
+            let first = capture_parent_helper_manifest_once(&helper_root, &root.authority)?;
+            let second = capture_parent_helper_manifest_once(&helper_root, &root.authority)?;
+            helper_root.revalidate()?;
+            if first != second {
+                return Err("lifecycle_parent_user_helper_changed_during_capture".to_string());
+            }
+            Some(first)
+        }
+    };
+    root.revalidate()?;
+    match first {
+        None => {
+            match fs::symlink_metadata(&helper_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(_) => {
+                    return Err("lifecycle_parent_user_helper_changed_during_capture".to_string());
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "lifecycle_parent_user_helper_root_metadata_failed:{}",
+                        error.raw_os_error().unwrap_or_default()
+                    ));
+                }
+            }
+            Ok(Observation::Absent)
+        }
+        Some(first) => {
+            let reopened = OwnedDirectory::open_without_delete_sharing(
+                &helper_path,
+                "parent_user_helper_root_reopen",
+            )?;
+            let third = capture_parent_helper_manifest_once(&reopened, &root.authority)?;
+            if first != third {
+                return Err("lifecycle_parent_user_helper_changed_during_capture".to_string());
+            }
+            Ok(Observation::Present(first.snapshot))
+        }
+    }
+}
+
+pub(crate) fn capture_parent_current_user_residue(
+    root: &ParentCurrentUserAuthorityGuard,
+) -> Result<ParentCurrentUserResidueSnapshot, String> {
+    root.revalidate()?;
+    let hkcu_run = capture_parent_run_key(root)?;
+    let helper = capture_parent_helper_manifest(root)?;
+    root.revalidate()?;
+    Ok(ParentCurrentUserResidueSnapshot { hkcu_run, helper })
+}
+
+fn observe_parent_seed_directory(
+    path: &Path,
+    authority: &ParentCurrentUserAuthority,
+    label: &str,
+) -> Result<Observation<ParentTrackedDirectorySnapshot>, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Observation::Absent),
+        Err(_) => Err(format!("lifecycle_{label}_metadata_failed")),
+        Ok(metadata)
+            if metadata.is_dir()
+                && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 =>
+        {
+            let directory = OwnedDirectory::open_without_delete_sharing(path, label)?;
+            let (owner_sid, dacl_sha256) = parent_security_snapshot(
+                directory.handle.as_raw_handle() as HANDLE,
+                label,
+                &authority.user_sid,
+            )?;
+            if !owner_sid.eq_ignore_ascii_case(&authority.user_sid) {
+                return Err(format!("lifecycle_{label}_owner_invalid"));
+            }
+            Ok(Observation::Present(ParentTrackedDirectorySnapshot {
+                directory: directory.snapshot(),
+                owner_sid,
+                dacl_sha256,
+            }))
+        }
+        Ok(_) => Err(format!("lifecycle_{label}_type_invalid")),
+    }
+}
+
+fn parent_seed_transaction(
+    root: &ParentCurrentUserAuthorityGuard,
+) -> Result<ParentCurrentUserResidueTransaction, String> {
+    root.revalidate()?;
+    let prior = capture_parent_current_user_residue(root)?;
+    let helper_clean = match &prior.helper {
+        Observation::Absent => true,
+        Observation::Present(helper) => {
+            helper.known_files.is_empty()
+                && matches!(helper.sentinel, Observation::Absent)
+                && helper.unexpected_entry_count == 0
+        }
+        Observation::Unknown(_) => false,
+    };
+    if !matches!(prior.hkcu_run.batcave_monitor, Observation::Absent) || !helper_clean {
+        return Err("lifecycle_parent_user_residue_preseed_not_clean".to_string());
+    }
+    let helper_root_path = Path::new(&root.authority.resolved_data_root).join("elevated-helper");
+    let run_root_path = helper_root_path.join(HELPER_PROOF_RUN_NAME);
+    let helper_root_before = observe_parent_seed_directory(
+        &helper_root_path,
+        &root.authority,
+        "parent_user_helper_seed_root_before",
+    )?;
+    let run_root_before = observe_parent_seed_directory(
+        &run_root_path,
+        &root.authority,
+        "parent_user_helper_seed_run_before",
+    )?;
+    if matches!(prior.helper, Observation::Absent)
+        != matches!(helper_root_before, Observation::Absent)
+        || matches!(helper_root_before, Observation::Absent)
+            && !matches!(run_root_before, Observation::Absent)
+    {
+        return Err("lifecycle_parent_user_residue_preseed_changed".to_string());
+    }
+    Ok(ParentCurrentUserResidueTransaction {
+        prior,
+        helper_root_path,
+        run_root_path,
+        helper_root_before,
+        run_root_before,
+        helper_root_created: None,
+        run_root_created: None,
+        created_files: Vec::with_capacity(expected_helper_leaves().len() + 1),
+        run_value_created: false,
+    })
+}
+
+fn create_parent_seed_directory(
+    path: &Path,
+    before: &Observation<ParentTrackedDirectorySnapshot>,
+    authority: &ParentCurrentUserAuthority,
+    label: &str,
+) -> Result<Option<ParentTrackedDirectorySnapshot>, String> {
+    let created = match fs::create_dir(path) {
+        Ok(()) => true,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                && matches!(before, Observation::Present(_)) =>
+        {
+            false
+        }
+        Err(_) => return Err(format!("lifecycle_{label}_create_failed")),
+    };
+    let observed = match observe_parent_seed_directory(path, authority, label) {
+        Ok(observed) => observed,
+        Err(reason) if created => {
+            return match fs::remove_dir(path) {
+                Ok(()) => Err(reason),
+                Err(_) => Err(format!("{reason}|rollback:lifecycle_{label}_delete_failed")),
+            };
+        }
+        Err(reason) => return Err(reason),
+    };
+    let Observation::Present(observed) = observed else {
+        let reason = format!("lifecycle_{label}_missing");
+        return if created && fs::remove_dir(path).is_err() {
+            Err(format!("{reason}|rollback:lifecycle_{label}_delete_failed"))
+        } else {
+            Err(reason)
+        };
+    };
+    if let Observation::Present(before) = before {
+        if &observed != before {
+            return Err(format!("lifecycle_{label}_changed"));
+        }
+    }
+    Ok(created.then_some(observed))
+}
+
+fn create_parent_seed_file(
+    path: &Path,
+    parent: &OwnedDirectory,
+    relative_leaf: &str,
+    bytes: &[u8],
+    authority: &ParentCurrentUserAuthority,
+) -> Result<ParentHelperFileSnapshot, String> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE_ACCESS)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = options
+        .open(path)
+        .map_err(|_| "lifecycle_parent_user_helper_seed_file_failed".to_string())?;
+    let result = (|| -> Result<ParentHelperFileSnapshot, String> {
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "lifecycle_parent_user_helper_seed_file_write_failed".to_string())?;
+        let observed = capture_parent_helper_file(
+            path,
+            parent,
+            relative_leaf,
+            authority,
+            HELPER_MAX_FILE_BYTES,
+        )?;
+        if observed.file.size != bytes.len() as u64
+            || observed.file.sha256 != hex_digest(&Sha256::digest(bytes))
+        {
+            return Err("lifecycle_parent_user_helper_seed_file_changed".to_string());
+        }
+        Ok(observed)
+    })();
+    match result {
+        Ok(observed) => Ok(observed),
+        Err(reason) => {
+            if let Err(cleanup) = mark_handle_for_delete(&file, "parent_user_helper_seed_file") {
+                return Err(format!("{reason}|rollback:{cleanup}"));
+            }
+            Err(reason)
+        }
+    }
+}
+
+fn injected_parent_seed_failure(
+    failure_after: Option<usize>,
+    completed_mutations: &mut usize,
+) -> Result<(), String> {
+    *completed_mutations += 1;
+    if failure_after == Some(*completed_mutations) {
+        Err("lifecycle_parent_user_seed_injected_failure".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn seed_parent_helper_tree(
+    transaction: &mut ParentCurrentUserResidueTransaction,
+    authority: &ParentCurrentUserAuthority,
+    failure_after: Option<usize>,
+    completed_mutations: &mut usize,
+) -> Result<(), String> {
+    transaction.helper_root_created = create_parent_seed_directory(
+        &transaction.helper_root_path,
+        &transaction.helper_root_before,
+        authority,
+        "parent_user_helper_seed_root",
+    )?;
+    if transaction.helper_root_created.is_some() {
+        injected_parent_seed_failure(failure_after, completed_mutations)?;
+    }
+    let helper_guard = OwnedDirectory::open_without_delete_sharing(
+        &transaction.helper_root_path,
+        "parent_user_helper_seed_root",
+    )?;
+    transaction.run_root_created = create_parent_seed_directory(
+        &transaction.run_root_path,
+        &transaction.run_root_before,
+        authority,
+        "parent_user_helper_seed_run",
+    )?;
+    if transaction.run_root_created.is_some() {
+        injected_parent_seed_failure(failure_after, completed_mutations)?;
+    }
+    let run_guard = OwnedDirectory::open_without_delete_sharing(
+        &transaction.run_root_path,
+        "parent_user_helper_seed_run",
+    )?;
+    for relative_leaf in expected_helper_leaves() {
+        let helper_leaf = relative_leaf
+            .strip_prefix("elevated-helper/")
+            .ok_or_else(|| "lifecycle_parent_user_helper_seed_leaf_invalid".to_string())?;
+        let (parent, path) =
+            if let Some(name) = helper_leaf.strip_prefix(&format!("{HELPER_PROOF_RUN_NAME}/")) {
+                (&run_guard, transaction.run_root_path.join(name))
+            } else {
+                (
+                    &helper_guard,
+                    transaction.helper_root_path.join(helper_leaf),
+                )
+            };
+        let created = create_parent_seed_file(
+            &path,
+            parent,
+            &relative_leaf,
+            &helper_fixture_bytes(&relative_leaf),
+            authority,
+        )?;
+        transaction.created_files.push(created);
+        injected_parent_seed_failure(failure_after, completed_mutations)?;
+    }
+    let sentinel_leaf = format!("elevated-helper/{HELPER_SENTINEL_NAME}");
+    let sentinel = create_parent_seed_file(
+        &transaction.helper_root_path.join(HELPER_SENTINEL_NAME),
+        &helper_guard,
+        &sentinel_leaf,
+        helper_sentinel_bytes(),
+        authority,
+    )?;
+    transaction.created_files.push(sentinel);
+    injected_parent_seed_failure(failure_after, completed_mutations)
+}
+
+fn seed_parent_run_value(
+    transaction: &mut ParentCurrentUserResidueTransaction,
+    authority: &ParentCurrentUserAuthority,
+    adapter: &impl ParentRunKeyAdapter,
+    failure_after: Option<usize>,
+    completed_mutations: &mut usize,
+) -> Result<(), String> {
+    let key = adapter.open(KEY_SET_VALUE | KEY_QUERY_VALUE | READ_CONTROL)?;
+    let before = capture_parent_run_key_once(&key, authority, adapter)?;
+    if !matches!(before.batcave_monitor, Observation::Absent)
+        || before.final_key_path != transaction.prior.hkcu_run.final_key_path
+        || before.owner_sid != transaction.prior.hkcu_run.owner_sid
+        || before.dacl_sha256 != transaction.prior.hkcu_run.dacl_sha256
+        || before.manifest_sha256 != transaction.prior.hkcu_run.manifest_sha256
+    {
+        return Err("lifecycle_parent_user_run_value_preseed_changed".to_string());
+    }
+    let name = wide(HKCU_RUN_VALUE);
+    let value = wide(EXACT_HKCU_RUN_VALUE);
+    let status = unsafe {
+        RegSetValueExW(
+            key.raw(),
+            name.as_ptr(),
+            0,
+            REG_SZ,
+            value.as_ptr().cast(),
+            (value.len() * size_of::<u16>()) as u32,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "lifecycle_parent_user_run_value_seed_failed:{status}"
+        ));
+    }
+    transaction.run_value_created = true;
+    injected_parent_seed_failure(failure_after, completed_mutations)?;
+    let after = capture_parent_run_key_once(&key, authority, adapter)?;
+    if !matches!(
+        after.batcave_monitor,
+        Observation::Present(ParentRunValueSnapshot {
+            value_type: REG_SZ,
+            ref value,
+        }) if value == EXACT_HKCU_RUN_VALUE
+    ) {
+        return Err("lifecycle_parent_user_run_value_seed_changed".to_string());
+    }
+    Ok(())
+}
+
+fn seed_parent_current_user_legacy_residue_with_failure(
+    root: &ParentCurrentUserAuthorityGuard,
+    failure_after: Option<usize>,
+) -> Result<ParentCurrentUserResidueTransaction, ParentCurrentUserResidueSeedFailure> {
+    let mut transaction =
+        parent_seed_transaction(root).map_err(|reason| ParentCurrentUserResidueSeedFailure {
+            reason,
+            transaction: None,
+        })?;
+    let result = (|| -> Result<(), String> {
+        let mut completed_mutations = 0;
+        seed_parent_helper_tree(
+            &mut transaction,
+            &root.authority,
+            failure_after,
+            &mut completed_mutations,
+        )?;
+
+        seed_parent_run_value(
+            &mut transaction,
+            &root.authority,
+            &CurrentUserRunKeyAdapter,
+            failure_after,
+            &mut completed_mutations,
+        )?;
+        root.revalidate()?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(transaction),
+        Err(reason) => Err(ParentCurrentUserResidueSeedFailure {
+            reason,
+            transaction: Some(Box::new(transaction)),
+        }),
+    }
+}
+
+pub(crate) fn seed_parent_current_user_legacy_residue(
+    root: &ParentCurrentUserAuthorityGuard,
+) -> Result<ParentCurrentUserResidueTransaction, ParentCurrentUserResidueSeedFailure> {
+    seed_parent_current_user_legacy_residue_with_failure(root, None)
+}
+
+fn parent_run_matches_cleanup_baseline(
+    current: &ParentRunKeySnapshot,
+    prior: &ParentRunKeySnapshot,
+) -> bool {
+    current.final_key_path == prior.final_key_path
+        && current.owner_sid == prior.owner_sid
+        && current.dacl_sha256 == prior.dacl_sha256
+        && current.value_count == prior.value_count
+        && current.manifest_sha256 == prior.manifest_sha256
+        && current.batcave_monitor == prior.batcave_monitor
+}
+
+fn is_exact_parent_run_value(observation: &Observation<ParentRunValueSnapshot>) -> bool {
+    matches!(
+        observation,
+        Observation::Present(ParentRunValueSnapshot {
+            value_type: REG_SZ,
+            value,
+        }) if value == EXACT_HKCU_RUN_VALUE
+    )
+}
+
+fn cleanup_parent_seed_file(
+    transaction: &ParentCurrentUserResidueTransaction,
+    expected: &ParentHelperFileSnapshot,
+    authority: &ParentCurrentUserAuthority,
+) -> Result<(), String> {
+    let helper_leaf = expected
+        .relative_leaf
+        .strip_prefix("elevated-helper/")
+        .ok_or_else(|| "lifecycle_parent_user_cleanup_leaf_invalid".to_string())?;
+    let (parent_path, path) =
+        if let Some(name) = helper_leaf.strip_prefix(&format!("{HELPER_PROOF_RUN_NAME}/")) {
+            (
+                &transaction.run_root_path,
+                transaction.run_root_path.join(name),
+            )
+        } else {
+            (
+                &transaction.helper_root_path,
+                transaction.helper_root_path.join(helper_leaf),
+            )
+        };
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("lifecycle_parent_user_cleanup_file_metadata_failed".to_string()),
+        Ok(_) => {}
+    }
+    let parent = OwnedDirectory::open_without_delete_sharing(
+        parent_path,
+        "parent_user_cleanup_file_parent",
+    )?;
+    let observed =
+        ParentObservedFile::open_for_cleanup(&path, &parent, "parent_user_cleanup_file")?;
+    let (owner_sid, dacl_sha256) = parent_security_snapshot(
+        observed.handle.as_raw_handle() as HANDLE,
+        "parent_user_cleanup_file",
+        &authority.user_sid,
+    )?;
+    if observed.snapshot() != expected.file
+        || owner_sid != expected.owner_sid
+        || dacl_sha256 != expected.dacl_sha256
+    {
+        return Err("lifecycle_parent_user_cleanup_file_changed".to_string());
+    }
+    observed.revalidate()?;
+    observed.delete_on_close("parent_user_cleanup_file")
+}
+
+fn cleanup_parent_seed_directory(
+    path: &Path,
+    expected: Option<&ParentTrackedDirectorySnapshot>,
+    authority: &ParentCurrentUserAuthority,
+    label: &str,
+) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(format!("lifecycle_{label}_metadata_failed")),
+        Ok(_) => {}
+    }
+    let observed = OwnedDirectory::open_for_cleanup(path, label)?;
+    let (owner_sid, dacl_sha256) = parent_security_snapshot(
+        observed.handle.as_raw_handle() as HANDLE,
+        label,
+        &authority.user_sid,
+    )?;
+    if observed.snapshot() != expected.directory
+        || owner_sid != expected.owner_sid
+        || dacl_sha256 != expected.dacl_sha256
+    {
+        return Err(format!("lifecycle_{label}_changed"));
+    }
+    if fs::read_dir(path)
+        .map_err(|_| format!("lifecycle_{label}_enumeration_failed"))?
+        .next()
+        .is_some()
+    {
+        return Err(format!("lifecycle_{label}_not_empty"));
+    }
+    observed.delete_on_close(label)
+}
+
+fn cleanup_parent_seed_filesystem(
+    transaction: &ParentCurrentUserResidueTransaction,
+    authority: &ParentCurrentUserAuthority,
+) -> Vec<String> {
+    let mut blocked = Vec::new();
+    for expected in transaction.created_files.iter().rev() {
+        if let Err(reason) = cleanup_parent_seed_file(transaction, expected, authority) {
+            blocked.push(reason);
+        }
+    }
+    if let Err(reason) = cleanup_parent_seed_directory(
+        &transaction.run_root_path,
+        transaction.run_root_created.as_ref(),
+        authority,
+        "parent_user_cleanup_run_root",
+    ) {
+        blocked.push(reason);
+    }
+    if let Err(reason) = cleanup_parent_seed_directory(
+        &transaction.helper_root_path,
+        transaction.helper_root_created.as_ref(),
+        authority,
+        "parent_user_cleanup_helper_root",
+    ) {
+        blocked.push(reason);
+    }
+    blocked
+}
+
+fn cleanup_parent_run_value(
+    transaction: &ParentCurrentUserResidueTransaction,
+    authority: &ParentCurrentUserAuthority,
+    adapter: &impl ParentRunKeyAdapter,
+) -> Result<(), String> {
+    if !transaction.run_value_created {
+        return Ok(());
+    }
+    let key = adapter.open(KEY_SET_VALUE | KEY_QUERY_VALUE | READ_CONTROL)?;
+    let current = capture_parent_run_key_once(&key, authority, adapter)?;
+    if matches!(current.batcave_monitor, Observation::Absent) {
+        return Ok(());
+    }
+    if !is_exact_parent_run_value(&current.batcave_monitor) {
+        return Err("lifecycle_parent_user_cleanup_run_changed".to_string());
+    }
+    if current.final_key_path != transaction.prior.hkcu_run.final_key_path
+        || current.owner_sid != transaction.prior.hkcu_run.owner_sid
+        || current.dacl_sha256 != transaction.prior.hkcu_run.dacl_sha256
+    {
+        return Err("lifecycle_parent_user_cleanup_run_authority_changed".to_string());
+    }
+    let name = wide(HKCU_RUN_VALUE);
+    let status = unsafe { RegDeleteValueW(key.raw(), name.as_ptr()) };
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "lifecycle_parent_user_cleanup_run_delete_failed:{status}"
+        ));
+    }
+    let after = capture_parent_run_key_once(&key, authority, adapter)?;
+    if !parent_run_matches_cleanup_baseline(&after, &transaction.prior.hkcu_run) {
+        return Err("lifecycle_parent_user_cleanup_run_baseline_changed".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn cleanup_parent_current_user_legacy_residue(
+    root: &ParentCurrentUserAuthorityGuard,
+    transaction: &mut ParentCurrentUserResidueTransaction,
+) -> Result<(), String> {
+    root.revalidate()?;
+    let mut blocked = Vec::new();
+
+    if let Err(reason) =
+        cleanup_parent_run_value(transaction, &root.authority, &CurrentUserRunKeyAdapter)
+    {
+        blocked.push(reason);
+    }
+
+    blocked.extend(cleanup_parent_seed_filesystem(transaction, &root.authority));
+
+    let final_snapshot = capture_parent_current_user_residue(root);
+    match final_snapshot {
+        Ok(final_snapshot)
+            if parent_run_matches_cleanup_baseline(
+                &final_snapshot.hkcu_run,
+                &transaction.prior.hkcu_run,
+            ) && final_snapshot.helper == transaction.prior.helper => {}
+        Ok(_) => blocked.push("lifecycle_parent_user_cleanup_baseline_changed".to_string()),
+        Err(reason) => blocked.push(reason),
+    }
+    if blocked.is_empty() {
+        transaction.run_value_created = false;
+        transaction.created_files.clear();
+        transaction.run_root_created = None;
+        transaction.helper_root_created = None;
+        return Ok(());
+    }
+    blocked.sort();
+    blocked.dedup();
+    Err(format!(
+        "lifecycle_parent_user_cleanup_blocked:{}",
+        blocked.join(",")
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn exercise_isolated_parent_current_user_residue_cleanup() -> Result<(), String> {
+    let token = standard_token_evidence()?;
+    let authority = ParentCurrentUserAuthority {
+        user_sid: token.sid_string,
+        ..tests::parent_current_user_authority()
+    };
+    let temporary = PathBuf::from(
+        std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| "lifecycle_test_local_app_data_missing".to_string())?,
+    )
+    .join(format!(
+        "BatCave-parent-terminal-{}-{}",
+        std::process::id(),
+        random_hex(8)?
+    ));
+    fs::create_dir(&temporary)
+        .map_err(|_| "lifecycle_test_parent_terminal_root_create_failed".to_string())?;
+    let adapter = IsolatedParentRunKeyAdapter::create()?;
+    let key = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
+    let prior_run = capture_parent_run_key_once(&key, &authority, &adapter)?;
+    drop(key);
+    let mut transaction = tests::parent_seed_test_transaction(&temporary, &authority, false);
+    transaction.prior.hkcu_run = prior_run.clone();
+    let mut completed_mutations = 0;
+    seed_parent_helper_tree(&mut transaction, &authority, None, &mut completed_mutations)?;
+    seed_parent_run_value(
+        &mut transaction,
+        &authority,
+        &adapter,
+        None,
+        &mut completed_mutations,
+    )?;
+    if !transaction.helper_root_path.is_dir()
+        || transaction.created_files.iter().any(|file| {
+            let leaf = file
+                .relative_leaf
+                .strip_prefix("elevated-helper/")
+                .unwrap_or_default();
+            !transaction.helper_root_path.join(leaf).is_file()
+        })
+    {
+        return Err("lifecycle_test_parent_terminal_filesystem_seed_missing".to_string());
+    }
+    let key = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
+    let seeded_run = capture_parent_run_key_once(&key, &authority, &adapter)?;
+    drop(key);
+    if !is_exact_parent_run_value(&seeded_run.batcave_monitor) {
+        return Err("lifecycle_test_parent_terminal_run_seed_missing".to_string());
+    }
+
+    cleanup_parent_run_value(&transaction, &authority, &adapter)?;
+    let blocked = cleanup_parent_seed_filesystem(&transaction, &authority);
+    if !blocked.is_empty() {
+        return Err(format!(
+            "lifecycle_test_parent_terminal_filesystem_cleanup_blocked:{}",
+            blocked.join(",")
+        ));
+    }
+    let key = adapter.open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)?;
+    let restored_run = capture_parent_run_key_once(&key, &authority, &adapter)?;
+    if !parent_run_matches_cleanup_baseline(&restored_run, &prior_run)
+        || transaction.helper_root_path.exists()
+    {
+        return Err("lifecycle_test_parent_terminal_baseline_not_restored".to_string());
+    }
+    fs::remove_dir(&temporary)
+        .map_err(|_| "lifecycle_test_parent_terminal_root_delete_failed".to_string())
+}
+
+pub(crate) fn exact_parent_run_value() -> &'static str {
+    EXACT_HKCU_RUN_VALUE
 }
 
 pub(crate) fn capture_machine_snapshot(controller_bindings: &[PeerBinding]) -> PreflightSnapshot {
@@ -4630,6 +6435,70 @@ mod tests {
     }
 
     #[test]
+    fn parent_run_owner_and_writer_policies_are_distinct_and_exact() {
+        let parent = "S-1-5-21-1";
+        for owner in [parent, "S-1-5-18", "S-1-5-32-544"] {
+            assert!(valid_parent_run_key_owner(owner, parent), "owner {owner}");
+            assert!(valid_parent_dacl_writer(owner, parent), "writer {owner}");
+        }
+        for rejected in [
+            "S-1-3-4",
+            "S-1-3-0",
+            "S-1-5-11",
+            "S-1-5-32-545",
+            "S-1-5-21-2",
+            "",
+        ] {
+            assert!(
+                !valid_parent_run_key_owner(rejected, parent),
+                "owner {rejected}"
+            );
+        }
+        assert!(valid_parent_dacl_writer("S-1-3-4", parent));
+        for rejected in ["S-1-3-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-21-2", ""] {
+            assert!(!valid_parent_dacl_writer(rejected, parent));
+        }
+    }
+
+    #[test]
+    fn parent_run_cleanup_accepts_only_exact_controller_value_and_prior_baseline() {
+        let prior = ParentRunKeySnapshot {
+            final_key_path: "fixed Run key".to_string(),
+            owner_sid: "S-1-5-18".to_string(),
+            dacl_sha256: "a".repeat(64),
+            last_write_time_100ns: 1,
+            value_count: 0,
+            manifest_sha256: "b".repeat(64),
+            batcave_monitor: Observation::Absent,
+        };
+        let mut current = prior.clone();
+        current.last_write_time_100ns = 2;
+        assert!(parent_run_matches_cleanup_baseline(&current, &prior));
+        current.owner_sid = "S-1-5-32-544".to_string();
+        assert!(!parent_run_matches_cleanup_baseline(&current, &prior));
+
+        let exact = Observation::Present(ParentRunValueSnapshot {
+            value_type: REG_SZ,
+            value: EXACT_HKCU_RUN_VALUE.to_string(),
+        });
+        assert!(is_exact_parent_run_value(&exact));
+        for changed in [
+            Observation::Absent,
+            Observation::Unknown("changed".to_string()),
+            Observation::Present(ParentRunValueSnapshot {
+                value_type: REG_EXPAND_SZ,
+                value: EXACT_HKCU_RUN_VALUE.to_string(),
+            }),
+            Observation::Present(ParentRunValueSnapshot {
+                value_type: REG_SZ,
+                value: format!("{EXACT_HKCU_RUN_VALUE} --changed"),
+            }),
+        ] {
+            assert!(!is_exact_parent_run_value(&changed));
+        }
+    }
+
+    #[test]
     fn checkpoint_root_pin_blocks_rename_but_leaf_observation_does_not() {
         let canonical_temp =
             crate::collector_service::windows_provisioner::strip_verbatim_disk_prefix(
@@ -4662,7 +6531,277 @@ mod tests {
         fs::remove_dir(&temporary).expect("temporary directory cleanup");
     }
 
-    fn parent_current_user_authority() -> ParentCurrentUserAuthority {
+    #[test]
+    fn helper_observer_rejects_links_escape_overflow_and_releases_capture_handles() {
+        let token = standard_token_evidence().expect("standard test token");
+        let authority = ParentCurrentUserAuthority {
+            user_sid: token.sid_string,
+            ..parent_current_user_authority()
+        };
+        let local_app_data = PathBuf::from(
+            std::env::var_os("LOCALAPPDATA").expect("runtime LocalAppData directory"),
+        );
+        let temporary = local_app_data.join(format!(
+            "BatCave-parent-helper-{}-{}",
+            std::process::id(),
+            random_hex(8).expect("nonce")
+        ));
+        let helper_root_path = temporary.join("elevated-helper");
+        fs::create_dir_all(&helper_root_path).expect("helper root");
+        let known_path = helper_root_path.join("snapshot.json");
+        let known_leaf = "elevated-helper/snapshot.json";
+        fs::write(&known_path, helper_fixture_bytes(known_leaf)).expect("known fixture");
+
+        let helper_root = OwnedDirectory::open_without_delete_sharing(
+            &helper_root_path,
+            "test_parent_helper_root",
+        )
+        .expect("open helper root");
+        let first = capture_parent_helper_manifest_once(&helper_root, &authority)
+            .expect("first helper capture");
+        assert_eq!(first.snapshot.known_files.len(), 1);
+
+        fs::write(&known_path, b"changed").expect("change fixture");
+        let second = capture_parent_helper_manifest_once(&helper_root, &authority)
+            .expect("second helper capture");
+        assert_ne!(first, second, "content churn must alter the manifest");
+
+        let unexpected_path = helper_root_path.join("unexpected.bin");
+        fs::write(&unexpected_path, b"unexpected").expect("unexpected fixture");
+        let unexpected = capture_parent_helper_manifest_once(&helper_root, &authority)
+            .expect("bounded unexpected capture");
+        assert_eq!(unexpected.snapshot.unexpected_entry_count, 1);
+        fs::remove_file(&unexpected_path).expect("unexpected cleanup");
+
+        fs::write(&known_path, vec![0_u8; HELPER_MAX_FILE_BYTES as usize + 1])
+            .expect("overflow fixture");
+        assert!(capture_parent_helper_manifest_once(&helper_root, &authority).is_err());
+        fs::write(&known_path, helper_fixture_bytes(known_leaf)).expect("restore known fixture");
+
+        let outside = temporary.join("outside.bin");
+        fs::write(&outside, b"outside").expect("outside fixture");
+        assert!(capture_parent_helper_file(
+            &outside,
+            &helper_root,
+            "outside.bin",
+            &authority,
+            HELPER_MAX_FILE_BYTES,
+        )
+        .is_err());
+
+        let hardlink = helper_root_path.join("accepted.signal");
+        fs::hard_link(&known_path, &hardlink).expect("hardlink fixture");
+        assert!(capture_parent_helper_manifest_once(&helper_root, &authority).is_err());
+        fs::remove_file(&hardlink).expect("hardlink cleanup");
+
+        let reparse = helper_root_path.join("stop.signal");
+        if std::os::windows::fs::symlink_file(&outside, &reparse).is_ok() {
+            assert!(capture_parent_helper_manifest_once(&helper_root, &authority).is_err());
+            fs::remove_file(&reparse).expect("reparse cleanup");
+        }
+
+        drop(helper_root);
+        fs::remove_file(&known_path).expect("capture released known file");
+        fs::remove_file(&outside).expect("outside cleanup");
+        let renamed = temporary.join("helper-renamed");
+        fs::rename(&helper_root_path, &renamed).expect("capture released helper root");
+        fs::remove_dir(&renamed).expect("renamed helper cleanup");
+        fs::remove_dir(&temporary).expect("temporary helper cleanup");
+    }
+
+    #[test]
+    fn parent_seed_partial_failures_restore_exact_filesystem_and_isolated_run_key() {
+        let token = standard_token_evidence().expect("standard test token");
+        let authority = ParentCurrentUserAuthority {
+            user_sid: token.sid_string,
+            ..parent_current_user_authority()
+        };
+        for failure_after in 1..=12 {
+            let temporary = parent_seed_test_root();
+            fs::create_dir(&temporary).expect("test root");
+            let adapter = IsolatedParentRunKeyAdapter::create().expect("isolated Run key");
+            let key = adapter
+                .open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)
+                .expect("open isolated Run key");
+            let prior_run = capture_parent_run_key_once(&key, &authority, &adapter)
+                .expect("capture isolated Run baseline");
+            drop(key);
+            let mut transaction = parent_seed_test_transaction(&temporary, &authority, false);
+            transaction.prior.hkcu_run = prior_run.clone();
+            let mut completed = 0;
+            assert_eq!(
+                (|| {
+                    seed_parent_helper_tree(
+                        &mut transaction,
+                        &authority,
+                        Some(failure_after),
+                        &mut completed,
+                    )?;
+                    seed_parent_run_value(
+                        &mut transaction,
+                        &authority,
+                        &adapter,
+                        Some(failure_after),
+                        &mut completed,
+                    )
+                })(),
+                Err("lifecycle_parent_user_seed_injected_failure".to_string())
+            );
+            assert_eq!(transaction.run_value_created, failure_after == 12);
+            cleanup_parent_run_value(&transaction, &authority, &adapter)
+                .expect("restore isolated Run value");
+            assert!(cleanup_parent_seed_filesystem(&transaction, &authority).is_empty());
+            assert!(!transaction.helper_root_path.exists());
+            let key = adapter
+                .open(KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL)
+                .expect("reopen isolated Run key");
+            let restored = capture_parent_run_key_once(&key, &authority, &adapter)
+                .expect("capture restored Run key");
+            assert!(parent_run_matches_cleanup_baseline(&restored, &prior_run));
+            fs::remove_dir(&temporary).expect("test root cleanup");
+        }
+    }
+
+    #[test]
+    fn parent_seed_cleanup_supports_success_preexisting_directories_and_rerun() {
+        let token = standard_token_evidence().expect("standard test token");
+        let authority = ParentCurrentUserAuthority {
+            user_sid: token.sid_string,
+            ..parent_current_user_authority()
+        };
+        for preexisting_directories in [false, true] {
+            let temporary = parent_seed_test_root();
+            fs::create_dir(&temporary).expect("test root");
+            for _ in 0..2 {
+                let mut transaction =
+                    parent_seed_test_transaction(&temporary, &authority, preexisting_directories);
+                let mut completed = 0;
+                seed_parent_helper_tree(&mut transaction, &authority, None, &mut completed)
+                    .expect("seed helper tree");
+                assert_eq!(completed, if preexisting_directories { 9 } else { 11 });
+                assert!(cleanup_parent_seed_filesystem(&transaction, &authority).is_empty());
+                if preexisting_directories {
+                    assert!(transaction.helper_root_path.is_dir());
+                    assert!(transaction.run_root_path.is_dir());
+                } else {
+                    assert!(!transaction.helper_root_path.exists());
+                }
+            }
+            if preexisting_directories {
+                fs::remove_dir(
+                    temporary
+                        .join("elevated-helper")
+                        .join(HELPER_PROOF_RUN_NAME),
+                )
+                .expect("preexisting run cleanup");
+                fs::remove_dir(temporary.join("elevated-helper"))
+                    .expect("preexisting helper cleanup");
+            }
+            fs::remove_dir(&temporary).expect("test root cleanup");
+        }
+    }
+
+    #[test]
+    fn parent_seed_cleanup_preserves_changed_and_unexpected_data() {
+        let token = standard_token_evidence().expect("standard test token");
+        let authority = ParentCurrentUserAuthority {
+            user_sid: token.sid_string,
+            ..parent_current_user_authority()
+        };
+        let temporary = parent_seed_test_root();
+        fs::create_dir(&temporary).expect("test root");
+        let mut transaction = parent_seed_test_transaction(&temporary, &authority, false);
+        let mut completed = 0;
+        seed_parent_helper_tree(&mut transaction, &authority, None, &mut completed)
+            .expect("seed helper tree");
+        let sentinel = transaction.helper_root_path.join(HELPER_SENTINEL_NAME);
+        fs::write(&sentinel, b"hostile changed sentinel").expect("change sentinel");
+        let unexpected = transaction.helper_root_path.join("unexpected.bin");
+        fs::write(&unexpected, b"preserve me").expect("unexpected file");
+        let blocked = cleanup_parent_seed_filesystem(&transaction, &authority);
+        assert!(blocked
+            .iter()
+            .any(|reason| reason.contains("cleanup_file_changed")));
+        assert!(sentinel.is_file());
+        assert_eq!(
+            fs::read(&unexpected).expect("unexpected bytes"),
+            b"preserve me"
+        );
+        assert!(transaction
+            .created_files
+            .iter()
+            .filter(|file| !file.relative_leaf.ends_with(HELPER_SENTINEL_NAME))
+            .all(|file| {
+                let leaf = file
+                    .relative_leaf
+                    .strip_prefix("elevated-helper/")
+                    .expect("relative helper leaf");
+                !transaction.helper_root_path.join(leaf).exists()
+            }));
+        fs::remove_file(&sentinel).expect("changed sentinel cleanup");
+        fs::remove_file(&unexpected).expect("unexpected cleanup");
+        if transaction.run_root_path.exists() {
+            fs::remove_dir(&transaction.run_root_path).expect("run cleanup");
+        }
+        fs::remove_dir(&transaction.helper_root_path).expect("helper cleanup");
+        fs::remove_dir(&temporary).expect("test root cleanup");
+    }
+
+    fn parent_seed_test_root() -> PathBuf {
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("runtime LocalAppData directory"))
+            .join(format!(
+                "BatCave-parent-seed-{}-{}",
+                std::process::id(),
+                random_hex(8).expect("nonce")
+            ))
+    }
+
+    pub(super) fn parent_seed_test_transaction(
+        temporary: &Path,
+        authority: &ParentCurrentUserAuthority,
+        preexisting_directories: bool,
+    ) -> ParentCurrentUserResidueTransaction {
+        let helper_root_path = temporary.join("elevated-helper");
+        let run_root_path = helper_root_path.join(HELPER_PROOF_RUN_NAME);
+        if preexisting_directories && !helper_root_path.exists() {
+            fs::create_dir(&helper_root_path).expect("preexisting helper root");
+            fs::create_dir(&run_root_path).expect("preexisting run root");
+        }
+        ParentCurrentUserResidueTransaction {
+            prior: ParentCurrentUserResidueSnapshot {
+                hkcu_run: ParentRunKeySnapshot {
+                    final_key_path: "test Run key".to_string(),
+                    owner_sid: authority.user_sid.clone(),
+                    dacl_sha256: "a".repeat(64),
+                    last_write_time_100ns: 1,
+                    value_count: 0,
+                    manifest_sha256: "b".repeat(64),
+                    batcave_monitor: Observation::Absent,
+                },
+                helper: Observation::Absent,
+            },
+            helper_root_before: observe_parent_seed_directory(
+                &helper_root_path,
+                authority,
+                "test_seed_helper_before",
+            )
+            .expect("helper before"),
+            run_root_before: observe_parent_seed_directory(
+                &run_root_path,
+                authority,
+                "test_seed_run_before",
+            )
+            .expect("run before"),
+            helper_root_path,
+            run_root_path,
+            helper_root_created: None,
+            run_root_created: None,
+            created_files: Vec::new(),
+            run_value_created: false,
+        }
+    }
+
+    pub(super) fn parent_current_user_authority() -> ParentCurrentUserAuthority {
         ParentCurrentUserAuthority {
             user_sid: "S-1-5-21-1".to_string(),
             session_id: 1,
