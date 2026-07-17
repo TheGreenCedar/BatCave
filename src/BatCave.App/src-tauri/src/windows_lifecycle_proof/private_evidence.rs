@@ -680,6 +680,13 @@ mod tests {
             service_data_root: Observation::Absent,
             current_user_data_root: Observation::Absent,
             installed_boundaries: Observation::Absent,
+            named_pipe: Observation::Absent,
+            etw_lease: Observation::Absent,
+            etw_session: Observation::Absent,
+            etw_owner_lock:
+                crate::collector_service::windows_provisioner::RuntimeLockObservation::Absent {},
+            service_lifecycle_lock:
+                crate::collector_service::windows_provisioner::RuntimeLockObservation::Absent {},
         }
     }
 }
