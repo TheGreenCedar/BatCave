@@ -687,6 +687,21 @@ mod tests {
                 crate::collector_service::windows_provisioner::RuntimeLockObservation::Absent {},
             service_lifecycle_lock:
                 crate::collector_service::windows_provisioner::RuntimeLockObservation::Absent {},
+            service_install_residue:
+                crate::collector_service::windows_provisioner::ServiceInstallResidueForProof {
+                    service_registry_key: Observation::Absent,
+                    service_data: Observation::Absent,
+                    install: Observation::Present(
+                        crate::collector_service::windows_provisioner::InstallResidueForProof {
+                            volume_serial: 1,
+                            file_index: 2,
+                            staged_service_images: Vec::new(),
+                            rollback_service_images: Vec::new(),
+                            atomic_temporary_files: Vec::new(),
+                            rollback_execution_marker: Observation::Absent,
+                        },
+                    ),
+                },
         }
     }
 }
