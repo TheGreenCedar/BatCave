@@ -304,6 +304,61 @@ pub(crate) struct ServiceInstallResidueForProof {
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProductRegistrationKeyForProof {
+    pub(crate) final_key_path: String,
+    pub(crate) install_root: String,
+    pub(crate) value_names: Vec<String>,
+    pub(crate) subkey_names: Vec<String>,
+    pub(crate) default_value_type: u32,
+    pub(crate) last_write_time_100ns: u64,
+    pub(crate) owner: SecurityPrincipalForProof,
+    pub(crate) dacl_sha256: String,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ShortcutForProof {
+    pub(crate) path: String,
+    pub(crate) target: String,
+    pub(crate) arguments: String,
+    pub(crate) icon_path: String,
+    pub(crate) icon_index: i32,
+    pub(crate) working_directory: String,
+    pub(crate) show_command: i32,
+    pub(crate) hotkey: u16,
+    pub(crate) description: String,
+    pub(crate) app_user_model_id: String,
+    pub(crate) owner: SecurityPrincipalForProof,
+    pub(crate) dacl_sha256: String,
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
+    pub(crate) volume_serial: u32,
+    pub(crate) file_index: u64,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MachineRegistrationForProof {
+    pub(crate) product_key_64:
+        crate::windows_lifecycle_proof_contract::Observation<ProductRegistrationKeyForProof>,
+    pub(crate) product_key_32:
+        crate::windows_lifecycle_proof_contract::Observation<ProductRegistrationKeyForProof>,
+    pub(crate) public_desktop_shortcut:
+        crate::windows_lifecycle_proof_contract::Observation<ShortcutForProof>,
+    pub(crate) common_start_menu_shortcut:
+        crate::windows_lifecycle_proof_contract::Observation<ShortcutForProof>,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn observe_machine_registration_for_proof() -> MachineRegistrationForProof {
+    native::observe_machine_registration_for_proof()
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResidueKindForProof {
     Journal,
@@ -626,6 +681,10 @@ mod native {
         time::{Duration, Instant},
     };
 
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    use windows_sys::core::GUID;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    use windows_sys::Wdk::System::Registry::{KeyNameInformation, NtQueryKey};
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, GetLastError, LocalFree, SetLastError, ERROR_ALREADY_EXISTS,
@@ -692,8 +751,25 @@ mod native {
     };
     #[cfg(feature = "private-windows-lifecycle-proof")]
     use windows_sys::Win32::{
-        Foundation::{ERROR_LOCK_VIOLATION, WAIT_TIMEOUT},
-        System::Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
+        Foundation::{
+            ERROR_LOCK_VIOLATION, ERROR_NO_MORE_ITEMS, FILETIME, PROPERTYKEY, WAIT_TIMEOUT,
+        },
+        Security::GetSecurityDescriptorOwner,
+        Storage::FileSystem::{SetFilePointerEx, FILE_BEGIN},
+        System::{
+            Com::{
+                CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+                StructuredStorage::{PropVariantClear, PropVariantToStringAlloc, PROPVARIANT},
+                CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+            },
+            Registry::{
+                RegEnumKeyExW, RegEnumValueW, RegGetKeySecurity, RegQueryInfoKeyW,
+                KEY_ENUMERATE_SUB_KEYS, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+            },
+            Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
+            Variant::VT_LPWSTR,
+        },
+        UI::Shell::{FOLDERID_CommonPrograms, FOLDERID_PublicDesktop, SHGetKnownFolderPath},
     };
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -712,6 +788,53 @@ mod native {
     const SERVICE_REGISTRY_PATH: &str = r"SYSTEM\CurrentControlSet\Services\BatCaveCollector";
     const PRODUCT_UNINSTALL_REGISTRY_PATH: &str =
         r"Software\Microsoft\Windows\CurrentVersion\Uninstall\BatCave Monitor";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PRODUCT_REGISTRATION_PATH: &str = r"Software\batcave\BatCave Monitor";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PRODUCT_REGISTRATION_NT_PATH: &str =
+        r"\REGISTRY\MACHINE\SOFTWARE\batcave\BatCave Monitor";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_INSTALL_ROOT: &str = r"C:\Program Files\BatCave Monitor";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_MONITOR_PATH: &str = r"C:\Program Files\BatCave Monitor\batcave-monitor.exe";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PUBLIC_DESKTOP_PATH: &str = r"C:\Users\Public\Desktop";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const COMMON_PROGRAMS_PATH: &str = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PRODUCT_SHORTCUT_NAME: &str = "BatCave Monitor.lnk";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PRODUCT_APP_USER_MODEL_ID: &str = "dev.batcave.monitor";
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_SHORTCUT_MAX_BYTES: u64 = 1024 * 1024;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_COM_TEXT_CAPACITY: usize = 32 * 1024;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_REGISTRY_MAX_TEXT_BYTES: u32 = 64 * 1024;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_REGISTRY_MAX_NAME_CHARS: u32 = 1024;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PRODUCT_REGISTRY_WRITE_MASK: u32 = 0x0000_0002
+        | 0x0000_0004
+        | 0x0000_0020
+        | DELETE
+        | WRITE_DAC
+        | WRITE_OWNER
+        | GENERIC_WRITE
+        | GENERIC_ALL;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const CLSID_SHELL_LINK: GUID = GUID::from_u128(0x00021401_0000_0000_c000_000000000046);
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const IID_SHELL_LINK_W: GUID = GUID::from_u128(0x000214f9_0000_0000_c000_000000000046);
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const IID_PERSIST_FILE: GUID = GUID::from_u128(0x0000010b_0000_0000_c000_000000000046);
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const IID_PROPERTY_STORE: GUID = GUID::from_u128(0x886d8eeb_8cf2_4446_8d02_cdba1dbdcf99);
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
+        pid: 5,
+    };
     // Deterministic NT SERVICE SID for "BatCaveCollector"; unlike account
     // lookup, it remains available after SCM deletion for cleanup retries.
     const SERVICE_SID: &str = "S-1-5-80-729049718-3519104438-3277487564-1168609684-1739013119";
@@ -872,11 +995,139 @@ mod native {
 
     struct OwnedRegistryKey(windows_sys::Win32::System::Registry::HKEY);
 
+    impl OwnedRegistryKey {
+        #[cfg(feature = "private-windows-lifecycle-proof")]
+        fn raw(&self) -> windows_sys::Win32::System::Registry::HKEY {
+            self.0
+        }
+    }
+
     impl Drop for OwnedRegistryKey {
         fn drop(&mut self) {
             unsafe {
                 RegCloseKey(self.0);
             }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[repr(C)]
+    struct UnknownVtable {
+        query_interface:
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> i32,
+        add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[repr(C)]
+    struct ShellLinkWVtable {
+        unknown: UnknownVtable,
+        get_path: unsafe extern "system" fn(*mut c_void, *mut u16, i32, *mut c_void, u32) -> i32,
+        get_id_list: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32,
+        set_id_list: unsafe extern "system" fn(*mut c_void, *const c_void) -> i32,
+        get_description: unsafe extern "system" fn(*mut c_void, *mut u16, i32) -> i32,
+        set_description: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+        get_working_directory: unsafe extern "system" fn(*mut c_void, *mut u16, i32) -> i32,
+        set_working_directory: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+        get_arguments: unsafe extern "system" fn(*mut c_void, *mut u16, i32) -> i32,
+        set_arguments: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+        get_hotkey: unsafe extern "system" fn(*mut c_void, *mut u16) -> i32,
+        set_hotkey: unsafe extern "system" fn(*mut c_void, u16) -> i32,
+        get_show_command: unsafe extern "system" fn(*mut c_void, *mut i32) -> i32,
+        set_show_command: unsafe extern "system" fn(*mut c_void, i32) -> i32,
+        get_icon_location: unsafe extern "system" fn(*mut c_void, *mut u16, i32, *mut i32) -> i32,
+        set_icon_location: unsafe extern "system" fn(*mut c_void, *const u16, i32) -> i32,
+        set_relative_path: unsafe extern "system" fn(*mut c_void, *const u16, u32) -> i32,
+        resolve: unsafe extern "system" fn(*mut c_void, *mut c_void, u32) -> i32,
+        set_path: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[repr(C)]
+    struct PersistFileVtable {
+        unknown: UnknownVtable,
+        get_class_id: unsafe extern "system" fn(*mut c_void, *mut GUID) -> i32,
+        is_dirty: unsafe extern "system" fn(*mut c_void) -> i32,
+        load: unsafe extern "system" fn(*mut c_void, *const u16, u32) -> i32,
+        save: unsafe extern "system" fn(*mut c_void, *const u16, i32) -> i32,
+        save_completed: unsafe extern "system" fn(*mut c_void, *const u16) -> i32,
+        get_current_file: unsafe extern "system" fn(*mut c_void, *mut *mut u16) -> i32,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[repr(C)]
+    struct PropertyStoreVtable {
+        unknown: UnknownVtable,
+        get_count: unsafe extern "system" fn(*mut c_void, *mut u32) -> i32,
+        get_at: unsafe extern "system" fn(*mut c_void, u32, *mut PROPERTYKEY) -> i32,
+        get_value:
+            unsafe extern "system" fn(*mut c_void, *const PROPERTYKEY, *mut PROPVARIANT) -> i32,
+        set_value:
+            unsafe extern "system" fn(*mut c_void, *const PROPERTYKEY, *const PROPVARIANT) -> i32,
+        commit: unsafe extern "system" fn(*mut c_void) -> i32,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    struct ComPtr(*mut c_void);
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl ComPtr {
+        fn query(&self, iid: &GUID, context: &str) -> Result<Self, String> {
+            let mut value = ptr::null_mut();
+            let vtable = unsafe { &**(self.0.cast::<*const UnknownVtable>()) };
+            let result = unsafe { (vtable.query_interface)(self.0, iid, &mut value) };
+            if result != 0 || value.is_null() {
+                Err(format!("{context}:{result:#010x}"))
+            } else {
+                Ok(Self(value))
+            }
+        }
+
+        fn shell_link(&self) -> &ShellLinkWVtable {
+            unsafe { &**(self.0.cast::<*const ShellLinkWVtable>()) }
+        }
+
+        fn persist_file(&self) -> &PersistFileVtable {
+            unsafe { &**(self.0.cast::<*const PersistFileVtable>()) }
+        }
+
+        fn property_store(&self) -> &PropertyStoreVtable {
+            unsafe { &**(self.0.cast::<*const PropertyStoreVtable>()) }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl Drop for ComPtr {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                let vtable = unsafe { &**(self.0.cast::<*const UnknownVtable>()) };
+                unsafe { (vtable.release)(self.0) };
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    struct ComApartment;
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl ComApartment {
+        fn initialize() -> Result<Self, String> {
+            let result = unsafe { CoInitializeEx(ptr::null(), COINIT_MULTITHREADED as u32) };
+            if result < 0 {
+                Err(format!(
+                    "collector_service_proof_shortcut_com_initialize_failed:{result:#010x}"
+                ))
+            } else {
+                Ok(Self)
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl Drop for ComApartment {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
         }
     }
 
@@ -2641,6 +2892,994 @@ mod native {
                 }
             },
         }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ProductRegistryCapture {
+        final_key_path: String,
+        install_root: String,
+        value_names: Vec<String>,
+        subkey_names: Vec<String>,
+        default_value_type: u32,
+        last_write_time_100ns: u64,
+        owner: PrincipalClass,
+        dacl_sha256: String,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl From<ProductRegistryCapture> for ProductRegistrationKeyForProof {
+        fn from(value: ProductRegistryCapture) -> Self {
+            Self {
+                final_key_path: value.final_key_path,
+                install_root: value.install_root,
+                value_names: value.value_names,
+                subkey_names: value.subkey_names,
+                default_value_type: value.default_value_type,
+                last_write_time_100ns: value.last_write_time_100ns,
+                owner: principal_for_proof(value.owner),
+                dacl_sha256: value.dacl_sha256,
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn observe_machine_registration_for_proof() -> MachineRegistrationForProof {
+        use crate::windows_lifecycle_proof_contract::Observation;
+
+        let product_key_64 = observe_product_registry_view_for_proof(KEY_WOW64_64KEY);
+        let product_key_32 = match observe_product_registry_view_for_proof(KEY_WOW64_32KEY) {
+            Observation::Absent => Observation::Absent,
+            Observation::Present(_) => Observation::Unknown(
+                "collector_service_proof_product_registry_32_view_present".to_string(),
+            ),
+            Observation::Unknown(reason) => Observation::Unknown(reason),
+        };
+        MachineRegistrationForProof {
+            product_key_64,
+            product_key_32,
+            public_desktop_shortcut: observe_shortcut_for_proof(
+                &FOLDERID_PublicDesktop,
+                Path::new(PUBLIC_DESKTOP_PATH),
+                false,
+            ),
+            common_start_menu_shortcut: observe_shortcut_for_proof(
+                &FOLDERID_CommonPrograms,
+                Path::new(COMMON_PROGRAMS_PATH),
+                true,
+            ),
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn observe_product_registry_view_for_proof(
+        view: u32,
+    ) -> crate::windows_lifecycle_proof_contract::Observation<ProductRegistrationKeyForProof> {
+        use crate::windows_lifecycle_proof_contract::Observation;
+
+        let Some(key) = (match open_product_registry_key_for_proof(view) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        }) else {
+            return match open_product_registry_key_for_proof(view) {
+                Ok(None) => Observation::Absent,
+                Ok(Some(_)) => Observation::Unknown(
+                    "collector_service_proof_product_registry_appeared".to_string(),
+                ),
+                Err(reason) => Observation::Unknown(reason),
+            };
+        };
+        let principals = match SecurityPrincipals::load_base() {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let first = match capture_product_registry_key_for_proof(&key, &principals) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let second = match capture_product_registry_key_for_proof(&key, &principals) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let reopened = match open_product_registry_key_for_proof(view) {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                return Observation::Unknown(
+                    "collector_service_proof_product_registry_disappeared".to_string(),
+                )
+            }
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let third = match capture_product_registry_key_for_proof(&reopened, &principals) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        if first != second || second != third {
+            return Observation::Unknown(
+                "collector_service_proof_product_registry_changed".to_string(),
+            );
+        }
+        Observation::Present(first.into())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn open_product_registry_key_for_proof(view: u32) -> Result<Option<OwnedRegistryKey>, String> {
+        let path = wide(PRODUCT_REGISTRATION_PATH);
+        let mut key = ptr::null_mut();
+        let status = unsafe {
+            RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                path.as_ptr(),
+                0,
+                KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL | view,
+                &mut key,
+            )
+        };
+        if status == ERROR_SUCCESS {
+            Ok(Some(OwnedRegistryKey(key)))
+        } else if is_missing_path_error(status) {
+            Ok(None)
+        } else {
+            Err(format!(
+                "collector_service_proof_product_registry_open_failed:{status}"
+            ))
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn capture_product_registry_key_for_proof(
+        key: &OwnedRegistryKey,
+        principals: &SecurityPrincipals,
+    ) -> Result<ProductRegistryCapture, String> {
+        let final_key_path = query_registry_key_path_for_proof(key.raw())?;
+        if !final_key_path.eq_ignore_ascii_case(PRODUCT_REGISTRATION_NT_PATH) {
+            return Err("collector_service_proof_product_registry_path_invalid".to_string());
+        }
+        let mut subkey_count = 0_u32;
+        let mut maximum_subkey_name = 0_u32;
+        let mut value_count = 0_u32;
+        let mut maximum_value_name = 0_u32;
+        let mut maximum_value_bytes = 0_u32;
+        let mut security_descriptor_bytes = 0_u32;
+        let mut last_write = FILETIME::default();
+        let status = unsafe {
+            RegQueryInfoKeyW(
+                key.raw(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                &mut subkey_count,
+                &mut maximum_subkey_name,
+                ptr::null_mut(),
+                &mut value_count,
+                &mut maximum_value_name,
+                &mut maximum_value_bytes,
+                &mut security_descriptor_bytes,
+                &mut last_write,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(format!(
+                "collector_service_proof_product_registry_info_failed:{status}"
+            ));
+        }
+        if subkey_count != 0
+            || value_count != 1
+            || maximum_subkey_name > PROOF_REGISTRY_MAX_NAME_CHARS
+            || maximum_value_name > PROOF_REGISTRY_MAX_NAME_CHARS
+            || !(2..=PROOF_REGISTRY_MAX_TEXT_BYTES).contains(&maximum_value_bytes)
+            || security_descriptor_bytes == 0
+            || security_descriptor_bytes > PROOF_REGISTRY_MAX_TEXT_BYTES
+        {
+            return Err("collector_service_proof_product_registry_shape_invalid".to_string());
+        }
+        let (value_names, default_value_type, install_root) =
+            enumerate_product_registry_values_for_proof(
+                key.raw(),
+                maximum_value_name,
+                maximum_value_bytes,
+            )?;
+        let subkey_names = enumerate_product_registry_subkeys_for_proof(key.raw())?;
+        if value_names != [String::new()]
+            || !subkey_names.is_empty()
+            || default_value_type != REG_SZ
+            || !fixed_path_eq(Path::new(&install_root), Path::new(PROOF_INSTALL_ROOT))
+        {
+            return Err("collector_service_proof_product_registry_contract_invalid".to_string());
+        }
+        let (owner, dacl_sha256) = registry_dacl_for_proof(key.raw(), principals)?;
+        Ok(ProductRegistryCapture {
+            final_key_path,
+            install_root,
+            value_names,
+            subkey_names,
+            default_value_type,
+            last_write_time_100ns: (u64::from(last_write.dwHighDateTime) << 32)
+                | u64::from(last_write.dwLowDateTime),
+            owner,
+            dacl_sha256,
+        })
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn enumerate_product_registry_values_for_proof(
+        key: windows_sys::Win32::System::Registry::HKEY,
+        maximum_name: u32,
+        maximum_bytes: u32,
+    ) -> Result<(Vec<String>, u32, String), String> {
+        let mut name = vec![0_u16; maximum_name as usize + 1];
+        let mut name_chars = name.len() as u32;
+        let mut value_type = 0_u32;
+        let mut data = vec![0_u8; maximum_bytes as usize];
+        let mut data_bytes = data.len() as u32;
+        let status = unsafe {
+            RegEnumValueW(
+                key,
+                0,
+                name.as_mut_ptr(),
+                &mut name_chars,
+                ptr::null(),
+                &mut value_type,
+                data.as_mut_ptr(),
+                &mut data_bytes,
+            )
+        };
+        if status != ERROR_SUCCESS || name_chars as usize > name.len() || data_bytes > maximum_bytes
+        {
+            return Err(format!(
+                "collector_service_proof_product_registry_value_enumeration_failed:{status}"
+            ));
+        }
+        let value_name = String::from_utf16(&name[..name_chars as usize]).map_err(|_| {
+            "collector_service_proof_product_registry_value_name_invalid".to_string()
+        })?;
+        let install_root = parse_registry_sz_for_proof(&data[..data_bytes as usize], value_type)?;
+        name_chars = name.len() as u32;
+        data_bytes = data.len() as u32;
+        let terminal = unsafe {
+            RegEnumValueW(
+                key,
+                1,
+                name.as_mut_ptr(),
+                &mut name_chars,
+                ptr::null(),
+                &mut value_type,
+                data.as_mut_ptr(),
+                &mut data_bytes,
+            )
+        };
+        if terminal != ERROR_NO_MORE_ITEMS {
+            return Err("collector_service_proof_product_registry_value_count_changed".to_string());
+        }
+        Ok((vec![value_name], REG_SZ, install_root))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn enumerate_product_registry_subkeys_for_proof(
+        key: windows_sys::Win32::System::Registry::HKEY,
+    ) -> Result<Vec<String>, String> {
+        let mut name = vec![0_u16; PROOF_REGISTRY_MAX_NAME_CHARS as usize + 1];
+        let mut name_chars = name.len() as u32;
+        let status = unsafe {
+            RegEnumKeyExW(
+                key,
+                0,
+                name.as_mut_ptr(),
+                &mut name_chars,
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        if status == ERROR_NO_MORE_ITEMS {
+            Ok(Vec::new())
+        } else {
+            Err(format!(
+                "collector_service_proof_product_registry_subkey_enumeration_failed:{status}"
+            ))
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn parse_registry_sz_for_proof(bytes: &[u8], value_type: u32) -> Result<String, String> {
+        if value_type != REG_SZ || bytes.len() < 2 || bytes.len() & 1 != 0 {
+            return Err("collector_service_proof_product_registry_default_invalid".to_string());
+        }
+        let wide = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        let Some((&0, text)) = wide.split_last() else {
+            return Err("collector_service_proof_product_registry_default_invalid".to_string());
+        };
+        if text.is_empty() || text.contains(&0) {
+            return Err("collector_service_proof_product_registry_default_invalid".to_string());
+        }
+        String::from_utf16(text)
+            .map_err(|_| "collector_service_proof_product_registry_default_invalid".to_string())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn query_registry_key_path_for_proof(
+        key: windows_sys::Win32::System::Registry::HKEY,
+    ) -> Result<String, String> {
+        let mut required = 0_u32;
+        unsafe {
+            NtQueryKey(
+                key.cast(),
+                KeyNameInformation,
+                ptr::null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        if !(6..=8 * 1024).contains(&required) {
+            return Err("collector_service_proof_product_registry_path_size_invalid".to_string());
+        }
+        let mut buffer = vec![0_u32; (required as usize).div_ceil(size_of::<u32>())];
+        let status = unsafe {
+            NtQueryKey(
+                key.cast(),
+                KeyNameInformation,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        };
+        if status != 0 {
+            return Err(format!(
+                "collector_service_proof_product_registry_path_query_failed:{status:#010x}"
+            ));
+        }
+        let bytes =
+            unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer.len() * 4) };
+        let name_bytes = u32::from_ne_bytes(bytes[..4].try_into().expect("four bytes")) as usize;
+        if name_bytes == 0 || name_bytes & 1 != 0 || name_bytes + 4 > required as usize {
+            return Err("collector_service_proof_product_registry_path_invalid".to_string());
+        }
+        let wide = bytes[4..4 + name_bytes]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16(&wide)
+            .map_err(|_| "collector_service_proof_product_registry_path_invalid".to_string())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn registry_dacl_for_proof(
+        key: windows_sys::Win32::System::Registry::HKEY,
+        principals: &SecurityPrincipals,
+    ) -> Result<(PrincipalClass, String), String> {
+        let mut required = 0_u32;
+        let information = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let status = unsafe { RegGetKeySecurity(key, information, ptr::null_mut(), &mut required) };
+        if status != ERROR_INSUFFICIENT_BUFFER
+            || required == 0
+            || required > PROOF_REGISTRY_MAX_TEXT_BYTES
+        {
+            return Err(format!(
+                "collector_service_proof_product_registry_security_size_failed:{status}"
+            ));
+        }
+        let mut buffer = aligned_buffer(required as usize);
+        let descriptor = buffer.as_mut_ptr().cast();
+        let status = unsafe { RegGetKeySecurity(key, information, descriptor, &mut required) };
+        if status != ERROR_SUCCESS {
+            return Err(format!(
+                "collector_service_proof_product_registry_security_failed:{status}"
+            ));
+        }
+        let mut owner = ptr::null_mut();
+        let mut owner_defaulted = 0_i32;
+        if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted) } == 0
+            || owner.is_null()
+        {
+            return Err("collector_service_proof_product_registry_owner_invalid".to_string());
+        }
+        let owner = principals.classify(owner);
+        if !matches!(
+            owner,
+            PrincipalClass::LocalSystem
+                | PrincipalClass::Administrators
+                | PrincipalClass::TrustedInstaller
+        ) {
+            return Err("collector_service_proof_product_registry_owner_invalid".to_string());
+        }
+        let mut present = 0_i32;
+        let mut defaulted = 0_i32;
+        let mut dacl = ptr::null_mut();
+        if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
+            == 0
+            || present == 0
+            || dacl.is_null()
+        {
+            return Err("collector_service_proof_product_registry_dacl_invalid".to_string());
+        }
+        for ace in read_aces(dacl, principals)? {
+            if ace.allow
+                && !ace.inherit_only
+                && !matches!(
+                    ace.principal,
+                    PrincipalClass::LocalSystem
+                        | PrincipalClass::Administrators
+                        | PrincipalClass::TrustedInstaller
+                )
+                && ace.mask & PRODUCT_REGISTRY_WRITE_MASK != 0
+            {
+                return Err(
+                    "collector_service_proof_product_registry_unprivileged_writer".to_string(),
+                );
+            }
+        }
+        Ok((
+            owner,
+            dacl_sha256(dacl, "collector_service_proof_product_registry_dacl")?,
+        ))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    struct PinnedProofDirectory {
+        path: PathBuf,
+        handle: OwnedHandle,
+        volume_serial: u32,
+        file_index: u64,
+        file_attributes: u32,
+        creation_time_100ns: u64,
+        last_write_time_100ns: u64,
+        owner: PrincipalClass,
+        dacl_sha256: String,
+        strict_writer_policy: bool,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl PinnedProofDirectory {
+        fn open(
+            path: &Path,
+            principals: &SecurityPrincipals,
+            strict_writer_policy: bool,
+        ) -> Result<Self, String> {
+            let handle = open_directory(
+                path,
+                "collector_service_proof_shortcut_ancestry_open_failed",
+            )?;
+            let info = file_information(
+                handle.raw(),
+                "collector_service_proof_shortcut_ancestry_info_failed",
+            )?;
+            if !fixed_path_eq(
+                &final_path(
+                    &handle,
+                    "collector_service_proof_shortcut_ancestry_path_failed",
+                )?,
+                path,
+            ) {
+                return Err(
+                    "collector_service_proof_shortcut_ancestry_identity_invalid".to_string()
+                );
+            }
+            if strict_writer_policy {
+                validate_no_untrusted_writer(handle.raw(), principals, false, false).map_err(
+                    |_| "collector_service_proof_shortcut_common_acl_invalid".to_string(),
+                )?;
+            }
+            let (policy, dacl_sha256) = security_policy_with_dacl_sha256(handle.raw(), principals)?;
+            Ok(Self {
+                path: path.to_path_buf(),
+                handle,
+                volume_serial: info.dwVolumeSerialNumber,
+                file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+                file_attributes: info.dwFileAttributes,
+                creation_time_100ns: proof_filetime(info.ftCreationTime),
+                last_write_time_100ns: proof_filetime(info.ftLastWriteTime),
+                owner: policy.owner,
+                dacl_sha256,
+                strict_writer_policy,
+            })
+        }
+
+        fn revalidate(&self, principals: &SecurityPrincipals) -> Result<(), String> {
+            let info = file_information(
+                self.handle.raw(),
+                "collector_service_proof_shortcut_ancestry_revalidate_info_failed",
+            )?;
+            if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+                || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                || info.dwVolumeSerialNumber != self.volume_serial
+                || ((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))
+                    != self.file_index
+                || info.dwFileAttributes != self.file_attributes
+                || proof_filetime(info.ftCreationTime) != self.creation_time_100ns
+                || proof_filetime(info.ftLastWriteTime) != self.last_write_time_100ns
+                || !fixed_path_eq(
+                    &final_path(
+                        &self.handle,
+                        "collector_service_proof_shortcut_ancestry_revalidate_path_failed",
+                    )?,
+                    &self.path,
+                )
+            {
+                return Err("collector_service_proof_shortcut_ancestry_changed".to_string());
+            }
+            if self.strict_writer_policy {
+                validate_no_untrusted_writer(self.handle.raw(), principals, false, false).map_err(
+                    |_| "collector_service_proof_shortcut_common_acl_changed".to_string(),
+                )?;
+            }
+            let (policy, dacl_sha256) =
+                security_policy_with_dacl_sha256(self.handle.raw(), principals)?;
+            if policy.owner != self.owner || dacl_sha256 != self.dacl_sha256 {
+                return Err("collector_service_proof_shortcut_ancestry_acl_changed".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    struct PinnedProofShortcut {
+        snapshot: ShortcutForProof,
+        path: PathBuf,
+        handle: OwnedHandle,
+        file_attributes: u32,
+        creation_time_100ns: u64,
+        last_write_time_100ns: u64,
+        owner: PrincipalClass,
+        dacl_sha256: String,
+        strict_writer_policy: bool,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl PinnedProofShortcut {
+        fn open(
+            path: &Path,
+            principals: &SecurityPrincipals,
+            strict_writer_policy: bool,
+        ) -> Result<Option<Self>, String> {
+            let path_wide = wide_path(path);
+            let raw = unsafe {
+                CreateFileW(
+                    path_wide.as_ptr(),
+                    GENERIC_READ | READ_CONTROL | FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut(),
+                )
+            };
+            if raw.is_null() || raw == (-1_isize as HANDLE) {
+                let error = unsafe { GetLastError() };
+                if is_missing_path_error(error) {
+                    return Ok(None);
+                }
+                return Err(format!(
+                    "collector_service_proof_shortcut_open_failed:{error}"
+                ));
+            }
+            let handle = OwnedHandle(raw);
+            let info =
+                file_information(handle.raw(), "collector_service_proof_shortcut_info_failed")?;
+            let size = file_size(&info);
+            if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                != 0
+                || info.nNumberOfLinks != 1
+                || ((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)) == 0
+                || !(1..=PROOF_SHORTCUT_MAX_BYTES).contains(&size)
+                || !fixed_path_eq(
+                    &final_path(&handle, "collector_service_proof_shortcut_path_failed")?,
+                    path,
+                )
+            {
+                return Err("collector_service_proof_shortcut_identity_invalid".to_string());
+            }
+            if strict_writer_policy {
+                validate_no_untrusted_writer(handle.raw(), principals, false, false).map_err(
+                    |_| "collector_service_proof_shortcut_common_acl_invalid".to_string(),
+                )?;
+            }
+            let (policy, dacl_sha256) = security_policy_with_dacl_sha256(handle.raw(), principals)?;
+            let sha256 = digest_hex(&hash_open_file_from_start_for_proof(handle.raw(), size)?);
+            Ok(Some(Self {
+                snapshot: ShortcutForProof {
+                    path: path
+                        .to_str()
+                        .ok_or_else(|| {
+                            "collector_service_proof_shortcut_path_utf16_invalid".to_string()
+                        })?
+                        .to_string(),
+                    target: String::new(),
+                    arguments: String::new(),
+                    icon_path: String::new(),
+                    icon_index: 0,
+                    working_directory: String::new(),
+                    show_command: 0,
+                    hotkey: 0,
+                    description: String::new(),
+                    app_user_model_id: String::new(),
+                    owner: principal_for_proof(policy.owner),
+                    dacl_sha256: dacl_sha256.clone(),
+                    size,
+                    sha256,
+                    volume_serial: info.dwVolumeSerialNumber,
+                    file_index: (u64::from(info.nFileIndexHigh) << 32)
+                        | u64::from(info.nFileIndexLow),
+                },
+                path: path.to_path_buf(),
+                handle,
+                file_attributes: info.dwFileAttributes,
+                creation_time_100ns: proof_filetime(info.ftCreationTime),
+                last_write_time_100ns: proof_filetime(info.ftLastWriteTime),
+                owner: policy.owner,
+                dacl_sha256,
+                strict_writer_policy,
+            }))
+        }
+
+        fn read_contract(&mut self) -> Result<(), String> {
+            let contract = read_shortcut_contract_for_proof(&self.path)?;
+            validate_shortcut_contract_for_proof(&contract)?;
+            self.snapshot.target = contract.target;
+            self.snapshot.arguments = contract.arguments;
+            self.snapshot.icon_path = contract.icon_path;
+            self.snapshot.icon_index = contract.icon_index;
+            self.snapshot.working_directory = contract.working_directory;
+            self.snapshot.show_command = contract.show_command;
+            self.snapshot.hotkey = contract.hotkey;
+            self.snapshot.description = contract.description;
+            self.snapshot.app_user_model_id = contract.app_user_model_id;
+            Ok(())
+        }
+
+        fn revalidate(&self, principals: &SecurityPrincipals) -> Result<(), String> {
+            let info = file_information(
+                self.handle.raw(),
+                "collector_service_proof_shortcut_revalidate_info_failed",
+            )?;
+            if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                != 0
+                || info.nNumberOfLinks != 1
+                || info.dwVolumeSerialNumber != self.snapshot.volume_serial
+                || ((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))
+                    != self.snapshot.file_index
+                || file_size(&info) != self.snapshot.size
+                || info.dwFileAttributes != self.file_attributes
+                || proof_filetime(info.ftCreationTime) != self.creation_time_100ns
+                || proof_filetime(info.ftLastWriteTime) != self.last_write_time_100ns
+                || !fixed_path_eq(
+                    &final_path(
+                        &self.handle,
+                        "collector_service_proof_shortcut_revalidate_path_failed",
+                    )?,
+                    &self.path,
+                )
+                || digest_hex(&hash_open_file_from_start_for_proof(
+                    self.handle.raw(),
+                    self.snapshot.size,
+                )?) != self.snapshot.sha256
+            {
+                return Err("collector_service_proof_shortcut_changed".to_string());
+            }
+            if self.strict_writer_policy {
+                validate_no_untrusted_writer(self.handle.raw(), principals, false, false).map_err(
+                    |_| "collector_service_proof_shortcut_common_acl_changed".to_string(),
+                )?;
+            }
+            let (policy, dacl_sha256) =
+                security_policy_with_dacl_sha256(self.handle.raw(), principals)?;
+            if policy.owner != self.owner || dacl_sha256 != self.dacl_sha256 {
+                return Err("collector_service_proof_shortcut_acl_changed".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[derive(Debug, Eq, PartialEq)]
+    struct ShortcutContract {
+        target: String,
+        arguments: String,
+        icon_path: String,
+        icon_index: i32,
+        working_directory: String,
+        show_command: i32,
+        hotkey: u16,
+        description: String,
+        app_user_model_id: String,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn observe_shortcut_for_proof(
+        folder_id: &GUID,
+        expected_root: &Path,
+        strict_writer_policy: bool,
+    ) -> crate::windows_lifecycle_proof_contract::Observation<ShortcutForProof> {
+        use crate::windows_lifecycle_proof_contract::Observation;
+
+        let root = match known_folder_path_for_proof(folder_id) {
+            Ok(value) if fixed_path_eq(&value, expected_root) => value,
+            Ok(_) => {
+                return Observation::Unknown(
+                    "collector_service_proof_shortcut_known_folder_invalid".to_string(),
+                )
+            }
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let principals = match SecurityPrincipals::load_base() {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let ancestry =
+            match pin_known_folder_ancestry_for_proof(&root, &principals, strict_writer_policy) {
+                Ok(value) => value,
+                Err(reason) => return Observation::Unknown(reason),
+            };
+        let path = root.join(PRODUCT_SHORTCUT_NAME);
+        let mut shortcut = match PinnedProofShortcut::open(&path, &principals, strict_writer_policy)
+        {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                return match PinnedProofShortcut::open(&path, &principals, strict_writer_policy) {
+                    Ok(None) => {
+                        for directory in &ancestry {
+                            if let Err(reason) = directory.revalidate(&principals) {
+                                return Observation::Unknown(reason);
+                            }
+                        }
+                        match known_folder_path_for_proof(folder_id) {
+                            Ok(after) if fixed_path_eq(&after, &root) => Observation::Absent,
+                            Ok(_) => Observation::Unknown(
+                                "collector_service_proof_shortcut_known_folder_changed".to_string(),
+                            ),
+                            Err(reason) => Observation::Unknown(reason),
+                        }
+                    }
+                    Ok(Some(_)) => Observation::Unknown(
+                        "collector_service_proof_shortcut_appeared".to_string(),
+                    ),
+                    Err(reason) => Observation::Unknown(reason),
+                }
+            }
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        if let Err(reason) = shortcut.read_contract() {
+            return Observation::Unknown(reason);
+        }
+        if let Err(reason) = shortcut.revalidate(&principals) {
+            return Observation::Unknown(reason);
+        }
+        for directory in &ancestry {
+            if let Err(reason) = directory.revalidate(&principals) {
+                return Observation::Unknown(reason);
+            }
+        }
+        match known_folder_path_for_proof(folder_id) {
+            Ok(after) if fixed_path_eq(&after, &root) => Observation::Present(shortcut.snapshot),
+            Ok(_) => Observation::Unknown(
+                "collector_service_proof_shortcut_known_folder_changed".to_string(),
+            ),
+            Err(reason) => Observation::Unknown(reason),
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn pin_known_folder_ancestry_for_proof(
+        root: &Path,
+        principals: &SecurityPrincipals,
+        strict_root_writer_policy: bool,
+    ) -> Result<Vec<PinnedProofDirectory>, String> {
+        let mut paths = root
+            .ancestors()
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        paths.reverse();
+        if paths.len() > 16 || paths.last().copied() != Some(root) {
+            return Err("collector_service_proof_shortcut_ancestry_invalid".to_string());
+        }
+        paths
+            .into_iter()
+            .map(|path| {
+                PinnedProofDirectory::open(
+                    path,
+                    principals,
+                    strict_root_writer_policy && path == root,
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn known_folder_path_for_proof(folder_id: &GUID) -> Result<PathBuf, String> {
+        let mut raw = ptr::null_mut();
+        let result = unsafe { SHGetKnownFolderPath(folder_id, 0, ptr::null_mut(), &mut raw) };
+        if result < 0 || raw.is_null() {
+            return Err(format!(
+                "collector_service_proof_shortcut_known_folder_failed:{result:#010x}"
+            ));
+        }
+        let value =
+            read_nul_terminated_wide_for_proof(raw, PROOF_COM_TEXT_CAPACITY).map(PathBuf::from);
+        unsafe { CoTaskMemFree(raw.cast()) };
+        value
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn read_shortcut_contract_for_proof(path: &Path) -> Result<ShortcutContract, String> {
+        let _apartment = ComApartment::initialize()?;
+        let mut raw = ptr::null_mut();
+        let result = unsafe {
+            CoCreateInstance(
+                &CLSID_SHELL_LINK,
+                ptr::null_mut(),
+                CLSCTX_INPROC_SERVER,
+                &IID_SHELL_LINK_W,
+                &mut raw,
+            )
+        };
+        if result != 0 || raw.is_null() {
+            return Err(format!(
+                "collector_service_proof_shortcut_create_failed:{result:#010x}"
+            ));
+        }
+        let shell = ComPtr(raw);
+        let persist = shell.query(
+            &IID_PERSIST_FILE,
+            "collector_service_proof_shortcut_persist_query_failed",
+        )?;
+        let path_wide = wide_path(path);
+        let result = unsafe { (persist.persist_file().load)(persist.0, path_wide.as_ptr(), 0) };
+        if result != 0 {
+            return Err(format!(
+                "collector_service_proof_shortcut_load_failed:{result:#010x}"
+            ));
+        }
+        let target = shell_link_text_for_proof(|buffer, capacity| unsafe {
+            (shell.shell_link().get_path)(shell.0, buffer, capacity, ptr::null_mut(), 4)
+        })?;
+        let description = shell_link_text_for_proof(|buffer, capacity| unsafe {
+            (shell.shell_link().get_description)(shell.0, buffer, capacity)
+        })?;
+        let working_directory = shell_link_text_for_proof(|buffer, capacity| unsafe {
+            (shell.shell_link().get_working_directory)(shell.0, buffer, capacity)
+        })?;
+        let arguments = shell_link_text_for_proof(|buffer, capacity| unsafe {
+            (shell.shell_link().get_arguments)(shell.0, buffer, capacity)
+        })?;
+        let mut hotkey = 0_u16;
+        let result = unsafe { (shell.shell_link().get_hotkey)(shell.0, &mut hotkey) };
+        if result != 0 {
+            return Err(format!(
+                "collector_service_proof_shortcut_hotkey_failed:{result:#010x}"
+            ));
+        }
+        let mut show_command = 0_i32;
+        let result = unsafe { (shell.shell_link().get_show_command)(shell.0, &mut show_command) };
+        if result != 0 {
+            return Err(format!(
+                "collector_service_proof_shortcut_show_command_failed:{result:#010x}"
+            ));
+        }
+        let mut icon_index = i32::MIN;
+        let icon_path = shell_link_text_for_proof(|buffer, capacity| unsafe {
+            (shell.shell_link().get_icon_location)(shell.0, buffer, capacity, &mut icon_index)
+        })?;
+        let property_store = shell.query(
+            &IID_PROPERTY_STORE,
+            "collector_service_proof_shortcut_property_store_query_failed",
+        )?;
+        let app_user_model_id = property_string_for_proof(
+            &property_store,
+            &PKEY_APP_USER_MODEL_ID,
+            "collector_service_proof_shortcut_app_id",
+        )?;
+        Ok(ShortcutContract {
+            target,
+            arguments,
+            icon_path,
+            icon_index,
+            working_directory,
+            show_command,
+            hotkey,
+            description,
+            app_user_model_id,
+        })
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn shell_link_text_for_proof(
+        read: impl FnOnce(*mut u16, i32) -> i32,
+    ) -> Result<String, String> {
+        let mut buffer = vec![u16::MAX; PROOF_COM_TEXT_CAPACITY];
+        let result = read(buffer.as_mut_ptr(), buffer.len() as i32);
+        if result != 0 {
+            return Err(format!(
+                "collector_service_proof_shortcut_property_failed:{result:#010x}"
+            ));
+        }
+        let Some(end) = buffer.iter().position(|value| *value == 0) else {
+            return Err("collector_service_proof_shortcut_property_unbounded".to_string());
+        };
+        String::from_utf16(&buffer[..end])
+            .map_err(|_| "collector_service_proof_shortcut_property_utf16_invalid".to_string())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn property_string_for_proof(
+        store: &ComPtr,
+        key: &PROPERTYKEY,
+        context: &str,
+    ) -> Result<String, String> {
+        let mut value = PROPVARIANT::default();
+        let result = unsafe { (store.property_store().get_value)(store.0, key, &mut value) };
+        if result != 0 {
+            unsafe { PropVariantClear(&mut value) };
+            return Err(format!("{context}_read_failed:{result:#010x}"));
+        }
+        let value_type = unsafe { value.Anonymous.Anonymous.vt };
+        if value_type != VT_LPWSTR {
+            unsafe { PropVariantClear(&mut value) };
+            return Err(format!("{context}_type_invalid"));
+        }
+        let mut raw = ptr::null_mut();
+        let result = unsafe { PropVariantToStringAlloc(&value, &mut raw) };
+        let text = if result == 0 && !raw.is_null() {
+            read_nul_terminated_wide_for_proof(raw, PROOF_COM_TEXT_CAPACITY)
+        } else {
+            Err(format!("{context}_conversion_failed:{result:#010x}"))
+        };
+        if !raw.is_null() {
+            unsafe { CoTaskMemFree(raw.cast()) };
+        }
+        unsafe { PropVariantClear(&mut value) };
+        text
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn read_nul_terminated_wide_for_proof(
+        value: *const u16,
+        capacity: usize,
+    ) -> Result<String, String> {
+        let mut length = 0_usize;
+        while length < capacity && unsafe { *value.add(length) } != 0 {
+            length += 1;
+        }
+        if length == capacity {
+            return Err("collector_service_proof_wide_text_unbounded".to_string());
+        }
+        String::from_utf16(unsafe { std::slice::from_raw_parts(value, length) })
+            .map_err(|_| "collector_service_proof_wide_text_utf16_invalid".to_string())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn validate_shortcut_contract_for_proof(contract: &ShortcutContract) -> Result<(), String> {
+        if !fixed_path_eq(Path::new(&contract.target), Path::new(PROOF_MONITOR_PATH))
+            || !contract.arguments.is_empty()
+            || !contract.icon_path.is_empty()
+            || contract.icon_index != 0
+            || !fixed_path_eq(
+                Path::new(&contract.working_directory),
+                Path::new(PROOF_INSTALL_ROOT),
+            )
+            || contract.show_command != 1
+            || contract.hotkey != 0
+            || !contract.description.is_empty()
+            || contract.app_user_model_id != PRODUCT_APP_USER_MODEL_ID
+        {
+            return Err("collector_service_proof_shortcut_contract_invalid".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn hash_open_file_from_start_for_proof(handle: HANDLE, size: u64) -> Result<[u8; 32], String> {
+        if unsafe { SetFilePointerEx(handle, 0, ptr::null_mut(), FILE_BEGIN) } == 0 {
+            return Err(last_error("collector_service_proof_shortcut_seek_failed"));
+        }
+        hash_open_file(handle, size)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn proof_filetime(value: FILETIME) -> u64 {
+        (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
