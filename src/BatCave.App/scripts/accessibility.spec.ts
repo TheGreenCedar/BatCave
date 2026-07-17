@@ -103,6 +103,22 @@ test("diagnostics exposes collector-service identity without a helper action", a
   await expect(dialog.getByText("Collector service active", { exact: true }).first()).toBeVisible();
   await expect(dialog.getByText("Installed collector service", { exact: true })).toBeVisible();
   await expect(dialog.getByText("accessibility-fixture-service", { exact: true })).toBeVisible();
+  for (const name of [
+    "Current process: Standard token",
+    "Privileged source: Installed collector service",
+    "Standard fallback: Not active",
+    "Protected sample: Stale",
+    "Fallback process ETW: Not active",
+    "Collector service: Collector service active",
+    "Service version: development",
+    "Service protocol: 3",
+    "Minimum desktop: Not reported",
+    "Service release: development",
+    "Service instance: accessibility-fixture-service",
+    "Service detail: None",
+  ]) {
+    await expect(dialog.getByRole("group", { name, exact: true })).toBeVisible();
+  }
   await expect(page.getByRole("button", { name: /helper/i })).toHaveCount(0);
 });
 

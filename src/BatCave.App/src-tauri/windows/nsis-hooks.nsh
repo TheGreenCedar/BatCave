@@ -1,5 +1,9 @@
 !include "LogicLib.nsh"
 
+!if "$%BATCAVE_UNINSTALLER_EXPORT_PATH%" != ""
+  !uninstfinalize '"$%ComSpec%" /D /C copy /Y "%1" "$%BATCAVE_UNINSTALLER_EXPORT_PATH%"'
+!endif
+
 !define BATCAVE_SERVICE_NAME "BatCaveCollector"
 !define BATCAVE_SERVICE_REGISTRY_KEY "SYSTEM\CurrentControlSet\Services\${BATCAVE_SERVICE_NAME}"
 !define BATCAVE_SERVICE_OWNER_VALUE "BatCaveInstallerOwner"
