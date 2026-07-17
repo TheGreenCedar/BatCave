@@ -504,6 +504,42 @@ pub(crate) struct ServiceTerminationFailure {
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServiceStateTransitionFailure {
+    pub(crate) reason: String,
+    pub(crate) service_settled: bool,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) struct ServiceStateTransactionOutcome<T, E> {
+    pub(crate) body: Result<T, E>,
+    pub(crate) restoration: ServiceStateRestorationOutcome,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) enum ServiceStateRestorationOutcome {
+    Restored,
+    Failed(Box<ServiceStateTransitionFailure>),
+    BlockedUnsettled,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+fn restore_after_settled_body<T, E>(
+    body: &Result<T, E>,
+    body_settled: impl FnOnce(&E) -> bool,
+    restore: impl FnOnce() -> Result<(), Box<ServiceStateTransitionFailure>>,
+) -> ServiceStateRestorationOutcome {
+    if body.as_ref().is_err_and(|failure| !body_settled(failure)) {
+        return ServiceStateRestorationOutcome::BlockedUnsettled;
+    }
+    match restore() {
+        Ok(()) => ServiceStateRestorationOutcome::Restored,
+        Err(failure) => ServiceStateRestorationOutcome::Failed(failure),
+    }
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
 pub(crate) fn terminate_running_service_for_proof(
     expected_sha256: [u8; 32],
 ) -> Result<TerminatedServiceForProof, Box<ServiceTerminationFailure>> {
@@ -521,6 +557,60 @@ pub(crate) fn exercise_failed_upgrade_rollback_for_proof(
         expected_candidate_sha256,
         expected_original_sha256,
     )
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn with_missing_service_for_proof<T, E>(
+    final_service_bytes: &[u8],
+    expected_final_sha256: [u8; 32],
+    body: impl FnOnce() -> Result<T, E>,
+    body_settled: impl FnOnce(&E) -> bool,
+) -> Result<ServiceStateTransactionOutcome<T, E>, Box<ServiceStateTransitionFailure>> {
+    native::remove_service_boundary_for_proof(final_service_bytes, expected_final_sha256)?;
+    let body = body();
+    let restoration = restore_after_settled_body(&body, body_settled, || {
+        native::restore_service_boundary_for_proof(final_service_bytes, expected_final_sha256)
+    });
+    Ok(ServiceStateTransactionOutcome { body, restoration })
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn with_stopped_service_for_proof<T, E>(
+    expected_sha256: [u8; 32],
+    body: impl FnOnce() -> Result<T, E>,
+    body_settled: impl FnOnce(&E) -> bool,
+) -> Result<ServiceStateTransactionOutcome<T, E>, Box<ServiceStateTransitionFailure>> {
+    native::stop_running_service_for_proof(expected_sha256)?;
+    let body = body();
+    let restoration = restore_after_settled_body(&body, body_settled, || {
+        native::start_stopped_service_for_proof(expected_sha256)
+    });
+    Ok(ServiceStateTransactionOutcome { body, restoration })
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+pub(crate) fn with_incompatible_service_for_proof<T, E>(
+    final_service_bytes: &[u8],
+    expected_final_sha256: [u8; 32],
+    incompatible_service_bytes: &[u8],
+    expected_incompatible_sha256: [u8; 32],
+    body: impl FnOnce() -> Result<T, E>,
+    body_settled: impl FnOnce(&E) -> bool,
+) -> Result<ServiceStateTransactionOutcome<T, E>, Box<ServiceStateTransitionFailure>> {
+    native::replace_running_service_for_proof(
+        incompatible_service_bytes,
+        expected_incompatible_sha256,
+        expected_final_sha256,
+    )?;
+    let body = body();
+    let restoration = restore_after_settled_body(&body, body_settled, || {
+        native::replace_running_service_for_proof(
+            final_service_bytes,
+            expected_final_sha256,
+            expected_incompatible_sha256,
+        )
+    });
+    Ok(ServiceStateTransactionOutcome { body, restoration })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4692,6 +4782,387 @@ mod native {
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn remove_service_boundary_for_proof(
+        final_service_bytes: &[u8],
+        expected_final_sha256: [u8; 32],
+    ) -> Result<(), Box<ServiceStateTransitionFailure>> {
+        let before_mutation = |reason| service_state_failure(reason, true);
+        require_elevated().map_err(before_mutation)?;
+        validate_service_image_bytes(final_service_bytes, expected_final_sha256)
+            .map_err(before_mutation)?;
+        let program_files = known_folder(CSIDL_PROGRAM_FILES).map_err(before_mutation)?;
+        let stable = expected_service_path(&program_files);
+        if trusted_file_digest(&stable, "collector_service_stable_image")
+            .map_err(before_mutation)?
+            != expected_final_sha256
+        {
+            return Err(before_mutation(
+                "collector_service_proof_original_digest_invalid".to_string(),
+            ));
+        }
+        let manager = open_manager(SC_MANAGER_CONNECT).map_err(before_mutation)?;
+        let service = open_service(&manager, SERVICE_ALL_ACCESS)
+            .map_err(before_mutation)?
+            .ok_or_else(|| {
+                before_mutation("collector_service_proof_service_missing".to_string())
+            })?;
+        validate_service_contract(&service, &stable).map_err(before_mutation)?;
+        let status = query_service_status(&service).map_err(before_mutation)?;
+        validate_running_service_image(
+            &service,
+            &stable,
+            expected_final_sha256,
+            status.dwProcessId,
+        )
+        .map_err(before_mutation)?;
+        let principals = SecurityPrincipals::load_with_service().map_err(before_mutation)?;
+        let protected_root = open_protected_etw_lease_root().map_err(before_mutation)?;
+
+        let operation = (|| -> Result<(), String> {
+            settle_service_for_replacement(&service)?;
+            if unsafe { DeleteService(service.raw()) } == 0 {
+                return Err(last_error("collector_service_delete_failed"));
+            }
+            drop(service);
+            wait_service_deleted(&manager)?;
+            drop(protected_root);
+            cleanup_roots_if_owned(false, &principals)?;
+            delete_trusted_leaf(
+                &stable,
+                Some(expected_final_sha256),
+                "collector_service_proof_missing_service_image",
+            )?;
+            if open_service(&manager, SERVICE_QUERY_STATUS)?.is_some()
+                || path_exists_no_follow(&stable)?
+                || path_exists_no_follow(&fixed_roots()?.service)?
+            {
+                return Err("collector_service_proof_missing_state_invalid".to_string());
+            }
+            Ok(())
+        })();
+        match operation {
+            Ok(()) => Ok(()),
+            Err(primary) => {
+                let recovery =
+                    restore_service_boundary_inner(final_service_bytes, expected_final_sha256);
+                Err(service_state_failure(
+                    match &recovery {
+                        Ok(()) => primary,
+                        Err(recovery) => {
+                            format!("{primary};collector_service_proof_recovery_failed:{recovery}")
+                        }
+                    },
+                    recovery.is_ok(),
+                ))
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn restore_service_boundary_for_proof(
+        final_service_bytes: &[u8],
+        expected_final_sha256: [u8; 32],
+    ) -> Result<(), Box<ServiceStateTransitionFailure>> {
+        restore_service_boundary_inner(final_service_bytes, expected_final_sha256)
+            .map_err(|reason| service_state_failure(reason, false))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn restore_service_boundary_inner(
+        final_service_bytes: &[u8],
+        expected_final_sha256: [u8; 32],
+    ) -> Result<(), String> {
+        require_elevated()?;
+        validate_service_image_bytes(final_service_bytes, expected_final_sha256)?;
+        let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
+        let stable = expected_service_path(&program_files);
+        if path_exists_no_follow(&stable)? {
+            if trusted_file_digest(&stable, "collector_service_stable_image")?
+                != expected_final_sha256
+            {
+                return Err("collector_service_proof_restore_image_untrusted".to_string());
+            }
+        } else {
+            crate::atomic_json::write_bytes_atomic(&stable, final_service_bytes).map_err(
+                |error| {
+                    format!(
+                        "collector_service_proof_restore_image_write_failed:{:?}:{}",
+                        error.operation, error.error
+                    )
+                },
+            )?;
+        }
+        let image = verify_service_image_at(&stable, &program_files)?;
+        if trusted_file_digest(image.path(), "collector_service_stable_image")?
+            != expected_final_sha256
+        {
+            return Err("collector_service_proof_restore_digest_invalid".to_string());
+        }
+        let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
+        if let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? {
+            validate_service_contract(&service, &stable)?;
+            let mut roots_created = RootCreationJournal::default();
+            provision_roots(&mut roots_created)?;
+            start_service_and_wait(&service)?;
+            validate_proof_running_generation(&service, &stable, expected_final_sha256)?;
+        } else {
+            let service = create_service(&manager, &stable)?;
+            let mut roots_created = RootCreationJournal::default();
+            let install = (|| {
+                configure_new_service(&service)?;
+                set_owner_marker()?;
+                provision_roots(&mut roots_created)?;
+                validate_service_contract(&service, &stable)?;
+                start_service_and_wait(&service)?;
+                validate_proof_running_generation(&service, &stable, expected_final_sha256)?;
+                Ok(())
+            })();
+            if let Err(primary) = install {
+                return match rollback_new_install(
+                    service,
+                    &manager,
+                    roots_created.product,
+                    roots_created.service,
+                ) {
+                    Ok(()) => Err(primary),
+                    Err(rollback) => Err(format!(
+                        "{primary};collector_service_proof_restore_rollback_failed:{rollback}"
+                    )),
+                };
+            }
+        }
+        retire_shortcuts_with_controller(&image)?;
+        retire_legacy_cli(&image)?;
+        retire_staged_upgrade_image(&image)
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn stop_running_service_for_proof(
+        expected_sha256: [u8; 32],
+    ) -> Result<(), Box<ServiceStateTransitionFailure>> {
+        let before_mutation = |reason| service_state_failure(reason, true);
+        require_elevated().map_err(before_mutation)?;
+        let stable =
+            expected_service_path(&known_folder(CSIDL_PROGRAM_FILES).map_err(before_mutation)?);
+        if trusted_file_digest(&stable, "collector_service_stable_image")
+            .map_err(before_mutation)?
+            != expected_sha256
+        {
+            return Err(before_mutation(
+                "collector_service_proof_original_digest_invalid".to_string(),
+            ));
+        }
+        let manager = open_manager(SC_MANAGER_CONNECT).map_err(before_mutation)?;
+        let service = open_service(&manager, SERVICE_ALL_ACCESS)
+            .map_err(before_mutation)?
+            .ok_or_else(|| {
+                before_mutation("collector_service_proof_service_missing".to_string())
+            })?;
+        validate_service_contract(&service, &stable).map_err(before_mutation)?;
+        let status = query_service_status(&service).map_err(before_mutation)?;
+        validate_running_service_image(&service, &stable, expected_sha256, status.dwProcessId)
+            .map_err(before_mutation)?;
+        let _protected_root = open_protected_etw_lease_root().map_err(before_mutation)?;
+        match stop_service_and_wait(&service, true)
+            .and_then(|_| validate_clean_stopped_status(&query_service_status(&service)?))
+        {
+            Ok(()) => Ok(()),
+            Err(primary) => {
+                let recovery = start_service_and_wait(&service).and_then(|_| {
+                    let status = query_service_status(&service)?;
+                    validate_running_service_image(
+                        &service,
+                        &stable,
+                        expected_sha256,
+                        status.dwProcessId,
+                    )
+                });
+                Err(service_state_failure(
+                    match &recovery {
+                        Ok(()) => primary,
+                        Err(recovery) => {
+                            format!("{primary};collector_service_proof_recovery_failed:{recovery}")
+                        }
+                    },
+                    recovery.is_ok(),
+                ))
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn start_stopped_service_for_proof(
+        expected_sha256: [u8; 32],
+    ) -> Result<(), Box<ServiceStateTransitionFailure>> {
+        let before_mutation = |reason| service_state_failure(reason, true);
+        require_elevated().map_err(before_mutation)?;
+        let stable =
+            expected_service_path(&known_folder(CSIDL_PROGRAM_FILES).map_err(before_mutation)?);
+        if trusted_file_digest(&stable, "collector_service_stable_image")
+            .map_err(before_mutation)?
+            != expected_sha256
+        {
+            return Err(before_mutation(
+                "collector_service_proof_original_digest_invalid".to_string(),
+            ));
+        }
+        let manager = open_manager(SC_MANAGER_CONNECT).map_err(before_mutation)?;
+        let service = open_service(&manager, SERVICE_ALL_ACCESS)
+            .map_err(before_mutation)?
+            .ok_or_else(|| {
+                before_mutation("collector_service_proof_service_missing".to_string())
+            })?;
+        validate_service_contract(&service, &stable).map_err(before_mutation)?;
+        start_service_and_wait(&service)
+            .and_then(|_| {
+                let status = query_service_status(&service)?;
+                validate_running_service_image(
+                    &service,
+                    &stable,
+                    expected_sha256,
+                    status.dwProcessId,
+                )
+            })
+            .map_err(|reason| service_state_failure(reason, false))
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) fn replace_running_service_for_proof(
+        candidate_bytes: &[u8],
+        expected_candidate_sha256: [u8; 32],
+        expected_original_sha256: [u8; 32],
+    ) -> Result<(), Box<ServiceStateTransitionFailure>> {
+        let before_mutation = |reason| service_state_failure(reason, true);
+        require_elevated().map_err(before_mutation)?;
+        validate_failed_upgrade_fixture_inputs(
+            candidate_bytes,
+            expected_candidate_sha256,
+            expected_original_sha256,
+        )
+        .map_err(before_mutation)?;
+        let program_files = known_folder(CSIDL_PROGRAM_FILES).map_err(before_mutation)?;
+        let stable = expected_service_path(&program_files);
+        let staged = expected_staged_service_path(&program_files);
+        let install_directory = stable
+            .parent()
+            .ok_or_else(|| {
+                before_mutation("collector_service_install_directory_missing".to_string())
+            })?
+            .to_path_buf();
+        let manager = open_manager(SC_MANAGER_CONNECT).map_err(before_mutation)?;
+        let service = open_service(&manager, SERVICE_ALL_ACCESS)
+            .map_err(before_mutation)?
+            .ok_or_else(|| {
+                before_mutation("collector_service_proof_service_missing".to_string())
+            })?;
+        validate_service_contract(&service, &stable).map_err(before_mutation)?;
+        let protected_root = open_protected_etw_lease_root().map_err(before_mutation)?;
+        if trusted_file_digest(&stable, "collector_service_stable_image")
+            .map_err(before_mutation)?
+            != expected_original_sha256
+        {
+            return Err(before_mutation(
+                "collector_service_proof_original_digest_invalid".to_string(),
+            ));
+        }
+        let status = query_service_status(&service).map_err(before_mutation)?;
+        validate_running_service_image(
+            &service,
+            &stable,
+            expected_original_sha256,
+            status.dwProcessId,
+        )
+        .map_err(before_mutation)?;
+        ensure_upgrade_proof_residue_absent(&install_directory).map_err(before_mutation)?;
+
+        let operation = (|| -> Result<(), String> {
+            crate::atomic_json::write_bytes_atomic(&staged, candidate_bytes).map_err(|error| {
+                format!(
+                    "collector_service_proof_staged_write_failed:{:?}:{}",
+                    error.operation, error.error
+                )
+            })?;
+            let staged_image = verify_service_image_at(&staged, &program_files)?;
+            if trusted_file_digest(staged_image.path(), "collector_service_staged_image")?
+                != expected_candidate_sha256
+            {
+                return Err("collector_service_proof_staged_digest_invalid".to_string());
+            }
+            prepare_upgrade_staged_image(&staged_image, &stable, &service)?;
+            let mut journal = read_upgrade_journal()?
+                .ok_or_else(|| "collector_service_proof_upgrade_journal_missing".to_string())?;
+            if journal.phase != UpgradePhase::Prepared
+                || journal.old_digest != expected_original_sha256
+                || journal.new_digest != expected_candidate_sha256
+            {
+                return Err("collector_service_proof_upgrade_journal_invalid".to_string());
+            }
+            commit_upgrade_candidate(&mut journal, &service, &stable, || Ok(()))?;
+            if journal.phase != UpgradePhase::Verified {
+                return Err("collector_service_proof_candidate_not_verified".to_string());
+            }
+            validate_proof_running_generation(&service, &stable, expected_candidate_sha256)?;
+            drop(staged_image);
+            finalize_verified_upgrade(&stable, &staged, &journal)?;
+            delete_trusted_leaf(
+                &staged,
+                Some(expected_candidate_sha256),
+                "collector_service_proof_staged_image",
+            )?;
+            cleanup_upgrade_install_residue(&install_directory, None)?;
+            validate_proof_running_generation(&service, &stable, expected_candidate_sha256)?;
+            Ok(())
+        })();
+        drop(protected_root);
+        match operation {
+            Ok(()) => Ok(()),
+            Err(primary) => {
+                let recovery = recover_failed_upgrade_proof(
+                    &service,
+                    &stable,
+                    &staged,
+                    &install_directory,
+                    expected_candidate_sha256,
+                    expected_original_sha256,
+                );
+                Err(service_state_failure(
+                    match &recovery {
+                        Ok(()) => primary,
+                        Err(recovery) => {
+                            format!("{primary};collector_service_proof_recovery_failed:{recovery}")
+                        }
+                    },
+                    recovery.is_ok(),
+                ))
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn validate_service_image_bytes(bytes: &[u8], expected_sha256: [u8; 32]) -> Result<(), String> {
+        if bytes.is_empty()
+            || bytes.len() > PRIVATE_ROLLBACK_FIXTURE_MAX_BYTES
+            || expected_sha256 == [0; 32]
+            || <[u8; 32]>::from(Sha256::digest(bytes)) != expected_sha256
+        {
+            Err("collector_service_proof_service_bytes_invalid".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn service_state_failure(
+        reason: String,
+        service_settled: bool,
+    ) -> Box<ServiceStateTransitionFailure> {
+        Box::new(ServiceStateTransitionFailure {
+            reason,
+            service_settled,
+        })
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
     fn validate_proof_running_generation(
         service: &OwnedScHandle,
         stable: &Path,
@@ -6930,6 +7401,60 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[test]
+    fn fallback_restoration_runs_only_after_a_settled_body() {
+        use std::cell::Cell;
+
+        let called = Cell::new(false);
+        let unsettled_body: Result<(), ()> = Err(());
+        assert!(matches!(
+            restore_after_settled_body(
+                &unsettled_body,
+                |_| false,
+                || {
+                    called.set(true);
+                    Ok(())
+                },
+            ),
+            ServiceStateRestorationOutcome::BlockedUnsettled
+        ));
+        assert!(!called.get());
+
+        let settled_body: Result<(), ()> = Err(());
+        assert!(matches!(
+            restore_after_settled_body(
+                &settled_body,
+                |_| true,
+                || {
+                    called.set(true);
+                    Ok(())
+                }
+            ),
+            ServiceStateRestorationOutcome::Restored
+        ));
+        assert!(called.get());
+
+        for service_settled in [true, false] {
+            let successful_body: Result<(), ()> = Ok(());
+            let outcome = restore_after_settled_body(
+                &successful_body,
+                |_| unreachable!(),
+                || {
+                    Err(Box::new(ServiceStateTransitionFailure {
+                        reason: "restoration_failed".to_string(),
+                        service_settled,
+                    }))
+                },
+            );
+            assert!(matches!(
+                outcome,
+                ServiceStateRestorationOutcome::Failed(failure)
+                    if failure.service_settled == service_settled
+            ));
+        }
+    }
 
     fn exact_root_aces(service_mask: u32) -> [AcePolicy; 3] {
         [

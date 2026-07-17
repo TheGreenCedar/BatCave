@@ -1129,15 +1129,66 @@ impl OwnedFile {
         let mut target_file = OpenOptions::new()
             .create_new(true)
             .write(true)
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE_ACCESS)
             .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(target)
             .map_err(|_| format!("lifecycle_{label}_copy_create_failed"))?;
-        std::io::copy(&mut source, &mut target_file)
+        if std::io::copy(&mut source, &mut target_file)
             .and_then(|_| target_file.sync_all())
-            .map_err(|_| format!("lifecycle_{label}_copy_write_failed"))?;
-        drop(target_file);
-        self.revalidate()?;
-        OwnedFile::open(target, self.size, &self.sha256_hex(), label)
+            .is_err()
+        {
+            let cleanup = mark_handle_for_delete(&target_file, label);
+            drop(target_file);
+            return Err(cleanup.err().map_or_else(
+                || format!("lifecycle_{label}_copy_write_failed"),
+                |error| format!("lifecycle_{label}_copy_write_failed:{error}"),
+            ));
+        }
+        if let Err(error) = self.revalidate() {
+            let cleanup = mark_handle_for_delete(&target_file, label);
+            drop(target_file);
+            return Err(cleanup
+                .err()
+                .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
+        }
+        let target_validation = (|| -> Result<(PathBuf, FileIdentity), String> {
+            let metadata = target_file
+                .metadata()
+                .map_err(|_| format!("lifecycle_{label}_metadata_failed"))?;
+            let information = file_information(&target_file)
+                .map_err(|_| format!("lifecycle_{label}_identity_failed"))?;
+            if !metadata.is_file()
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                || metadata.len() != self.size
+                || information.number_of_links != 1
+                || digest_handle(&mut target_file)
+                    .map_err(|_| format!("lifecycle_{label}_hash_failed"))?
+                    != self.sha256
+            {
+                return Err(format!("lifecycle_{label}_identity_mismatch"));
+            }
+            let path = final_path(&target_file)
+                .map_err(|_| format!("lifecycle_{label}_final_path_failed"))?;
+            Ok((path, information.identity))
+        })();
+        let (path, identity) = match target_validation {
+            Ok(validated) => validated,
+            Err(error) => {
+                let cleanup = mark_handle_for_delete(&target_file, label);
+                drop(target_file);
+                return Err(cleanup
+                    .err()
+                    .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
+            }
+        };
+        Ok(OwnedFile {
+            path,
+            handle: target_file,
+            size: self.size,
+            sha256: self.sha256,
+            identity,
+        })
     }
 
     pub(crate) fn read_all_exact(&self, label: &str) -> Result<Vec<u8>, String> {
@@ -4087,6 +4138,10 @@ pub(crate) fn open_allowlisted_legacy_cli(plan: &ProofPlan) -> Result<OwnedFile,
     Ok(legacy)
 }
 
+pub(crate) fn restore_allowlisted_legacy_cli(source: &OwnedFile) -> Result<OwnedFile, String> {
+    source.copy_to(Path::new(LEGACY_CLI_PATH), "allowlisted_legacy_cli_restore")
+}
+
 pub(crate) fn parse_sha256(value: &str, label: &str) -> Result<[u8; 32], String> {
     if value.len() != 64 {
         return Err(format!("lifecycle_{label}_sha256_invalid"));
@@ -4269,6 +4324,57 @@ pub(crate) fn require_elevated_crashed_candidate(
         false,
         label,
     )
+}
+
+pub(crate) fn require_elevated_desktop_only_candidate(
+    snapshot: &ElevatedMachineSnapshot,
+    candidate: &Candidate,
+    label: &str,
+) -> Result<(), String> {
+    require_absent(&snapshot.machine.service, &format!("{label}_service"))?;
+    require_fixed_install_root(&snapshot.machine.install_root, label)?;
+    require_file_hash(
+        &snapshot.machine.monitor,
+        &candidate.monitor_sha256,
+        &format!("{label}_monitor"),
+    )?;
+    require_absent(
+        &snapshot.machine.service_binary,
+        &format!("{label}_service_binary"),
+    )?;
+    require_file_size_and_hash(
+        &snapshot.machine.uninstaller,
+        candidate.uninstaller_size,
+        &candidate.uninstaller_sha256,
+        &format!("{label}_uninstaller"),
+    )?;
+    require_absent(&snapshot.machine.legacy_cli, &format!("{label}_legacy_cli"))?;
+    let registry = require_present(
+        &snapshot.machine.uninstall_registry,
+        &format!("{label}_uninstall_registry"),
+    )?;
+    if !is_fixed_install_location(&registry.install_location) {
+        return Err(format!("lifecycle_{label}_install_location_invalid"));
+    }
+    let processes = require_present(
+        &snapshot.machine.product_processes,
+        &format!("{label}_product_processes"),
+    )?;
+    if !processes.is_empty()
+        || !matches!(snapshot.installed_boundaries, Observation::Absent)
+        || !matches!(snapshot.service_data_root, Observation::Absent)
+        || !matches!(
+            snapshot.service_install_residue.service_registry_key,
+            Observation::Absent
+        )
+    {
+        return Err(format!("lifecycle_{label}_service_residue"));
+    }
+    require_present(
+        &snapshot.product_data_root,
+        &format!("{label}_product_data_root"),
+    )?;
+    Ok(())
 }
 
 fn require_elevated_stopped_candidate_inner(
@@ -7192,6 +7298,23 @@ mod tests {
         );
         drop(guard);
         fs::write(&path, b"replacement").expect("replacement allowed after explicit drop");
+    }
+
+    #[test]
+    fn owned_file_copy_retains_the_validated_target_handle() {
+        let scratch = ScratchEvidence::new("owned-file-copy");
+        let source_path = scratch.root.join("source.exe");
+        let target_path = scratch.root.join("target.exe");
+        fs::write(&source_path, b"installed").expect("write source fixture");
+        let source = OwnedFile::open_unchecked(&source_path, "copy_source").expect("source");
+
+        let target = source.copy_to(&target_path, "copy_target").expect("copy");
+
+        assert_eq!(
+            target.read_all_exact("copy_target").expect("target bytes"),
+            b"installed"
+        );
+        assert!(OpenOptions::new().write(true).open(&target_path).is_err());
     }
 
     #[test]

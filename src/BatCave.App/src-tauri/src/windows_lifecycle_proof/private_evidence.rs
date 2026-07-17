@@ -198,6 +198,22 @@ pub(super) fn write_machine_packet(
     )
 }
 
+pub(super) fn write_desktop_packet(
+    evidence: &ProtectedEvidenceRoot,
+    name: &'static str,
+    machine: &ElevatedMachineSnapshot,
+    result: &DesktopPhaseResult,
+) -> Result<EvidenceReceipt, String> {
+    write_packet(
+        evidence,
+        name,
+        PrivateSuccessPayload::Desktop(Box::new(PrivateDesktopPayload {
+            machine: machine.clone(),
+            result: result.clone(),
+        })),
+    )
+}
+
 pub(super) fn write_service_crash_packet(
     evidence: &ProtectedEvidenceRoot,
     name: &'static str,
