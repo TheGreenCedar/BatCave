@@ -219,11 +219,19 @@ test("NSIS disables and retires both shared Tauri shortcut surfaces", async () =
   assert.doesNotMatch(retirement, /ProfileList|HKEY_USERS|FOLDERID_Programs|LocalAppData/u);
 });
 
-test("pinned NSIS template differs from Tauri 2.11.4 only by audited shortcut deltas", async () => {
+test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave deltas", async () => {
   const installerTemplate = await text("windows/installer-template.nsi");
   const header = [
     "; Pinned from Tauri CLI 2.11.4 (tauri-bundler 2.9.4, commit 8909f221d1515955fc843808032bdc5d62209c96).",
     "; BatCave deltas are limited to shortcut suppression in install, finish, and uninstall paths.",
+    "",
+  ].join("\n");
+  const uninstallerExport = [
+    "; Export exact post-sign uninstaller bytes only for lifecycle-proof artifact builds.",
+    '!if "$%BATCAVE_UNINSTALLER_EXPORT_PATH%" != ""',
+    '  !uninstfinalize \'"$%ComSpec%" /D /C copy /Y "%1" "$%BATCAVE_UNINSTALLER_EXPORT_PATH%"\' = 0',
+    "!endif",
+    "",
     "",
   ].join("\n");
   const guard = [
@@ -252,6 +260,12 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited shortcut de
   assert.equal(installerTemplate.split(finishControlOmission).length - 1, 1);
   assert.equal(installerTemplate.split(uninstallGuardComment).length - 1, 1);
   assert.equal(installerTemplate.split(uninstallGuardStart).length - 1, 1);
+  assert.equal(installerTemplate.split(uninstallerExport).length - 1, 1);
+  assert.ok(
+    installerTemplate.indexOf(uninstallerExport) >
+      installerTemplate.indexOf("!uninstfinalize '${UNINSTALLERSIGNCOMMAND}'"),
+    "lifecycle-proof export must capture the post-sign bytes embedded by WriteUninstaller",
+  );
   const shortcutRemoval = between(
     installerTemplate,
     "  ; Remove shortcuts if not updating",
@@ -274,6 +288,7 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited shortcut de
   ].join("\n");
   const upstream = installerTemplate
     .slice(header.length)
+    .replace(uninstallerExport, "")
     .replaceAll(guard, "")
     .replace(finishControlOmission, upstreamFinishControl)
     .replace(shortcutRemoval, upstreamShortcutRemoval);

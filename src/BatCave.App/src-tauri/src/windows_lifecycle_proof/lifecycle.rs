@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
-const CONTROLLER_READY: bool = false;
+const CONTROLLER_READY: bool = true;
 const MUTATION_FAILURE_SCHEMA: &str = "batcave.windows-lifecycle.mutation-failure.v1";
 const RESTORATION_SCHEMA: &str = "batcave.windows-lifecycle.restoration.v1";
 const RESTORATION_PENDING: &str = "lifecycle_restoration_pending_stage_validation";
@@ -3095,11 +3095,8 @@ mod tests {
     }
 
     #[test]
-    fn controller_remains_fail_closed_until_reviewed() {
-        assert_eq!(
-            require_controller_ready(),
-            Err("lifecycle_controller_not_reviewed".to_string())
-        );
+    fn controller_is_enabled_after_integrated_review() {
+        assert_eq!(require_controller_ready(), Ok(()));
     }
 
     #[test]

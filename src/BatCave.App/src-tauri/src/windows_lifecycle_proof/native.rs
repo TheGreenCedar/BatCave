@@ -1281,13 +1281,58 @@ impl OwnedFile {
                     .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
             }
         };
-        Ok(OwnedFile {
-            path,
-            handle: target_file,
-            size: self.size,
-            sha256: self.sha256,
-            identity,
-        })
+        let mut bridge = match OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&path)
+        {
+            Ok(bridge) => bridge,
+            Err(_) => {
+                let error = format!("lifecycle_{label}_handoff_open_failed");
+                let cleanup = mark_handle_for_delete(&target_file, label);
+                drop(target_file);
+                return Err(cleanup
+                    .err()
+                    .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
+            }
+        };
+        let bridge_validation = (|| -> Result<(), String> {
+            let metadata = bridge
+                .metadata()
+                .map_err(|_| format!("lifecycle_{label}_handoff_metadata_failed"))?;
+            let information = file_information(&bridge)
+                .map_err(|_| format!("lifecycle_{label}_handoff_identity_failed"))?;
+            let bridge_path = final_path(&bridge)
+                .map_err(|_| format!("lifecycle_{label}_handoff_final_path_failed"))?;
+            if !metadata.is_file()
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                || metadata.len() != self.size
+                || information.identity != identity
+                || information.number_of_links != 1
+                || bridge_path != path
+                || digest_handle(&mut bridge)
+                    .map_err(|_| format!("lifecycle_{label}_handoff_hash_failed"))?
+                    != self.sha256
+            {
+                return Err(format!("lifecycle_{label}_handoff_identity_mismatch"));
+            }
+            Ok(())
+        })();
+        if let Err(error) = bridge_validation {
+            let cleanup = mark_handle_for_delete(&target_file, label);
+            drop(bridge);
+            drop(target_file);
+            return Err(cleanup
+                .err()
+                .map_or(error.clone(), |cleanup| format!("{error}:{cleanup}")));
+        }
+        drop(target_file);
+        let target = OwnedFile::open(&path, self.size, &self.sha256_hex(), label)?;
+        if target.identity != identity || target.path != path {
+            return Err(format!("lifecycle_{label}_handoff_identity_mismatch"));
+        }
+        Ok(target)
     }
 
     pub(crate) fn read_all_exact(&self, label: &str) -> Result<Vec<u8>, String> {
@@ -1840,7 +1885,10 @@ impl SuspendedChild {
             )
         } == 0
         {
-            return Err(format!("lifecycle_{label}_process_create_failed"));
+            return Err(format!(
+                "lifecycle_{label}_process_create_failed:{}",
+                unsafe { GetLastError() }
+            ));
         }
         Ok(Self {
             process: OwnedHandle(information.hProcess),
@@ -6479,9 +6527,17 @@ fn build_fixed_environment_block(
     evidence: &Path,
     command_processor: &Path,
 ) -> Result<Vec<u16>, String> {
+    let windows_text = windows
+        .to_str()
+        .ok_or_else(|| "lifecycle_child_windows_path_invalid".to_string())?;
+    let system_drive = windows_text
+        .get(..2)
+        .filter(|drive| drive.as_bytes().get(1) == Some(&b':'))
+        .ok_or_else(|| "lifecycle_child_windows_path_invalid".to_string())?;
     let entries = [
         ("ComSpec", command_processor),
         ("Path", system),
+        ("SystemDrive", Path::new(system_drive)),
         ("SystemRoot", windows),
         ("TEMP", evidence),
         ("TMP", evidence),
@@ -7738,6 +7794,31 @@ mod tests {
     }
 
     #[test]
+    fn owned_file_copy_executes_while_retaining_the_validated_target() {
+        let scratch = ScratchEvidence::new("owned-file-copy-execute");
+        let source = OwnedFile::open_current_executable().expect("owned test executable");
+        let target_path = scratch.root.join("copied-test.exe");
+        let target = source
+            .copy_to(&target_path, "copy_execute")
+            .expect("copy test executable");
+
+        let outcome = target
+            .execute(
+                scratch.evidence(),
+                "--ignored --exact windows_lifecycle_proof::native::tests::fixed_nonzero_child --nocapture",
+                Duration::from_secs(30),
+                "copied_nonzero_child",
+            )
+            .expect("copied child settlement");
+
+        assert!(matches!(
+            outcome.terminal.terminal,
+            ProcessTerminal::Exited { exit_code: 23 }
+        ));
+        target.revalidate().expect("retained copied executable");
+    }
+
+    #[test]
     fn install_location_accepts_only_the_fixed_nsis_forms() {
         assert!(is_fixed_install_location(INSTALL_ROOT));
         assert!(is_fixed_install_location(&format!("\"{INSTALL_ROOT}\"")));
@@ -7780,11 +7861,25 @@ mod tests {
             [
                 r"ComSpec=C:\Windows\System32\cmd.exe",
                 r"Path=C:\Windows\System32",
+                r"SystemDrive=C:",
                 r"SystemRoot=C:\Windows",
                 r"TEMP=C:\ProgramData\BatCaveLifecycleProof-v1-test",
                 r"TMP=C:\ProgramData\BatCaveLifecycleProof-v1-test",
                 r"WINDIR=C:\Windows",
             ]
+        );
+    }
+
+    #[test]
+    fn child_environment_rejects_a_windows_path_without_a_drive_root() {
+        assert_eq!(
+            build_fixed_environment_block(
+                Path::new(r"\\server\Windows\System32"),
+                Path::new(r"\\server\Windows"),
+                Path::new(r"C:\ProgramData\BatCaveLifecycleProof-v1-test"),
+                Path::new(r"\\server\Windows\System32\cmd.exe"),
+            ),
+            Err("lifecycle_child_windows_path_invalid".to_string())
         );
     }
 
@@ -7910,17 +8005,18 @@ mod tests {
         let output = fs::read_to_string(&scratch.output).expect("child environment output");
         let lines = output.lines().collect::<Vec<_>>();
         assert_eq!(
-            lines[..6],
+            lines[..7],
             [
                 format!("ComSpec={}", system.join("cmd.exe").display()),
                 format!("Path={}", system.display()),
+                format!("SystemDrive={}", &windows.display().to_string()[..2]),
                 format!("SystemRoot={}", windows.display()),
                 format!("TEMP={}", scratch.root.display()),
                 format!("TMP={}", scratch.root.display()),
                 format!("WINDIR={}", windows.display()),
             ]
         );
-        assert!(lines[6].eq_ignore_ascii_case(&scratch.root.to_string_lossy()));
+        assert!(lines[7].eq_ignore_ascii_case(&scratch.root.to_string_lossy()));
     }
 
     #[test]

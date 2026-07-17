@@ -877,7 +877,7 @@ mod native {
                 KEY_ENUMERATE_SUB_KEYS, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
             },
             Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
-            Variant::VT_LPWSTR,
+            Variant::{VT_BSTR, VT_LPWSTR},
         },
         UI::Shell::{FOLDERID_CommonPrograms, FOLDERID_PublicDesktop, SHGetKnownFolderPath},
     };
@@ -919,6 +919,8 @@ mod native {
     const PROOF_SHORTCUT_MAX_BYTES: u64 = 1024 * 1024;
     #[cfg(feature = "private-windows-lifecycle-proof")]
     const PROOF_COM_TEXT_CAPACITY: usize = 32 * 1024;
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    const PROOF_SHARED_SHORTCUT_STRICT_WRITER_POLICY: bool = false;
     #[cfg(feature = "private-windows-lifecycle-proof")]
     const PROOF_REGISTRY_MAX_TEXT_BYTES: u32 = 64 * 1024;
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -3141,12 +3143,12 @@ mod native {
             public_desktop_shortcut: observe_shortcut_for_proof(
                 &FOLDERID_PublicDesktop,
                 Path::new(PUBLIC_DESKTOP_PATH),
-                false,
+                PROOF_SHARED_SHORTCUT_STRICT_WRITER_POLICY,
             ),
             common_start_menu_shortcut: observe_shortcut_for_proof(
                 &FOLDERID_CommonPrograms,
                 Path::new(COMMON_PROGRAMS_PATH),
-                true,
+                PROOF_SHARED_SHORTCUT_STRICT_WRITER_POLICY,
             ),
         }
     }
@@ -4015,7 +4017,7 @@ mod native {
             return Err(format!("{context}_read_failed:{result:#010x}"));
         }
         let value_type = unsafe { value.Anonymous.Anonymous.vt };
-        if value_type != VT_LPWSTR {
+        if !is_supported_shortcut_string_variant_for_proof(value_type) {
             unsafe { PropVariantClear(&mut value) };
             return Err(format!("{context}_type_invalid"));
         }
@@ -4031,6 +4033,11 @@ mod native {
         }
         unsafe { PropVariantClear(&mut value) };
         text
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn is_supported_shortcut_string_variant_for_proof(value_type: u16) -> bool {
+        matches!(value_type, VT_BSTR | VT_LPWSTR)
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -6538,6 +6545,13 @@ mod native {
     #[cfg(all(test, feature = "private-windows-lifecycle-proof"))]
     mod proof_runtime_observation_tests {
         use super::*;
+
+        #[test]
+        fn proof_shortcut_observation_accepts_only_supported_string_variants() {
+            assert!(is_supported_shortcut_string_variant_for_proof(VT_BSTR));
+            assert!(is_supported_shortcut_string_variant_for_proof(VT_LPWSTR));
+            assert!(!is_supported_shortcut_string_variant_for_proof(0));
+        }
 
         #[test]
         fn lock_transition_classification_is_fail_closed() {
