@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 
 pub(crate) const EMBEDDED_PLAN: &str = include_str!("windows_lifecycle_proof_plan.v1.json");
 pub(crate) const PLAN_SCHEMA: &str = "batcave_windows_lifecycle_proof_plan_v1";
-pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protocol_v3";
+pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protocol_v4";
 pub(crate) const NONCE_HEX_LENGTH: usize = 64;
 pub(crate) const LOCATOR_HEX_LENGTH: usize = 32;
 pub(crate) const FIRST_SEQUENCE: u64 = 1;
@@ -764,7 +764,6 @@ pub(crate) struct WorkerResult {
     pub failure: Option<WorkerFailure>,
     pub process_tree_settled: bool,
     pub private_evidence: Vec<EvidenceReceipt>,
-    pub sanitized_export: Option<EvidenceReceipt>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1477,6 +1476,40 @@ mod tests {
             validate_envelope(&wrong, &nonce, &mut gate),
             Err("lifecycle_protocol_nonce_invalid".to_string())
         );
+
+        let mut legacy = wrong;
+        legacy.nonce = nonce.clone();
+        legacy.schema_version = "batcave_windows_lifecycle_proof_protocol_v3".to_string();
+        assert_eq!(
+            validate_envelope(&legacy, &nonce, &mut SequenceGate::new()),
+            Err("lifecycle_protocol_schema_invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn protocol_v4_worker_result_rejects_the_removed_sanitized_export_field() {
+        let result = WorkerResult {
+            disposition: WorkerDisposition::Failed,
+            completed_stage: None,
+            last_authenticated_checkpoint: None,
+            abort: None,
+            failure: Some(WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: None,
+                reason: "controller_failed".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::NotRequired),
+            }),
+            process_tree_settled: true,
+            private_evidence: Vec::new(),
+        };
+        let mut value = serde_json::to_value(result).expect("worker result");
+        value
+            .as_object_mut()
+            .expect("worker result object")
+            .insert("sanitized_export".to_string(), serde_json::Value::Null);
+        assert!(serde_json::from_value::<WorkerResult>(value).is_err());
     }
 
     #[test]
@@ -1575,7 +1608,6 @@ mod tests {
             }),
             process_tree_settled: true,
             private_evidence: Vec::new(),
-            sanitized_export: None,
         }));
         assert_eq!(
             serde_json::to_value(&result_ready).expect("result ready")["kind"],

@@ -1,9 +1,10 @@
+use super::evidence::PreparedSanitizedExport;
 use crate::collector_service::etw_lease::{EtwLeaseV1, ReadOnlyEtwLeaseObservation};
 use crate::collector_service::windows_provisioner::RuntimeLockObservation;
 use crate::windows_lifecycle_proof_contract::{
     Candidate, DesktopCollectorRuntimeObservation, DesktopFileObservation, DesktopPhase,
     DesktopProcessObservation, DesktopServiceProcessObservation, EvidenceReceipt,
-    EvidenceRootIdentity, LifecycleStage, Observation, ProofPlan,
+    EvidenceRootIdentity, LifecycleStage, Observation, ProofPlan, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
 };
 use crate::windows_network::{EtwSessionProofSnapshot, NetworkAttributionMonitor};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -120,6 +121,8 @@ const LEGACY_CLI_PATH: &str = r"C:\Program Files\BatCave Monitor\batcave-monitor
 const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\BatCave Monitor";
 const INSTALL_LOCATION_VALUE: &str = "InstallLocation";
 const EVIDENCE_ROOT_PREFIX: &str = r"C:\ProgramData\BatCaveLifecycleProof-v1-";
+const PARENT_EXPORT_DIRECTORY: &str = r"artifacts\windows-lifecycle-proof";
+const PARENT_EXPORT_LEAF: &str = "windows-lifecycle-proof.sanitized.json";
 const PROCESS_TREE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_TREE_SETTLEMENT_TIMEOUT_MS: u32 = 30_000;
 const PROCESS_TREE_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -590,6 +593,22 @@ pub(crate) struct VerifiedEvidenceFile {
     file: OwnedFile,
 }
 
+struct PinnedDirectoryComponent {
+    path: PathBuf,
+    identity: FileIdentity,
+    handle: File,
+}
+
+pub(crate) struct ParentExportDirectory {
+    path: PathBuf,
+    components: Vec<PinnedDirectoryComponent>,
+}
+
+pub(crate) struct ParentExportFile {
+    receipt: EvidenceReceipt,
+    file: OwnedFile,
+}
+
 impl VerifiedEvidenceFile {
     pub(crate) fn receipt(&self) -> &EvidenceReceipt {
         &self.receipt
@@ -605,6 +624,86 @@ impl VerifiedEvidenceFile {
 
     pub(crate) fn revalidate(&self) -> Result<(), String> {
         self.file.revalidate()
+    }
+}
+
+impl ParentExportDirectory {
+    pub(crate) fn require_leaf_absent(&self) -> Result<(), String> {
+        self.revalidate()?;
+        match fs::symlink_metadata(self.path.join(PARENT_EXPORT_LEAF)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err("lifecycle_parent_export_stale".to_string()),
+            Err(error) => Err(format!(
+                "lifecycle_parent_export_probe_failed:{}",
+                error.raw_os_error().unwrap_or_default()
+            )),
+        }
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        if self.components.is_empty() {
+            return Err("lifecycle_parent_export_component_missing".to_string());
+        }
+        for component in &self.components {
+            let metadata = component
+                .handle
+                .metadata()
+                .map_err(|_| "lifecycle_parent_export_component_metadata_failed".to_string())?;
+            let information = file_information(&component.handle)
+                .map_err(|_| "lifecycle_parent_export_component_identity_failed".to_string())?;
+            let path = final_path(&component.handle)
+                .map_err(|_| "lifecycle_parent_export_component_path_failed".to_string())?;
+            if !metadata.is_dir()
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                || information.identity != component.identity
+                || !paths_equal(&path, &component.path)
+            {
+                return Err("lifecycle_parent_export_component_changed".to_string());
+            }
+        }
+        let (path, reopened) =
+            open_no_follow_directory_components(&self.path, "parent_export_reopen")?;
+        if !paths_equal(&path, &self.path) || reopened.len() != self.components.len() {
+            return Err("lifecycle_parent_export_directory_changed".to_string());
+        }
+        for (reopened, expected) in reopened.iter().zip(&self.components) {
+            let information = file_information(reopened)
+                .map_err(|_| "lifecycle_parent_export_reopen_identity_failed".to_string())?;
+            let path = final_path(reopened)
+                .map_err(|_| "lifecycle_parent_export_reopen_path_failed".to_string())?;
+            if information.identity != expected.identity || !paths_equal(&path, &expected.path) {
+                return Err("lifecycle_parent_export_directory_changed".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ParentExportFile {
+    pub(crate) fn receipt(&self) -> &EvidenceReceipt {
+        &self.receipt
+    }
+
+    pub(crate) fn identity(&self) -> FileIdentity {
+        self.file.identity()
+    }
+
+    pub(crate) fn revalidate(&self, directory: &ParentExportDirectory) -> Result<(), String> {
+        directory.revalidate()?;
+        self.file.revalidate()?;
+        let expected_path = directory.path.join(PARENT_EXPORT_LEAF);
+        let path = final_path(&self.file.handle)
+            .map_err(|_| "lifecycle_parent_export_revalidate_path_failed".to_string())?;
+        let information = file_information(&self.file.handle)
+            .map_err(|_| "lifecycle_parent_export_revalidate_identity_failed".to_string())?;
+        if !paths_equal(&self.file.path, &expected_path)
+            || !paths_equal(&path, &expected_path)
+            || information.identity != self.file.identity
+            || information.number_of_links != 1
+        {
+            return Err("lifecycle_parent_export_identity_changed".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -2003,6 +2102,9 @@ impl PipeConnection {
 pub(crate) struct ProtectedEvidenceRoot {
     root: PathBuf,
     identity: EvidenceRootIdentity,
+    parent_sid: String,
+    owner_sid: String,
+    dacl_sha256: String,
     _handle: OwnedHandle,
 }
 
@@ -2013,6 +2115,65 @@ impl ProtectedEvidenceRoot {
 
     pub(crate) fn identity(&self) -> EvidenceRootIdentity {
         self.identity
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        let metadata = fs::symlink_metadata(&self.root)
+            .map_err(|_| "lifecycle_evidence_root_revalidate_metadata_failed".to_string())?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("lifecycle_evidence_root_revalidate_type_invalid".to_string());
+        }
+        let information = file_information_handle(self._handle.raw())
+            .map_err(|_| "lifecycle_evidence_root_revalidate_identity_failed".to_string())?;
+        let path = final_path_handle(self._handle.raw())
+            .map_err(|_| "lifecycle_evidence_root_revalidate_path_failed".to_string())?;
+        let identity = EvidenceRootIdentity {
+            volume_serial: information.identity.volume_serial,
+            file_index: information.identity.file_index,
+        };
+        let (owner_sid, dacl_sha256) = parent_security_snapshot(
+            self._handle.raw(),
+            "evidence_root_revalidate",
+            &self.parent_sid,
+        )?;
+        if identity != self.identity
+            || !paths_equal(&path, &self.root)
+            || owner_sid != self.owner_sid
+            || dacl_sha256 != self.dacl_sha256
+        {
+            return Err("lifecycle_evidence_root_changed".to_string());
+        }
+
+        let root_wide = wide(self.root.as_os_str());
+        let reopened = unsafe {
+            CreateFileW(
+                root_wide.as_ptr(),
+                FILE_READ_ATTRIBUTES | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                null_mut(),
+            )
+        };
+        if reopened == INVALID_HANDLE_VALUE {
+            return Err("lifecycle_evidence_root_reopen_failed".to_string());
+        }
+        let reopened = OwnedHandle(reopened);
+        let reopened_information = file_information_handle(reopened.raw())
+            .map_err(|_| "lifecycle_evidence_root_reopen_identity_failed".to_string())?;
+        let reopened_path = final_path_handle(reopened.raw())
+            .map_err(|_| "lifecycle_evidence_root_reopen_path_failed".to_string())?;
+        let (reopened_owner, reopened_dacl) =
+            parent_security_snapshot(reopened.raw(), "evidence_root_reopen", &self.parent_sid)?;
+        if reopened_information.identity != information.identity
+            || !paths_equal(&reopened_path, &self.root)
+            || reopened_owner != self.owner_sid
+            || reopened_dacl != self.dacl_sha256
+        {
+            return Err("lifecycle_evidence_root_changed".to_string());
+        }
+        Ok(())
     }
 
     pub(crate) fn write_json_new<T: Serialize>(
@@ -2216,6 +2377,112 @@ fn open_no_follow_directory_components(
         return Err(format!("lifecycle_{label}_component_missing"));
     }
     Ok((normalized, handles))
+}
+
+pub(crate) fn pin_parent_export_directory(
+    repo_root: &Path,
+) -> Result<ParentExportDirectory, String> {
+    let requested = repo_root.join(PARENT_EXPORT_DIRECTORY);
+    let (path, handles) =
+        open_no_follow_directory_components(&requested, "parent_export_directory")?;
+    if !paths_equal(&path, &requested) {
+        return Err("lifecycle_parent_export_directory_path_changed".to_string());
+    }
+    let mut components = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let information = file_information(&handle)
+            .map_err(|_| "lifecycle_parent_export_component_identity_failed".to_string())?;
+        let component_path = final_path(&handle)
+            .map_err(|_| "lifecycle_parent_export_component_path_failed".to_string())?;
+        components.push(PinnedDirectoryComponent {
+            path: component_path,
+            identity: information.identity,
+            handle,
+        });
+    }
+    if !components
+        .last()
+        .is_some_and(|component| paths_equal(&component.path, &path))
+    {
+        return Err("lifecycle_parent_export_directory_path_changed".to_string());
+    }
+    let directory = ParentExportDirectory { path, components };
+    directory.require_leaf_absent()?;
+    Ok(directory)
+}
+
+pub(crate) fn write_parent_export_new(
+    directory: &ParentExportDirectory,
+    prepared: &PreparedSanitizedExport,
+) -> Result<ParentExportFile, String> {
+    directory.require_leaf_absent()?;
+    let bytes = prepared.bytes();
+    let expected_receipt = prepared.receipt();
+    if bytes.is_empty()
+        || expected_receipt.name != PARENT_EXPORT_LEAF
+        || expected_receipt.size != bytes.len() as u64
+        || expected_receipt.sha256 != hex_digest(&Sha256::digest(bytes))
+    {
+        return Err("lifecycle_parent_export_prepared_identity_invalid".to_string());
+    }
+    let path = directory.path.join(PARENT_EXPORT_LEAF);
+    let mut handle = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path)
+        .map_err(|_| "lifecycle_parent_export_create_failed".to_string())?;
+
+    // Publication failures deliberately leave this create-new leaf behind. A rerun must
+    // stop on the stale destination instead of deleting or overwriting uncertain bytes.
+    handle
+        .write_all(bytes)
+        .and_then(|_| handle.sync_all())
+        .map_err(|_| "lifecycle_parent_export_write_failed".to_string())?;
+    directory.revalidate()?;
+
+    let metadata = handle
+        .metadata()
+        .map_err(|_| "lifecycle_parent_export_metadata_failed".to_string())?;
+    let information = file_information(&handle)
+        .map_err(|_| "lifecycle_parent_export_identity_failed".to_string())?;
+    let observed_path =
+        final_path(&handle).map_err(|_| "lifecycle_parent_export_path_failed".to_string())?;
+    if !metadata.is_file()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || metadata.len() != bytes.len() as u64
+        || information.number_of_links != 1
+        || !paths_equal(&observed_path, &path)
+    {
+        return Err("lifecycle_parent_export_identity_invalid".to_string());
+    }
+
+    handle
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| "lifecycle_parent_export_readback_seek_failed".to_string())?;
+    let mut readback = Vec::with_capacity(bytes.len());
+    handle
+        .read_to_end(&mut readback)
+        .map_err(|_| "lifecycle_parent_export_readback_failed".to_string())?;
+    if readback != bytes {
+        return Err("lifecycle_parent_export_readback_mismatch".to_string());
+    }
+    let receipt = evidence_receipt(PARENT_EXPORT_LEAF, &readback);
+    if receipt != *expected_receipt {
+        return Err("lifecycle_parent_export_digest_mismatch".to_string());
+    }
+    let file = OwnedFile {
+        path: observed_path,
+        handle,
+        size: receipt.size,
+        sha256: Sha256::digest(&readback).into(),
+        identity: information.identity,
+    };
+    let export = ParentExportFile { receipt, file };
+    export.revalidate(directory)?;
+    Ok(export)
 }
 
 pub(crate) fn require_clean_exact_head(repo_root: &Path, expected: &str) -> Result<(), String> {
@@ -4726,7 +4993,7 @@ pub(crate) fn create_protected_evidence_root(
     let handle = unsafe {
         CreateFileW(
             root_wide.as_ptr(),
-            FILE_READ_ATTRIBUTES,
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             null(),
             OPEN_EXISTING,
@@ -4748,12 +5015,18 @@ pub(crate) fn create_protected_evidence_root(
     {
         return Err("lifecycle_evidence_root_handle_path_invalid".to_string());
     }
+    let parent_sid = parent.token.sid_string;
+    let (owner_sid, dacl_sha256) =
+        parent_security_snapshot(handle.raw(), "evidence_root", &parent_sid)?;
     Ok(ProtectedEvidenceRoot {
         root,
         identity: EvidenceRootIdentity {
             volume_serial: information.identity.volume_serial,
             file_index: information.identity.file_index,
         },
+        parent_sid,
+        owner_sid,
+        dacl_sha256,
         _handle: handle,
     })
 }
@@ -4776,7 +5049,7 @@ pub(crate) fn open_protected_evidence_root(
     let handle = unsafe {
         CreateFileW(
             root_wide.as_ptr(),
-            FILE_READ_ATTRIBUTES,
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             null(),
             OPEN_EXISTING,
@@ -4803,9 +5076,15 @@ pub(crate) fn open_protected_evidence_root(
     {
         return Err("lifecycle_evidence_root_identity_mismatch".to_string());
     }
+    let parent_sid = standard_token_evidence()?.sid_string;
+    let (owner_sid, dacl_sha256) =
+        parent_security_snapshot(handle.raw(), "evidence_root", &parent_sid)?;
     Ok(ProtectedEvidenceRoot {
         root,
         identity,
+        parent_sid,
+        owner_sid,
+        dacl_sha256,
         _handle: handle,
     })
 }
@@ -4827,6 +5106,36 @@ pub(crate) fn verify_evidence_receipt(
         receipt: receipt.clone(),
         file,
     })
+}
+
+pub(crate) fn collect_success_evidence_receipts(
+    root: &ProtectedEvidenceRoot,
+) -> Result<Vec<EvidenceReceipt>, String> {
+    root.revalidate()?;
+    let mut receipts = Vec::with_capacity(SUCCESS_PRIVATE_EVIDENCE_LEAVES.len());
+    let mut identities = Vec::with_capacity(SUCCESS_PRIVATE_EVIDENCE_LEAVES.len());
+    for name in SUCCESS_PRIVATE_EVIDENCE_LEAVES {
+        let file = OwnedFile::open_unchecked(&root.root.join(name), "success_private_evidence")?;
+        if file.size == 0
+            || file.size > 8 * 1024 * 1024
+            || !file
+                .path
+                .parent()
+                .is_some_and(|parent| paths_equal(parent, &root.root))
+            || identities.contains(&file.identity)
+        {
+            return Err("lifecycle_success_private_evidence_manifest_invalid".to_string());
+        }
+        identities.push(file.identity);
+        receipts.push(EvidenceReceipt {
+            name: name.to_string(),
+            size: file.size,
+            sha256: file.sha256_hex(),
+        });
+        file.revalidate()?;
+    }
+    root.revalidate()?;
+    Ok(receipts)
 }
 
 fn evidence_receipt(name: &str, payload: &[u8]) -> EvidenceReceipt {
@@ -6456,13 +6765,14 @@ mod tests {
                 random_hex(16).expect("unique lifecycle scratch")
             ));
             fs::create_dir(&root).expect("create lifecycle scratch");
+            let parent_sid = current_token().expect("scratch process token").sid_string;
             let root =
                 canonical_real_directory(&root, "scratch").expect("canonical lifecycle scratch");
             let root_wide = wide(root.as_os_str());
             let handle = unsafe {
                 CreateFileW(
                     root_wide.as_ptr(),
-                    FILE_READ_ATTRIBUTES,
+                    FILE_READ_ATTRIBUTES | READ_CONTROL,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                     null(),
                     OPEN_EXISTING,
@@ -6473,6 +6783,13 @@ mod tests {
             assert_ne!(handle, INVALID_HANDLE_VALUE, "open lifecycle scratch");
             let information =
                 file_information_handle(handle).expect("read lifecycle scratch identity");
+            let security = ParentSecurityInfo::read(handle, "scratch")
+                .expect("read lifecycle scratch security");
+            let owner_sid = sid_string(security.owner.cast()).expect("scratch owner SID");
+            let acl_size = unsafe { (*security.dacl).AclSize as usize };
+            let acl_bytes =
+                unsafe { std::slice::from_raw_parts(security.dacl.cast::<u8>(), acl_size) };
+            let dacl_sha256 = hex_digest(&Sha256::digest(acl_bytes));
             Self {
                 evidence: Some(ProtectedEvidenceRoot {
                     root: root.clone(),
@@ -6480,6 +6797,9 @@ mod tests {
                         volume_serial: information.identity.volume_serial,
                         file_index: information.identity.file_index,
                     },
+                    parent_sid,
+                    owner_sid,
+                    dacl_sha256,
                     _handle: OwnedHandle(handle),
                 }),
                 root,
@@ -6496,6 +6816,106 @@ mod tests {
             drop(self.evidence.take());
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    struct ScratchExportRepo {
+        repo: PathBuf,
+        directory: Option<ParentExportDirectory>,
+    }
+
+    impl ScratchExportRepo {
+        fn new(label: &str) -> Self {
+            let repo = std::env::temp_dir().join(format!(
+                "batcave-parent-export-{label}-{}",
+                random_hex(16).expect("unique export scratch")
+            ));
+            fs::create_dir_all(repo.join(PARENT_EXPORT_DIRECTORY))
+                .expect("create export artifact directory");
+            let repo = canonical_real_directory(&repo, "scratch_export")
+                .expect("canonical export scratch");
+            let directory =
+                pin_parent_export_directory(&repo).expect("pin export artifact directory");
+            Self {
+                repo,
+                directory: Some(directory),
+            }
+        }
+
+        fn directory(&self) -> &ParentExportDirectory {
+            self.directory.as_ref().expect("pinned export directory")
+        }
+    }
+
+    impl Drop for ScratchExportRepo {
+        fn drop(&mut self) {
+            drop(self.directory.take());
+            let _ = fs::remove_dir_all(&self.repo);
+        }
+    }
+
+    #[test]
+    fn parent_export_pin_blocks_directory_rebinding_until_dropped() {
+        let mut scratch = ScratchExportRepo::new("pin");
+        let artifact = scratch.repo.join(PARENT_EXPORT_DIRECTORY);
+        let renamed = scratch
+            .repo
+            .join(r"artifacts\windows-lifecycle-proof-renamed");
+        assert!(fs::rename(&artifact, &renamed).is_err());
+        drop(scratch.directory.take());
+        fs::rename(&artifact, &renamed).expect("rename after export pin dropped");
+        fs::rename(&renamed, &artifact).expect("restore export directory for cleanup");
+    }
+
+    #[test]
+    fn parent_export_stale_leaf_blocks_pinning_without_mutation() {
+        let repo = std::env::temp_dir().join(format!(
+            "batcave-parent-export-stale-{}",
+            random_hex(16).expect("unique export scratch")
+        ));
+        fs::create_dir_all(repo.join(PARENT_EXPORT_DIRECTORY))
+            .expect("create export artifact directory");
+        let repo = canonical_real_directory(&repo, "scratch_export_stale")
+            .expect("canonical stale export scratch");
+        let artifact = repo.join(PARENT_EXPORT_DIRECTORY);
+        let leaf = artifact.join(PARENT_EXPORT_LEAF);
+        fs::write(&leaf, b"existing-publication").expect("seed stale export");
+        assert_eq!(
+            pin_parent_export_directory(&repo).err(),
+            Some("lifecycle_parent_export_stale".to_string())
+        );
+        assert_eq!(
+            fs::read(&leaf).expect("read untouched stale export"),
+            b"existing-publication"
+        );
+        fs::remove_dir_all(&repo).expect("remove stale export scratch");
+    }
+
+    #[test]
+    fn parent_export_writer_is_create_new_durable_and_collision_preserving() {
+        let scratch = ScratchExportRepo::new("writer");
+        let bytes = br#"{"schema_version":"test"}"#.to_vec();
+        let prepared = PreparedSanitizedExport::from_bytes_for_test(bytes.clone());
+        let export = write_parent_export_new(scratch.directory(), &prepared)
+            .expect("write exact parent export");
+        export
+            .revalidate(scratch.directory())
+            .expect("revalidate retained export");
+        assert_eq!(export.receipt(), prepared.receipt());
+        let leaf = scratch
+            .repo
+            .join(PARENT_EXPORT_DIRECTORY)
+            .join(PARENT_EXPORT_LEAF);
+        assert_eq!(fs::read(&leaf).expect("read parent export"), bytes);
+        assert!(OpenOptions::new().write(true).open(&leaf).is_err());
+        assert!(fs::remove_file(&leaf).is_err());
+        assert_eq!(
+            write_parent_export_new(scratch.directory(), &prepared).err(),
+            Some("lifecycle_parent_export_stale".to_string())
+        );
+        assert_eq!(
+            fs::read(&leaf).expect("read collision-preserved export"),
+            prepared.bytes()
+        );
     }
 
     #[test]
