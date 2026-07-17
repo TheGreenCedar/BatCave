@@ -229,7 +229,7 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
   const uninstallerExport = [
     "; Export exact post-sign uninstaller bytes only for lifecycle-proof artifact builds.",
     '!if "$%BATCAVE_UNINSTALLER_EXPORT_PATH%" != ""',
-    "  !uninstfinalize '\"$%ComSpec%\" /D /C copy /Y \"%1\" \"$%BATCAVE_UNINSTALLER_EXPORT_PATH%\"' = 0",
+    '  !uninstfinalize \'"$%ComSpec%" /D /C copy /Y "%1" "$%BATCAVE_UNINSTALLER_EXPORT_PATH%"\' = 0',
     "!endif",
     "",
     "",

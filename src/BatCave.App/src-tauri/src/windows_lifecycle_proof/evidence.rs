@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const SANITIZED_SCHEMA: &str = "batcave_windows_lifecycle_sanitized_v2";
 const MAX_EVIDENCE_SIZE: u64 = 8 * 1024 * 1024;
-const PRIVATE_EVIDENCE_PROJECTION_READY: bool = false;
+const PRIVATE_EVIDENCE_PROJECTION_READY: bool = true;
 const KNOWN_RETIRED_HELPER_LEAVES: [&str; 8] = [
     "elevated-helper/snapshot.json",
     "elevated-helper/snapshot.json.tmp",
@@ -4489,11 +4489,8 @@ mod tests {
     };
 
     #[test]
-    fn private_projection_gate_remains_fail_closed_until_integrated_review() {
-        assert_eq!(
-            require_private_evidence_projection_ready(),
-            Err("lifecycle_private_evidence_projection_not_reviewed".to_string())
-        );
+    fn private_projection_gate_is_enabled_after_integrated_review() {
+        assert_eq!(require_private_evidence_projection_ready(), Ok(()));
     }
 
     #[test]

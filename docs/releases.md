@@ -48,6 +48,8 @@ Because the NSIS postinstall hook runs after package files and registration are 
 
 Windows proof builds can now export the exact post-sign NSIS uninstaller bytes through an opt-in `BATCAVE_UNINSTALLER_EXPORT_PATH`; a failed export fails the build, avoiding an extra install merely to discover the plan-bound uninstaller identity.
 
+Both private lifecycle readiness gates are enabled after the integrated protocol-v4 review, exact-artifact preflight, fail-closed uninstaller export, restoration review, and native UI Automation smoke of both exact packaged monitor payloads. This makes the one attended controller run reachable; it does not claim installed lifecycle proof until that run succeeds and its sanitized export is verified.
+
 Residue enumeration is capped per root at 256 direct children, 64 classified leaves, and 256 MiB of classified bytes, with tighter per-kind caps. Hardlinks, noncanonical case aliases, and count/byte overflow fail as `Unknown` before an unbounded hash can begin.
 
 ## Platform support and proof
