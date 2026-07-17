@@ -202,8 +202,9 @@ test("keeps validation toolchains, cache writers, and Linux package transport bo
     3,
   );
   assert.equal(
-    validationWorkflow.match(/save-if: \$\{\{ github\.event_name != 'pull_request' \}\}/g)
-      ?.length,
+    validationWorkflow.match(
+      /save-if: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/g,
+    )?.length,
     3,
   );
   assert.doesNotMatch(validationWorkflow, /cache-on-failure|cache-workspace-crates:\s*true/);
@@ -228,10 +229,7 @@ test("keeps validation toolchains, cache writers, and Linux package transport bo
     /^          shared-key: batcave-package-release-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}$/m,
   );
   assert.match(packageTransport, /^          cache-workspace-crates: false$/m);
-  assert.match(
-    packageTransport,
-    /^          save-if: \$\{\{ github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch' \}\}$/m,
-  );
+  assert.match(packageTransport, /^          save-if: false$/m);
 
   const windows = validationJob("windows");
   assertStepOrder(windows, "Reject Rust warnings", "Validate Windows app");

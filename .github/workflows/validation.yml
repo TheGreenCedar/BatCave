@@ -7,6 +7,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -65,7 +68,7 @@ jobs:
         with:
           shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          save-if: ${{ github.event_name != 'pull_request' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -137,7 +140,7 @@ jobs:
         with:
           shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          save-if: ${{ github.event_name != 'pull_request' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install Linux native dependencies
         run: bash scripts/install-linux-deps.sh
@@ -156,6 +159,9 @@ jobs:
 
       - name: Check shell script syntax
         run: bash -n scripts/*.sh
+
+      - name: Test CI cache policy
+        run: node --test scripts/validate-ci-cache-policy.test.mjs
 
       - name: Test release contracts
         run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-deb-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
@@ -196,7 +202,7 @@ jobs:
           shared-key: batcave-package-release-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+          save-if: false
 
       - name: Install Linux native dependencies
         run: bash scripts/install-linux-deps.sh
@@ -235,7 +241,7 @@ jobs:
         with:
           shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          save-if: ${{ github.event_name != 'pull_request' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies
         run: npm ci

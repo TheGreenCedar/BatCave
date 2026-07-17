@@ -38,14 +38,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.97.1
           components: rustfmt
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          shared-key: batcave-bundle-release-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          cache-on-failure: true
-          cache-workspace-crates: true
+          cache-workspace-crates: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -77,16 +78,16 @@ jobs:
           cache: npm
           cache-dependency-path: src/BatCave.App/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4e529fb27e59237866a6523e61ab248308c068b4 # 1.88.0
         with:
           components: rustfmt
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          shared-key: batcave-package-release-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          cache-on-failure: true
-          cache-workspace-crates: true
+          cache-workspace-crates: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install Linux native dependencies
         run: bash scripts/install-linux-deps.sh
@@ -156,15 +157,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.97.1
           components: rustfmt
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: batcave-${{ runner.os }}-${{ runner.arch }}
+          shared-key: batcave-bundle-release-${{ runner.os }}-${{ runner.arch }}
           workspaces: src/BatCave.App/src-tauri -> target
-          cache-on-failure: true
-          cache-workspace-crates: true
+          cache-workspace-crates: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies
         run: npm ci
