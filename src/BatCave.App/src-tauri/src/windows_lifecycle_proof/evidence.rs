@@ -3241,6 +3241,7 @@ struct InstalledArtifactExpectation<'a> {
     service_size: Option<u64>,
     uninstaller_sha256: &'a str,
     uninstaller_size: Option<u64>,
+    shared_shortcuts_present: bool,
 }
 
 fn allowlisted_artifacts(plan: &ProofPlan) -> InstalledArtifactExpectation<'_> {
@@ -3250,6 +3251,7 @@ fn allowlisted_artifacts(plan: &ProofPlan) -> InstalledArtifactExpectation<'_> {
         service_size: None,
         uninstaller_sha256: &plan.allowlisted_start.uninstaller_sha256,
         uninstaller_size: None,
+        shared_shortcuts_present: true,
     }
 }
 
@@ -3260,6 +3262,7 @@ fn baseline_artifacts(plan: &ProofPlan) -> InstalledArtifactExpectation<'_> {
         service_size: None,
         uninstaller_sha256: &plan.baseline.uninstaller_sha256,
         uninstaller_size: Some(plan.baseline.uninstaller_size),
+        shared_shortcuts_present: true,
     }
 }
 
@@ -3270,6 +3273,7 @@ fn final_artifacts(plan: &ProofPlan) -> InstalledArtifactExpectation<'_> {
         service_size: None,
         uninstaller_sha256: &plan.final_candidate.uninstaller_sha256,
         uninstaller_size: Some(plan.final_candidate.uninstaller_size),
+        shared_shortcuts_present: false,
     }
 }
 
@@ -3344,6 +3348,9 @@ fn validate_installed_machine(
     artifacts: InstalledArtifactExpectation<'_>,
     service_expectation: ServiceExpectation,
 ) -> Result<(), String> {
+    if !shared_shortcut_timeline_valid(machine, artifacts.shared_shortcuts_present) {
+        return Err("lifecycle_sanitized_shared_shortcut_timeline_invalid".to_string());
+    }
     if !directory_role_valid(&machine.install_root, LogicalRoot::Install, true)
         || !directory_role_valid(&machine.product_data_root, LogicalRoot::ProductData, true)
         || !directory_role_valid(&machine.service_data_root, LogicalRoot::ServiceData, true)
@@ -3369,8 +3376,6 @@ fn validate_installed_machine(
         || !matches!(machine.uninstall_registry, Observation::Present(_))
         || machine.service_registry_key.is_none()
         || machine.machine_product_key.is_none()
-        || machine.public_desktop_shortcut.is_none()
-        || machine.common_start_menu_shortcut.is_none()
         || !matches!(machine.installed_boundaries, Observation::Present(_))
         || !no_surviving_product_processes(machine)
         || !installed_registration_valid(machine, true)
@@ -3437,6 +3442,9 @@ fn validate_desktop_only_machine(
     machine: &SanitizedMachineSnapshot,
     artifacts: InstalledArtifactExpectation<'_>,
 ) -> Result<(), String> {
+    if !shared_shortcut_timeline_valid(machine, artifacts.shared_shortcuts_present) {
+        return Err("lifecycle_sanitized_shared_shortcut_timeline_invalid".to_string());
+    }
     if !matches!(machine.service, Observation::Absent)
         || machine.service_registry_key.is_some()
         || !runtime_residue_absent(machine)
@@ -3462,8 +3470,6 @@ fn validate_desktop_only_machine(
         })
         || !matches!(machine.uninstall_registry, Observation::Present(_))
         || machine.machine_product_key.is_none()
-        || machine.public_desktop_shortcut.is_none()
-        || machine.common_start_menu_shortcut.is_none()
         || !matches!(machine.installed_boundaries, Observation::Absent)
         || !no_surviving_product_processes(machine)
         || !installed_registration_valid(machine, false)
@@ -3538,7 +3544,18 @@ fn installed_registration_valid(
     let product_key_valid = machine.machine_product_key.as_ref().is_some_and(|path| {
         logical_leaf_eq(path, LogicalRoot::Hklm, "software/batcave/batcave monitor")
     });
-    let public_shortcut_valid = machine
+    uninstall_registry_valid && (!require_service_key || service_key_valid) && product_key_valid
+}
+
+fn shared_shortcut_timeline_valid(
+    machine: &SanitizedMachineSnapshot,
+    should_be_present: bool,
+) -> bool {
+    if !should_be_present {
+        return machine.public_desktop_shortcut.is_none()
+            && machine.common_start_menu_shortcut.is_none();
+    }
+    machine
         .public_desktop_shortcut
         .as_ref()
         .is_some_and(|shortcut| {
@@ -3551,9 +3568,8 @@ fn installed_registration_valid(
                 LogicalRoot::Install,
                 "batcave-monitor.exe",
             )
-        });
-    let start_menu_shortcut_valid =
-        machine
+        })
+        && machine
             .common_start_menu_shortcut
             .as_ref()
             .is_some_and(|shortcut| {
@@ -3566,12 +3582,7 @@ fn installed_registration_valid(
                     LogicalRoot::Install,
                     "batcave-monitor.exe",
                 )
-            });
-    uninstall_registry_valid
-        && (!require_service_key || service_key_valid)
-        && product_key_valid
-        && public_shortcut_valid
-        && start_menu_shortcut_valid
+            })
 }
 
 fn logical_leaf_eq(path: &LogicalPath, root: LogicalRoot, relative_leaf: &str) -> bool {
@@ -4595,8 +4606,8 @@ mod tests {
         let machine = export
             .private_evidence
             .iter()
-            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
-            .expect("running entry")
+            .find(|entry| entry.receipt.name == "baseline-install-state.private.json")
+            .expect("baseline entry")
             .machine
             .clone();
         let raw = raw_machine(&machine);
@@ -4610,6 +4621,27 @@ mod tests {
             Ok(())
         );
         assert_eq!(SANITIZED_SCHEMA, "batcave_windows_lifecycle_sanitized_v2");
+
+        let final_machine = export
+            .private_evidence
+            .iter()
+            .find(|entry| entry.receipt.name == "final-repair-state.private.json")
+            .expect("final repair entry")
+            .machine
+            .clone();
+        let final_raw = raw_machine(&final_machine);
+        assert!(matches!(
+            final_raw.machine_registration.public_desktop_shortcut,
+            Observation::Absent
+        ));
+        assert!(matches!(
+            final_raw.machine_registration.common_start_menu_shortcut,
+            Observation::Absent
+        ));
+        assert_eq!(
+            compare_machine_projection(&final_raw, &final_machine, &plan, &parent_current_user(),),
+            Ok(())
+        );
 
         let mut unknown_product = raw.clone();
         unknown_product.machine_registration.product_key_64 =
@@ -4646,6 +4678,12 @@ mod tests {
         unknown_public.machine_registration.public_desktop_shortcut =
             Observation::Unknown("public_unknown".to_string());
         assert_rejected(unknown_public);
+
+        let mut unknown_common = raw.clone();
+        unknown_common
+            .machine_registration
+            .common_start_menu_shortcut = Observation::Unknown("common_unknown".to_string());
+        assert_rejected(unknown_common);
 
         for mutation in 0..11 {
             let mut hostile = raw.clone();
@@ -5548,6 +5586,71 @@ mod tests {
             &receipts,
         )
         .is_err());
+    }
+
+    #[test]
+    fn sanitized_export_enforces_shared_shortcut_timeline() {
+        let plan = parse_plan().expect("plan");
+        let receipts = success_receipts();
+        let packet = valid_export(&plan, &receipts);
+        let validate = |packet: &SanitizedExportPacket| {
+            validate_sanitized_export_bytes(
+                &serde_json::to_vec(packet).expect("packet"),
+                &plan,
+                &"c".repeat(40),
+                &"d".repeat(64),
+                &receipts,
+            )
+        };
+
+        assert_eq!(validate(&packet), Ok(()));
+        for (index, entry) in packet.private_evidence.iter().enumerate() {
+            let historical_shortcuts_required = entry.receipt.name == "initial-state.private.json"
+                || entry.receipt.name.starts_with("baseline-")
+                || entry.receipt.name == "legacy-residue-seeded-state.private.json";
+            assert_eq!(
+                entry.machine.public_desktop_shortcut.is_some()
+                    && entry.machine.common_start_menu_shortcut.is_some(),
+                historical_shortcuts_required,
+                "{} shortcut timeline",
+                entry.receipt.name
+            );
+
+            for (location, replacement) in [
+                (
+                    "public desktop",
+                    if historical_shortcuts_required {
+                        None
+                    } else {
+                        Some(shortcut(LogicalRoot::PublicDesktop))
+                    },
+                ),
+                (
+                    "common start menu",
+                    if historical_shortcuts_required {
+                        None
+                    } else {
+                        Some(shortcut(LogicalRoot::CommonStartMenu))
+                    },
+                ),
+            ] {
+                let mut wrong = packet.clone();
+                if location == "public desktop" {
+                    wrong.private_evidence[index]
+                        .machine
+                        .public_desktop_shortcut = replacement;
+                } else {
+                    wrong.private_evidence[index]
+                        .machine
+                        .common_start_menu_shortcut = replacement;
+                }
+                assert!(
+                    validate(&wrong).is_err(),
+                    "{} {location}",
+                    entry.receipt.name
+                );
+            }
+        }
     }
 
     #[test]
@@ -7261,8 +7364,12 @@ mod tests {
                 value_name: "BatCave Monitor".to_string(),
                 target: logical_path(LogicalRoot::Install, "batcave-monitor.exe"),
             }),
-            public_desktop_shortcut: Some(shortcut(LogicalRoot::PublicDesktop)),
-            common_start_menu_shortcut: Some(shortcut(LogicalRoot::CommonStartMenu)),
+            public_desktop_shortcut: artifacts
+                .shared_shortcuts_present
+                .then(|| shortcut(LogicalRoot::PublicDesktop)),
+            common_start_menu_shortcut: artifacts
+                .shared_shortcuts_present
+                .then(|| shortcut(LogicalRoot::CommonStartMenu)),
             known_retired_helper_artifacts: Vec::new(),
             unknown_helper_sentinel: preserve_unknown_sentinel.then(unknown_sentinel),
         }

@@ -92,6 +92,8 @@ Current-user residue authority is now standard-parent-only and never enters the 
 
 Residue enumeration is capped per root at 256 direct children, 64 classified leaves, and 256 MiB of classified bytes, with tighter 16 KiB journal/ServiceData-temp, 64 MiB image/temp, and 1 KiB execution-marker caps. Hardlinks, noncanonical case aliases, or count/byte overflow fail as `Unknown` before an unbounded hash can begin.
 
+Sanitized stage validation requires both exact historical links for the allowlisted legacy install, every baseline checkpoint and baseline desktop phase, and `LegacyResidueSeeded`. It requires both absent for `FinalRepair`, every final checkpoint, restoration, and desktop phase, and both uninstall checkpoints. Any unknown raw shortcut observation fails projection closed.
+
 ## Required observations
 
 Each stage records bounded private JSON with exact machine paths under the protected local evidence root. A distinct sanitized export replaces those paths with logical root identities and relative leaves before it can leave the machine.
