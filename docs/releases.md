@@ -11,6 +11,8 @@ The `Versioned release` workflow supports two paths:
 
 Every release artifact contains the offline-capable Windows NSIS installer, Windows GUI and benchmark CLI executables, Linux deb and AppImage packages, the universal macOS DMG and updater archive, `SHA256SUMS.txt`, and a Sigstore/GitHub build-provenance bundle. Workflow artifacts are retained for 30 days; published GitHub Release assets are durable.
 
+Successful `main` pushes seed the Rust dependency caches that pull-request validation restores. Pull requests remain restore-only and cannot publish Rust caches. Windows, Linux, and macOS reuse the normal validation jobs; a push-only Linux package seed builds the existing release bundle graph under the separate package cache key without becoming a required pull-request check. The package cache excludes workspace crates, so this changes dependency reuse only and preserves every validation and packaging gate.
+
 Verify a downloaded file with `Get-FileHash -Algorithm SHA256` on Windows, `sha256sum --check SHA256SUMS.txt` on Linux, or `shasum -a 256 -c SHA256SUMS.txt` on macOS. Verify provenance with `gh attestation verify <file> --repo TheGreenCedar/BatCave`. On Windows, confirm the installed version in Apps settings and the executable file properties matches the release tag without the leading `v`.
 
 Windows artifacts remain unsigned until the code-signing issue is resolved. Do not promote an unsigned prerelease to the stable channel.
