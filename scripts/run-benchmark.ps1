@@ -17,7 +17,9 @@ param(
     [string]$MinSpeedupMultiplier = "",
     [string]$MaxP95Ms = "",
     [switch]$Strict,
-    [switch]$DevBuild
+    [switch]$DevBuild,
+    [ValidatePattern("^[0-9A-Fa-f]{64}$")]
+    [string]$PrebuiltBinarySha256 = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -116,16 +118,26 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     $BaselineJsonPath = $tempBaselinePath
 }
 
-$cargoArgs = @("build", "--manifest-path", $cargoManifest, "--bin", "batcave-monitor-cli")
-if (-not $DevBuild.IsPresent) {
-    $cargoArgs += "--release"
-}
-& cargo @cargoArgs
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+if ([string]::IsNullOrWhiteSpace($PrebuiltBinarySha256)) {
+    $cargoArgs = @("build", "--manifest-path", $cargoManifest, "--bin", "batcave-monitor-cli")
+    if (-not $DevBuild.IsPresent) {
+        $cargoArgs += "--release"
+    }
+    & cargo @cargoArgs
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
 if (-not (Test-Path -LiteralPath $benchmarkExe)) {
-    throw "Benchmark executable not found after $buildProfile build: $benchmarkExe"
+    $buildState = if ([string]::IsNullOrWhiteSpace($PrebuiltBinarySha256)) { "after $buildProfile build" } else { "for the prebuilt SHA-256 handoff" }
+    throw "Benchmark executable not found ${buildState}: $benchmarkExe"
+}
+if (-not [string]::IsNullOrWhiteSpace($PrebuiltBinarySha256)) {
+    $actualBinarySha256 = (Get-FileHash -LiteralPath $benchmarkExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualBinarySha256 -cne $PrebuiltBinarySha256.ToLowerInvariant()) {
+        throw "Prebuilt benchmark executable SHA-256 mismatch. Expected '$PrebuiltBinarySha256', found '$actualBinarySha256'."
+    }
+    Write-Host "Verified prebuilt benchmark executable SHA-256: $actualBinarySha256"
 }
 
 $benchmarkArgs = @(
