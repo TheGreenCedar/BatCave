@@ -87,6 +87,18 @@ test("keeps required pull-request validation restore-only", () => {
     assert.equal(cache.saveIf, trustedMainSave.slice("save-if: ".length));
   }
 
+  const windows = workflowJob(validationWorkflow, "windows");
+  assert.match(
+    windows,
+    /^    env:\n      CARGO_PROFILE_DEV_DEBUG: "0"\n      CARGO_PROFILE_TEST_DEBUG: "0"$/m,
+  );
+  for (const name of ["linux", "macos"]) {
+    assert.doesNotMatch(
+      workflowJob(validationWorkflow, name),
+      /CARGO_PROFILE_(?:DEV|TEST)_DEBUG/,
+    );
+  }
+
   assert.equal(validationWorkflow.split(trustedMainSave).length - 1, 3);
   assert.doesNotMatch(validationWorkflow, /linux-package-cache-seed/);
   const transport = workflowJob(validationWorkflow, "linux-package-transport");
