@@ -839,7 +839,7 @@ test("serialized plans cannot authorize a separate Rust composition root", () =>
   );
 });
 
-test("accepted no-entry decision leaves every prohibited production bridge absent", () => {
+test("superseded no-entry decision preserves the rejected bridge boundary", () => {
   const decision = fs.readFileSync(
     path.join(
       ROOT,
@@ -866,9 +866,20 @@ test("accepted no-entry decision leaves every prohibited production bridge absen
     "utf8",
   );
 
-  assert.match(decision, /Status: accepted; no current product-owned entry/u);
+  assert.match(
+    decision,
+    /Status: superseded; the Rust-owned `batcave-install-smoke` entry now preserves the accepted boundary/u,
+  );
+  assert.match(
+    decision,
+    /historical record for rejecting a serialized JavaScript-to-Rust authority bridge/u,
+  );
   assert.match(decision, /Do not add a production Rust install-smoke composition root yet/u);
   assert.match(decision, /Rust independently reads the immutable public release/u);
+  assert.match(
+    cargoManifest,
+    /\[\[bin\]\]\s*name = "batcave-install-smoke"\s*path = "src\/bin\/batcave-install-smoke\.rs"\s*required-features = \["private-release-verifier"\]/u,
+  );
   assert.equal(
     rustSourceFiles.filter((file) => /native[_-]install[_-]smoke/iu.test(file)).length,
     0,

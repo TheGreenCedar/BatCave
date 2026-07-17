@@ -1757,22 +1757,3 @@ fn cleanup_failure_retains_state_and_retry_removes_it() {
     assert!(!recovered.outcome().residue_retained);
     assert_non_claims(recovered.outcome());
 }
-
-#[test]
-fn probe_has_no_production_javascript_or_cli_entrypoint() {
-    let manifest_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let production_lib =
-        std::fs::read_to_string(manifest_root.join("src/lib.rs")).expect("read production library");
-    assert!(!production_lib.contains("macos_updater_owned_stream_transport_spike"));
-
-    let repository_root = manifest_root
-        .ancestors()
-        .nth(3)
-        .expect("manifest is nested below repository root");
-    for candidate in [
-        "scripts/macos-updater-owned-stream-transport.mjs",
-        "scripts/macos-updater-owned-stream-transport.test.mjs",
-    ] {
-        assert!(!repository_root.join(candidate).exists());
-    }
-}

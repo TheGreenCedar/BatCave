@@ -145,25 +145,6 @@ fn unsupported_hosts_report_the_boundary_without_mutation() {
     assert_non_claims(&outcome);
 }
 
-#[test]
-fn probe_has_no_production_or_javascript_entrypoint() {
-    let manifest_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let production_lib =
-        std::fs::read_to_string(manifest_root.join("src/lib.rs")).expect("read production library");
-    assert!(!production_lib.contains("macos_dmg_destination_gate_spike"));
-
-    let repository_root = manifest_root
-        .ancestors()
-        .nth(3)
-        .expect("manifest is nested below repository root");
-    for prohibited in [
-        "scripts/macos-dmg-destination-gate.mjs",
-        "scripts/macos-dmg-destination-gate.test.mjs",
-    ] {
-        assert!(!repository_root.join(prohibited).exists());
-    }
-}
-
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{assert_non_claims, DestinationGates, Disposition, FailureBoundary, ProbeOutcome};

@@ -1,10 +1,15 @@
 # Rust install-smoke complete-operation entry
 
-- Status: accepted; no current product-owned entry preserves the accepted boundary
+- Status: superseded; the Rust-owned `batcave-install-smoke` entry now preserves the accepted boundary
 - Date: 2026-07-14
 - Decision issue: #138
 - Architecture dependency: #130 / ADR 0003 at `b83953e41b8a667c2a3c4d4f8af0e1fa3d66c62c`
 - Integration contained by that head: `090b29667a1e9d04f8e38b88d212b54717e87155`
+- Successor: [Native install-smoke executor](../native-install-smoke-executor.md)
+
+## Supersession
+
+This decision remains the historical record for rejecting a serialized JavaScript-to-Rust authority bridge. The production `batcave-install-smoke` binary now avoids that bridge: it independently verifies the immutable public release, complete inventory, checksums, source-bound attestations, protected source identity, and selected bytes before private dispatch. The sections below describe the repository state and constraints at the time of this decision.
 
 ## Decision
 
