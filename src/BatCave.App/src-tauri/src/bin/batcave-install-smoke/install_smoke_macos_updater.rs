@@ -845,7 +845,11 @@ mod tests {
     const FIXTURE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgRTc2MjBGMTg0MkI0RTgxRgpSV1FmNkxSQ0dBOWk1M21sWWVjTzRJelQ1MVRHUHB2V3VjTlNDaDFDQk0wUVRhTG43M1k3R0ZPMw==";
     const FIXTURE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUldRZjZMUkNHQTlpNTlTTE9GeHo2Tnh2QVNYREplUnR1Wnlrd1FlcGJERUd0ODdpZzFCTnBXYVZXdU5ybTczWWlJaUpicTcxV2krZFA5ZUtMOE9DMzUxdndJYXNTU2JYeHdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNTU1Nzc5OTY2CWZpbGU6dGVzdApRdEtNWFd5WWN3ZHBaQWxQRjd0RTJFTkprUmQxdWp2S2psajFtOVJ0SFRCblpQYTVXS1U1dVdSczVHb1A1TS9WcUU4MVFGdU1LSTVrL1NmTlFVYU9BQT09";
 
-    fn archive(entries: &[(&str, EntryType, &[u8])]) -> Vec<u8> {
+    fn archive(entries: &[(&[u8], EntryType, &[u8])]) -> Vec<u8> {
+        gzip_member(&raw_archive(entries))
+    }
+
+    fn raw_archive(entries: &[(&[u8], EntryType, &[u8])]) -> Vec<u8> {
         let mut tar = Builder::new(Vec::new());
         tar.mode(tar::HeaderMode::Deterministic);
         for (name, kind, bytes) in entries {
@@ -860,19 +864,26 @@ mod tests {
             } else {
                 0
             });
-            set_raw_name(&mut header, name.as_bytes());
-            if kind.is_symlink() {
+            set_raw_name(&mut header, name);
+            if kind.is_symlink() || *kind == EntryType::Link {
                 header.set_link_name("outside").expect("fixture link name");
+            }
+            if *kind == EntryType::Char {
+                header.set_device_major(1).expect("fixture device major");
+                header.set_device_minor(3).expect("fixture device minor");
             }
             header.set_cksum();
             tar.append(&header, Cursor::new(*bytes))
                 .expect("append fixture");
         }
-        let raw = tar.into_inner().expect("finish tar");
+        tar.into_inner().expect("finish tar")
+    }
+
+    fn gzip_member(bytes: &[u8]) -> Vec<u8> {
         let mut gzip = GzBuilder::new()
             .mtime(0)
             .write(Vec::new(), Compression::default());
-        gzip.write_all(&raw).expect("write gzip");
+        gzip.write_all(bytes).expect("write gzip");
         gzip.finish().expect("finish gzip")
     }
 
@@ -885,14 +896,41 @@ mod tests {
 
     fn valid_archive() -> Vec<u8> {
         archive(&[
-            (APP_NAME, EntryType::Directory, b""),
-            ("BatCave Monitor.app/Contents", EntryType::Directory, b""),
+            (APP_NAME.as_bytes(), EntryType::Directory, b""),
+            (b"BatCave Monitor.app/Contents", EntryType::Directory, b""),
             (
-                "BatCave Monitor.app/Contents/fixture",
+                b"BatCave Monitor.app/Contents/fixture",
                 EntryType::Regular,
                 b"fixture\n",
             ),
         ])
+    }
+
+    fn archive_with_hidden_entry_after_end_marker() -> Vec<u8> {
+        let mut raw = raw_archive(&[
+            (APP_NAME.as_bytes(), EntryType::Directory, b""),
+            (b"BatCave Monitor.app/Contents", EntryType::Directory, b""),
+            (
+                b"BatCave Monitor.app/Contents/fixture",
+                EntryType::Regular,
+                b"fixture\n",
+            ),
+        ]);
+        let first_zero = raw
+            .chunks_exact(512)
+            .position(|block| block.iter().all(|byte| *byte == 0))
+            .expect("fixture tar has an end marker")
+            * 512;
+        let hidden = raw_archive(&[(
+            b"BatCave Monitor.app/Contents/hidden",
+            EntryType::Regular,
+            b"hidden",
+        )]);
+        raw.splice(
+            first_zero + 512..first_zero + 512,
+            hidden[..1024].iter().copied(),
+        );
+        gzip_member(&raw)
     }
 
     fn assert_stage_failure(result: Result<usize, StageError>, expected: StageFailure) {
@@ -932,17 +970,106 @@ mod tests {
 
     #[test]
     fn hostile_paths_links_collisions_and_trailing_members_fail_closed() {
-        let cases = [
+        let cases = vec![
             archive(&[(
-                "BatCave Monitor.app/../outside",
+                b"BatCave Monitor.app/../outside",
                 EntryType::Regular,
                 b"outside",
             )]),
-            archive(&[("BatCave Monitor.app/Contents/link", EntryType::Symlink, b"")]),
+            archive(&[(
+                b"/BatCave Monitor.app/Contents/file",
+                EntryType::Regular,
+                b"file",
+            )]),
+            archive(&[(
+                b"BatCave Monitor.app/Contents\\file",
+                EntryType::Regular,
+                b"file",
+            )]),
+            archive(&[(
+                b"BatCave Monitor.app/Contents/\xff",
+                EntryType::Regular,
+                b"file",
+            )]),
+            archive(&[(
+                b"BatCave Monitor.app/Contents/link",
+                EntryType::Symlink,
+                b"",
+            )]),
+            archive(&[(b"BatCave Monitor.app/Contents/link", EntryType::Link, b"")]),
+            archive(&[(b"BatCave Monitor.app/Contents/device", EntryType::Char, b"")]),
             archive(&[
-                (APP_NAME, EntryType::Directory, b""),
-                ("BatCave Monitor.app/Contents/A", EntryType::Regular, b"one"),
-                ("BatCave Monitor.app/contents/a", EntryType::Regular, b"two"),
+                (APP_NAME.as_bytes(), EntryType::Directory, b""),
+                (b"README.txt", EntryType::Regular, b"readme"),
+            ]),
+            archive(&[
+                (APP_NAME.as_bytes(), EntryType::Directory, b""),
+                (
+                    b"BatCave Monitor.app/Other.app/file",
+                    EntryType::Regular,
+                    b"nested",
+                ),
+            ]),
+            archive(&[
+                (APP_NAME.as_bytes(), EntryType::Directory, b""),
+                (
+                    b"BatCave Monitor.app/Contents/duplicate",
+                    EntryType::Regular,
+                    b"one",
+                ),
+                (
+                    b"BatCave Monitor.app/Contents/duplicate",
+                    EntryType::Regular,
+                    b"two",
+                ),
+            ]),
+            archive(&[
+                (APP_NAME.as_bytes(), EntryType::Directory, b""),
+                (
+                    b"BatCave Monitor.app/Contents/A",
+                    EntryType::Regular,
+                    b"one",
+                ),
+                (
+                    b"BatCave Monitor.app/contents/a",
+                    EntryType::Regular,
+                    b"two",
+                ),
+            ]),
+            archive(&[
+                (APP_NAME.as_bytes(), EntryType::Directory, b""),
+                (
+                    "BatCave Monitor.app/Stra\u{df}e/A".as_bytes(),
+                    EntryType::Regular,
+                    b"one",
+                ),
+                (b"BatCave Monitor.app/STRASSE/B", EntryType::Regular, b"two"),
+            ]),
+            archive(&[
+                (APP_NAME.as_bytes(), EntryType::Directory, b""),
+                (
+                    "BatCave Monitor.app/Re\u{301}sources/A".as_bytes(),
+                    EntryType::Regular,
+                    b"one",
+                ),
+                (
+                    "BatCave Monitor.app/R\u{e9}sources/B".as_bytes(),
+                    EntryType::Regular,
+                    b"two",
+                ),
+            ]),
+            archive(&[
+                (APP_NAME.as_bytes(), EntryType::Directory, b""),
+                (
+                    b"BatCave Monitor.app/Contents/node",
+                    EntryType::Regular,
+                    b"file",
+                ),
+                (
+                    b"BatCave Monitor.app/Contents/Node/child",
+                    EntryType::Regular,
+                    b"child",
+                ),
             ]),
         ];
         for hostile in cases {
@@ -958,6 +1085,25 @@ mod tests {
             stage_and_cleanup(&trailing, Limits::production()),
             StageFailure::Preflight,
         );
+
+        let mut invalid_trailer = valid_archive();
+        let trailer = invalid_trailer.len() - 8;
+        invalid_trailer[trailer] ^= 0xff;
+        let mut trailing_bytes = valid_archive();
+        trailing_bytes.extend_from_slice(b"trailing");
+        let mut second_member = valid_archive();
+        second_member.extend_from_slice(&gzip_member(b"second gzip member"));
+        for hostile in [
+            invalid_trailer,
+            trailing_bytes,
+            second_member,
+            archive_with_hidden_entry_after_end_marker(),
+        ] {
+            assert_stage_failure(
+                stage_and_cleanup(&hostile, Limits::production()),
+                StageFailure::Preflight,
+            );
+        }
     }
 
     #[test]
@@ -973,6 +1119,22 @@ mod tests {
         let mut expanded = Limits::production();
         expanded.max_expanded_bytes = 1;
         assert_stage_failure(stage_and_cleanup(&bytes, expanded), StageFailure::Preflight);
+
+        let mut members = Limits::production();
+        members.max_member_count = 2;
+        assert_stage_failure(stage_and_cleanup(&bytes, members), StageFailure::Preflight);
+
+        let deep = archive(&[
+            (APP_NAME.as_bytes(), EntryType::Directory, b""),
+            (
+                b"BatCave Monitor.app/a/b/c/d/e/f/g/h/i/j/k/l/m/n/fixture",
+                EntryType::Regular,
+                b"fixture",
+            ),
+        ]);
+        let mut paths = Limits::production();
+        paths.max_path_bookkeeping_bytes = 1_024;
+        assert_stage_failure(stage_and_cleanup(&deep, paths), StageFailure::Preflight);
     }
 
     #[test]
@@ -1033,5 +1195,30 @@ mod tests {
             error.into_public_failure(),
             Failure::VerificationAndCleanupFailed
         );
+    }
+
+    #[test]
+    fn successful_stage_with_cleanup_failure_retains_authority_until_retry() {
+        let bytes = valid_archive();
+        let limits = Limits::production();
+        let preflight = preflight(&bytes, limits).expect("preflight");
+        let root =
+            PrivateRoot::create_with_cleanup_failures(1).expect("create retained fixture root");
+        let retained_path = root.path().to_path_buf();
+        materialize(&bytes, &preflight, root.path(), limits).expect("materialize fixture");
+        verify_staged_tree(root.path(), &preflight).expect("verify fixture");
+
+        let mut error = settle_staging(root, Ok(()), preflight.records.len())
+            .expect_err("cleanup failure cannot emit a successful observation");
+        assert_eq!(error.primary, None);
+        assert_eq!(error.cleanup, Some(StageFailure::Cleanup));
+        assert!(error.residue_retained());
+        assert!(retained_path.exists());
+        error
+            .retry_cleanup_bounded()
+            .expect("bounded retry removes retained staging root");
+        assert!(!error.residue_retained());
+        assert!(!retained_path.exists());
+        assert_eq!(error.into_public_failure(), Failure::CleanupFailed);
     }
 }
