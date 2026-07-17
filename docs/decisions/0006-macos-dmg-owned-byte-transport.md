@@ -13,6 +13,8 @@ Do not implement the macOS DMG adapter by passing an inherited Rust-owned descri
 
 On the tested macOS host, Rust kept a valid local fixture DMG open, cleared `FD_CLOEXEC` only in the fixed `hdiutil` child, unlinked and replaced the original source path, and invoked the fixed read-only attach operation with `/dev/fd/N`. `hdiutil` settled with `attach failed - Bad file descriptor`. It created no mount. The same result occurred in the smaller direct host experiment before the Rust probe was written.
 
+The regression probe does not depend on that localized diagnostic text. It reports descriptor transport as unsupported only when the descriptor attach settles unsuccessfully with bounded output and the same hashed fixture bytes then attach and detach cleanly through an ordinary positive-control path. A bounded unrelated `hdiutil` failure remains failed.
+
 The failure means the descriptor does not survive the complete DiskImages attachment path. The authority still owns valid bytes, but the fixed platform operation cannot consume them through that descriptor. A pre-attach rehash would not repair this boundary because `hdiutil` would still consume a different input.
 
 This is `unsupported`, not `native_proven`, and not a reason to expose a path.
@@ -25,6 +27,7 @@ The probe:
 
 - creates a small unsigned local read-only DMG containing one inert marker file;
 - opens the DMG in Rust, hashes it, unlinks its source name, and writes different bytes at that old name;
+- retains a private same-bytes copy only as a positive control for the test classifier, and requires that copy to attach and detach cleanly before accepting descriptor transport as unsupported;
 - makes only the exact owned descriptor inheritable in the fixed child and passes only `/dev/fd/N` to `hdiutil attach`;
 - runs every fixed `hdiutil` child in an owned process group with a deadline, `SIGTERM`/`SIGKILL` settlement, bounded output, and no stdin;
 - owns the private fixture root and mount point, attempts bounded detach before deletion, and checks owned process-group, mount, and temporary-root residue;

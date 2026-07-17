@@ -105,6 +105,7 @@ fn unsupported_hosts_report_the_boundary_without_mutation() {
 mod macos {
     use super::{assert_non_claims, Disposition, FailureBoundary, ProbeOutcome};
     use sha2::{Digest, Sha256};
+    use std::ffi::OsStr;
     use std::fs::{self, DirBuilder, File, OpenOptions};
     use std::io::{self, Read, Seek, SeekFrom};
     use std::os::fd::{AsRawFd, RawFd};
@@ -121,7 +122,6 @@ mod macos {
     const FIXTURE_MARKER: &str = "authority-marker.txt";
     const FIXTURE_CONTENTS: &[u8] = b"BatCave issue 140 descriptor fixture\n";
     const OUTPUT_LIMIT: usize = 4096;
-    const BAD_DESCRIPTOR: &[u8] = b"Bad file descriptor";
     const NORMAL_TIMEOUT: Duration = Duration::from_secs(30);
     const TERMINATION_GRACE: Duration = Duration::from_secs(2);
     static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -160,9 +160,9 @@ mod macos {
         AfterSpawn(UnsettledProcess),
     }
 
-    struct DescriptorAttachResult {
+    struct AttachResult {
         process: OwnedProcessResult,
-        bad_descriptor: Option<bool>,
+        output_bounded: bool,
     }
 
     struct RetainedRecovery {
@@ -201,6 +201,7 @@ mod macos {
         root: Option<PathBuf>,
         mount_point: PathBuf,
         source_path: PathBuf,
+        control_path: Option<PathBuf>,
         source: Option<File>,
         expected_digest: [u8; 32],
         mount_created: bool,
@@ -254,6 +255,13 @@ mod macos {
                 FixtureKind::InvalidBytes => write_private(&source_path, b"not a disk image\n")?,
             }
 
+            let control_path = if kind == FixtureKind::ValidDmg {
+                let path = root.path().join("path-control.dmg");
+                fs::copy(&source_path, &path)?;
+                Some(path)
+            } else {
+                None
+            };
             let mut source = OpenOptions::new().read(true).open(&source_path)?;
             let expected_digest = digest_file(&mut source)?;
             source.seek(SeekFrom::Start(0))?;
@@ -264,6 +272,7 @@ mod macos {
                 root: Some(root),
                 mount_point,
                 source_path,
+                control_path,
                 source: Some(source),
                 expected_digest,
                 mount_created: false,
@@ -317,33 +326,43 @@ mod macos {
             );
 
             let (disposition, primary_boundary, started, settled) = match process {
-                Ok(result) if result.process.timed_out => (
-                    Disposition::Failed,
-                    FailureBoundary::Timeout,
-                    true,
-                    result.process.settled,
-                ),
-                Ok(result) if result.process.status.success() => {
-                    self.mount_created = mount_is_active(&self.mount_point);
-                    (
-                        Disposition::Failed,
-                        FailureBoundary::Consumption,
-                        true,
-                        result.process.settled,
-                    )
+                Ok(result) => {
+                    if result.process.timed_out {
+                        (
+                            Disposition::Failed,
+                            FailureBoundary::Timeout,
+                            true,
+                            result.process.settled,
+                        )
+                    } else if result.process.status.success() {
+                        self.mount_created = mount_is_active(&self.mount_point);
+                        (
+                            Disposition::Failed,
+                            FailureBoundary::Consumption,
+                            true,
+                            result.process.settled,
+                        )
+                    } else {
+                        let path_control_proven = valid_fixture
+                            && result.output_bounded
+                            && self.prove_path_attach_control();
+                        let disposition = if descriptor_failure_is_unsupported(
+                            valid_fixture,
+                            result.output_bounded,
+                            path_control_proven,
+                        ) {
+                            Disposition::Unsupported
+                        } else {
+                            Disposition::Failed
+                        };
+                        (
+                            disposition,
+                            FailureBoundary::Consumption,
+                            true,
+                            result.process.settled,
+                        )
+                    }
                 }
-                Ok(result) if valid_fixture && result.bad_descriptor == Some(true) => (
-                    Disposition::Unsupported,
-                    FailureBoundary::Consumption,
-                    true,
-                    result.process.settled,
-                ),
-                Ok(result) => (
-                    Disposition::Failed,
-                    FailureBoundary::Consumption,
-                    true,
-                    result.process.settled,
-                ),
                 Err(SupervisionFailure::BeforeSpawn) => (
                     Disposition::Failed,
                     FailureBoundary::Consumption,
@@ -368,6 +387,45 @@ mod macos {
                 settled,
                 descriptor_bytes_unchanged,
             )
+        }
+
+        fn prove_path_attach_control(&mut self) -> bool {
+            let Some(control_path) = self.control_path.as_ref() else {
+                return false;
+            };
+            if mount_is_active(&self.mount_point)
+                || digest_path(control_path).ok() != Some(self.expected_digest)
+            {
+                return false;
+            }
+
+            let result = match attach_path(
+                control_path,
+                &self.mount_point,
+                self.root.as_ref().expect("retained root"),
+            ) {
+                Ok(result) => result,
+                Err(SupervisionFailure::BeforeSpawn) => return false,
+                Err(SupervisionFailure::AfterSpawn(process)) => {
+                    self.unsettled_process = Some(process);
+                    return false;
+                }
+            };
+            if result.process.timed_out
+                || !result.process.status.success()
+                || !result.process.settled
+                || !result.output_bounded
+                || !mount_is_active(&self.mount_point)
+            {
+                return false;
+            }
+
+            self.mount_created = true;
+            if !self.detach_owned(false) {
+                return false;
+            }
+            self.mount_created = false;
+            true
         }
 
         fn probe_failed_detach(&mut self) -> ProbeOutcome {
@@ -758,6 +816,10 @@ mod macos {
         Ok(hasher.finalize().into())
     }
 
+    fn digest_path(path: &Path) -> io::Result<[u8; 32]> {
+        digest_file(&mut File::open(path)?)
+    }
+
     fn create_fixture_dmg(
         source_dir: &Path,
         output: &Path,
@@ -779,36 +841,73 @@ mod macos {
         root: &Path,
         timeout: Duration,
         fail_after_spawn: bool,
-    ) -> Result<DescriptorAttachResult, SupervisionFailure> {
-        let stdout = private_output(root.join("attach.stdout"))
-            .map_err(|_| SupervisionFailure::BeforeSpawn)?;
-        let stderr = private_output(root.join("attach.stderr"))
-            .map_err(|_| SupervisionFailure::BeforeSpawn)?;
+    ) -> Result<AttachResult, SupervisionFailure> {
+        let descriptor_path = format!("/dev/fd/{raw_fd}");
+        attach_image(
+            OsStr::new(&descriptor_path),
+            Some(raw_fd),
+            mount_point,
+            root,
+            "attach",
+            timeout,
+            fail_after_spawn,
+        )
+    }
+
+    fn attach_path(
+        source_path: &Path,
+        mount_point: &Path,
+        root: &Path,
+    ) -> Result<AttachResult, SupervisionFailure> {
+        attach_image(
+            source_path.as_os_str(),
+            None,
+            mount_point,
+            root,
+            "path-control-attach",
+            NORMAL_TIMEOUT,
+            false,
+        )
+    }
+
+    fn attach_image(
+        source: &OsStr,
+        inherited_fd: Option<RawFd>,
+        mount_point: &Path,
+        root: &Path,
+        output_stem: &str,
+        timeout: Duration,
+        fail_after_spawn: bool,
+    ) -> Result<AttachResult, SupervisionFailure> {
+        let stdout_path = root.join(format!("{output_stem}.stdout"));
+        let stderr_path = root.join(format!("{output_stem}.stderr"));
+        let stdout =
+            private_output(stdout_path.clone()).map_err(|_| SupervisionFailure::BeforeSpawn)?;
+        let stderr =
+            private_output(stderr_path.clone()).map_err(|_| SupervisionFailure::BeforeSpawn)?;
         let mut command = Command::new(HDIUTIL);
         command
             .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
             .arg(mount_point)
-            .arg(format!("/dev/fd/{raw_fd}"))
+            .arg(source)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
-        let result = supervise(command, Some(raw_fd), timeout, fail_after_spawn)?;
-        let stdout = read_bounded(&root.join("attach.stdout"));
-        let stderr = read_bounded(&root.join("attach.stderr"));
-        let bad_descriptor = match (stdout, stderr) {
-            (Ok(_), Ok(stderr)) => Some(contains_bytes(&stderr, BAD_DESCRIPTOR)),
-            _ => None,
-        };
-        Ok(DescriptorAttachResult {
+        let result = supervise(command, inherited_fd, timeout, fail_after_spawn)?;
+        let output_bounded =
+            read_bounded(&stdout_path).is_ok() && read_bounded(&stderr_path).is_ok();
+        Ok(AttachResult {
             process: result,
-            bad_descriptor,
+            output_bounded,
         })
     }
 
-    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-        haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
+    fn descriptor_failure_is_unsupported(
+        valid_fixture: bool,
+        descriptor_output_bounded: bool,
+        path_control_proven: bool,
+    ) -> bool {
+        valid_fixture && descriptor_output_bounded && path_control_proven
     }
 
     fn detach_mount(
@@ -1030,6 +1129,14 @@ mod macos {
         assert_eq!(replay.disposition, Disposition::AuthorityRejected);
         assert!(!replay.hdiutil_started);
         assert_non_claims(&replay);
+    }
+
+    #[test]
+    fn bounded_unrelated_attach_failure_is_not_unsupported_without_path_control() {
+        assert!(!descriptor_failure_is_unsupported(true, true, false));
+        assert!(!descriptor_failure_is_unsupported(true, false, true));
+        assert!(!descriptor_failure_is_unsupported(false, true, true));
+        assert!(descriptor_failure_is_unsupported(true, true, true));
     }
 
     #[test]
