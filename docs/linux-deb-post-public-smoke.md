@@ -1,10 +1,10 @@
 # Linux deb post-public smoke
 
-Published releases get separate fresh, protected `ubuntu-22.04` deb and AppImage jobs after the release has been made public. This document covers the deb job. The companion AppImage job uses `scripts/linux-appimage-post-public-smoke.mjs` and retains its own sanitized observation.
+Published releases get separate fresh, protected `ubuntu-22.04` deb and AppImage jobs after the release has been made public. This document covers the deb job. The fixed `scripts/linux-deb-post-public-smoke.mjs` and `scripts/linux-appimage-post-public-smoke.mjs` entrypoints share `scripts/linux-post-public-smoke.mjs`, but each selects one closed native capture and retains its own sanitized observation and output filename.
 
 ## Identity and byte boundary
 
-The finalize job retains its exact pre-publication candidate JSON as a one-day workflow artifact. The post-public job downloads that fixed artifact name and invokes `scripts/linux-deb-post-public-smoke.mjs` with only the workflow-owned release tag and source SHA. The script reads the candidate from one fixed repository-relative location. It accepts no caller artifact path, command, environment, status, callback, or evidence payload.
+The finalize job retains its exact pre-publication candidate JSON as a one-day workflow artifact. The post-public job downloads that fixed artifact name and invokes `scripts/linux-deb-post-public-smoke.mjs` with only the workflow-owned release tag and source SHA. Its shared driver reads the candidate from one fixed repository-relative location. Neither entrypoint accepts a caller-selected profile, artifact path, command, environment, status, callback, or evidence payload.
 
 The new job then:
 
