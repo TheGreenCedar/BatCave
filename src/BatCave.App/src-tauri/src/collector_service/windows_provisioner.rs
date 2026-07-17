@@ -510,16 +510,11 @@ mod native {
         time::{Duration, Instant},
     };
 
-    #[cfg(feature = "private-windows-lifecycle-proof")]
-    use windows_sys::Win32::{
-        Foundation::WAIT_TIMEOUT,
-        System::Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
-    };
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, GetLastError, LocalFree, SetLastError, ERROR_ALREADY_EXISTS,
-            ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_LOCK_VIOLATION,
-            ERROR_NOT_ALL_ASSIGNED, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
+            ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ALL_ASSIGNED,
+            ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
             ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SERVICE_NOT_ACTIVE, ERROR_SHARING_VIOLATION,
             ERROR_SUCCESS, HANDLE, LUID, WAIT_OBJECT_0,
         },
@@ -578,6 +573,11 @@ mod native {
         UI::Shell::{
             SHGetFolderPathW, CSIDL_COMMON_APPDATA, CSIDL_PROGRAM_FILES, SHGFP_TYPE_CURRENT,
         },
+    };
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    use windows_sys::Win32::{
+        Foundation::{ERROR_LOCK_VIOLATION, WAIT_TIMEOUT},
+        System::Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
     };
 
     #[cfg(feature = "private-windows-lifecycle-proof")]

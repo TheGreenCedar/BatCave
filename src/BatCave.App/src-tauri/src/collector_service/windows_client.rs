@@ -6,8 +6,8 @@ use std::{
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_NO_DATA,
-        ERROR_PIPE_BUSY, HANDLE,
+        GetLastError, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY,
+        HANDLE,
     },
     Security::{CreateWellKnownSid, WinLocalSystemSid, TOKEN_QUERY},
     Storage::FileSystem::{
@@ -24,6 +24,9 @@ use windows_sys::Win32::{
         Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
     },
 };
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 
 use super::{
     authorization::VerifiedServicePeer,
