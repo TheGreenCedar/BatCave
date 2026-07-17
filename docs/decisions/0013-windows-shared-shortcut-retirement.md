@@ -1,0 +1,39 @@
+# Windows shared-shortcut retirement
+
+- Status: accepted source contract; native install proof remains outstanding
+- Date: 2026-07-16
+- Issues: #212, #214
+
+## Decision
+
+The per-machine NSIS package owns no shared launch shortcut. BatCave pins Tauri CLI 2.11.4's NSIS template in-repo and makes both shortcut callbacks return on `NoShortcutMode` before any legacy-target inspection, mutation, or other return path. The stock finish-page desktop-shortcut control is omitted. The preinstall hook sets `NoShortcutMode` before either callback can run and clears the completed WiX migration flag as defense in depth. Preuninstall sets the same mode before native retirement, and the template guards only Tauri's later path-based shortcut cleanup so it cannot reopen either shared namespace after the native gate; the upstream `DeleteAppUserModelId` registration cleanup still runs on non-update uninstall. Postinstall and preuninstall call one fixed native provisioner verb that requires both historical links to be absent.
+
+Vendoring the template is accepted as part of #213 because Tauri's supported installer hooks run around the install section and cannot prepend logic inside `CreateOrUpdateStartMenuShortcut` or `CreateOrUpdateDesktopShortcut`, remove the finish-page control, or suppress the stock post-hook uninstall block. A normal source test removes BatCave's two callback guards and uninstall condition, restores the omitted finish-page definitions, removes the provenance header, and then requires the remaining bytes to match the SHA-256 of Tauri CLI 2.11.4 / tauri-bundler 2.9.4 commit `8909f221d1515955fc843808032bdc5d62209c96`. A Tauri CLI upgrade therefore requires importing the new upstream template, reapplying only those audited deltas, updating the pinned commit/hash, and reviewing fresh generated release output.
+
+The native verb resolves only `FOLDERID_PublicDesktop` and `FOLDERID_CommonPrograms`, pins the OS-returned paths and every ancestry directory without following reparse points or allowing delete sharing, and opens only `BatCave Monitor.lnk`. Handle-returned `\\?\UNC\server\share` paths are normalized back to canonical `\\server\share` form before they are compared with redirected known folders. It does not assume that Program Files, the public profile, ProgramData, or a redirected known folder is on `C:`. The invoking controller must first verify as the exact stable service image, recovery image, or semver-staged image under the OS-resolved Program Files product directory; those Program Files, install-directory, and controller handles remain pinned throughout retirement. The expected monitor target and working directory are derived from that verified install directory.
+
+A present leaf must be a single-link, bounded regular file at the exact final path. While its no-write/no-delete-sharing handle remains open, the helper reads the bounded bytes from that handle and loads them into native `IShellLinkW` through an in-memory `IPersistStream`; `IPropertyStore` reads the AppUserModelID. The exact target, arguments, icon, working directory, show state, hotkey, description, and AppUserModelID must match the historical Tauri contract. Only then is that same handle marked delete-pending. Unknown, replaced, redirected, reparse, hardlinked, malformed, or changed objects abort the installer rather than being deleted.
+
+No shared parent or leaf ACL is rewritten. In particular, hardening only the link cannot compensate for `DELETE_CHILD` on its parent, and changing the machine-wide Common Programs ACL would alter an OS namespace owned by other products. Shortcut retirement is monotonic across update and rollback: once removed, a failed candidate does not restore the unsafe shared surface.
+
+Upgrade preflight runs while a verified prior service generation is running. If an earlier installer was interrupted with a `Prepared` journal, the provisioner first restores and validates that prior generation before destructive preparation continues. Candidate commit repeats the absence gate after the candidate is running but before the upgrade journal can be finalized; a hostile or recreated collision rolls the candidate back and proves the prior digest running again. The stable install verb repeats the gate once more. On a fresh install, a failure after service creation runs the existing new-install rollback. Uninstall retains its retirement-before-service-mutation ordering.
+
+## Launch-surface boundary
+
+This slice deliberately creates no per-user replacement. A per-machine NSIS uninstaller started from Apps & Features has no authenticated original-user profile: over-the-shoulder UAC credentials identify the elevation account, an administrator or SYSTEM uninstall may have no intended desktop user, and logged-out users may have redirected Start folders with unloaded profile hives. Creating per-user links without a bounded all-user retirement mechanism would leave broken Start entries after uninstall. Per-user discoverability therefore remains a separate packaging/lifecycle decision; the elevated installer does not infer profiles, enumerate user hives, or write current-user state.
+
+Until that follow-up lands, users launch the installed executable from its fixed Program Files location or retain a user-created pin/shortcut. Such user-created entries are user state, not installer authority.
+
+## Proof boundary
+
+Source tests prove the fixed hook ordering, controller selection, OS-known-folder and relocated-install handling (including verbatim UNC handle paths), exact two-location plan, exact shortcut contract, hostile identity rejection, handle-authorized deletion primitive, interrupted-transaction recovery ordering, and absence of ACL/profile-enumeration code. Windows bundle validation and the protected release build both run the post-bundle verifier against `src-tauri/target/release/nsis/x64/installer.nsi`; it requires both generated callbacks to short-circuit before any shortcut inspection or mutation, no finish-page shortcut control, preserved AppUserModelId cleanup, and a `NoShortcutMode` guard around every stock shared-path inspection or mutation after PREUNINSTALL. Final acceptance still requires an exact built NSIS install, update, failed-update rollback, repair, and uninstall under a real standard account, including over-the-shoulder elevation credentials. Every post-migration stage must observe both shared links absent; an unknown collision must fail closed without deleting it and with the prior verified generation running.
+
+## Verification
+
+```powershell
+npm --prefix src/BatCave.App run test:windows-service-installer
+npm --prefix src/BatCave.App run verify:windows-installer-generated -- src-tauri/target/release/nsis/x64/installer.nsi
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -BundleOnly
+cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml windows_shortcut_retirement
+cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
+```

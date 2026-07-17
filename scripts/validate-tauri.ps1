@@ -192,6 +192,10 @@ try {
             exit $LASTEXITCODE
         }
 
+        Run-Step "Generated release NSIS shortcut contract" {
+            npm run verify:windows-installer-generated -- "src-tauri/target/release/nsis/x64/installer.nsi"
+        }
+
         $releaseExecutable = Join-Path $appRoot "src-tauri/target/release/batcave-monitor.exe"
         $subsystem = Get-PeSubsystem -Path $releaseExecutable
         if ($subsystem -ne 2) {

@@ -153,6 +153,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
 
+      - name: Verify generated release NSIS shortcut contract
+        working-directory: src/BatCave.App
+        run: npm run verify:windows-installer-generated -- "src-tauri/target/release/nsis/x64/installer.nsi"
+
       - name: Collect Windows distributables
         shell: pwsh
         run: |
