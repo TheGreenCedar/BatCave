@@ -188,6 +188,19 @@ impl ParentCurrentUserRetentionState {
         )?;
         Ok((before.authority(), after.authority()))
     }
+
+    fn revalidate_terminal(
+        &self,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<(), String> {
+        let (_, after) = self.complete(root)?;
+        let current = native::capture_parent_current_user_objects(root)?;
+        current.revalidate()?;
+        if current.authority() != after {
+            return Err("lifecycle_parent_user_retention_terminal_drift".to_string());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,6 +385,31 @@ impl ParentCurrentUserResidueState {
         Ok(&self.timeline)
     }
 
+    fn revalidate_final_uninstall(
+        &mut self,
+        root: &native::ParentCurrentUserAuthorityGuard,
+    ) -> Result<(), String> {
+        root.revalidate()?;
+        let expected = self
+            .timeline
+            .get(native::ParentCurrentUserCapturePoint::Checkpoint(
+                LifecycleStage::FinalUninstall,
+            ))?
+            .clone();
+        let current = native::capture_parent_current_user_residue(root)?;
+        validate_parent_residue_snapshot(
+            &current,
+            ParentResidueExpectation::FinalUninstalled,
+            root.authority(),
+            self.sentinel_anchor.as_ref(),
+        )?;
+        self.validate_authority_anchors(&current)?;
+        if current != expected {
+            return Err("lifecycle_parent_user_final_uninstall_drift".to_string());
+        }
+        Ok(())
+    }
+
     fn cleanup_after_worker_settlement(
         &mut self,
         root: &native::ParentCurrentUserAuthorityGuard,
@@ -493,6 +531,15 @@ trait ParentResidueTerminalCleanup {
     }
 
     fn cleanup_worker_failure(
+        &mut self,
+        authority: &Self::Authority,
+        process_trees_settled: bool,
+    ) -> Option<String> {
+        self.cleanup_parent_residue(authority, process_trees_settled)
+            .err()
+    }
+
+    fn cleanup_post_release_failure(
         &mut self,
         authority: &Self::Authority,
         process_trees_settled: bool,
@@ -963,6 +1010,9 @@ fn run_parent() -> Result<i32, String> {
     let preflight = parent_preflight()?;
     lifecycle::require_controller_ready()?;
     evidence::require_private_evidence_projection_ready()?;
+    // This full-ancestry, no-delete guard is acquired before elevation and retained
+    // through terminal publication. A stale destination therefore blocks UAC entirely.
+    let export_directory = native::pin_parent_export_directory(&preflight.repo_root)?;
     let locator = native::random_hex(crate::windows_lifecycle_proof_contract::LOCATOR_HEX_LENGTH)?;
     let nonce = native::random_hex(crate::windows_lifecycle_proof_contract::NONCE_HEX_LENGTH)?;
     let mut pipe = native::create_parent_pipe(&locator)?;
@@ -991,6 +1041,7 @@ fn run_parent() -> Result<i32, String> {
     let mut parent_desktop_trees_settled = true;
     let mut current_user_retention = ParentCurrentUserRetentionState::default();
     let mut current_user_residue = ParentCurrentUserResidueState::default();
+    let mut worker_released = false;
     let session = (|| -> Result<i32, String> {
         loop {
             let envelope: Envelope<WorkerMessage> = pipe.read_json(SESSION_TIMEOUT)?;
@@ -1125,31 +1176,41 @@ fn run_parent() -> Result<i32, String> {
                             receipt,
                         )?);
                     }
-                    let sanitized_export = result
-                        .sanitized_export
-                        .as_ref()
-                        .ok_or_else(|| "lifecycle_sanitized_export_missing".to_string())?;
-                    let sanitized_evidence_guard =
-                        native::verify_evidence_receipt(evidence_root_guard, sanitized_export)?;
-                    let (before_uninstall, after_uninstall) =
-                        current_user_retention.complete(&preflight.parent_current_user)?;
-                    let residue_timeline =
-                        current_user_residue.complete(&preflight.parent_current_user)?;
-                    evidence::validate_verified_private_projection(
-                        &private_evidence_guards,
-                        &sanitized_evidence_guard,
-                        &preflight.plan,
-                        &preflight.source_commit_sha,
-                        &preflight.controller.sha256_hex(),
+                    validate_success_desktop_results(
                         &desktop_results,
-                        evidence::ParentCurrentUserProjection {
-                            authority: preflight.parent_current_user.authority(),
-                            before_uninstall,
-                            after_uninstall,
-                            residue_timeline,
-                        },
+                        parent_desktop_trees_settled,
+                        &preflight.plan,
                     )?;
-                    revalidate_preflight_artifacts(&preflight)?;
+                    let prepared_export = {
+                        let (before_uninstall, after_uninstall) =
+                            current_user_retention.complete(&preflight.parent_current_user)?;
+                        let residue_timeline =
+                            current_user_residue.complete(&preflight.parent_current_user)?;
+                        evidence::derive_sanitized_export(
+                            &private_evidence_guards,
+                            &preflight.plan,
+                            &preflight.source_commit_sha,
+                            &preflight.controller.sha256_hex(),
+                            &desktop_results,
+                            evidence::ParentCurrentUserProjection {
+                                authority: preflight.parent_current_user.authority(),
+                                before_uninstall,
+                                after_uninstall,
+                                residue_timeline,
+                            },
+                        )?
+                    };
+                    revalidate_success_sources(
+                        &preflight,
+                        evidence_root_guard,
+                        &private_evidence_guards,
+                        &current_user_retention,
+                        &mut current_user_residue,
+                    )?;
+                    export_directory.require_leaf_absent()?;
+                    // EvidenceAccepted releases the worker only. It is not publication success,
+                    // and every later error stays on the local post-release finalizer.
+                    worker_released = true;
                     send_parent_message(
                         &mut pipe,
                         &nonce,
@@ -1157,13 +1218,34 @@ fn run_parent() -> Result<i32, String> {
                         ParentMessage::EvidenceAccepted,
                     )?;
                     let exit_code = worker.wait(Duration::from_secs(30))?;
-                    revalidate_preflight_artifacts(&preflight)?;
                     if exit_code != 0 {
                         return Err("lifecycle_worker_exit_mismatch".to_string());
                     }
+                    revalidate_success_sources(
+                        &preflight,
+                        evidence_root_guard,
+                        &private_evidence_guards,
+                        &current_user_retention,
+                        &mut current_user_residue,
+                    )?;
+                    export_directory.require_leaf_absent()?;
+                    let sanitized_export =
+                        native::write_parent_export_new(&export_directory, &prepared_export)?;
+                    if private_evidence_guards
+                        .iter()
+                        .any(|private| private.identity() == sanitized_export.identity())
+                    {
+                        return Err("lifecycle_parent_export_private_identity_reused".to_string());
+                    }
+                    revalidate_success_sources(
+                        &preflight,
+                        evidence_root_guard,
+                        &private_evidence_guards,
+                        &current_user_retention,
+                        &mut current_user_residue,
+                    )?;
+                    sanitized_export.revalidate(&export_directory)?;
                     current_user_residue.cleanup_success(&preflight.parent_current_user)?;
-                    let evidence_root_value =
-                        Some(evidence_root_guard.root().to_string_lossy().into_owned());
                     print_json(&ControllerOutcome {
                         disposition: "passed",
                         reason: None,
@@ -1177,11 +1259,11 @@ fn run_parent() -> Result<i32, String> {
                         restoration_evidence_verified: None,
                         parent_followup_error: None,
                         private_evidence: Some(result.private_evidence.clone()),
-                        sanitized_export: result.sanitized_export.clone(),
+                        sanitized_export: Some(sanitized_export.receipt().clone()),
                         success_evidence_verified: Some(true),
                         profile: Some(preflight.plan.profile.clone()),
                         controller_source_commit_sha: Some(preflight.source_commit_sha.clone()),
-                        evidence_root: evidence_root_value,
+                        evidence_root: None,
                         preflight: Some(preflight.snapshot.clone()),
                     });
                     return Ok(0);
@@ -1310,6 +1392,13 @@ fn run_parent() -> Result<i32, String> {
     })();
     match session {
         Ok(code) => Ok(code),
+        Err(reason) if worker_released => finalize_post_release_failure(
+            &mut worker,
+            &preflight,
+            &mut current_user_residue,
+            parent_desktop_trees_settled,
+            reason,
+        ),
         Err(reason) => abort_parent_session(
             &mut pipe,
             &nonce,
@@ -1907,6 +1996,98 @@ fn revalidate_preflight_artifacts(preflight: &ParentPreflight) -> Result<(), Str
     preflight.parent_current_user.revalidate()
 }
 
+fn validate_success_desktop_results(
+    results: &[DesktopPhaseResult],
+    process_trees_settled: bool,
+    plan: &ProofPlan,
+) -> Result<(), String> {
+    if !process_trees_settled || results.len() != DESKTOP_PHASES.len() {
+        return Err("lifecycle_parent_desktop_results_incomplete".to_string());
+    }
+    for (result, expected_phase) in results.iter().zip(DESKTOP_PHASES) {
+        if result.phase != expected_phase
+            || result.disposition != DesktopPhaseDisposition::Passed
+            || !result.process_tree_settled
+        {
+            return Err("lifecycle_parent_desktop_result_invalid".to_string());
+        }
+        validate_desktop_phase_result(result, plan)?;
+    }
+    Ok(())
+}
+
+fn revalidate_success_sources(
+    preflight: &ParentPreflight,
+    evidence_root: &native::ProtectedEvidenceRoot,
+    private_evidence: &[native::VerifiedEvidenceFile],
+    current_user_retention: &ParentCurrentUserRetentionState,
+    current_user_residue: &mut ParentCurrentUserResidueState,
+) -> Result<(), String> {
+    revalidate_preflight_artifacts(preflight)?;
+    evidence_root.revalidate()?;
+    if private_evidence.len() != SUCCESS_PRIVATE_EVIDENCE_LEAVES.len() {
+        return Err("lifecycle_success_private_evidence_manifest_invalid".to_string());
+    }
+    let mut identities = std::collections::BTreeSet::new();
+    for (file, expected_name) in private_evidence.iter().zip(SUCCESS_PRIVATE_EVIDENCE_LEAVES) {
+        if file.receipt().name != expected_name
+            || !identities.insert((file.identity().volume_serial, file.identity().file_index))
+        {
+            return Err("lifecycle_success_private_evidence_manifest_invalid".to_string());
+        }
+        file.revalidate()?;
+    }
+    current_user_retention.revalidate_terminal(&preflight.parent_current_user)?;
+    current_user_residue.complete(&preflight.parent_current_user)?;
+    current_user_residue.revalidate_final_uninstall(&preflight.parent_current_user)
+}
+
+fn finalize_post_release_failure(
+    worker: &mut native::ElevatedProcess,
+    preflight: &ParentPreflight,
+    current_user_residue: &mut ParentCurrentUserResidueState,
+    parent_desktop_trees_settled: bool,
+    reason: String,
+) -> Result<i32, String> {
+    let mut followup = None;
+    let worker_tree_settled = match worker.terminate_and_settle() {
+        Ok(()) => true,
+        Err(error) => {
+            followup = Some(error);
+            false
+        }
+    };
+    if let Some(error) = current_user_residue.cleanup_post_release_failure(
+        &preflight.parent_current_user,
+        worker_tree_settled && parent_desktop_trees_settled,
+    ) {
+        followup = Some(followup.map_or(error.clone(), |existing| {
+            append_parent_followup_error(&existing, &error)
+        }));
+    }
+    print_json(&ControllerOutcome {
+        disposition: "parent_post_release_failed",
+        reason: Some(reason),
+        worker_failure_kind: None,
+        attempted_stage: None,
+        failure_evidence: None,
+        failure_evidence_verified: None,
+        evidence_error: None,
+        restoration: None,
+        abort: None,
+        restoration_evidence_verified: None,
+        parent_followup_error: followup,
+        private_evidence: None,
+        sanitized_export: None,
+        success_evidence_verified: Some(false),
+        profile: Some(preflight.plan.profile.clone()),
+        controller_source_commit_sha: Some(preflight.source_commit_sha.clone()),
+        evidence_root: None,
+        preflight: Some(preflight.snapshot.clone()),
+    });
+    Ok(1)
+}
+
 fn restoration_evidence(restoration: &RestorationOutcome) -> Option<&EvidenceReceipt> {
     match restoration {
         RestorationOutcome::Restored { evidence }
@@ -2198,16 +2379,13 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
                 .is_none_or(|checkpoint| {
                     checkpoint.completed_stage != LifecycleStage::FinalUninstall
                 })
-            || result.private_evidence.is_empty()
-            || result.private_evidence.len() > 64
-            || result.sanitized_export.is_none()
             || !valid_success_evidence_receipts(result)
         {
             return Err("lifecycle_worker_result_invalid".to_string());
         }
         return Ok(());
     }
-    if !result.private_evidence.is_empty() || result.sanitized_export.is_some() {
+    if !result.private_evidence.is_empty() {
         return Err("lifecycle_worker_failure_evidence_state_invalid".to_string());
     }
     let failure = result
@@ -2402,7 +2580,6 @@ fn failure_requires_restoration(
         WorkerFailureKind::ParentAbort => {
             result.completed_stage != Some(LifecycleStage::InitialState)
         }
-        WorkerFailureKind::Controller if valid_parent_export_pending(result, failure) => false,
         WorkerFailureKind::EvidenceWrite | WorkerFailureKind::Controller => {
             restoration_stage(result, failure)
                 .is_some_and(|stage| stage != LifecycleStage::InitialState)
@@ -2410,27 +2587,11 @@ fn failure_requires_restoration(
     }
 }
 
-fn valid_parent_export_pending(
-    result: &WorkerResult,
-    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
-) -> bool {
-    result.completed_stage == Some(LifecycleStage::FinalUninstall)
-        && result.process_tree_settled
-        && result
-            .last_authenticated_checkpoint
-            .is_some_and(|checkpoint| checkpoint.completed_stage == LifecycleStage::FinalUninstall)
-        && failure.attempted_stage.is_none()
-        && failure.reason == "lifecycle_parent_export_pending"
-}
-
 fn validate_parent_failure_completion(
     result: &WorkerResult,
     failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
     desktop_phase_index: usize,
 ) -> Result<(), String> {
-    if valid_parent_export_pending(result, failure) && desktop_phase_index != DESKTOP_PHASES.len() {
-        return Err("lifecycle_parent_export_desktop_phases_incomplete".to_string());
-    }
     if failure
         .attempted_stage
         .is_some_and(|stage| desktop_phase_index < minimum_desktop_phase_index_before_stage(stage))
@@ -2575,30 +2736,27 @@ fn validate_restoration_receipt(
 
 fn valid_success_evidence_receipts(result: &WorkerResult) -> bool {
     let mut names = std::collections::BTreeSet::new();
-    if result.private_evidence.iter().any(|receipt| {
-        receipt.size == 0
-            || receipt.size > 8 * 1024 * 1024
-            || !receipt.name.ends_with(".private.json")
-            || !valid_evidence_leaf(&receipt.name)
-            || validate_sha256(&receipt.sha256, "private_evidence").is_err()
-            || !names.insert(receipt.name.as_str())
-    }) {
-        return false;
-    }
-    if names
-        != SUCCESS_PRIVATE_EVIDENCE_LEAVES
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
+    if result.private_evidence.len() != SUCCESS_PRIVATE_EVIDENCE_LEAVES.len()
+        || result
+            .private_evidence
+            .iter()
+            .zip(SUCCESS_PRIVATE_EVIDENCE_LEAVES)
+            .any(|(receipt, expected_name)| {
+                receipt.size == 0
+                    || receipt.size > 8 * 1024 * 1024
+                    || !receipt.name.ends_with(".private.json")
+                    || receipt.name != expected_name
+                    || !valid_evidence_leaf(&receipt.name)
+                    || validate_sha256(&receipt.sha256, "private_evidence").is_err()
+                    || !names.insert(receipt.name.as_str())
+            })
     {
         return false;
     }
-    result.sanitized_export.as_ref().is_some_and(|receipt| {
-        receipt.name == "windows-lifecycle-proof.sanitized.json"
-            && receipt.size > 0
-            && receipt.size <= 8 * 1024 * 1024
-            && validate_sha256(&receipt.sha256, "sanitized_export").is_ok()
-            && names.insert(receipt.name.as_str())
-    })
+    names
+        == SUCCESS_PRIVATE_EVIDENCE_LEAVES
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
 }
 
 fn valid_evidence_leaf(value: &str) -> bool {
@@ -2666,9 +2824,6 @@ fn controller_attempt_binding_valid(
     result: &WorkerResult,
     failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
 ) -> bool {
-    if failure.reason == "lifecycle_parent_export_pending" {
-        return valid_parent_export_pending(result, failure);
-    }
     let fallback_desktop_failure = [
         DesktopPhase::FinalMissingService,
         DesktopPhase::FinalStoppedService,
@@ -2909,7 +3064,7 @@ mod tests {
         let success_terminal = bounded(
             success_arm,
             "                    let exit_code = worker.wait(Duration::from_secs(30))?;",
-            "                    let evidence_root_value =",
+            "                    print_json(&ControllerOutcome {",
         );
 
         let worker_failure_arm = bounded(
@@ -2938,10 +3093,16 @@ mod tests {
             "    let (restoration, worker_settled) = match worker",
             "    if let Err(error) = revalidate_preflight_artifacts(preflight) {",
         );
+        let post_release_terminal = bounded(
+            production,
+            "fn finalize_post_release_failure(",
+            "fn restoration_evidence(",
+        );
 
         let routes = [
             (".cleanup_success(", success_terminal),
             (".cleanup_worker_failure(", worker_failure_terminal),
+            (".cleanup_post_release_failure(", post_release_terminal),
             (
                 ".cleanup_authenticated_abort(",
                 authenticated_abort_terminal,
@@ -2962,6 +3123,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn parent_publication_order_crosses_ack_only_after_preparation_and_writes_after_job_zero() {
+        let source = include_str!("windows_lifecycle_proof.rs").replace("\r\n", "\n");
+        let (production, _) = source
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .expect("production/test source boundary");
+        let run_parent = production
+            .split_once("fn run_parent()")
+            .expect("run parent")
+            .1
+            .split_once("fn validate_requested_desktop_phase_result(")
+            .expect("run parent end")
+            .0;
+        let pin = run_parent
+            .find("native::pin_parent_export_directory")
+            .expect("pre-UAC export pin");
+        let launch = run_parent
+            .find("native::launch_elevated_worker")
+            .expect("worker launch");
+        assert!(pin < launch, "destination authority must precede UAC");
+
+        let success = run_parent
+            .split_once(
+                "                WorkerMessage::ResultReady(result) if result.failure.is_none() => {",
+            )
+            .expect("success result arm")
+            .1
+            .split_once("                WorkerMessage::ResultReady(result) => {")
+            .expect("success result arm end")
+            .0;
+        let ordered = [
+            "evidence::derive_sanitized_export(",
+            "revalidate_success_sources(",
+            "worker_released = true;",
+            "ParentMessage::EvidenceAccepted,",
+            "let exit_code = worker.wait(Duration::from_secs(30))?;",
+            "native::write_parent_export_new",
+            "sanitized_export.revalidate(&export_directory)?;",
+            ".cleanup_success(&preflight.parent_current_user)?;",
+            "disposition: \"passed\"",
+        ];
+        let positions = ordered
+            .iter()
+            .map(|needle| {
+                success
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("missing ordered publication step: {needle}"))
+            })
+            .collect::<Vec<_>>();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+
+        assert!(run_parent.contains("Err(reason) if worker_released =>"));
+        let post_release = production
+            .split_once("fn finalize_post_release_failure(")
+            .expect("post-release finalizer")
+            .1
+            .split_once("fn restoration_evidence(")
+            .expect("post-release finalizer end")
+            .0;
+        assert!(!post_release.contains("abort_parent_session("));
+        assert!(!post_release.contains("send_parent_message("));
+        assert!(post_release.contains(".terminate_and_settle()"));
+        assert!(post_release.contains("sanitized_export: None"));
     }
 
     struct IsolatedParentResidueTerminal {
@@ -3769,7 +3995,6 @@ mod tests {
             }),
             process_tree_settled: true,
             private_evidence: Vec::new(),
-            sanitized_export: None,
         };
         assert!(validate_worker_result(&original, false).is_ok());
 
@@ -4207,7 +4432,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_success_requires_unique_fixed_private_and_sanitized_receipts() {
+    fn worker_success_requires_exact_ordered_private_receipts() {
         let passed = success_result();
         assert!(validate_worker_result(&passed, true).is_ok());
 
@@ -4247,14 +4472,10 @@ mod tests {
             Err("lifecycle_worker_result_invalid".to_string())
         );
 
-        let mut wrong_export = passed;
-        wrong_export
-            .sanitized_export
-            .as_mut()
-            .expect("sanitized")
-            .name = "sanitized.json".to_string();
+        let mut reordered = passed;
+        reordered.private_evidence.swap(0, 1);
         assert_eq!(
-            validate_worker_result(&wrong_export, true),
+            validate_worker_result(&reordered, true),
             Err("lifecycle_worker_result_invalid".to_string())
         );
     }
@@ -4601,86 +4822,6 @@ mod tests {
     }
 
     #[test]
-    fn final_uninstall_may_stop_only_for_pending_parent_export() {
-        let result = failed_result_at(
-            LifecycleStage::FinalUninstall,
-            WorkerFailure {
-                kind: WorkerFailureKind::Controller,
-                attempted_stage: None,
-                reason: "lifecycle_parent_export_pending".to_string(),
-                evidence: None,
-                evidence_error: None,
-                restoration: Box::new(RestorationOutcome::NotRequired),
-            },
-        );
-        assert!(validate_worker_result(&result, false).is_ok());
-        let export_failure = result.failure.as_ref().expect("failure");
-        assert!(
-            validate_parent_failure_completion(&result, export_failure, DESKTOP_PHASES.len(),)
-                .is_ok()
-        );
-        assert_eq!(
-            validate_parent_failure_completion(&result, export_failure, 0),
-            Err("lifecycle_parent_export_desktop_phases_incomplete".to_string())
-        );
-
-        let mut missing_checkpoint = result.clone();
-        missing_checkpoint.last_authenticated_checkpoint = None;
-        *missing_checkpoint
-            .failure
-            .as_mut()
-            .expect("failure")
-            .restoration = RestorationOutcome::BlockedUntrusted {
-            reason: "lifecycle_restoration_not_reviewed".to_string(),
-        };
-        assert_eq!(
-            validate_worker_result(&missing_checkpoint, false),
-            Err("lifecycle_worker_failure_shape_invalid".to_string())
-        );
-
-        let mut stale_checkpoint = missing_checkpoint;
-        stale_checkpoint.last_authenticated_checkpoint = Some(WorkerCheckpoint {
-            completed_stage: LifecycleStage::FinalFallbackStates,
-            evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
-                volume_serial: 1,
-                file_index: 1,
-            },
-        });
-        assert_eq!(
-            validate_worker_result(&stale_checkpoint, false),
-            Err("lifecycle_worker_failure_shape_invalid".to_string())
-        );
-
-        let mut attempted_stage = result.clone();
-        attempted_stage
-            .failure
-            .as_mut()
-            .expect("failure")
-            .attempted_stage = Some(LifecycleStage::FinalUninstall);
-        assert_eq!(
-            validate_worker_result(&attempted_stage, false),
-            Err("lifecycle_worker_failure_shape_invalid".to_string())
-        );
-
-        let mut wrong_reason = result.clone();
-        wrong_reason.failure.as_mut().expect("failure").reason =
-            "lifecycle_other_controller_failure".to_string();
-        assert_eq!(
-            validate_worker_result(&wrong_reason, false),
-            Err("lifecycle_worker_restoration_disposition_invalid".to_string())
-        );
-
-        let mut leaked_receipt = result;
-        leaked_receipt
-            .private_evidence
-            .push(evidence_receipt("final-uninstall-state.private.json"));
-        assert_eq!(
-            validate_worker_result(&leaked_receipt, false),
-            Err("lifecycle_worker_failure_evidence_state_invalid".to_string())
-        );
-    }
-
-    #[test]
     fn ordinary_failure_progress_allows_only_the_next_stage_evidence_write() {
         let initial_checkpoint = WorkerCheckpoint {
             completed_stage: LifecycleStage::InitialState,
@@ -4868,7 +5009,6 @@ mod tests {
             }),
             process_tree_settled: true,
             private_evidence: Vec::new(),
-            sanitized_export: None,
         }
     }
 
@@ -4897,7 +5037,6 @@ mod tests {
                 .iter()
                 .map(|name| evidence_receipt(name))
                 .collect(),
-            sanitized_export: Some(evidence_receipt("windows-lifecycle-proof.sanitized.json")),
         }
     }
 
@@ -4917,7 +5056,6 @@ mod tests {
             failure: Some(failure),
             process_tree_settled: true,
             private_evidence: Vec::new(),
-            sanitized_export: None,
         }
     }
 

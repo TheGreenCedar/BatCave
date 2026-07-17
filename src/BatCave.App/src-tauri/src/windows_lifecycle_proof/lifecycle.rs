@@ -1,12 +1,12 @@
 use super::desktop::DesktopWindow;
 use super::native::{
-    capture_elevated_machine_snapshot, open_allowlisted_legacy_cli, open_installed_service,
-    open_installed_uninstaller, parse_sha256, require_allowlisted_elevated_preflight,
-    require_elevated_crashed_candidate, require_elevated_installed_candidate,
-    require_elevated_stopped_candidate, require_elevated_total_product_absence,
-    restore_allowlisted_legacy_cli, DesktopProcess, ElevatedMachineSnapshot, ExecuteFailure,
-    OwnedFile, PeerBinding, PipeConnection, ProcessTerminal, ProcessTerminalSnapshot,
-    ProtectedEvidenceRoot,
+    capture_elevated_machine_snapshot, collect_success_evidence_receipts,
+    open_allowlisted_legacy_cli, open_installed_service, open_installed_uninstaller, parse_sha256,
+    require_allowlisted_elevated_preflight, require_elevated_crashed_candidate,
+    require_elevated_installed_candidate, require_elevated_stopped_candidate,
+    require_elevated_total_product_absence, restore_allowlisted_legacy_cli, DesktopProcess,
+    ElevatedMachineSnapshot, ExecuteFailure, OwnedFile, PeerBinding, PipeConnection,
+    ProcessTerminal, ProcessTerminalSnapshot, ProtectedEvidenceRoot,
 };
 use super::private_evidence::{
     write_desktop_packet, write_machine_packet, write_service_crash_packet,
@@ -321,12 +321,10 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
     let mut last_authenticated_checkpoint = None;
     let result = execute_worker_inner(context, &mut last_authenticated_checkpoint);
     match result {
-        Ok(completed_stage) => failed(
-            Some(completed_stage),
+        Ok((completed_stage, private_evidence)) => passed(
+            completed_stage,
             last_authenticated_checkpoint,
-            None,
-            controller_failure("lifecycle_parent_export_pending".to_string()),
-            true,
+            private_evidence,
         ),
         Err(failure) => failed(
             failure.completed_stage,
@@ -393,7 +391,13 @@ fn preserve_failed_abort_result(
 fn execute_worker_inner(
     context: WorkerContext<'_>,
     last_authenticated_checkpoint: &mut Option<WorkerCheckpoint>,
-) -> Result<LifecycleStage, WorkerExecutionFailure> {
+) -> Result<
+    (
+        LifecycleStage,
+        Vec<crate::windows_lifecycle_proof_contract::EvidenceReceipt>,
+    ),
+    WorkerExecutionFailure,
+> {
     let WorkerContext {
         plan,
         repo_root: _repo_root,
@@ -1685,6 +1689,13 @@ fn execute_worker_inner(
             true,
         )
     })?;
+    let private_evidence = collect_success_evidence_receipts(evidence).map_err(|error| {
+        (
+            Some(LifecycleStage::FinalUninstall),
+            evidence_write_failure("lifecycle_success_evidence_manifest_incomplete", error),
+            true,
+        )
+    })?;
     authenticated_checkpoint(
         LifecycleStage::FinalUninstall,
         evidence,
@@ -1693,7 +1704,7 @@ fn execute_worker_inner(
         controller_bindings,
     )?;
 
-    Ok(LifecycleStage::FinalUninstall)
+    Ok((LifecycleStage::FinalUninstall, private_evidence))
 }
 
 fn authenticated_checkpoint(
@@ -2596,6 +2607,22 @@ fn restoration_not_reviewed() -> RestorationOutcome {
     }
 }
 
+fn passed(
+    completed_stage: LifecycleStage,
+    last_authenticated_checkpoint: Option<WorkerCheckpoint>,
+    private_evidence: Vec<crate::windows_lifecycle_proof_contract::EvidenceReceipt>,
+) -> WorkerResult {
+    WorkerResult {
+        disposition: WorkerDisposition::Passed,
+        completed_stage: Some(completed_stage),
+        last_authenticated_checkpoint,
+        abort: None,
+        failure: None,
+        process_tree_settled: true,
+        private_evidence,
+    }
+}
+
 fn failed(
     completed_stage: Option<LifecycleStage>,
     last_authenticated_checkpoint: Option<WorkerCheckpoint>,
@@ -2613,15 +2640,7 @@ fn failed(
             .attempted_stage
             .or(completed_stage)
             .is_some_and(|stage| stage != LifecycleStage::InitialState);
-        let parent_export_pending = completed_stage == Some(LifecycleStage::FinalUninstall)
-            && last_authenticated_checkpoint.is_some_and(|checkpoint| {
-                checkpoint.completed_stage == LifecycleStage::FinalUninstall
-            })
-            && failure.kind == WorkerFailureKind::Controller
-            && failure.reason == "lifecycle_parent_export_pending";
-        if restoration_required
-            && !parent_export_pending
-            && failure.restoration.as_ref() == &RestorationOutcome::NotRequired
+        if restoration_required && failure.restoration.as_ref() == &RestorationOutcome::NotRequired
         {
             failure.restoration = Box::new(restoration_not_reviewed());
         } else if !restoration_required
@@ -2642,7 +2661,6 @@ fn failed(
         failure: Some(failure),
         process_tree_settled,
         private_evidence: Vec::new(),
-        sanitized_export: None,
     }
 }
 
@@ -2721,7 +2739,6 @@ mod tests {
             }),
             process_tree_settled: false,
             private_evidence: Vec::new(),
-            sanitized_export: None,
         };
 
         let aborted = preserve_failed_abort_result(
@@ -2813,7 +2830,6 @@ mod tests {
                 failure: Some(failure),
                 process_tree_settled: true,
                 private_evidence: Vec::new(),
-                sanitized_export: None,
             };
             let aborted = preserve_failed_abort_result(
                 &original,
@@ -2947,53 +2963,28 @@ mod tests {
                 if reason == "lifecycle_restoration_not_reviewed"
         ));
 
-        let root = crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
-            volume_serial: 1,
-            file_index: 1,
-        };
-        let final_checkpoint = WorkerCheckpoint {
-            completed_stage: LifecycleStage::FinalUninstall,
-            evidence_root_identity: root,
-        };
-        let exact_export_boundary = failed(
+        let final_failure = failed(
             Some(LifecycleStage::FinalUninstall),
-            Some(final_checkpoint),
+            Some(WorkerCheckpoint {
+                completed_stage: LifecycleStage::FinalUninstall,
+                evidence_root_identity:
+                    crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                        volume_serial: 1,
+                        file_index: 1,
+                    },
+            }),
             None,
-            controller_failure("lifecycle_parent_export_pending".to_string()),
+            controller_failure("controller_failed".to_string()),
             true,
         );
-        assert_eq!(
-            exact_export_boundary
+        assert!(matches!(
+            final_failure
                 .failure
                 .expect("failure")
                 .restoration
                 .as_ref(),
-            &RestorationOutcome::NotRequired
-        );
-
-        for stale_checkpoint in [
-            None,
-            Some(WorkerCheckpoint {
-                completed_stage: LifecycleStage::FinalFallbackStates,
-                evidence_root_identity: root,
-            }),
-        ] {
-            let forged_export_boundary = failed(
-                Some(LifecycleStage::FinalUninstall),
-                stale_checkpoint,
-                None,
-                controller_failure("lifecycle_parent_export_pending".to_string()),
-                true,
-            );
-            assert!(matches!(
-                forged_export_boundary
-                    .failure
-                    .expect("failure")
-                    .restoration
-                    .as_ref(),
-                RestorationOutcome::BlockedUntrusted { reason }
-                    if reason == "lifecycle_restoration_not_reviewed"
-            ));
-        }
+            RestorationOutcome::BlockedUntrusted { reason }
+                if reason == "lifecycle_restoration_not_reviewed"
+        ));
     }
 }
