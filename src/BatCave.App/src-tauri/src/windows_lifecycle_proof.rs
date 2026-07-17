@@ -84,6 +84,17 @@ struct ProtocolGates {
     inbound: SequenceGate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CrossedWorkerRequest {
+    completed_stage: LifecycleStage,
+    attempted_stage: Option<LifecycleStage>,
+}
+
+struct PendingFailedDesktopResult {
+    result: DesktopPhaseResult,
+    completion_write_confirmed: bool,
+}
+
 #[derive(Default)]
 struct ParentCurrentUserRetentionState {
     before_uninstall: Option<native::ParentCurrentUserObjectsGuard>,
@@ -240,21 +251,7 @@ impl ParentCurrentUserResidueState {
         stage: LifecycleStage,
         root: &native::ParentCurrentUserAuthorityGuard,
     ) -> Result<(), String> {
-        let expectation = match stage {
-            LifecycleStage::InitialState
-            | LifecycleStage::FinalRepair
-            | LifecycleStage::InitialUninstall
-            | LifecycleStage::BaselineInstall
-            | LifecycleStage::BaselineRestart
-            | LifecycleStage::BaselineCrashRecovery
-            | LifecycleStage::BaselineRollbackRecovery => ParentResidueExpectation::Clean,
-            LifecycleStage::LegacyResidueSeeded
-            | LifecycleStage::FinalUpgrade
-            | LifecycleStage::FinalRestart
-            | LifecycleStage::FinalCrashRecovery => ParentResidueExpectation::SeededKnownHelpers,
-            LifecycleStage::FinalFallbackStates => ParentResidueExpectation::SeededHelpersRemoved,
-            LifecycleStage::FinalUninstall => ParentResidueExpectation::FinalUninstalled,
-        };
+        let expectation = checkpoint_parent_residue_expectation(stage);
         let snapshot = native::capture_parent_current_user_residue(root)?;
         validate_parent_residue_snapshot(
             &snapshot,
@@ -324,16 +321,7 @@ impl ParentCurrentUserResidueState {
         phase: DesktopPhase,
         root: &native::ParentCurrentUserAuthorityGuard,
     ) -> Result<(), String> {
-        let expectation = match phase {
-            DesktopPhase::FinalPrimary
-            | DesktopPhase::BaselinePrimary
-            | DesktopPhase::BaselineSecondInstance => ParentResidueExpectation::Clean,
-            DesktopPhase::FinalMissingService
-            | DesktopPhase::FinalStoppedService
-            | DesktopPhase::FinalIncompatibleService => {
-                ParentResidueExpectation::SeededHelpersRemoved
-            }
-        };
+        let expectation = desktop_parent_residue_expectation(phase);
         let snapshot = native::capture_parent_current_user_residue(root)?;
         validate_parent_residue_snapshot(
             &snapshot,
@@ -433,6 +421,64 @@ impl ParentCurrentUserResidueState {
     }
 }
 
+fn checkpoint_parent_residue_expectation(stage: LifecycleStage) -> ParentResidueExpectation {
+    match stage {
+        LifecycleStage::InitialState
+        | LifecycleStage::FinalRepair
+        | LifecycleStage::InitialUninstall
+        | LifecycleStage::BaselineInstall
+        | LifecycleStage::BaselineRestart
+        | LifecycleStage::BaselineCrashRecovery
+        | LifecycleStage::BaselineRollbackRecovery => ParentResidueExpectation::Clean,
+        LifecycleStage::LegacyResidueSeeded
+        | LifecycleStage::FinalUpgrade
+        | LifecycleStage::FinalRestart
+        | LifecycleStage::FinalCrashRecovery => ParentResidueExpectation::SeededKnownHelpers,
+        LifecycleStage::FinalFallbackStates => ParentResidueExpectation::SeededHelpersRemoved,
+        LifecycleStage::FinalUninstall => ParentResidueExpectation::FinalUninstalled,
+    }
+}
+
+fn desktop_parent_residue_expectation(phase: DesktopPhase) -> ParentResidueExpectation {
+    match phase {
+        DesktopPhase::FinalPrimary
+        | DesktopPhase::BaselinePrimary
+        | DesktopPhase::BaselineSecondInstance => ParentResidueExpectation::Clean,
+        DesktopPhase::FinalMissingService
+        | DesktopPhase::FinalStoppedService
+        | DesktopPhase::FinalIncompatibleService => ParentResidueExpectation::SeededHelpersRemoved,
+    }
+}
+
+fn crossed_desktop_request(phase: DesktopPhase) -> CrossedWorkerRequest {
+    let (completed_stage, attempted_stage) = match phase {
+        DesktopPhase::FinalPrimary => (LifecycleStage::FinalRepair, None),
+        DesktopPhase::BaselinePrimary | DesktopPhase::BaselineSecondInstance => {
+            (LifecycleStage::BaselineInstall, None)
+        }
+        DesktopPhase::FinalMissingService
+        | DesktopPhase::FinalStoppedService
+        | DesktopPhase::FinalIncompatibleService => (
+            LifecycleStage::FinalCrashRecovery,
+            Some(LifecycleStage::FinalFallbackStates),
+        ),
+    };
+    CrossedWorkerRequest {
+        completed_stage,
+        attempted_stage,
+    }
+}
+
+fn crossed_worker_result(result: &WorkerResult) -> Option<CrossedWorkerRequest> {
+    Some(CrossedWorkerRequest {
+        completed_stage: result.completed_stage?,
+        attempted_stage: result
+            .failure
+            .as_ref()
+            .and_then(|failure| failure.attempted_stage),
+    })
+}
+
 trait ParentResidueTerminalCleanup {
     type Authority;
 
@@ -446,12 +492,22 @@ trait ParentResidueTerminalCleanup {
         self.cleanup_parent_residue(authority, true)
     }
 
-    fn cleanup_worker_failure(&mut self, authority: &Self::Authority) -> Option<String> {
-        self.cleanup_parent_residue(authority, true).err()
+    fn cleanup_worker_failure(
+        &mut self,
+        authority: &Self::Authority,
+        process_trees_settled: bool,
+    ) -> Option<String> {
+        self.cleanup_parent_residue(authority, process_trees_settled)
+            .err()
     }
 
-    fn cleanup_authenticated_abort(&mut self, authority: &Self::Authority) -> Option<String> {
-        self.cleanup_parent_residue(authority, true).err()
+    fn cleanup_authenticated_abort(
+        &mut self,
+        authority: &Self::Authority,
+        process_trees_settled: bool,
+    ) -> Option<String> {
+        self.cleanup_parent_residue(authority, process_trees_settled)
+            .err()
     }
 
     fn cleanup_last_resort_abort(
@@ -646,18 +702,17 @@ enum AbortAcceptanceAction {
 struct AbortResultTracker {
     original: Option<WorkerResult>,
     awaiting_successor: bool,
-    expected_parent_abort_stage: Option<LifecycleStage>,
+    expected_parent_abort: Option<CrossedWorkerRequest>,
 }
 
 impl AbortResultTracker {
     fn new(original: Option<WorkerResult>) -> Self {
         let awaiting_successor = original.is_some();
-        let expected_parent_abort_stage =
-            original.as_ref().and_then(|result| result.completed_stage);
+        let expected_parent_abort = original.as_ref().and_then(crossed_worker_result);
         Self {
             original,
             awaiting_successor,
-            expected_parent_abort_stage,
+            expected_parent_abort,
         }
     }
 
@@ -676,10 +731,21 @@ impl AbortResultTracker {
     ) -> Result<AbortResultAction, String> {
         if result.abort.is_none() {
             validate_worker_result(&result, result.failure.is_none())?;
+            if result.last_authenticated_checkpoint != last_checkpoint {
+                return Err("lifecycle_parent_abort_context_invalid".to_string());
+            }
             if self.awaiting_successor {
                 return Err("lifecycle_parent_abort_result_replayed".to_string());
             }
-            self.expected_parent_abort_stage = result.completed_stage;
+            let crossed = crossed_worker_result(&result);
+            match (self.expected_parent_abort, crossed) {
+                (Some(expected), Some(actual)) if expected == actual => {}
+                (None, None) => {}
+                (None, Some(actual)) => self.expected_parent_abort = Some(actual),
+                _ => {
+                    return Err("lifecycle_parent_abort_crossed_stage_mismatch".to_string());
+                }
+            }
             self.original = Some(result);
             self.awaiting_successor = true;
             return Ok(AbortResultAction::RepeatAbort);
@@ -713,13 +779,20 @@ impl AbortResultTracker {
     }
 
     fn note_crossed_stage(&mut self, stage: LifecycleStage) -> Result<(), String> {
+        self.note_crossed_request(CrossedWorkerRequest {
+            completed_stage: stage,
+            attempted_stage: None,
+        })
+    }
+
+    fn note_crossed_request(&mut self, request: CrossedWorkerRequest) -> Result<(), String> {
         if self
-            .expected_parent_abort_stage
-            .is_some_and(|expected| expected != stage)
+            .expected_parent_abort
+            .is_some_and(|expected| expected != request)
         {
             return Err("lifecycle_parent_abort_crossed_stage_mismatch".to_string());
         }
-        self.expected_parent_abort_stage = Some(stage);
+        self.expected_parent_abort = Some(request);
         Ok(())
     }
 
@@ -728,14 +801,19 @@ impl AbortResultTracker {
         result: &WorkerResult,
         reason: AbortReason,
     ) -> Result<(), String> {
-        let expected_stage = self
-            .expected_parent_abort_stage
+        let expected = self
+            .expected_parent_abort
             .ok_or_else(|| "lifecycle_parent_abort_crossed_stage_missing".to_string())?;
         let failure = result
             .failure
             .as_ref()
             .ok_or_else(|| "lifecycle_parent_abort_failure_missing".to_string())?;
-        let restoration_valid = if expected_stage == LifecycleStage::InitialState {
+        let restoration_stage = failure.attempted_stage.unwrap_or(expected.completed_stage);
+        let restoration_valid = if !result.process_tree_settled {
+            failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
+        } else if expected.attempted_stage == Some(LifecycleStage::FinalFallbackStates) {
+            valid_settled_fallback_restoration(failure.restoration.as_ref())
+        } else if restoration_stage == LifecycleStage::InitialState {
             failure.restoration.as_ref() == &RestorationOutcome::NotRequired
         } else {
             matches!(
@@ -747,13 +825,14 @@ impl AbortResultTracker {
                 } if reason == "lifecycle_parent_abort_restoration_not_reviewed"
                     && (evidence.is_some() != evidence_error.is_some())
                     && evidence.as_ref().is_none_or(|receipt| {
-                        restoration_leaf_for_stage(expected_stage)
+                        restoration_leaf_for_stage(restoration_stage)
                             == Some(receipt.name.as_str())
                     })
             )
         };
-        if result.completed_stage != Some(expected_stage)
+        if result.completed_stage != Some(expected.completed_stage)
             || failure.kind != WorkerFailureKind::ParentAbort
+            || failure.attempted_stage != expected.attempted_stage
             || failure.reason != parent_abort_reason(reason)
             || !restoration_valid
         {
@@ -906,12 +985,22 @@ fn run_parent() -> Result<i32, String> {
     let mut last_checkpoint = None;
     let mut desktop_phase_index = 0;
     let mut desktop_results = Vec::with_capacity(DESKTOP_PHASES.len());
+    let mut pending_failed_desktop: Option<PendingFailedDesktopResult> = None;
+    let mut in_flight_worker_request = None;
+    let mut unacknowledged_worker_result = None;
+    let mut parent_desktop_trees_settled = true;
     let mut current_user_retention = ParentCurrentUserRetentionState::default();
     let mut current_user_residue = ParentCurrentUserResidueState::default();
     let session = (|| -> Result<i32, String> {
         loop {
             let envelope: Envelope<WorkerMessage> = pipe.read_json(SESSION_TIMEOUT)?;
             validate_envelope(&envelope, &nonce, &mut gates.inbound)?;
+            if let Some(expected) = pending_failed_desktop.as_ref() {
+                let WorkerMessage::ResultReady(result) = &envelope.message else {
+                    return Err("lifecycle_failed_desktop_result_required".to_string());
+                };
+                validate_failed_desktop_worker_result(&expected.result, result)?;
+            }
             match envelope.message {
                 WorkerMessage::Accepted(accepted) => {
                     if evidence_root.is_some()
@@ -931,11 +1020,18 @@ fn run_parent() -> Result<i32, String> {
                     let root = evidence_root
                         .as_ref()
                         .ok_or_else(|| "lifecycle_checkpoint_before_acceptance".to_string())?;
-                    if checkpoint.evidence_root_identity != root.identity()
-                        || !valid_checkpoint_transition(last_checkpoint, checkpoint)
-                    {
+                    if !valid_parent_checkpoint(
+                        checkpoint,
+                        root.identity(),
+                        last_checkpoint,
+                        desktop_phase_index,
+                    ) {
                         return Err("lifecycle_checkpoint_invalid".to_string());
                     }
+                    in_flight_worker_request = Some(CrossedWorkerRequest {
+                        completed_stage: checkpoint.completed_stage,
+                        attempted_stage: None,
+                    });
                     current_user_retention.capture_checkpoint(
                         checkpoint.completed_stage,
                         &preflight.parent_current_user,
@@ -951,6 +1047,7 @@ fn run_parent() -> Result<i32, String> {
                     )?;
                     send_parent_message(&mut pipe, &nonce, &mut gates.outbound, acceptance)?;
                     last_checkpoint = Some(checkpoint);
+                    in_flight_worker_request = None;
                 }
                 WorkerMessage::RunDesktopPhase(phase) => {
                     if evidence_root.is_none() {
@@ -959,6 +1056,13 @@ fn run_parent() -> Result<i32, String> {
                     if DESKTOP_PHASES.get(desktop_phase_index) != Some(&phase) {
                         return Err("lifecycle_desktop_phase_order_invalid".to_string());
                     }
+                    let crossed = crossed_desktop_request(phase);
+                    if last_checkpoint.map(|checkpoint| checkpoint.completed_stage)
+                        != Some(crossed.completed_stage)
+                    {
+                        return Err("lifecycle_desktop_phase_checkpoint_invalid".to_string());
+                    }
+                    in_flight_worker_request = Some(crossed);
                     current_user_residue
                         .capture_before_desktop(phase, &preflight.parent_current_user)?;
                     let result = lifecycle::run_parent_desktop_phase(
@@ -973,8 +1077,19 @@ fn run_parent() -> Result<i32, String> {
                         observation: None,
                         failure_reason: Some("lifecycle_desktop_phase_runner_failed".to_string()),
                     });
+                    parent_desktop_trees_settled &= result.process_tree_settled;
                     validate_requested_desktop_phase_result(phase, &result, &preflight.plan)?;
                     desktop_results.push(result.clone());
+                    pending_failed_desktop = (result.disposition
+                        == DesktopPhaseDisposition::Failed)
+                        .then(|| PendingFailedDesktopResult {
+                            result: result.clone(),
+                            completion_write_confirmed: false,
+                        });
+                    // The parent executed this phase even when the completion write or the
+                    // immediately preceding current-user capture later fails. Retaining that
+                    // progress lets the abort lane validate a completion that raced the error.
+                    desktop_phase_index += 1;
                     // Capture after the standard-parent launch and immediately before the
                     // authenticated completion message; no helper file handle survives this call.
                     let completion = desktop_completion_after_parent_capture(
@@ -983,16 +1098,22 @@ fn run_parent() -> Result<i32, String> {
                             .capture_desktop_complete(phase, &preflight.parent_current_user),
                     )?;
                     send_parent_message(&mut pipe, &nonce, &mut gates.outbound, completion)?;
-                    desktop_phase_index += 1;
+                    if let Some(pending) = pending_failed_desktop.as_mut() {
+                        pending.completion_write_confirmed = true;
+                    }
+                    in_flight_worker_request = None;
                 }
                 WorkerMessage::ResultReady(result) if result.failure.is_none() => {
-                    if evidence_root.is_none() || desktop_phase_index != DESKTOP_PHASES.len() {
+                    if evidence_root.is_none() {
                         return Err("lifecycle_worker_completion_order_invalid".to_string());
                     }
-                    if result.last_authenticated_checkpoint != last_checkpoint {
-                        return Err("lifecycle_worker_checkpoint_mismatch".to_string());
-                    }
-                    validate_worker_result(&result, true)?;
+                    validate_parent_original_worker_result(
+                        &result,
+                        last_checkpoint,
+                        desktop_phase_index,
+                    )?;
+                    in_flight_worker_request = crossed_worker_result(&result);
+                    unacknowledged_worker_result = Some((*result).clone());
                     let evidence_root_guard = evidence_root
                         .as_ref()
                         .ok_or_else(|| "lifecycle_evidence_root_missing".to_string())?;
@@ -1069,21 +1190,22 @@ fn run_parent() -> Result<i32, String> {
                     if evidence_root.is_none() {
                         return Err("lifecycle_worker_failure_before_acceptance".to_string());
                     }
-                    if result.last_authenticated_checkpoint != last_checkpoint {
-                        return Err("lifecycle_worker_checkpoint_mismatch".to_string());
-                    }
-                    if result.abort.is_some() {
-                        return Err("lifecycle_worker_unsolicited_abort".to_string());
-                    }
-                    validate_worker_result(&result, false)?;
+                    validate_parent_original_worker_result(
+                        &result,
+                        last_checkpoint,
+                        desktop_phase_index,
+                    )?;
                     let failure = result
                         .failure
                         .as_ref()
                         .ok_or_else(|| "lifecycle_worker_failure_missing".to_string())?;
-                    let terminate_without_ack = matches!(
-                        failure.restoration.as_ref(),
-                        RestorationOutcome::BlockedUnsettled
-                    );
+                    in_flight_worker_request = crossed_worker_result(&result);
+                    unacknowledged_worker_result = Some((*result).clone());
+                    let terminate_without_ack = !result.process_tree_settled
+                        && matches!(
+                            failure.restoration.as_ref(),
+                            RestorationOutcome::BlockedUnsettled
+                        );
                     let expected_exit_code = u32::from(result.abort.is_some());
                     let mut evidence_guard = None;
                     let mut restoration_evidence_guard = None;
@@ -1121,8 +1243,10 @@ fn run_parent() -> Result<i32, String> {
                             }
                             revalidate_preflight_artifacts(&preflight)?;
                         }
-                        cleanup_error = current_user_residue
-                            .cleanup_worker_failure(&preflight.parent_current_user);
+                        cleanup_error = current_user_residue.cleanup_worker_failure(
+                            &preflight.parent_current_user,
+                            parent_desktop_trees_settled,
+                        );
                         Ok(())
                     })();
                     let failure_evidence_verified =
@@ -1142,6 +1266,10 @@ fn run_parent() -> Result<i32, String> {
                                 &mut current_user_residue,
                                 evidence_root.as_ref(),
                                 last_checkpoint,
+                                desktop_phase_index,
+                                in_flight_worker_request,
+                                pending_failed_desktop.as_ref(),
+                                parent_desktop_trees_settled,
                                 Some((*result).clone()),
                                 reason,
                             );
@@ -1191,7 +1319,11 @@ fn run_parent() -> Result<i32, String> {
             &mut current_user_residue,
             evidence_root.as_ref(),
             last_checkpoint,
-            None,
+            desktop_phase_index,
+            in_flight_worker_request,
+            pending_failed_desktop.as_ref(),
+            parent_desktop_trees_settled,
+            unacknowledged_worker_result,
             reason,
         ),
     }
@@ -1208,12 +1340,153 @@ fn validate_requested_desktop_phase_result(
     validate_desktop_phase_result(result, plan)
 }
 
+fn validate_failed_desktop_worker_result(
+    desktop: &DesktopPhaseResult,
+    result: &WorkerResult,
+) -> Result<(), String> {
+    if desktop.disposition != DesktopPhaseDisposition::Failed {
+        return Err("lifecycle_failed_desktop_expectation_invalid".to_string());
+    }
+    validate_worker_result(result, false)?;
+    let failure = result
+        .failure
+        .as_ref()
+        .ok_or_else(|| "lifecycle_failed_desktop_worker_failure_missing".to_string())?;
+    let crossed = crossed_desktop_request(desktop.phase);
+    let expected_reason = format!(
+        "{}:{}",
+        lifecycle::desktop_evidence_name(desktop.phase),
+        desktop
+            .failure_reason
+            .as_deref()
+            .ok_or_else(|| "lifecycle_failed_desktop_reason_missing".to_string())?
+    );
+    if result.completed_stage != Some(crossed.completed_stage)
+        || result.abort.is_some()
+        || failure.kind != WorkerFailureKind::Controller
+        || failure.attempted_stage != crossed.attempted_stage
+        || failure.reason != expected_reason
+        || failure.evidence.is_some()
+        || failure.evidence_error.is_some()
+    {
+        return Err("lifecycle_failed_desktop_worker_result_mismatch".to_string());
+    }
+    let settlement_matches = if crossed.attempted_stage.is_none() {
+        result.process_tree_settled == desktop.process_tree_settled
+            && if desktop.process_tree_settled {
+                matches!(
+                    failure.restoration.as_ref(),
+                    RestorationOutcome::BlockedUntrusted { reason }
+                        if reason == "lifecycle_restoration_not_reviewed"
+                )
+            } else {
+                failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
+            }
+    } else if !desktop.process_tree_settled {
+        !result.process_tree_settled
+            && failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
+    } else if result.process_tree_settled {
+        valid_settled_fallback_restoration(failure.restoration.as_ref())
+    } else {
+        failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
+    };
+    if settlement_matches {
+        Ok(())
+    } else {
+        Err("lifecycle_failed_desktop_settlement_mismatch".to_string())
+    }
+}
+
+fn validate_queued_failed_desktop_result(
+    pending: Option<&PendingFailedDesktopResult>,
+    tracker_has_original: bool,
+    result: &WorkerResult,
+) -> Result<(), String> {
+    let Some(expected) = pending else {
+        return Ok(());
+    };
+    if result.abort.is_none() {
+        validate_failed_desktop_worker_result(&expected.result, result)
+    } else if tracker_has_original || !expected.completion_write_confirmed {
+        Ok(())
+    } else {
+        Err("lifecycle_failed_desktop_original_result_required".to_string())
+    }
+}
+
+fn validate_parent_original_worker_result(
+    result: &WorkerResult,
+    last_checkpoint: Option<WorkerCheckpoint>,
+    desktop_phase_index: usize,
+) -> Result<(), String> {
+    if result.abort.is_some() {
+        return Err("lifecycle_worker_unsolicited_abort".to_string());
+    }
+    if result.last_authenticated_checkpoint != last_checkpoint {
+        return Err("lifecycle_worker_checkpoint_mismatch".to_string());
+    }
+    let Some(failure) = result.failure.as_ref() else {
+        if desktop_phase_index != DESKTOP_PHASES.len() {
+            return Err("lifecycle_worker_completion_order_invalid".to_string());
+        }
+        return validate_worker_result(result, true);
+    };
+    validate_worker_result(result, false)?;
+    validate_parent_failure_completion(result, failure, desktop_phase_index)?;
+    validate_parent_failure_progress(result)
+}
+
 fn valid_checkpoint_transition(
     previous: Option<WorkerCheckpoint>,
     checkpoint: WorkerCheckpoint,
 ) -> bool {
     next_lifecycle_stage(previous.map(|checkpoint| checkpoint.completed_stage))
         == Some(checkpoint.completed_stage)
+}
+
+fn valid_parent_checkpoint(
+    checkpoint: WorkerCheckpoint,
+    evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity,
+    previous: Option<WorkerCheckpoint>,
+    desktop_phase_index: usize,
+) -> bool {
+    checkpoint.evidence_root_identity == evidence_root_identity
+        && valid_checkpoint_transition(previous, checkpoint)
+        && desktop_phase_index
+            == expected_desktop_phase_index_at_checkpoint(checkpoint.completed_stage)
+}
+
+fn expected_desktop_phase_index_at_checkpoint(stage: LifecycleStage) -> usize {
+    match stage {
+        LifecycleStage::InitialState | LifecycleStage::FinalRepair => 0,
+        LifecycleStage::InitialUninstall | LifecycleStage::BaselineInstall => 1,
+        LifecycleStage::BaselineRestart
+        | LifecycleStage::BaselineCrashRecovery
+        | LifecycleStage::BaselineRollbackRecovery
+        | LifecycleStage::LegacyResidueSeeded
+        | LifecycleStage::FinalUpgrade
+        | LifecycleStage::FinalRestart
+        | LifecycleStage::FinalCrashRecovery => 3,
+        LifecycleStage::FinalFallbackStates | LifecycleStage::FinalUninstall => {
+            DESKTOP_PHASES.len()
+        }
+    }
+}
+
+fn minimum_desktop_phase_index_before_stage(stage: LifecycleStage) -> usize {
+    match stage {
+        LifecycleStage::InitialState | LifecycleStage::FinalRepair => 0,
+        LifecycleStage::InitialUninstall | LifecycleStage::BaselineInstall => 1,
+        LifecycleStage::BaselineRestart
+        | LifecycleStage::BaselineCrashRecovery
+        | LifecycleStage::BaselineRollbackRecovery
+        | LifecycleStage::LegacyResidueSeeded
+        | LifecycleStage::FinalUpgrade
+        | LifecycleStage::FinalRestart
+        | LifecycleStage::FinalCrashRecovery
+        | LifecycleStage::FinalFallbackStates => 3,
+        LifecycleStage::FinalUninstall => DESKTOP_PHASES.len(),
+    }
 }
 
 fn next_lifecycle_stage(previous: Option<LifecycleStage>) -> Option<LifecycleStage> {
@@ -1247,11 +1520,18 @@ fn abort_parent_session(
     current_user_residue: &mut ParentCurrentUserResidueState,
     evidence_root: Option<&native::ProtectedEvidenceRoot>,
     last_checkpoint: Option<WorkerCheckpoint>,
+    desktop_phase_index: usize,
+    crossed_request: Option<CrossedWorkerRequest>,
+    pending_failed_desktop: Option<&PendingFailedDesktopResult>,
+    parent_desktop_trees_settled: bool,
     original_result: Option<WorkerResult>,
     parent_error: String,
 ) -> Result<i32, String> {
     let reason = abort_reason_for_parent_error(&parent_error);
     let mut tracker = AbortResultTracker::new(original_result);
+    if let Some(crossed) = crossed_request {
+        tracker.note_crossed_request(crossed)?;
+    }
     let mut failure_evidence_guard = None;
     let mut restoration_evidence_guard = None;
     let mut cleanup_error = None;
@@ -1276,6 +1556,18 @@ fn abort_parent_session(
                 validate_envelope(&envelope, nonce, &mut gates.inbound)?;
                 match envelope.message {
                     WorkerMessage::ResultReady(value) => {
+                        validate_queued_failed_desktop_result(
+                            pending_failed_desktop,
+                            tracker.original.is_some(),
+                            &value,
+                        )?;
+                        if value.abort.is_none() {
+                            validate_parent_original_worker_result(
+                                &value,
+                                last_checkpoint,
+                                desktop_phase_index,
+                            )?;
+                        }
                         let root = evidence_root.ok_or_else(|| {
                             "lifecycle_parent_abort_evidence_root_missing".to_string()
                         })?;
@@ -1298,8 +1590,12 @@ fn abort_parent_session(
                     @ (WorkerMessage::Checkpoint(_) | WorkerMessage::RunDesktopPhase(_)) => {
                         if let WorkerMessage::Checkpoint(checkpoint) = &message {
                             if evidence_root.is_none_or(|root| {
-                                checkpoint.evidence_root_identity != root.identity()
-                                    || !valid_checkpoint_transition(last_checkpoint, *checkpoint)
+                                !valid_parent_checkpoint(
+                                    *checkpoint,
+                                    root.identity(),
+                                    last_checkpoint,
+                                    desktop_phase_index,
+                                )
                             }) {
                                 return Err("lifecycle_parent_abort_result_required".to_string());
                             }
@@ -1310,7 +1606,20 @@ fn abort_parent_session(
                                     "lifecycle_parent_abort_desktop_precursor_missing".to_string()
                                 })?
                                 .completed_stage;
-                            tracker.note_crossed_stage(precursor)?;
+                            let WorkerMessage::RunDesktopPhase(phase) = &message else {
+                                unreachable!()
+                            };
+                            if DESKTOP_PHASES.get(desktop_phase_index) != Some(phase) {
+                                return Err("lifecycle_parent_abort_desktop_phase_order_invalid"
+                                    .to_string());
+                            }
+                            let crossed = crossed_desktop_request(*phase);
+                            if crossed.completed_stage != precursor {
+                                return Err(
+                                    "lifecycle_parent_abort_desktop_precursor_mismatch".to_string()
+                                );
+                            }
+                            tracker.note_crossed_request(crossed)?;
                         }
                         if worker_message_requires_abort_repeat(&message) {
                             send_parent_message(
@@ -1334,8 +1643,7 @@ fn abort_parent_session(
                 .failure
                 .as_ref()
                 .ok_or_else(|| "lifecycle_parent_abort_failure_missing".to_string())?;
-            let unsettled_abort = failure.kind == WorkerFailureKind::ProcessSettlement
-                && !result.process_tree_settled
+            let unsettled_abort = !result.process_tree_settled
                 && failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled;
             if unsettled_abort {
                 revalidate_preflight_artifacts(preflight)?;
@@ -1360,8 +1668,10 @@ fn abort_parent_session(
                 }
                 revalidate_preflight_artifacts(preflight)?;
             }
-            cleanup_error =
-                current_user_residue.cleanup_authenticated_abort(&preflight.parent_current_user);
+            cleanup_error = current_user_residue.cleanup_authenticated_abort(
+                &preflight.parent_current_user,
+                parent_desktop_trees_settled,
+            );
             Ok(result)
         })();
         match followup {
@@ -1476,7 +1786,7 @@ fn abort_parent_session(
     };
     current_user_residue.cleanup_last_resort_abort(
         &preflight.parent_current_user,
-        worker_settled,
+        worker_settled && parent_desktop_trees_settled,
         &mut followup_error,
     );
     if let Err(error) = revalidate_preflight_artifacts(preflight) {
@@ -1935,10 +2245,17 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
     if failure.reason.is_empty() {
         return Err("lifecycle_worker_failure_reason_invalid".to_string());
     }
+    if result.process_tree_settled
+        == matches!(
+            failure.restoration.as_ref(),
+            RestorationOutcome::BlockedUnsettled
+        )
+    {
+        return Err("lifecycle_worker_settlement_restoration_invalid".to_string());
+    }
     let failure_shape_valid = match failure.kind {
         WorkerFailureKind::Mutation => {
-            result.process_tree_settled
-                && failure.evidence.is_some()
+            failure.evidence.is_some()
                 && failure.evidence_error.is_none()
                 && mutation_failure_binding(result, failure).is_some_and(|expected_name| {
                     failure
@@ -1948,8 +2265,7 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
                 })
         }
         WorkerFailureKind::EvidenceWrite => {
-            result.process_tree_settled
-                && failure.evidence.is_none()
+            failure.evidence.is_none()
                 && failure.evidence_error.is_some()
                 && (failure.attempted_stage.is_none()
                     || mutation_failure_binding(result, failure).is_some())
@@ -1966,15 +2282,13 @@ fn validate_worker_result(result: &WorkerResult, expected_success: bool) -> Resu
                 })
         }
         WorkerFailureKind::Controller => {
-            result.process_tree_settled
-                && failure.attempted_stage.is_none()
-                && failure.evidence.is_none()
+            failure.evidence.is_none()
                 && failure.evidence_error.is_none()
+                && controller_attempt_binding_valid(result, failure)
         }
         WorkerFailureKind::ParentAbort => {
-            result.process_tree_settled
-                && failure.attempted_stage.is_none()
-                && (failure.evidence.is_some() != failure.evidence_error.is_some())
+            (failure.evidence.is_some() != failure.evidence_error.is_some())
+                && fallback_attempt_binding_valid(result, failure)
                 && result.abort.is_some_and(|abort| {
                     failure.reason == parent_abort_reason(abort.reason)
                         && abort.last_authenticated_checkpoint
@@ -2011,15 +2325,12 @@ fn validate_restoration_for_failure(
     result: &WorkerResult,
     failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
 ) -> Result<(), String> {
+    if !result.process_tree_settled {
+        return Ok(());
+    }
     match failure.kind {
         WorkerFailureKind::ProcessSettlement => {
-            if !result.process_tree_settled
-                && failure.restoration.as_ref() == &RestorationOutcome::BlockedUnsettled
-            {
-                Ok(())
-            } else {
-                Err("lifecycle_worker_restoration_disposition_invalid".to_string())
-            }
+            Err("lifecycle_worker_restoration_disposition_invalid".to_string())
         }
         WorkerFailureKind::Mutation => validate_required_restoration(result, failure),
         WorkerFailureKind::ParentAbort => {
@@ -2091,10 +2402,75 @@ fn failure_requires_restoration(
         WorkerFailureKind::ParentAbort => {
             result.completed_stage != Some(LifecycleStage::InitialState)
         }
+        WorkerFailureKind::Controller if valid_parent_export_pending(result, failure) => false,
         WorkerFailureKind::EvidenceWrite | WorkerFailureKind::Controller => {
             restoration_stage(result, failure)
                 .is_some_and(|stage| stage != LifecycleStage::InitialState)
         }
+    }
+}
+
+fn valid_parent_export_pending(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> bool {
+    result.completed_stage == Some(LifecycleStage::FinalUninstall)
+        && result.process_tree_settled
+        && result
+            .last_authenticated_checkpoint
+            .is_some_and(|checkpoint| checkpoint.completed_stage == LifecycleStage::FinalUninstall)
+        && failure.attempted_stage.is_none()
+        && failure.reason == "lifecycle_parent_export_pending"
+}
+
+fn validate_parent_failure_completion(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+    desktop_phase_index: usize,
+) -> Result<(), String> {
+    if valid_parent_export_pending(result, failure) && desktop_phase_index != DESKTOP_PHASES.len() {
+        return Err("lifecycle_parent_export_desktop_phases_incomplete".to_string());
+    }
+    if failure
+        .attempted_stage
+        .is_some_and(|stage| desktop_phase_index < minimum_desktop_phase_index_before_stage(stage))
+    {
+        return Err("lifecycle_worker_failure_desktop_phases_incomplete".to_string());
+    }
+    let authenticated_stage = result
+        .last_authenticated_checkpoint
+        .map(|checkpoint| checkpoint.completed_stage);
+    if failure.kind == WorkerFailureKind::EvidenceWrite
+        && failure.attempted_stage.is_none()
+        && result.completed_stage != authenticated_stage
+        && result.completed_stage.is_some_and(|stage| {
+            desktop_phase_index != expected_desktop_phase_index_at_checkpoint(stage)
+        })
+    {
+        return Err("lifecycle_worker_failure_desktop_phases_incomplete".to_string());
+    }
+    Ok(())
+}
+
+fn validate_parent_failure_progress(result: &WorkerResult) -> Result<(), String> {
+    let authenticated_stage = result
+        .last_authenticated_checkpoint
+        .map(|checkpoint| checkpoint.completed_stage);
+    if result.completed_stage == authenticated_stage {
+        return Ok(());
+    }
+    let failure = result
+        .failure
+        .as_ref()
+        .ok_or_else(|| "lifecycle_worker_failure_missing".to_string())?;
+    if failure.kind == WorkerFailureKind::EvidenceWrite
+        && failure.attempted_stage.is_none()
+        && authenticated_stage.and_then(|stage| next_lifecycle_stage(Some(stage)))
+            == result.completed_stage
+    {
+        Ok(())
+    } else {
+        Err("lifecycle_worker_failure_progress_invalid".to_string())
     }
 }
 
@@ -2258,7 +2634,78 @@ fn mutation_failure_binding(
         (LifecycleStage::BaselineRollbackRecovery, Some(LifecycleStage::BaselineCrashRecovery)) => {
             Some("baseline-rollback-recovery-failure.private.json")
         }
+        (LifecycleStage::FinalUpgrade, Some(LifecycleStage::LegacyResidueSeeded)) => {
+            Some("final-upgrade-failure.private.json")
+        }
+        (LifecycleStage::FinalRestart, Some(LifecycleStage::FinalUpgrade)) => {
+            Some("final-restart-failure.private.json")
+        }
+        (LifecycleStage::FinalCrashRecovery, Some(LifecycleStage::FinalRestart)) => {
+            Some("final-crash-recovery-failure.private.json")
+        }
+        (LifecycleStage::FinalFallbackStates, Some(LifecycleStage::FinalCrashRecovery)) => {
+            Some("final-fallback-states-failure.private.json")
+        }
+        (LifecycleStage::FinalUninstall, Some(LifecycleStage::FinalFallbackStates)) => {
+            Some("final-uninstall-failure.private.json")
+        }
         _ => None,
+    }
+}
+
+fn fallback_attempt_binding_valid(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> bool {
+    failure.attempted_stage.is_none()
+        || (failure.attempted_stage == Some(LifecycleStage::FinalFallbackStates)
+            && result.completed_stage == Some(LifecycleStage::FinalCrashRecovery))
+}
+
+fn controller_attempt_binding_valid(
+    result: &WorkerResult,
+    failure: &crate::windows_lifecycle_proof_contract::WorkerFailure,
+) -> bool {
+    if failure.reason == "lifecycle_parent_export_pending" {
+        return valid_parent_export_pending(result, failure);
+    }
+    let fallback_desktop_failure = [
+        DesktopPhase::FinalMissingService,
+        DesktopPhase::FinalStoppedService,
+        DesktopPhase::FinalIncompatibleService,
+    ]
+    .into_iter()
+    .any(|phase| {
+        failure
+            .reason
+            .starts_with(&format!("{}:", lifecycle::desktop_evidence_name(phase)))
+    });
+    fallback_attempt_binding_valid(result, failure)
+        && (!fallback_desktop_failure
+            || failure.attempted_stage == Some(LifecycleStage::FinalFallbackStates))
+}
+
+fn valid_settled_fallback_restoration(restoration: &RestorationOutcome) -> bool {
+    const LEAF: &str = "final-fallback-states-restoration.private.json";
+    match restoration {
+        RestorationOutcome::Restored { evidence } => evidence.name == LEAF,
+        RestorationOutcome::Failed {
+            reason,
+            evidence,
+            evidence_error,
+        } => match reason.as_str() {
+            "lifecycle_fallback_restoration_failed" => {
+                (evidence.is_some() != evidence_error.is_some())
+                    && evidence.as_ref().is_none_or(|receipt| receipt.name == LEAF)
+            }
+            "lifecycle_fallback_restoration_evidence_failed" => {
+                evidence.is_none() && evidence_error.is_some()
+            }
+            _ => false,
+        },
+        RestorationOutcome::NotRequired
+        | RestorationOutcome::BlockedUnsettled
+        | RestorationOutcome::BlockedUntrusted { .. } => false,
     }
 }
 
@@ -2346,6 +2793,48 @@ mod tests {
         assert!(
             parent_retention_checkpoint_action(LifecycleStage::FinalUninstall, true, true,)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn stage_engine_order_preserves_parent_current_user_timing() {
+        assert_eq!(
+            DESKTOP_PHASES,
+            [
+                DesktopPhase::FinalPrimary,
+                DesktopPhase::BaselinePrimary,
+                DesktopPhase::BaselineSecondInstance,
+                DesktopPhase::FinalMissingService,
+                DesktopPhase::FinalStoppedService,
+                DesktopPhase::FinalIncompatibleService,
+            ]
+        );
+        assert_eq!(
+            checkpoint_parent_residue_expectation(LifecycleStage::BaselineRollbackRecovery),
+            ParentResidueExpectation::Clean
+        );
+        for stage in [
+            LifecycleStage::LegacyResidueSeeded,
+            LifecycleStage::FinalUpgrade,
+            LifecycleStage::FinalRestart,
+            LifecycleStage::FinalCrashRecovery,
+        ] {
+            assert_eq!(
+                checkpoint_parent_residue_expectation(stage),
+                ParentResidueExpectation::SeededKnownHelpers
+            );
+        }
+        assert_eq!(
+            desktop_parent_residue_expectation(DesktopPhase::FinalMissingService),
+            ParentResidueExpectation::SeededHelpersRemoved
+        );
+        assert_eq!(
+            checkpoint_parent_residue_expectation(LifecycleStage::FinalFallbackStates),
+            ParentResidueExpectation::SeededHelpersRemoved
+        );
+        assert_eq!(
+            checkpoint_parent_residue_expectation(LifecycleStage::FinalUninstall),
+            ParentResidueExpectation::FinalUninstalled
         );
     }
 
@@ -2492,6 +2981,13 @@ mod tests {
                 "terminal retained residue authority"
             );
         }
+
+        fn assert_retained(&self) {
+            assert!(
+                self.transaction.is_some(),
+                "unsettled terminal route deleted retained residue authority"
+            );
+        }
     }
 
     impl ParentResidueTerminalCleanup for IsolatedParentResidueTerminal {
@@ -2518,15 +3014,40 @@ mod tests {
     #[test]
     fn worker_failure_terminal_route_restores_filesystem_and_isolated_run_key() {
         let mut residue = IsolatedParentResidueTerminal::pending();
-        assert_eq!(residue.cleanup_worker_failure(&()), None);
+        assert_eq!(residue.cleanup_worker_failure(&(), true), None);
         residue.assert_restored();
     }
 
     #[test]
     fn authenticated_abort_terminal_route_restores_filesystem_and_isolated_run_key() {
         let mut residue = IsolatedParentResidueTerminal::pending();
-        assert_eq!(residue.cleanup_authenticated_abort(&()), None);
+        assert_eq!(residue.cleanup_authenticated_abort(&(), true), None);
         residue.assert_restored();
+    }
+
+    #[test]
+    fn unsettled_terminal_routes_retain_parent_user_residue() {
+        let expected = Some("lifecycle_parent_user_cleanup_blocked_unsettled".to_string());
+
+        let mut worker_failure = IsolatedParentResidueTerminal::pending();
+        assert_eq!(worker_failure.cleanup_worker_failure(&(), false), expected);
+        worker_failure.assert_retained();
+
+        let mut authenticated_abort = IsolatedParentResidueTerminal::pending();
+        assert_eq!(
+            authenticated_abort.cleanup_authenticated_abort(&(), false),
+            expected
+        );
+        authenticated_abort.assert_retained();
+
+        let mut last_resort = IsolatedParentResidueTerminal::pending();
+        let mut followup_error = "authenticated_abort_failed".to_string();
+        last_resort.cleanup_last_resort_abort(&(), false, &mut followup_error);
+        assert_eq!(
+            followup_error,
+            "authenticated_abort_failed|abort_followup:lifecycle_parent_user_cleanup_blocked_unsettled"
+        );
+        last_resort.assert_retained();
     }
 
     #[test]
@@ -2770,6 +3291,145 @@ mod tests {
     }
 
     #[test]
+    fn failed_desktop_result_requires_exact_worker_binding() {
+        let mut primary_desktop = DesktopPhaseResult {
+            phase: DesktopPhase::FinalPrimary,
+            disposition: DesktopPhaseDisposition::Failed,
+            process_tree_settled: true,
+            observation: None,
+            failure_reason: Some("lifecycle_desktop_window_failed".to_string()),
+        };
+        let mut primary_result = failed_result_at(
+            LifecycleStage::FinalRepair,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: None,
+                reason: "final-primary-desktop.private.json:lifecycle_desktop_window_failed"
+                    .to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: restoration_not_reviewed(),
+            },
+        );
+        assert!(validate_failed_desktop_worker_result(&primary_desktop, &primary_result).is_ok());
+
+        primary_desktop.process_tree_settled = false;
+        primary_result.process_tree_settled = false;
+        *primary_result
+            .failure
+            .as_mut()
+            .expect("failure")
+            .restoration = RestorationOutcome::BlockedUnsettled;
+        assert!(validate_failed_desktop_worker_result(&primary_desktop, &primary_result).is_ok());
+
+        let mut fallback_desktop = DesktopPhaseResult {
+            phase: DesktopPhase::FinalMissingService,
+            disposition: DesktopPhaseDisposition::Failed,
+            process_tree_settled: true,
+            observation: None,
+            failure_reason: Some("lifecycle_desktop_fallback_failed".to_string()),
+        };
+        let fallback_result = failed_result_at(
+            LifecycleStage::FinalCrashRecovery,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+                reason:
+                    "final-missing-service-desktop.private.json:lifecycle_desktop_fallback_failed"
+                        .to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::Restored {
+                    evidence: evidence_receipt("final-fallback-states-restoration.private.json"),
+                }),
+            },
+        );
+        assert!(validate_failed_desktop_worker_result(&fallback_desktop, &fallback_result).is_ok());
+        let confirmed_pending = PendingFailedDesktopResult {
+            result: fallback_desktop.clone(),
+            completion_write_confirmed: true,
+        };
+        assert!(validate_queued_failed_desktop_result(
+            Some(&confirmed_pending),
+            false,
+            &fallback_result,
+        )
+        .is_ok());
+
+        let mut queued_mismatch = fallback_result.clone();
+        queued_mismatch.failure.as_mut().expect("failure").reason =
+            "final-missing-service-desktop.private.json:hostile_drift".to_string();
+        assert!(validate_queued_failed_desktop_result(
+            Some(&confirmed_pending),
+            false,
+            &queued_mismatch,
+        )
+        .is_err());
+
+        let mut abort_successor = fallback_result.clone();
+        abort_successor.abort = Some(WorkerAbort {
+            reason: AbortReason::Timeout,
+            last_authenticated_checkpoint: abort_successor.last_authenticated_checkpoint,
+            evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 1,
+                file_index: 1,
+            },
+        });
+        assert_eq!(
+            validate_queued_failed_desktop_result(
+                Some(&confirmed_pending),
+                false,
+                &abort_successor,
+            ),
+            Err("lifecycle_failed_desktop_original_result_required".to_string())
+        );
+        assert!(validate_queued_failed_desktop_result(
+            Some(&confirmed_pending),
+            true,
+            &abort_successor,
+        )
+        .is_ok());
+        let ambiguous_pending = PendingFailedDesktopResult {
+            result: fallback_desktop.clone(),
+            completion_write_confirmed: false,
+        };
+        assert!(validate_queued_failed_desktop_result(
+            Some(&ambiguous_pending),
+            false,
+            &abort_successor,
+        )
+        .is_ok());
+
+        let mut forged_settlement = fallback_result.clone();
+        fallback_desktop.process_tree_settled = false;
+        assert_eq!(
+            validate_failed_desktop_worker_result(&fallback_desktop, &forged_settlement),
+            Err("lifecycle_failed_desktop_settlement_mismatch".to_string())
+        );
+
+        forged_settlement
+            .failure
+            .as_mut()
+            .expect("failure")
+            .attempted_stage = None;
+        assert_eq!(
+            validate_worker_result(&forged_settlement, false),
+            Err("lifecycle_worker_failure_shape_invalid".to_string())
+        );
+
+        let mut unsettled_fallback = fallback_result;
+        unsettled_fallback.process_tree_settled = false;
+        *unsettled_fallback
+            .failure
+            .as_mut()
+            .expect("failure")
+            .restoration = RestorationOutcome::BlockedUnsettled;
+        assert!(
+            validate_failed_desktop_worker_result(&fallback_desktop, &unsettled_fallback).is_ok()
+        );
+    }
+
+    #[test]
     fn parent_classifies_disconnect_and_timeout_before_aborting() {
         assert_eq!(
             abort_reason_for_parent_error("lifecycle_pipe_closed"),
@@ -2810,6 +3470,18 @@ mod tests {
         assert!(!valid_checkpoint_transition(Some(initial), uninstall));
         assert!(!valid_checkpoint_transition(Some(repair), repair));
         assert!(!valid_checkpoint_transition(Some(repair), initial));
+        assert!(valid_parent_checkpoint(initial, root, None, 0));
+        assert!(!valid_parent_checkpoint(uninstall, root, Some(repair), 0));
+        assert!(valid_parent_checkpoint(uninstall, root, Some(repair), 1));
+        assert!(!valid_parent_checkpoint(
+            uninstall,
+            crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 9,
+                file_index: 9,
+            },
+            Some(repair),
+            1,
+        ));
         assert_eq!(
             next_lifecycle_stage(Some(LifecycleStage::FinalUninstall)),
             None
@@ -2847,6 +3519,22 @@ mod tests {
             previous = Some(stage);
         }
         assert_eq!(next_lifecycle_stage(previous), None);
+
+        for (stage, expected_index) in [
+            (LifecycleStage::InitialState, 0),
+            (LifecycleStage::FinalRepair, 0),
+            (LifecycleStage::InitialUninstall, 1),
+            (LifecycleStage::BaselineInstall, 1),
+            (LifecycleStage::BaselineRestart, 3),
+            (LifecycleStage::FinalCrashRecovery, 3),
+            (LifecycleStage::FinalFallbackStates, DESKTOP_PHASES.len()),
+            (LifecycleStage::FinalUninstall, DESKTOP_PHASES.len()),
+        ] {
+            assert_eq!(
+                expected_desktop_phase_index_at_checkpoint(stage),
+                expected_index
+            );
+        }
     }
 
     #[test]
@@ -2889,6 +3577,25 @@ mod tests {
         assert!(!worker_message_requires_abort_repeat(
             &WorkerMessage::ResultReady(Box::new(success_result()))
         ));
+
+        let result = failed_result_at(
+            LifecycleStage::FinalCrashRecovery,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+                reason: "final-missing-service-desktop.private.json:desktop_failed".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::BlockedUnsettled),
+            },
+        );
+        assert_eq!(
+            crossed_worker_result(&result),
+            Some(CrossedWorkerRequest {
+                completed_stage: LifecycleStage::FinalCrashRecovery,
+                attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+            })
+        );
     }
 
     #[test]
@@ -3039,6 +3746,73 @@ mod tests {
             ),
             Err("lifecycle_parent_abort_successor_mismatch".to_string())
         );
+    }
+
+    #[test]
+    fn abort_result_tracker_preserves_pre_initial_failure_and_binds_parent_context() {
+        let root = crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+            volume_serial: 1,
+            file_index: 1,
+        };
+        let original = WorkerResult {
+            disposition: WorkerDisposition::Failed,
+            completed_stage: None,
+            last_authenticated_checkpoint: None,
+            abort: None,
+            failure: Some(WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: None,
+                reason: "lifecycle_controller_not_ready".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::NotRequired),
+            }),
+            process_tree_settled: true,
+            private_evidence: Vec::new(),
+            sanitized_export: None,
+        };
+        assert!(validate_worker_result(&original, false).is_ok());
+
+        let mut tracker = AbortResultTracker::new(None);
+        assert_eq!(
+            tracker
+                .observe(original.clone(), AbortReason::ProtocolViolation, root, None,)
+                .expect("crossed pre-initial failure"),
+            AbortResultAction::RepeatAbort
+        );
+        let mut successor = original.clone();
+        successor.abort = Some(WorkerAbort {
+            reason: AbortReason::ProtocolViolation,
+            last_authenticated_checkpoint: None,
+            evidence_root_identity: root,
+        });
+        assert_eq!(
+            tracker
+                .observe(
+                    successor.clone(),
+                    AbortReason::ProtocolViolation,
+                    root,
+                    None,
+                )
+                .expect("bound pre-initial successor"),
+            AbortResultAction::Complete(Box::new(successor))
+        );
+
+        let forged_parent_checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::InitialState,
+            evidence_root_identity: root,
+        };
+        let mut context_mismatch = AbortResultTracker::new(None);
+        assert_eq!(
+            context_mismatch.observe(
+                original,
+                AbortReason::ProtocolViolation,
+                root,
+                Some(forged_parent_checkpoint),
+            ),
+            Err("lifecycle_parent_abort_context_invalid".to_string())
+        );
+        assert!(context_mismatch.original.is_none());
     }
 
     #[test]
@@ -3229,6 +4003,121 @@ mod tests {
                 Some(prior),
             ),
             Err("lifecycle_parent_abort_successor_mismatch".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_parent_abort_binds_restoration_to_the_attempted_stage() {
+        let root = crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+            volume_serial: 1,
+            file_index: 1,
+        };
+        let checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::FinalCrashRecovery,
+            evidence_root_identity: root,
+        };
+
+        for process_tree_settled in [true, false] {
+            let mut result = deterministic_parent_abort_result(
+                LifecycleStage::FinalCrashRecovery,
+                Some(checkpoint),
+                AbortReason::DesktopFailure,
+            );
+            let failure = result.failure.as_mut().expect("failure");
+            failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
+            *failure.restoration = if process_tree_settled {
+                RestorationOutcome::Restored {
+                    evidence: evidence_receipt("final-fallback-states-restoration.private.json"),
+                }
+            } else {
+                RestorationOutcome::BlockedUnsettled
+            };
+            result.process_tree_settled = process_tree_settled;
+
+            assert!(validate_worker_result(&result, false).is_ok());
+            let mut tracker = AbortResultTracker::new(None);
+            tracker
+                .note_crossed_request(crossed_desktop_request(DesktopPhase::FinalMissingService))
+                .expect("crossed stage");
+            assert_eq!(
+                tracker
+                    .observe(
+                        result.clone(),
+                        AbortReason::DesktopFailure,
+                        root,
+                        Some(checkpoint),
+                    )
+                    .expect("fallback parent abort"),
+                AbortResultAction::Complete(Box::new(result))
+            );
+        }
+
+        let omitted_attempt = deterministic_parent_abort_result(
+            LifecycleStage::FinalCrashRecovery,
+            Some(checkpoint),
+            AbortReason::DesktopFailure,
+        );
+        assert!(validate_worker_result(&omitted_attempt, false).is_ok());
+        let mut tracker = AbortResultTracker::new(None);
+        tracker
+            .note_crossed_request(crossed_desktop_request(DesktopPhase::FinalMissingService))
+            .expect("crossed fallback desktop");
+        assert_eq!(
+            tracker.observe(
+                omitted_attempt,
+                AbortReason::DesktopFailure,
+                root,
+                Some(checkpoint),
+            ),
+            Err("lifecycle_parent_abort_successor_mismatch".to_string())
+        );
+
+        let mut legacy_restoration = deterministic_parent_abort_result(
+            LifecycleStage::FinalCrashRecovery,
+            Some(checkpoint),
+            AbortReason::DesktopFailure,
+        );
+        let failure = legacy_restoration.failure.as_mut().expect("failure");
+        failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
+        *failure.restoration = RestorationOutcome::Failed {
+            reason: "lifecycle_parent_abort_restoration_not_reviewed".to_string(),
+            evidence: Some(evidence_receipt(
+                "final-fallback-states-restoration.private.json",
+            )),
+            evidence_error: None,
+        };
+        assert!(validate_worker_result(&legacy_restoration, false).is_ok());
+        let mut tracker = AbortResultTracker::new(None);
+        tracker
+            .note_crossed_request(crossed_desktop_request(DesktopPhase::FinalMissingService))
+            .expect("crossed fallback desktop");
+        assert_eq!(
+            tracker.observe(
+                legacy_restoration,
+                AbortReason::DesktopFailure,
+                root,
+                Some(checkpoint),
+            ),
+            Err("lifecycle_parent_abort_successor_mismatch".to_string())
+        );
+
+        let mut wrong_pair = deterministic_parent_abort_result(
+            LifecycleStage::FinalRepair,
+            None,
+            AbortReason::DesktopFailure,
+        );
+        let failure = wrong_pair.failure.as_mut().expect("failure");
+        failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
+        *failure.restoration = RestorationOutcome::Failed {
+            reason: "lifecycle_parent_abort_restoration_not_reviewed".to_string(),
+            evidence: Some(evidence_receipt(
+                "final-fallback-states-restoration.private.json",
+            )),
+            evidence_error: None,
+        };
+        assert_eq!(
+            validate_worker_result(&wrong_pair, false),
+            Err("lifecycle_worker_failure_shape_invalid".to_string())
         );
     }
 
@@ -3426,6 +4315,35 @@ mod tests {
         });
         assert!(validate_worker_result(&controller, false).is_ok());
 
+        let fallback_controller = failed_result_at(
+            LifecycleStage::FinalCrashRecovery,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+                reason: "final-missing-service-desktop.private.json:desktop_failed".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::Restored {
+                    evidence: evidence_receipt("final-fallback-states-restoration.private.json"),
+                }),
+            },
+        );
+        assert!(validate_worker_result(&fallback_controller, false).is_ok());
+
+        let mut unsettled_fallback_controller = failed_result_at(
+            LifecycleStage::FinalCrashRecovery,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+                reason: "final-missing-service-desktop.private.json:desktop_unsettled".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::BlockedUnsettled),
+            },
+        );
+        unsettled_fallback_controller.process_tree_settled = false;
+        assert!(validate_worker_result(&unsettled_fallback_controller, false).is_ok());
+
         let restored = failed_result(WorkerFailure {
             kind: WorkerFailureKind::Mutation,
             attempted_stage: Some(LifecycleStage::FinalRepair),
@@ -3467,6 +4385,41 @@ mod tests {
         forged_settlement.process_tree_settled = true;
         assert_eq!(
             validate_worker_result(&forged_settlement, false),
+            Err("lifecycle_worker_settlement_restoration_invalid".to_string())
+        );
+
+        let mut forged_unsettled_controller = failed_result_at(
+            LifecycleStage::FinalCrashRecovery,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+                reason: "desktop_unsettled".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::NotRequired),
+            },
+        );
+        forged_unsettled_controller.process_tree_settled = false;
+        assert_eq!(
+            validate_worker_result(&forged_unsettled_controller, false),
+            Err("lifecycle_worker_settlement_restoration_invalid".to_string())
+        );
+
+        let wrong_fallback_pair = failed_result_at(
+            LifecycleStage::FinalRepair,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+                reason: "wrong_fallback_pair".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::Restored {
+                    evidence: evidence_receipt("final-fallback-states-restoration.private.json"),
+                }),
+            },
+        );
+        assert_eq!(
+            validate_worker_result(&wrong_fallback_pair, false),
             Err("lifecycle_worker_failure_shape_invalid".to_string())
         );
 
@@ -3606,6 +4559,31 @@ mod tests {
                 LifecycleStage::BaselineCrashRecovery,
                 "baseline-rollback-recovery-failure.private.json",
             ),
+            (
+                LifecycleStage::FinalUpgrade,
+                LifecycleStage::LegacyResidueSeeded,
+                "final-upgrade-failure.private.json",
+            ),
+            (
+                LifecycleStage::FinalRestart,
+                LifecycleStage::FinalUpgrade,
+                "final-restart-failure.private.json",
+            ),
+            (
+                LifecycleStage::FinalCrashRecovery,
+                LifecycleStage::FinalRestart,
+                "final-crash-recovery-failure.private.json",
+            ),
+            (
+                LifecycleStage::FinalFallbackStates,
+                LifecycleStage::FinalCrashRecovery,
+                "final-fallback-states-failure.private.json",
+            ),
+            (
+                LifecycleStage::FinalUninstall,
+                LifecycleStage::FinalFallbackStates,
+                "final-uninstall-failure.private.json",
+            ),
         ] {
             let result = failed_result_at(
                 completed,
@@ -3619,6 +4597,225 @@ mod tests {
                 },
             );
             assert!(validate_worker_result(&result, false).is_ok(), "{leaf}");
+        }
+    }
+
+    #[test]
+    fn final_uninstall_may_stop_only_for_pending_parent_export() {
+        let result = failed_result_at(
+            LifecycleStage::FinalUninstall,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: None,
+                reason: "lifecycle_parent_export_pending".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: Box::new(RestorationOutcome::NotRequired),
+            },
+        );
+        assert!(validate_worker_result(&result, false).is_ok());
+        let export_failure = result.failure.as_ref().expect("failure");
+        assert!(
+            validate_parent_failure_completion(&result, export_failure, DESKTOP_PHASES.len(),)
+                .is_ok()
+        );
+        assert_eq!(
+            validate_parent_failure_completion(&result, export_failure, 0),
+            Err("lifecycle_parent_export_desktop_phases_incomplete".to_string())
+        );
+
+        let mut missing_checkpoint = result.clone();
+        missing_checkpoint.last_authenticated_checkpoint = None;
+        *missing_checkpoint
+            .failure
+            .as_mut()
+            .expect("failure")
+            .restoration = RestorationOutcome::BlockedUntrusted {
+            reason: "lifecycle_restoration_not_reviewed".to_string(),
+        };
+        assert_eq!(
+            validate_worker_result(&missing_checkpoint, false),
+            Err("lifecycle_worker_failure_shape_invalid".to_string())
+        );
+
+        let mut stale_checkpoint = missing_checkpoint;
+        stale_checkpoint.last_authenticated_checkpoint = Some(WorkerCheckpoint {
+            completed_stage: LifecycleStage::FinalFallbackStates,
+            evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 1,
+                file_index: 1,
+            },
+        });
+        assert_eq!(
+            validate_worker_result(&stale_checkpoint, false),
+            Err("lifecycle_worker_failure_shape_invalid".to_string())
+        );
+
+        let mut attempted_stage = result.clone();
+        attempted_stage
+            .failure
+            .as_mut()
+            .expect("failure")
+            .attempted_stage = Some(LifecycleStage::FinalUninstall);
+        assert_eq!(
+            validate_worker_result(&attempted_stage, false),
+            Err("lifecycle_worker_failure_shape_invalid".to_string())
+        );
+
+        let mut wrong_reason = result.clone();
+        wrong_reason.failure.as_mut().expect("failure").reason =
+            "lifecycle_other_controller_failure".to_string();
+        assert_eq!(
+            validate_worker_result(&wrong_reason, false),
+            Err("lifecycle_worker_restoration_disposition_invalid".to_string())
+        );
+
+        let mut leaked_receipt = result;
+        leaked_receipt
+            .private_evidence
+            .push(evidence_receipt("final-uninstall-state.private.json"));
+        assert_eq!(
+            validate_worker_result(&leaked_receipt, false),
+            Err("lifecycle_worker_failure_evidence_state_invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn ordinary_failure_progress_allows_only_the_next_stage_evidence_write() {
+        let initial_checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::InitialState,
+            evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+                volume_serial: 1,
+                file_index: 1,
+            },
+        };
+        let mut evidence_write = failed_result_at(
+            LifecycleStage::FinalRepair,
+            WorkerFailure {
+                kind: WorkerFailureKind::EvidenceWrite,
+                attempted_stage: None,
+                reason: "lifecycle_final_repair_evidence_incomplete".to_string(),
+                evidence: None,
+                evidence_error: Some("lifecycle_evidence_create_failed".to_string()),
+                restoration: restoration_not_reviewed(),
+            },
+        );
+        evidence_write.last_authenticated_checkpoint = Some(initial_checkpoint);
+        assert!(validate_worker_result(&evidence_write, false).is_ok());
+        assert!(validate_parent_failure_progress(&evidence_write).is_ok());
+
+        let mut forged_controller = failed_result_at(
+            LifecycleStage::FinalRepair,
+            WorkerFailure {
+                kind: WorkerFailureKind::Controller,
+                attempted_stage: None,
+                reason: "lifecycle_controller_forward_drift".to_string(),
+                evidence: None,
+                evidence_error: None,
+                restoration: restoration_not_reviewed(),
+            },
+        );
+        forged_controller.last_authenticated_checkpoint = Some(initial_checkpoint);
+        assert!(validate_worker_result(&forged_controller, false).is_ok());
+        assert_eq!(
+            validate_parent_failure_progress(&forged_controller),
+            Err("lifecycle_worker_failure_progress_invalid".to_string())
+        );
+
+        let final_repair_checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::FinalRepair,
+            evidence_root_identity: initial_checkpoint.evidence_root_identity,
+        };
+        let mut post_desktop_evidence_write = failed_result_at(
+            LifecycleStage::InitialUninstall,
+            WorkerFailure {
+                kind: WorkerFailureKind::EvidenceWrite,
+                attempted_stage: None,
+                reason: "lifecycle_initial_uninstall_evidence_incomplete".to_string(),
+                evidence: None,
+                evidence_error: Some("lifecycle_evidence_create_failed".to_string()),
+                restoration: restoration_not_reviewed(),
+            },
+        );
+        post_desktop_evidence_write.last_authenticated_checkpoint = Some(final_repair_checkpoint);
+        assert!(validate_worker_result(&post_desktop_evidence_write, false).is_ok());
+        assert_eq!(
+            validate_parent_original_worker_result(
+                &post_desktop_evidence_write,
+                Some(final_repair_checkpoint),
+                0,
+            ),
+            Err("lifecycle_worker_failure_desktop_phases_incomplete".to_string())
+        );
+        assert!(validate_parent_original_worker_result(
+            &post_desktop_evidence_write,
+            Some(final_repair_checkpoint),
+            1,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn attempted_stage_failures_require_all_prior_desktop_phases() {
+        for (completed, attempted, leaf, required_index) in [
+            (
+                LifecycleStage::FinalRepair,
+                LifecycleStage::InitialUninstall,
+                "initial-uninstall-failure.private.json",
+                1,
+            ),
+            (
+                LifecycleStage::BaselineInstall,
+                LifecycleStage::BaselineRestart,
+                "baseline-restart-failure.private.json",
+                3,
+            ),
+            (
+                LifecycleStage::FinalCrashRecovery,
+                LifecycleStage::FinalFallbackStates,
+                "final-fallback-states-failure.private.json",
+                3,
+            ),
+            (
+                LifecycleStage::FinalFallbackStates,
+                LifecycleStage::FinalUninstall,
+                "final-uninstall-failure.private.json",
+                DESKTOP_PHASES.len(),
+            ),
+        ] {
+            let result = failed_result_at(
+                completed,
+                WorkerFailure {
+                    kind: WorkerFailureKind::Mutation,
+                    attempted_stage: Some(attempted),
+                    reason: "lifecycle_mutation_failed".to_string(),
+                    evidence: Some(Box::new(evidence_receipt(leaf))),
+                    evidence_error: None,
+                    restoration: restoration_not_reviewed(),
+                },
+            );
+            assert!(
+                validate_worker_result(&result, false).is_ok(),
+                "{attempted:?}"
+            );
+            assert_eq!(
+                validate_parent_original_worker_result(
+                    &result,
+                    result.last_authenticated_checkpoint,
+                    required_index - 1,
+                ),
+                Err("lifecycle_worker_failure_desktop_phases_incomplete".to_string()),
+                "{attempted:?}"
+            );
+            assert!(
+                validate_parent_original_worker_result(
+                    &result,
+                    result.last_authenticated_checkpoint,
+                    required_index,
+                )
+                .is_ok(),
+                "{attempted:?}"
+            );
         }
     }
 

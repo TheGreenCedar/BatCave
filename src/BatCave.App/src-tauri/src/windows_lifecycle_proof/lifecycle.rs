@@ -3,12 +3,14 @@ use super::native::{
     capture_elevated_machine_snapshot, open_allowlisted_legacy_cli, open_installed_service,
     open_installed_uninstaller, parse_sha256, require_allowlisted_elevated_preflight,
     require_elevated_crashed_candidate, require_elevated_installed_candidate,
-    require_elevated_stopped_candidate, require_elevated_total_product_absence, DesktopProcess,
-    ElevatedMachineSnapshot, ExecuteFailure, OwnedFile, PeerBinding, PipeConnection,
-    ProcessTerminal, ProcessTerminalSnapshot, ProtectedEvidenceRoot,
+    require_elevated_stopped_candidate, require_elevated_total_product_absence,
+    restore_allowlisted_legacy_cli, DesktopProcess, ElevatedMachineSnapshot, ExecuteFailure,
+    OwnedFile, PeerBinding, PipeConnection, ProcessTerminal, ProcessTerminalSnapshot,
+    ProtectedEvidenceRoot,
 };
 use super::private_evidence::{
-    write_machine_packet, write_service_crash_packet, write_upgrade_rollback_packet,
+    write_desktop_packet, write_machine_packet, write_service_crash_packet,
+    write_upgrade_rollback_packet,
 };
 use crate::windows_lifecycle_proof_contract::{
     validate_envelope, AbortReason, DesktopPhase, DesktopPhaseDisposition, DesktopPhaseObservation,
@@ -25,6 +27,7 @@ const MUTATION_FAILURE_SCHEMA: &str = "batcave.windows-lifecycle.mutation-failur
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const UNINSTALLER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const SERVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const DESKTOP_PHASE_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const FINAL_REPAIR_ARGUMENTS: &str = "/S /UPDATE";
 const BASELINE_INSTALL_ARGUMENTS: &str = "/S";
 const DIRECT_UNINSTALL_ARGUMENTS: &str = r"/S _?=C:\Program Files\BatCave Monitor";
@@ -322,7 +325,7 @@ pub(super) fn execute_worker(context: WorkerContext<'_>) -> WorkerResult {
             Some(completed_stage),
             last_authenticated_checkpoint,
             None,
-            controller_failure("lifecycle_remaining_stages_not_implemented".to_string()),
+            controller_failure("lifecycle_parent_export_pending".to_string()),
             true,
         ),
         Err(failure) => failed(
@@ -396,7 +399,7 @@ fn execute_worker_inner(
         repo_root: _repo_root,
         baseline,
         final_candidate,
-        incompatible_service_fixture: _incompatible_service_fixture,
+        incompatible_service_fixture,
         rollback_failing_service_fixture,
         evidence,
         pipe,
@@ -438,7 +441,7 @@ fn execute_worker_inner(
             None,
         )
     })?;
-    let _historical_cli_copy = historical_cli
+    let historical_cli_copy = historical_cli
         .copy_to(
             &evidence.root().join("historical-cli.exe"),
             "historical_cli_copy",
@@ -506,6 +509,24 @@ fn execute_worker_inner(
         &mut transport,
         last_authenticated_checkpoint,
         controller_bindings,
+    )?;
+    authenticated_desktop_phase(
+        LifecycleStage::FinalRepair,
+        DesktopPhase::FinalPrimary,
+        plan,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+        false,
+        |snapshot| {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.final_candidate,
+                true,
+                "final_primary_desktop",
+            )
+        },
     )?;
 
     let installed_uninstaller =
@@ -627,6 +648,29 @@ fn execute_worker_inner(
         last_authenticated_checkpoint,
         controller_bindings,
     )?;
+    for phase in [
+        DesktopPhase::BaselinePrimary,
+        DesktopPhase::BaselineSecondInstance,
+    ] {
+        authenticated_desktop_phase(
+            LifecycleStage::BaselineInstall,
+            phase,
+            plan,
+            evidence,
+            &mut transport,
+            last_authenticated_checkpoint,
+            controller_bindings,
+            false,
+            |snapshot| {
+                require_elevated_installed_candidate(
+                    snapshot,
+                    &plan.baseline,
+                    false,
+                    "baseline_desktop",
+                )
+            },
+        )?;
+    }
 
     let baseline_stop_service = open_installed_service(&plan.baseline).map_err(|failure| {
         (
@@ -747,6 +791,8 @@ fn execute_worker_inner(
                 let failure = write_service_crash_failure(
                     evidence,
                     controller_bindings,
+                    LifecycleStage::BaselineCrashRecovery,
+                    "baseline-crash-recovery-failure.private.json",
                     &baseline_restart_state,
                     &failure.reason,
                     failure.service_settled,
@@ -771,6 +817,8 @@ fn execute_worker_inner(
         let failure = write_service_crash_failure(
             evidence,
             controller_bindings,
+            LifecycleStage::BaselineCrashRecovery,
+            "baseline-crash-recovery-failure.private.json",
             &baseline_restart_state,
             &reason,
             true,
@@ -970,7 +1018,682 @@ fn execute_worker_inner(
         last_authenticated_checkpoint,
         controller_bindings,
     )?;
-    Ok(LifecycleStage::BaselineRollbackRecovery)
+
+    let restored_legacy_cli =
+        restore_allowlisted_legacy_cli(&historical_cli_copy).map_err(|reason| {
+            (
+                Some(LifecycleStage::BaselineRollbackRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+    let legacy_residue_seeded_state = capture_elevated_machine_snapshot(controller_bindings);
+    require_elevated_installed_candidate(
+        &legacy_residue_seeded_state,
+        &plan.baseline,
+        false,
+        "legacy_residue_seeded",
+    )
+    .and_then(|_| {
+        require_legacy_cli_hash(
+            &legacy_residue_seeded_state,
+            &plan.allowlisted_start.legacy_cli_sha256,
+            "legacy_residue_seeded",
+        )
+    })
+    .map_err(|reason| {
+        (
+            Some(LifecycleStage::BaselineRollbackRecovery),
+            controller_failure(reason),
+            true,
+        )
+    })?;
+    write_machine_packet(
+        evidence,
+        "legacy-residue-seeded-state.private.json",
+        &legacy_residue_seeded_state,
+    )
+    .map_err(|error| {
+        (
+            Some(LifecycleStage::LegacyResidueSeeded),
+            evidence_write_failure("lifecycle_legacy_residue_seeded_evidence_incomplete", error),
+            true,
+        )
+    })?;
+    drop(restored_legacy_cli);
+    authenticated_checkpoint(
+        LifecycleStage::LegacyResidueSeeded,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
+
+    let final_upgrade_state = execute_mutation(
+        evidence,
+        controller_bindings,
+        "final-upgrade-failure.private.json",
+        LifecycleStage::FinalUpgrade,
+        &legacy_residue_seeded_state,
+        &final_copy,
+        FINAL_REPAIR_ARGUMENTS,
+        INSTALLER_TIMEOUT,
+        "final_upgrade",
+        "lifecycle_final_upgrade_failed",
+        |snapshot| {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.final_candidate,
+                true,
+                "final_upgrade",
+            )
+        },
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::LegacyResidueSeeded), failure, settled))?;
+    write_machine_packet(
+        evidence,
+        "final-upgrade-state.private.json",
+        &final_upgrade_state,
+    )
+    .map_err(|error| {
+        (
+            Some(LifecycleStage::FinalUpgrade),
+            evidence_write_failure("lifecycle_final_upgrade_evidence_incomplete", error),
+            true,
+        )
+    })?;
+    authenticated_checkpoint(
+        LifecycleStage::FinalUpgrade,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
+
+    let final_stop_service = open_installed_service(&plan.final_candidate).map_err(|reason| {
+        (
+            Some(LifecycleStage::FinalUpgrade),
+            controller_failure(reason),
+            true,
+        )
+    })?;
+    let final_restart_stopped = execute_mutation(
+        evidence,
+        controller_bindings,
+        "final-restart-failure.private.json",
+        LifecycleStage::FinalRestart,
+        &final_upgrade_state,
+        &final_stop_service,
+        SERVICE_STOP_ARGUMENTS,
+        SERVICE_OPERATION_TIMEOUT,
+        "final_restart_stop",
+        "lifecycle_final_restart_stop_failed",
+        |snapshot| {
+            require_elevated_stopped_candidate(
+                snapshot,
+                &plan.final_candidate,
+                true,
+                "final_restart_stop",
+            )
+        },
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::FinalUpgrade), failure, settled))?;
+    drop(final_stop_service);
+    write_machine_packet(
+        evidence,
+        "final-restart-stopped-state.private.json",
+        &final_restart_stopped,
+    )
+    .map_err(|error| {
+        (
+            Some(LifecycleStage::FinalUpgrade),
+            evidence_write_failure("lifecycle_final_restart_stopped_evidence_incomplete", error),
+            true,
+        )
+    })?;
+    let final_start_service = open_installed_service(&plan.final_candidate).map_err(|reason| {
+        (
+            Some(LifecycleStage::FinalUpgrade),
+            controller_failure(reason),
+            true,
+        )
+    })?;
+    let final_restart_state = execute_mutation(
+        evidence,
+        controller_bindings,
+        "final-restart-failure.private.json",
+        LifecycleStage::FinalRestart,
+        &final_restart_stopped,
+        &final_start_service,
+        SERVICE_START_ARGUMENTS,
+        SERVICE_OPERATION_TIMEOUT,
+        "final_restart_start",
+        "lifecycle_final_restart_start_failed",
+        |snapshot| {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.final_candidate,
+                true,
+                "final_restart_start",
+            )
+        },
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::FinalUpgrade), failure, settled))?;
+    drop(final_start_service);
+    write_machine_packet(
+        evidence,
+        "final-restart-state.private.json",
+        &final_restart_state,
+    )
+    .map_err(|error| {
+        (
+            Some(LifecycleStage::FinalRestart),
+            evidence_write_failure("lifecycle_final_restart_evidence_incomplete", error),
+            true,
+        )
+    })?;
+    authenticated_checkpoint(
+        LifecycleStage::FinalRestart,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
+
+    require_running_service(&final_restart_state, "final_crash_before").map_err(|reason| {
+        (
+            Some(LifecycleStage::FinalRestart),
+            controller_failure(reason),
+            true,
+        )
+    })?;
+    let expected_final_service_sha256 =
+        parse_sha256(&plan.final_candidate.service_sha256, "final_service").map_err(|reason| {
+            (
+                Some(LifecycleStage::FinalRestart),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+    let final_termination =
+        match crate::collector_service::windows_provisioner::terminate_running_service_for_proof(
+            expected_final_service_sha256,
+        ) {
+            Ok(termination) => termination,
+            Err(failure) => {
+                let failure = write_service_crash_failure(
+                    evidence,
+                    controller_bindings,
+                    LifecycleStage::FinalCrashRecovery,
+                    "final-crash-recovery-failure.private.json",
+                    &final_restart_state,
+                    &failure.reason,
+                    failure.service_settled,
+                    ServiceCrashMutationObservation::Failed(&failure),
+                );
+                let process_tree_settled = failure.kind != WorkerFailureKind::ProcessSettlement;
+                return Err((
+                    Some(LifecycleStage::FinalRestart),
+                    failure,
+                    process_tree_settled,
+                )
+                    .into());
+            }
+        };
+    let final_crashed_state = capture_elevated_machine_snapshot(controller_bindings);
+    if let Err(reason) = require_elevated_crashed_candidate(
+        &final_crashed_state,
+        &plan.final_candidate,
+        true,
+        "final_crash",
+    ) {
+        let failure = write_service_crash_failure(
+            evidence,
+            controller_bindings,
+            LifecycleStage::FinalCrashRecovery,
+            "final-crash-recovery-failure.private.json",
+            &final_restart_state,
+            &reason,
+            true,
+            ServiceCrashMutationObservation::Terminated(&final_termination),
+        );
+        return Err((Some(LifecycleStage::FinalRestart), failure, true).into());
+    }
+    write_service_crash_packet(
+        evidence,
+        "final-crashed-state.private.json",
+        &final_crashed_state,
+        &final_termination,
+    )
+    .map_err(|error| {
+        (
+            Some(LifecycleStage::FinalRestart),
+            evidence_write_failure("lifecycle_final_crashed_evidence_incomplete", error),
+            true,
+        )
+    })?;
+    let final_recovery_service =
+        open_installed_service(&plan.final_candidate).map_err(|reason| {
+            (
+                Some(LifecycleStage::FinalRestart),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+    let final_crash_recovery_state = execute_mutation(
+        evidence,
+        controller_bindings,
+        "final-crash-recovery-failure.private.json",
+        LifecycleStage::FinalCrashRecovery,
+        &final_crashed_state,
+        &final_recovery_service,
+        SERVICE_START_ARGUMENTS,
+        SERVICE_OPERATION_TIMEOUT,
+        "final_crash_recovery",
+        "lifecycle_final_crash_recovery_failed",
+        |snapshot| {
+            require_elevated_installed_candidate(
+                snapshot,
+                &plan.final_candidate,
+                true,
+                "final_crash_recovery",
+            )?;
+            require_running_service(snapshot, "final_crash_recovery").map(|_| ())
+        },
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::FinalRestart), failure, settled))?;
+    drop(final_recovery_service);
+    write_machine_packet(
+        evidence,
+        "final-crash-recovery-state.private.json",
+        &final_crash_recovery_state,
+    )
+    .map_err(|error| {
+        (
+            Some(LifecycleStage::FinalCrashRecovery),
+            evidence_write_failure("lifecycle_final_crash_recovery_evidence_incomplete", error),
+            true,
+        )
+    })?;
+    authenticated_checkpoint(
+        LifecycleStage::FinalCrashRecovery,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
+
+    let installed_final_service =
+        open_installed_service(&plan.final_candidate).map_err(|reason| {
+            (
+                Some(LifecycleStage::FinalCrashRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+    let retained_final_service = installed_final_service
+        .copy_to(
+            &evidence.root().join("final-service.exe"),
+            "final_service_copy",
+        )
+        .map_err(|reason| {
+            (
+                Some(LifecycleStage::FinalCrashRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+    drop(installed_final_service);
+    let final_service_bytes = retained_final_service
+        .read_all_exact("final_service")
+        .map_err(|reason| {
+            (
+                Some(LifecycleStage::FinalCrashRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+
+    let missing = crate::collector_service::windows_provisioner::with_missing_service_for_proof(
+        &final_service_bytes,
+        expected_final_service_sha256,
+        || {
+            let state = capture_elevated_machine_snapshot(controller_bindings);
+            super::native::require_elevated_desktop_only_candidate(
+                &state,
+                &plan.final_candidate,
+                "final_missing_service",
+            )
+            .map_err(|reason| {
+                WorkerExecutionFailure::from((
+                    Some(LifecycleStage::FinalCrashRecovery),
+                    controller_failure(reason),
+                    true,
+                ))
+            })?;
+            write_machine_packet(evidence, "final-missing-service-state.private.json", &state)
+                .map_err(|error| {
+                    WorkerExecutionFailure::from((
+                        Some(LifecycleStage::FinalCrashRecovery),
+                        evidence_write_failure(
+                            "lifecycle_final_missing_service_evidence_incomplete",
+                            error,
+                        ),
+                        true,
+                    ))
+                })?;
+            authenticated_desktop_phase(
+                LifecycleStage::FinalCrashRecovery,
+                DesktopPhase::FinalMissingService,
+                plan,
+                evidence,
+                &mut transport,
+                last_authenticated_checkpoint,
+                controller_bindings,
+                true,
+                |snapshot| {
+                    super::native::require_elevated_desktop_only_candidate(
+                        snapshot,
+                        &plan.final_candidate,
+                        "final_missing_service_desktop",
+                    )
+                },
+            )
+        },
+        |failure| failure.process_tree_settled,
+    )
+    .map_err(|failure| {
+        service_state_execution_failure(
+            &final_crash_recovery_state,
+            &failure.reason,
+            failure.service_settled,
+            plan,
+            evidence,
+            controller_bindings,
+        )
+    })?;
+    let final_missing_service_restored = finish_fallback_transaction(
+        missing.body,
+        missing.restoration,
+        &final_crash_recovery_state,
+        plan,
+        evidence,
+        controller_bindings,
+    )?;
+    write_machine_packet(
+        evidence,
+        "final-missing-service-restored-state.private.json",
+        &final_missing_service_restored,
+    )
+    .map_err(|error| {
+        let mut failure = WorkerExecutionFailure::from((
+            Some(LifecycleStage::FinalCrashRecovery),
+            evidence_write_failure(
+                "lifecycle_final_missing_service_restored_evidence_incomplete",
+                error,
+            ),
+            true,
+        ));
+        record_fallback_restoration(
+            &mut failure,
+            None,
+            &final_missing_service_restored,
+            evidence,
+        );
+        failure
+    })?;
+
+    let stopped = crate::collector_service::windows_provisioner::with_stopped_service_for_proof(
+        expected_final_service_sha256,
+        || {
+            let state = capture_elevated_machine_snapshot(controller_bindings);
+            require_elevated_stopped_candidate(
+                &state,
+                &plan.final_candidate,
+                true,
+                "final_stopped_service",
+            )
+            .map_err(|reason| {
+                WorkerExecutionFailure::from((
+                    Some(LifecycleStage::FinalCrashRecovery),
+                    controller_failure(reason),
+                    true,
+                ))
+            })?;
+            write_machine_packet(evidence, "final-stopped-service-state.private.json", &state)
+                .map_err(|error| {
+                    WorkerExecutionFailure::from((
+                        Some(LifecycleStage::FinalCrashRecovery),
+                        evidence_write_failure(
+                            "lifecycle_final_stopped_service_evidence_incomplete",
+                            error,
+                        ),
+                        true,
+                    ))
+                })?;
+            authenticated_desktop_phase(
+                LifecycleStage::FinalCrashRecovery,
+                DesktopPhase::FinalStoppedService,
+                plan,
+                evidence,
+                &mut transport,
+                last_authenticated_checkpoint,
+                controller_bindings,
+                true,
+                |snapshot| {
+                    require_elevated_stopped_candidate(
+                        snapshot,
+                        &plan.final_candidate,
+                        true,
+                        "final_stopped_service_desktop",
+                    )
+                },
+            )
+        },
+        |failure| failure.process_tree_settled,
+    )
+    .map_err(|failure| {
+        service_state_execution_failure(
+            &final_missing_service_restored,
+            &failure.reason,
+            failure.service_settled,
+            plan,
+            evidence,
+            controller_bindings,
+        )
+    })?;
+    let final_stopped_service_restored = finish_fallback_transaction(
+        stopped.body,
+        stopped.restoration,
+        &final_missing_service_restored,
+        plan,
+        evidence,
+        controller_bindings,
+    )?;
+    write_machine_packet(
+        evidence,
+        "final-stopped-service-restored-state.private.json",
+        &final_stopped_service_restored,
+    )
+    .map_err(|error| {
+        let mut failure = WorkerExecutionFailure::from((
+            Some(LifecycleStage::FinalCrashRecovery),
+            evidence_write_failure(
+                "lifecycle_final_stopped_service_restored_evidence_incomplete",
+                error,
+            ),
+            true,
+        ));
+        record_fallback_restoration(
+            &mut failure,
+            None,
+            &final_stopped_service_restored,
+            evidence,
+        );
+        failure
+    })?;
+
+    let incompatible_service_bytes = incompatible_service_fixture
+        .read_all_exact("incompatible_service")
+        .map_err(|reason| {
+            (
+                Some(LifecycleStage::FinalCrashRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+    let expected_incompatible_service_sha256 = parse_sha256(
+        &plan.incompatible_service_fixture.sha256,
+        "incompatible_service",
+    )
+    .map_err(|reason| {
+        (
+            Some(LifecycleStage::FinalCrashRecovery),
+            controller_failure(reason),
+            true,
+        )
+    })?;
+    let incompatible =
+        crate::collector_service::windows_provisioner::with_incompatible_service_for_proof(
+            &final_service_bytes,
+            expected_final_service_sha256,
+            &incompatible_service_bytes,
+            expected_incompatible_service_sha256,
+            || {
+                let state = capture_elevated_machine_snapshot(controller_bindings);
+                require_incompatible_candidate(&state, plan, "final_incompatible_service")
+                    .map_err(|reason| {
+                        WorkerExecutionFailure::from((
+                            Some(LifecycleStage::FinalCrashRecovery),
+                            controller_failure(reason),
+                            true,
+                        ))
+                    })?;
+                write_machine_packet(
+                    evidence,
+                    "final-incompatible-service-state.private.json",
+                    &state,
+                )
+                .map_err(|error| {
+                    WorkerExecutionFailure::from((
+                        Some(LifecycleStage::FinalCrashRecovery),
+                        evidence_write_failure(
+                            "lifecycle_final_incompatible_service_evidence_incomplete",
+                            error,
+                        ),
+                        true,
+                    ))
+                })?;
+                authenticated_desktop_phase(
+                    LifecycleStage::FinalCrashRecovery,
+                    DesktopPhase::FinalIncompatibleService,
+                    plan,
+                    evidence,
+                    &mut transport,
+                    last_authenticated_checkpoint,
+                    controller_bindings,
+                    true,
+                    |snapshot| {
+                        require_incompatible_candidate(
+                            snapshot,
+                            plan,
+                            "final_incompatible_service_desktop",
+                        )
+                    },
+                )
+            },
+            |failure| failure.process_tree_settled,
+        )
+        .map_err(|failure| {
+            service_state_execution_failure(
+                &final_stopped_service_restored,
+                &failure.reason,
+                failure.service_settled,
+                plan,
+                evidence,
+                controller_bindings,
+            )
+        })?;
+    let final_incompatible_service_restored = finish_fallback_transaction(
+        incompatible.body,
+        incompatible.restoration,
+        &final_stopped_service_restored,
+        plan,
+        evidence,
+        controller_bindings,
+    )?;
+    write_machine_packet(
+        evidence,
+        "final-incompatible-service-restored-state.private.json",
+        &final_incompatible_service_restored,
+    )
+    .map_err(|error| {
+        let mut failure = WorkerExecutionFailure::from((
+            Some(LifecycleStage::FinalCrashRecovery),
+            evidence_write_failure(
+                "lifecycle_final_incompatible_service_restored_evidence_incomplete",
+                error,
+            ),
+            true,
+        ));
+        record_fallback_restoration(
+            &mut failure,
+            None,
+            &final_incompatible_service_restored,
+            evidence,
+        );
+        failure
+    })?;
+    retained_final_service.revalidate().map_err(|reason| {
+        (
+            Some(LifecycleStage::FinalCrashRecovery),
+            controller_failure(reason),
+            true,
+        )
+    })?;
+    authenticated_checkpoint(
+        LifecycleStage::FinalFallbackStates,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
+
+    let final_uninstall_state = execute_mutation(
+        evidence,
+        controller_bindings,
+        "final-uninstall-failure.private.json",
+        LifecycleStage::FinalUninstall,
+        &final_incompatible_service_restored,
+        &uninstaller_copy,
+        DIRECT_UNINSTALL_ARGUMENTS,
+        UNINSTALLER_TIMEOUT,
+        "final_uninstall",
+        "lifecycle_final_uninstall_failed",
+        |snapshot| require_elevated_total_product_absence(snapshot, "final_uninstall"),
+    )
+    .map_err(|(failure, settled)| (Some(LifecycleStage::FinalFallbackStates), failure, settled))?;
+    write_machine_packet(
+        evidence,
+        "final-uninstall-state.private.json",
+        &final_uninstall_state,
+    )
+    .map_err(|error| {
+        (
+            Some(LifecycleStage::FinalUninstall),
+            evidence_write_failure("lifecycle_final_uninstall_evidence_incomplete", error),
+            true,
+        )
+    })?;
+    authenticated_checkpoint(
+        LifecycleStage::FinalUninstall,
+        evidence,
+        &mut transport,
+        last_authenticated_checkpoint,
+        controller_bindings,
+    )?;
+
+    Ok(LifecycleStage::FinalUninstall)
 }
 
 fn authenticated_checkpoint(
@@ -1047,6 +1770,158 @@ fn authenticated_checkpoint(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn authenticated_desktop_phase(
+    completed_stage: LifecycleStage,
+    phase: DesktopPhase,
+    plan: &ProofPlan,
+    evidence: &ProtectedEvidenceRoot,
+    transport: &mut AuthenticatedWorkerTransport<'_>,
+    last_authenticated_checkpoint: &mut Option<WorkerCheckpoint>,
+    controller_bindings: &[PeerBinding],
+    defer_restoration: bool,
+    validate_machine: impl FnOnce(&ElevatedMachineSnapshot) -> Result<(), String>,
+) -> Result<(), WorkerExecutionFailure> {
+    if super::send_worker_message(
+        transport.pipe,
+        transport.nonce,
+        transport.outbound_gate,
+        WorkerMessage::RunDesktopPhase(phase),
+    )
+    .is_err()
+    {
+        return Err(parent_abort_execution_failure_for_desktop(
+            completed_stage,
+            AbortReason::Disconnected,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+            defer_restoration,
+        ));
+    }
+    let response: Envelope<ParentMessage> = match transport.pipe.read_json(DESKTOP_PHASE_TIMEOUT) {
+        Ok(response) => response,
+        Err(reason) => {
+            return Err(parent_abort_execution_failure_for_desktop(
+                completed_stage,
+                abort_reason_for_transport_error(&reason),
+                *last_authenticated_checkpoint,
+                evidence,
+                controller_bindings,
+                defer_restoration,
+            ));
+        }
+    };
+    if validate_envelope(&response, transport.nonce, transport.inbound_gate).is_err() {
+        return Err(parent_abort_execution_failure_for_desktop(
+            completed_stage,
+            AbortReason::ProtocolViolation,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+            defer_restoration,
+        ));
+    }
+    match response.message {
+        ParentMessage::DesktopPhaseComplete(result) => {
+            super::validate_requested_desktop_phase_result(phase, &result, plan).map_err(
+                |reason| {
+                    WorkerExecutionFailure::from((
+                        Some(completed_stage),
+                        controller_failure(reason),
+                        true,
+                    ))
+                },
+            )?;
+            if let Some(failure) =
+                desktop_execution_failure(completed_stage, &result, defer_restoration)
+            {
+                return Err(failure);
+            }
+            let machine = capture_elevated_machine_snapshot(controller_bindings);
+            validate_machine(&machine).map_err(|reason| {
+                WorkerExecutionFailure::from((
+                    Some(completed_stage),
+                    controller_failure(reason),
+                    true,
+                ))
+            })?;
+            write_desktop_packet(evidence, desktop_evidence_name(phase), &machine, &result)
+                .map(|_| ())
+                .map_err(|error| {
+                    WorkerExecutionFailure::from((
+                        Some(completed_stage),
+                        evidence_write_failure("lifecycle_desktop_evidence_incomplete", error),
+                        true,
+                    ))
+                })
+        }
+        ParentMessage::Abort(reason) => Err(parent_abort_execution_failure_for_desktop(
+            completed_stage,
+            reason,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+            defer_restoration,
+        )),
+        ParentMessage::Begin(_)
+        | ParentMessage::CheckpointAccepted(_)
+        | ParentMessage::EvidenceAccepted => Err(parent_abort_execution_failure_for_desktop(
+            completed_stage,
+            AbortReason::ProtocolViolation,
+            *last_authenticated_checkpoint,
+            evidence,
+            controller_bindings,
+            defer_restoration,
+        )),
+    }
+}
+
+fn desktop_execution_failure(
+    completed_stage: LifecycleStage,
+    result: &DesktopPhaseResult,
+    fallback_transaction: bool,
+) -> Option<WorkerExecutionFailure> {
+    if result.disposition == DesktopPhaseDisposition::Passed {
+        return None;
+    }
+    Some(WorkerExecutionFailure {
+        completed_stage: Some(completed_stage),
+        failure: WorkerFailure {
+            kind: WorkerFailureKind::Controller,
+            attempted_stage: fallback_transaction.then_some(LifecycleStage::FinalFallbackStates),
+            reason: format!(
+                "{}:{}",
+                desktop_evidence_name(result.phase),
+                result
+                    .failure_reason
+                    .as_deref()
+                    .unwrap_or("lifecycle_desktop_phase_failed")
+            ),
+            evidence: None,
+            evidence_error: None,
+            restoration: Box::new(if result.process_tree_settled {
+                RestorationOutcome::NotRequired
+            } else {
+                RestorationOutcome::BlockedUnsettled
+            }),
+        },
+        process_tree_settled: result.process_tree_settled,
+        abort_reason: None,
+    })
+}
+
+pub(super) fn desktop_evidence_name(phase: DesktopPhase) -> &'static str {
+    match phase {
+        DesktopPhase::FinalPrimary => "final-primary-desktop.private.json",
+        DesktopPhase::BaselinePrimary => "baseline-primary-desktop.private.json",
+        DesktopPhase::BaselineSecondInstance => "baseline-second-instance-desktop.private.json",
+        DesktopPhase::FinalMissingService => "final-missing-service-desktop.private.json",
+        DesktopPhase::FinalStoppedService => "final-stopped-service-desktop.private.json",
+        DesktopPhase::FinalIncompatibleService => "final-incompatible-service-desktop.private.json",
+    }
+}
+
 fn abort_reason_for_transport_error(reason: &str) -> AbortReason {
     if reason.contains("timeout") {
         AbortReason::Timeout
@@ -1069,7 +1944,7 @@ fn parent_abort_execution_failure(
         last_authenticated_checkpoint,
         evidence_root_identity: evidence.identity(),
         process_tree_settled: true,
-        machine_after_settlement: capture_elevated_machine_snapshot(controller_bindings),
+        machine_after_attempt: capture_elevated_machine_snapshot(controller_bindings),
     };
     let (failure_evidence, evidence_error) = match evidence
         .write_json_new(super::parent_abort_leaf_for_stage(completed_stage), &packet)
@@ -1093,6 +1968,44 @@ fn parent_abort_execution_failure(
             )),
         },
         process_tree_settled: true,
+        abort_reason: Some(reason),
+    }
+}
+
+fn parent_abort_execution_failure_for_desktop(
+    completed_stage: LifecycleStage,
+    reason: AbortReason,
+    last_authenticated_checkpoint: Option<WorkerCheckpoint>,
+    evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
+    defer_restoration: bool,
+) -> WorkerExecutionFailure {
+    let packet = ParentAbortFailurePacket {
+        schema_version: MUTATION_FAILURE_SCHEMA,
+        reason,
+        completed_stage,
+        last_authenticated_checkpoint,
+        evidence_root_identity: evidence.identity(),
+        process_tree_settled: false,
+        machine_after_attempt: capture_elevated_machine_snapshot(controller_bindings),
+    };
+    let (failure_evidence, evidence_error) = match evidence
+        .write_json_new(super::parent_abort_leaf_for_stage(completed_stage), &packet)
+    {
+        Ok(receipt) => (Some(Box::new(receipt)), None),
+        Err(error) => (None, Some(error)),
+    };
+    WorkerExecutionFailure {
+        completed_stage: Some(completed_stage),
+        failure: WorkerFailure {
+            kind: WorkerFailureKind::ParentAbort,
+            attempted_stage: defer_restoration.then_some(LifecycleStage::FinalFallbackStates),
+            reason: super::parent_abort_reason(reason).to_string(),
+            evidence: failure_evidence,
+            evidence_error,
+            restoration: Box::new(RestorationOutcome::BlockedUnsettled),
+        },
+        process_tree_settled: false,
         abort_reason: Some(reason),
     }
 }
@@ -1143,7 +2056,7 @@ struct ParentAbortFailurePacket {
     last_authenticated_checkpoint: Option<WorkerCheckpoint>,
     evidence_root_identity: crate::windows_lifecycle_proof_contract::EvidenceRootIdentity,
     process_tree_settled: bool,
-    machine_after_settlement: ElevatedMachineSnapshot,
+    machine_after_attempt: ElevatedMachineSnapshot,
 }
 
 #[derive(Serialize)]
@@ -1164,6 +2077,25 @@ struct ServiceCrashFailurePacket<'a> {
     mutation: ServiceCrashMutationObservation<'a>,
     machine_before_mutation: &'a ElevatedMachineSnapshot,
     machine_after_attempt: ElevatedMachineSnapshot,
+}
+
+#[derive(Serialize)]
+struct ServiceStateFailurePacket<'a> {
+    schema_version: &'static str,
+    attempted_stage: LifecycleStage,
+    reason: &'a str,
+    service_settled: bool,
+    machine_before_mutation: &'a ElevatedMachineSnapshot,
+    machine_after_attempt: ElevatedMachineSnapshot,
+}
+
+#[derive(Serialize)]
+struct StageRestorationPacket<'a> {
+    schema_version: &'static str,
+    stage: LifecycleStage,
+    restored: bool,
+    reason: Option<&'a str>,
+    machine_after_attempt: &'a ElevatedMachineSnapshot,
 }
 
 #[derive(Serialize)]
@@ -1325,9 +2257,45 @@ fn require_running_service<'a>(
     }
 }
 
+fn require_legacy_cli_hash(
+    snapshot: &ElevatedMachineSnapshot,
+    expected_sha256: &str,
+    label: &str,
+) -> Result<(), String> {
+    match &snapshot.machine.legacy_cli {
+        crate::windows_lifecycle_proof_contract::Observation::Present(file)
+            if file.sha256 == expected_sha256 =>
+        {
+            Ok(())
+        }
+        _ => Err(format!("lifecycle_{label}_legacy_cli_identity_invalid")),
+    }
+}
+
+fn require_incompatible_candidate(
+    snapshot: &ElevatedMachineSnapshot,
+    plan: &ProofPlan,
+    label: &str,
+) -> Result<(), String> {
+    let mut candidate = plan.final_candidate.clone();
+    candidate.service_sha256 = plan.incompatible_service_fixture.sha256.clone();
+    require_elevated_installed_candidate(snapshot, &candidate, true, label)?;
+    match &snapshot.machine.service_binary {
+        crate::windows_lifecycle_proof_contract::Observation::Present(file)
+            if file.size == plan.incompatible_service_fixture.size =>
+        {
+            Ok(())
+        }
+        _ => Err(format!("lifecycle_{label}_service_fixture_size_invalid")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_service_crash_failure(
     evidence: &ProtectedEvidenceRoot,
     controller_bindings: &[PeerBinding],
+    attempted_stage: LifecycleStage,
+    evidence_name: &'static str,
     before: &ElevatedMachineSnapshot,
     reason: &str,
     service_settled: bool,
@@ -1335,18 +2303,17 @@ fn write_service_crash_failure(
 ) -> WorkerFailure {
     let packet = ServiceCrashFailurePacket {
         schema_version: MUTATION_FAILURE_SCHEMA,
-        attempted_stage: LifecycleStage::BaselineCrashRecovery,
+        attempted_stage,
         reason,
         service_settled,
         mutation,
         machine_before_mutation: before,
         machine_after_attempt: capture_elevated_machine_snapshot(controller_bindings),
     };
-    let (receipt, evidence_error) =
-        match evidence.write_json_new("baseline-crash-recovery-failure.private.json", &packet) {
-            Ok(receipt) => (Some(receipt), None),
-            Err(error) => (None, Some(error)),
-        };
+    let (receipt, evidence_error) = match evidence.write_json_new(evidence_name, &packet) {
+        Ok(receipt) => (Some(receipt), None),
+        Err(error) => (None, Some(error)),
+    };
     WorkerFailure {
         kind: if service_settled {
             if receipt.is_some() {
@@ -1357,7 +2324,7 @@ fn write_service_crash_failure(
         } else {
             WorkerFailureKind::ProcessSettlement
         },
-        attempted_stage: Some(LifecycleStage::BaselineCrashRecovery),
+        attempted_stage: Some(attempted_stage),
         reason: reason.to_string(),
         evidence: receipt.map(Box::new),
         evidence_error,
@@ -1409,6 +2376,186 @@ fn write_upgrade_rollback_failure(
             RestorationOutcome::BlockedUnsettled
         }),
     }
+}
+
+fn finish_fallback_transaction(
+    body: Result<(), WorkerExecutionFailure>,
+    restoration: crate::collector_service::windows_provisioner::ServiceStateRestorationOutcome,
+    before: &ElevatedMachineSnapshot,
+    plan: &ProofPlan,
+    evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
+) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
+    use crate::collector_service::windows_provisioner::ServiceStateRestorationOutcome;
+
+    let restored = capture_elevated_machine_snapshot(controller_bindings);
+    if matches!(
+        restoration,
+        ServiceStateRestorationOutcome::BlockedUnsettled
+    ) {
+        return match body {
+            Ok(()) => Err(service_state_execution_failure(
+                before,
+                "lifecycle_fallback_restoration_blocked_unsettled",
+                false,
+                plan,
+                evidence,
+                controller_bindings,
+            )),
+            Err(mut failure) => {
+                failure.failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
+                failure.process_tree_settled = false;
+                failure.failure.restoration = Box::new(RestorationOutcome::BlockedUnsettled);
+                Err(failure)
+            }
+        };
+    }
+    let restoration_error = match restoration {
+        ServiceStateRestorationOutcome::Restored => require_elevated_installed_candidate(
+            &restored,
+            &plan.final_candidate,
+            true,
+            "fallback_restoration",
+        )
+        .err()
+        .map(|reason| (reason, true)),
+        ServiceStateRestorationOutcome::Failed(failure) => {
+            Some((failure.reason, failure.service_settled))
+        }
+        ServiceStateRestorationOutcome::BlockedUnsettled => unreachable!(),
+    };
+    match (body, restoration_error) {
+        (Ok(()), None) => Ok(restored),
+        (Err(mut failure), None) => {
+            failure.failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
+            if failure.process_tree_settled {
+                record_fallback_restoration(&mut failure, None, &restored, evidence);
+            }
+            Err(failure)
+        }
+        (Err(mut failure), Some((reason, service_settled))) => {
+            failure.failure.attempted_stage = Some(LifecycleStage::FinalFallbackStates);
+            if failure.process_tree_settled && service_settled {
+                record_fallback_restoration(&mut failure, Some(&reason), &restored, evidence);
+            } else {
+                failure.process_tree_settled = false;
+                failure.failure.restoration = Box::new(RestorationOutcome::BlockedUnsettled);
+            }
+            Err(failure)
+        }
+        (Ok(()), Some((reason, service_settled))) => Err(service_state_execution_failure(
+            before,
+            &reason,
+            service_settled,
+            plan,
+            evidence,
+            controller_bindings,
+        )),
+    }
+}
+
+fn record_fallback_restoration(
+    failure: &mut WorkerExecutionFailure,
+    reason: Option<&str>,
+    machine: &ElevatedMachineSnapshot,
+    evidence: &ProtectedEvidenceRoot,
+) {
+    let stage = LifecycleStage::FinalFallbackStates;
+    let name = "final-fallback-states-restoration.private.json";
+    failure.failure.attempted_stage = Some(stage);
+    let packet = StageRestorationPacket {
+        schema_version: MUTATION_FAILURE_SCHEMA,
+        stage,
+        restored: reason.is_none(),
+        reason,
+        machine_after_attempt: machine,
+    };
+    match evidence.write_json_new(name, &packet) {
+        Ok(receipt) if reason.is_none() => {
+            *failure.failure.restoration = RestorationOutcome::Restored { evidence: receipt }
+        }
+        Ok(receipt) => {
+            *failure.failure.restoration = RestorationOutcome::Failed {
+                reason: "lifecycle_fallback_restoration_failed".to_string(),
+                evidence: Some(receipt),
+                evidence_error: None,
+            }
+        }
+        Err(error) => {
+            *failure.failure.restoration = RestorationOutcome::Failed {
+                reason: if reason.is_some() {
+                    "lifecycle_fallback_restoration_failed"
+                } else {
+                    "lifecycle_fallback_restoration_evidence_failed"
+                }
+                .to_string(),
+                evidence: None,
+                evidence_error: Some(error),
+            }
+        }
+    }
+}
+
+fn service_state_execution_failure(
+    before: &ElevatedMachineSnapshot,
+    reason: &str,
+    service_settled: bool,
+    plan: &ProofPlan,
+    evidence: &ProtectedEvidenceRoot,
+    controller_bindings: &[PeerBinding],
+) -> WorkerExecutionFailure {
+    let after = capture_elevated_machine_snapshot(controller_bindings);
+    let packet = ServiceStateFailurePacket {
+        schema_version: MUTATION_FAILURE_SCHEMA,
+        attempted_stage: LifecycleStage::FinalFallbackStates,
+        reason,
+        service_settled,
+        machine_before_mutation: before,
+        machine_after_attempt: after.clone(),
+    };
+    let (receipt, evidence_error) =
+        match evidence.write_json_new("final-fallback-states-failure.private.json", &packet) {
+            Ok(receipt) => (Some(receipt), None),
+            Err(error) => (None, Some(error)),
+        };
+    let mut failure = WorkerExecutionFailure {
+        completed_stage: Some(LifecycleStage::FinalCrashRecovery),
+        failure: WorkerFailure {
+            kind: if service_settled {
+                if receipt.is_some() {
+                    WorkerFailureKind::Mutation
+                } else {
+                    WorkerFailureKind::EvidenceWrite
+                }
+            } else {
+                WorkerFailureKind::ProcessSettlement
+            },
+            attempted_stage: Some(LifecycleStage::FinalFallbackStates),
+            reason: reason.to_string(),
+            evidence: receipt.map(Box::new),
+            evidence_error,
+            restoration: Box::new(if service_settled {
+                RestorationOutcome::BlockedUntrusted {
+                    reason: "lifecycle_fallback_restoration_unproven".to_string(),
+                }
+            } else {
+                RestorationOutcome::BlockedUnsettled
+            }),
+        },
+        process_tree_settled: service_settled,
+        abort_reason: None,
+    };
+    if service_settled {
+        let restoration_error = require_elevated_installed_candidate(
+            &after,
+            &plan.final_candidate,
+            true,
+            "fallback_failure_restoration",
+        )
+        .err();
+        record_fallback_restoration(&mut failure, restoration_error.as_deref(), &after, evidence);
+    }
+    failure
 }
 
 #[derive(Serialize)]
@@ -1466,7 +2613,15 @@ fn failed(
             .attempted_stage
             .or(completed_stage)
             .is_some_and(|stage| stage != LifecycleStage::InitialState);
-        if restoration_required && failure.restoration.as_ref() == &RestorationOutcome::NotRequired
+        let parent_export_pending = completed_stage == Some(LifecycleStage::FinalUninstall)
+            && last_authenticated_checkpoint.is_some_and(|checkpoint| {
+                checkpoint.completed_stage == LifecycleStage::FinalUninstall
+            })
+            && failure.kind == WorkerFailureKind::Controller
+            && failure.reason == "lifecycle_parent_export_pending";
+        if restoration_required
+            && !parent_export_pending
+            && failure.restoration.as_ref() == &RestorationOutcome::NotRequired
         {
             failure.restoration = Box::new(restoration_not_reviewed());
         } else if !restoration_required
@@ -1494,6 +2649,45 @@ fn failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_failure_preserves_phase_reason_and_settlement_truth() {
+        for process_tree_settled in [true, false] {
+            let result = DesktopPhaseResult {
+                phase: DesktopPhase::FinalMissingService,
+                disposition: DesktopPhaseDisposition::Failed,
+                process_tree_settled,
+                observation: None,
+                failure_reason: Some("lifecycle_desktop_launch_failed".to_string()),
+            };
+            let failure =
+                desktop_execution_failure(LifecycleStage::FinalCrashRecovery, &result, true)
+                    .expect("failed desktop result");
+
+            assert_eq!(
+                failure.completed_stage,
+                Some(LifecycleStage::FinalCrashRecovery)
+            );
+            assert_eq!(
+                failure.failure.attempted_stage,
+                Some(LifecycleStage::FinalFallbackStates)
+            );
+            assert_eq!(failure.failure.kind, WorkerFailureKind::Controller);
+            assert_eq!(
+                failure.failure.reason,
+                "final-missing-service-desktop.private.json:lifecycle_desktop_launch_failed"
+            );
+            assert_eq!(failure.process_tree_settled, process_tree_settled);
+            assert_eq!(
+                failure.failure.restoration.as_ref(),
+                if process_tree_settled {
+                    &RestorationOutcome::NotRequired
+                } else {
+                    &RestorationOutcome::BlockedUnsettled
+                }
+            );
+        }
+    }
 
     #[test]
     fn post_result_abort_preserves_unsettled_failure_authority() {
@@ -1655,6 +2849,7 @@ mod tests {
     fn service_lifecycle_uses_only_production_provisioner_verbs() {
         assert_eq!(SERVICE_STOP_ARGUMENTS, "--provision prepare-upgrade");
         assert_eq!(SERVICE_START_ARGUMENTS, "--provision install");
+        assert_eq!(DESKTOP_PHASE_TIMEOUT, Duration::from_secs(8 * 60));
     }
 
     #[test]
@@ -1751,5 +2946,54 @@ mod tests {
             RestorationOutcome::BlockedUntrusted { reason }
                 if reason == "lifecycle_restoration_not_reviewed"
         ));
+
+        let root = crate::windows_lifecycle_proof_contract::EvidenceRootIdentity {
+            volume_serial: 1,
+            file_index: 1,
+        };
+        let final_checkpoint = WorkerCheckpoint {
+            completed_stage: LifecycleStage::FinalUninstall,
+            evidence_root_identity: root,
+        };
+        let exact_export_boundary = failed(
+            Some(LifecycleStage::FinalUninstall),
+            Some(final_checkpoint),
+            None,
+            controller_failure("lifecycle_parent_export_pending".to_string()),
+            true,
+        );
+        assert_eq!(
+            exact_export_boundary
+                .failure
+                .expect("failure")
+                .restoration
+                .as_ref(),
+            &RestorationOutcome::NotRequired
+        );
+
+        for stale_checkpoint in [
+            None,
+            Some(WorkerCheckpoint {
+                completed_stage: LifecycleStage::FinalFallbackStates,
+                evidence_root_identity: root,
+            }),
+        ] {
+            let forged_export_boundary = failed(
+                Some(LifecycleStage::FinalUninstall),
+                stale_checkpoint,
+                None,
+                controller_failure("lifecycle_parent_export_pending".to_string()),
+                true,
+            );
+            assert!(matches!(
+                forged_export_boundary
+                    .failure
+                    .expect("failure")
+                    .restoration
+                    .as_ref(),
+                RestorationOutcome::BlockedUntrusted { reason }
+                    if reason == "lifecycle_restoration_not_reviewed"
+            ));
+        }
     }
 }
