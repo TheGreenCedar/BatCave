@@ -6765,9 +6765,7 @@ mod tests {
                 random_hex(16).expect("unique lifecycle scratch")
             ));
             fs::create_dir(&root).expect("create lifecycle scratch");
-            let parent_sid = standard_token_evidence()
-                .expect("standard scratch token")
-                .sid_string;
+            let parent_sid = current_token().expect("scratch process token").sid_string;
             let root =
                 canonical_real_directory(&root, "scratch").expect("canonical lifecycle scratch");
             let root_wide = wide(root.as_os_str());
@@ -6833,6 +6831,8 @@ mod tests {
             ));
             fs::create_dir_all(repo.join(PARENT_EXPORT_DIRECTORY))
                 .expect("create export artifact directory");
+            let repo = canonical_real_directory(&repo, "scratch_export")
+                .expect("canonical export scratch");
             let directory =
                 pin_parent_export_directory(&repo).expect("pin export artifact directory");
             Self {
@@ -6872,8 +6872,11 @@ mod tests {
             "batcave-parent-export-stale-{}",
             random_hex(16).expect("unique export scratch")
         ));
+        fs::create_dir_all(repo.join(PARENT_EXPORT_DIRECTORY))
+            .expect("create export artifact directory");
+        let repo = canonical_real_directory(&repo, "scratch_export_stale")
+            .expect("canonical stale export scratch");
         let artifact = repo.join(PARENT_EXPORT_DIRECTORY);
-        fs::create_dir_all(&artifact).expect("create export artifact directory");
         let leaf = artifact.join(PARENT_EXPORT_LEAF);
         fs::write(&leaf, b"existing-publication").expect("seed stale export");
         assert_eq!(
