@@ -31,7 +31,6 @@ mod tests {
 
     #[test]
     fn renewal_precedes_the_server_request_cap_with_headroom() {
-        assert!(SESSION_RENEW_AFTER_REQUESTS < SESSION_MAX_REQUESTS);
         assert!(!should_renew_session(
             Duration::ZERO,
             SESSION_RENEW_AFTER_REQUESTS - 1,

@@ -2300,10 +2300,11 @@ fn hold_snapshot_after_collector_failure(snapshot: &mut RuntimeSnapshot, held_at
         &mut snapshot.process_contributors.memory_quality,
         &mut snapshot.process_contributors.io_quality,
         &mut snapshot.process_contributors.network_quality,
-    ] {
-        if let Some(quality) = quality {
-            hold_metric_after_collector_failure(quality, sampled_at_ms, held_at_ms);
-        }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hold_metric_after_collector_failure(quality, sampled_at_ms, held_at_ms);
     }
 }
 
@@ -2323,10 +2324,11 @@ fn hold_system_after_collector_failure(
         &mut quality.swap,
         &mut quality.disk,
         &mut quality.network,
-    ] {
-        if let Some(metric) = metric {
-            hold_metric_after_collector_failure(metric, sampled_at_ms, held_at_ms);
-        }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hold_metric_after_collector_failure(metric, sampled_at_ms, held_at_ms);
     }
 }
 
@@ -2346,10 +2348,11 @@ fn hold_process_after_collector_failure(
         &mut quality.network,
         &mut quality.threads,
         &mut quality.handles,
-    ] {
-        if let Some(metric) = metric {
-            hold_metric_after_collector_failure(metric, sampled_at_ms, held_at_ms);
-        }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hold_metric_after_collector_failure(metric, sampled_at_ms, held_at_ms);
     }
 }
 

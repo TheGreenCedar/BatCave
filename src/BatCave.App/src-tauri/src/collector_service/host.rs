@@ -67,7 +67,7 @@ impl ServiceWireClock {
 
 enum SnapshotAvailability {
     Pending,
-    Ready(CollectorSnapshotV1),
+    Ready(Box<CollectorSnapshotV1>),
     RecoverableFailure(ContractFailure),
     Fatal(ContractFailure),
 }
@@ -114,6 +114,7 @@ impl CollectorSnapshotSource {
         state.availability = match &publication.event {
             CollectorEvent::Sample(sample) => {
                 snapshot_from_publication(&self.instance_id, &publication, sample, &self.clock)
+                    .map(Box::new)
                     .map(SnapshotAvailability::Ready)
                     .unwrap_or_else(SnapshotAvailability::RecoverableFailure)
             }
@@ -161,7 +162,7 @@ impl SnapshotProvider for CollectorSnapshotSource {
                         sample_seq: snapshot.sample_seq,
                     }))
                 }
-                _ => Ok(LatestSnapshotV1::Snapshot(Box::new(snapshot.clone()))),
+                _ => Ok(LatestSnapshotV1::Snapshot(snapshot.clone())),
             },
         })
     }
