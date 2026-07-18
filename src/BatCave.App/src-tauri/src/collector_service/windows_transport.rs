@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY,
-        ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, HANDLE, INVALID_HANDLE_VALUE,
+        ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, ERROR_PIPE_NOT_CONNECTED, HANDLE,
+        INVALID_HANDLE_VALUE,
     },
     Security::{
         Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, GetLengthSid,
@@ -56,7 +57,15 @@ pub(crate) const PIPE_NAME: &str = r"\\.\pipe\BatCaveCollector.v1";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const PIPE_INSTANCE_LIMIT: u32 = MAX_CLIENTS as u32 + 1;
 const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CLIENT_AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(super) fn is_disconnected_pipe_error(error: u32) -> bool {
+    matches!(
+        error,
+        ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED
+    )
+}
 
 pub(crate) fn allow_interactive_service_observation() -> Result<(), String> {
     set_kernel_object_dacl(
@@ -151,20 +160,17 @@ pub(crate) fn run_pipe_server(
             }
             let connected_pipe = std::mem::replace(&mut pipe, next_pipe);
 
-            let peer = match verify_pipe_peer(&connected_pipe, &policy) {
-                Ok(peer) => peer,
-                Err(_) => continue,
-            };
             let worker_stop = Arc::clone(&stop);
             let worker_identity = identity.clone();
             let worker_snapshots = Arc::clone(&snapshots);
+            let worker_policy = policy.clone();
             workers.push(
                 std::thread::Builder::new()
                     .name("batcave-collector-client".to_string())
                     .spawn(move || {
                         let _ = serve_client(
                             connected_pipe,
-                            peer,
+                            worker_policy,
                             worker_stop,
                             worker_identity,
                             worker_snapshots,
@@ -209,20 +215,44 @@ fn reap_workers(workers: &mut Vec<JoinHandle<()>>) {
 
 fn serve_client(
     pipe: PipeConnection,
-    peer: VerifiedPeer,
+    policy: ClientTrustPolicy,
     stop: Arc<AtomicBool>,
     identity: ServiceIdentityV1,
     snapshots: Arc<dyn SnapshotProvider>,
 ) -> Result<(), String> {
+    let authentication_deadline = Instant::now() + CLIENT_AUTH_TIMEOUT;
+    let (peer, first_bytes) = loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if Instant::now() >= authentication_deadline {
+            return Err("collector_service_peer_authentication_timeout".to_string());
+        }
+        let Some(bytes) = pipe.read_available()? else {
+            std::thread::sleep(PIPE_POLL_INTERVAL);
+            continue;
+        };
+        // Windows binds pipe impersonation to the last message read. Keep the
+        // bytes bounded and opaque until the transport peer is verified.
+        break (verify_pipe_peer(&pipe, &policy)?, bytes);
+    };
+
     let mut session = ServiceSession::new(identity, snapshots);
     let mut decoder = FrameDecoder::default();
     let mut last_activity = Instant::now();
     let mut request_count = 0_usize;
+    let mut first_bytes = Some(first_bytes);
 
     while !stop.load(Ordering::Acquire) && last_activity.elapsed() < SESSION_IDLE_TIMEOUT {
-        let Some(bytes) = pipe.read_available()? else {
-            std::thread::sleep(PIPE_POLL_INTERVAL);
-            continue;
+        let bytes = match first_bytes.take() {
+            Some(bytes) => bytes,
+            None => {
+                let Some(bytes) = pipe.read_available()? else {
+                    std::thread::sleep(PIPE_POLL_INTERVAL);
+                    continue;
+                };
+                bytes
+            }
         };
         last_activity = Instant::now();
         let payloads = decoder
@@ -692,7 +722,7 @@ impl PipeConnection {
         } == 0
         {
             return match unsafe { GetLastError() } {
-                ERROR_BROKEN_PIPE | ERROR_NO_DATA => {
+                error if is_disconnected_pipe_error(error) => {
                     Err("collector_service_pipe_disconnected".to_string())
                 }
                 error => Err(format!("collector_service_pipe_peek_failed:{error}")),
@@ -714,7 +744,7 @@ impl PipeConnection {
         } == 0
         {
             return match unsafe { GetLastError() } {
-                ERROR_BROKEN_PIPE | ERROR_NO_DATA => {
+                error if is_disconnected_pipe_error(error) => {
                     Err("collector_service_pipe_disconnected".to_string())
                 }
                 error => Err(format!("collector_service_pipe_read_failed:{error}")),
@@ -752,7 +782,7 @@ impl PipeConnection {
             if ok == 0 {
                 match unsafe { GetLastError() } {
                     ERROR_PIPE_BUSY => {}
-                    ERROR_BROKEN_PIPE | ERROR_NO_DATA => {
+                    error if is_disconnected_pipe_error(error) => {
                         return Err("collector_service_pipe_disconnected".to_string())
                     }
                     error => return Err(format!("collector_service_pipe_write_failed:{error}")),
@@ -955,5 +985,14 @@ mod tests {
     #[test]
     fn client_capacity_reserves_one_pipe_instance_for_the_listener() {
         assert_eq!(PIPE_INSTANCE_LIMIT, MAX_CLIENTS as u32 + 1);
+    }
+
+    #[test]
+    fn authentication_and_disconnect_bounds_cover_native_pipe_races() {
+        assert!(CLIENT_AUTH_TIMEOUT < SESSION_IDLE_TIMEOUT);
+        for error in [ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED] {
+            assert!(is_disconnected_pipe_error(error));
+        }
+        assert!(!is_disconnected_pipe_error(ERROR_PIPE_BUSY));
     }
 }
