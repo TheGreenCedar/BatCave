@@ -28,7 +28,7 @@ use windows_sys::Win32::{
 use windows_sys::{core::GUID, Wdk::System::SystemInformation::NtQuerySystemInformation};
 
 use crate::{
-    collector_engine::{CollectorEngine, CollectorEngineConfig, CollectorEvent},
+    collector_engine::{CollectorEngine, CollectorEngineConfig},
     telemetry::TelemetryCollector,
 };
 
@@ -174,10 +174,6 @@ fn complete_service_readiness(
     report_running()
 }
 
-fn initial_publication_is_ready(event: &CollectorEvent) -> bool {
-    matches!(event, CollectorEvent::Sample(_))
-}
-
 fn run_service_body(
     status_handle: SERVICE_STATUS_HANDLE,
     stop: Arc<AtomicBool>,
@@ -210,10 +206,14 @@ fn run_service_body(
         }
     };
     let collector = engine.handle();
-    let initial = collector.refresh_now().and_then(|publication| {
-        initial_publication_is_ready(&publication.event)
-            .then_some(())
-            .ok_or_else(|| "collector_service_initial_snapshot_unavailable".to_string())
+    let snapshot_source = Arc::new(CollectorSnapshotSource::new(collector.clone(), instance_id));
+    let initial = collector.refresh_now().and_then(|_| {
+        snapshot_source.latest(None).map(|_| ()).map_err(|failure| {
+            format!(
+                "collector_service_initial_snapshot_unavailable:{}",
+                failure.detail
+            )
+        })
     });
     if initial.is_err() {
         return Err(combine_results(
@@ -221,9 +221,12 @@ fn run_service_body(
             etw_lifecycle.shutdown_engine(&engine),
         ));
     }
-    let snapshots: Arc<dyn SnapshotProvider> =
-        Arc::new(CollectorSnapshotSource::new(collector, instance_id));
-    let transport = run_pipe_server(Arc::clone(&stop), identity, snapshots, || {
+    let snapshots: Arc<dyn SnapshotProvider> = snapshot_source;
+    let readiness_snapshot = Arc::clone(&snapshots);
+    let transport = run_pipe_server(Arc::clone(&stop), identity, snapshots, move || {
+        readiness_snapshot
+            .latest(None)
+            .map_err(|failure| format!("collector_service_readiness_lost:{failure}"))?;
         complete_service_readiness(windows_provisioner::clear_service_failure, || {
             report_status(status_handle, SERVICE_RUNNING, 0, 0)
         })
@@ -841,27 +844,6 @@ mod tests {
             "transport"
         );
         assert_eq!(sanitized_failure_reason("private path text"), "startup");
-    }
-
-    #[test]
-    fn service_readiness_rejects_an_unavailable_initial_publication() {
-        assert!(!initial_publication_is_ready(&CollectorEvent::Unavailable(
-            "collector unavailable".to_string()
-        )));
-        assert!(!initial_publication_is_ready(&CollectorEvent::Fatal {
-            code: "collector_fatal".to_string(),
-            message: "collector failed".to_string(),
-        }));
-    }
-
-    #[test]
-    fn service_readiness_accepts_a_real_initial_sample() {
-        let sample = TelemetryCollector::for_standard_fallback()
-            .collect()
-            .expect("standard fallback sample");
-        assert!(initial_publication_is_ready(&CollectorEvent::Sample(
-            Arc::new(sample)
-        )));
     }
 
     #[test]

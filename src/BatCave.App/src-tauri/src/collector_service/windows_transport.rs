@@ -44,6 +44,7 @@ use super::{
     framing::FrameDecoder,
     host::{extract_request_id, failure_reply, ServiceSession, SnapshotProvider},
     protocol::{ServiceIdentityV1, MAX_CLIENTS},
+    session_lease::{SESSION_IDLE_TIMEOUT, SESSION_MAX_REQUESTS},
     transport_policy::{
         ClientTrustPolicy, ExecutableReleaseEvidence, VerifiedClientEvidence, PIPE_SDDL,
     },
@@ -53,9 +54,7 @@ pub(crate) const PIPE_NAME: &str = r"\\.\pipe\BatCaveCollector.v1";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const PIPE_INSTANCE_LIMIT: u32 = MAX_CLIENTS as u32 + 1;
 const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_REQUESTS_PER_CONNECTION: usize = 4_096;
 
 pub(crate) fn run_pipe_server(
     stop: Arc<AtomicBool>,
@@ -77,6 +76,12 @@ pub(crate) fn run_pipe_server(
     let mut pipe = bind_before_ready(|| PipeConnection::create(true), ready)?;
 
     while !stop.load(Ordering::Acquire) {
+        if let Some(failure) = snapshots
+            .terminal_failure()
+            .map_err(|failure| failure.to_string())?
+        {
+            return Err(failure);
+        }
         reap_workers(&mut workers);
         if workers.len() >= MAX_CLIENTS {
             std::thread::sleep(PIPE_POLL_INTERVAL);
@@ -166,7 +171,7 @@ fn serve_client(
     let mut last_activity = Instant::now();
     let mut request_count = 0_usize;
 
-    while !stop.load(Ordering::Acquire) && last_activity.elapsed() < CLIENT_IDLE_TIMEOUT {
+    while !stop.load(Ordering::Acquire) && last_activity.elapsed() < SESSION_IDLE_TIMEOUT {
         let Some(bytes) = pipe.read_available()? else {
             std::thread::sleep(PIPE_POLL_INTERVAL);
             continue;
@@ -177,7 +182,7 @@ fn serve_client(
             .map_err(|error| format!("collector_service_frame_rejected:{error}"))?;
         for payload in payloads {
             request_count = request_count.saturating_add(1);
-            if request_count > MAX_REQUESTS_PER_CONNECTION {
+            if request_count > SESSION_MAX_REQUESTS {
                 return Err("collector_service_connection_request_limit_exceeded".to_string());
             }
             let reply = match session.handle_payload(&peer, &payload) {

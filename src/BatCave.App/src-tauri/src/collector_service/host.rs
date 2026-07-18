@@ -28,6 +28,10 @@ use super::{
 
 pub(crate) trait SnapshotProvider: Send + Sync {
     fn latest(&self, after_sample_seq: Option<u64>) -> Result<LatestSnapshotV1, ContractFailure>;
+
+    fn terminal_failure(&self) -> Result<Option<String>, ContractFailure> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug)]
@@ -61,10 +65,25 @@ impl ServiceWireClock {
     }
 }
 
-#[derive(Default)]
+enum SnapshotAvailability {
+    Pending,
+    Ready(CollectorSnapshotV1),
+    RecoverableFailure(ContractFailure),
+    Fatal(ContractFailure),
+}
+
 struct SnapshotState {
     observed_publication_revision: u64,
-    latest: Option<CollectorSnapshotV1>,
+    availability: SnapshotAvailability,
+}
+
+impl Default for SnapshotState {
+    fn default() -> Self {
+        Self {
+            observed_publication_revision: 0,
+            availability: SnapshotAvailability::Pending,
+        }
+    }
 }
 
 pub(crate) struct CollectorSnapshotSource {
@@ -92,41 +111,68 @@ impl CollectorSnapshotSource {
             return Ok(());
         }
         state.observed_publication_revision = publication.revision;
-        if let CollectorEvent::Sample(sample) = &publication.event {
-            state.latest = Some(snapshot_from_publication(
-                &self.instance_id,
-                &publication,
-                sample,
-                &self.clock,
-            )?);
-        }
+        state.availability = match &publication.event {
+            CollectorEvent::Sample(sample) => {
+                snapshot_from_publication(&self.instance_id, &publication, sample, &self.clock)
+                    .map(SnapshotAvailability::Ready)
+                    .unwrap_or_else(SnapshotAvailability::RecoverableFailure)
+            }
+            CollectorEvent::Unavailable(_) => SnapshotAvailability::RecoverableFailure(
+                incompatible("collector_service_snapshot_unavailable"),
+            ),
+            CollectorEvent::Fatal { .. } => {
+                SnapshotAvailability::Fatal(incompatible("collector_service_snapshot_fatal"))
+            }
+            CollectorEvent::PausedHeartbeat => SnapshotAvailability::RecoverableFailure(
+                incompatible("collector_service_snapshot_paused"),
+            ),
+        };
         Ok(())
     }
-}
 
-impl SnapshotProvider for CollectorSnapshotSource {
-    fn latest(&self, after_sample_seq: Option<u64>) -> Result<LatestSnapshotV1, ContractFailure> {
+    fn with_refreshed_state<T>(
+        &self,
+        read: impl FnOnce(&SnapshotAvailability) -> Result<T, ContractFailure>,
+    ) -> Result<T, ContractFailure> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| incompatible("collector_service_snapshot_state_unavailable"))?;
         self.refresh_state(&mut state)?;
-        let snapshot = state
-            .latest
-            .as_ref()
-            .ok_or_else(|| incompatible("collector_service_snapshot_not_ready"))?;
-        match after_sample_seq {
-            Some(after) if after > snapshot.sample_seq => {
-                Err(stale_sequence("collector_service_requested_sequence_ahead"))
+        read(&state.availability)
+    }
+}
+
+impl SnapshotProvider for CollectorSnapshotSource {
+    fn latest(&self, after_sample_seq: Option<u64>) -> Result<LatestSnapshotV1, ContractFailure> {
+        self.with_refreshed_state(|availability| match availability {
+            SnapshotAvailability::Pending => {
+                Err(incompatible("collector_service_snapshot_not_ready"))
             }
-            Some(after) if after == snapshot.sample_seq => {
-                Ok(LatestSnapshotV1::Unchanged(UnchangedSnapshotV1 {
-                    service_instance_id: snapshot.service_instance_id.clone(),
-                    sample_seq: snapshot.sample_seq,
-                }))
-            }
-            _ => Ok(LatestSnapshotV1::Snapshot(Box::new(snapshot.clone()))),
-        }
+            SnapshotAvailability::RecoverableFailure(failure)
+            | SnapshotAvailability::Fatal(failure) => Err(failure.clone()),
+            SnapshotAvailability::Ready(snapshot) => match after_sample_seq {
+                Some(after) if after > snapshot.sample_seq => {
+                    Err(stale_sequence("collector_service_requested_sequence_ahead"))
+                }
+                Some(after) if after == snapshot.sample_seq => {
+                    Ok(LatestSnapshotV1::Unchanged(UnchangedSnapshotV1 {
+                        service_instance_id: snapshot.service_instance_id.clone(),
+                        sample_seq: snapshot.sample_seq,
+                    }))
+                }
+                _ => Ok(LatestSnapshotV1::Snapshot(Box::new(snapshot.clone()))),
+            },
+        })
+    }
+
+    fn terminal_failure(&self) -> Result<Option<String>, ContractFailure> {
+        self.with_refreshed_state(|availability| {
+            Ok(match availability {
+                SnapshotAvailability::Fatal(failure) => Some(failure.detail.clone()),
+                _ => None,
+            })
+        })
     }
 }
 
@@ -460,6 +506,20 @@ mod tests {
         }
     }
 
+    struct OutcomeCollector {
+        outcomes: VecDeque<Result<TelemetrySample, CollectionFailure>>,
+    }
+
+    impl RawCollector for OutcomeCollector {
+        fn collect(&mut self) -> Result<TelemetrySample, CollectionFailure> {
+            self.outcomes.pop_front().unwrap_or_else(|| {
+                Err(CollectionFailure::Unavailable(
+                    "collector outcome exhausted".to_string(),
+                ))
+            })
+        }
+    }
+
     #[test]
     fn raw_publications_map_to_monotonic_snapshot_and_unchanged_responses() {
         let engine = CollectorEngine::start(
@@ -494,6 +554,79 @@ mod tests {
         assert_eq!(
             source.latest(Some(seq + 1)).unwrap_err().code,
             ServiceFailureCodeV1::StaleSequence
+        );
+        engine.shutdown().unwrap();
+    }
+
+    #[test]
+    fn invalid_initial_sample_never_becomes_wire_ready() {
+        let mut invalid = sample(10);
+        invalid.system.process_count = 2;
+        let engine = test_engine(VecDeque::from([Ok(invalid)]));
+        let handle = engine.handle();
+        handle.refresh_now().unwrap();
+        let source = CollectorSnapshotSource::new(handle, "instance".to_string());
+
+        assert_eq!(
+            source.latest(None).unwrap_err().detail,
+            "collector_service_raw_process_count_mismatch"
+        );
+        assert_eq!(source.terminal_failure().unwrap(), None);
+        engine.shutdown().unwrap();
+    }
+
+    #[test]
+    fn newer_invalid_or_unavailable_publication_invalidates_the_current_snapshot() {
+        let mut invalid = sample(11);
+        invalid.system.process_count = 2;
+        let engine = test_engine(VecDeque::from([
+            Ok(sample(10)),
+            Ok(invalid),
+            Err(CollectionFailure::Unavailable("temporary".to_string())),
+        ]));
+        let handle = engine.handle();
+        let source = CollectorSnapshotSource::new(handle.clone(), "instance".to_string());
+
+        handle.refresh_now().unwrap();
+        assert!(matches!(
+            source.latest(None).unwrap(),
+            LatestSnapshotV1::Snapshot(_)
+        ));
+
+        handle.refresh_now().unwrap();
+        assert_eq!(
+            source.latest(None).unwrap_err().detail,
+            "collector_service_raw_process_count_mismatch"
+        );
+
+        handle.refresh_now().unwrap();
+        assert_eq!(
+            source.latest(None).unwrap_err().detail,
+            "collector_service_snapshot_unavailable"
+        );
+        assert_eq!(source.terminal_failure().unwrap(), None);
+        engine.shutdown().unwrap();
+    }
+
+    #[test]
+    fn fatal_publication_invalidates_the_snapshot_and_terminates_the_provider() {
+        let engine = test_engine(VecDeque::from([
+            Ok(sample(10)),
+            Err(CollectionFailure::Fatal("terminal".to_string())),
+        ]));
+        let handle = engine.handle();
+        let source = CollectorSnapshotSource::new(handle.clone(), "instance".to_string());
+
+        handle.refresh_now().unwrap();
+        assert!(source.latest(None).is_ok());
+        assert_eq!(handle.refresh_now().unwrap_err(), "collector_engine_fatal");
+        assert_eq!(
+            source.latest(None).unwrap_err().detail,
+            "collector_service_snapshot_fatal"
+        );
+        assert_eq!(
+            source.terminal_failure().unwrap().as_deref(),
+            Some("collector_service_snapshot_fatal")
         );
         engine.shutdown().unwrap();
     }
@@ -592,6 +725,22 @@ mod tests {
                 .detail,
             "collector_service_raw_process_count_mismatch"
         );
+    }
+
+    fn test_engine(
+        outcomes: VecDeque<Result<TelemetrySample, CollectionFailure>>,
+    ) -> CollectorEngine {
+        CollectorEngine::start(
+            Box::new(OutcomeCollector { outcomes }),
+            CollectorEngineConfig {
+                interval: Duration::from_secs(1),
+                metric_window: Duration::from_secs(60),
+                paused: false,
+                automatic: false,
+            },
+            Arc::new(|| {}),
+        )
+        .unwrap()
     }
 
     struct StaticSnapshot(CollectorSnapshotV1);

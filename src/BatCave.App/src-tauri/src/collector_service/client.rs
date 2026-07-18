@@ -1,7 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::{
     contracts::{
@@ -24,6 +24,7 @@ use super::{
         NegotiateRequestV1, ReleaseIdentityV1, ServiceFailureCodeV1, ServiceIdentityV1,
         ServiceOutcomeV1, ServiceResponseV1, COLLECTOR_SERVICE_PROTOCOL_VERSION,
     },
+    session_lease::should_renew_session,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +72,16 @@ impl ClientFailure {
 pub(crate) trait ClientTransport: Send {
     fn verified_peer(&self) -> &VerifiedServicePeer;
     fn exchange(&mut self, request: &ClientRequestV1) -> Result<ServiceResponseV1, ClientFailure>;
+
+    fn reconnect(&self) -> Result<Self, ClientFailure>
+    where
+        Self: Sized,
+    {
+        Err(ClientFailure::new(
+            ClientFailureKind::Failed,
+            "collector_service_transport_reconnect_unsupported",
+        ))
+    }
 }
 
 pub(crate) struct ServiceClientSession<T: ClientTransport> {
@@ -79,6 +90,8 @@ pub(crate) struct ServiceClientSession<T: ClientTransport> {
     next_request_id: u64,
     last_sample_seq: Option<u64>,
     last_snapshot: Option<CollectorSnapshotV1>,
+    last_activity: Instant,
+    request_count: usize,
 }
 
 impl<T: ClientTransport> ServiceClientSession<T> {
@@ -132,17 +145,47 @@ impl<T: ClientTransport> ServiceClientSession<T> {
             next_request_id: 2,
             last_sample_seq: None,
             last_snapshot: None,
+            last_activity: Instant::now(),
+            request_count: 1,
         })
     }
 
     pub(crate) fn latest_sample(&mut self) -> Result<TelemetrySample, ClientFailure> {
         match self.latest_sample_inner() {
             Ok(sample) => Ok(sample),
+            Err(failure) if failure.service_identity.is_some() => Err(failure),
             Err(failure) => Err(failure.with_service_identity(&self.identity)),
         }
     }
 
     fn latest_sample_inner(&mut self) -> Result<TelemetrySample, ClientFailure> {
+        let renewal_due = should_renew_session(self.last_activity.elapsed(), self.request_count);
+        let mut reconnect_attempted = false;
+        if renewal_due {
+            reconnect_attempted = true;
+            if let Err(failure) = self.renew_connection() {
+                if matches!(
+                    failure.kind,
+                    ClientFailureKind::Restarted
+                        | ClientFailureKind::Incompatible
+                        | ClientFailureKind::Unauthorized
+                ) {
+                    return Err(failure);
+                }
+            }
+        }
+
+        match self.latest_sample_once() {
+            Ok(sample) => Ok(sample),
+            Err(failure) if failure.kind == ClientFailureKind::Failed && !reconnect_attempted => {
+                self.renew_connection()?;
+                self.latest_sample_once()
+            }
+            Err(failure) => Err(failure),
+        }
+    }
+
+    fn latest_sample_once(&mut self) -> Result<TelemetrySample, ClientFailure> {
         let request_id = self.take_request_id()?;
         let request = ClientRequestV1 {
             protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
@@ -151,7 +194,9 @@ impl<T: ClientTransport> ServiceClientSession<T> {
                 after_sample_seq: self.last_sample_seq,
             }),
         };
+        self.request_count = self.request_count.saturating_add(1);
         let response = self.transport.exchange(&request)?;
+        self.last_activity = Instant::now();
         let outcome = response_outcome(response, request_id)?;
         let ServiceOutcomeV1::LatestSnapshot(latest) = outcome else {
             return Err(ClientFailure::new(
@@ -200,6 +245,25 @@ impl<T: ClientTransport> ServiceClientSession<T> {
         ))
     }
 
+    fn renew_connection(&mut self) -> Result<(), ClientFailure> {
+        let replacement = self.transport.reconnect()?;
+        let renewed = Self::connect(replacement)?;
+        if renewed.identity.instance_id != self.identity.instance_id {
+            return Err(ClientFailure::new(
+                ClientFailureKind::Restarted,
+                "collector_service_instance_restarted",
+            )
+            .with_service_identity(&renewed.identity));
+        }
+
+        self.transport = renewed.transport;
+        self.identity = renewed.identity;
+        self.next_request_id = renewed.next_request_id;
+        self.last_activity = renewed.last_activity;
+        self.request_count = renewed.request_count;
+        Ok(())
+    }
+
     fn take_request_id(&mut self) -> Result<u64, ClientFailure> {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
@@ -234,9 +298,19 @@ fn response_outcome(
         ServiceOutcomeV1::Error(failure) => {
             let kind = match failure.code {
                 ServiceFailureCodeV1::Incompatible
-                    if failure.detail == "collector_service_snapshot_not_ready" =>
+                    if matches!(
+                        failure.detail.as_str(),
+                        "collector_service_snapshot_not_ready"
+                            | "collector_service_snapshot_unavailable"
+                            | "collector_service_snapshot_paused"
+                    ) =>
                 {
                     ClientFailureKind::NotReady
+                }
+                ServiceFailureCodeV1::Incompatible
+                    if failure.detail == "collector_service_snapshot_fatal" =>
+                {
+                    ClientFailureKind::Failed
                 }
                 ServiceFailureCodeV1::Incompatible => ClientFailureKind::Incompatible,
                 ServiceFailureCodeV1::Unauthorized => ClientFailureKind::Unauthorized,
@@ -543,7 +617,13 @@ mod tests {
         },
         contracts::{RuntimeCollectorServiceState, RuntimeCollectorState},
     };
-    use std::collections::VecDeque;
+    use std::{
+        collections::VecDeque,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
+    };
 
     struct FakeTransport {
         peer: VerifiedServicePeer,
@@ -563,6 +643,41 @@ mod tests {
             self.requests.push(request.clone());
             self.responses.pop_front().ok_or_else(|| {
                 ClientFailure::new(ClientFailureKind::Failed, "fake_transport_empty")
+            })
+        }
+    }
+
+    struct RenewingTransport {
+        peer: VerifiedServicePeer,
+        responses: VecDeque<ServiceResponseV1>,
+        replacement_responses: Vec<ServiceResponseV1>,
+        requests: Arc<Mutex<Vec<ClientRequestV1>>>,
+        reconnects: Arc<AtomicUsize>,
+    }
+
+    impl ClientTransport for RenewingTransport {
+        fn verified_peer(&self) -> &VerifiedServicePeer {
+            &self.peer
+        }
+
+        fn exchange(
+            &mut self,
+            request: &ClientRequestV1,
+        ) -> Result<ServiceResponseV1, ClientFailure> {
+            self.requests.lock().unwrap().push(request.clone());
+            self.responses.pop_front().ok_or_else(|| {
+                ClientFailure::new(ClientFailureKind::Failed, "fake_transport_disconnected")
+            })
+        }
+
+        fn reconnect(&self) -> Result<Self, ClientFailure> {
+            self.reconnects.fetch_add(1, Ordering::SeqCst);
+            Ok(Self {
+                peer: self.peer.clone(),
+                responses: VecDeque::from(self.replacement_responses.clone()),
+                replacement_responses: self.replacement_responses.clone(),
+                requests: Arc::clone(&self.requests),
+                reconnects: Arc::clone(&self.reconnects),
             })
         }
     }
@@ -628,6 +743,91 @@ mod tests {
             held.collector_service.unwrap().state,
             RuntimeCollectorServiceState::Active
         );
+    }
+
+    #[test]
+    fn idle_session_renews_without_losing_the_authenticated_snapshot_sequence() {
+        let identity = identity("instance-1");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let mut session = ServiceClientSession::connect(RenewingTransport {
+            peer: peer(identity.release.clone()),
+            responses: VecDeque::from([
+                negotiated_response(&identity),
+                response(
+                    2,
+                    ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                        snapshot("instance-1", 7),
+                    ))),
+                ),
+            ]),
+            replacement_responses: vec![
+                negotiated_response(&identity),
+                response(
+                    2,
+                    ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Unchanged(
+                        super::super::protocol::UnchangedSnapshotV1 {
+                            service_instance_id: "instance-1".to_string(),
+                            sample_seq: 7,
+                        },
+                    )),
+                ),
+            ],
+            requests: Arc::clone(&requests),
+            reconnects: Arc::clone(&reconnects),
+        })
+        .unwrap();
+
+        let first = session.latest_sample().unwrap();
+        session.last_activity =
+            Instant::now() - super::super::session_lease::SESSION_RENEW_IDLE_AFTER;
+        let renewed = session.latest_sample().unwrap();
+
+        assert_eq!(renewed.source_provenance, first.source_provenance);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|request| request.request_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 1, 2]
+        );
+    }
+
+    #[test]
+    fn failed_safe_read_reconnects_and_retries_only_once() {
+        let identity = identity("instance-1");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let mut session = ServiceClientSession::connect(RenewingTransport {
+            peer: peer(identity.release.clone()),
+            responses: VecDeque::from([negotiated_response(&identity)]),
+            replacement_responses: vec![
+                negotiated_response(&identity),
+                response(
+                    2,
+                    ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                        snapshot("instance-1", 7),
+                    ))),
+                ),
+            ],
+            requests,
+            reconnects: Arc::clone(&reconnects),
+        })
+        .unwrap();
+
+        assert_eq!(
+            session
+                .latest_sample()
+                .unwrap()
+                .source_provenance
+                .unwrap()
+                .source_sample_seq,
+            7
+        );
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -703,6 +903,46 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_availability_failures_map_to_recovery_semantics() {
+        for detail in [
+            "collector_service_snapshot_not_ready",
+            "collector_service_snapshot_unavailable",
+            "collector_service_snapshot_paused",
+        ] {
+            assert_eq!(
+                response_outcome(
+                    response(
+                        2,
+                        ServiceOutcomeV1::Error(ServiceFailureV1 {
+                            code: ServiceFailureCodeV1::Incompatible,
+                            detail: detail.to_string(),
+                        }),
+                    ),
+                    2,
+                )
+                .unwrap_err()
+                .kind,
+                ClientFailureKind::NotReady
+            );
+        }
+        assert_eq!(
+            response_outcome(
+                response(
+                    2,
+                    ServiceOutcomeV1::Error(ServiceFailureV1 {
+                        code: ServiceFailureCodeV1::Incompatible,
+                        detail: "collector_service_snapshot_fatal".to_string(),
+                    }),
+                ),
+                2,
+            )
+            .unwrap_err()
+            .kind,
+            ClientFailureKind::Failed
+        );
+    }
+
+    #[test]
     fn transport_failures_map_to_truthful_fallback_states() {
         for (kind, state) in [
             (
@@ -763,6 +1003,16 @@ mod tests {
             request_id,
             outcome,
         }
+    }
+
+    fn negotiated_response(identity: &ServiceIdentityV1) -> ServiceResponseV1 {
+        response(
+            1,
+            ServiceOutcomeV1::Negotiated(NegotiatedV1 {
+                negotiated_protocol_version: COLLECTOR_SERVICE_PROTOCOL_VERSION,
+                service: identity.clone(),
+            }),
+        )
     }
 
     fn snapshot(instance_id: &str, sample_seq: u64) -> CollectorSnapshotV1 {

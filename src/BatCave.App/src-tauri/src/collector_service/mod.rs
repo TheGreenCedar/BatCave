@@ -7,6 +7,7 @@ pub(crate) mod etw_lease;
 pub(crate) mod framing;
 pub(crate) mod host;
 pub(crate) mod protocol;
+pub(crate) mod session_lease;
 pub(crate) mod transport_policy;
 #[cfg(windows)]
 pub(crate) mod windows_client;
