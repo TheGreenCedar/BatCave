@@ -324,22 +324,23 @@ fn collector_state(
         .flatten()
         .any(metric_degrades_collector)
     });
-    let process_limited = processes.iter().any(|process| {
-        process.quality.as_ref().is_none_or(|quality| {
-            [
-                quality.cpu.as_ref(),
-                quality.memory.as_ref(),
-                quality.io.as_ref(),
-                quality.other_io.as_ref(),
-                quality.network.as_ref(),
-                quality.threads.as_ref(),
-                quality.handles.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(metric_degrades_collector)
-        })
-    });
+    let process_limited = !processes.is_empty()
+        && processes.iter().all(|process| {
+            process.quality.as_ref().is_none_or(|quality| {
+                [
+                    quality.cpu.as_ref(),
+                    quality.memory.as_ref(),
+                    quality.io.as_ref(),
+                    quality.other_io.as_ref(),
+                    quality.network.as_ref(),
+                    quality.threads.as_ref(),
+                    quality.handles.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(metric_degrades_collector)
+            })
+        });
 
     if warnings.is_empty() && !system_limited && !process_limited {
         RuntimeCollectorState::Healthy
@@ -1120,6 +1121,40 @@ mod tests {
     }
 
     #[test]
+    fn isolated_process_probe_failure_stays_row_local() {
+        let native = MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi);
+        let mut system = collect_sysinfo_system(&System::new(), &Networks::new());
+        system.quality = Some(SystemMetricQuality {
+            cpu: Some(native.clone()),
+            kernel_cpu: Some(native.clone()),
+            logical_cpu: Some(native.clone()),
+            memory: Some(native.clone()),
+            swap: Some(native.clone()),
+            disk: Some(native.clone()),
+            network: Some(native),
+        });
+
+        let healthy = sample_process("1");
+        let mut failed = sample_process("2");
+        failed.quality.as_mut().expect("process quality").io = Some(
+            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc)
+                .with_limitation(
+                    MetricLimitationCode::CollectorFailure,
+                    "One native process probe failed.",
+                ),
+        );
+
+        assert_eq!(
+            collector_state(&system, &[healthy, failed.clone()], &[]),
+            RuntimeCollectorState::Healthy
+        );
+        assert_eq!(
+            collector_state(&system, &[failed], &[]),
+            RuntimeCollectorState::Limited
+        );
+    }
+
+    #[test]
     fn sysinfo_fallback_marks_physical_disk_unavailable_for_native_collector_failures() {
         let system = System::new();
         let networks = Networks::new();
@@ -1528,7 +1563,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
-        assert_eq!(sample.collector_state, RuntimeCollectorState::Limited);
+        assert_eq!(sample.collector_state, RuntimeCollectorState::Healthy);
 
         assert!(sample.system.memory_available_bytes.is_some());
         let system_quality = sample.system.quality.as_ref().expect("system quality");
