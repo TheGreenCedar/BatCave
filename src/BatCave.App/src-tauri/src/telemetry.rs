@@ -174,7 +174,7 @@ impl TelemetryCollector {
         let sysinfo_cpu_by_generation = sysinfo_processes
             .iter()
             .filter_map(|process| {
-                ProcessGeneration::from_process(process)
+                sysinfo_process_join_key(process)
                     .map(|generation| (generation, process.cpu_percent))
             })
             .collect::<HashMap<_, _>>();
@@ -382,6 +382,25 @@ pub fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SysinfoProcessJoinKey {
+    pid: u32,
+    start_time_seconds: u64,
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sysinfo_process_join_key(process: &ProcessSample) -> Option<SysinfoProcessJoinKey> {
+    let pid = process.pid.parse().ok()?;
+    (process.start_time_ms > 0).then_some(SysinfoProcessJoinKey {
+        pid,
+        // sysinfo exposes Windows process start times in whole Unix seconds while the native
+        // collector retains milliseconds. Coarsen only this cross-collector join so the native
+        // timestamp remains available for rate baselines and PID-reuse detection.
+        start_time_seconds: process.start_time_ms / 1_000,
+    })
+}
+
 fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
@@ -389,7 +408,7 @@ fn round1(value: f64) -> f64 {
 #[cfg(not(target_os = "linux"))]
 fn collect_processes(
     sysinfo_processes: &[ProcessSample],
-    sysinfo_cpu_by_generation: &HashMap<ProcessGeneration, f64>,
+    sysinfo_cpu_by_generation: &HashMap<SysinfoProcessJoinKey, f64>,
     warnings: &mut Vec<String>,
     collector: &mut TelemetryCollector,
 ) -> Result<Vec<ProcessSample>, String> {
@@ -403,8 +422,7 @@ fn collect_processes(
                 let sysinfo_by_generation = sysinfo_processes
                     .iter()
                     .filter_map(|process| {
-                        ProcessGeneration::from_process(process)
-                            .map(|generation| (generation, process))
+                        sysinfo_process_join_key(process).map(|generation| (generation, process))
                     })
                     .collect::<HashMap<_, _>>();
                 Ok(native_processes
@@ -822,10 +840,10 @@ fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> 
 #[cfg(windows)]
 fn enrich_native_process(
     mut process: ProcessSample,
-    sysinfo_cpu_by_generation: &HashMap<ProcessGeneration, f64>,
-    sysinfo_by_generation: &HashMap<ProcessGeneration, &ProcessSample>,
+    sysinfo_cpu_by_generation: &HashMap<SysinfoProcessJoinKey, f64>,
+    sysinfo_by_generation: &HashMap<SysinfoProcessJoinKey, &ProcessSample>,
 ) -> ProcessSample {
-    let generation = ProcessGeneration::from_process(&process);
+    let generation = sysinfo_process_join_key(&process);
     let has_cpu = generation
         .and_then(|generation| sysinfo_cpu_by_generation.get(&generation))
         .map(|cpu| {
@@ -1285,20 +1303,19 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn enrich_native_process_uses_sysinfo_memory_when_native_memory_is_denied() {
+    fn enrich_native_process_joins_sysinfo_at_whole_second_precision() {
         let mut native = sample_process("42");
+        native.start_time_ms = 1_700_000_000_999;
         native.access_state = AccessState::Denied;
         native.memory_bytes = 0;
         native.private_bytes = 0;
         native.virtual_memory_bytes = None;
         let mut fallback = sample_process("42");
+        fallback.start_time_ms = 1_700_000_000_000;
         fallback.memory_bytes = 123;
         fallback.private_bytes = 45;
         fallback.virtual_memory_bytes = Some(678);
-        let generation = ProcessGeneration {
-            pid: 42,
-            start_time_ms: 1,
-        };
+        let generation = sysinfo_process_join_key(&fallback).expect("sysinfo join key");
         let sysinfo_cpu_by_generation = HashMap::from([(generation, 9.0)]);
         let sysinfo_by_generation = HashMap::from([(generation, &fallback)]);
 
@@ -1326,17 +1343,14 @@ mod tests {
     #[test]
     fn enrich_native_process_rejects_pid_reuse_between_probes() {
         let mut native = sample_process("42");
-        native.start_time_ms = 2;
+        native.start_time_ms = 1_700_000_001_000;
         native.memory_bytes = 0;
         native.private_bytes = 0;
         let mut old_generation = sample_process("42");
-        old_generation.start_time_ms = 1;
+        old_generation.start_time_ms = 1_700_000_000_999;
         old_generation.memory_bytes = 999;
         old_generation.private_bytes = 777;
-        let old_identity = ProcessGeneration {
-            pid: 42,
-            start_time_ms: 1,
-        };
+        let old_identity = sysinfo_process_join_key(&old_generation).expect("old sysinfo join key");
 
         let enriched = enrich_native_process(
             native,
