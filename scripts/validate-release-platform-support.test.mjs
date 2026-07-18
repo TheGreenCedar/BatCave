@@ -62,10 +62,6 @@ function withMutatedTauri(sources, mutate) {
   return { ...sources, tauri };
 }
 
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
 function workflowJob(source, id) {
   const lines = source.split("\n");
   const start = lines.findIndex((line) => line === `  ${id}:`);
@@ -76,7 +72,7 @@ function workflowJob(source, id) {
 }
 
 function shellReadonly(source, name) {
-  const match = new RegExp(`^readonly ${escapeRegex(name)}=(?:"([^"]+)"|([^\\s]+))$`, "mu").exec(
+  const match = new RegExp(`^readonly ${RegExp.escape(name)}=(?:"([^"]+)"|([^\\s]+))$`, "mu").exec(
     source,
   );
   assert.ok(match, `verifier must define readonly ${name}`);
@@ -95,7 +91,7 @@ function shellFunction(source, name) {
 function assertActiveLine(source, command, message) {
   assert.match(
     source,
-    new RegExp(`^\\s*${escapeRegex(command)}\\s*$`, "mu"),
+    new RegExp(`^\\s*${RegExp.escape(command)}\\s*$`, "mu"),
     message ?? `source must actively run: ${command}`,
   );
 }
@@ -229,7 +225,7 @@ function assertLinuxSourceEnforcementMatchesContract(sources) {
   const validationJob = workflowJob(sources.validationWorkflow, "linux");
   const bundleJob = workflowJob(sources.bundlesWorkflow, "linux");
   const releaseJob = workflowJob(sources.releaseWorkflow, "linux");
-  const runner = new RegExp(`^    runs-on: ${escapeRegex(source.hosted_runner)}$`, "mu");
+  const runner = new RegExp(`^    runs-on: ${RegExp.escape(source.hosted_runner)}$`, "mu");
   assert.match(validationJob, runner, "validation Linux runner must match the machine contract");
   assert.match(bundleJob, runner, "bundle Linux runner must match the machine contract");
   assert.match(releaseJob, runner, "release Linux runner must match the machine contract");
@@ -308,12 +304,12 @@ function assertLinuxSourceEnforcementMatchesContract(sources) {
     assert.ok(assetName, `release assets must define ${package_.asset_role}`);
     const extension = path.extname(assetName);
     const artifactGlob = `src/BatCave.App/src-tauri/target/release/bundle/${package_.kind}/*${extension}`;
-    assert.match(bundleJob, new RegExp(escapeRegex(artifactGlob), "u"));
-    assert.match(releaseJob, new RegExp(escapeRegex(artifactGlob), "u"));
+    assert.match(bundleJob, new RegExp(RegExp.escape(artifactGlob), "u"));
+    assert.match(releaseJob, new RegExp(RegExp.escape(artifactGlob), "u"));
     assert.match(
       sources.verifier,
       new RegExp(
-        `^\\w+=\\("\\$bundle_root"/${escapeRegex(package_.kind)}/\\*${escapeRegex(extension)}\\)$`,
+        `^\\w+=\\("\\$bundle_root"/${RegExp.escape(package_.kind)}/\\*${RegExp.escape(extension)}\\)$`,
         "mu",
       ),
     );
@@ -336,7 +332,7 @@ function assertLinuxSourceEnforcementMatchesContract(sources) {
   assert.equal(shellReadonly(sources.verifier, "expected_deb_architecture"), debArchitecture);
   assert.match(
     shellReadonly(sources.verifier, "expected_elf_machine").toLowerCase(),
-    new RegExp(escapeRegex(source.architecture.replace("_", "-")), "u"),
+    new RegExp(RegExp.escape(source.architecture.replace("_", "-")), "u"),
   );
 
   const dependencyPackages = [
@@ -792,7 +788,7 @@ test("keeps package and macOS floor declarations aligned with Tauri configuratio
 });
 
 function assertActiveLineCount(source, command, expected, message) {
-  const matches = source.match(new RegExp(`^\\s*${escapeRegex(command)}\\s*$`, "gmu")) ?? [];
+  const matches = source.match(new RegExp(`^\\s*${RegExp.escape(command)}\\s*$`, "gmu")) ?? [];
   assert.equal(
     matches.length,
     expected,
@@ -801,7 +797,7 @@ function assertActiveLineCount(source, command, expected, message) {
 }
 
 function withoutActiveLine(source, command) {
-  return source.replace(new RegExp(`^\\s*${escapeRegex(command)}\\s*\\n?`, "mu"), "");
+  return source.replace(new RegExp(`^\\s*${RegExp.escape(command)}\\s*\\n?`, "mu"), "");
 }
 
 function assertCanonicalTauriSources(sources) {

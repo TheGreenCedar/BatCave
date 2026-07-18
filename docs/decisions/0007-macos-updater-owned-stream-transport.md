@@ -41,7 +41,6 @@ The private verifier preserves these properties behind the Rust-owned public-rel
 ```sh
 cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
   --bin batcave-install-smoke --features private-release-verifier
-node --test scripts/native-install-smoke-executor.test.mjs
 ```
 
 The Rust binary suite covers valid staging, artifact ownership and replay rejection, hostile entry types, macOS path collisions, retained `String` and `Vec` prefix budgets, invalid gzip trailers, hidden entries after an end marker, trailing bytes, second gzip members, persistent materialization and verification cleanup failures, cleanup retention, and bounded cleanup retry.

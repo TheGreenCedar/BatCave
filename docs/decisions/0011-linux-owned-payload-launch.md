@@ -4,7 +4,6 @@
 - Date: 2026-07-14
 - Parent issue: #115
 - Transport dependency: [Linux real-package owned transport](0008-linux-package-owned-transport.md)
-- Lifetime dependency: [Linux owned complete-operation source contract](0010-linux-owned-complete-operation-source-contract.md)
 
 ## Decision
 

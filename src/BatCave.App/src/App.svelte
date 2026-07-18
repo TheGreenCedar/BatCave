@@ -9,7 +9,7 @@
   import AttentionQueue from "./lib/components/processes/AttentionQueue.svelte";
   import AppHeader from "./lib/components/shell/AppHeader.svelte";
   import AppShell from "./lib/components/shell/AppShell.svelte";
-  import HealthStatus from "./lib/components/shell/HealthStatus.svelte";
+  import DiagnosticsDrawer from "./lib/components/shell/DiagnosticsDrawer.svelte";
   import ProcessCommandBar from "./lib/components/shell/ProcessCommandBar.svelte";
   import SettingsDrawer from "./lib/components/shell/SettingsDrawer.svelte";
   import {
@@ -1645,7 +1645,7 @@
     {/if}
   </section>
 
-  <HealthStatus
+  <DiagnosticsDrawer
     {snapshot}
     {sourceLabel}
     {systemQuality}

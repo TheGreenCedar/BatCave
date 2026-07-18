@@ -456,10 +456,6 @@ export function processMemoryQuality(process: ProcessSample): MetricQualityInfo 
   return process.quality?.memory;
 }
 
-export function processMemoryIsReported(process: ProcessSample): boolean {
-  return processMetricIsPublishable(processMemoryQuality(process));
-}
-
 export function processBytesLabel(process: ProcessSample, value: number): string {
   return displayProcessMetricValue(value, processMemoryQuality(process), formatBytes);
 }

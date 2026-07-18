@@ -72,7 +72,7 @@ Coverage is derived from `platform-support-contract.v1.json`, rather than mainta
 
 The index has no accepted, passed, or overall disposition field. Its mandatory `independent_review_and_live_publication_required` non-claim makes it a review input only. Publishing a packet or index does not replace native execution, public-release verification, signed updater proof, or #76's independent final review. These files record evidence after it exists; they cannot manufacture it.
 
-The parameterized install smoke harness is documented in [Public-artifact install smoke harness](public-artifact-install-smoke.md). The [native executor boundary](native-install-smoke-executor.md) closes selected-byte ownership and validates the future packet mapping, but no platform adapter can mint its internal native execution receipt. Fixture runs emit only a normalized `schema_fixture`; plans and the source-slice executor emit no release packet. `release_evidence` remains reserved for a complete reviewed native run.
+The private Rust install-smoke verifier closes public-release and selected-byte ownership before platform dispatch. Its current Linux handler returns `skipped`, and its macOS updater handler emits only a bounded staging observation. Neither can mint a native execution receipt or release-evidence packet. `release_evidence` remains reserved for a complete reviewed native run.
 
 ## Synthetic fixtures
 

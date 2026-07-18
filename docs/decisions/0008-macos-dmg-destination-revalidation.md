@@ -54,7 +54,6 @@ Hosted/source tests and this local unsigned fixture cannot satisfy those gates.
 ```sh
 cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
   --test macos_dmg_destination_gate_spike
-node --test scripts/native-install-smoke-executor.test.mjs
 bash scripts/validate-tauri.sh --skip-bundle
 ```
 

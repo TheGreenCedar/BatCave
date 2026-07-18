@@ -61,10 +61,6 @@ function absolute(root, relative) {
   return path.join(root, ...relative.split("/"));
 }
 
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
 function workflowJob(source, id) {
   const lines = source.split("\n");
   const start = lines.findIndex((line) => line === `  ${id}:`);
@@ -75,7 +71,7 @@ function workflowJob(source, id) {
 }
 
 function activeIndexTestPattern({ capture = false } = {}) {
-  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${escapeRegex(INDEX_TEST_SCRIPT)}[^#\\n]*`;
+  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${RegExp.escape(INDEX_TEST_SCRIPT)}[^#\\n]*`;
   return new RegExp(capture ? `^([ \\t]*)(${command})$` : `^[ \\t]*${command}$`, "mu");
 }
 
@@ -532,7 +528,7 @@ test("workflow coverage rejects commented-out index test commands", () => {
   for (const [label, mutatedRelease, mutatedValidation] of mutations) {
     assert.throws(
       () => assertWorkflowIndexCoverage(mutatedRelease, mutatedValidation),
-      new RegExp(`${escapeRegex(label)} must actively run`, "u"),
+      new RegExp(`${RegExp.escape(label)} must actively run`, "u"),
     );
   }
 });

@@ -92,8 +92,8 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-      - name: Test native artifact capability
-        run: node --test scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
+      - name: Test post-public and persistence evidence
+        run: node --test scripts/capture-linux-current-user-persistence.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
       - name: Test release evidence index contract
         run: node --test scripts/validate-release-evidence-index.test.mjs
@@ -167,7 +167,7 @@ jobs:
         run: node --test scripts/validate-ci-cache-policy.test.mjs
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
       - name: Reject Rust warnings on the MSRV
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -254,7 +254,7 @@ jobs:
         run: bash -n scripts/*.sh
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/public-artifact-install-smoke.test.mjs scripts/native-install-smoke-executor.test.mjs scripts/linux-native-install-smoke-adapter.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
       - name: Reject Rust warnings for Apple Silicon
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets --target aarch64-apple-darwin -- -D warnings

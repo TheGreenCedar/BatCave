@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(any(windows, target_os = "macos"))]
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+
 static ICON_CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
 
 pub fn icon_data_url(exe: &str) -> Result<Option<String>, String> {
@@ -39,7 +42,7 @@ fn load_icon_data_url(exe: &str) -> Option<String> {
     let bytes = icon_to_ico_bytes(icon.raw())?;
     Some(format!(
         "data:image/x-icon;base64,{}",
-        base64_encode(&bytes)
+        STANDARD.encode(&bytes)
     ))
 }
 
@@ -52,7 +55,7 @@ fn load_icon_data_url(exe: &str) -> Option<String> {
     }
     let bytes = std::fs::read(icon_path).ok()?;
     let png = decode_icns_to_png(&bytes)?;
-    Some(format!("data:image/png;base64,{}", base64_encode(&png)))
+    Some(format!("data:image/png;base64,{}", STANDARD.encode(&png)))
 }
 
 #[cfg(target_os = "macos")]
@@ -327,44 +330,9 @@ fn write_i32(bytes: &mut Vec<u8>, value: i32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-#[cfg(any(windows, target_os = "macos"))]
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = *chunk.get(1).unwrap_or(&0);
-        let third = *chunk.get(2).unwrap_or(&0);
-        output.push(TABLE[(first >> 2) as usize] as char);
-        output.push(TABLE[(((first & 0b0000_0011) << 4) | (second >> 4)) as usize] as char);
-        output.push(if chunk.len() > 1 {
-            TABLE[(((second & 0b0000_1111) << 2) | (third >> 6)) as usize] as char
-        } else {
-            '='
-        });
-        output.push(if chunk.len() > 2 {
-            TABLE[(third & 0b0011_1111) as usize] as char
-        } else {
-            '='
-        });
-    }
-
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(any(windows, target_os = "macos"))]
-    #[test]
-    fn base64_encode_handles_padding() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-    }
 
     #[test]
     fn empty_exe_has_no_icon() {

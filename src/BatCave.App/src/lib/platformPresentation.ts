@@ -1,10 +1,5 @@
-import type {
-  MetricQualityInfo,
-  ProcessSample,
-  RuntimeEnvironment,
-  RuntimePlatform,
-} from "./types";
-import { processBytesLabel, processMetricIsPublishable, processPrivateMemoryValue } from "./format";
+import type { ProcessSample, RuntimeEnvironment, RuntimePlatform } from "./types";
+import { processBytesLabel, processPrivateMemoryValue } from "./format";
 
 export interface PlatformPresentation {
   platformName: string;
@@ -57,24 +52,6 @@ export function platformPresentation(
   environment: Pick<RuntimeEnvironment, "platform">,
 ): PlatformPresentation {
   return presentations[environment.platform] ?? presentations.fixture;
-}
-
-export function metricIsUnavailable(quality: MetricQualityInfo | undefined): boolean {
-  return quality?.quality === "unavailable";
-}
-
-export function processMetricAvailable(
-  process: ProcessSample,
-  metric: keyof NonNullable<ProcessSample["quality"]>,
-): boolean {
-  return processMetricIsPublishable(process.quality?.[metric]);
-}
-
-export function qualityAwareZero(
-  value: number,
-  quality: MetricQualityInfo | undefined,
-): number | null {
-  return processMetricIsPublishable(quality) ? value : null;
 }
 
 export function residentMemoryValue(process: ProcessSample, platform: RuntimePlatform): string {

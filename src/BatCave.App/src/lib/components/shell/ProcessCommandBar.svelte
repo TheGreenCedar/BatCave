@@ -2,7 +2,6 @@
   import { ArrowClockwise, ArrowDown, ArrowUp } from "phosphor-svelte";
   import { sortDirectionButtonLabel, type FocusMode, type SortKey } from "../../process";
   import type { SortDirection } from "../../types";
-  import SegmentedControl from "../ui/SegmentedControl.svelte";
   import SortSelect from "../ui/SortSelect.svelte";
 
   export let focusMode: FocusMode;
@@ -29,7 +28,19 @@
 </script>
 
 <section class="process-command-bar" aria-label="Workload controls">
-  <SegmentedControl label="Workload view" options={focusOptions} value={focusMode} disabled={mutationsDisabled} onChange={onFocus} />
+  <div class="segmented" role="group" aria-label="Workload view">
+    {#each focusOptions as option}
+      <button
+        class:active={focusMode === option.value}
+        type="button"
+        aria-pressed={focusMode === option.value}
+        disabled={mutationsDisabled}
+        onclick={() => onFocus(option.value)}
+      >
+        {option.label}
+      </button>
+    {/each}
+  </div>
 
   <div class="sort-control" role="group" aria-label="Workload sort">
     <label>

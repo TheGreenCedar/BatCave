@@ -584,14 +584,6 @@ export function sortButtonLabel(
   return `Sort by ${column.label} ${defaultDirection}.`;
 }
 
-export function sortIndicator(key: SortKey, activeKey: SortKey, direction: SortDirection): string {
-  if (activeKey !== key) {
-    return "";
-  }
-
-  return direction === "asc" ? "Asc" : "Desc";
-}
-
 export function processIdentity(process: ProcessSample): ProcessIdentity {
   const haystack = `${process.name} ${process.exe}`.toLocaleLowerCase();
   const name = process.name.toLocaleLowerCase();
