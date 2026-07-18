@@ -645,8 +645,18 @@ mod linux {
                 .seek(SeekFrom::Start(0))
                 .map_err(|error| format!("owned descriptor rewind failed: {error}"))?;
             let mut hasher = Sha256::new();
-            let copied = std::io::copy(&mut reader, &mut hasher)
-                .map_err(|error| format!("owned descriptor rehash failed: {error}"))?;
+            let mut copied = 0_u64;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = reader
+                    .read(&mut buffer)
+                    .map_err(|error| format!("owned descriptor rehash failed: {error}"))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                copied = copied.saturating_add(read as u64);
+            }
             if copied != self.size || hasher.finalize().as_slice() != self.sha256 {
                 return Err("owned descriptor bytes changed".to_string());
             }
