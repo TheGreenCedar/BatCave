@@ -39,7 +39,7 @@ Network is a first-class column. BatCave attributes live TCP, UDP, and QUIC traf
 | --- | --- | --- | --- | --- |
 | Windows | Windows 10 `10.0.16299`+, x86-64 | Win32 and PDH | ETW; installed service for protected collection | NSIS |
 | Linux | Ubuntu 22.04+ or Debian 12+, x86-64 glibc | `/proc` and `/sys` | Optional bpftrace/eBPF | deb, AppImage |
-| macOS | macOS 12+, Apple Silicon | sysinfo, libproc, IOKit | XNU NStat | DMG |
+| macOS | macOS 12.0+, Apple Silicon | sysinfo, libproc, IOKit | XNU NStat | DMG, updater archive |
 
 Intel Macs, Windows ARM64, Linux ARM64, musl, and unlisted operating-system profiles are not supported release targets. The complete source, scope, failure, and proof contract lives in [Platform capabilities](docs/platform-capabilities.md).
 

@@ -621,10 +621,10 @@ mod tests {
             "Protected sample: Current",
             "Fallback process ETW: Not active",
             "Collector service: Collector service active",
-            "Service version: 0.2.0-rc.2",
+            concat!("Service version: ", env!("CARGO_PKG_VERSION")),
             "Service protocol: 1",
-            "Minimum desktop: 0.2.0-rc.2",
-            "Service release: 0.2.0-rc.2",
+            concat!("Minimum desktop: ", env!("CARGO_PKG_VERSION")),
+            concat!("Service release: ", env!("CARGO_PKG_VERSION")),
             "Service instance: 00000065-00000000000000000000000000000001",
             "Service detail: None",
         ]

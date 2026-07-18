@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   macosUpdaterPostPublicObservationContract,
   validateMacosUpdaterPostPublicObservation,
 } from "./validate-macos-updater-post-public-observation.mjs";
+import { readCargoVersion } from "./verify-release-version.mjs";
 
-const TAG = "v0.2.0-rc.2";
+const APP_VERSION = readCargoVersion(fileURLToPath(new URL("..", import.meta.url)));
+const TAG = `v${APP_VERSION}`;
 const SOURCE_SHA = "a".repeat(40);
 const DIGEST = `sha256:${"b".repeat(64)}`;
 
@@ -20,7 +23,7 @@ function observation() {
       proof_scope: "post_public_macos_updater_staging_observation_only",
       release_evidence_eligible: false,
       repository: "TheGreenCedar/BatCave",
-      release: { tag: TAG, source_sha: SOURCE_SHA, app_version: "0.2.0-rc.2" },
+      release: { tag: TAG, source_sha: SOURCE_SHA, app_version: APP_VERSION },
       artifact: {
         name: "BatCave.Monitor.app.tar.gz",
         size_bytes: 123,

@@ -463,9 +463,9 @@ function assertReleaseSupportDocumentationMatchesContract(documents) {
     ],
   );
 
-  const readme = markdownSection(documents.readme, "Release Platform Support");
+  const readme = markdownSection(documents.readme, "Platform support");
   const releases = markdownSection(documents.releases, "Platform support and proof");
-  for (const source of [readme, capabilities, releases]) {
+  for (const source of [capabilities, releases]) {
     assert.match(source, /platform-support-contract\.v1\.json/u);
   }
 
@@ -474,29 +474,20 @@ function assertReleaseSupportDocumentationMatchesContract(documents) {
   const debian = PROFILES.get("debian-12-x86_64-glibc");
   const macos = PROFILES.get("macos-12-arm64");
   const linux = RELEASE_PLATFORM_SUPPORT_CONTRACT.linux_source_enforcement;
+  assert.deepEqual(
+    readme.split("\n").filter((line) => line.startsWith("|")),
+    [
+      "| Platform | Release target | Machine telemetry | Per-process network | Package |",
+      "| --- | --- | --- | --- | --- |",
+      `| Windows | Windows 10 \`${windows.host.minimum}\`+, ${windows.host_architectures[0].replace("_", "-")} | Win32 and PDH | ETW; installed service for protected collection | ${documentedPackageKinds(windows)} |`,
+      `| Linux | Ubuntu ${ubuntu.host.minimum}+ or Debian ${debian.host.minimum}+, ${linux.architecture.replace("_", "-")} ${linux.libc_family} | \`/proc\` and \`/sys\` | Optional bpftrace/eBPF | deb, AppImage |`,
+      `| macOS | macOS ${macos.host.minimum}+, Apple Silicon | sysinfo, libproc, IOKit | XNU NStat | ${documentedPackageKinds(macos)} |`,
+    ],
+  );
+  assert.ok(readme.includes("[Platform capabilities](docs/platform-capabilities.md)"));
   assert.ok(
     readme.includes(
-      `Windows 10 client \`${windows.host.minimum}\`+ on \`${windows.host_architectures[0]}\` with NSIS`,
-    ),
-  );
-  assert.ok(
-    readme.includes(
-      `Ubuntu \`${ubuntu.host.minimum}\`+ and Debian \`${debian.host.minimum}\`+ on \`${linux.architecture}\` ${linux.libc_family} with deb and AppImage packages`,
-    ),
-  );
-  assert.ok(
-    readme.includes(
-      `macOS \`${macos.host.minimum}\`+ on Apple Silicon \`${macos.host_architectures[0]}\` with a DMG and updater archive`,
-    ),
-  );
-  assert.ok(
-    readme.includes(
-      `Every profile is \`${windows.proof.source}\`; \`native_oldest_supported\` remains \`${windows.proof.native_oldest_supported}\``,
-    ),
-  );
-  assert.ok(
-    documents.readme.includes(
-      `From the repository root on Ubuntu ${ubuntu.host.minimum}, Debian ${debian.host.minimum}, or newer releases within those declared profiles:`,
+      "Intel Macs, Windows ARM64, Linux ARM64, musl, and unlisted operating-system profiles are not supported release targets.",
     ),
   );
 
@@ -547,9 +538,9 @@ test("rejects platform support documentation drift", () => {
   const documents = releaseSupportDocumentation();
   const mutations = [
     ["capabilities", "`10.0.16299`+", "`10.0.19045`+"],
-    ["readme", "Ubuntu `22.04`+", "Ubuntu `24.04`+"],
+    ["readme", "Ubuntu 22.04+", "Ubuntu 24.04+"],
     ["capabilities", "Debian `12`+", "Debian `13`+"],
-    ["readme", "macOS `12.0`+", "macOS `13.0`+"],
+    ["readme", "macOS 12.0+", "macOS 13.0+"],
     ["capabilities", "`x86_64`, glibc", "`arm64`, glibc"],
     ["capabilities", "deb, AppImage", "rpm"],
     ["capabilities", "`source_enforced`", "`declared`"],
@@ -558,7 +549,8 @@ test("rejects platform support documentation drift", () => {
     ["capabilities", "`libgtk-3-0`", "`libgtk-4-1`"],
     ["capabilities", "`libwebkit2gtk-4.1-0`", "`libwebkit2gtk-4.0-0`"],
     ["capabilities", "Windows Server, ", ""],
-    ["readme", "Ubuntu 22.04, Debian 12", "Ubuntu 24.04, Debian 13"],
+    ["readme", "DMG, updater archive", "DMG"],
+    ["readme", "Intel Macs, ", ""],
   ];
 
   for (const [file, current, drifted] of mutations) {
@@ -850,13 +842,6 @@ function assertCanonicalTauriSources(sources) {
     'bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc',
   );
 
-  assertActiveLineCount(sources.readme, "npm run tauri -- dev", 3);
-  assertActiveLineCount(sources.readme, "npm run tauri -- build", 2);
-  assertActiveLineCount(
-    sources.readme,
-    "npm run tauri -- build --target aarch64-apple-darwin",
-    1,
-  );
   assertActiveLineCount(sources.appReadme, "npm run tauri -- dev", 1);
   assertActiveLineCount(sources.appReadme, "npm run tauri -- build", 1);
   assertActiveLineCount(
@@ -875,7 +860,6 @@ test("uses one canonical Tauri npm entry while preserving platform config resolu
   const appRoot = path.join(ROOT, "src", "BatCave.App");
   const sources = {
     packageJson: JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8")),
-    readme: fs.readFileSync(path.join(ROOT, "README.md"), "utf8"),
     appReadme: fs.readFileSync(path.join(appRoot, "README.md"), "utf8"),
     runtimeDocs: fs.readFileSync(path.join(ROOT, "docs", "runtime-telemetry.md"), "utf8"),
     runPowerShell: fs.readFileSync(path.join(ROOT, "scripts", "run-dev.ps1"), "utf8"),
@@ -931,9 +915,6 @@ test("uses one canonical Tauri npm entry while preserving platform config resolu
       'bash "$repo_root/scripts/remove-macos-dmg-volume-icon.sh" "${dmg_candidates[0]}"',
     ],
     ["validateShell", 'bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc'],
-    ["readme", "npm run tauri -- dev"],
-    ["readme", "npm run tauri -- build"],
-    ["readme", "npm run tauri -- build --target aarch64-apple-darwin"],
     ["appReadme", "npm run tauri -- dev"],
     ["appReadme", "npm run tauri -- build"],
     ["appReadme", "npm run tauri -- build --target aarch64-apple-darwin  # macOS Apple Silicon"],
