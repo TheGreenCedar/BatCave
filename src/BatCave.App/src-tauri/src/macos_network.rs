@@ -25,6 +25,11 @@ const CONTROL_NAME: &[u8] = b"com.apple.network.statistics\0";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SOCKET_POLL_TIMEOUT_MS: i32 = 250;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+const SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(3);
+const RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(250);
+const RESTART_BACKOFF_MAX: Duration = Duration::from_secs(10);
+const RESTART_BACKOFF_RESET_AFTER: Duration = Duration::from_secs(30);
+const RESTART_WAIT_SLICE: Duration = Duration::from_millis(25);
 const MAX_MESSAGE_SIZE: usize = 65_536;
 const RECEIVE_BUFFER_SIZE: libc::c_int = 1_048_576;
 
@@ -95,9 +100,93 @@ struct SourceState {
     transmitted_bytes: u64,
 }
 
+// A query reserves its epoch when it is sent. Unsolicited context-zero events
+// reserve later epochs as they arrive, so committing a delayed query cannot
+// overwrite a newer live update or removal. Removal order is retained as a
+// tombstone in the engine even after the source itself is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct EventOrder {
+    epoch: u64,
+    ordinal: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceEvent {
+    Update(SourceUpdate),
+    Removed(u64),
+}
+
+impl SourceEvent {
+    fn source_ref(self) -> u64 {
+        match self {
+            Self::Update(update) => update.source_ref,
+            Self::Removed(source_ref) => source_ref,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OrderedSourceEvent {
+    order: EventOrder,
+    event: SourceEvent,
+}
+
+#[derive(Debug)]
+struct ActiveQuery {
+    context: u64,
+    started_at: Instant,
+    epoch: u64,
+    next_ordinal: u64,
+    events: Vec<OrderedSourceEvent>,
+}
+
+impl ActiveQuery {
+    fn new(context: u64, epoch: u64, now: Instant) -> Self {
+        Self {
+            context,
+            started_at: now,
+            epoch,
+            next_ordinal: 0,
+            events: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, event: SourceEvent) {
+        let order = EventOrder {
+            epoch: self.epoch,
+            ordinal: self.next_ordinal,
+        };
+        self.next_ordinal = self.next_ordinal.saturating_add(1);
+        self.events.push(OrderedSourceEvent { order, event });
+    }
+}
+
+#[derive(Debug, Default)]
+struct EventClock {
+    next_epoch: u64,
+}
+
+impl EventClock {
+    fn next_epoch(&mut self) -> u64 {
+        self.next_epoch = self.next_epoch.saturating_add(1);
+        self.next_epoch
+    }
+
+    fn direct(&mut self, event: SourceEvent) -> OrderedSourceEvent {
+        OrderedSourceEvent {
+            order: EventOrder {
+                epoch: self.next_epoch(),
+                ordinal: 0,
+            },
+            event,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SharedSample {
     baseline_complete: bool,
+    interval_complete: bool,
     interval_bytes_by_process: HashMap<ObservedProcessGeneration, ProcessNetworkRates>,
     interval_started_at: Instant,
     failure: Option<String>,
@@ -108,6 +197,7 @@ impl Default for SharedSample {
     fn default() -> Self {
         Self {
             baseline_complete: false,
+            interval_complete: false,
             interval_bytes_by_process: HashMap::new(),
             interval_started_at: Instant::now(),
             failure: None,
@@ -119,10 +209,34 @@ impl Default for SharedSample {
 #[derive(Debug, Default)]
 struct AttributionEngine {
     sources: HashMap<u64, SourceState>,
+    last_event_order: HashMap<u64, EventOrder>,
     baseline_complete: bool,
 }
 
 impl AttributionEngine {
+    fn apply_event(
+        &mut self,
+        ordered: OrderedSourceEvent,
+        interval: &mut HashMap<ObservedProcessGeneration, ProcessNetworkRates>,
+    ) -> Option<String> {
+        let source_ref = ordered.event.source_ref();
+        if self
+            .last_event_order
+            .get(&source_ref)
+            .is_some_and(|last| *last >= ordered.order)
+        {
+            return None;
+        }
+        self.last_event_order.insert(source_ref, ordered.order);
+        match ordered.event {
+            SourceEvent::Update(update) => self.apply_update(update, interval),
+            SourceEvent::Removed(source_ref) => {
+                self.sources.remove(&source_ref);
+                None
+            }
+        }
+    }
+
     fn apply_update(
         &mut self,
         update: SourceUpdate,
@@ -196,8 +310,37 @@ impl AttributionEngine {
         self.baseline_complete = true;
     }
 
-    fn remove_source(&mut self, source_ref: u64) {
-        self.sources.remove(&source_ref);
+    fn prune_tombstones(&mut self) {
+        self.last_event_order
+            .retain(|source_ref, _| self.sources.contains_key(source_ref));
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RestartBackoff {
+    next: Duration,
+}
+
+impl Default for RestartBackoff {
+    fn default() -> Self {
+        Self {
+            next: RESTART_BACKOFF_INITIAL,
+        }
+    }
+}
+
+impl RestartBackoff {
+    fn take(&mut self) -> Duration {
+        let delay = self.next;
+        self.next = self.next.saturating_mul(2).min(RESTART_BACKOFF_MAX);
+        delay
+    }
+
+    fn take_after_session(&mut self, elapsed: Duration) -> Duration {
+        if elapsed >= RESTART_BACKOFF_RESET_AFTER {
+            *self = Self::default();
+        }
+        self.take()
     }
 }
 
@@ -244,6 +387,11 @@ impl MacosNetworkAttribution {
                 "Waiting for the initial macOS network-statistics baseline.".to_string(),
             );
         }
+        if !shared.interval_complete {
+            return NetworkAttributionSample::Held(
+                "Waiting for the next complete macOS network-statistics interval.".to_string(),
+            );
+        }
 
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(shared.interval_started_at);
@@ -253,6 +401,7 @@ impl MacosNetworkAttribution {
             );
         }
         shared.interval_started_at = now;
+        shared.interval_complete = false;
         let interval = std::mem::take(&mut shared.interval_bytes_by_process);
         let rates_by_process = interval
             .into_iter()
@@ -294,13 +443,58 @@ impl Drop for MacosNetworkAttribution {
 }
 
 fn run_collector(shared: Arc<Mutex<SharedSample>>, stop: Arc<AtomicBool>) {
-    if let Err(error) = run_collector_inner(&shared, &stop) {
+    if let Err(error) = ensure_qualified_darwin_layout() {
         set_failure(&shared, error);
+        return;
+    }
+
+    run_supervisor_with(
+        &shared,
+        &stop,
+        || run_collector_session(&shared, &stop),
+        |delay| wait_for_restart(&stop, delay),
+    );
+}
+
+fn run_supervisor_with<F, W>(
+    shared: &Arc<Mutex<SharedSample>>,
+    stop: &AtomicBool,
+    mut run_session: F,
+    mut wait: W,
+) where
+    F: FnMut() -> Result<(), String>,
+    W: FnMut(Duration) -> bool,
+{
+    let mut failures = 0_u64;
+    let mut backoff = RestartBackoff::default();
+    while !stop.load(Ordering::Acquire) {
+        begin_session(shared, failures);
+        let session_started_at = Instant::now();
+        match run_session() {
+            Ok(()) => return,
+            Err(_) if stop.load(Ordering::Acquire) => return,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                let delay = backoff.take_after_session(session_started_at.elapsed());
+                set_failure(
+                    shared,
+                    format!(
+                        "{error}; restart_state=waiting restart_failures={failures} retry_in_ms={}",
+                        delay.as_millis()
+                    ),
+                );
+                if !wait(delay) {
+                    return;
+                }
+            }
+        }
     }
 }
 
-fn run_collector_inner(shared: &Arc<Mutex<SharedSample>>, stop: &AtomicBool) -> Result<(), String> {
-    ensure_qualified_darwin_layout()?;
+fn run_collector_session(
+    shared: &Arc<Mutex<SharedSample>>,
+    stop: &AtomicBool,
+) -> Result<(), String> {
     let socket = connect_nstat().map_err(|error| format!("nstat_connect_failed:{error}"))?;
     configure_socket(&socket).map_err(|error| format!("nstat_socket_config_failed:{error}"))?;
 
@@ -312,27 +506,40 @@ fn run_collector_inner(shared: &Arc<Mutex<SharedSample>>, stop: &AtomicBool) -> 
         send_message(socket.as_raw_fd(), &add_all_request(provider))
             .map_err(|error| format!("nstat_subscribe_failed:provider={provider}:{error}"))?;
     }
+    let subscription_deadline = Instant::now() + SUBSCRIPTION_TIMEOUT;
 
     let mut engine = AttributionEngine::default();
+    let mut event_clock = EventClock::default();
     let mut receive_buffer = vec![0_u8; MAX_MESSAGE_SIZE];
     let mut query_context = 0x4e53_5400_0000_0001_u64;
-    let mut active_query: Option<(u64, Instant, Vec<SourceUpdate>)> = None;
+    let mut active_query: Option<ActiveQuery> = None;
     let mut next_query_at = Instant::now();
 
     while !stop.load(Ordering::Acquire) {
+        if let Some(error) = subscription_timeout_error(
+            &pending_subscriptions,
+            Instant::now(),
+            subscription_deadline,
+        ) {
+            return Err(error);
+        }
         if pending_subscriptions.is_empty()
             && active_query.is_none()
             && Instant::now() >= next_query_at
         {
             send_message(socket.as_raw_fd(), &update_request(query_context, false))
                 .map_err(|error| format!("nstat_update_request_failed:{error}"))?;
-            active_query = Some((query_context, Instant::now(), Vec::new()));
+            active_query = Some(ActiveQuery::new(
+                query_context,
+                event_clock.next_epoch(),
+                Instant::now(),
+            ));
             query_context = query_context.wrapping_add(1).max(0x4e53_5400_0000_0001);
         }
 
         if active_query
             .as_ref()
-            .is_some_and(|(_, started, _)| started.elapsed() > QUERY_TIMEOUT)
+            .is_some_and(|query| query.started_at.elapsed() > QUERY_TIMEOUT)
         {
             return Err("nstat_update_request_timed_out".to_string());
         }
@@ -391,12 +598,52 @@ fn run_collector_inner(shared: &Arc<Mutex<SharedSample>>, stop: &AtomicBool) -> 
                 &mut pending_subscriptions,
                 &mut active_query,
                 &mut engine,
+                &mut event_clock,
                 shared,
                 &mut next_query_at,
             )?;
         }
     }
     Ok(())
+}
+
+fn begin_session(shared: &Arc<Mutex<SharedSample>>, failures: u64) {
+    if let Ok(mut shared) = shared.lock() {
+        shared.baseline_complete = false;
+        shared.interval_complete = false;
+        shared.interval_bytes_by_process.clear();
+        shared.interval_started_at = Instant::now();
+        shared.failure = None;
+        shared.data_loss = (failures > 0)
+            .then(|| format!("nstat_restarted_after_transient_failure:failures={failures}"));
+    }
+}
+
+fn wait_for_restart(stop: &AtomicBool, delay: Duration) -> bool {
+    let deadline = Instant::now() + delay;
+    while !stop.load(Ordering::Acquire) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        thread::sleep(remaining.min(RESTART_WAIT_SLICE));
+    }
+    false
+}
+
+fn subscription_timeout_error(
+    pending: &HashMap<u64, u32>,
+    now: Instant,
+    deadline: Instant,
+) -> Option<String> {
+    if pending.is_empty() || now <= deadline {
+        return None;
+    }
+    let mut providers = pending.values().copied().collect::<Vec<_>>();
+    providers.sort_unstable();
+    Some(format!(
+        "nstat_subscription_timed_out:pending_providers={providers:?}"
+    ))
 }
 
 fn ensure_qualified_darwin_layout() -> Result<(), String> {
@@ -433,8 +680,9 @@ fn handle_datagram(
     datagram: &[u8],
     socket: RawFd,
     pending_subscriptions: &mut HashMap<u64, u32>,
-    active_query: &mut Option<(u64, Instant, Vec<SourceUpdate>)>,
+    active_query: &mut Option<ActiveQuery>,
     engine: &mut AttributionEngine,
+    event_clock: &mut EventClock,
     shared: &Arc<Mutex<SharedSample>>,
     next_query_at: &mut Instant,
 ) -> Result<(), String> {
@@ -455,24 +703,31 @@ fn handle_datagram(
                     }
                 } else if active_query
                     .as_ref()
-                    .is_some_and(|(context, _, _)| *context == header.context)
+                    .is_some_and(|query| query.context == header.context)
                 {
                     if header.flags & NSTAT_MSG_HDR_FLAG_CONTINUATION != 0 {
                         send_message(socket, &update_request(header.context, true))
                             .map_err(|error| format!("nstat_update_continuation_failed:{error}"))?;
                     } else {
-                        let (_, _, updates) = active_query
+                        let query = active_query
                             .take()
                             .expect("active query checked before completion");
-                        commit_updates(engine, updates, shared)?;
+                        commit_events(engine, query.events, shared)?;
+                        engine.prune_tombstones();
                         if !engine.baseline_complete {
                             engine.finish_baseline();
                             let mut sample = shared
                                 .lock()
                                 .map_err(|_| "nstat_shared_lock_poisoned".to_string())?;
                             sample.baseline_complete = true;
+                            sample.interval_complete = false;
                             sample.interval_bytes_by_process.clear();
                             sample.interval_started_at = Instant::now();
+                        } else {
+                            let mut sample = shared
+                                .lock()
+                                .map_err(|_| "nstat_shared_lock_poisoned".to_string())?;
+                            sample.interval_complete = true;
                         }
                         *next_query_at = Instant::now() + POLL_INTERVAL;
                     }
@@ -487,28 +742,32 @@ fn handle_datagram(
                 }
                 if active_query
                     .as_ref()
-                    .is_some_and(|(context, _, _)| *context == header.context)
+                    .is_some_and(|query| query.context == header.context)
                 {
                     return Err(format!("nstat_update_rejected:errno={error}"));
                 }
             }
             NSTAT_MSG_TYPE_SRC_UPDATE | NSTAT_MSG_TYPE_SRC_EXTENDED_UPDATE => {
                 let update = parse_source_update(message, header)?;
-                if header.context == 0 {
-                    commit_updates(engine, vec![update], shared)?;
-                } else if let Some((context, _, updates)) = active_query.as_mut() {
-                    if *context != header.context {
-                        return Err(format!(
-                            "nstat_update_context_mismatch:expected={context}:actual={}",
-                            header.context
-                        ));
-                    }
-                    updates.push(update);
-                }
+                route_event(
+                    SourceEvent::Update(update),
+                    header.context,
+                    active_query,
+                    engine,
+                    event_clock,
+                    shared,
+                )?;
             }
             NSTAT_MSG_TYPE_SRC_REMOVED => {
                 let source_ref = read_u64(message, HEADER_LEN)?;
-                engine.remove_source(source_ref);
+                route_event(
+                    SourceEvent::Removed(source_ref),
+                    header.context,
+                    active_query,
+                    engine,
+                    event_clock,
+                    shared,
+                )?;
             }
             NSTAT_MSG_TYPE_SRC_ADDED => {}
             _ => {}
@@ -518,16 +777,40 @@ fn handle_datagram(
     Ok(())
 }
 
-fn commit_updates(
+fn route_event(
+    event: SourceEvent,
+    context: u64,
+    active_query: &mut Option<ActiveQuery>,
     engine: &mut AttributionEngine,
-    updates: Vec<SourceUpdate>,
+    event_clock: &mut EventClock,
+    shared: &Arc<Mutex<SharedSample>>,
+) -> Result<(), String> {
+    if context == 0 {
+        commit_events(engine, vec![event_clock.direct(event)], shared)
+    } else if let Some(query) = active_query.as_mut() {
+        if query.context != context {
+            return Err(format!(
+                "nstat_event_context_mismatch:expected={}:actual={context}",
+                query.context
+            ));
+        }
+        query.push(event);
+        Ok(())
+    } else {
+        Err(format!("nstat_event_context_unexpected:{context}"))
+    }
+}
+
+fn commit_events(
+    engine: &mut AttributionEngine,
+    events: Vec<OrderedSourceEvent>,
     shared: &Arc<Mutex<SharedSample>>,
 ) -> Result<(), String> {
     let mut sample = shared
         .lock()
         .map_err(|_| "nstat_shared_lock_poisoned".to_string())?;
-    for update in updates {
-        if let Some(message) = engine.apply_update(update, &mut sample.interval_bytes_by_process) {
+    for event in events {
+        if let Some(message) = engine.apply_event(event, &mut sample.interval_bytes_by_process) {
             sample.data_loss = Some(message);
         }
     }
@@ -749,6 +1032,7 @@ fn set_failure(shared: &Arc<Mutex<SharedSample>>, message: String) {
 mod tests {
     use super::*;
     use std::{
+        cell::Cell,
         io::{Read, Write},
         net::{Shutdown, TcpListener, TcpStream},
     };
@@ -763,6 +1047,84 @@ mod tests {
             closing: false,
             previous_event_discarded: false,
         }
+    }
+
+    fn source_update_datagram(
+        context: u64,
+        source_ref: u64,
+        pid: u32,
+        received: u64,
+        transmitted: u64,
+    ) -> Vec<u8> {
+        let length = UPDATE_PREFIX_LEN + TCP_DESCRIPTOR_PID_OFFSET + size_of::<u32>();
+        let mut message = Vec::with_capacity(length);
+        write_header(
+            &mut message,
+            context,
+            NSTAT_MSG_TYPE_SRC_UPDATE,
+            length as u16,
+            0,
+        );
+        message.resize(length, 0);
+        message[UPDATE_SOURCE_REF_OFFSET..UPDATE_SOURCE_REF_OFFSET + 8]
+            .copy_from_slice(&source_ref.to_le_bytes());
+        message[UPDATE_RX_BYTES_OFFSET..UPDATE_RX_BYTES_OFFSET + 8]
+            .copy_from_slice(&received.to_le_bytes());
+        message[UPDATE_TX_BYTES_OFFSET..UPDATE_TX_BYTES_OFFSET + 8]
+            .copy_from_slice(&transmitted.to_le_bytes());
+        message[UPDATE_PROVIDER_OFFSET..UPDATE_PROVIDER_OFFSET + 4]
+            .copy_from_slice(&NSTAT_PROVIDER_TCP_USERLAND.to_le_bytes());
+        message[UPDATE_PREFIX_LEN..UPDATE_PREFIX_LEN + 8]
+            .copy_from_slice(&u64::from(pid).to_le_bytes());
+        let pid_offset = UPDATE_PREFIX_LEN + TCP_DESCRIPTOR_PID_OFFSET;
+        message[pid_offset..pid_offset + 4].copy_from_slice(&pid.to_le_bytes());
+        message
+    }
+
+    fn source_removed_datagram(context: u64, source_ref: u64) -> Vec<u8> {
+        let mut message = Vec::with_capacity(HEADER_LEN + size_of::<u64>());
+        write_header(
+            &mut message,
+            context,
+            NSTAT_MSG_TYPE_SRC_REMOVED,
+            (HEADER_LEN + size_of::<u64>()) as u16,
+            0,
+        );
+        message.extend_from_slice(&source_ref.to_le_bytes());
+        message
+    }
+
+    fn success_datagram(context: u64) -> Vec<u8> {
+        let mut message = Vec::with_capacity(HEADER_LEN);
+        write_header(
+            &mut message,
+            context,
+            NSTAT_MSG_TYPE_SUCCESS,
+            HEADER_LEN as u16,
+            0,
+        );
+        message
+    }
+
+    fn replay(
+        datagram: &[u8],
+        active_query: &mut Option<ActiveQuery>,
+        engine: &mut AttributionEngine,
+        event_clock: &mut EventClock,
+        shared: &Arc<Mutex<SharedSample>>,
+        next_query_at: &mut Instant,
+    ) {
+        handle_datagram(
+            datagram,
+            -1,
+            &mut HashMap::new(),
+            active_query,
+            engine,
+            event_clock,
+            shared,
+            next_query_at,
+        )
+        .expect("synthetic NStat datagram");
     }
 
     #[test]
@@ -889,6 +1251,218 @@ mod tests {
             parse_source_update(&[0; UPDATE_PREFIX_LEN], header).unwrap_err(),
             "nstat_provider_unexpected:0"
         );
+    }
+
+    #[test]
+    fn older_query_update_cannot_roll_back_newer_context_zero_update() {
+        let shared = Arc::new(Mutex::new(SharedSample::default()));
+        let mut engine = AttributionEngine::default();
+        let mut event_clock = EventClock::default();
+        let mut next_query_at = Instant::now();
+        let context = 41;
+        let mut active_query = Some(ActiveQuery::new(
+            context,
+            event_clock.next_epoch(),
+            Instant::now(),
+        ));
+
+        replay(
+            &source_update_datagram(context, 7, 80, 100, 200),
+            &mut active_query,
+            &mut engine,
+            &mut event_clock,
+            &shared,
+            &mut next_query_at,
+        );
+        replay(
+            &source_update_datagram(0, 7, 80, 150, 275),
+            &mut active_query,
+            &mut engine,
+            &mut event_clock,
+            &shared,
+            &mut next_query_at,
+        );
+        replay(
+            &success_datagram(context),
+            &mut active_query,
+            &mut engine,
+            &mut event_clock,
+            &shared,
+            &mut next_query_at,
+        );
+
+        assert_eq!(
+            engine.sources.get(&7),
+            Some(&SourceState {
+                pid: 80,
+                unique_pid: 80,
+                received_bytes: 150,
+                transmitted_bytes: 275,
+            })
+        );
+        assert!(active_query.is_none());
+    }
+
+    #[test]
+    fn older_query_update_cannot_resurrect_newer_context_zero_removal() {
+        let shared = Arc::new(Mutex::new(SharedSample::default()));
+        let mut engine = AttributionEngine::default();
+        let mut event_clock = EventClock::default();
+        let mut next_query_at = Instant::now();
+        commit_events(
+            &mut engine,
+            vec![event_clock.direct(SourceEvent::Update(update(9, 90, 100, 200)))],
+            &shared,
+        )
+        .unwrap();
+        let context = 42;
+        let mut active_query = Some(ActiveQuery::new(
+            context,
+            event_clock.next_epoch(),
+            Instant::now(),
+        ));
+
+        replay(
+            &source_update_datagram(context, 9, 90, 180, 260),
+            &mut active_query,
+            &mut engine,
+            &mut event_clock,
+            &shared,
+            &mut next_query_at,
+        );
+        replay(
+            &source_removed_datagram(0, 9),
+            &mut active_query,
+            &mut engine,
+            &mut event_clock,
+            &shared,
+            &mut next_query_at,
+        );
+        replay(
+            &success_datagram(context),
+            &mut active_query,
+            &mut engine,
+            &mut event_clock,
+            &shared,
+            &mut next_query_at,
+        );
+
+        assert!(!engine.sources.contains_key(&9));
+        assert!(!engine.last_event_order.contains_key(&9));
+        assert!(active_query.is_none());
+    }
+
+    #[test]
+    fn subscription_deadline_reports_the_unacknowledged_providers() {
+        let now = Instant::now();
+        let pending = HashMap::from([
+            (
+                subscription_context(NSTAT_PROVIDER_UDP_USERLAND),
+                NSTAT_PROVIDER_UDP_USERLAND,
+            ),
+            (
+                subscription_context(NSTAT_PROVIDER_TCP_KERNEL),
+                NSTAT_PROVIDER_TCP_KERNEL,
+            ),
+        ]);
+
+        assert!(subscription_timeout_error(&pending, now, now).is_none());
+        assert_eq!(
+            subscription_timeout_error(&pending, now, now - Duration::from_millis(1)).as_deref(),
+            Some("nstat_subscription_timed_out:pending_providers=[2, 5]")
+        );
+    }
+
+    #[test]
+    fn restart_backoff_is_exponential_and_bounded() {
+        let mut backoff = RestartBackoff::default();
+        assert_eq!(backoff.take(), Duration::from_millis(250));
+        assert_eq!(backoff.take(), Duration::from_millis(500));
+        for _ in 0..10 {
+            backoff.take();
+        }
+        assert_eq!(backoff.take(), RESTART_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn restart_backoff_resets_after_a_healthy_session() {
+        let mut backoff = RestartBackoff::default();
+        assert_eq!(backoff.take(), Duration::from_millis(250));
+        assert_eq!(backoff.take(), Duration::from_millis(500));
+        assert_eq!(
+            backoff.take_after_session(RESTART_BACKOFF_RESET_AFTER),
+            RESTART_BACKOFF_INITIAL
+        );
+    }
+
+    #[test]
+    fn supervisor_restarts_after_a_transient_session_failure() {
+        let shared = Arc::new(Mutex::new(SharedSample::default()));
+        let stop = AtomicBool::new(false);
+        let attempts = Cell::new(0_u32);
+
+        run_supervisor_with(
+            &shared,
+            &stop,
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    Err("nstat_receive_failed:synthetic".to_string())
+                } else {
+                    let sample = shared.lock().unwrap();
+                    assert!(sample.failure.is_none());
+                    assert!(!sample.baseline_complete);
+                    assert_eq!(
+                        sample.data_loss.as_deref(),
+                        Some("nstat_restarted_after_transient_failure:failures=1")
+                    );
+                    Ok(())
+                }
+            },
+            |delay| {
+                assert_eq!(delay, RESTART_BACKOFF_INITIAL);
+                let sample = shared.lock().unwrap();
+                assert!(sample
+                    .failure
+                    .as_deref()
+                    .is_some_and(|message| message.contains("restart_state=waiting")));
+                true
+            },
+        );
+
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn restarted_session_moves_from_pending_to_held_before_publishing() {
+        let shared = Arc::new(Mutex::new(SharedSample::default()));
+        set_failure(&shared, "transient".to_string());
+        begin_session(&shared, 1);
+
+        let pending = shared.lock().unwrap();
+        assert!(!pending.baseline_complete);
+        assert!(!pending.interval_complete);
+        assert!(pending.failure.is_none());
+        assert_eq!(
+            pending.data_loss.as_deref(),
+            Some("nstat_restarted_after_transient_failure:failures=1")
+        );
+        drop(pending);
+
+        let mut attribution = MacosNetworkAttribution {
+            shared: Arc::clone(&shared),
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: None,
+        };
+        assert!(matches!(
+            attribution.sample(),
+            NetworkAttributionSample::PendingBaseline(_)
+        ));
+        shared.lock().unwrap().baseline_complete = true;
+        assert!(matches!(
+            attribution.sample(),
+            NetworkAttributionSample::Held(_)
+        ));
     }
 
     #[test]
