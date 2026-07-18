@@ -5,6 +5,12 @@ use super::{
 };
 
 pub(crate) const DESKTOP_EXECUTABLE_NAME: &str = "batcave-monitor.exe";
+#[cfg(test)]
+pub(crate) const SERVICE_PROCESS_INTERACTIVE_ACCESS_MASK: u32 = 0x0000_1000;
+pub(crate) const SERVICE_PROCESS_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00001000;;;IU)";
+#[cfg(test)]
+pub(crate) const SERVICE_TOKEN_INTERACTIVE_ACCESS_MASK: u32 = 0x0000_0008;
+pub(crate) const SERVICE_TOKEN_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000008;;;IU)";
 // FILE_GENERIC_READ | FILE_WRITE_DATA. FILE_GENERIC_WRITE is deliberately not
 // granted because it includes FILE_CREATE_PIPE_INSTANCE for named pipes.
 #[cfg(test)]
@@ -228,6 +234,27 @@ mod tests {
             interactive_mask & 0x0000_0004,
             0,
             "FILE_CREATE_PIPE_INSTANCE must never be granted to clients"
+        );
+    }
+
+    #[test]
+    fn service_peer_observation_acls_grant_only_the_required_interactive_reads() {
+        for sddl in [SERVICE_PROCESS_SDDL, SERVICE_TOKEN_SDDL] {
+            assert!(sddl.contains(";;;SY)"));
+            assert!(sddl.contains(";;;BA)"));
+            assert!(sddl.contains(";;;IU)"));
+            for forbidden in [";;;WD)", ";;;AN)", ";;;NU)", ";;;AU)"] {
+                assert!(!sddl.contains(forbidden));
+            }
+        }
+
+        assert_eq!(
+            ace_mask(SERVICE_PROCESS_SDDL, "IU"),
+            Some(SERVICE_PROCESS_INTERACTIVE_ACCESS_MASK)
+        );
+        assert_eq!(
+            ace_mask(SERVICE_TOKEN_SDDL, "IU"),
+            Some(SERVICE_TOKEN_INTERACTIVE_ACCESS_MASK)
         );
     }
 

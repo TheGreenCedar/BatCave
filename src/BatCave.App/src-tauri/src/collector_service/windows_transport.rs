@@ -16,15 +16,15 @@ use windows_sys::Win32::{
     },
     Security::{
         Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, GetLengthSid,
-        GetTokenInformation, IsValidSid, RevertToSelf, TokenElevation, TokenSessionId, TokenUser,
-        PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS,
-        TOKEN_QUERY, TOKEN_USER,
+        GetTokenInformation, IsValidSid, RevertToSelf, SetKernelObjectSecurity, TokenElevation,
+        TokenSessionId, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateFileW, GetFileInformationByHandle, GetFileVersionInfoSizeW, GetFileVersionInfoW,
         ReadFile, VerQueryValueW, WriteFile, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL,
         FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, OPEN_EXISTING,
-        PIPE_ACCESS_DUPLEX, VS_FFI_SIGNATURE, VS_FIXEDFILEINFO,
+        PIPE_ACCESS_DUPLEX, READ_CONTROL, VS_FFI_SIGNATURE, VS_FIXEDFILEINFO, WRITE_DAC,
     },
     System::{
         Pipes::{
@@ -33,8 +33,8 @@ use windows_sys::Win32::{
             PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
         },
         Threading::{
-            GetCurrentThread, GetProcessTimes, OpenProcess, OpenProcessToken, OpenThreadToken,
-            QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetCurrentProcess, GetCurrentThread, GetProcessTimes, OpenProcess, OpenProcessToken,
+            OpenThreadToken, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
 };
@@ -48,6 +48,7 @@ use super::{
     session_lease::{SESSION_IDLE_TIMEOUT, SESSION_MAX_REQUESTS},
     transport_policy::{
         ClientTrustPolicy, ExecutableReleaseEvidence, VerifiedClientEvidence, PIPE_SDDL,
+        SERVICE_PROCESS_SDDL, SERVICE_TOKEN_SDDL,
     },
 };
 
@@ -56,6 +57,46 @@ const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const PIPE_INSTANCE_LIMIT: u32 = MAX_CLIENTS as u32 + 1;
 const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(crate) fn allow_interactive_service_observation() -> Result<(), String> {
+    set_kernel_object_dacl(
+        unsafe { GetCurrentProcess() },
+        SERVICE_PROCESS_SDDL,
+        "collector_service_process_observation_acl_failed",
+    )?;
+
+    let mut token = std::ptr::null_mut();
+    if unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY | READ_CONTROL | WRITE_DAC,
+            &mut token,
+        )
+    } == 0
+    {
+        return Err(last_error_message(
+            "collector_service_token_observation_open_failed",
+        ));
+    }
+    let token = OwnedHandle::new(token)
+        .ok_or_else(|| "collector_service_token_observation_handle_invalid".to_string())?;
+    set_kernel_object_dacl(
+        token.raw(),
+        SERVICE_TOKEN_SDDL,
+        "collector_service_token_observation_acl_failed",
+    )
+}
+
+fn set_kernel_object_dacl(handle: HANDLE, sddl: &str, label: &str) -> Result<(), String> {
+    let security = SecurityDescriptor::new(sddl, label)?;
+    if unsafe { SetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, security.descriptor) }
+        == 0
+    {
+        Err(last_error_message(label))
+    } else {
+        Ok(())
+    }
+}
 
 pub(crate) fn run_pipe_server(
     stop: Arc<AtomicBool>,
@@ -754,6 +795,39 @@ impl PipeSecurity {
 }
 
 impl Drop for PipeSecurity {
+    fn drop(&mut self) {
+        if !self.descriptor.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(self.descriptor.cast());
+            }
+        }
+    }
+}
+
+struct SecurityDescriptor {
+    descriptor: PSECURITY_DESCRIPTOR,
+}
+
+impl SecurityDescriptor {
+    fn new(sddl: &str, label: &str) -> Result<Self, String> {
+        let mut descriptor = std::ptr::null_mut();
+        let sddl = wide(sddl);
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(last_error_message(label));
+        }
+        Ok(Self { descriptor })
+    }
+}
+
+impl Drop for SecurityDescriptor {
     fn drop(&mut self) {
         if !self.descriptor.is_null() {
             unsafe {
