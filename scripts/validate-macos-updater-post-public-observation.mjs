@@ -21,7 +21,7 @@ const EXPECTED_CHECKS = [
 ];
 const EXPECTED_LIMITATIONS = [
   "github_hosted_macos_15",
-  "universal_updater_archive_staging_only",
+  "arm64_updater_archive_staging_only",
   "application_not_installed_or_launched",
   "developer_id_notarization_and_staple_not_rechecked",
   "runtime_settings_telemetry_and_degradation_not_exercised",

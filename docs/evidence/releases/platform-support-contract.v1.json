@@ -46,28 +46,28 @@
       }
     },
     {
-      "id": "macos-12-universal",
+      "id": "macos-12-arm64",
       "os": "macos",
       "host": {
         "kind": "macos_release",
         "minimum": "12.0"
       },
-      "host_architectures": ["arm64", "x86_64"],
+      "host_architectures": ["arm64"],
       "runtime": {
         "libc_family": "not_applicable"
       },
       "packages": [
         {
           "kind": "dmg",
-          "architecture": "universal",
-          "asset_role": "macOS universal DMG",
+          "architecture": "arm64",
+          "asset_role": "macOS Apple Silicon DMG",
           "updater_targets": []
         },
         {
           "kind": "macos_updater",
-          "architecture": "universal",
-          "asset_role": "macOS universal updater payload",
-          "updater_targets": ["darwin-aarch64", "darwin-x86_64"]
+          "architecture": "arm64",
+          "asset_role": "macOS Apple Silicon updater payload",
+          "updater_targets": ["darwin-aarch64"]
         }
       ],
       "proof": {

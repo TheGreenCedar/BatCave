@@ -14,7 +14,7 @@ const SLUG = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/u;
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const PLATFORM_ARCHITECTURES = {
   linux: new Set(["aarch64", "x86_64"]),
-  macos: new Set(["aarch64", "x86_64"]),
+  macos: new Set(["aarch64"]),
   windows: new Set(["aarch64", "x86", "x86_64"]),
 };
 const ARTIFACT_INSTALL_KINDS = {

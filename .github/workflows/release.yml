@@ -244,7 +244,7 @@ jobs:
           retention-days: 30
 
   macos:
-    name: Build notarized universal macOS release
+    name: Build notarized Apple Silicon macOS release
     needs: prepare
     runs-on: macos-15
     environment: release
@@ -271,7 +271,7 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -334,16 +334,16 @@ jobs:
           security default-keychain -d user -s "${keychain_path}"
           security find-identity -v -p codesigning "${keychain_path}" | grep -F "${APPLE_SIGNING_IDENTITY}"
 
-      - name: Build universal macOS binaries without packaging
+      - name: Build Apple Silicon macOS binaries without packaging
         working-directory: src/BatCave.App
         env:
           CI: "true"
-        run: npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.updater.ci.conf.json --no-bundle --ci
+        run: npm run tauri -- build --target aarch64-apple-darwin --config src-tauri/tauri.macos.updater.ci.conf.json --no-bundle --ci
 
-      - name: Assemble universal macOS CLI
-        run: bash scripts/build-macos-universal-cli.sh --lipo-only
+      - name: Verify Apple Silicon macOS CLI
+        run: bash scripts/build-macos-arm64-cli.sh --verify-only
 
-      - name: Bundle signed and notarized universal macOS updater
+      - name: Bundle signed and notarized Apple Silicon macOS updater
         working-directory: src/BatCave.App
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -352,7 +352,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CI: "true"
-        run: npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.updater.ci.conf.json --ci
+        run: npm run tauri -- build --target aarch64-apple-darwin --config src-tauri/tauri.macos.updater.ci.conf.json --ci
 
       - name: Sign, notarize, and staple the DMG
         shell: bash
@@ -363,21 +363,22 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          dmgs=(src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
-          [[ "${#dmgs[@]}" -eq 1 ]] || { echo "Expected exactly one universal DMG; found ${#dmgs[@]}." >&2; exit 1; }
+          dmgs=(src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          [[ "${#dmgs[@]}" -eq 1 ]] || { echo "Expected exactly one Apple Silicon DMG; found ${#dmgs[@]}." >&2; exit 1; }
+          bash scripts/remove-macos-dmg-volume-icon.sh "${dmgs[0]}"
           codesign --force --timestamp --sign "${APPLE_SIGNING_IDENTITY}" "${dmgs[0]}"
           xcrun notarytool submit "${dmgs[0]}" --key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY}" --issuer "${APPLE_API_ISSUER}" --wait
           xcrun stapler staple "${dmgs[0]}"
 
-      - name: Verify signing, notarization, universal binary, and DMG
+      - name: Verify signing, notarization, Apple Silicon binary, and DMG
         run: bash scripts/verify-macos-bundle.sh --mode release
 
       - name: Collect macOS distributables
         run: |
           mkdir -p dist/macos
-          cp src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg dist/macos/
-          cp src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz dist/macos/
-          cp src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig dist/macos/
+          cp src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg dist/macos/
+          cp src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz dist/macos/
+          cp src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig dist/macos/
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

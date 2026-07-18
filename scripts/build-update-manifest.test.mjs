@@ -22,7 +22,7 @@ function artifactsForVersion(version) {
   );
 }
 
-test("builds stable signed update entries for Windows, Linux, and universal macOS", () => {
+test("builds stable signed update entries for Windows, Linux, and Apple Silicon macOS", () => {
   assert.deepEqual(buildUpdateManifest("v0.3.0", "TheGreenCedar/BatCave", artifacts), {
     version: "0.3.0",
     notes: "BatCave v0.3.0",
@@ -36,10 +36,6 @@ test("builds stable signed update entries for Windows, Linux, and universal macO
         url: "https://github.com/TheGreenCedar/BatCave/releases/download/v0.3.0/BatCave.Monitor_0.3.0_amd64.AppImage",
       },
       "darwin-aarch64": {
-        signature: "macos-signature",
-        url: "https://github.com/TheGreenCedar/BatCave/releases/download/v0.3.0/BatCave.Monitor.app.tar.gz",
-      },
-      "darwin-x86_64": {
         signature: "macos-signature",
         url: "https://github.com/TheGreenCedar/BatCave/releases/download/v0.3.0/BatCave.Monitor.app.tar.gz",
       },
@@ -68,7 +64,7 @@ test("rejects missing signatures", () => {
   );
 });
 
-test("requires exactly one universal macOS updater archive", () => {
+test("requires exactly one Apple Silicon macOS updater archive", () => {
   assert.throws(
     () =>
       buildUpdateManifest("v0.3.0", "owner/repo", {
@@ -76,7 +72,7 @@ test("requires exactly one universal macOS updater archive", () => {
         "another.app.tar.gz": "",
         "another.app.tar.gz.sig": "other-signature",
       }),
-    /macOS universal updater payload requires exactly one asset; found 2/,
+    /macOS Apple Silicon updater payload requires exactly one asset; found 2/,
   );
 });
 

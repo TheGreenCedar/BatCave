@@ -48,21 +48,21 @@ const declarations = [
     signatureFor: "Linux AppImage package and updater payload",
   },
   {
-    role: "macOS universal DMG",
-    name: ({ version }) => `BatCave.Monitor_${version}_universal.dmg`,
-    family: /^BatCave\.Monitor_.+_universal\.dmg$/u,
+    role: "macOS Apple Silicon DMG",
+    name: ({ version }) => `BatCave.Monitor_${version}_aarch64.dmg`,
+    family: /^BatCave\.Monitor_.+_aarch64\.dmg$/u,
   },
   {
-    role: "macOS universal updater payload",
+    role: "macOS Apple Silicon updater payload",
     name: () => "BatCave.Monitor.app.tar.gz",
     family: /\.app\.tar\.gz$/u,
-    updateTargets: ["darwin-aarch64", "darwin-x86_64"],
+    updateTargets: ["darwin-aarch64"],
   },
   {
     role: "macOS updater signature",
-    name: ({ roles }) => `${roles.get("macOS universal updater payload")}.sig`,
+    name: ({ roles }) => `${roles.get("macOS Apple Silicon updater payload")}.sig`,
     family: /\.app\.tar\.gz\.sig$/u,
-    signatureFor: "macOS universal updater payload",
+    signatureFor: "macOS Apple Silicon updater payload",
   },
   {
     role: "updater manifest",

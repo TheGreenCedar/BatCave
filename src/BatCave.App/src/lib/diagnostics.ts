@@ -108,7 +108,12 @@ function toDiagnosticIssue(
     };
   }
 
-  if (value.includes("network_attribution") || value.includes("etw") || value.includes("ebpf")) {
+  if (
+    value.includes("network_attribution") ||
+    value.includes("etw") ||
+    value.includes("ebpf") ||
+    value.includes("nstat")
+  ) {
     return {
       ...baseIssue(warning),
       title: "App network activity is unavailable",

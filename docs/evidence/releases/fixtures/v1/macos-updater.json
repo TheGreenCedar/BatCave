@@ -20,7 +20,7 @@
   },
   "platform": {
     "support_contract_version": 1,
-    "profile_id": "macos-12-universal",
+    "profile_id": "macos-12-arm64",
     "proof": {
       "declaration": "declared",
       "source": "pending",
@@ -28,13 +28,13 @@
     },
     "os": "macos",
     "os_version": "synthetic-macos-fixture",
-    "architecture": "x86_64",
+    "architecture": "arm64",
     "runtime": {
       "libc_family": "not_applicable"
     },
     "package": {
       "kind": "macos_updater",
-      "architecture": "universal",
+      "architecture": "arm64",
       "asset_name": "BatCave.Monitor.app.tar.gz"
     }
   },

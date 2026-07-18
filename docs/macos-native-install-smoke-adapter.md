@@ -30,7 +30,7 @@ Both profiles carry the same consumed-destination revalidation contract. The fut
 
 - compiled Tauri bundle identifier;
 - verified release version;
-- both `arm64` and `x86_64` slices;
+- an `arm64` slice and no unsupported Intel `x86_64` slice;
 - code-signature integrity;
 - Developer ID application authority;
 - notarization acceptance; and
@@ -53,7 +53,7 @@ cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
   install_smoke_macos_updater
 ```
 
-The JavaScript suite creates process-local plans and #111 capabilities, rejects injected adapter arguments, copied descriptors, same-asset receipt substitution, and equivalent-plan replay, checks the two distinct macOS profiles, and confirms every source result remains skipped with null native/evidence receipts. The production Rust suite consumes immutable owned bytes, validates one complete gzip member and a zero-only tar tail, rejects trailers, hidden post-marker entries, trailing data, second members, hostile tar entries, and macOS filesystem collisions before materialization, charges retained `String` and `Vec` prefix allocations to its path budget, rechecks every staged file, and retains cleanup authority with both failures visible until bounded retry succeeds. The universal macOS validation job runs the private verifier tests.
+The JavaScript suite creates process-local plans and #111 capabilities, rejects injected adapter arguments, copied descriptors, same-asset receipt substitution, and equivalent-plan replay, checks the two distinct macOS profiles, and confirms every source result remains skipped with null native/evidence receipts. The production Rust suite consumes immutable owned bytes, validates one complete gzip member and a zero-only tar tail, rejects trailers, hidden post-marker entries, trailing data, second members, hostile tar entries, and macOS filesystem collisions before materialization, charges retained `String` and `Vec` prefix allocations to its path budget, rechecks every staged file, and retains cleanup authority with both failures visible until bounded retry succeeds. The Apple Silicon macOS validation job runs the private verifier tests.
 
 The release extractor retains its separate traversal, link, collision, size-budget, and replacement coverage in `scripts/test-macos-updater-archive.sh`. Those shell fixtures remain local and do not replace exact-public updater A-to-B proof.
 

@@ -539,6 +539,14 @@ test("singleton attention labels publish only quality-backed activity", () => {
     ),
     "network activity · limited",
   );
+
+  const unsupportedNetwork = quality("native");
+  unsupportedNetwork.cpu = { quality: "estimated", source: "direct_api" };
+  unsupportedNetwork.network = { quality: "unavailable", source: "direct_api" };
+  assert.equal(
+    processAttentionLabel(process({ cpu_percent: 4, quality: unsupportedNetwork })),
+    "Limited",
+  );
 });
 
 test("fixture group attention exposes nonpublishable and mixed coverage states", () => {

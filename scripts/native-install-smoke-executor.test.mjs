@@ -175,7 +175,7 @@ function planInput() {
 function macosReleaseTemplate(packageKind) {
   const packet = releaseTemplate();
   const role =
-    packageKind === "dmg" ? "macOS universal DMG" : "macOS universal updater payload";
+    packageKind === "dmg" ? "macOS Apple Silicon DMG" : "macOS Apple Silicon updater payload";
   const assetName = expectedReleaseAssetRoles(TAG).roles.find(
     ({ role: candidateRole }) => candidateRole === role,
   ).name;
@@ -183,7 +183,7 @@ function macosReleaseTemplate(packageKind) {
   packet.packet_id = `macos-${packageKind}-native-source-slice`;
   packet.platform = {
     support_contract_version: 1,
-    profile_id: "macos-12-universal",
+    profile_id: "macos-12-arm64",
     proof: {
       declaration: "declared",
       source: "source_enforced",
@@ -193,7 +193,7 @@ function macosReleaseTemplate(packageKind) {
     os_version: "macos-15.0",
     architecture: "arm64",
     runtime: { libc_family: "not_applicable" },
-    package: { kind: packageKind, architecture: "universal", asset_name: assetName },
+    package: { kind: packageKind, architecture: "arm64", asset_name: assetName },
   };
   packet.assets[0] = {
     name: assetName,
@@ -607,7 +607,7 @@ test("closed macOS source binding is verified-identity-bound and cannot mint pro
       boundary: "consumed_destination_only",
       bundle_id_source: "compiled_tauri_identifier",
       version_source: "verified_release_version",
-      required_architectures: ["arm64", "x86_64"],
+      required_architectures: ["arm64"],
       required_gate_ids: [
         "bundle_id",
         "version",

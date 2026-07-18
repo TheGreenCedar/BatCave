@@ -1,3 +1,6 @@
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+compile_error!("BatCave supports macOS on Apple Silicon only.");
+
 mod atomic_json;
 mod benchmark;
 mod cli_args;
@@ -14,10 +17,12 @@ mod linux_process;
 #[cfg(any(target_os = "linux", test))]
 mod linux_system;
 #[cfg(target_os = "macos")]
+mod macos_network;
+#[cfg(target_os = "macos")]
 mod macos_process;
 #[cfg(target_os = "macos")]
 mod macos_system;
-#[cfg(any(windows, target_os = "linux", test))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 mod network_attribution;
 mod persistence;
 mod persistence_proof;

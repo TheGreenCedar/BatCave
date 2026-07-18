@@ -127,6 +127,13 @@ test("accepts a sanitized native candidate without granting release status", () 
 });
 
 test("rejects source drift, hidden fields, raw paths, and false passing results", () => {
+  const intelMac = packet();
+  intelMac.host.architecture = "x86_64";
+  assert.throws(
+    () => validateCurrentUserPersistencePacket(intelMac),
+    /packet\.host\.architecture: must be one of aarch64/u,
+  );
+
   const sourceDrift = packet();
   sourceDrift.receipts.restart.release_identity.source_commit_sha = "c".repeat(40);
   assert.throws(

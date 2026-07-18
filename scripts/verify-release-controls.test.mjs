@@ -88,7 +88,7 @@ test("accepts immutable releases, reviewed main, and a protected release environ
     "Windows validation",
     "Linux validation",
     "Linux package transport",
-    "macOS universal validation",
+    "macOS Apple Silicon validation",
   ]);
   assert.equal(verifyReleaseControls(validControls()), true);
 });

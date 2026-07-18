@@ -11,7 +11,7 @@
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1`: run frontend build/type/lint/format checks, Rust fmt/check/test, and the Tauri bundle.
 - `bash scripts/install-linux-deps.sh`: install Ubuntu/Debian native Tauri prerequisites.
 - `bash scripts/run-dev.sh` and `bash scripts/run-dev.sh --web-only`: Linux or macOS app/web launch workflows; Darwin selects the native Mac configuration.
-- `bash scripts/validate-tauri.sh`: Linux/macOS validation equivalent for frontend build/type/lint/format checks, Rust fmt/check/test, and the Tauri bundle; Darwin builds the universal target by default.
+- `bash scripts/validate-tauri.sh`: Linux/macOS validation equivalent for frontend build/type/lint/format checks, Rust fmt/check/test, and the Tauri bundle; Darwin builds the Apple Silicon target by default.
 - `cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml`: run Rust runtime, contract, collector-service, platform collector, migration, and benchmark tests.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark.ps1 -BenchmarkHost core -Platform x64 -Ticks 120 -SleepMs 1000`: run benchmark gates through the Rust runtime host.
 - `bash scripts/run-benchmark.sh --benchmark-host core --ticks 120 --sleep-ms 1000`: Linux/macOS benchmark run; use `scripts/run-benchmark-gate.sh` when budget regressions must fail the command.

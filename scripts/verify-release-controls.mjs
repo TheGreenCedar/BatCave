@@ -7,7 +7,7 @@ export const REQUIRED_STATUS_CHECK_CONTEXTS = Object.freeze([
   "Windows validation",
   "Linux validation",
   "Linux package transport",
-  "macOS universal validation",
+  "macOS Apple Silicon validation",
 ]);
 export const GITHUB_ACTIONS_APP_ID = 15_368;
 export const GITHUB_API_VERSION = "2022-11-28";

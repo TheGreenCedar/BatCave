@@ -48,7 +48,7 @@ enum FailureBoundary {
 struct DestinationGates {
     bundle_id: bool,
     version: bool,
-    universal_architectures: bool,
+    arm64_architecture: bool,
     signature_integrity: bool,
     developer_id_authority: bool,
     notarization: bool,
@@ -60,7 +60,7 @@ impl DestinationGates {
     fn all_required(&self) -> bool {
         self.bundle_id
             && self.version
-            && self.universal_architectures
+            && self.arm64_architecture
             && self.signature_integrity
             && self.developer_id_authority
             && self.notarization
@@ -704,13 +704,9 @@ mod macos {
             let executable = app.join("Contents/MacOS").join(EXECUTABLE_NAME);
             let mut architectures = Command::new(LIPO);
             architectures.arg("-archs").arg(&executable);
-            gates.universal_architectures = self
+            gates.arm64_architecture = self
                 .run_output_owned(&mut architectures, "architectures")
-                .is_some_and(|output| {
-                    let mut observed = output.split_whitespace().collect::<Vec<_>>();
-                    observed.sort_unstable();
-                    observed == ["arm64", "x86_64"]
-                });
+                .is_some_and(|output| output.split_whitespace().collect::<Vec<_>>() == ["arm64"]);
             if self.unsettled_process.is_some() {
                 return (gates, false);
             }
@@ -916,7 +912,7 @@ mod macos {
     fn first_failed_gate(gates: &DestinationGates) -> Option<FailureBoundary> {
         if !gates.bundle_id || !gates.version {
             Some(FailureBoundary::BundleIdentity)
-        } else if !gates.universal_architectures {
+        } else if !gates.arm64_architecture {
             Some(FailureBoundary::Architectures)
         } else if !gates.signature_integrity {
             Some(FailureBoundary::Signature)
@@ -959,22 +955,9 @@ mod macos {
         let source = root.join("fixture-main.rs");
         fs::write(&source, "fn main() {}\n")?;
         let arm64 = root.join("fixture-arm64");
-        let x86_64 = root.join("fixture-x86_64");
         compile_fixture(root, &source, &arm64, "aarch64-apple-darwin")?;
-        compile_fixture(root, &source, &x86_64, "x86_64-apple-darwin")?;
         let executable = macos.join(EXECUTABLE_NAME);
-        let mut lipo = Command::new(LIPO);
-        lipo.args(["-create"])
-            .arg(&arm64)
-            .arg(&x86_64)
-            .arg("-output")
-            .arg(&executable);
-        require_success(run_fixture_process(
-            &mut lipo,
-            root,
-            "fixture-lipo",
-            NORMAL_TIMEOUT,
-        )?)?;
+        fs::copy(&arm64, &executable)?;
         let mut sign = Command::new(CODESIGN);
         sign.args(["--force", "--deep", "--sign", "-"]).arg(&app);
         require_success(run_fixture_process(
@@ -1090,17 +1073,21 @@ mod macos {
     }
 
     fn fixture_info_plist() -> &'static str {
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+        concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>BatCaveMonitor</string>
 <key>CFBundleIdentifier</key><string>dev.batcave.monitor</string>
 <key>CFBundleName</key><string>BatCave Monitor</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.0-rc.2</string>
+<key>CFBundleShortVersionString</key><string>"#,
+            env!("CARGO_PKG_VERSION"),
+            r#"</string>
 <key>CFBundleVersion</key><string>2</string>
 </dict></plist>
 "#
+        )
     }
 
     fn drifted_info_plist() -> &'static str {
@@ -1392,7 +1379,7 @@ mod macos {
         assert!(outcome.destination_revalidation_completed);
         assert!(outcome.gates.bundle_id);
         assert!(outcome.gates.version);
-        assert!(outcome.gates.universal_architectures);
+        assert!(outcome.gates.arm64_architecture);
         assert!(outcome.gates.signature_integrity);
         assert!(!outcome.gates.developer_id_authority);
         assert!(!outcome.gates.notarization);
@@ -1498,7 +1485,7 @@ mod macos {
         assert_eq!(outcome.primary_boundary, FailureBoundary::Signature);
         assert!(outcome.gates.bundle_id);
         assert!(outcome.gates.version);
-        assert!(outcome.gates.universal_architectures);
+        assert!(outcome.gates.arm64_architecture);
         assert!(!outcome.gates.signature_integrity);
         assert!(!outcome.gates.all_required());
         assert!(!outcome.mount_residue);
@@ -1519,7 +1506,7 @@ mod macos {
         assert!(!outcome.destination_binding_proven);
         assert!(outcome.gates.bundle_id);
         assert!(outcome.gates.version);
-        assert!(outcome.gates.universal_architectures);
+        assert!(outcome.gates.arm64_architecture);
         assert!(!outcome.gates.signature_integrity);
         assert!(!outcome.gates.all_required());
         assert!(!outcome.mount_residue);
@@ -1621,7 +1608,7 @@ mod macos {
         let all = DestinationGates {
             bundle_id: true,
             version: true,
-            universal_architectures: true,
+            arm64_architecture: true,
             signature_integrity: true,
             developer_id_authority: true,
             notarization: true,
@@ -1633,7 +1620,7 @@ mod macos {
             match boundary {
                 0 => missing.bundle_id = false,
                 1 => missing.version = false,
-                2 => missing.universal_architectures = false,
+                2 => missing.arm64_architecture = false,
                 3 => missing.signature_integrity = false,
                 4 => missing.developer_id_authority = false,
                 5 => missing.notarization = false,

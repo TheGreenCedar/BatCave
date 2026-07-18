@@ -65,7 +65,7 @@ impl Profile {
             Self::WindowsNsis => format!("BatCave.Monitor_{version}_x64-setup.exe"),
             Self::LinuxDeb => format!("BatCave.Monitor_{version}_amd64.deb"),
             Self::LinuxAppImage => format!("BatCave.Monitor_{version}_amd64.AppImage"),
-            Self::MacOsDmg => format!("BatCave.Monitor_{version}_universal.dmg"),
+            Self::MacOsDmg => format!("BatCave.Monitor_{version}_aarch64.dmg"),
             Self::MacOsUpdater => "BatCave.Monitor.app.tar.gz".to_string(),
         }
     }
@@ -177,7 +177,7 @@ impl SanitizedOutcome {
                 },
                 limitations: [
                     "github_hosted_macos_15",
-                    "universal_updater_archive_staging_only",
+                    "arm64_updater_archive_staging_only",
                     "application_not_installed_or_launched",
                     "developer_id_notarization_and_staple_not_rechecked",
                     "runtime_settings_telemetry_and_degradation_not_exercised",
@@ -782,7 +782,7 @@ fn expected_names(tag: &str, version: &str) -> BTreeSet<String> {
         format!("BatCave.Monitor_{version}_amd64.deb"),
         format!("BatCave.Monitor_{version}_amd64.AppImage"),
         format!("BatCave.Monitor_{version}_amd64.AppImage.sig"),
-        format!("BatCave.Monitor_{version}_universal.dmg"),
+        format!("BatCave.Monitor_{version}_aarch64.dmg"),
         "BatCave.Monitor.app.tar.gz".to_string(),
         "BatCave.Monitor.app.tar.gz.sig".to_string(),
         "latest.json".to_string(),

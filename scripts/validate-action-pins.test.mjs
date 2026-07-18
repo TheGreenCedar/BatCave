@@ -242,7 +242,7 @@ test("keeps validation toolchains, cache writers, and Linux package transport bo
   const macos = validationJob("macos");
   assertStepOrder(
     macos,
-    "Reject Rust warnings for both Apple architectures",
+    "Reject Rust warnings for Apple Silicon",
     "Validate native macOS app",
   );
   assert.match(

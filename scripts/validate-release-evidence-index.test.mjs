@@ -30,7 +30,7 @@ const INDEX_FIXTURE = path.join(
 const INDEX_TEST_SCRIPT = "scripts/validate-release-evidence-index.test.mjs";
 const REAL_HOSTS = {
   "debian-12-x86_64-glibc": "debian-12",
-  "macos-12-universal": "macos-12.0",
+  "macos-12-arm64": "macos-12.0",
   "ubuntu-22.04-x86_64-glibc": "ubuntu-22.04",
   "windows-client-10-x86_64": "windows-client-10.0.16299",
 };
@@ -401,7 +401,7 @@ test("rejects missing profile and package-role coverage", () => {
 
   const missingRole = fixture();
   missingRole.packet_references = missingRole.packet_references.filter(
-    ({ package_role: role }) => role !== "macOS universal updater payload",
+    ({ package_role: role }) => role !== "macOS Apple Silicon updater payload",
   );
   assert.throws(() => validateReleaseEvidenceIndex(missingRole), /package-role coverage/u);
 });

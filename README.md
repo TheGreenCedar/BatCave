@@ -1,66 +1,69 @@
-# BatCave Monitor
+<p align="center">
+  <img src="src/BatCave.App/src-tauri/icons/128x128.png" width="96" height="96" alt="BatCave Monitor icon">
+</p>
 
-BatCave Monitor is a local-first resource cockpit for Windows, Linux, and macOS. It shows the machine underneath the machine: machine-total CPU, memory, disk and network movement, process triage, runtime health, and the little permission-shaped holes where the operating system says "not today."
+<h1 align="center">BatCave Monitor</h1>
 
-This is a public preview. It is useful now, honest about what it cannot see, and intentionally boring about privacy: BatCave reads local telemetry and keeps it local.
+<p align="center">
+  Local resource triage for Windows, Linux, and Apple Silicon Macs.
+</p>
 
-### Light Theme
+BatCave shows what is putting pressure on your machine, which workloads are responsible, and how trustworthy each number is. It combines machine-wide CPU, memory, disk, and network telemetry with a stable process ranking and a focused workload inspector.
 
-![BatCave Monitor attention-first resource overview in the Daylight theme](docs/images/batcave-monitor-remediation-overview-daylight.png)
+![BatCave Monitor ranking live workloads in the native Apple Silicon app](docs/images/batcave-monitor-macos-overview.jpg)
 
-![BatCave Monitor selected workload detail in the Daylight theme](docs/images/batcave-monitor-remediation-workload-daylight.png)
+<p align="center"><sub>Native Apple Silicon app with live local telemetry. No browser fixtures.</sub></p>
 
-![BatCave Monitor plain-language diagnostics drawer in the Daylight theme](docs/images/batcave-monitor-remediation-diagnostics-daylight.png)
+## Find the problem, then inspect it
 
-![BatCave Monitor settings and privileged-access drawer in the Daylight theme](docs/images/batcave-monitor-remediation-settings-daylight.png)
+- See machine pressure and the best matching workload in one glance.
+- Rank grouped apps and individual processes by CPU, memory, disk, or network activity.
+- Keep workload order stable while live values update, or refresh the ranking when you choose.
+- Open a process or group to inspect trends, totals, source quality, coverage, and technical details.
+- Filter to workloads that need attention or are actively moving data.
+- Read `Native`, `Estimated`, `Limited`, and `Unavailable` as real collection states—not decorative labels.
 
-### Dark Theme
+If the operating system denies a process, a collector is still warming up, or a source cannot support a metric, BatCave says so. It does not turn missing telemetry into zeroes.
 
-![BatCave Monitor attention-first resource overview in the dark Cave theme](docs/images/batcave-monitor-remediation-overview-cave.png)
+## Per-process network activity
 
-![BatCave Monitor compact card layout in the dark Cave theme](docs/images/batcave-monitor-remediation-narrow-cave.png)
+Network is a first-class column. BatCave attributes live TCP, UDP, and QUIC traffic to processes on macOS, IP socket payloads through ETW on Windows, and optional eBPF probes on Linux.
 
-![BatCave Monitor dismissible compact detail drawer in the dark Cave theme](docs/images/batcave-monitor-remediation-narrow-detail-cave.png)
+![BatCave Monitor attributing live network traffic to a Python process on macOS](docs/images/batcave-monitor-macos-network.jpg)
 
-Screenshots show the native Tauri app with live Windows telemetry. Browser fixture screenshots are layout-only and should not be used as product proof. Keep only captures linked from product documentation under `docs/images`; store transient or superseded captures under the ignored `artifacts/` tree.
+<p align="center"><sub>A local transfer captured through macOS NStat and attributed to its owning process.</sub></p>
 
-## What It Shows
+## Platform support
 
-- A selected-resource summary that keeps the headline, value, chart, time window, source quality, and compatible process attribution on one semantic.
-- A stable grouped workload ranking that keeps row identity and scroll position fixed while the user inspects live values.
-- A contextual detail pane with Overview, Resources, and Technical views for the selected workload or system resource.
-- Plain-language telemetry diagnostics that explain impact, next steps, and raw collector detail on demand.
-- Focused drawers for appearance, sampling, privileged access, and local data controls.
-- A compact card layout at narrow window widths, with the same diagnosis path as the desktop table.
+| Platform | Release target | Machine telemetry | Per-process network | Package |
+| --- | --- | --- | --- | --- |
+| Windows | Windows 10 `10.0.16299`+, x86-64 | Win32 and PDH | ETW; installed service for protected collection | NSIS |
+| Linux | Ubuntu 22.04+ or Debian 12+, x86-64 glibc | `/proc` and `/sys` | Optional bpftrace/eBPF | deb, AppImage |
+| macOS | macOS 12.0+, Apple Silicon | sysinfo, libproc, IOKit | XNU NStat | DMG, updater archive |
 
-BatCave does not pretend. If ETW, eBPF, `/proc`, `/sys`, libproc, PDH, or process permissions are unavailable, the app keeps running and marks the affected metric honestly instead of painting fake numbers over the crack.
+Intel Macs, Windows ARM64, Linux ARM64, musl, and unlisted operating-system profiles are not supported release targets. The complete source, scope, failure, and proof contract lives in [Platform capabilities](docs/platform-capabilities.md).
 
-## Preview Status
+## Get BatCave
 
-BatCave is ready for source-based testing and local preview builds.
+BatCave is currently a public preview. Download a packaged build from [GitHub Releases](https://github.com/TheGreenCedar/BatCave/releases), or run it from source.
 
-- Windows, Linux, and macOS native telemetry collectors are implemented.
-- The Tauri app can run as a native desktop shell or as a browser-only fixture UI for layout testing.
-- Windows bundles currently produce an unsigned executable and NSIS installer.
-- Linux builds produce `.deb` and AppImage bundles.
-- macOS builds produce one universal Apple Silicon/Intel DMG with a macOS 12 minimum.
-- The signed updater is implemented; Windows Authenticode release promotion remains gated on SignPath approval.
+You will need Node.js 24 and a current stable Rust toolchain. Linux also needs the native Tauri dependencies installed by `scripts/install-linux-deps.sh`. macOS development requires Apple Silicon, Xcode Command Line Tools, and the `aarch64-apple-darwin` Rust target.
 
-## Release Platform Support
+### macOS or Linux
 
-The canonical human-readable profile matrix is [Platform capabilities](docs/platform-capabilities.md), and the machine authority is the [version 1 platform support contract](docs/evidence/releases/platform-support-contract.v1.json). The declared release profiles are Windows 10 client `10.0.16299`+ on `x86_64` with NSIS; Ubuntu `22.04`+ and Debian `12`+ on `x86_64` glibc with deb and AppImage packages; and macOS `12.0`+ on universal `arm64` + `x86_64` with a DMG and updater archive. Every profile is `source_enforced`; `native_oldest_supported` remains `pending`. Hosted builds, metadata checks, and package inspection do not prove installation or runtime behavior on an oldest-supported host.
+```bash
+# Linux only
+bash scripts/install-linux-deps.sh
 
-## Try It
+cd src/BatCave.App
+npm install
+cd ../..
+bash scripts/run-dev.sh
+```
 
-Install prerequisites first:
+On macOS, add the target once with `rustup target add aarch64-apple-darwin`. To enable optional Linux process-network attribution, install the extra probe with `bash scripts/install-linux-deps.sh --with-bpftrace`.
 
-- Node.js 24
-- A current stable Rust toolchain
-- On Windows, Microsoft Edge WebView2 Evergreen Runtime. The NSIS bundle embeds Microsoft's Evergreen Standalone Installer, so installation works without network access when WebView2 is missing.
-- On Linux, the WebKitGTK/GTK/Tauri native packages installed by `scripts/install-linux-deps.sh`
-- On macOS, Xcode Command Line Tools. Universal bundles also require `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
-
-From the repository root on Windows:
+### Windows
 
 ```powershell
 cd src\BatCave.App
@@ -69,142 +72,49 @@ cd ..\..
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1
 ```
 
-Run only the browser UI with deterministic fixture telemetry:
+The Windows installer includes the WebView2 Evergreen runtime for offline installation. Public Windows artifacts remain unsigned while the Authenticode release gate is unresolved.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1 -WebOnly
-```
+## Build and verify
 
-From the repository root on Ubuntu 22.04, Debian 12, or newer releases within those declared profiles:
+Run the platform validation workflow from the repository root:
 
 ```bash
-bash scripts/install-linux-deps.sh
-cd src/BatCave.App
-npm install
-cd ../..
-bash scripts/run-dev.sh
-```
-
-Run the Linux browser-only fixture UI:
-
-```bash
-bash scripts/run-dev.sh --web-only
-```
-
-On macOS, the shared shell launcher detects Darwin and starts the native Mac build:
-
-```bash
-cd src/BatCave.App
-npm install
-cd ../..
-bash scripts/run-dev.sh
-```
-
-Use `bash scripts/run-dev.sh --web-only` only for deterministic layout work.
-
-## Validate And Build
-
-Run the full Windows validation workflow:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1
-```
-
-Run the Linux or macOS equivalent (Darwin builds the universal DMG unless `--skip-bundle` is supplied):
-
-```bash
+# macOS or Linux
 bash scripts/validate-tauri.sh
 ```
 
-For faster app-level checks from `src/BatCave.App`:
-
 ```powershell
-npm run verify
-npm run tauri -- dev
-npm run tauri -- build
+# Windows
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1
 ```
 
-On Linux, use:
+These workflows cover the frontend checks, Rust formatting and tests, and the native bundle. macOS produces an Apple Silicon build only.
 
-```bash
-npm run verify
-npm run tauri -- dev
-npm run tauri -- build
-```
+For deterministic layout work, use `bash scripts/run-dev.sh --web-only` or the Windows `-WebOnly` switch. Browser fixture mode does not exercise native collectors and is never acceptable as telemetry proof.
 
-On macOS, use:
+## Local by design
 
-```bash
-npm run verify
-npm run tauri -- dev
-npm run tauri -- build --target universal-apple-darwin
-```
+BatCave reads resource telemetry on your machine and keeps its settings, cache, and logs there. It has no analytics, telemetry upload, remote logging, or background update check. The manual **Check now** action is the only product-owned release lookup.
 
-Windows release builds emit the release executable and unsigned, offline-capable NSIS installer under `src/BatCave.App/src-tauri/target/release`. Windows validation and the protected release workflow verify the exact generated release `installer.nsi`: shared-shortcut callbacks return before every legacy inspection or mutation, the finish page exposes no shortcut control, and native retirement suppresses the stock path-based shared-shortcut cleanup while preserving Tauri's AppUserModelId cleanup. The installer embeds Microsoft's WebView2 Evergreen Standalone Installer. This adds roughly 127 MB to the artifact, avoids install-time network access, and leaves runtime security servicing with the Evergreen updater rather than pinning a fixed WebView2 version. BatCave does not publish a separate online-bootstrapper variant. Building the bundle can still download the Microsoft redistributable into Tauri's build cache; shipping and installation do not require that build-time connection. Distribution remains subject to the [Microsoft Edge WebView2 Runtime license](https://www.microsoft.com/software-download/webview2). Linux builds emit `.deb` and AppImage bundles under `src/BatCave.App/src-tauri/target/release/bundle`. Universal macOS output lands under `src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle`, including the `.app`, DMG, and release-only updater archive.
-
-The per-machine Windows installer creates no Public Desktop or all-users Start Menu shortcut. Instead, its native lifecycle provisioner owns the fixed machine App Paths registration for `batcave-monitor.exe`; Windows shares this key across WOW64 registry views. Install, migration, rollback, repair, and uninstall reject foreign or writable registry state and never infer a user profile. This supports shell activation but does not claim a visible Start/Search entry or pin. User-created pins and shortcuts remain user state, not installer authority, and `Win+R` guidance remains gated on exact-package native proof. See the [shared-shortcut and launch-surface decision](docs/decisions/0013-windows-shared-shortcut-retirement.md).
-
-## Privacy And Local Data
-
-BatCave is local-only by design. Do not add outbound tracking, remote logging, hosted collection, or surprise network dependencies.
-
-Runtime state, settings, warm cache, and logs stay under:
+Local state lives under:
 
 - Windows: `%LOCALAPPDATA%\BatCaveMonitor`
 - Linux: `$XDG_DATA_HOME/BatCaveMonitor` or `~/.local/share/BatCaveMonitor`
 - macOS: `~/Library/Application Support/BatCaveMonitor`
 
-Theme preference is stored in browser `localStorage` under `batcave.monitor.theme`.
+See [Current-user state](docs/current-user-state.md) for ownership, retention, permissions, and cleanup behavior.
 
-The [current-user state ownership and retention contract](docs/current-user-state.md) defines the owned files, permission checks, diagnostic limits, and safe cleanup boundary.
+## Project status
 
-## Platform Notes
+The native collectors, runtime store, desktop UI, packaging, updater, and cross-platform validation lanes are implemented. The support contract distinguishes source-enforced targets from native proof on the oldest supported hosts; those oldest-host claims are still pending. Release promotion also requires the signing, notarization, checksum, provenance, and public-artifact checks described in [Release channels and verification](docs/releases.md).
 
-- Windows per-process network attribution uses ETW over the kernel TCP/IP provider. If the kernel logger cannot start or access is denied, BatCave reports the reason and continues.
-- The Windows app starts with the invoking user's token and stays `asInvoker`. An installed collector service supplies protected telemetry; missing, stopped, incompatible, or unauthorized service states fall back visibly to standard-access collection without launch-time elevation. A copied release executable is reported as portable, development builds as development, and an NSIS install only when the executable directory matches Tauri's uninstall-registry location. Failed executable or registry probes are reported as unavailable instead of portable. The UI reports the Windows token state as unavailable when it cannot be read.
-- Linux aggregate telemetry uses `/proc` and `/sys`. Optional per-process network attribution uses owned `bpftrace`/eBPF probes when the host has the needed permissions or capabilities. It counts IPv4/IPv6 sockets only, excludes Unix-domain traffic, and marks a failed or missing collector unavailable rather than reporting zero. Install that optional tool with `bash scripts/install-linux-deps.sh --with-bpftrace`; the default dependency install does not require it.
-- macOS telemetry uses sysinfo plus local libproc process details and deduplicated IOKit physical block-driver counters. Disk images are excluded from host disk, host network includes loopback, and per-process network attribution and privileged collection are intentionally unavailable.
-- Browser fixture mode is for UI work. It is deterministic on purpose and is not proof of native collector behavior.
+## Documentation
 
-## Benchmarks
-
-Run a headless runtime benchmark:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark.ps1 -BenchmarkHost core -Platform x64 -Ticks 120 -SleepMs 1000
-```
-
-Capture a reusable benchmark baseline artifact:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-benchmark-baseline.ps1 -BenchmarkHost core -Platform x64
-```
-
-Run the strict regression gate with either a matching baseline artifact or an explicit p95 budget. The normal validation scripts keep their fast smoke check; this gate is for release/local performance validation and writes a report under `artifacts/benchmarks`.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -BaselineArtifactPath artifacts\benchmarks\baseline-core-YYYYMMDD-HHMMSS.json
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-benchmark-gate.ps1 -BenchmarkHost core -Platform x64 -MaxP95Ms 10000
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-tauri.ps1 -SkipBundle -BenchmarkGate -BenchmarkMaxP95Ms 10000
-```
-
-Linux and macOS equivalents are available at `scripts/run-benchmark.sh`, `scripts/capture-benchmark-baseline.sh`, and `scripts/run-benchmark-gate.sh`; the shared scripts detect the host and normalize Apple `arm64` to the public `aarch64` contract.
-
-Benchmark artifact format v4 measures the owned sampling engine's `refresh_now` command and protocol-v3 encoding/JSON serialization as separate phases in an isolated temporary data directory. Collection includes transform, sorting, and persistence; publication covers the immutable snapshot build and swap. It reports median collection, publication, serialization, and live-command p95 values; latency ceilings and baseline speed ratios gate `median_live_command_p95_ms`. Output carries `evidence_scope: core_runtime_host_only` and `whole_app_measured: false`, so it is not whole-app or process-tree evidence. The CLI flag remains `-SleepMs`/`--sleep-ms`, while the schema records it as `inter_command_delay_ms`. Samples must advance exactly once per measured command. Baseline artifacts include the commit, release-binary hash, machine class, workload, every repeat, and the component medians.
-
-The complete-remediation release comparison is preserved in [docs/evidence/benchmarks/remediation-20260710.json](docs/evidence/benchmarks/remediation-20260710.json), including source hashes, commit provenance, protocol settings, all repeats, and the strict gate result.
-
-## Continuous Integration
-
-Pull requests run Windows, Linux, dual-architecture macOS, and independent Linux package-transport validation. Pull requests restore Rust caches but never write them; pushes to `main` and manually dispatched validation runs seed reusable base-branch caches. The package lane keeps a separate release-profile cache and runs its live transport tests in release mode so they reuse the release dependency graph without caching workspace crates. Rust warning gates run before the longer test passes, and the Linux bundle-only transport tail runs in parallel with the main Linux job. Pull requests also reject newly introduced dependencies with moderate-or-higher advisories. Pushes to `main` and manual bundle runs produce Windows NSIS, Linux deb/AppImage, and ad-hoc-signed universal Mac artifacts retained for 14 days. The versioned release workflow produces 30-day dry-run artifacts or durable GitHub Releases with aligned versions, checksums, build provenance, and a Developer ID-signed/notarized/stapled Mac DMG. A separate Monday/manual audit runs `npm audit --omit=dev` and pinned `cargo-audit 0.22.2`.
-
-## More Documentation
-
-- [App runbook](src/BatCave.App/README.md) covers native/browser run modes, app scripts, and platform troubleshooting.
-- [Runtime telemetry](docs/runtime-telemetry.md) covers the Rust runtime store, native collectors, quality states, collector-service behavior, and benchmark surfaces.
-- [Platform capabilities](docs/platform-capabilities.md) is the canonical telemetry, scope, privilege, package, and CPU-architecture matrix.
-- [Release channels and verification](docs/releases.md) covers version alignment, stable/prerelease policy, checksums, provenance, and publication.
+- [App runbook](src/BatCave.App/README.md) — development modes, scripts, and platform troubleshooting
+- [Runtime telemetry](docs/runtime-telemetry.md) — collectors, quality states, runtime shaping, and benchmarks
+- [Platform capabilities](docs/platform-capabilities.md) — supported sources, scopes, permissions, packages, and architectures
+- [Release channels and verification](docs/releases.md) — versioning, signing, provenance, publication, and updater behavior
 
 ## Contributing
 
-Keep the app local, explicit, and boringly reliable. Match the existing Rust/Tauri/Svelte boundaries, preserve the snake_case JSON contracts, and run the narrowest meaningful verification before opening a PR.
+Keep the app local, explicit, and honest about missing data. Preserve the Rust/Tauri/Svelte boundaries and snake_case runtime contracts, add tests around credible failure boundaries, and run the narrowest validation that proves the change.

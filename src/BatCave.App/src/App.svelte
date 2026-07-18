@@ -221,11 +221,6 @@
       : selectedProcess
         ? processIcons[selectedProcess.exe || selectedProcess.name]
         : undefined;
-  $: processNetworkAvailable = processViewRows.some((row) => {
-    const quality =
-      row.kind === "group" ? row.detail.quality.network : row.detail.process.quality?.network;
-    return quality?.quality !== "unavailable";
-  });
   $: sourceLabel =
     snapshot.source === "batcave_runtime" ||
     snapshot.source === "tauri_runtime" ||
@@ -233,11 +228,9 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
-  $: visibleProcessColumns = processColumns
-    .filter((column) => column.key !== "network" || processNetworkAvailable)
-    .map((column) =>
-      column.key === "memory" ? { ...column, label: presentation.memoryLabel } : column,
-    );
+  $: visibleProcessColumns = processColumns.map((column) =>
+    column.key === "memory" ? { ...column, label: presentation.memoryLabel } : column,
+  );
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
@@ -1486,9 +1479,6 @@
     if (quality?.quality === "unavailable" || quality?.quality === "held" || quality?.quality === "partial") {
       return metricQualityLabel(quality, fallback);
     }
-    if (snapshot.health.degraded || snapshot.warnings.length > 0) {
-      return `Degraded / ${metricQualityLabel(quality, fallback)}`;
-    }
     return metricQualityLabel(quality, fallback);
   }
 
@@ -1502,7 +1492,6 @@
     if (quality?.quality === "unavailable" || quality?.quality === "held" || quality?.quality === "partial") {
       return metricQualityShortLabel(quality, fallback);
     }
-    if (snapshot.health.degraded || snapshot.warnings.length > 0) return "Degraded";
     return metricQualityShortLabel(quality, fallback);
   }
 

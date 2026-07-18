@@ -16,7 +16,7 @@ use crate::contracts::{
     ProcessMetricQuality, ProcessSample, RuntimeCollectorServiceStatus, RuntimeCollectorState,
     SystemMetricQuality, SystemMetricsSnapshot,
 };
-#[cfg(any(windows, target_os = "linux", test))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 use crate::network_attribution::NetworkAttributionSample;
 
 #[cfg(windows)]
@@ -27,7 +27,10 @@ use crate::{
     linux_system::LinuxSystemCollector,
 };
 #[cfg(target_os = "macos")]
-use crate::{macos_process::MacosProcessCollector, macos_system::MacosSystemCollector};
+use crate::{
+    macos_network::MacosNetworkAttribution, macos_process::MacosProcessCollector,
+    macos_system::MacosSystemCollector,
+};
 #[cfg(windows)]
 use crate::{
     windows_network::NetworkAttributionMonitor,
@@ -67,6 +70,8 @@ pub struct TelemetryCollector {
     macos_system: MacosSystemCollector,
     #[cfg(target_os = "macos")]
     macos_processes: MacosProcessCollector,
+    #[cfg(target_os = "macos")]
+    macos_network_attribution: MacosNetworkAttribution,
     #[cfg(windows)]
     previous_cpu_times: Option<windows_system::CpuTimes>,
     #[cfg(windows)]
@@ -126,6 +131,8 @@ impl TelemetryCollector {
             macos_system: MacosSystemCollector::new(),
             #[cfg(target_os = "macos")]
             macos_processes: MacosProcessCollector::new(),
+            #[cfg(target_os = "macos")]
+            macos_network_attribution: MacosNetworkAttribution::new(),
             #[cfg(windows)]
             previous_cpu_times: None,
             #[cfg(windows)]
@@ -175,6 +182,11 @@ impl TelemetryCollector {
         {
             let network_attribution = self.network_attribution_sample(&mut warnings);
             apply_network_attribution(&mut processes, network_attribution, MetricSource::Etw);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let network_attribution = self.macos_network_attribution_sample(&mut warnings);
+            apply_network_attribution(&mut processes, network_attribution, MetricSource::Nstat);
         }
 
         processes.sort_by(|left, right| {
@@ -280,7 +292,7 @@ fn collector_state(
         ]
         .into_iter()
         .flatten()
-        .any(|quality| quality.quality != MetricQuality::Native)
+        .any(metric_degrades_collector)
     });
     let process_limited = processes.iter().any(|process| {
         process.quality.as_ref().is_none_or(|quality| {
@@ -295,7 +307,7 @@ fn collector_state(
             ]
             .into_iter()
             .flatten()
-            .any(|quality| quality.quality != MetricQuality::Native)
+            .any(metric_degrades_collector)
         })
     });
 
@@ -304,6 +316,18 @@ fn collector_state(
     } else {
         RuntimeCollectorState::Limited
     }
+}
+
+fn metric_degrades_collector(quality: &MetricQualityInfo) -> bool {
+    quality.limitation_code.is_some_and(|limitation| {
+        matches!(
+            limitation,
+            MetricLimitationCode::CollectorFailure
+                | MetricLimitationCode::DataLoss
+                | MetricLimitationCode::MissingMetadata
+                | MetricLimitationCode::NumericRange
+        )
+    }) || (quality.quality == MetricQuality::Unavailable && quality.limitation_code.is_none())
 }
 
 fn sysinfo_refresh_kind() -> RefreshKind {
@@ -520,6 +544,18 @@ impl TelemetryCollector {
         let sample = self.linux_network_attribution.sample();
         if let NetworkAttributionSample::Failed(message) = &sample {
             warnings.push(format!("linux_network_attribution_failed:{message}"));
+        }
+        sample
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_network_attribution_sample(
+        &mut self,
+        warnings: &mut Vec<String>,
+    ) -> NetworkAttributionSample {
+        let sample = self.macos_network_attribution.sample();
+        if let NetworkAttributionSample::Failed(message) = &sample {
+            warnings.push(format!("macos_network_attribution_failed:{message}"));
         }
         sample
     }
@@ -865,7 +901,7 @@ enum NetworkAttributionState {
     ServiceReady(Box<NetworkAttributionMonitor>),
 }
 
-#[cfg(any(windows, target_os = "linux", test))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 fn apply_network_attribution(
     processes: &mut [ProcessSample],
     attribution: NetworkAttributionSample,
@@ -938,7 +974,7 @@ fn apply_network_attribution(
     }
 }
 
-#[cfg(any(windows, target_os = "linux", test))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 fn process_quality(process: &mut ProcessSample) -> &mut ProcessMetricQuality {
     process
         .quality
@@ -964,6 +1000,39 @@ mod tests {
     use super::*;
     use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
     use std::collections::HashMap;
+
+    #[test]
+    fn collector_health_separates_expected_coverage_gaps_from_failures() {
+        for limitation in [
+            MetricLimitationCode::UnsupportedMetric,
+            MetricLimitationCode::AccessDenied,
+            MetricLimitationCode::AuthorizationScope,
+            MetricLimitationCode::PartialCoverage,
+            MetricLimitationCode::PendingBaseline,
+            MetricLimitationCode::HeldValue,
+            MetricLimitationCode::GroupPartialCoverage,
+        ] {
+            let quality = MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Runtime)
+                .with_limitation(limitation, "Expected platform coverage gap.");
+            assert!(!metric_degrades_collector(&quality), "{limitation:?}");
+        }
+
+        for limitation in [
+            MetricLimitationCode::CollectorFailure,
+            MetricLimitationCode::DataLoss,
+            MetricLimitationCode::MissingMetadata,
+            MetricLimitationCode::NumericRange,
+        ] {
+            let quality = MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Runtime)
+                .with_limitation(limitation, "Operational collector failure.");
+            assert!(metric_degrades_collector(&quality), "{limitation:?}");
+        }
+
+        assert!(metric_degrades_collector(&MetricQualityInfo::new(
+            MetricQuality::Unavailable,
+            MetricSource::Runtime,
+        )));
+    }
 
     #[test]
     fn sysinfo_fallback_marks_physical_disk_unavailable_for_native_collector_failures() {
@@ -1303,6 +1372,7 @@ mod tests {
         let first = collector
             .collect()
             .expect("macOS baseline telemetry sample");
+        assert_eq!(first.collector_state, RuntimeCollectorState::Healthy);
         let first_disk = first
             .system
             .quality
@@ -1316,7 +1386,24 @@ mod tests {
             Some(MetricLimitationCode::PendingBaseline)
         );
 
-        let sample = collector.collect().expect("macOS telemetry sample");
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let sample = loop {
+            let sample = collector.collect().expect("macOS telemetry sample");
+            let current_pid = std::process::id().to_string();
+            let network_ready = sample.processes.iter().any(|process| {
+                process.pid == current_pid
+                    && process
+                        .quality
+                        .as_ref()
+                        .and_then(|quality| quality.network.as_ref())
+                        .is_some_and(|quality| quality.quality == MetricQuality::Native)
+            });
+            if network_ready || Instant::now() >= deadline {
+                break sample;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert_eq!(sample.collector_state, RuntimeCollectorState::Healthy);
 
         assert!(sample.system.memory_available_bytes.is_some());
         let system_quality = sample.system.quality.as_ref().expect("system quality");
@@ -1354,10 +1441,14 @@ mod tests {
         );
         assert_eq!(
             quality.network.as_ref().map(|quality| quality.quality),
-            Some(MetricQuality::Unavailable)
+            Some(MetricQuality::Native)
         );
-        assert_eq!(current.network_received_bps, None);
-        assert_eq!(current.network_transmitted_bps, None);
+        assert_eq!(
+            quality.network.as_ref().and_then(|quality| quality.source),
+            Some(MetricSource::Nstat)
+        );
+        assert!(current.network_received_bps.is_some());
+        assert!(current.network_transmitted_bps.is_some());
     }
 
     fn sample_process(pid: &str) -> ProcessSample {

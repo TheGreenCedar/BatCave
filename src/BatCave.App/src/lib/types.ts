@@ -127,6 +127,7 @@ export type MetricSource =
   | "sysinfo"
   | "runtime"
   | "etw"
+  | "nstat"
   | "procfs"
   | "ebpf"
   | "fixture";
