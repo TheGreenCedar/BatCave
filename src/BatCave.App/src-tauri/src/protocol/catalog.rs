@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::LazyLock};
+
 use super::types::{
     LimitationCode, LimitationEntry, MeasurementDescriptor, MetricObservation, MetricQualityV3,
     MetricScope, MetricSemantic, MetricSourceV3, MetricUnit, NetworkScopeV3,
@@ -14,75 +16,392 @@ pub const QUALITY_CODES: [MetricQualityV3; 5] = [
 
 const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SemanticDefinition {
+    pub semantic: MetricSemantic,
+    pub scope: MetricScope,
     pub unit: MetricUnit,
     pub sampled_over_interval: bool,
+    pub network_scope: NetworkScopePolicy,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkScopePolicy {
+    pub default: Option<NetworkScopeV3>,
+    pub sysinfo: Option<NetworkScopeV3>,
+}
+
+impl NetworkScopePolicy {
+    const NONE: Self = Self {
+        default: None,
+        sysinfo: None,
+    };
+    const SYSTEM_INTERFACE: Self = Self {
+        default: Some(NetworkScopeV3::NonLoopbackInterfaceAggregate),
+        sysinfo: Some(NetworkScopeV3::AllInterfaceAggregate),
+    };
+    const IP_SOCKET_PAYLOAD: Self = Self {
+        default: Some(NetworkScopeV3::IpSocketPayload),
+        sysinfo: Some(NetworkScopeV3::IpSocketPayload),
+    };
+
+    fn resolve(self, source: MetricSourceV3) -> Option<NetworkScopeV3> {
+        match source {
+            MetricSourceV3::Unknown => None,
+            MetricSourceV3::Sysinfo => self.sysinfo,
+            _ => self.default,
+        }
+    }
+}
+
+const fn semantic(
+    semantic: MetricSemantic,
+    scope: MetricScope,
+    unit: MetricUnit,
+    network_scope: NetworkScopePolicy,
+) -> SemanticDefinition {
+    SemanticDefinition {
+        semantic,
+        scope,
+        unit,
+        sampled_over_interval: matches!(
+            unit,
+            MetricUnit::PercentOneCore | MetricUnit::PercentSystem | MetricUnit::BytesPerSecond
+        ),
+        network_scope,
+    }
+}
+
+/// Canonical descriptor policy for both the Rust writer and generated TypeScript reader.
+pub const SEMANTIC_DEFINITIONS: &[SemanticDefinition] = &[
+    semantic(
+        MetricSemantic::CpuUsage,
+        MetricScope::System,
+        MetricUnit::PercentSystem,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelCpuUsage,
+        MetricScope::System,
+        MetricUnit::PercentSystem,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::LogicalCpuUsage,
+        MetricScope::System,
+        MetricUnit::PercentSystem,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::CpuUsage,
+        MetricScope::Process,
+        MetricUnit::PercentOneCore,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelCpuUsage,
+        MetricScope::Process,
+        MetricUnit::PercentOneCore,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::CpuUsage,
+        MetricScope::Group,
+        MetricUnit::PercentOneCore,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::MemoryUsed,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::MemoryCapacity,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::MemoryAvailable,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::SwapUsed,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::SwapCapacity,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::ProcessWorkingSetMemory,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::ProcessPrivateMemory,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::CommitUsed,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::CommitLimit,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::SystemCache,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelMemory,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelPagedPool,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelNonpagedPool,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelPoolBytes,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::PhysicalDiskReadTotal,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::PhysicalDiskWriteTotal,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::NetworkReceiveTotal,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::SYSTEM_INTERFACE,
+    ),
+    semantic(
+        MetricSemantic::NetworkTransmitTotal,
+        MetricScope::System,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::SYSTEM_INTERFACE,
+    ),
+    semantic(
+        MetricSemantic::ResidentMemory,
+        MetricScope::Process,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::PrivateMemory,
+        MetricScope::Process,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::VirtualMemory,
+        MetricScope::Process,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::ReadIoTotal,
+        MetricScope::Process,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::WriteIoTotal,
+        MetricScope::Process,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::OtherIoTotal,
+        MetricScope::Process,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::ResidentMemory,
+        MetricScope::Group,
+        MetricUnit::Bytes,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::PhysicalDiskReadRate,
+        MetricScope::System,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::PhysicalDiskWriteRate,
+        MetricScope::System,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::NetworkReceiveRate,
+        MetricScope::System,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::SYSTEM_INTERFACE,
+    ),
+    semantic(
+        MetricSemantic::NetworkTransmitRate,
+        MetricScope::System,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::SYSTEM_INTERFACE,
+    ),
+    semantic(
+        MetricSemantic::ReadIoRate,
+        MetricScope::Process,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::WriteIoRate,
+        MetricScope::Process,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::OtherIoRate,
+        MetricScope::Process,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::NetworkReceiveRate,
+        MetricScope::Process,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::IP_SOCKET_PAYLOAD,
+    ),
+    semantic(
+        MetricSemantic::NetworkTransmitRate,
+        MetricScope::Process,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::IP_SOCKET_PAYLOAD,
+    ),
+    semantic(
+        MetricSemantic::ReadWriteIoRate,
+        MetricScope::Group,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::OtherIoRate,
+        MetricScope::Group,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::NetworkRate,
+        MetricScope::Group,
+        MetricUnit::BytesPerSecond,
+        NetworkScopePolicy::IP_SOCKET_PAYLOAD,
+    ),
+    semantic(
+        MetricSemantic::ProcessCount,
+        MetricScope::System,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::DeniedProcessCount,
+        MetricScope::System,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::PartialProcessCount,
+        MetricScope::System,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelPoolAllocations,
+        MetricScope::System,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::KernelPoolFrees,
+        MetricScope::System,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::ThreadCount,
+        MetricScope::Process,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::HandleCount,
+        MetricScope::Process,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+    semantic(
+        MetricSemantic::ThreadCount,
+        MetricScope::Group,
+        MetricUnit::Count,
+        NetworkScopePolicy::NONE,
+    ),
+];
+
+static SEMANTIC_DEFINITION_INDEX: LazyLock<
+    HashMap<(MetricScope, MetricSemantic), SemanticDefinition>,
+> = LazyLock::new(|| {
+    let index = SEMANTIC_DEFINITIONS
+        .iter()
+        .map(|definition| ((definition.scope, definition.semantic), *definition))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        index.len(),
+        SEMANTIC_DEFINITIONS.len(),
+        "runtime protocol semantic policy contains duplicate keys"
+    );
+    index
+});
 
 pub fn semantic_definition(
     semantic: MetricSemantic,
     scope: MetricScope,
 ) -> Option<SemanticDefinition> {
-    use MetricScope::{Group, Process, System};
-    use MetricSemantic::*;
-    use MetricUnit::{Bytes, BytesPerSecond, Count, PercentOneCore, PercentSystem};
-
-    let unit = match (scope, semantic) {
-        (System, CpuUsage | KernelCpuUsage | LogicalCpuUsage) => PercentSystem,
-        (Process | Group, CpuUsage) | (Process, KernelCpuUsage) => PercentOneCore,
-        (
-            System,
-            MemoryUsed
-            | MemoryCapacity
-            | MemoryAvailable
-            | SwapUsed
-            | SwapCapacity
-            | ProcessWorkingSetMemory
-            | ProcessPrivateMemory
-            | CommitUsed
-            | CommitLimit
-            | SystemCache
-            | KernelMemory
-            | KernelPagedPool
-            | KernelNonpagedPool
-            | KernelPoolBytes
-            | PhysicalDiskReadTotal
-            | PhysicalDiskWriteTotal
-            | NetworkReceiveTotal
-            | NetworkTransmitTotal,
-        )
-        | (
-            Process,
-            ResidentMemory | PrivateMemory | VirtualMemory | ReadIoTotal | WriteIoTotal
-            | OtherIoTotal,
-        )
-        | (Group, ResidentMemory) => Bytes,
-        (
-            System,
-            PhysicalDiskReadRate | PhysicalDiskWriteRate | NetworkReceiveRate | NetworkTransmitRate,
-        )
-        | (
-            Process,
-            ReadIoRate | WriteIoRate | OtherIoRate | NetworkReceiveRate | NetworkTransmitRate,
-        )
-        | (Group, ReadWriteIoRate | OtherIoRate | NetworkRate) => BytesPerSecond,
-        (
-            System,
-            ProcessCount
-            | DeniedProcessCount
-            | PartialProcessCount
-            | KernelPoolAllocations
-            | KernelPoolFrees,
-        )
-        | (Process, ThreadCount | HandleCount)
-        | (Group, ThreadCount) => Count,
-        _ => return None,
-    };
-    Some(SemanticDefinition {
-        unit,
-        sampled_over_interval: matches!(unit, PercentOneCore | PercentSystem | BytesPerSecond),
-    })
+    SEMANTIC_DEFINITION_INDEX.get(&(scope, semantic)).copied()
 }
 
 pub fn network_scope_definition(
@@ -90,28 +409,8 @@ pub fn network_scope_definition(
     scope: MetricScope,
     source: MetricSourceV3,
 ) -> Option<NetworkScopeV3> {
-    use MetricScope::{Group, Process, System};
-    use MetricSemantic::{
-        NetworkRate, NetworkReceiveRate, NetworkReceiveTotal, NetworkTransmitRate,
-        NetworkTransmitTotal,
-    };
-    if source == MetricSourceV3::Unknown {
-        return None;
-    }
-    match (scope, semantic) {
-        (
-            System,
-            NetworkReceiveTotal | NetworkTransmitTotal | NetworkReceiveRate | NetworkTransmitRate,
-        ) if source == MetricSourceV3::Sysinfo => Some(NetworkScopeV3::AllInterfaceAggregate),
-        (
-            System,
-            NetworkReceiveTotal | NetworkTransmitTotal | NetworkReceiveRate | NetworkTransmitRate,
-        ) => Some(NetworkScopeV3::NonLoopbackInterfaceAggregate),
-        (Process, NetworkReceiveRate | NetworkTransmitRate) | (Group, NetworkRate) => {
-            Some(NetworkScopeV3::IpSocketPayload)
-        }
-        _ => None,
-    }
+    semantic_definition(semantic, scope)
+        .and_then(|definition| definition.network_scope.resolve(source))
 }
 
 #[derive(Debug, Clone, Copy)]

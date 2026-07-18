@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import type {
-  MetricSemantic,
-  ProtocolEnvelope,
-  RuntimeSnapshotPayloadV3,
-  WorkloadDetailV3,
+import {
+  RUNTIME_PROTOCOL_POLICY,
+  type MetricSemantic,
+  type ProtocolEnvelope,
+  type RuntimeSnapshotPayloadV3,
+  type WorkloadDetailV3,
 } from "../src/lib/generated/runtime-protocol-v3.ts";
 import {
   canonicalKernelPoolStableId,
@@ -22,6 +23,24 @@ const incompatible = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/inco
 const transitions = fixtureArray(
   "../src-tauri/src/fixtures/runtime-protocol-v3/quality-transitions.json",
 );
+
+test("generated semantic policy is complete, unique, and internally coherent", () => {
+  assert.deepEqual(RUNTIME_PROTOCOL_POLICY.quality_codes, [
+    "native",
+    "estimated",
+    "held",
+    "partial",
+    "unavailable",
+  ]);
+  assert.equal(RUNTIME_PROTOCOL_POLICY.semantic_definitions.length, 51);
+  const keys = new Set<string>();
+  const intervalUnits = new Set(["percent_one_core", "percent_system", "bytes_per_second"]);
+  for (const definition of RUNTIME_PROTOCOL_POLICY.semantic_definitions) {
+    assert.equal(keys.has(`${definition.scope}:${definition.semantic}`), false);
+    keys.add(`${definition.scope}:${definition.semantic}`);
+    assert.equal(definition.sampled_over_interval, intervalUnits.has(definition.unit));
+  }
+});
 
 test("production fixture validates and preserves workload identity and order", () => {
   const decoded = decodeProtocolEnvelope(windows);

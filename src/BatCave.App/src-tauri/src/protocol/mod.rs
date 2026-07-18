@@ -25,7 +25,7 @@ pub(crate) fn release_identity() -> RuntimeReleaseIdentityV3 {
 mod tests {
     use std::path::Path;
 
-    use super::catalog::{CatalogBuilder, MetricDefinition, QUALITY_CODES};
+    use super::catalog::{CatalogBuilder, MetricDefinition, QUALITY_CODES, SEMANTIC_DEFINITIONS};
     use super::types::*;
     use super::{encode::encode_snapshot_at, encode_snapshot, validate::validate_envelope};
     use crate::contracts::{
@@ -45,6 +45,29 @@ mod tests {
         SystemMetricQuality,
     };
     use ts_rs::{Config, TS};
+
+    fn generated_protocol_policy() -> String {
+        let semantic_definitions = SEMANTIC_DEFINITIONS
+            .iter()
+            .map(|definition| {
+                serde_json::json!({
+                    "semantic": definition.semantic,
+                    "scope": definition.scope,
+                    "unit": definition.unit,
+                    "sampled_over_interval": definition.sampled_over_interval,
+                    "network_scope": {
+                        "default": definition.network_scope.default,
+                        "sysinfo": definition.network_scope.sysinfo,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string_pretty(&serde_json::json!({
+            "quality_codes": QUALITY_CODES,
+            "semantic_definitions": semantic_definitions,
+        }))
+        .expect("serialize runtime protocol policy")
+    }
 
     fn generated_typescript() -> String {
         let config = Config::default();
@@ -115,8 +138,9 @@ mod tests {
         ]
         .map(|declaration| declaration.replacen("type ", "export type ", 1));
         format!(
-            "// Generated from the production Rust protocol; do not edit by hand.\nexport const RUNTIME_PROTOCOL_VERSION = 3 as const;\n\n{}\n",
-            declarations.join("\n\n")
+            "// Generated from the production Rust protocol; do not edit by hand.\nexport const RUNTIME_PROTOCOL_VERSION = 3 as const;\n\nexport const RUNTIME_PROTOCOL_POLICY = {} as const;\n\n{}\n",
+            generated_protocol_policy(),
+            declarations.join("\n\n"),
         )
     }
 
@@ -136,6 +160,57 @@ mod tests {
         assert_eq!(
             generated_typescript(),
             include_str!("../../../src/lib/generated/runtime-protocol-v3.ts")
+        );
+    }
+
+    #[test]
+    fn semantic_policy_is_unique_and_internally_consistent() {
+        let mut keys = std::collections::BTreeSet::new();
+        let mut covered_semantics = std::collections::BTreeSet::new();
+        for definition in SEMANTIC_DEFINITIONS {
+            assert!(
+                keys.insert((definition.scope, definition.semantic)),
+                "duplicate semantic policy for {:?}:{:?}",
+                definition.scope,
+                definition.semantic
+            );
+            assert_eq!(
+                definition.sampled_over_interval,
+                matches!(
+                    definition.unit,
+                    MetricUnit::PercentOneCore
+                        | MetricUnit::PercentSystem
+                        | MetricUnit::BytesPerSecond
+                ),
+                "interval policy disagrees with the metric unit"
+            );
+            assert_eq!(
+                super::catalog::network_scope_definition(
+                    definition.semantic,
+                    definition.scope,
+                    MetricSourceV3::Unknown,
+                ),
+                None,
+                "unknown sources must never claim a network scope"
+            );
+            covered_semantics.insert(
+                serde_json::to_value(definition.semantic)
+                    .expect("serialize metric semantic")
+                    .as_str()
+                    .expect("metric semantic serializes as a string")
+                    .to_string(),
+            );
+        }
+        assert_eq!(keys.len(), 51, "semantic policy changed without review");
+        let declared_semantics = MetricSemantic::decl(&Config::default())
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            covered_semantics, declared_semantics,
+            "every wire semantic must have at least one policy definition"
         );
     }
 

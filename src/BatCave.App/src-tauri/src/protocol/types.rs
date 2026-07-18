@@ -528,7 +528,7 @@ pub enum MetricSemantic {
     HandleCount,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
 pub enum MetricScope {
