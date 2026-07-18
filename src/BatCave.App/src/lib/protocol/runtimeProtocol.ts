@@ -1,9 +1,8 @@
 import {
+  RUNTIME_PROTOCOL_POLICY,
   RUNTIME_PROTOCOL_VERSION,
-  type MetricQualityV3,
   type MetricScope,
   type MetricSemantic,
-  type MetricUnit,
   type NetworkScopeV3,
   type RuntimeSnapshotPayloadV3,
 } from "../generated/runtime-protocol-v3.ts";
@@ -19,54 +18,8 @@ export type ProtocolDecodeResult =
   | { kind: "snapshot"; payload: RuntimeSnapshotPayloadV3 }
   | { kind: "protocol_mismatch"; mismatch: ProtocolMismatchView };
 
-const qualityCodes: MetricQualityV3[] = ["native", "estimated", "held", "partial", "unavailable"];
-const scopes = new Set<MetricScope>(["system", "process", "group"]);
-const semantics = new Set<MetricSemantic>([
-  "cpu_usage",
-  "kernel_cpu_usage",
-  "logical_cpu_usage",
-  "resident_memory",
-  "private_memory",
-  "virtual_memory",
-  "memory_used",
-  "memory_capacity",
-  "memory_available",
-  "swap_used",
-  "swap_capacity",
-  "process_working_set_memory",
-  "process_private_memory",
-  "denied_process_count",
-  "partial_process_count",
-  "commit_used",
-  "commit_limit",
-  "system_cache",
-  "kernel_memory",
-  "kernel_paged_pool",
-  "kernel_nonpaged_pool",
-  "kernel_pool_bytes",
-  "kernel_pool_allocations",
-  "kernel_pool_frees",
-  "physical_disk_read_total",
-  "physical_disk_write_total",
-  "physical_disk_read_rate",
-  "physical_disk_write_rate",
-  "read_io_total",
-  "write_io_total",
-  "other_io_total",
-  "read_io_rate",
-  "write_io_rate",
-  "other_io_rate",
-  "read_write_io_rate",
-  "network_receive_total",
-  "network_transmit_total",
-  "network_receive_rate",
-  "network_transmit_rate",
-  "network_rate",
-  "process_count",
-  "thread_count",
-  "handle_count",
-]);
-const units = new Set(["percent_one_core", "percent_system", "bytes", "bytes_per_second", "count"]);
+// Shape checks stay local to this reader; shared catalog policy comes from the Rust writer.
+const qualityCodes = RUNTIME_PROTOCOL_POLICY.quality_codes;
 const sources = new Set([
   "unknown",
   "direct_api",
@@ -168,107 +121,12 @@ const persistenceOperations = new Set([
   "remove",
   "permissions",
 ]);
-const semanticDefinitions = new Map<
-  string,
-  { unit: MetricUnit; sampledOverInterval: boolean; networkScope: NetworkScopeV3 | null }
->();
-
-function defineSemantics(
-  scope: MetricScope,
-  unit: MetricUnit,
-  semantics: MetricSemantic[],
-  networkScope: NetworkScopeV3 | null = null,
-): void {
-  const sampledOverInterval = ["percent_one_core", "percent_system", "bytes_per_second"].includes(
-    unit,
-  );
-  for (const semantic of semantics) {
-    semanticDefinitions.set(`${scope}:${semantic}`, {
-      unit,
-      sampledOverInterval,
-      networkScope,
-    });
-  }
-}
-
-defineSemantics("system", "percent_system", ["cpu_usage", "kernel_cpu_usage", "logical_cpu_usage"]);
-defineSemantics("process", "percent_one_core", ["cpu_usage", "kernel_cpu_usage"]);
-defineSemantics("group", "percent_one_core", ["cpu_usage"]);
-defineSemantics("system", "bytes", [
-  "memory_used",
-  "memory_capacity",
-  "memory_available",
-  "swap_used",
-  "swap_capacity",
-  "process_working_set_memory",
-  "process_private_memory",
-  "commit_used",
-  "commit_limit",
-  "system_cache",
-  "kernel_memory",
-  "kernel_paged_pool",
-  "kernel_nonpaged_pool",
-  "kernel_pool_bytes",
-  "physical_disk_read_total",
-  "physical_disk_write_total",
-  "network_receive_total",
-  "network_transmit_total",
-]);
-defineSemantics("process", "bytes", [
-  "resident_memory",
-  "private_memory",
-  "virtual_memory",
-  "read_io_total",
-  "write_io_total",
-  "other_io_total",
-]);
-defineSemantics("group", "bytes", ["resident_memory"]);
-defineSemantics("system", "bytes_per_second", [
-  "physical_disk_read_rate",
-  "physical_disk_write_rate",
-  "network_receive_rate",
-  "network_transmit_rate",
-]);
-defineSemantics("process", "bytes_per_second", [
-  "read_io_rate",
-  "write_io_rate",
-  "other_io_rate",
-  "network_receive_rate",
-  "network_transmit_rate",
-]);
-defineSemantics("group", "bytes_per_second", [
-  "read_write_io_rate",
-  "other_io_rate",
-  "network_rate",
-]);
-defineSemantics("system", "count", [
-  "process_count",
-  "denied_process_count",
-  "partial_process_count",
-  "kernel_pool_allocations",
-  "kernel_pool_frees",
-]);
-defineSemantics("process", "count", ["thread_count", "handle_count"]);
-defineSemantics("group", "count", ["thread_count"]);
-defineSemantics(
-  "system",
-  "bytes",
-  ["network_receive_total", "network_transmit_total"],
-  "non_loopback_interface_aggregate",
+const semanticDefinitions = new Map(
+  RUNTIME_PROTOCOL_POLICY.semantic_definitions.map((definition) => [
+    `${definition.scope}:${definition.semantic}`,
+    definition,
+  ]),
 );
-defineSemantics(
-  "system",
-  "bytes_per_second",
-  ["network_receive_rate", "network_transmit_rate"],
-  "non_loopback_interface_aggregate",
-);
-defineSemantics(
-  "process",
-  "bytes_per_second",
-  ["network_receive_rate", "network_transmit_rate"],
-  "ip_socket_payload",
-);
-defineSemantics("group", "bytes_per_second", ["network_rate"], "ip_socket_payload");
 
 export function decodeProtocolEnvelope(input: unknown): ProtocolDecodeResult {
   if (!isRecord(input))
@@ -561,13 +419,10 @@ function validatePayload(input: unknown): string | null {
     const definition = isRecord(descriptor)
       ? semanticDefinitions.get(`${descriptor.scope}:${descriptor.semantic}`)
       : undefined;
-    const requiresInterval = definition?.sampledOverInterval ?? false;
+    const requiresInterval = definition?.sampled_over_interval ?? false;
     if (
       !isRecord(descriptor) ||
       descriptor.id !== index ||
-      !semantics.has(descriptor.semantic) ||
-      !scopes.has(descriptor.scope) ||
-      !units.has(descriptor.unit) ||
       !sources.has(descriptor.source) ||
       !definition ||
       descriptor.unit !== definition.unit ||
@@ -1122,26 +977,20 @@ function validateQualityLimitation(
   limitationIndex: unknown,
   payload: Record<string, any>,
 ): string | null {
-  if (!qualityCodes.some((candidate) => candidate === quality)) return "quality code is unknown.";
   if (!validIndex(limitationIndex, payload.limitations.length))
     return "quality limitation index is invalid.";
+  const policy = RUNTIME_PROTOCOL_POLICY.quality_limitation_policies.find(
+    (candidate) => candidate.quality === quality,
+  );
+  if (!policy || !qualityCodes.some((candidate) => candidate === quality))
+    return "quality code is unknown.";
   const code =
     limitationIndex === null ? null : (payload.limitations[limitationIndex]?.code ?? null);
-  if ((quality === "held" || quality === "partial" || quality === "unavailable") && code === null)
-    return "quality requires a typed explanation.";
+  if (policy.requires_limitation && code === null) return "quality requires a typed explanation.";
   const valid =
-    quality === "native"
-      ? code === null
-      : quality === "estimated"
-        ? code !== "pending_baseline" && code !== "held_value" && code !== "group_partial_coverage"
-        : quality === "held"
-          ? code === "pending_baseline" || code === "held_value"
-          : quality === "partial"
-            ? code !== null &&
-              code !== "pending_baseline" &&
-              code !== "held_value" &&
-              code !== "numeric_range"
-            : code !== null && code !== "pending_baseline" && code !== "held_value";
+    code === null
+      ? !policy.requires_limitation
+      : policy.allowed_codes.some((candidate) => candidate === code);
   return valid ? null : "quality and limitation code contradict each other.";
 }
 
@@ -1179,20 +1028,8 @@ function networkScopeDefinition(
   source: string,
 ): NetworkScopeV3 | null {
   if (source === "unknown") return null;
-  const systemNetwork = [
-    "network_receive_total",
-    "network_transmit_total",
-    "network_receive_rate",
-    "network_transmit_rate",
-  ].includes(semantic);
-  if (scope === "system" && systemNetwork)
-    return source === "sysinfo" ? "all_interface_aggregate" : "non_loopback_interface_aggregate";
-  if (
-    (scope === "process" && ["network_receive_rate", "network_transmit_rate"].includes(semantic)) ||
-    (scope === "group" && semantic === "network_rate")
-  )
-    return "ip_socket_payload";
-  return null;
+  const definition = semanticDefinitions.get(`${scope}:${semantic}`);
+  return definition?.network_scope[source === "sysinfo" ? "sysinfo" : "default"] ?? null;
 }
 
 function validProcessId(value: string, sampleSeq: number): boolean {

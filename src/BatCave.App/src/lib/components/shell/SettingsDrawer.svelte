@@ -12,6 +12,7 @@
   export let pollIntervalMs: number;
   export let historyPointOptions: readonly number[];
   export let historyPointLimit: number;
+  export let commandError = "";
   export let adminAvailable = true;
   export let runtimeMutationsDisabled = false;
   export let processStatus = "Standard token";
@@ -151,6 +152,9 @@
               {/each}
             </select>
           </label>
+          {#if commandError}
+            <p class="command-error" role="alert">{commandError}</p>
+          {/if}
         </section>
 
         {#if adminAvailable}

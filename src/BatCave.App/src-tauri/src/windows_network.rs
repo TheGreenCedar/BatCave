@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 #[cfg(windows)]
 use crate::collector_service::etw_lease::{EtwSessionIdentityV1, EtwSessionObservation};
-use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
+use crate::network_attribution::{
+    NetworkAttributionSample, ObservedProcessGeneration, ProcessNetworkRates,
+};
 
 #[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -390,7 +392,7 @@ mod windows_impl {
     use super::{
         apply_network_event, classify_direction, first_matching_property, rate_map_from_deltas,
         EtwHealthSnapshot, EtwQualityDecision, EtwQualityTracker, EtwSessionStatistics,
-        NetworkAttributionSample, NetworkByteCounters, NetworkDirection,
+        NetworkAttributionSample, NetworkByteCounters, NetworkDirection, ObservedProcessGeneration,
     };
     use crate::collector_service::etw_lease::{EtwSessionIdentityV1, EtwSessionObservation};
 
@@ -561,7 +563,10 @@ mod windows_impl {
             let elapsed_seconds = now.duration_since(*previous_sample_at).as_secs_f64();
             *previous_sample_at = now;
 
-            let rates_by_pid = rate_map_from_deltas(&current, &HashMap::new(), elapsed_seconds);
+            let rates_by_process = rate_map_from_deltas(&current, &HashMap::new(), elapsed_seconds)
+                .into_iter()
+                .map(|(pid, rates)| (ObservedProcessGeneration::pid_only(pid), rates))
+                .collect();
             let session_statistics = query_trace_statistics(
                 self.trace_handle,
                 &self.session_name,
@@ -589,12 +594,12 @@ mod windows_impl {
             };
 
             match decision {
-                EtwQualityDecision::Native => NetworkAttributionSample::Ready { rates_by_pid },
+                EtwQualityDecision::Native => NetworkAttributionSample::Ready { rates_by_process },
                 EtwQualityDecision::PendingBaseline => NetworkAttributionSample::PendingBaseline(
                     "Waiting for a supported ETW process-network event baseline.".to_string(),
                 ),
                 EtwQualityDecision::DataLoss(message) => NetworkAttributionSample::Partial {
-                    rates_by_pid,
+                    rates_by_process,
                     message,
                 },
                 EtwQualityDecision::Unavailable(message) => {

@@ -277,6 +277,10 @@ impl ClientTransport for WindowsServiceTransport {
         self.write_request(request)?;
         self.read_response()
     }
+
+    fn reconnect(&self) -> Result<Self, ClientFailure> {
+        Self::connect()
+    }
 }
 
 fn verify_service_peer(

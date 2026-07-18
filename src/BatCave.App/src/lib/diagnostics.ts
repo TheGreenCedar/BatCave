@@ -7,6 +7,7 @@ import type {
 
 export type DiagnosticAction = "enable" | "retry";
 export type DiagnosticPollState = "starting" | "native" | "fixture" | "error";
+export type DiagnosticOverviewLabel = "Healthy" | "Limited" | "Stale" | "Waiting" | "Recovering";
 
 export interface NativeLifecycleDiagnosticLabels {
   standardFallback: "Current" | "Paused" | "Stale" | "No sample" | "Not active";
@@ -49,6 +50,23 @@ export function nativeLifecycleDiagnosticLabels(
         ? "Disabled"
         : "Not verified",
   };
+}
+
+export function windowsLifecycleDiagnosticsVisible(snapshot: RuntimeSnapshot): boolean {
+  return snapshot.environment.platform === "windows";
+}
+
+export function diagnosticOverviewLabel(
+  pollState: DiagnosticPollState,
+  adminState: RuntimeAdminModeStatus["state"],
+  healthDegraded: boolean,
+  activeIssueCount: number,
+  qualityGuidanceCount: number,
+): DiagnosticOverviewLabel {
+  if (pollState === "error") return "Stale";
+  if (adminState === "requesting") return "Waiting";
+  if (adminState === "recovering") return "Recovering";
+  return healthDegraded || activeIssueCount > 0 || qualityGuidanceCount > 0 ? "Limited" : "Healthy";
 }
 
 export function currentDiagnosticIssues(

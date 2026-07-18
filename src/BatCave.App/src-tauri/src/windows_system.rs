@@ -5,9 +5,10 @@ use crate::contracts::{
     MetricSource, SystemMemoryAccounting, SystemMetricQuality, SystemMetricsSnapshot,
 };
 
+use std::{collections::BTreeMap, time::Instant};
+
 #[cfg(windows)]
 use std::{
-    collections::BTreeMap,
     mem::{align_of, size_of},
     ptr::{null_mut, read_unaligned},
     slice,
@@ -48,11 +49,12 @@ const MAX_POOL_TAG_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(windows)]
 const MAX_KERNEL_POOL_TAGS: usize = 8;
 #[cfg(windows)]
-#[cfg(windows)]
-pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
+pub fn sample_system(
+    network_sampler: &mut WindowsNetworkSampler,
+) -> Result<SystemMetricsSnapshot, String> {
     let memory = sample_memory()?;
     let _cpu_times = sample_cpu_times()?;
-    let network = sample_network_totals()?;
+    let network = network_sampler.sample()?;
     let performance = sample_performance_metrics().ok();
     let process_count = performance
         .as_ref()
@@ -73,10 +75,10 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
         disk_write_total_bytes: 0,
         disk_read_bps: 0,
         disk_write_bps: 0,
-        network_received_total_bytes: network.received_bytes,
-        network_transmitted_total_bytes: network.transmitted_bytes,
-        network_received_bps: 0,
-        network_transmitted_bps: 0,
+        network_received_total_bytes: network.totals.received_bytes,
+        network_transmitted_total_bytes: network.totals.transmitted_bytes,
+        network_received_bps: network.received_bps,
+        network_transmitted_bps: network.transmitted_bps,
         memory_accounting: performance.map(|metrics| metrics.memory_accounting),
         quality: Some(SystemMetricQuality {
             cpu: Some(
@@ -112,16 +114,15 @@ pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
                         "Disk counters need the PDH collector layer.",
                     ),
             ),
-            network: Some(MetricQualityInfo::new(
-                MetricQuality::Native,
-                MetricSource::InterfaceAggregate,
-            )),
+            network: Some(network.quality),
         }),
     })
 }
 
 #[cfg(not(windows))]
-pub fn sample_system() -> Result<SystemMetricsSnapshot, String> {
+pub fn sample_system(
+    _network_sampler: &mut WindowsNetworkSampler,
+) -> Result<SystemMetricsSnapshot, String> {
     Err("windows_system_collector_requires_windows".to_string())
 }
 
@@ -156,6 +157,131 @@ pub(crate) struct CpuLoad {
 struct NetworkTotals {
     received_bytes: u64,
     transmitted_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct TimedInterfaceCounters {
+    counters: BTreeMap<u64, NetworkTotals>,
+    sampled_at: Instant,
+}
+
+#[derive(Debug, Default)]
+pub struct WindowsNetworkSampler {
+    previous: Option<TimedInterfaceCounters>,
+}
+
+#[derive(Debug)]
+struct NetworkRateSample {
+    totals: NetworkTotals,
+    received_bps: u64,
+    transmitted_bps: u64,
+    quality: MetricQualityInfo,
+}
+
+impl WindowsNetworkSampler {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg(windows)]
+    fn sample(&mut self) -> Result<NetworkRateSample, String> {
+        let counters = sample_network_counters()?;
+        let sampled_at = Instant::now();
+        let totals = sum_network_totals(counters.values().copied());
+        let (received_bps, transmitted_bps, quality) = self.previous.as_ref().map_or_else(
+            || {
+                (
+                    0,
+                    0,
+                    MetricQualityInfo::new(MetricQuality::Held, MetricSource::InterfaceAggregate)
+                        .with_limitation(
+                            MetricLimitationCode::PendingBaseline,
+                            "Windows interface counters need a second stable per-interface sample.",
+                        ),
+                )
+            },
+            |previous| {
+                keyed_interface_rates(
+                    &counters,
+                    &previous.counters,
+                    sampled_at.duration_since(previous.sampled_at).as_secs_f64(),
+                )
+            },
+        );
+        self.previous = Some(TimedInterfaceCounters {
+            counters,
+            sampled_at,
+        });
+        Ok(NetworkRateSample {
+            totals,
+            received_bps,
+            transmitted_bps,
+            quality,
+        })
+    }
+}
+
+fn keyed_interface_rates(
+    current: &BTreeMap<u64, NetworkTotals>,
+    previous: &BTreeMap<u64, NetworkTotals>,
+    elapsed_seconds: f64,
+) -> (u64, u64, MetricQualityInfo) {
+    let mut received_bps = 0_u64;
+    let mut transmitted_bps = 0_u64;
+    let mut matched = 0_usize;
+    let mut warming = 0_usize;
+    let mut reset = 0_usize;
+    for (identity, current) in current {
+        let Some(previous) = previous.get(identity) else {
+            warming += 1;
+            continue;
+        };
+        if current.received_bytes < previous.received_bytes
+            || current.transmitted_bytes < previous.transmitted_bytes
+        {
+            reset += 1;
+            continue;
+        }
+        matched += 1;
+        received_bps = received_bps.saturating_add(network_byte_rate(
+            current.received_bytes,
+            previous.received_bytes,
+            elapsed_seconds,
+        ));
+        transmitted_bps = transmitted_bps.saturating_add(network_byte_rate(
+            current.transmitted_bytes,
+            previous.transmitted_bytes,
+            elapsed_seconds,
+        ));
+    }
+    let quality = if matched == 0 && (!current.is_empty() || !previous.is_empty()) {
+        MetricQualityInfo::new(MetricQuality::Held, MetricSource::InterfaceAggregate)
+            .with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "Windows interface topology changed or reset; waiting for stable identities.",
+            )
+    } else if warming > 0 || reset > 0 {
+        MetricQualityInfo::new(MetricQuality::Partial, MetricSource::InterfaceAggregate)
+            .with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "New or reset Windows interfaces are warming up; stable interfaces remain native.",
+            )
+    } else {
+        MetricQualityInfo::new(MetricQuality::Native, MetricSource::InterfaceAggregate)
+    };
+    (received_bps, transmitted_bps, quality)
+}
+
+fn sum_network_totals(counters: impl IntoIterator<Item = NetworkTotals>) -> NetworkTotals {
+    counters
+        .into_iter()
+        .fold(NetworkTotals::default(), |totals, counter| {
+            add_network_totals(totals, counter.received_bytes, counter.transmitted_bytes)
+        })
+}
+
+fn network_byte_rate(current: u64, previous: u64, elapsed_seconds: f64) -> u64 {
+    ((current - previous) as f64 / elapsed_seconds.max(0.001)).round() as u64
 }
 
 pub(crate) fn calculate_cpu_load(previous: CpuTimes, current: CpuTimes) -> CpuLoad {
@@ -240,20 +366,20 @@ fn sample_performance_metrics() -> Result<PerformanceMetrics, String> {
 }
 
 #[cfg(windows)]
-fn sample_network_totals() -> Result<NetworkTotals, String> {
+fn sample_network_counters() -> Result<BTreeMap<u64, NetworkTotals>, String> {
     let mut table: *mut MIB_IF_TABLE2 = null_mut();
     let result = unsafe { GetIfTable2(&mut table) };
     if result != ERROR_SUCCESS {
         return Err(format!("GetIfTable2 failed with error code {result}"));
     }
     if table.is_null() {
-        return Ok(NetworkTotals::default());
+        return Ok(BTreeMap::new());
     }
 
     let totals = unsafe {
         let row_count = (*table).NumEntries as usize;
         let first_row = (*table).Table.as_ptr();
-        network_totals_from_if_rows(slice::from_raw_parts(first_row, row_count))
+        network_counters_from_if_rows(slice::from_raw_parts(first_row, row_count))
     };
     unsafe {
         FreeMibTable(table.cast());
@@ -263,12 +389,20 @@ fn sample_network_totals() -> Result<NetworkTotals, String> {
 }
 
 #[cfg(windows)]
-fn network_totals_from_if_rows(rows: &[MIB_IF_ROW2]) -> NetworkTotals {
+fn network_counters_from_if_rows(rows: &[MIB_IF_ROW2]) -> BTreeMap<u64, NetworkTotals> {
     rows.iter()
         .filter(|row| include_network_interface(row))
-        .fold(NetworkTotals::default(), |totals, row| {
-            add_network_totals(totals, row.InOctets, row.OutOctets)
+        .map(|row| {
+            let identity = unsafe { row.InterfaceLuid.Value };
+            (
+                identity,
+                NetworkTotals {
+                    received_bytes: row.InOctets,
+                    transmitted_bytes: row.OutOctets,
+                },
+            )
         })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -772,7 +906,8 @@ mod tests {
             ..MIB_IF_ROW2::default()
         };
 
-        let totals = network_totals_from_if_rows(&[row]);
+        let counters = network_counters_from_if_rows(&[row]);
+        let totals = sum_network_totals(counters.values().copied());
 
         assert_eq!(totals.received_bytes, u32::MAX as u64 + 42);
         assert_eq!(totals.transmitted_bytes, u32::MAX as u64 + 84);
@@ -781,7 +916,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn sample_system_reports_plausible_memory_totals() {
-        let snapshot = sample_system().expect("system collection succeeds");
+        let snapshot =
+            sample_system(&mut WindowsNetworkSampler::new()).expect("system collection succeeds");
         let available = snapshot
             .memory_available_bytes
             .expect("native memory reports available bytes");
@@ -789,5 +925,61 @@ mod tests {
         assert!(snapshot.memory_total_bytes > 0);
         assert!(snapshot.memory_used_bytes <= snapshot.memory_total_bytes);
         assert!(available <= snapshot.memory_total_bytes);
+    }
+
+    #[test]
+    fn interface_rates_ignore_reorder_hotplug_removal_and_reset() {
+        let previous = BTreeMap::from([
+            (
+                1,
+                NetworkTotals {
+                    received_bytes: 1_000,
+                    transmitted_bytes: 2_000,
+                },
+            ),
+            (
+                2,
+                NetworkTotals {
+                    received_bytes: 9_000,
+                    transmitted_bytes: 9_000,
+                },
+            ),
+            (
+                3,
+                NetworkTotals {
+                    received_bytes: 8_000,
+                    transmitted_bytes: 8_000,
+                },
+            ),
+        ]);
+        let current = BTreeMap::from([
+            (
+                4,
+                NetworkTotals {
+                    received_bytes: 50_000,
+                    transmitted_bytes: 60_000,
+                },
+            ),
+            (
+                3,
+                NetworkTotals {
+                    received_bytes: 10,
+                    transmitted_bytes: 20,
+                },
+            ),
+            (
+                1,
+                NetworkTotals {
+                    received_bytes: 1_500,
+                    transmitted_bytes: 2_250,
+                },
+            ),
+        ]);
+
+        let (received_bps, transmitted_bps, quality) =
+            keyed_interface_rates(&current, &previous, 1.0);
+
+        assert_eq!((received_bps, transmitted_bps), (500, 250));
+        assert_eq!(quality.quality, MetricQuality::Partial);
     }
 }

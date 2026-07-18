@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    catalog::{network_scope_definition, semantic_definition, QUALITY_CODES},
+    catalog::{
+        network_scope_definition, quality_limitation_policy, semantic_definition, QUALITY_CODES,
+    },
     types::*,
     RUNTIME_PROTOCOL_VERSION,
 };
@@ -419,40 +421,13 @@ fn validate_quality_limitation(
 ) -> Result<(), String> {
     validate_limitation_index(limitation_index, payload)?;
     let code = limitation_index.map(|index| payload.limitations[usize::from(index)].code);
-    if matches!(
-        quality,
-        MetricQualityV3::Held | MetricQualityV3::Partial | MetricQualityV3::Unavailable
-    ) && code.is_none()
-    {
+    let policy = quality_limitation_policy(quality);
+    if policy.requires_limitation && code.is_none() {
         return Err("protocol_quality_explanation_missing".to_string());
     }
-    let valid = match quality {
-        MetricQualityV3::Native => code.is_none(),
-        MetricQualityV3::Estimated => !matches!(
-            code,
-            Some(
-                LimitationCode::PendingBaseline
-                    | LimitationCode::HeldValue
-                    | LimitationCode::GroupPartialCoverage
-            )
-        ),
-        MetricQualityV3::Held => matches!(
-            code,
-            Some(LimitationCode::PendingBaseline | LimitationCode::HeldValue)
-        ),
-        MetricQualityV3::Partial => !matches!(
-            code,
-            Some(
-                LimitationCode::PendingBaseline
-                    | LimitationCode::HeldValue
-                    | LimitationCode::NumericRange
-            ) | None
-        ),
-        MetricQualityV3::Unavailable => !matches!(
-            code,
-            Some(LimitationCode::PendingBaseline | LimitationCode::HeldValue) | None
-        ),
-    };
+    let valid = code.map_or(!policy.requires_limitation, |code| {
+        policy.allowed_codes.contains(&code)
+    });
     valid
         .then_some(())
         .ok_or_else(|| "protocol_quality_limitation_contradiction".to_string())

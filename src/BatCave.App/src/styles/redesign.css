@@ -1777,6 +1777,12 @@ dialog.detail-pane::backdrop {
   font-size: var(--text-xs);
 }
 
+.global-command-error {
+  margin: 0;
+  border-radius: 0;
+  text-align: center;
+}
+
 .drawer-layer {
   position: fixed;
   z-index: 100;

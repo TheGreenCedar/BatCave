@@ -441,9 +441,10 @@ export function prepareProcessViewRows(
   selection: string,
   visibleRowLimit: number,
 ): { rows: ProcessViewRow[]; selection: string } {
+  const windowedRows = windowProcessViewRows(rows, visibleRowLimit);
   return {
-    rows: windowProcessViewRows(rows, visibleRowLimit),
-    selection: reconcileWorkloadSelection(rows, selection),
+    rows: windowedRows,
+    selection: reconcileWorkloadSelection(windowedRows, selection),
   };
 }
 

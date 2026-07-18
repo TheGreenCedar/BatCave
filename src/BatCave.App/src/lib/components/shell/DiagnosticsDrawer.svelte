@@ -3,8 +3,10 @@
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
   import {
     currentDiagnosticIssues,
+    diagnosticOverviewLabel,
     nativeLifecycleDiagnosticLabels,
     suppressedDiagnosticsLabel,
+    windowsLifecycleDiagnosticsVisible,
   } from "../../diagnostics";
   import {
     collectorServiceStateLabel,
@@ -32,17 +34,15 @@
   );
   $: guidance = qualityGuidance(systemQuality);
   $: hasQualityLimitations = guidance.length > 0;
+  $: hasActiveLimitations = issues.length > 0 || hasQualityLimitations;
   $: presentation = platformPresentation(snapshot.environment);
-  $: overviewLabel =
-    pollState === "error"
-      ? "Stale"
-      : snapshot.admin_mode.state === "requesting"
-        ? "Waiting"
-        : snapshot.admin_mode.state === "recovering"
-          ? "Recovering"
-          : snapshot.health.degraded || hasQualityLimitations
-            ? "Limited"
-            : "Healthy";
+  $: overviewLabel = diagnosticOverviewLabel(
+    pollState,
+    snapshot.admin_mode.state,
+    snapshot.health.degraded,
+    issues.length,
+    guidance.length,
+  );
 
   let dialog: HTMLDialogElement | null = null;
   let opener: HTMLElement | null = null;
@@ -50,6 +50,7 @@
 
   $: collectorService = snapshot.admin_mode.collector_service ?? null;
   $: lifecycleDiagnostics = nativeLifecycleDiagnosticLabels(snapshot, pollState);
+  $: showWindowsLifecycleDiagnostics = windowsLifecycleDiagnosticsVisible(snapshot);
 
   $: if (dialog) syncDialog(dialog, open);
 
@@ -128,14 +129,14 @@
           <h3>
             {pollState === "error"
               ? lastError
-              : hasQualityLimitations && !snapshot.health.degraded
+              : hasActiveLimitations && !snapshot.health.degraded
                 ? "Core telemetry is current with known limitations."
                 : snapshot.health.status_summary}
           </h3>
           <p>
             {pollState === "fixture"
               ? "Fixture data is useful for layout work, not native collector proof."
-              : snapshot.health.degraded || hasQualityLimitations
+              : snapshot.health.degraded || hasActiveLimitations
                 ? "BatCave keeps the trustworthy parts running and marks the gaps instead of inventing data."
                 : "Collectors are current and no limitations are active."}
           </p>
@@ -190,6 +191,10 @@
               <div><dt>Platform</dt><dd>{presentation.platformName}</dd></div>
               <div><dt>Package</dt><dd>{installKindLabel(snapshot.environment.install_kind)}</dd></div>
               <div><dt>CPU quality</dt><dd>{metricQualityLabel(systemQuality.cpu, "Legacy")}</dd></div>
+              <div><dt>Kernel CPU quality</dt><dd>{metricQualityLabel(systemQuality.kernel_cpu, "Not reported")}</dd></div>
+              <div><dt>Logical CPU quality</dt><dd>{metricQualityLabel(systemQuality.logical_cpu, "Not reported")}</dd></div>
+              <div><dt>Memory quality</dt><dd>{metricQualityLabel(systemQuality.memory, "Legacy")}</dd></div>
+              <div><dt>Swap quality</dt><dd>{metricQualityLabel(systemQuality.swap, "Not reported")}</dd></div>
               <div><dt>Disk quality</dt><dd>{metricQualityLabel(systemQuality.disk, "Legacy")}</dd></div>
               <div><dt>Network quality</dt><dd>{metricQualityLabel(systemQuality.network, "Aggregate")}</dd></div>
               <div
@@ -202,18 +207,20 @@
                 aria-label={`Privileged source: ${privilegedSourceLabel(snapshot.admin_mode.source)}`}
               ><dt>Privileged source</dt><dd>{privilegedSourceLabel(snapshot.admin_mode.source)}</dd></div>
               <div><dt>Last privileged sample</dt><dd>{snapshot.admin_mode.last_success_at_ms ? new Date(snapshot.admin_mode.last_success_at_ms).toLocaleString() : "None this session"}</dd></div>
-              <div
-                role="group"
-                aria-label={`Standard fallback: ${lifecycleDiagnostics.standardFallback}`}
-              ><dt>Standard fallback</dt><dd>{lifecycleDiagnostics.standardFallback}</dd></div>
-              <div
-                role="group"
-                aria-label={`Protected sample: ${lifecycleDiagnostics.protectedSample}`}
-              ><dt>Protected sample</dt><dd>{lifecycleDiagnostics.protectedSample}</dd></div>
-              <div
-                role="group"
-                aria-label={`Fallback process ETW: ${lifecycleDiagnostics.fallbackProcessEtw}`}
-              ><dt>Fallback process ETW</dt><dd>{lifecycleDiagnostics.fallbackProcessEtw}</dd></div>
+              {#if showWindowsLifecycleDiagnostics}
+                <div
+                  role="group"
+                  aria-label={`Standard fallback: ${lifecycleDiagnostics.standardFallback}`}
+                ><dt>Standard fallback</dt><dd>{lifecycleDiagnostics.standardFallback}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Protected sample: ${lifecycleDiagnostics.protectedSample}`}
+                ><dt>Protected sample</dt><dd>{lifecycleDiagnostics.protectedSample}</dd></div>
+                <div
+                  role="group"
+                  aria-label={`Fallback process ETW: ${lifecycleDiagnostics.fallbackProcessEtw}`}
+                ><dt>Fallback process ETW</dt><dd>{lifecycleDiagnostics.fallbackProcessEtw}</dd></div>
+              {/if}
               {#if collectorService}
                 <div
                   role="group"

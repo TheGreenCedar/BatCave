@@ -1,4 +1,5 @@
 import {
+  RUNTIME_PROTOCOL_POLICY,
   RUNTIME_PROTOCOL_VERSION,
   type GroupMetricCoverageV3,
   type LimitationEntry,
@@ -14,7 +15,13 @@ import {
 } from "../generated/runtime-protocol-v3.ts";
 import type { MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "../types.ts";
 
-const qualityCodes: MetricQualityV3[] = ["native", "estimated", "held", "partial", "unavailable"];
+const qualityCodes: MetricQualityV3[] = [...RUNTIME_PROTOCOL_POLICY.quality_codes];
+const semanticPolicies = new Map(
+  RUNTIME_PROTOCOL_POLICY.semantic_definitions.map((definition) => [
+    `${definition.scope}:${definition.semantic}`,
+    definition,
+  ]),
+);
 
 export function canonicalKernelPoolStableId(tag: string, kind: "paged" | "nonpaged"): string {
   return `system:local:pool:${tag}:${kind}`.toLocaleLowerCase();
@@ -156,20 +163,27 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
   ];
   const accounting = snapshot.system.memory_accounting;
   if (accounting) {
-    for (const [semantic, value, unit] of [
-      ["process_working_set_memory", accounting.process_working_set_bytes, "bytes"],
-      ["process_private_memory", accounting.process_private_bytes, "bytes"],
-      ["denied_process_count", accounting.denied_process_count, "count"],
-      ["partial_process_count", accounting.partial_process_count, "count"],
-      ["commit_used", accounting.commit_used_bytes, "bytes"],
-      ["commit_limit", accounting.commit_limit_bytes, "bytes"],
-      ["system_cache", accounting.system_cache_bytes, "bytes"],
-      ["kernel_memory", accounting.kernel_total_bytes, "bytes"],
-      ["kernel_paged_pool", accounting.kernel_paged_pool_bytes, "bytes"],
-      ["kernel_nonpaged_pool", accounting.kernel_nonpaged_pool_bytes, "bytes"],
+    for (const [semantic, field, unit] of [
+      ["process_working_set_memory", "process_working_set_bytes", "bytes"],
+      ["process_private_memory", "process_private_bytes", "bytes"],
+      ["denied_process_count", "denied_process_count", "count"],
+      ["partial_process_count", "partial_process_count", "count"],
+      ["commit_used", "commit_used_bytes", "bytes"],
+      ["commit_limit", "commit_limit_bytes", "bytes"],
+      ["system_cache", "system_cache_bytes", "bytes"],
+      ["kernel_memory", "kernel_total_bytes", "bytes"],
+      ["kernel_paged_pool", "kernel_paged_pool_bytes", "bytes"],
+      ["kernel_nonpaged_pool", "kernel_nonpaged_pool_bytes", "bytes"],
     ] as const) {
       systemMetrics.push(
-        catalog.metric(semantic, "system", unit, value, systemQuality?.memory, sampled),
+        catalog.metric(
+          semantic,
+          "system",
+          unit,
+          accounting[field],
+          accounting.quality?.[field] ?? systemQuality?.memory,
+          sampled,
+        ),
       );
     }
   }
@@ -400,7 +414,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
             "system",
             "bytes",
             tag.bytes,
-            systemQuality?.memory,
+            tag.quality?.bytes ?? systemQuality?.memory,
             sampled,
           ),
           catalog.metric(
@@ -408,7 +422,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
             "system",
             "count",
             tag.allocations,
-            systemQuality?.memory,
+            tag.quality?.allocations ?? systemQuality?.memory,
             sampled,
           ),
           catalog.metric(
@@ -416,7 +430,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
             "system",
             "count",
             tag.frees,
-            systemQuality?.memory,
+            tag.quality?.frees ?? systemQuality?.memory,
             sampled,
           ),
         ],
@@ -601,7 +615,7 @@ class FixtureCatalog {
     semantic: MetricSemantic,
     scope: MetricScope,
     unit: MetricUnit,
-    input: number | undefined,
+    input: number | null | undefined,
     quality: MetricQualityInfo | undefined,
     sampled: number | null,
   ): MetricObservation {
@@ -687,44 +701,25 @@ class FixtureCatalog {
     unit: MetricUnit,
     source: MetricSourceV3,
   ): MeasurementDescriptor {
+    const policy = semanticPolicies.get(`${scope}:${semantic}`);
+    if (!policy || policy.unit !== unit) {
+      throw new Error(`Fixture descriptor policy mismatch for ${scope}:${semantic}.`);
+    }
     const descriptor = {
       id: this.descriptors.length,
       semantic,
       scope,
       unit,
-      interval_ms: ["percent_one_core", "percent_system", "bytes_per_second"].includes(unit)
-        ? this.sampleIntervalMs
-        : null,
-      network_scope: networkScope(semantic, scope, source),
+      interval_ms: policy.sampled_over_interval ? this.sampleIntervalMs : null,
+      network_scope:
+        source === "unknown"
+          ? null
+          : policy.network_scope[source === "sysinfo" ? "sysinfo" : "default"],
       source,
     };
     this.descriptors.push(descriptor);
     return descriptor;
   }
-}
-
-function networkScope(
-  semantic: MetricSemantic,
-  scope: MetricScope,
-  source: MetricSourceV3,
-): "non_loopback_interface_aggregate" | "all_interface_aggregate" | "ip_socket_payload" | null {
-  if (source === "unknown") return null;
-  if (
-    scope === "system" &&
-    [
-      "network_receive_total",
-      "network_transmit_total",
-      "network_receive_rate",
-      "network_transmit_rate",
-    ].includes(semantic)
-  )
-    return source === "sysinfo" ? "all_interface_aggregate" : "non_loopback_interface_aggregate";
-  if (
-    (scope === "process" && ["network_receive_rate", "network_transmit_rate"].includes(semantic)) ||
-    (scope === "group" && semantic === "network_rate")
-  )
-    return "ip_socket_payload";
-  return null;
 }
 
 function totalsQuality(quality: MetricQualityInfo | undefined): MetricQualityInfo | undefined {

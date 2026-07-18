@@ -57,6 +57,8 @@ const ATTENTION_CPU_PERCENT: f64 = 10.0;
 const ATTENTION_MEMORY_BYTES: u64 = 900 * 1024 * 1024;
 const ATTENTION_IO_BPS: u64 = 500 * 1024;
 const ATTENTION_NETWORK_BPS: u64 = 1024 * 1024;
+const COLLECTOR_HELD_MESSAGE: &str =
+    "Collector unavailable; showing the last successful observation.";
 const CONTROL_QUEUE_CAPACITY: usize = 32;
 const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const ENGINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -798,6 +800,7 @@ fn publish_fatal_from_latest(
         Arc::clone(&current.snapshot)
     };
     let mut snapshot = (*current).clone();
+    hold_snapshot_after_collector_failure(&mut snapshot, occurred_at_ms);
     snapshot.publication_seq = snapshot.publication_seq.saturating_add(1);
     snapshot.published_at_ms = occurred_at_ms.max(snapshot.sampled_at_ms.unwrap_or_default());
     snapshot.health.engine_state = Some(crate::contracts::RuntimeEngineState::Fatal);
@@ -1418,12 +1421,14 @@ impl RuntimeStore {
             }
         }
         if let Some(previous) = &self.previous_totals {
-            let network_rates_are_native = system
-                .quality
-                .as_ref()
-                .and_then(|quality| quality.network.as_ref())
-                .and_then(|quality| quality.source)
-                == Some(MetricSource::Procfs);
+            let network_rates_are_native = matches!(
+                system
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.network.as_ref())
+                    .and_then(|quality| quality.source),
+                Some(MetricSource::Procfs | MetricSource::InterfaceAggregate)
+            );
             if !network_rates_are_native {
                 system.network_received_bps = byte_rate(
                     system.network_received_total_bytes,
@@ -1602,6 +1607,7 @@ impl RuntimeStore {
     fn publish_collector_unavailable(&mut self, error: String) {
         self.collector_state = Some(RuntimeCollectorState::Unavailable);
         self.live_process_snapshot = false;
+        self.hold_retained_telemetry();
         self.publish_snapshot_only(Some(("collector", error)));
     }
 
@@ -1610,12 +1616,24 @@ impl RuntimeStore {
         self.engine_state = RuntimeEngineState::Fatal;
         self.collector_state = Some(RuntimeCollectorState::Unavailable);
         self.live_process_snapshot = false;
+        self.hold_retained_telemetry();
         self.fatal_error = Some(RuntimeFatalError {
             code: code.to_string(),
             message: message.clone(),
             occurred_at_ms,
         });
         self.publish_snapshot_only(Some(("collector", message)));
+    }
+
+    fn hold_retained_telemetry(&mut self) {
+        let Some(sampled_at_ms) = self.sampled_at_ms else {
+            return;
+        };
+        let held_at_ms = self.clock.now_ms();
+        hold_system_after_collector_failure(&mut self.snapshot.system, sampled_at_ms, held_at_ms);
+        for process in &mut self.previous_processes {
+            hold_process_after_collector_failure(process, sampled_at_ms, held_at_ms);
+        }
     }
 
     fn refresh_snapshot_health(&mut self) {
@@ -2250,6 +2268,110 @@ fn hold_process_rates(mut processes: Vec<ProcessSample>) -> Vec<ProcessSample> {
     processes
 }
 
+fn hold_snapshot_after_collector_failure(snapshot: &mut RuntimeSnapshot, held_at_ms: u64) {
+    let Some(sampled_at_ms) = snapshot.sampled_at_ms else {
+        return;
+    };
+    hold_system_after_collector_failure(&mut snapshot.system, sampled_at_ms, held_at_ms);
+    for process in &mut snapshot.processes {
+        hold_process_after_collector_failure(process, sampled_at_ms, held_at_ms);
+    }
+    for row in &mut snapshot.process_view_rows {
+        match row {
+            ProcessViewRow::Process { detail, .. } => {
+                hold_process_after_collector_failure(&mut detail.process, sampled_at_ms, held_at_ms)
+            }
+            ProcessViewRow::Group { detail, .. } => {
+                for quality in [
+                    &mut detail.quality.cpu,
+                    &mut detail.quality.memory,
+                    &mut detail.quality.io,
+                    &mut detail.quality.other_io,
+                    &mut detail.quality.network,
+                    &mut detail.quality.threads,
+                ] {
+                    hold_metric_after_collector_failure(quality, sampled_at_ms, held_at_ms);
+                }
+            }
+        }
+    }
+    for quality in [
+        &mut snapshot.process_contributors.cpu_quality,
+        &mut snapshot.process_contributors.memory_quality,
+        &mut snapshot.process_contributors.io_quality,
+        &mut snapshot.process_contributors.network_quality,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hold_metric_after_collector_failure(quality, sampled_at_ms, held_at_ms);
+    }
+}
+
+fn hold_system_after_collector_failure(
+    system: &mut SystemMetricsSnapshot,
+    sampled_at_ms: u64,
+    held_at_ms: u64,
+) {
+    let Some(quality) = system.quality.as_mut() else {
+        return;
+    };
+    for metric in [
+        &mut quality.cpu,
+        &mut quality.kernel_cpu,
+        &mut quality.logical_cpu,
+        &mut quality.memory,
+        &mut quality.swap,
+        &mut quality.disk,
+        &mut quality.network,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hold_metric_after_collector_failure(metric, sampled_at_ms, held_at_ms);
+    }
+}
+
+fn hold_process_after_collector_failure(
+    process: &mut ProcessSample,
+    sampled_at_ms: u64,
+    held_at_ms: u64,
+) {
+    let Some(quality) = process.quality.as_mut() else {
+        return;
+    };
+    for metric in [
+        &mut quality.cpu,
+        &mut quality.memory,
+        &mut quality.io,
+        &mut quality.other_io,
+        &mut quality.network,
+        &mut quality.threads,
+        &mut quality.handles,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hold_metric_after_collector_failure(metric, sampled_at_ms, held_at_ms);
+    }
+}
+
+fn hold_metric_after_collector_failure(
+    quality: &mut MetricQualityInfo,
+    sampled_at_ms: u64,
+    held_at_ms: u64,
+) {
+    if quality.quality == MetricQuality::Unavailable {
+        return;
+    }
+    let updated_at_ms = quality.updated_at_ms.unwrap_or(sampled_at_ms);
+    quality.quality = MetricQuality::Held;
+    quality.updated_at_ms = Some(updated_at_ms);
+    quality.age_ms = Some(held_at_ms.saturating_sub(updated_at_ms));
+    quality.limitation_code = Some(MetricLimitationCode::HeldValue);
+    quality.message = Some(COLLECTOR_HELD_MESSAGE.to_string());
+}
+
 fn hold_process_rate_quality(process: &mut ProcessSample) {
     hold_process_io_rate_quality(process);
     if process.other_io_total_bytes.is_some() {
@@ -2449,21 +2571,21 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
         };
 
         let group = &mut groups[index];
-        if group_metric_available(process, GroupMetric::Cpu) {
+        if group_metric_has_observed_value(process, GroupMetric::Cpu) {
             group.cpu_percent += process.cpu_percent;
         }
-        if group_metric_available(process, GroupMetric::Memory) {
+        if group_metric_has_observed_value(process, GroupMetric::Memory) {
             group.memory_bytes = group.memory_bytes.saturating_add(process.memory_bytes);
         }
-        if group_metric_available(process, GroupMetric::Io) {
+        if group_metric_has_observed_value(process, GroupMetric::Io) {
             group.io_bps = group.io_bps.saturating_add(process_io_rate(process));
         }
-        if group_metric_available(process, GroupMetric::Network) {
+        if group_metric_has_observed_value(process, GroupMetric::Network) {
             group.network_bps = group
                 .network_bps
                 .saturating_add(process_network_rate(process));
         }
-        if group_metric_available(process, GroupMetric::Threads) {
+        if group_metric_has_observed_value(process, GroupMetric::Threads) {
             group.threads = group.threads.saturating_add(process.threads as u64);
         }
         group.processes.push(process.clone());
@@ -2632,14 +2754,28 @@ fn group_metric_summary(
         MetricQuality::Native
     };
 
-    let limitation_code = if available < total {
+    let held_observation = (quality == MetricQuality::Held)
+        .then(|| {
+            processes
+                .iter()
+                .filter_map(|process| group_metric_quality(process, metric))
+                .find(|quality| quality.quality == MetricQuality::Held)
+        })
+        .flatten();
+    let limitation_code = if quality == MetricQuality::Held {
+        Some(MetricLimitationCode::HeldValue)
+    } else if available < total {
         Some(MetricLimitationCode::GroupPartialCoverage)
     } else if includes_partial_quality {
         Some(MetricLimitationCode::PartialCoverage)
     } else {
         None
     };
-    let message = if available < total {
+    let message = if quality == MetricQuality::Held {
+        held_observation
+            .and_then(|quality| quality.message.clone())
+            .or_else(|| Some(COLLECTOR_HELD_MESSAGE.to_string()))
+    } else if available < total {
         Some(format!(
             "{available} of {total} processes contribute to this aggregate."
         ))
@@ -2652,8 +2788,8 @@ fn group_metric_summary(
         MetricQualityInfo {
             quality,
             source: Some(MetricSource::ProcessAggregate),
-            updated_at_ms: None,
-            age_ms: None,
+            updated_at_ms: held_observation.and_then(|quality| quality.updated_at_ms),
+            age_ms: held_observation.and_then(|quality| quality.age_ms),
             limitation_code,
             message,
         },
@@ -2669,6 +2805,16 @@ fn group_metric_available(process: &ProcessSample, metric: GroupMetric) -> bool 
                 MetricQuality::Unavailable | MetricQuality::Held
             )
         })
+}
+
+fn group_metric_has_observed_value(process: &ProcessSample, metric: GroupMetric) -> bool {
+    group_metric_available(process, metric)
+        || (group_metric_has_value(process, metric)
+            && group_metric_quality(process, metric).is_some_and(|quality| {
+                quality.quality == MetricQuality::Held
+                    && quality.limitation_code == Some(MetricLimitationCode::HeldValue)
+                    && quality.updated_at_ms.is_some()
+            }))
 }
 
 fn group_metric_has_value(process: &ProcessSample, metric: GroupMetric) -> bool {
@@ -4161,6 +4307,14 @@ mod tests {
         let fatal = state.snapshot().expect("fatal snapshot remains readable");
         assert_eq!(fatal.health.engine_state, Some(RuntimeEngineState::Fatal));
         assert!(fatal.health.fatal_error.is_some());
+        assert_eq!(
+            fatal.processes[0]
+                .quality
+                .as_ref()
+                .and_then(|quality| quality.cpu.as_ref())
+                .map(|quality| quality.quality),
+            Some(MetricQuality::Held)
+        );
         let envelope = crate::protocol::encode_snapshot(fatal).expect("fatal v3 payload is valid");
         let value = serde_json::to_value(envelope).expect("fatal envelope serializes");
         assert_eq!(
@@ -4177,6 +4331,72 @@ mod tests {
         );
         state.shutdown().expect("fatal engine joins");
         let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn collector_failure_holds_retained_system_process_group_and_contributor_values() {
+        for fatal in [false, true] {
+            let name = if fatal {
+                "held-after-fatal"
+            } else {
+                "held-after-unavailable"
+            };
+            let (mut store, base_dir) = store_with_native_group_sample(name);
+            let sampled_at_ms = store.snapshot.sampled_at_ms.expect("sample is current");
+
+            if fatal {
+                store.mark_engine_fatal("collector_fatal", "collector poisoned".to_string());
+            } else {
+                store.publish_collector_unavailable("collector offline".to_string());
+            }
+
+            assert_eq!(store.snapshot.sampled_at_ms, Some(sampled_at_ms));
+            assert_eq!(store.snapshot.system.cpu_percent, 42.0);
+            assert!(store.snapshot.health.degraded);
+            assert_eq!(
+                store.snapshot.health.collector_state,
+                Some(RuntimeCollectorState::Unavailable)
+            );
+            assert_held_after_collector_failure(
+                store
+                    .snapshot
+                    .system
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.cpu.as_ref())
+                    .expect("system CPU quality is retained"),
+                sampled_at_ms,
+            );
+            assert_held_after_collector_failure(
+                store.snapshot.processes[0]
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.memory.as_ref())
+                    .expect("process memory quality is retained"),
+                sampled_at_ms,
+            );
+            assert_held_after_collector_failure(
+                store
+                    .snapshot
+                    .process_contributors
+                    .cpu_quality
+                    .as_ref()
+                    .expect("contributor quality is retained"),
+                sampled_at_ms,
+            );
+            let ProcessViewRow::Group { detail, .. } = &store.snapshot.process_view_rows[0] else {
+                panic!("expected retained aggregate group");
+            };
+            assert_eq!(detail.cpu_percent, 20.0);
+            assert_eq!(detail.memory_bytes, 128 * 1024 * 1024);
+            assert_held_after_collector_failure(&detail.quality.cpu, sampled_at_ms);
+            assert_held_after_collector_failure(&detail.quality.memory, sampled_at_ms);
+            crate::protocol::encode_snapshot(store.snapshot.clone())
+                .expect("held collector-failure snapshot remains protocol-valid");
+
+            drop(store);
+            let _ = fs::remove_dir_all(base_dir);
+        }
     }
 
     #[test]
@@ -7176,6 +7396,60 @@ mod tests {
             base_dir,
             RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard),
         )
+    }
+
+    fn store_with_native_group_sample(name: &str) -> (RuntimeStore, PathBuf) {
+        let base_dir = runtime_test_dir(name);
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let mut system = empty_system();
+        system.cpu_percent = 42.0;
+        system.memory_used_bytes = 1_024;
+        system.memory_total_bytes = 2_048;
+        system.quality = Some(crate::contracts::SystemMetricQuality {
+            cpu: Some(MetricQualityInfo::new(
+                MetricQuality::Native,
+                MetricSource::DirectApi,
+            )),
+            memory: Some(MetricQualityInfo::new(
+                MetricQuality::Native,
+                MetricSource::DirectApi,
+            )),
+            ..crate::contracts::SystemMetricQuality::default()
+        });
+        let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
+        first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        first.quality = group_test_quality(MetricQuality::Native);
+        first.network_received_bps = Some(1_024);
+        let mut second = sample("20", "SearchIndexer-223.exe", 8.0);
+        second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        second.quality = group_test_quality(MetricQuality::Native);
+        second.network_received_bps = Some(2_048);
+        let sample_ts_ms = store.clock.now_ms();
+        store.apply_raw_sample(
+            crate::telemetry::TelemetrySample {
+                latency_ms: 0,
+                collector_state: RuntimeCollectorState::Healthy,
+                system,
+                processes: vec![first, second],
+                warnings: Vec::new(),
+                collector_service: None,
+                source_provenance: None,
+                standard_fallback_process_etw_disabled: false,
+            },
+            0.0,
+            sample_ts_ms,
+        );
+        (store, base_dir)
+    }
+
+    fn assert_held_after_collector_failure(quality: &MetricQualityInfo, sampled_at_ms: u64) {
+        assert_eq!(quality.quality, MetricQuality::Held);
+        assert_eq!(quality.updated_at_ms, Some(sampled_at_ms));
+        assert_eq!(
+            quality.limitation_code,
+            Some(MetricLimitationCode::HeldValue)
+        );
+        assert_eq!(quality.message.as_deref(), Some(COLLECTOR_HELD_MESSAGE));
     }
 
     fn row_cpu_percent(row: &ProcessViewRow) -> f64 {

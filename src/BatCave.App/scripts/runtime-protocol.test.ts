@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import type {
-  MetricSemantic,
-  ProtocolEnvelope,
-  RuntimeSnapshotPayloadV3,
-  WorkloadDetailV3,
+import {
+  RUNTIME_PROTOCOL_POLICY,
+  type MetricSemantic,
+  type ProtocolEnvelope,
+  type RuntimeSnapshotPayloadV3,
+  type WorkloadDetailV3,
 } from "../src/lib/generated/runtime-protocol-v3.ts";
 import {
   canonicalKernelPoolStableId,
@@ -22,6 +23,31 @@ const incompatible = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/inco
 const transitions = fixtureArray(
   "../src-tauri/src/fixtures/runtime-protocol-v3/quality-transitions.json",
 );
+
+test("generated semantic policy is complete, unique, and internally coherent", () => {
+  assert.deepEqual(RUNTIME_PROTOCOL_POLICY.quality_codes, [
+    "native",
+    "estimated",
+    "held",
+    "partial",
+    "unavailable",
+  ]);
+  assert.deepEqual(
+    RUNTIME_PROTOCOL_POLICY.quality_limitation_policies.map((policy) => policy.quality),
+    RUNTIME_PROTOCOL_POLICY.quality_codes,
+  );
+  for (const policy of RUNTIME_PROTOCOL_POLICY.quality_limitation_policies) {
+    assert.equal(new Set(policy.allowed_codes).size, policy.allowed_codes.length);
+  }
+  assert.equal(RUNTIME_PROTOCOL_POLICY.semantic_definitions.length, 51);
+  const keys = new Set<string>();
+  const intervalUnits = new Set(["percent_one_core", "percent_system", "bytes_per_second"]);
+  for (const definition of RUNTIME_PROTOCOL_POLICY.semantic_definitions) {
+    assert.equal(keys.has(`${definition.scope}:${definition.semantic}`), false);
+    keys.add(`${definition.scope}:${definition.semantic}`);
+    assert.equal(definition.sampled_over_interval, intervalUnits.has(definition.unit));
+  }
+});
 
 test("production fixture validates and preserves workload identity and order", () => {
   const decoded = decodeProtocolEnvelope(windows);
@@ -128,6 +154,55 @@ test("unsupported process values remain unavailable instead of becoming zero", (
   const adapted = adaptRuntimePayload(decoded.payload);
   assert.ok(Number.isNaN(adapted.processes[0].private_bytes));
   assert.equal(adapted.processes[0].quality?.memory?.quality, "partial");
+});
+
+test("nullable memory accounting keeps its value and quality instead of producing NaN", () => {
+  const nullable = structuredClone(windows);
+  const wire = payload(nullable);
+  const workingSet = wire.system.metrics.find(
+    (metric) => wire.descriptors[metric[0]].semantic === "process_working_set_memory",
+  );
+  assert.ok(workingSet);
+  workingSet[1] = null;
+  workingSet[2] = wire.quality_codes.indexOf("unavailable");
+  workingSet[3] = null;
+  workingSet[4] = wire.limitations.findIndex(
+    (limitation) => limitation.code === "unsupported_metric",
+  );
+
+  const decoded = decodeProtocolEnvelope(nullable);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+  const accounting = adaptRuntimePayload(decoded.payload).system.memory_accounting;
+  assert.ok(accounting);
+  assert.equal(accounting.process_working_set_bytes, null);
+  assert.equal(accounting.quality?.process_working_set_bytes?.quality, "unavailable");
+  assert.equal(Number.isNaN(accounting.process_working_set_bytes), false);
+});
+
+test("nullable kernel pool tags keep their quality instead of producing NaN", () => {
+  const nullable = structuredClone(windows);
+  const wire = payload(nullable);
+  const tag = wire.system.kernel_pool_tags[0];
+  assert.ok(tag);
+  const bytes = tag.metrics.find(
+    (candidate) => wire.descriptors[candidate[0]].semantic === "kernel_pool_bytes",
+  );
+  assert.ok(bytes);
+  bytes[1] = null;
+  bytes[2] = wire.quality_codes.indexOf("unavailable");
+  bytes[3] = null;
+  bytes[4] = wire.limitations.findIndex((limitation) => limitation.code === "unsupported_metric");
+
+  const decoded = decodeProtocolEnvelope(nullable);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+  const adapted = adaptRuntimePayload(decoded.payload).system.memory_accounting
+    ?.kernel_pool_tags?.[0];
+  assert.ok(adapted);
+  assert.equal(adapted.bytes, null);
+  assert.equal(adapted.quality?.bytes?.quality, "unavailable");
+  assert.equal(Number.isNaN(adapted.bytes), false);
 });
 
 test("platform fixtures carry their privilege and collection limits", () => {

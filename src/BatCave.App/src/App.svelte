@@ -36,15 +36,13 @@
     formatOptionalRate,
     formatPercent,
     formatRate,
-    groupMetricCanDisplay,
     logicalCpuMetricQuality,
     metricQualityLabel,
     metricQualityShortLabel,
-    nextProcessMetricHistory,
     processMemoryQuality,
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
-  import { nextMetricHistory, resourceHistoryWindowLabel } from "./lib/history";
+  import { resourceHistoryWindowLabel } from "./lib/history";
   import {
     platformPresentation,
     privateMemoryValue,
@@ -80,6 +78,23 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
+  import { startRuntimePolling } from "./lib/runtimePolling";
+  import {
+    boundedPercent,
+    combineSeries,
+    emptyProcessTrendState,
+    emptyTrendState,
+    initialWorkloadTrend,
+    maxRate,
+    nextSystemHistory,
+    nextWorkloadTrend,
+    percentage,
+    processRatesFromSamples,
+    trimProcessHistory,
+    trimSystemHistory,
+    type ProcessTrendState,
+  } from "./lib/telemetryHistory";
+  import { AcceptedRuntimeControls } from "./lib/runtimeControls";
   import {
     dispatchAutomaticRuntimeHydration,
     planAutomaticRuntimeFocusHydration,
@@ -115,31 +130,26 @@
     RuntimeQuery,
     RuntimeSnapshot,
     SortDirection,
-    TrendState,
     WorkloadDetail,
   } from "./lib/types";
   import { UiPreferencePersistenceSequence } from "./lib/uiPreferencePersistence";
   import {
-    checkAfterClosingUpdate,
-    downloadInstallAndClose,
-    UpdateResourceCleanupError,
-  } from "./lib/updateLifecycle";
+    StableUpdateController,
+    type StableUpdateState,
+  } from "./lib/stableUpdate";
   import type { ProtocolMismatchView } from "./lib/protocol/runtimeProtocol";
-
-  interface ProcessTrendState {
-    cpu: number[];
-    memory: number[];
-    readRate: number[];
-    writeRate: number[];
-    networkRate: number[];
-  }
 
   const historyPointOptions = [30, 72, 180, 360] as const;
   type HistoryPointLimit = (typeof historyPointOptions)[number];
+  type CommandErrorSurface = "global" | "settings" | "workload";
 
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
   const uiPreferencePersistence = new UiPreferencePersistenceSequence();
+  const acceptedRuntimeControls = new AcceptedRuntimeControls(makeDefaultRuntimeQuery(), 1000);
+  const stableUpdateController = new StableUpdateController<Update>(() =>
+    check({ timeout: 15_000 }),
+  );
   const browserFixturePlatform = "macos" as const;
   const accessibilityFixtureState = resolveAccessibilityFixtureState(
     typeof window === "undefined" ? "" : window.location.search,
@@ -155,6 +165,7 @@
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
   let commandError = "";
+  let commandErrorSurface: CommandErrorSurface = "global";
   let protocolMismatch: ProtocolMismatchView | null = null;
   let copyStatus = "";
   let isPaused = false;
@@ -170,7 +181,7 @@
   let systemThemeName: ThemeName = "cave";
   let themeName: ThemeName = "cave";
   let historyPointLimit: HistoryPointLimit = 72;
-  let history: TrendState = emptyTrendState();
+  let history = emptyTrendState();
   let processHistory: ProcessTrendState = emptyProcessTrendState();
   let processRates: Record<string, ProcessRates> = {};
   let processIcons: Record<string, string> = {};
@@ -189,10 +200,11 @@
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
   let runtimeQueryRequestSeq = 0;
+  let runtimeCadenceRequestSeq = 0;
+  let pendingCadenceRequestSeq = 0;
   let searchDebounceId: number | undefined;
   let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
   let updateMessage = "Checks only when you ask.";
-  let pendingUpdate: Update | null = null;
 
   $: themeName = resolveThemeName(themePreference, systemThemeName);
   $: activeTheme = chartPalettes[themeName];
@@ -421,9 +433,8 @@
   );
 
   onMount(() => {
-    let timeoutId: number | undefined;
+    let stopPolling: (() => void) | undefined;
     let detailFocusFrame: number | undefined;
-    let disposed = false;
     const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
     const compactDetailQuery = window.matchMedia("(max-width: 1279px)");
     const savedTheme = window.localStorage.getItem(themeStorageKey);
@@ -468,19 +479,21 @@
       ingest(makeEmptySnapshot(lastError));
     }
 
-    const loop = async () => {
-      if (shouldPollRuntime(isPaused, hasTauriRuntime())) {
-        const next = await readSnapshot();
-        ingest(next);
-      }
-
-      if (!disposed) {
-        timeoutId = window.setTimeout(loop, pollIntervalMs);
-      }
-    };
-
     if (!accessibilityFixtureState) {
-      timeoutId = window.setTimeout(loop, 120);
+      stopPolling = startRuntimePolling({
+        initialDelayMs: 120,
+        intervalMs: () => pollIntervalMs,
+        poll: async () => {
+          if (shouldPollRuntime(isPaused, hasTauriRuntime())) {
+            const next = await readSnapshot();
+            ingest(next);
+          }
+        },
+        scheduler: {
+          setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+          clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
+        },
+      });
     }
 
     const handleSystemThemeChange = (event: MediaQueryListEvent) => {
@@ -515,12 +528,9 @@
     compactDetailQuery.addEventListener("change", handleCompactDetailChange);
 
     return () => {
-      disposed = true;
       systemThemeQuery.removeEventListener("change", handleSystemThemeChange);
       compactDetailQuery.removeEventListener("change", handleCompactDetailChange);
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId);
-      }
+      stopPolling?.();
       if (searchDebounceId !== undefined) {
         window.clearTimeout(searchDebounceId);
       }
@@ -687,6 +697,7 @@
         }
       } catch (error) {
         if (uiPreferencePersistence.isLatest(save)) {
+          commandErrorSurface = "settings";
           commandError = runtimeCommandError(error, "Unable to save interface preferences.");
         }
       }
@@ -734,6 +745,7 @@
       applyNativeSnapshot(next);
     } catch (error) {
       isPaused = previousPaused;
+      commandErrorSurface = "global";
       commandError = runtimeCommandError(error, "Unable to change runtime pause state.");
     }
   }
@@ -754,6 +766,7 @@
       const next = await refreshRuntime(invoke);
       applyNativeSnapshot(next);
     } catch (error) {
+      commandErrorSurface = "global";
       commandError = runtimeCommandError(error, "Unable to refresh runtime.");
     }
   }
@@ -763,59 +776,37 @@
     pollIntervalMs = interval as (typeof pollIntervals)[number];
     if (runtimeMode() !== "native") return;
 
+    const requestSeq = (runtimeCadenceRequestSeq += 1);
+    pendingCadenceRequestSeq = requestSeq;
     try {
-      applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
+      const next = await setRuntimeSampleInterval(invoke, interval);
+      acceptedRuntimeControls.observe(next);
+      if (requestSeq !== runtimeCadenceRequestSeq) return;
+      pendingCadenceRequestSeq = 0;
+      applyNativeSnapshot(next);
     } catch (error) {
+      if (requestSeq !== runtimeCadenceRequestSeq) return;
+      pendingCadenceRequestSeq = 0;
+      const acceptedInterval = acceptedRuntimeControls.acceptedSampleIntervalMs();
+      if (pollIntervals.includes(acceptedInterval as (typeof pollIntervals)[number])) {
+        pollIntervalMs = acceptedInterval as (typeof pollIntervals)[number];
+      }
+      commandErrorSurface = "settings";
       commandError = runtimeCommandError(error, "Unable to change sampling cadence.");
     }
   }
 
   async function checkForStableUpdate(): Promise<void> {
-    if (snapshot.environment.install_kind === "deb") {
-      updateStatus = "current";
-      updateMessage = "Debian packages update through your package manager or a downloaded .deb release.";
-      return;
-    }
-    updateStatus = "checking";
-    updateMessage = "Checking the stable release channel…";
-    const previousUpdate = pendingUpdate;
-    try {
-      pendingUpdate = await checkAfterClosingUpdate(previousUpdate, () =>
-        check({ timeout: 15_000 }),
-      );
-      if (pendingUpdate) {
-        updateStatus = "available";
-        updateMessage = `Version ${pendingUpdate.version} is available.`;
-      } else {
-        updateStatus = "current";
-        updateMessage = "BatCave is up to date.";
-      }
-    } catch {
-      updateStatus = "error";
-      updateMessage = "Unable to check for updates. Monitoring remains available offline.";
-    }
+    await stableUpdateController.check(snapshot.environment.install_kind, applyStableUpdateState);
   }
 
   async function installStableUpdate(): Promise<void> {
-    const update = pendingUpdate;
-    if (!update) return;
-    updateStatus = "installing";
-    updateMessage = "Downloading and verifying the signed update…";
-    try {
-      updateMessage = "Installing the verified update. BatCave will close when installation begins.";
-      await downloadInstallAndClose(update);
-      pendingUpdate = null;
-    } catch (error) {
-      if (error instanceof UpdateResourceCleanupError) {
-        updateMessage = error.operationError
-          ? "Update failed and its local selection could not be released. Retry will clean it up before checking again."
-          : "Update finished, but its local selection could not be released. Retry will clean it up before checking again.";
-      } else {
-        pendingUpdate = null;
-        updateMessage = "Update verification or installation did not complete. Monitoring remains available.";
-      }
-      updateStatus = "error";
-    }
+    await stableUpdateController.install(applyStableUpdateState);
+  }
+
+  function applyStableUpdateState(state: StableUpdateState): void {
+    updateStatus = state.status;
+    updateMessage = state.message;
   }
 
   function setSortKey(key: SortKey): void {
@@ -898,6 +889,7 @@
     const requestSeq = (runtimeQueryRequestSeq += 1);
     try {
       const next = await setRuntimeProcessQuery(invoke, query, intent);
+      acceptedRuntimeControls.observe(next);
       if (requestSeq !== runtimeQueryRequestSeq) {
         return;
       }
@@ -907,8 +899,18 @@
       if (requestSeq !== runtimeQueryRequestSeq) {
         return;
       }
+      restoreRuntimeQueryControls(acceptedRuntimeControls.acceptedQuery());
+      commandErrorSurface = "workload";
       commandError = runtimeCommandError(error, "Unable to update runtime query.");
     }
+  }
+
+  function restoreRuntimeQueryControls(query: RuntimeQuery): void {
+    searchText = query.filter_text;
+    focusMode = query.focus_mode;
+    sortKey = sortKeyForColumn(query.sort_column);
+    sortDirection = query.sort_direction;
+    forceRankingRefresh = true;
   }
 
   function runtimeCommandError(error: unknown, fallback: string): string {
@@ -943,6 +945,7 @@
     pollState = "native";
     lastError = "";
     commandError = "";
+    commandErrorSurface = "global";
     protocolMismatch = null;
     copyStatus = "";
     hasNativeSnapshot = true;
@@ -954,6 +957,7 @@
       return;
     }
 
+    acceptedRuntimeControls.observe(next);
     const previous = snapshot;
     hydrateRuntimeControls(next);
     const previousWorkload = selectedWorkloadId
@@ -963,12 +967,11 @@
       ? selectedWorkloadFromSnapshot(next, selectedWorkloadId)
       : null;
     const hasNewSample = hasNewRuntimeSample(previous, next);
-    const logicalCpu = next.system.logical_cpu_percent.length
-      ? next.system.logical_cpu_percent
-      : [next.system.cpu_percent];
-    const nextMemoryPercent = percentage(next.system.memory_used_bytes, next.system.memory_total_bytes);
     isPaused = next.settings.paused;
-    if (pollIntervals.includes(next.settings.sample_interval_ms as (typeof pollIntervals)[number])) {
+    if (
+      pendingCadenceRequestSeq === 0 &&
+      pollIntervals.includes(next.settings.sample_interval_ms as (typeof pollIntervals)[number])
+    ) {
       pollIntervalMs = next.settings.sample_interval_ms as (typeof pollIntervals)[number];
     }
     snapshot = next;
@@ -988,97 +991,21 @@
       return;
     }
 
-    processRates = buildProcessRates(next.processes);
+    processRates = processRatesFromSamples(next.processes);
 
     if (nextWorkload) {
-      const nextRates = workloadTrendRates(nextWorkload);
-      const nextMetrics = workloadMetrics(nextWorkload);
-      processHistory = {
-        cpu: nextWorkloadHistory(
-          processHistory.cpu,
-          nextMetrics.cpuPercent,
-          nextWorkload,
-          "cpu",
-        ),
-        memory: nextWorkloadHistory(
-          processHistory.memory,
-          percentage(nextMetrics.memoryBytes, Math.max(next.system.memory_total_bytes, 1)),
-          nextWorkload,
-          "memory",
-        ),
-        readRate: nextWorkloadHistory(
-          processHistory.readRate,
-          nextRates.readRate,
-          nextWorkload,
-          "io",
-        ),
-        writeRate: nextWorkloadHistory(
-          processHistory.writeRate,
-          nextRates.writeRate,
-          nextWorkload,
-          "io",
-        ),
-        networkRate: nextWorkloadHistory(
-          processHistory.networkRate,
-          nextRates.networkRate,
-          nextWorkload,
-          "network",
-        ),
-      };
+      processHistory = nextWorkloadTrend(
+        processHistory,
+        nextWorkload,
+        next.system.memory_total_bytes,
+        processRates,
+        historyPointLimit,
+      );
     } else if (previousWorkload) {
       processHistory = emptyProcessTrendState();
     }
 
-    history = {
-      cpu: nextMetricHistory(
-        history.cpu,
-        next.system.cpu_percent,
-        next.system.quality?.cpu,
-        historyPointLimit,
-      ),
-      memory: nextMetricHistory(
-        history.memory,
-        nextMemoryPercent,
-        next.system.quality?.memory,
-        historyPointLimit,
-      ),
-      swap:
-        next.system.swap_total_bytes && next.system.swap_used_bytes !== undefined
-          ? pushPoint(history.swap, percentage(next.system.swap_used_bytes, next.system.swap_total_bytes))
-          : history.swap,
-      diskRead: nextMetricHistory(
-        history.diskRead,
-        next.system.disk_read_bps,
-        next.system.quality?.disk,
-        historyPointLimit,
-      ),
-      diskWrite: nextMetricHistory(
-        history.diskWrite,
-        next.system.disk_write_bps,
-        next.system.quality?.disk,
-        historyPointLimit,
-      ),
-      netRx: nextMetricHistory(
-        history.netRx,
-        next.system.network_received_bps,
-        next.system.quality?.network,
-        historyPointLimit,
-      ),
-      netTx: nextMetricHistory(
-        history.netTx,
-        next.system.network_transmitted_bps,
-        next.system.quality?.network,
-        historyPointLimit,
-      ),
-      cores: logicalCpu.map((value, index) =>
-        nextMetricHistory(
-          history.cores[index] ?? [],
-          value,
-          logicalCpuMetricQuality(next.system.quality ?? {}),
-          historyPointLimit,
-        ),
-      ),
-    };
+    history = nextSystemHistory(history, next, historyPointLimit);
   }
 
   function hydrateRuntimeControls(next: RuntimeSnapshot): void {
@@ -1367,19 +1294,12 @@
   }
 
   function resetWorkloadHistory(workload: WorkloadDetail): void {
-    const rates = workloadTrendRates(workload);
-    const metrics = workloadMetrics(workload);
-    processHistory = {
-      cpu: initialWorkloadHistory(metrics.cpuPercent, workload, "cpu"),
-      memory: initialWorkloadHistory(
-        percentage(metrics.memoryBytes, Math.max(snapshot.system.memory_total_bytes, 1)),
-        workload,
-        "memory",
-      ),
-      readRate: initialWorkloadHistory(rates.readRate, workload, "io"),
-      writeRate: initialWorkloadHistory(rates.writeRate, workload, "io"),
-      networkRate: initialWorkloadHistory(rates.networkRate, workload, "network"),
-    };
+    processHistory = initialWorkloadTrend(
+      workload,
+      snapshot.system.memory_total_bytes,
+      processRates,
+      historyPointLimit,
+    );
   }
 
   function resetHistory(): void {
@@ -1389,64 +1309,9 @@
     }
   }
 
-  function emptyTrendState(): TrendState {
-    return {
-      cpu: [],
-      memory: [],
-      swap: [],
-      diskRead: [],
-      diskWrite: [],
-      netRx: [],
-      netTx: [],
-      cores: [],
-    };
-  }
-
-  function emptyProcessTrendState(): ProcessTrendState {
-    return {
-      cpu: [],
-      memory: [],
-      readRate: [],
-      writeRate: [],
-      networkRate: [],
-    };
-  }
-
   function trimHistory(): void {
-    history = {
-      cpu: trimPoints(history.cpu),
-      memory: trimPoints(history.memory),
-      swap: trimPoints(history.swap),
-      diskRead: trimPoints(history.diskRead),
-      diskWrite: trimPoints(history.diskWrite),
-      netRx: trimPoints(history.netRx),
-      netTx: trimPoints(history.netTx),
-      cores: history.cores.map(trimPoints),
-    };
-    processHistory = {
-      cpu: trimPoints(processHistory.cpu),
-      memory: trimPoints(processHistory.memory),
-      readRate: trimPoints(processHistory.readRate),
-      writeRate: trimPoints(processHistory.writeRate),
-      networkRate: trimPoints(processHistory.networkRate),
-    };
-  }
-
-  function trimPoints(points: number[]): number[] {
-    return points.slice(-historyPointLimit);
-  }
-
-  function pushPoint(points: number[], value: number): number[] {
-    return trimPoints([...points, Number.isFinite(value) ? value : 0]);
-  }
-
-  function combineSeries(left: number[], right: number[]): number[] {
-    const length = Math.max(left.length, right.length);
-    const leftOffset = length - left.length;
-    const rightOffset = length - right.length;
-    return Array.from({ length }, (_, index) =>
-      (left[index - leftOffset] ?? 0) + (right[index - rightOffset] ?? 0),
-    );
+    history = trimSystemHistory(history, historyPointLimit);
+    processHistory = trimProcessHistory(processHistory, historyPointLimit);
   }
 
   function metricValueLabel(
@@ -1495,20 +1360,6 @@
     return metricQualityShortLabel(quality, fallback);
   }
 
-  function buildProcessRates(nextProcesses: ProcessSample[]): Record<string, ProcessRates> {
-    const rates: Record<string, ProcessRates> = {};
-
-    for (const process of nextProcesses) {
-      rates[processSelectionKey(process)] = {
-        readRate: process.io_read_bps,
-        otherRate: process.other_io_bps,
-        writeRate: process.io_write_bps,
-      };
-    }
-
-    return rates;
-  }
-
   function selectedWorkloadFromSnapshot(
     source: RuntimeSnapshot,
     selection: string,
@@ -1516,93 +1367,8 @@
     return selectedWorkloadDetail(source.process_view_rows, selection);
   }
 
-  function workloadMetrics(workload: WorkloadDetail): import("./lib/process").WorkloadMetrics {
-    if (workload.kind === "group") {
-      return {
-        cpuPercent: workload.cpu_percent,
-        memoryBytes: workload.memory_bytes,
-        ioBps: workload.io_bps,
-        networkBps: workload.network_bps,
-        threads: workload.threads,
-      };
-    }
-
-    return {
-      cpuPercent: workload.process.cpu_percent,
-      memoryBytes: workload.process.memory_bytes,
-      ioBps: workload.io_bps,
-      networkBps: workload.network_bps,
-      threads: workload.process.threads,
-    };
-  }
-
-  function workloadTrendRates(workload: WorkloadDetail): ProcessRates & { networkRate: number } {
-    if (workload.kind === "group") {
-      return {
-        readRate: workload.io_bps,
-        writeRate: 0,
-        otherRate: undefined,
-        networkRate: workload.network_bps,
-      };
-    }
-
-    const process = workload.process;
-    const rates = processRates[processSelectionKey(process)];
-    return {
-      readRate: rates?.readRate ?? process.io_read_bps,
-      writeRate: rates?.writeRate ?? process.io_write_bps,
-      otherRate: rates?.otherRate ?? process.other_io_bps,
-      networkRate: workload.network_bps,
-    };
-  }
-
-  type HistoricalGroupMetric = "cpu" | "memory" | "io" | "network";
-
-  function initialWorkloadHistory(
-    value: number,
-    workload: WorkloadDetail,
-    metric: HistoricalGroupMetric,
-  ): number[] {
-    if (workload.kind === "group") {
-      return groupMetricCanDisplay(workload.quality[metric], workload.coverage[metric])
-        ? [value]
-        : [];
-    }
-    const quality =
-      metric === "memory" ? processMemoryQuality(workload.process) : workload.process.quality?.[metric];
-    return nextProcessMetricHistory([], value, quality, historyPointLimit);
-  }
-
-  function nextWorkloadHistory(
-    values: number[],
-    value: number,
-    workload: WorkloadDetail,
-    metric: HistoricalGroupMetric,
-  ): number[] {
-    if (workload.kind === "group") {
-      return groupMetricCanDisplay(workload.quality[metric], workload.coverage[metric])
-        ? pushPoint(values, value)
-        : [];
-    }
-    const quality =
-      metric === "memory" ? processMemoryQuality(workload.process) : workload.process.quality?.[metric];
-    return nextProcessMetricHistory(values, value, quality, historyPointLimit);
-  }
-
-  function percentage(value: number, total: number): number {
-    if (total <= 0) {
-      return 0;
-    }
-
-    return Math.min(100, Math.max(0, (value / total) * 100));
-  }
-
   function currentCoreLoad(points: number[]): number {
     return boundedPercent(points.at(-1) ?? 0);
-  }
-
-  function boundedPercent(value: number): number {
-    return Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
   }
 
   function coreTone(load: number): string {
@@ -1618,7 +1384,9 @@
   }
 
   function topPoolTags(tags: KernelPoolTag[] | undefined): KernelPoolTag[] {
-    return [...(tags ?? [])].sort((left, right) => right.bytes - left.bytes).slice(0, 8);
+    return [...(tags ?? [])]
+      .sort((left, right) => (right.bytes ?? -1) - (left.bytes ?? -1))
+      .slice(0, 8);
   }
 
   function processNetworkLabel(process: ProcessSample): string {
@@ -1712,10 +1480,6 @@
     }
   }
 
-  function maxRate(points: number[], fallback: number): number {
-    return Math.max(fallback, Math.max(...points, 0) * 1.2);
-  }
-
   function timeLabel(timestampMs: number): string {
     if (timestampMs <= 0) {
       return "--";
@@ -1767,6 +1531,9 @@
     onOpenSettings={() => (settingsOpen = true)}
     onOpenDiagnostics={() => (diagnosticsOpen = true)}
   />
+  {#if commandError && commandErrorSurface === "global"}
+    <p class="command-error global-command-error" role="alert">{commandError}</p>
+  {/if}
   <SystemSummary
     brief={resourceBrief}
     resources={resourceSummaries}
@@ -1797,7 +1564,7 @@
         {focusMode}
         {sortKey}
         {sortDirection}
-        {commandError}
+        commandError={commandErrorSurface === "workload" ? commandError : ""}
         {rankingUpdateAvailable}
         {focusOptions}
         {sortOptions}
@@ -1889,6 +1656,7 @@
     {pollIntervalMs}
     {historyPointOptions}
     {historyPointLimit}
+    commandError={commandErrorSurface === "settings" ? commandError : ""}
     adminAvailable={snapshot.environment.admin_mode_available}
     runtimeMutationsDisabled={protocolMismatch !== null}
     processStatus={processElevationLabel(snapshot.environment)}

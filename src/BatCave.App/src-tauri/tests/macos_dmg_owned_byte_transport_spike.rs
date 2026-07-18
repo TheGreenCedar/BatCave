@@ -1069,7 +1069,20 @@ mod macos {
         }
         signal_process_group(process_group, libc::SIGKILL)?;
         let _ = child.wait()?;
-        Ok(())
+        let deadline = Instant::now() + TERMINATION_GRACE;
+        while Instant::now() < deadline {
+            if process_group_settled(process_group) {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if process_group_settled(process_group) {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "owned fixture process group remained after forced termination",
+            ))
+        }
     }
 
     fn signal_process_group(process_group: i32, signal: i32) -> io::Result<()> {

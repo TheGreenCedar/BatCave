@@ -1,6 +1,6 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
-use std::{fs, path::Path, time::Instant};
+use std::{collections::BTreeMap, fs, path::Path, time::Instant};
 
 use crate::contracts::{
     MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource, SystemMetricQuality,
@@ -8,12 +8,13 @@ use crate::contracts::{
 };
 
 const SECTOR_SIZE_BYTES: u64 = 512;
+const REQUIRED_CPU_COUNTERS: usize = 8;
 
 #[derive(Debug, Default)]
 pub struct LinuxSystemCollector {
-    previous_cpu: Option<Vec<CpuTimes>>,
-    previous_disk: Option<TimedIoTotals>,
-    previous_network: Option<TimedIoTotals>,
+    previous_cpu: Option<BTreeMap<String, CpuTimes>>,
+    previous_disk: Option<TimedIoCounters>,
+    previous_network: Option<TimedIoCounters>,
 }
 
 impl LinuxSystemCollector {
@@ -39,11 +40,14 @@ impl LinuxSystemCollector {
                 "Linux network counters need a second /proc/net/dev sample.",
             );
 
-        let aggregate_cpu = cpu_times.first().copied().unwrap_or_default();
+        let aggregate_cpu = cpu_times
+            .get("cpu")
+            .copied()
+            .ok_or_else(|| "linux_proc_stat_missing_aggregate_cpu".to_string())?;
         let (cpu_percent, kernel_cpu_percent, cpu_quality) = self
             .previous_cpu
             .as_ref()
-            .and_then(|previous| previous.first().copied())
+            .and_then(|previous| previous.get("cpu").copied())
             .map_or(
                 (
                     0.0,
@@ -54,27 +58,69 @@ impl LinuxSystemCollector {
                             "Linux CPU counters need a second /proc/stat sample.",
                         ),
                 ),
-                |previous_cpu| {
-                    let (cpu, kernel) = cpu_load(previous_cpu, aggregate_cpu);
-                    (
+                |previous_cpu| match cpu_load(previous_cpu, aggregate_cpu) {
+                    Some((cpu, kernel)) => (
                         cpu,
                         kernel,
                         MetricQualityInfo::new(MetricQuality::Native, MetricSource::Procfs),
-                    )
+                    ),
+                    None => (
+                        0.0,
+                        0.0,
+                        MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
+                            .with_limitation(
+                                MetricLimitationCode::PendingBaseline,
+                                "Linux aggregate CPU counters reset; waiting for a fresh baseline.",
+                            ),
+                    ),
                 },
             );
 
-        let logical_cpu_percent = self
-            .previous_cpu
-            .as_ref()
-            .map_or_else(Vec::new, |previous| {
-                cpu_times
-                    .iter()
-                    .skip(1)
-                    .zip(previous.iter().skip(1))
-                    .map(|(current, previous)| cpu_load(*previous, *current).0)
-                    .collect()
-            });
+        let mut logical_warming = 0_usize;
+        let mut logical_reset = 0_usize;
+        let mut logical_cpu_times = cpu_times
+            .iter()
+            .filter(|(label, _)| label.as_str() != "cpu")
+            .collect::<Vec<_>>();
+        logical_cpu_times.sort_by_key(|(label, _)| {
+            label
+                .strip_prefix("cpu")
+                .and_then(|index| index.parse::<u32>().ok())
+                .unwrap_or(u32::MAX)
+        });
+        let logical_cpu_percent = logical_cpu_times
+            .into_iter()
+            .map(|(label, current)| {
+                let Some(previous) = self
+                    .previous_cpu
+                    .as_ref()
+                    .and_then(|previous| previous.get(label))
+                else {
+                    logical_warming += 1;
+                    return 0.0;
+                };
+                match cpu_load(*previous, *current) {
+                    Some(load) => load.0,
+                    None => {
+                        logical_reset += 1;
+                        0.0
+                    }
+                }
+            })
+            .collect();
+        let logical_cpu_quality = if self.previous_cpu.is_none() {
+            MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs).with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "Linux logical CPU counters need a second keyed /proc/stat sample.",
+            )
+        } else if logical_warming > 0 || logical_reset > 0 {
+            MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Procfs).with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "New or reset logical CPUs are warming up; stable CPU identities remain native.",
+            )
+        } else {
+            MetricQualityInfo::new(MetricQuality::Native, MetricSource::Procfs)
+        };
         self.previous_cpu = Some(cpu_times);
 
         let snapshot = SystemMetricsSnapshot {
@@ -99,7 +145,7 @@ impl LinuxSystemCollector {
             quality: Some(SystemMetricQuality {
                 cpu: Some(cpu_quality.clone()),
                 kernel_cpu: Some(cpu_quality.clone()),
-                logical_cpu: Some(cpu_quality),
+                logical_cpu: Some(logical_cpu_quality),
                 memory: Some(MetricQualityInfo::new(
                     MetricQuality::Native,
                     MetricSource::Procfs,
@@ -118,8 +164,8 @@ impl LinuxSystemCollector {
 }
 
 #[derive(Debug, Clone)]
-struct TimedIoTotals {
-    totals: IoTotals,
+struct TimedIoCounters {
+    counters: BTreeMap<String, IoTotals>,
     sampled_at: Instant,
 }
 
@@ -174,13 +220,14 @@ struct IoTotals {
 }
 
 fn resolve_io_sample(
-    current: Result<IoTotals, String>,
-    previous: &mut Option<TimedIoTotals>,
+    current: Result<BTreeMap<String, IoTotals>, String>,
+    previous: &mut Option<TimedIoCounters>,
     sampled_at: Instant,
     initial_message: &str,
 ) -> (IoTotals, u64, u64, MetricQualityInfo) {
     match current {
-        Ok(totals) => {
+        Ok(counters) => {
+            let totals = sum_io_totals(counters.values().copied());
             let (read_bps, write_bps, quality) = previous.as_ref().map_or_else(
                 || {
                     (
@@ -195,22 +242,13 @@ fn resolve_io_sample(
                 },
                 |previous| {
                     let elapsed = sampled_at.duration_since(previous.sampled_at).as_secs_f64();
-                    (
-                        byte_rate(
-                            totals.read_total_bytes,
-                            previous.totals.read_total_bytes,
-                            elapsed,
-                        ),
-                        byte_rate(
-                            totals.write_total_bytes,
-                            previous.totals.write_total_bytes,
-                            elapsed,
-                        ),
-                        MetricQualityInfo::new(MetricQuality::Native, MetricSource::Procfs),
-                    )
+                    keyed_io_rates(&counters, &previous.counters, elapsed)
                 },
             );
-            *previous = Some(TimedIoTotals { totals, sampled_at });
+            *previous = Some(TimedIoCounters {
+                counters,
+                sampled_at,
+            });
             (totals, read_bps, write_bps, quality)
         }
         Err(error) => previous.as_ref().map_or_else(
@@ -225,7 +263,7 @@ fn resolve_io_sample(
             },
             |previous| {
                 (
-                    previous.totals,
+                    sum_io_totals(previous.counters.values().copied()),
                     0,
                     0,
                     MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs)
@@ -236,7 +274,71 @@ fn resolve_io_sample(
     }
 }
 
-fn read_cpu_times() -> Result<Vec<CpuTimes>, String> {
+fn keyed_io_rates(
+    current: &BTreeMap<String, IoTotals>,
+    previous: &BTreeMap<String, IoTotals>,
+    elapsed_seconds: f64,
+) -> (u64, u64, MetricQualityInfo) {
+    let mut read_bps = 0_u64;
+    let mut write_bps = 0_u64;
+    let mut matched = 0_usize;
+    let mut warming = 0_usize;
+    let mut reset = 0_usize;
+
+    for (identity, current) in current {
+        let Some(previous) = previous.get(identity) else {
+            warming += 1;
+            continue;
+        };
+        if current.read_total_bytes < previous.read_total_bytes
+            || current.write_total_bytes < previous.write_total_bytes
+        {
+            reset += 1;
+            continue;
+        }
+        matched += 1;
+        read_bps = read_bps.saturating_add(byte_rate(
+            current.read_total_bytes,
+            previous.read_total_bytes,
+            elapsed_seconds,
+        ));
+        write_bps = write_bps.saturating_add(byte_rate(
+            current.write_total_bytes,
+            previous.write_total_bytes,
+            elapsed_seconds,
+        ));
+    }
+
+    let quality = if matched == 0 && (!current.is_empty() || !previous.is_empty()) {
+        MetricQualityInfo::new(MetricQuality::Held, MetricSource::Procfs).with_limitation(
+            MetricLimitationCode::PendingBaseline,
+            "Linux counter identities changed or reset; waiting for stable per-device baselines.",
+        )
+    } else if warming > 0 || reset > 0 {
+        MetricQualityInfo::new(MetricQuality::Partial, MetricSource::Procfs).with_limitation(
+            MetricLimitationCode::PendingBaseline,
+            "New or reset Linux counter identities are warming up; stable identities remain native.",
+        )
+    } else {
+        MetricQualityInfo::new(MetricQuality::Native, MetricSource::Procfs)
+    };
+    (read_bps, write_bps, quality)
+}
+
+fn sum_io_totals(counters: impl IntoIterator<Item = IoTotals>) -> IoTotals {
+    counters
+        .into_iter()
+        .fold(IoTotals::default(), |totals, counter| IoTotals {
+            read_total_bytes: totals
+                .read_total_bytes
+                .saturating_add(counter.read_total_bytes),
+            write_total_bytes: totals
+                .write_total_bytes
+                .saturating_add(counter.write_total_bytes),
+        })
+}
+
+fn read_cpu_times() -> Result<BTreeMap<String, CpuTimes>, String> {
     parse_cpu_times(
         &fs::read_to_string("/proc/stat")
             .map_err(|error| format!("linux_proc_stat_read_failed:{error}"))?,
@@ -250,19 +352,19 @@ fn read_meminfo() -> Result<MemoryTotals, String> {
     )
 }
 
-fn read_network_totals() -> Result<IoTotals, String> {
+fn read_network_totals() -> Result<BTreeMap<String, IoTotals>, String> {
     parse_network_totals(
         &fs::read_to_string("/proc/net/dev")
             .map_err(|error| format!("linux_proc_net_dev_read_failed:{error}"))?,
     )
 }
 
-fn read_block_device_totals() -> Result<IoTotals, String> {
+fn read_block_device_totals() -> Result<BTreeMap<String, IoTotals>, String> {
     read_block_device_totals_from(Path::new("/sys/block"))
 }
 
-fn read_block_device_totals_from(block_root: &Path) -> Result<IoTotals, String> {
-    let mut totals = IoTotals::default();
+fn read_block_device_totals_from(block_root: &Path) -> Result<BTreeMap<String, IoTotals>, String> {
+    let mut counters = BTreeMap::new();
     for entry in
         fs::read_dir(block_root).map_err(|error| format!("linux_sys_block_read_failed:{error}"))?
     {
@@ -274,19 +376,15 @@ fn read_block_device_totals_from(block_root: &Path) -> Result<IoTotals, String> 
         let stat_path = entry.path().join("stat");
         let stat = fs::read_to_string(&stat_path)
             .map_err(|error| format!("linux_sys_block_stat_read_failed:{stat_path:?}:{error}"))?;
-        let device_totals = parse_block_stat(&stat)?;
-        totals.read_total_bytes = totals
-            .read_total_bytes
-            .saturating_add(device_totals.read_total_bytes);
-        totals.write_total_bytes = totals
-            .write_total_bytes
-            .saturating_add(device_totals.write_total_bytes);
+        let device_totals =
+            parse_block_stat(&stat).map_err(|error| format!("{error}:device={name}"))?;
+        counters.insert(name, device_totals);
     }
-    Ok(totals)
+    Ok(counters)
 }
 
-fn parse_cpu_times(content: &str) -> Result<Vec<CpuTimes>, String> {
-    let mut cpus = Vec::new();
+fn parse_cpu_times(content: &str) -> Result<BTreeMap<String, CpuTimes>, String> {
+    let mut cpus = BTreeMap::new();
     for line in content.lines() {
         let mut fields = line.split_whitespace();
         let Some(label) = fields.next() else {
@@ -300,21 +398,32 @@ fn parse_cpu_times(content: &str) -> Result<Vec<CpuTimes>, String> {
             continue;
         }
         let values = fields
-            .filter_map(|value| value.parse::<u64>().ok())
-            .collect::<Vec<_>>();
-        if values.len() < 4 {
-            continue;
+            .enumerate()
+            .map(|(index, value)| {
+                value.parse::<u64>().map_err(|error| {
+                    format!("linux_proc_stat_cpu_parse_failed:{label}:field={index}:{error}")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if values.len() < REQUIRED_CPU_COUNTERS {
+            return Err(format!(
+                "linux_proc_stat_cpu_too_short:{label}:expected={REQUIRED_CPU_COUNTERS}:actual={}",
+                values.len()
+            ));
         }
-        cpus.push(CpuTimes {
-            user: values.first().copied().unwrap_or_default(),
-            nice: values.get(1).copied().unwrap_or_default(),
-            system: values.get(2).copied().unwrap_or_default(),
-            idle: values.get(3).copied().unwrap_or_default(),
-            iowait: values.get(4).copied().unwrap_or_default(),
-            irq: values.get(5).copied().unwrap_or_default(),
-            softirq: values.get(6).copied().unwrap_or_default(),
-            steal: values.get(7).copied().unwrap_or_default(),
-        });
+        cpus.insert(
+            label.to_string(),
+            CpuTimes {
+                user: values[0],
+                nice: values[1],
+                system: values[2],
+                idle: values[3],
+                iowait: values[4],
+                irq: values[5],
+                softirq: values[6],
+                steal: values[7],
+            },
+        );
     }
 
     if cpus.is_empty() {
@@ -359,27 +468,41 @@ fn parse_meminfo(content: &str) -> Result<MemoryTotals, String> {
     })
 }
 
-fn parse_network_totals(content: &str) -> Result<IoTotals, String> {
-    let mut totals = IoTotals::default();
-    for line in content.lines().skip(2) {
-        let Some((name, values)) = line.split_once(':') else {
+fn parse_network_totals(content: &str) -> Result<BTreeMap<String, IoTotals>, String> {
+    let mut counters = BTreeMap::new();
+    for (line_index, line) in content.lines().skip(2).enumerate() {
+        if line.trim().is_empty() {
             continue;
-        };
-        if name.trim() == "lo" {
+        }
+        let (name, values) = line.split_once(':').ok_or_else(|| {
+            format!(
+                "linux_proc_net_dev_missing_separator:line={}",
+                line_index + 3
+            )
+        })?;
+        let name = name.trim();
+        if name == "lo" {
             continue;
         }
         let fields = values.split_whitespace().collect::<Vec<_>>();
         if fields.len() < 16 {
-            continue;
+            return Err(format!("linux_proc_net_dev_too_short:interface={name}"));
         }
-        totals.read_total_bytes = totals
-            .read_total_bytes
-            .saturating_add(fields[0].parse::<u64>().unwrap_or_default());
-        totals.write_total_bytes = totals
-            .write_total_bytes
-            .saturating_add(fields[8].parse::<u64>().unwrap_or_default());
+        let received = fields[0].parse::<u64>().map_err(|error| {
+            format!("linux_proc_net_dev_rx_parse_failed:interface={name}:{error}")
+        })?;
+        let transmitted = fields[8].parse::<u64>().map_err(|error| {
+            format!("linux_proc_net_dev_tx_parse_failed:interface={name}:{error}")
+        })?;
+        counters.insert(
+            name.to_string(),
+            IoTotals {
+                read_total_bytes: received,
+                write_total_bytes: transmitted,
+            },
+        );
     }
-    Ok(totals)
+    Ok(counters)
 }
 
 fn parse_block_stat(content: &str) -> Result<IoTotals, String> {
@@ -387,8 +510,12 @@ fn parse_block_stat(content: &str) -> Result<IoTotals, String> {
     if fields.len() < 7 {
         return Err("linux_sys_block_stat_too_short".to_string());
     }
-    let sectors_read = fields[2].parse::<u64>().unwrap_or_default();
-    let sectors_written = fields[6].parse::<u64>().unwrap_or_default();
+    let sectors_read = fields[2]
+        .parse::<u64>()
+        .map_err(|error| format!("linux_sys_block_stat_read_parse_failed:{error}"))?;
+    let sectors_written = fields[6]
+        .parse::<u64>()
+        .map_err(|error| format!("linux_sys_block_stat_write_parse_failed:{error}"))?;
     Ok(IoTotals {
         read_total_bytes: sectors_read.saturating_mul(SECTOR_SIZE_BYTES),
         write_total_bytes: sectors_written.saturating_mul(SECTOR_SIZE_BYTES),
@@ -442,19 +569,30 @@ fn count_process_dirs() -> usize {
         .unwrap_or_default()
 }
 
-fn cpu_load(previous: CpuTimes, current: CpuTimes) -> (f64, f64) {
-    let total_delta = current.total().saturating_sub(previous.total());
+fn cpu_load(previous: CpuTimes, current: CpuTimes) -> Option<(f64, f64)> {
+    if current.user < previous.user
+        || current.nice < previous.nice
+        || current.system < previous.system
+        || current.idle < previous.idle
+        || current.iowait < previous.iowait
+        || current.irq < previous.irq
+        || current.softirq < previous.softirq
+        || current.steal < previous.steal
+    {
+        return None;
+    }
+    let total_delta = current.total() - previous.total();
     if total_delta == 0 {
-        return (0.0, 0.0);
+        return Some((0.0, 0.0));
     }
     let idle_delta = current.idle_total().saturating_sub(previous.idle_total());
     let kernel_delta = current
         .kernel_total()
         .saturating_sub(previous.kernel_total());
-    (
+    Some((
         round1(percent(total_delta.saturating_sub(idle_delta), total_delta)),
         round1(percent(kernel_delta, total_delta)),
-    )
+    ))
 }
 
 fn byte_rate(current: u64, previous: u64, elapsed_seconds: f64) -> u64 {
@@ -488,8 +626,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(cpus.len(), 2);
-        assert_eq!(cpus[0].system, 30);
-        assert_eq!(cpus[1].idle, 200);
+        assert_eq!(cpus["cpu"].system, 30);
+        assert_eq!(cpus["cpu0"].idle, 200);
     }
 
     #[test]
@@ -507,7 +645,7 @@ mod tests {
             ..CpuTimes::default()
         };
 
-        let (cpu, kernel) = cpu_load(previous, current);
+        let (cpu, kernel) = cpu_load(previous, current).expect("monotonic CPU counters");
 
         assert_eq!(cpu, 70.0);
         assert_eq!(kernel, 20.0);
@@ -527,13 +665,13 @@ mod tests {
 
     #[test]
     fn parse_network_totals_skips_loopback() {
-        let totals = parse_network_totals(
+        let counters = parse_network_totals(
             "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 10 0 0 0 0 0 0 0 20 0 0 0 0 0 0 0\neth0: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n",
         )
         .unwrap();
 
-        assert_eq!(totals.read_total_bytes, 100);
-        assert_eq!(totals.write_total_bytes, 200);
+        assert_eq!(counters["eth0"].read_total_bytes, 100);
+        assert_eq!(counters["eth0"].write_total_bytes, 200);
     }
 
     #[test]
@@ -549,10 +687,13 @@ mod tests {
         let started = Instant::now();
         let mut previous = None;
         let _ = resolve_io_sample(
-            Ok(IoTotals {
-                read_total_bytes: 100,
-                write_total_bytes: 200,
-            }),
+            Ok(BTreeMap::from([(
+                "device".to_string(),
+                IoTotals {
+                    read_total_bytes: 100,
+                    write_total_bytes: 200,
+                },
+            )])),
             &mut previous,
             started,
             "initial",
@@ -569,10 +710,13 @@ mod tests {
         assert_eq!(quality.quality, MetricQuality::Held);
 
         let (_, read_bps, write_bps, quality) = resolve_io_sample(
-            Ok(IoTotals {
-                read_total_bytes: 1_100,
-                write_total_bytes: 2_200,
-            }),
+            Ok(BTreeMap::from([(
+                "device".to_string(),
+                IoTotals {
+                    read_total_bytes: 1_100,
+                    write_total_bytes: 2_200,
+                },
+            )])),
             &mut previous,
             started + std::time::Duration::from_secs(10),
             "initial",
@@ -595,11 +739,105 @@ mod tests {
         create_block_device(&root, "nvme0n1", "1 0 2 0 2 0 4 0");
         create_block_device(&root, "zram0", "1 0 999 0 2 0 999 0");
 
-        let totals = read_block_device_totals_from(&root).expect("topology reads");
+        let counters = read_block_device_totals_from(&root).expect("topology reads");
+        let totals = sum_io_totals(counters.values().copied());
 
         assert_eq!(totals.read_total_bytes, 5_120);
         assert_eq!(totals.write_total_bytes, 10_240);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn logical_cpu_deltas_follow_labels_across_reordering() {
+        let previous = parse_cpu_times(
+            "cpu 20 0 0 180 0 0 0 0\ncpu0 10 0 0 90 0 0 0 0\ncpu1 10 0 0 90 0 0 0 0\n",
+        )
+        .unwrap();
+        let current = parse_cpu_times(
+            "cpu 60 0 0 340 0 0 0 0\ncpu1 40 0 0 160 0 0 0 0\ncpu0 20 0 0 180 0 0 0 0\n",
+        )
+        .unwrap();
+
+        let cpu0 = cpu_load(previous["cpu0"], current["cpu0"]).unwrap().0;
+        let cpu1 = cpu_load(previous["cpu1"], current["cpu1"]).unwrap().0;
+
+        assert_eq!(cpu0, 10.0);
+        assert_eq!(cpu1, 30.0);
+    }
+
+    #[test]
+    fn keyed_io_rates_ignore_new_removed_and_reset_identities() {
+        let previous = BTreeMap::from([
+            (
+                "gone".to_string(),
+                IoTotals {
+                    read_total_bytes: 9_000,
+                    write_total_bytes: 9_000,
+                },
+            ),
+            (
+                "reset".to_string(),
+                IoTotals {
+                    read_total_bytes: 8_000,
+                    write_total_bytes: 8_000,
+                },
+            ),
+            (
+                "stable".to_string(),
+                IoTotals {
+                    read_total_bytes: 1_000,
+                    write_total_bytes: 2_000,
+                },
+            ),
+        ]);
+        let current = BTreeMap::from([
+            (
+                "new".to_string(),
+                IoTotals {
+                    read_total_bytes: 50_000,
+                    write_total_bytes: 60_000,
+                },
+            ),
+            (
+                "reset".to_string(),
+                IoTotals {
+                    read_total_bytes: 10,
+                    write_total_bytes: 20,
+                },
+            ),
+            (
+                "stable".to_string(),
+                IoTotals {
+                    read_total_bytes: 1_500,
+                    write_total_bytes: 2_250,
+                },
+            ),
+        ]);
+
+        let (read_bps, write_bps, quality) = keyed_io_rates(&current, &previous, 1.0);
+
+        assert_eq!((read_bps, write_bps), (500, 250));
+        assert_eq!(quality.quality, MetricQuality::Partial);
+    }
+
+    #[test]
+    fn malformed_required_counters_fail_closed() {
+        assert!(parse_cpu_times("cpu 100 nope 30 400\n").is_err());
+        assert!(parse_cpu_times("cpu 100 2 30\n").is_err());
+        assert_eq!(
+            parse_cpu_times("cpu 100 2 30 400 5 6 7\n").unwrap_err(),
+            "linux_proc_stat_cpu_too_short:cpu:expected=8:actual=7"
+        );
+        assert_eq!(
+            parse_cpu_times("cpu 100 2 30 400 5 6 7 8\ncpu0 50 1 10 200 2 3 4\n").unwrap_err(),
+            "linux_proc_stat_cpu_too_short:cpu0:expected=8:actual=7"
+        );
+        assert!(parse_network_totals(
+            "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\neth0: nope 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n"
+        )
+        .is_err());
+        assert!(parse_block_stat("1 0 nope 0 2 0 16 0").is_err());
+        assert!(parse_block_stat("1 0 8 0 2 0 nope 0").is_err());
     }
 
     fn create_block_device(root: &Path, name: &str, stat: &str) {

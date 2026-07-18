@@ -1,6 +1,586 @@
 // Generated from the production Rust protocol; do not edit by hand.
 export const RUNTIME_PROTOCOL_VERSION = 3 as const;
 
+export const RUNTIME_PROTOCOL_POLICY = {
+  "quality_codes": [
+    "native",
+    "estimated",
+    "held",
+    "partial",
+    "unavailable"
+  ],
+  "quality_limitation_policies": [
+    {
+      "allowed_codes": [],
+      "quality": "native",
+      "requires_limitation": false
+    },
+    {
+      "allowed_codes": [
+        "unsupported_metric",
+        "access_denied",
+        "authorization_scope",
+        "partial_coverage",
+        "collector_failure",
+        "data_loss",
+        "missing_metadata",
+        "numeric_range"
+      ],
+      "quality": "estimated",
+      "requires_limitation": false
+    },
+    {
+      "allowed_codes": [
+        "pending_baseline",
+        "held_value"
+      ],
+      "quality": "held",
+      "requires_limitation": true
+    },
+    {
+      "allowed_codes": [
+        "unsupported_metric",
+        "access_denied",
+        "authorization_scope",
+        "partial_coverage",
+        "collector_failure",
+        "data_loss",
+        "missing_metadata",
+        "group_partial_coverage"
+      ],
+      "quality": "partial",
+      "requires_limitation": true
+    },
+    {
+      "allowed_codes": [
+        "unsupported_metric",
+        "access_denied",
+        "authorization_scope",
+        "partial_coverage",
+        "collector_failure",
+        "data_loss",
+        "missing_metadata",
+        "group_partial_coverage",
+        "numeric_range"
+      ],
+      "quality": "unavailable",
+      "requires_limitation": true
+    }
+  ],
+  "semantic_definitions": [
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "system",
+      "semantic": "cpu_usage",
+      "unit": "percent_system"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "system",
+      "semantic": "kernel_cpu_usage",
+      "unit": "percent_system"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "system",
+      "semantic": "logical_cpu_usage",
+      "unit": "percent_system"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "process",
+      "semantic": "cpu_usage",
+      "unit": "percent_one_core"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "process",
+      "semantic": "kernel_cpu_usage",
+      "unit": "percent_one_core"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "group",
+      "semantic": "cpu_usage",
+      "unit": "percent_one_core"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "memory_used",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "memory_capacity",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "memory_available",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "swap_used",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "swap_capacity",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "process_working_set_memory",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "process_private_memory",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "commit_used",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "commit_limit",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "system_cache",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "kernel_memory",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "kernel_paged_pool",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "kernel_nonpaged_pool",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "kernel_pool_bytes",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "physical_disk_read_total",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "physical_disk_write_total",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": "non_loopback_interface_aggregate",
+        "sysinfo": "all_interface_aggregate"
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "network_receive_total",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": "non_loopback_interface_aggregate",
+        "sysinfo": "all_interface_aggregate"
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "network_transmit_total",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "resident_memory",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "private_memory",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "virtual_memory",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "read_io_total",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "write_io_total",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "other_io_total",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "group",
+      "semantic": "resident_memory",
+      "unit": "bytes"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "system",
+      "semantic": "physical_disk_read_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "system",
+      "semantic": "physical_disk_write_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": "non_loopback_interface_aggregate",
+        "sysinfo": "all_interface_aggregate"
+      },
+      "sampled_over_interval": true,
+      "scope": "system",
+      "semantic": "network_receive_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": "non_loopback_interface_aggregate",
+        "sysinfo": "all_interface_aggregate"
+      },
+      "sampled_over_interval": true,
+      "scope": "system",
+      "semantic": "network_transmit_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "process",
+      "semantic": "read_io_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "process",
+      "semantic": "write_io_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "process",
+      "semantic": "other_io_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": "ip_socket_payload",
+        "sysinfo": "ip_socket_payload"
+      },
+      "sampled_over_interval": true,
+      "scope": "process",
+      "semantic": "network_receive_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": "ip_socket_payload",
+        "sysinfo": "ip_socket_payload"
+      },
+      "sampled_over_interval": true,
+      "scope": "process",
+      "semantic": "network_transmit_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "group",
+      "semantic": "read_write_io_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": true,
+      "scope": "group",
+      "semantic": "other_io_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": "ip_socket_payload",
+        "sysinfo": "ip_socket_payload"
+      },
+      "sampled_over_interval": true,
+      "scope": "group",
+      "semantic": "network_rate",
+      "unit": "bytes_per_second"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "process_count",
+      "unit": "count"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "denied_process_count",
+      "unit": "count"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "partial_process_count",
+      "unit": "count"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "kernel_pool_allocations",
+      "unit": "count"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "system",
+      "semantic": "kernel_pool_frees",
+      "unit": "count"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "thread_count",
+      "unit": "count"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "process",
+      "semantic": "handle_count",
+      "unit": "count"
+    },
+    {
+      "network_scope": {
+        "default": null,
+        "sysinfo": null
+      },
+      "sampled_over_interval": false,
+      "scope": "group",
+      "semantic": "thread_count",
+      "unit": "count"
+    }
+  ]
+} as const;
+
 export type Compatibility = { minimum_reader_version: number, breaking: boolean, };
 
 export type ProtocolMismatchReason = "legacy_writer" | "reader_too_old" | "breaking_writer" | "malformed_payload";

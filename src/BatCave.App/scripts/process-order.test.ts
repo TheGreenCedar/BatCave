@@ -165,6 +165,17 @@ test("visible workload budgeting preserves later identities behind a large colla
   );
 });
 
+test("result window clears a selection that no longer has a visible row", () => {
+  const rows = Array.from({ length: 181 }, (_, index) => row(`process-${index}`, 1));
+  const selected = processViewRowKey(rows.at(-1)!);
+
+  const prepared = prepareProcessViewRows(rows, selected, 180);
+
+  assert.equal(prepared.rows.length, 180);
+  assert.equal(prepared.selection, "");
+  assert.equal(reconcileWorkloadSelection(prepared.rows, selected), "");
+});
+
 test("child selection highlights its group without pressing the group inspection action", () => {
   const rows = groupRows("workers", 2);
   const group = rows[0];

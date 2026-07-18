@@ -3,6 +3,7 @@
   import { makeEmptySnapshot } from "../../runtimeSnapshot";
   import {
     displayMetricValue,
+    displayAccountingMetricValue,
     driverCandidateLabel,
     formatBytes,
     formatPercent,
@@ -12,6 +13,7 @@
     optionalBytes,
     poolKindLabel,
     poolTagKey,
+    poolTagBytesValue,
   } from "../../format";
   import type { DetailMode } from "../metrics/types";
   import type { ChartPalette } from "../../themes";
@@ -73,6 +75,18 @@
     displayMetricValue(value, systemQuality.disk, snapshot.sampled_at_ms, formatter);
   $: networkValue = <T>(value: T, formatter: (value: T) => string) =>
     displayMetricValue(value, systemQuality.network, snapshot.sampled_at_ms, formatter);
+  $: accountingValue = <T>(
+    key: keyof NonNullable<SystemMemoryAccounting["quality"]>,
+    value: T | null | undefined,
+    formatter: (value: T) => string,
+  ) => displayAccountingMetricValue(value, memoryAccounting?.quality?.[key], formatter);
+  $: commitLoadValue = accountingValue(
+    "commit_used_bytes",
+    memoryAccounting?.commit_used_bytes === null || memoryAccounting?.commit_used_bytes === undefined
+      ? null
+      : commitPercent,
+    formatPercent,
+  );
 
   function percent(value: number, total: number): number {
     return total > 0 ? Math.min(100, Math.max(0, (value / total) * 100)) : 0;
@@ -116,7 +130,7 @@
       <div><span>Load</span><strong>{memoryValue(memoryPercent, formatPercent)}</strong></div>
       <div>
         <span>{hasSwap ? "Swap" : hasCommit ? "Commit" : "Swap"}</span>
-        <strong>{hasSwap ? formatPercent(swapPercent) : hasCommit ? formatPercent(commitPercent) : "Unavailable"}</strong>
+        <strong>{hasSwap ? formatPercent(swapPercent) : hasCommit ? commitLoadValue : "Unavailable"}</strong>
       </div>
     </div>
     <div class="detail-chart-grid two-up compact-charts">
@@ -131,10 +145,10 @@
         </div>
       {:else if hasCommit}
         <div class="detail-chart-card">
-          <div><span>Commit load</span><strong>{formatPercent(commitPercent)}</strong></div>
+          <div><span>Commit load</span><strong>{commitLoadValue}</strong></div>
           <p>
-            {optionalBytes(memoryAccounting?.commit_used_bytes)} used of
-            {optionalBytes(memoryAccounting?.commit_limit_bytes)}
+            {accountingValue("commit_used_bytes", memoryAccounting?.commit_used_bytes, formatBytes)} used of
+            {accountingValue("commit_limit_bytes", memoryAccounting?.commit_limit_bytes, formatBytes)}
           </p>
         </div>
       {:else}
@@ -148,20 +162,20 @@
       <details class="technical-disclosure">
         <summary>Memory accounting</summary>
         <dl class="diagnostic-grid">
-          <div><dt>{presentation.memoryLabel}</dt><dd>{formatBytes(memoryAccounting.process_working_set_bytes)}</dd></div>
-          <div><dt>{presentation.privateMemoryLabel}</dt><dd>{formatBytes(memoryAccounting.process_private_bytes)}</dd></div>
-          <div><dt>Blocked rows</dt><dd>{memoryAccounting.denied_process_count}</dd></div>
-          <div><dt>Commit used</dt><dd>{optionalBytes(memoryAccounting.commit_used_bytes)}</dd></div>
-          <div><dt>Commit limit</dt><dd>{optionalBytes(memoryAccounting.commit_limit_bytes)}</dd></div>
-          <div><dt>Kernel paged</dt><dd>{optionalBytes(memoryAccounting.kernel_paged_pool_bytes)}</dd></div>
-          <div><dt>Kernel nonpaged</dt><dd>{optionalBytes(memoryAccounting.kernel_nonpaged_pool_bytes)}</dd></div>
+          <div><dt>{presentation.memoryLabel}</dt><dd>{accountingValue("process_working_set_bytes", memoryAccounting.process_working_set_bytes, formatBytes)}</dd></div>
+          <div><dt>{presentation.privateMemoryLabel}</dt><dd>{accountingValue("process_private_bytes", memoryAccounting.process_private_bytes, formatBytes)}</dd></div>
+          <div><dt>Blocked rows</dt><dd>{accountingValue("denied_process_count", memoryAccounting.denied_process_count, String)}</dd></div>
+          <div><dt>Commit used</dt><dd>{accountingValue("commit_used_bytes", memoryAccounting.commit_used_bytes, formatBytes)}</dd></div>
+          <div><dt>Commit limit</dt><dd>{accountingValue("commit_limit_bytes", memoryAccounting.commit_limit_bytes, formatBytes)}</dd></div>
+          <div><dt>Kernel paged</dt><dd>{accountingValue("kernel_paged_pool_bytes", memoryAccounting.kernel_paged_pool_bytes, formatBytes)}</dd></div>
+          <div><dt>Kernel nonpaged</dt><dd>{accountingValue("kernel_nonpaged_pool_bytes", memoryAccounting.kernel_nonpaged_pool_bytes, formatBytes)}</dd></div>
         </dl>
         {#if topKernelPoolTags.length > 0}
           <div class="compact-pool-list">
             {#each topKernelPoolTags as tag (poolTagKey(tag))}
               <div>
                 <span><b>{tag.tag}</b> {poolKindLabel(tag.kind)}</span>
-                <strong>{formatBytes(tag.bytes)}</strong>
+                <strong>{poolTagBytesValue(tag)}</strong>
                 <small>{driverCandidateLabel(tag)}</small>
               </div>
             {/each}

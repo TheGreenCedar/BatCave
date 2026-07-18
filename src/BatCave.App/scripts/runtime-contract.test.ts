@@ -10,8 +10,10 @@ import {
 } from "../src/lib/process.ts";
 import {
   currentDiagnosticIssues,
+  diagnosticOverviewLabel,
   suppressedDiagnosticsLabel,
   uniqueWarningCount,
+  windowsLifecycleDiagnosticsVisible,
 } from "../src/lib/diagnostics.ts";
 import {
   collectorServiceStateLabel,
@@ -21,8 +23,13 @@ import {
   privilegedSourceLabel,
   processElevationLabel,
 } from "../src/lib/environmentPresentation.ts";
-import { formatOptionalRate, qualityGuidance } from "../src/lib/format.ts";
+import {
+  displayAccountingMetricValue,
+  formatOptionalRate,
+  qualityGuidance,
+} from "../src/lib/format.ts";
 import { hasNewRuntimeSample } from "../src/lib/runtimeSnapshot.ts";
+import { AcceptedRuntimeControls } from "../src/lib/runtimeControls.ts";
 import {
   dispatchAutomaticRuntimeHydration,
   planAutomaticRuntimeFocusHydration,
@@ -215,6 +222,29 @@ test("runtime mutation queue preserves invocation order and continues after fail
   releaseBounded();
   await held;
   assert.equal(await queued, 2);
+});
+
+test("failed optimistic controls restore the newest accepted publication", () => {
+  const initial = durablePreferenceSnapshot("cave", 72);
+  const controls = new AcceptedRuntimeControls(initial.settings.query, 1_000);
+  controls.observe(initial);
+
+  const accepted = structuredClone(initial);
+  accepted.publication_seq += 2;
+  accepted.settings.sample_interval_ms = 2_000;
+  accepted.settings.query.filter_text = "accepted";
+  accepted.settings.query.sort_column = "memory_bytes";
+  controls.observe(accepted);
+
+  const older = structuredClone(initial);
+  older.publication_seq += 1;
+  older.settings.sample_interval_ms = 500;
+  older.settings.query.filter_text = "stale";
+  controls.observe(older);
+
+  assert.equal(controls.acceptedSampleIntervalMs(), 2_000);
+  assert.equal(controls.acceptedQuery().filter_text, "accepted");
+  assert.equal(controls.acceptedQuery().sort_column, "memory_bytes");
 });
 
 test("automatic focus hydration keeps the published control until its query applies", () => {
@@ -490,6 +520,37 @@ test("native metrics omit empty quality guidance", () => {
     qualityGuidance({ network: { quality: "unavailable", message: "ETW access denied" } }),
     ["ETW access denied"],
   );
+  assert.deepEqual(
+    qualityGuidance({
+      kernel_cpu: { quality: "unavailable", message: "Kernel metrics unavailable" },
+      logical_cpu: { quality: "unavailable", message: "Kernel metrics unavailable" },
+      memory: { quality: "held", message: "Memory sample held" },
+      swap: { quality: "partial", message: "Swap coverage limited" },
+    }),
+    ["Kernel metrics unavailable", "Memory sample held", "Swap coverage limited"],
+  );
+});
+
+test("diagnostics cannot report healthy while an active limitation is listed", () => {
+  assert.equal(diagnosticOverviewLabel("native", "off", false, 1, 0), "Limited");
+  assert.equal(diagnosticOverviewLabel("native", "off", false, 0, 1), "Limited");
+  assert.equal(diagnosticOverviewLabel("native", "off", false, 0, 0), "Healthy");
+});
+
+test("Windows lifecycle diagnostics stay on Windows", () => {
+  const snapshot = structuredClone(canonicalSnapshot) as RuntimeSnapshot;
+  snapshot.environment.platform = "windows";
+  assert.equal(windowsLifecycleDiagnosticsVisible(snapshot), true);
+  snapshot.environment.platform = "macos";
+  assert.equal(windowsLifecycleDiagnosticsVisible(snapshot), false);
+});
+
+test("memory accounting formats null and held observations honestly", () => {
+  assert.equal(
+    displayAccountingMetricValue(null, { quality: "unavailable" }, formatOptionalRate),
+    "Unavailable",
+  );
+  assert.equal(displayAccountingMetricValue(1024, { quality: "held" }, String), "Held");
 });
 
 test("attention includes each scored resource and limited access", () => {

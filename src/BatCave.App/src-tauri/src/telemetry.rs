@@ -17,7 +17,9 @@ use crate::contracts::{
     SystemMetricQuality, SystemMetricsSnapshot,
 };
 #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
-use crate::network_attribution::NetworkAttributionSample;
+use crate::network_attribution::{
+    NetworkAttributionBinder, NetworkAttributionSample, ProcessGeneration,
+};
 
 #[cfg(windows)]
 use crate::windows_process;
@@ -75,9 +77,12 @@ pub struct TelemetryCollector {
     #[cfg(windows)]
     previous_cpu_times: Option<windows_system::CpuTimes>,
     #[cfg(windows)]
+    windows_network: windows_system::WindowsNetworkSampler,
+    #[cfg(windows)]
     pdh_disk: PdhDiskState,
     #[cfg(windows)]
     network_attribution: NetworkAttributionState,
+    network_generation_binder: NetworkAttributionBinder,
     standard_fallback_process_etw_disabled: bool,
 }
 
@@ -136,9 +141,12 @@ impl TelemetryCollector {
             #[cfg(windows)]
             previous_cpu_times: None,
             #[cfg(windows)]
+            windows_network: windows_system::WindowsNetworkSampler::new(),
+            #[cfg(windows)]
             pdh_disk: PdhDiskState::new(),
             #[cfg(windows)]
             network_attribution,
+            network_generation_binder: NetworkAttributionBinder::default(),
             standard_fallback_process_etw_disabled,
         }
     }
@@ -163,14 +171,21 @@ impl TelemetryCollector {
         self.networks.refresh(true);
 
         let sysinfo_processes = collect_sysinfo_processes(&self.system);
-        let sysinfo_cpu_by_pid = sysinfo_processes
+        let sysinfo_cpu_by_generation = sysinfo_processes
             .iter()
-            .map(|process| (process.pid.clone(), process.cpu_percent))
+            .filter_map(|process| {
+                ProcessGeneration::from_process(process)
+                    .map(|generation| (generation, process.cpu_percent))
+            })
             .collect::<HashMap<_, _>>();
         let logical_cpu_percent = logical_cpu_percent(&self.system, &mut warnings);
         let sysinfo_snapshot = collect_sysinfo_system(&self.system, &self.networks);
-        let mut processes =
-            collect_processes(&sysinfo_processes, &sysinfo_cpu_by_pid, &mut warnings, self)?;
+        let mut processes = collect_processes(
+            &sysinfo_processes,
+            &sysinfo_cpu_by_generation,
+            &mut warnings,
+            self,
+        )?;
         let mut system_snapshot = collect_system_snapshot(
             sysinfo_snapshot,
             &logical_cpu_percent,
@@ -181,12 +196,22 @@ impl TelemetryCollector {
         #[cfg(windows)]
         {
             let network_attribution = self.network_attribution_sample(&mut warnings);
-            apply_network_attribution(&mut processes, network_attribution, MetricSource::Etw);
+            apply_network_attribution(
+                &mut processes,
+                network_attribution,
+                MetricSource::Etw,
+                &mut self.network_generation_binder,
+            );
         }
         #[cfg(target_os = "macos")]
         {
             let network_attribution = self.macos_network_attribution_sample(&mut warnings);
-            apply_network_attribution(&mut processes, network_attribution, MetricSource::Nstat);
+            apply_network_attribution(
+                &mut processes,
+                network_attribution,
+                MetricSource::Nstat,
+                &mut self.network_generation_binder,
+            );
         }
 
         processes.sort_by(|left, right| {
@@ -251,7 +276,12 @@ impl TelemetryCollector {
             }
         };
         let network_attribution = self.linux_network_attribution_sample(&mut warnings);
-        apply_network_attribution(&mut processes, network_attribution, MetricSource::Ebpf);
+        apply_network_attribution(
+            &mut processes,
+            network_attribution,
+            MetricSource::Ebpf,
+            &mut self.network_generation_binder,
+        );
         processes.sort_by(|left, right| {
             right
                 .cpu_percent
@@ -358,7 +388,7 @@ fn round1(value: f64) -> f64 {
 #[cfg(not(target_os = "linux"))]
 fn collect_processes(
     sysinfo_processes: &[ProcessSample],
-    sysinfo_cpu_by_pid: &HashMap<String, f64>,
+    sysinfo_cpu_by_generation: &HashMap<ProcessGeneration, f64>,
     warnings: &mut Vec<String>,
     collector: &mut TelemetryCollector,
 ) -> Result<Vec<ProcessSample>, String> {
@@ -369,14 +399,21 @@ fn collect_processes(
     {
         match windows_process::collect_processes(0) {
             Ok(native_processes) => {
-                let sysinfo_by_pid = sysinfo_processes
+                let sysinfo_by_generation = sysinfo_processes
                     .iter()
-                    .map(|process| (process.pid.clone(), process))
+                    .filter_map(|process| {
+                        ProcessGeneration::from_process(process)
+                            .map(|generation| (generation, process))
+                    })
                     .collect::<HashMap<_, _>>();
                 Ok(native_processes
                     .into_iter()
                     .map(|process| {
-                        enrich_native_process(process, sysinfo_cpu_by_pid, &sysinfo_by_pid)
+                        enrich_native_process(
+                            process,
+                            sysinfo_cpu_by_generation,
+                            &sysinfo_by_generation,
+                        )
                     })
                     .collect())
             }
@@ -391,7 +428,7 @@ fn collect_processes(
 
     #[cfg(target_os = "macos")]
     {
-        let _ = sysinfo_cpu_by_pid;
+        let _ = sysinfo_cpu_by_generation;
         let mut processes = sysinfo_processes.to_vec();
         let process_count = processes.len();
         let collection = collector.macos_processes.enrich(&mut processes);
@@ -411,7 +448,7 @@ fn collect_processes(
 
     #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
-        let _ = (sysinfo_cpu_by_pid, warnings, collector);
+        let _ = (sysinfo_cpu_by_generation, warnings, collector);
         Ok(sysinfo_processes.to_vec())
     }
 }
@@ -429,7 +466,7 @@ fn collect_system_snapshot(
         let _ = processes;
         let cpu_load = collector.native_cpu_load(warnings);
 
-        match windows_system::sample_system() {
+        match windows_system::sample_system(&mut collector.windows_network) {
             Ok(mut snapshot) => {
                 snapshot.logical_cpu_percent = logical_cpu_percent.to_vec();
                 if let Some(load) = cpu_load {
@@ -440,7 +477,25 @@ fn collect_system_snapshot(
                     snapshot.kernel_cpu_percent = 0.0;
                 }
                 let disk_quality = collector.apply_pdh_disk_rates(&mut snapshot, warnings);
-                snapshot.quality = Some(system_quality(cpu_load.is_some(), disk_quality));
+                let network_quality = snapshot
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.network.clone())
+                    .unwrap_or_else(|| {
+                        MetricQualityInfo::new(
+                            MetricQuality::Unavailable,
+                            MetricSource::InterfaceAggregate,
+                        )
+                        .with_limitation(
+                            MetricLimitationCode::CollectorFailure,
+                            "Windows interface quality metadata is unavailable.",
+                        )
+                    });
+                snapshot.quality = Some(system_quality(
+                    cpu_load.is_some(),
+                    disk_quality,
+                    network_quality,
+                ));
                 Ok(snapshot)
             }
             Err(error) => {
@@ -766,18 +821,19 @@ fn logical_cpu_percent(system: &System, warnings: &mut Vec<String>) -> Vec<f64> 
 #[cfg(windows)]
 fn enrich_native_process(
     mut process: ProcessSample,
-    sysinfo_cpu_by_pid: &HashMap<String, f64>,
-    sysinfo_by_pid: &HashMap<String, &ProcessSample>,
+    sysinfo_cpu_by_generation: &HashMap<ProcessGeneration, f64>,
+    sysinfo_by_generation: &HashMap<ProcessGeneration, &ProcessSample>,
 ) -> ProcessSample {
-    let has_cpu = sysinfo_cpu_by_pid
-        .get(&process.pid)
+    let generation = ProcessGeneration::from_process(&process);
+    let has_cpu = generation
+        .and_then(|generation| sysinfo_cpu_by_generation.get(&generation))
         .map(|cpu| {
             process.cpu_percent = *cpu;
             true
         })
         .unwrap_or(false);
-    let memory_from_sysinfo = sysinfo_by_pid
-        .get(&process.pid)
+    let memory_from_sysinfo = generation
+        .and_then(|generation| sysinfo_by_generation.get(&generation))
         .map(|fallback| {
             let mut enriched = false;
             if process.memory_bytes == 0 && process.private_bytes == 0 {
@@ -824,7 +880,11 @@ fn apply_native_process_enrichment_quality(
 }
 
 #[cfg(windows)]
-fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> SystemMetricQuality {
+fn system_quality(
+    has_native_cpu: bool,
+    disk_quality: DiskQualityState,
+    network_quality: MetricQualityInfo,
+) -> SystemMetricQuality {
     let cpu = if has_native_cpu {
         MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi)
     } else {
@@ -865,10 +925,7 @@ fn system_quality(has_native_cpu: bool, disk_quality: DiskQualityState) -> Syste
                     )
             }
         }),
-        network: Some(MetricQualityInfo::new(
-            MetricQuality::Native,
-            MetricSource::InterfaceAggregate,
-        )),
+        network: Some(network_quality),
     }
 }
 
@@ -906,42 +963,26 @@ fn apply_network_attribution(
     processes: &mut [ProcessSample],
     attribution: NetworkAttributionSample,
     source: MetricSource,
+    binder: &mut NetworkAttributionBinder,
 ) {
     match attribution {
-        NetworkAttributionSample::Ready { rates_by_pid } => {
+        NetworkAttributionSample::Ready { rates_by_process } => {
+            let bound = binder.bind(processes, rates_by_process);
             for process in processes {
-                let rates = process
-                    .pid
-                    .parse::<u32>()
-                    .ok()
-                    .and_then(|pid| rates_by_pid.get(&pid).copied())
-                    .unwrap_or_default();
-                process.network_received_bps = Some(rates.received_bps);
-                process.network_transmitted_bps = Some(rates.transmitted_bps);
-                process_quality(process).network =
-                    Some(MetricQualityInfo::new(MetricQuality::Native, source));
+                apply_bound_network_rates(process, &bound, source, None);
             }
         }
         NetworkAttributionSample::Partial {
-            rates_by_pid,
+            rates_by_process,
             message,
         } => {
+            let bound = binder.bind(processes, rates_by_process);
             for process in processes {
-                let rates = process
-                    .pid
-                    .parse::<u32>()
-                    .ok()
-                    .and_then(|pid| rates_by_pid.get(&pid).copied())
-                    .unwrap_or_default();
-                process.network_received_bps = Some(rates.received_bps);
-                process.network_transmitted_bps = Some(rates.transmitted_bps);
-                process_quality(process).network = Some(
-                    MetricQualityInfo::new(MetricQuality::Partial, source)
-                        .with_limitation(MetricLimitationCode::DataLoss, &message),
-                );
+                apply_bound_network_rates(process, &bound, source, Some(&message));
             }
         }
         NetworkAttributionSample::PendingBaseline(message) => {
+            binder.observe(processes);
             for process in processes {
                 process.network_received_bps = None;
                 process.network_transmitted_bps = None;
@@ -962,6 +1003,7 @@ fn apply_network_attribution(
             }
         }
         NetworkAttributionSample::Failed(message) => {
+            binder.clear();
             for process in processes {
                 process.network_received_bps = None;
                 process.network_transmitted_bps = None;
@@ -972,6 +1014,47 @@ fn apply_network_attribution(
             }
         }
     }
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+fn apply_bound_network_rates(
+    process: &mut ProcessSample,
+    bound: &crate::network_attribution::BoundNetworkRates,
+    source: MetricSource,
+    data_loss: Option<&str>,
+) {
+    let Some(generation) = ProcessGeneration::from_process(process) else {
+        process.network_received_bps = None;
+        process.network_transmitted_bps = None;
+        process_quality(process).network = Some(
+            MetricQualityInfo::new(MetricQuality::Unavailable, source).with_limitation(
+                MetricLimitationCode::MissingMetadata,
+                "Process network activity cannot be joined without a stable start time.",
+            ),
+        );
+        return;
+    };
+    if !bound.is_proven(generation) {
+        process.network_received_bps = None;
+        process.network_transmitted_bps = None;
+        process_quality(process).network = Some(
+            MetricQualityInfo::new(MetricQuality::Unavailable, source).with_limitation(
+                MetricLimitationCode::PartialCoverage,
+                "Process generation changed during the attribution interval; activity was not assigned by PID.",
+            ),
+        );
+        return;
+    }
+
+    let rates = bound.rates(generation);
+    process.network_received_bps = Some(rates.received_bps);
+    process.network_transmitted_bps = Some(rates.transmitted_bps);
+    process_quality(process).network = Some(if let Some(message) = data_loss {
+        MetricQualityInfo::new(MetricQuality::Partial, source)
+            .with_limitation(MetricLimitationCode::DataLoss, message)
+    } else {
+        MetricQualityInfo::new(MetricQuality::Native, source)
+    });
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
@@ -998,7 +1081,9 @@ fn fully_native_process_quality() -> ProcessMetricQuality {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
+    use crate::network_attribution::{
+        NetworkAttributionSample, ObservedProcessGeneration, ProcessNetworkRates,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -1175,10 +1260,15 @@ mod tests {
         fallback.memory_bytes = 123;
         fallback.private_bytes = 45;
         fallback.virtual_memory_bytes = Some(678);
-        let sysinfo_cpu_by_pid = HashMap::from([("42".to_string(), 9.0)]);
-        let sysinfo_by_pid = HashMap::from([("42".to_string(), &fallback)]);
+        let generation = ProcessGeneration {
+            pid: 42,
+            start_time_ms: 1,
+        };
+        let sysinfo_cpu_by_generation = HashMap::from([(generation, 9.0)]);
+        let sysinfo_by_generation = HashMap::from([(generation, &fallback)]);
 
-        let enriched = enrich_native_process(native, &sysinfo_cpu_by_pid, &sysinfo_by_pid);
+        let enriched =
+            enrich_native_process(native, &sysinfo_cpu_by_generation, &sysinfo_by_generation);
 
         assert_eq!(enriched.access_state, AccessState::Denied);
         assert_eq!(enriched.cpu_percent, 9.0);
@@ -1195,6 +1285,33 @@ mod tests {
             .message
             .expect("message exists")
             .contains("Native process memory counters were denied"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn enrich_native_process_rejects_pid_reuse_between_probes() {
+        let mut native = sample_process("42");
+        native.start_time_ms = 2;
+        native.memory_bytes = 0;
+        native.private_bytes = 0;
+        let mut old_generation = sample_process("42");
+        old_generation.start_time_ms = 1;
+        old_generation.memory_bytes = 999;
+        old_generation.private_bytes = 777;
+        let old_identity = ProcessGeneration {
+            pid: 42,
+            start_time_ms: 1,
+        };
+
+        let enriched = enrich_native_process(
+            native,
+            &HashMap::from([(old_identity, 75.0)]),
+            &HashMap::from([(old_identity, &old_generation)]),
+        );
+
+        assert_eq!(enriched.cpu_percent, 0.0);
+        assert_eq!(enriched.memory_bytes, 0);
+        assert_eq!(enriched.private_bytes, 0);
     }
 
     #[cfg(windows)]
@@ -1243,14 +1360,19 @@ mod tests {
             quality: Some(fully_native_process_quality()),
         }];
         let sample = NetworkAttributionSample::ready([(
-            42,
+            ProcessGeneration {
+                pid: 42,
+                start_time_ms: 1,
+            },
             ProcessNetworkRates {
                 received_bps: 4096,
                 transmitted_bps: 2048,
             },
         )]);
 
-        apply_network_attribution(&mut processes, sample, MetricSource::Etw);
+        let mut binder = NetworkAttributionBinder::default();
+        binder.observe(&processes);
+        apply_network_attribution(&mut processes, sample, MetricSource::Etw, &mut binder);
 
         assert_eq!(processes[0].network_received_bps, Some(4096));
         assert_eq!(processes[0].network_transmitted_bps, Some(2048));
@@ -1276,6 +1398,7 @@ mod tests {
                 "Waiting for a supported ETW event.".to_string(),
             ),
             MetricSource::Etw,
+            &mut NetworkAttributionBinder::default(),
         );
 
         assert_eq!(processes[0].network_received_bps, None);
@@ -1295,12 +1418,14 @@ mod tests {
     #[test]
     fn apply_network_attribution_marks_lossy_rows_partial() {
         let mut processes = vec![sample_process("42")];
+        let mut binder = NetworkAttributionBinder::default();
+        binder.observe(&processes);
 
         apply_network_attribution(
             &mut processes,
             NetworkAttributionSample::Partial {
-                rates_by_pid: HashMap::from([(
-                    42,
+                rates_by_process: HashMap::from([(
+                    ObservedProcessGeneration::pid_only(42),
                     ProcessNetworkRates {
                         received_bps: 512,
                         transmitted_bps: 256,
@@ -1309,6 +1434,7 @@ mod tests {
                 message: "ETW reported data loss.".to_string(),
             },
             MetricSource::Etw,
+            &mut binder,
         );
 
         assert_eq!(processes[0].network_received_bps, Some(512));
@@ -1372,7 +1498,6 @@ mod tests {
         let first = collector
             .collect()
             .expect("macOS baseline telemetry sample");
-        assert_eq!(first.collector_state, RuntimeCollectorState::Healthy);
         let first_disk = first
             .system
             .quality
@@ -1403,7 +1528,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
-        assert_eq!(sample.collector_state, RuntimeCollectorState::Healthy);
+        assert_eq!(sample.collector_state, RuntimeCollectorState::Limited);
 
         assert!(sample.system.memory_available_bytes.is_some());
         let system_quality = sample.system.quality.as_ref().expect("system quality");

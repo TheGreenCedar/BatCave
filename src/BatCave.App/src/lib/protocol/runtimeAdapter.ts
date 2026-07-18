@@ -15,6 +15,7 @@ import type {
   ProcessSample,
   ProcessViewRow,
   RuntimeSnapshot,
+  SystemMemoryAccounting,
   SystemMetricsSnapshot,
 } from "../types.ts";
 import { groupAttentionLabel, processAttentionLabel } from "../process.ts";
@@ -31,6 +32,13 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
   const processRows = new Map<string, ProcessViewRow>();
   const groupRows = new Map<string, ProcessViewRow>();
   const processes: ProcessSample[] = [];
+  const limitedProcessIds = new Set(
+    payload.workloads.flatMap((workload) =>
+      workload.kind === "process" && workload.detail.access_state !== "full"
+        ? [workload.detail.stable_id]
+        : [],
+    ),
+  );
 
   for (const workload of payload.workloads) {
     if (workload.kind === "process") {
@@ -38,7 +46,10 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
       processRows.set(workload.detail.stable_id, row);
       processes.push(row.detail.process);
     } else {
-      groupRows.set(workload.detail.stable_id, adaptGroupRow(workload.detail, payload));
+      groupRows.set(
+        workload.detail.stable_id,
+        adaptGroupRow(workload.detail, payload, limitedProcessIds),
+      );
     }
   }
   const process_view_rows = payload.workloads.flatMap((workload) => {
@@ -169,59 +180,53 @@ function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
     "system",
     payload,
   );
+  const deniedProcessCount = optionalMeasurement(
+    metrics,
+    "denied_process_count",
+    "system",
+    payload,
+  );
+  const partialProcessCount = optionalMeasurement(
+    metrics,
+    "partial_process_count",
+    "system",
+    payload,
+  );
+  const commitUsed = optionalMeasurement(metrics, "commit_used", "system", payload);
+  const commitLimit = optionalMeasurement(metrics, "commit_limit", "system", payload);
+  const systemCache = optionalMeasurement(metrics, "system_cache", "system", payload);
+  const kernelTotal = optionalMeasurement(metrics, "kernel_memory", "system", payload);
+  const kernelPaged = optionalMeasurement(metrics, "kernel_paged_pool", "system", payload);
+  const kernelNonpaged = optionalMeasurement(metrics, "kernel_nonpaged_pool", "system", payload);
   const memoryAccounting =
     accountingWorking || accountingPrivate
-      ? {
-          process_working_set_bytes: requiredNumber(accountingWorking?.value ?? null),
-          process_private_bytes: requiredNumber(accountingPrivate?.value ?? null),
-          denied_process_count: requiredNumber(
-            optionalMeasurement(metrics, "denied_process_count", "system", payload)?.value ?? null,
+      ? ({
+          process_working_set_bytes: accountingWorking?.value ?? null,
+          process_private_bytes: accountingPrivate?.value ?? null,
+          denied_process_count: deniedProcessCount?.value ?? null,
+          partial_process_count: partialProcessCount?.value ?? null,
+          ...nullableAccountingField("commit_used_bytes", commitUsed),
+          ...nullableAccountingField("commit_limit_bytes", commitLimit),
+          ...nullableAccountingField("system_cache_bytes", systemCache),
+          ...nullableAccountingField("kernel_total_bytes", kernelTotal),
+          ...nullableAccountingField("kernel_paged_pool_bytes", kernelPaged),
+          ...nullableAccountingField("kernel_nonpaged_pool_bytes", kernelNonpaged),
+          quality: {
+            process_working_set_bytes: accountingWorking?.quality ?? unavailableAccountingQuality(),
+            process_private_bytes: accountingPrivate?.quality ?? unavailableAccountingQuality(),
+            denied_process_count: deniedProcessCount?.quality ?? unavailableAccountingQuality(),
+            partial_process_count: partialProcessCount?.quality ?? unavailableAccountingQuality(),
+            ...accountingQualityField("commit_used_bytes", commitUsed),
+            ...accountingQualityField("commit_limit_bytes", commitLimit),
+            ...accountingQualityField("system_cache_bytes", systemCache),
+            ...accountingQualityField("kernel_total_bytes", kernelTotal),
+            ...accountingQualityField("kernel_paged_pool_bytes", kernelPaged),
+            ...accountingQualityField("kernel_nonpaged_pool_bytes", kernelNonpaged),
+          },
+          kernel_pool_tags: payload.system.kernel_pool_tags.map((tag) =>
+            adaptKernelPoolTag(tag, payload),
           ),
-          partial_process_count: requiredNumber(
-            optionalMeasurement(metrics, "partial_process_count", "system", payload)?.value ?? null,
-          ),
-          ...optionalNumberField(
-            "commit_used_bytes",
-            optionalMeasurement(metrics, "commit_used", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "commit_limit_bytes",
-            optionalMeasurement(metrics, "commit_limit", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "system_cache_bytes",
-            optionalMeasurement(metrics, "system_cache", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "kernel_total_bytes",
-            optionalMeasurement(metrics, "kernel_memory", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "kernel_paged_pool_bytes",
-            optionalMeasurement(metrics, "kernel_paged_pool", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "kernel_nonpaged_pool_bytes",
-            optionalMeasurement(metrics, "kernel_nonpaged_pool", "system", payload)?.value,
-          ),
-          kernel_pool_tags: payload.system.kernel_pool_tags.map(
-            (tag): KernelPoolTag => ({
-              tag: tag.tag,
-              kind: tag.kind,
-              bytes: requiredNumber(
-                measurement(tag.metrics, "kernel_pool_bytes", "system", payload).value,
-              ),
-              allocations: requiredNumber(
-                measurement(tag.metrics, "kernel_pool_allocations", "system", payload).value,
-              ),
-              frees: requiredNumber(
-                measurement(tag.metrics, "kernel_pool_frees", "system", payload).value,
-              ),
-              driver_candidates: [...tag.driver_candidates],
-              ...(tag.driver_candidates_pending ? { driver_candidates_pending: true } : {}),
-            }),
-          ),
-        }
+        } satisfies SystemMemoryAccounting)
       : undefined;
 
   return {
@@ -252,6 +257,29 @@ function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
       disk: worstQuality(diskReadTotal.quality, diskReadRate.quality),
       network: worstQuality(netReceiveTotal.quality, netReceiveRate.quality),
     },
+  };
+}
+
+function adaptKernelPoolTag(
+  tag: RuntimeSnapshotPayloadV3["system"]["kernel_pool_tags"][number],
+  payload: RuntimeSnapshotPayloadV3,
+): KernelPoolTag {
+  const bytes = measurement(tag.metrics, "kernel_pool_bytes", "system", payload);
+  const allocations = measurement(tag.metrics, "kernel_pool_allocations", "system", payload);
+  const frees = measurement(tag.metrics, "kernel_pool_frees", "system", payload);
+  return {
+    tag: tag.tag,
+    kind: tag.kind,
+    bytes: bytes.value,
+    allocations: allocations.value,
+    frees: frees.value,
+    quality: {
+      bytes: bytes.quality,
+      allocations: allocations.quality,
+      frees: frees.quality,
+    },
+    driver_candidates: [...tag.driver_candidates],
+    ...(tag.driver_candidates_pending ? { driver_candidates_pending: true } : {}),
   };
 }
 
@@ -330,6 +358,7 @@ function adaptProcessRow(
 function adaptGroupRow(
   detail: GroupDetailV3,
   payload: RuntimeSnapshotPayloadV3,
+  limitedProcessIds: ReadonlySet<string>,
 ): Extract<ProcessViewRow, { kind: "group" }> {
   const cpu = measurement(detail.metrics, "cpu_usage", "group", payload);
   const memory = measurement(detail.metrics, "resident_memory", "group", payload);
@@ -375,12 +404,7 @@ function adaptGroupRow(
     ...(detail.example_label ? { example_label: detail.example_label } : {}),
     attention_label: groupAttentionLabel(
       group,
-      detail.member_ids.some((memberId) => {
-        const member = payload.workloads.find(
-          (workload) => workload.kind === "process" && workload.detail.stable_id === memberId,
-        );
-        return member?.kind === "process" && member.detail.access_state !== "full";
-      }),
+      detail.member_ids.some((memberId) => limitedProcessIds.has(memberId)),
     ),
   };
 }
@@ -540,6 +564,28 @@ function optionalNumberField<Key extends string>(
   value: number | null | undefined,
 ): Partial<Record<Key, number>> {
   return value === null || value === undefined ? {} : ({ [key]: value } as Record<Key, number>);
+}
+
+function nullableAccountingField<Key extends keyof SystemMemoryAccounting>(
+  key: Key,
+  measurement: MeasurementView | undefined,
+): Partial<Pick<SystemMemoryAccounting, Key>> {
+  return measurement ? ({ [key]: measurement.value } as Pick<SystemMemoryAccounting, Key>) : {};
+}
+
+function accountingQualityField<Key extends keyof NonNullable<SystemMemoryAccounting["quality"]>>(
+  key: Key,
+  measurement: MeasurementView | undefined,
+): Partial<Record<Key, MetricQualityInfo>> {
+  return measurement ? ({ [key]: measurement.quality } as Record<Key, MetricQualityInfo>) : {};
+}
+
+function unavailableAccountingQuality(): MetricQualityInfo {
+  return {
+    quality: "unavailable",
+    source: "runtime",
+    message: "Metric was omitted from the protocol payload.",
+  };
 }
 
 function runtimeSource(value: string): RuntimeSnapshot["source"] {

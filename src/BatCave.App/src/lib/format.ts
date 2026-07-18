@@ -97,6 +97,20 @@ export function displayMetricValue<T>(
   return formatter(value);
 }
 
+export function displayAccountingMetricValue<T>(
+  value: T | null | undefined,
+  metric: MetricQualityInfo | undefined,
+  formatter: (value: T) => string,
+): string {
+  if (value === null || value === undefined || metric?.quality === "unavailable") {
+    return "Unavailable";
+  }
+  if (metric?.quality === "held") {
+    return "Held";
+  }
+  return formatter(value);
+}
+
 export function logicalCpuMetricQuality(
   quality: SystemMetricQuality,
 ): MetricQualityInfo | undefined {
@@ -381,9 +395,19 @@ export function metricQualityAction(metric: MetricQualityInfo | undefined): stri
 }
 
 export function qualityGuidance(quality: SystemMetricQuality): string[] {
-  return [quality.cpu, quality.disk, quality.network]
-    .map(metricQualityAction)
-    .filter((guidance) => guidance.length > 0);
+  return [
+    quality.cpu,
+    quality.kernel_cpu,
+    quality.logical_cpu,
+    quality.memory,
+    quality.swap,
+    quality.disk,
+    quality.network,
+  ].reduce<string[]>((guidance, metric) => {
+    const action = metricQualityAction(metric);
+    if (action && !guidance.includes(action)) guidance.push(action);
+    return guidance;
+  }, []);
 }
 
 export function formatMetricQuality(value: MetricQuality): string {
@@ -483,4 +507,8 @@ export function driverCandidateLabel(tag: KernelPoolTag): string {
 
 export function poolTagKey(tag: KernelPoolTag): string {
   return `${tag.tag}:${tag.kind}`;
+}
+
+export function poolTagBytesValue(tag: KernelPoolTag): string {
+  return displayAccountingMetricValue(tag.bytes, tag.quality?.bytes, formatBytes);
 }
