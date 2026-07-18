@@ -8,6 +8,7 @@ use crate::contracts::{
 };
 
 const SECTOR_SIZE_BYTES: u64 = 512;
+const REQUIRED_CPU_COUNTERS: usize = 8;
 
 #[derive(Debug, Default)]
 pub struct LinuxSystemCollector {
@@ -404,20 +405,23 @@ fn parse_cpu_times(content: &str) -> Result<BTreeMap<String, CpuTimes>, String> 
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if values.len() < 4 {
-            return Err(format!("linux_proc_stat_cpu_too_short:{label}"));
+        if values.len() < REQUIRED_CPU_COUNTERS {
+            return Err(format!(
+                "linux_proc_stat_cpu_too_short:{label}:expected={REQUIRED_CPU_COUNTERS}:actual={}",
+                values.len()
+            ));
         }
         cpus.insert(
             label.to_string(),
             CpuTimes {
-                user: values.first().copied().unwrap_or_default(),
-                nice: values.get(1).copied().unwrap_or_default(),
-                system: values.get(2).copied().unwrap_or_default(),
-                idle: values.get(3).copied().unwrap_or_default(),
-                iowait: values.get(4).copied().unwrap_or_default(),
-                irq: values.get(5).copied().unwrap_or_default(),
-                softirq: values.get(6).copied().unwrap_or_default(),
-                steal: values.get(7).copied().unwrap_or_default(),
+                user: values[0],
+                nice: values[1],
+                system: values[2],
+                idle: values[3],
+                iowait: values[4],
+                irq: values[5],
+                softirq: values[6],
+                steal: values[7],
             },
         );
     }
@@ -745,9 +749,14 @@ mod tests {
 
     #[test]
     fn logical_cpu_deltas_follow_labels_across_reordering() {
-        let previous = parse_cpu_times("cpu 20 0 0 180\ncpu0 10 0 0 90\ncpu1 10 0 0 90\n").unwrap();
-        let current =
-            parse_cpu_times("cpu 60 0 0 340\ncpu1 40 0 0 160\ncpu0 20 0 0 180\n").unwrap();
+        let previous = parse_cpu_times(
+            "cpu 20 0 0 180 0 0 0 0\ncpu0 10 0 0 90 0 0 0 0\ncpu1 10 0 0 90 0 0 0 0\n",
+        )
+        .unwrap();
+        let current = parse_cpu_times(
+            "cpu 60 0 0 340 0 0 0 0\ncpu1 40 0 0 160 0 0 0 0\ncpu0 20 0 0 180 0 0 0 0\n",
+        )
+        .unwrap();
 
         let cpu0 = cpu_load(previous["cpu0"], current["cpu0"]).unwrap().0;
         let cpu1 = cpu_load(previous["cpu1"], current["cpu1"]).unwrap().0;
@@ -815,6 +824,14 @@ mod tests {
     fn malformed_required_counters_fail_closed() {
         assert!(parse_cpu_times("cpu 100 nope 30 400\n").is_err());
         assert!(parse_cpu_times("cpu 100 2 30\n").is_err());
+        assert_eq!(
+            parse_cpu_times("cpu 100 2 30 400 5 6 7\n").unwrap_err(),
+            "linux_proc_stat_cpu_too_short:cpu:expected=8:actual=7"
+        );
+        assert_eq!(
+            parse_cpu_times("cpu 100 2 30 400 5 6 7 8\ncpu0 50 1 10 200 2 3 4\n").unwrap_err(),
+            "linux_proc_stat_cpu_too_short:cpu0:expected=8:actual=7"
+        );
         assert!(parse_network_totals(
             "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\neth0: nope 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n"
         )
