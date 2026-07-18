@@ -43,6 +43,7 @@ use super::{
     authorization::VerifiedPeer,
     framing::FrameDecoder,
     host::{extract_request_id, failure_reply, ServiceSession, SnapshotProvider},
+    listener_lifecycle::{shutdown_workers, wait_for_listener, ListenerState, ListenerWait},
     protocol::{ServiceIdentityV1, MAX_CLIENTS},
     session_lease::{SESSION_IDLE_TIMEOUT, SESSION_MAX_REQUESTS},
     transport_policy::{
@@ -75,67 +76,73 @@ pub(crate) fn run_pipe_server(
     let mut workers = Vec::<JoinHandle<()>>::new();
     let mut pipe = bind_before_ready(|| PipeConnection::create(true), ready)?;
 
-    while !stop.load(Ordering::Acquire) {
-        if let Some(failure) = snapshots
-            .terminal_failure()
-            .map_err(|failure| failure.to_string())?
-        {
-            return Err(failure);
-        }
-        reap_workers(&mut workers);
-        if workers.len() >= MAX_CLIENTS {
-            std::thread::sleep(PIPE_POLL_INTERVAL);
-            continue;
-        }
-
-        let connected = loop {
-            if stop.load(Ordering::Acquire) {
-                break false;
+    let result = (|| {
+        while !stop.load(Ordering::Acquire) {
+            if let Some(failure) = terminal_failure(snapshots.as_ref())? {
+                return Err(failure);
             }
-            match pipe.connect_state()? {
-                PipeConnectState::Connected => break true,
-                PipeConnectState::Abandoned => break false,
-                PipeConnectState::Listening => std::thread::sleep(PIPE_POLL_INTERVAL),
+            reap_workers(&mut workers);
+            if workers.len() >= MAX_CLIENTS {
+                std::thread::sleep(PIPE_POLL_INTERVAL);
+                continue;
             }
-        };
-        if stop.load(Ordering::Acquire) {
-            break;
-        }
-        // Create the successor while this instance still owns the namespace.
-        let next_pipe = PipeConnection::create(false)?;
-        if !connected {
-            pipe = next_pipe;
-            continue;
-        }
-        let connected_pipe = std::mem::replace(&mut pipe, next_pipe);
 
-        let peer = match verify_pipe_peer(&connected_pipe, &policy) {
-            Ok(peer) => peer,
-            Err(_) => continue,
-        };
-        let worker_stop = Arc::clone(&stop);
-        let worker_identity = identity.clone();
-        let worker_snapshots = Arc::clone(&snapshots);
-        workers.push(
-            std::thread::Builder::new()
-                .name("batcave-collector-client".to_string())
-                .spawn(move || {
-                    let _ = serve_client(
-                        connected_pipe,
-                        peer,
-                        worker_stop,
-                        worker_identity,
-                        worker_snapshots,
-                    );
-                })
-                .map_err(|error| format!("collector_service_client_spawn_failed:{error}"))?,
-        );
-    }
+            let connected = wait_for_listener(
+                stop.as_ref(),
+                || terminal_failure(snapshots.as_ref()),
+                || {
+                    Ok(match pipe.connect_state()? {
+                        PipeConnectState::Connected => ListenerState::Connected,
+                        PipeConnectState::Abandoned => ListenerState::Abandoned,
+                        PipeConnectState::Listening => ListenerState::Listening,
+                    })
+                },
+                || std::thread::sleep(PIPE_POLL_INTERVAL),
+            )?;
+            if connected == ListenerWait::Stopped {
+                break;
+            }
+            // Create the successor while this instance still owns the namespace.
+            let next_pipe = PipeConnection::create(false)?;
+            if connected == ListenerWait::Abandoned {
+                pipe = next_pipe;
+                continue;
+            }
+            let connected_pipe = std::mem::replace(&mut pipe, next_pipe);
 
-    for worker in workers {
-        let _ = worker.join();
-    }
-    Ok(())
+            let peer = match verify_pipe_peer(&connected_pipe, &policy) {
+                Ok(peer) => peer,
+                Err(_) => continue,
+            };
+            let worker_stop = Arc::clone(&stop);
+            let worker_identity = identity.clone();
+            let worker_snapshots = Arc::clone(&snapshots);
+            workers.push(
+                std::thread::Builder::new()
+                    .name("batcave-collector-client".to_string())
+                    .spawn(move || {
+                        let _ = serve_client(
+                            connected_pipe,
+                            peer,
+                            worker_stop,
+                            worker_identity,
+                            worker_snapshots,
+                        );
+                    })
+                    .map_err(|error| format!("collector_service_client_spawn_failed:{error}"))?,
+            );
+        }
+        Ok(())
+    })();
+
+    shutdown_workers(stop.as_ref(), &mut workers);
+    result
+}
+
+fn terminal_failure(snapshots: &dyn SnapshotProvider) -> Result<Option<String>, String> {
+    snapshots
+        .terminal_failure()
+        .map_err(|failure| failure.to_string())
 }
 
 fn bind_before_ready<T>(
