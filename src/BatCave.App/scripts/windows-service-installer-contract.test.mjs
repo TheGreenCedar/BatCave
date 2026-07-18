@@ -89,6 +89,49 @@ test("NSIS hooks own only fixed native service and shortcut retirement verbs", a
   assert.doesNotMatch(hooks, /ExecShell|batcave-monitor\.exe.*start/u);
 });
 
+test("native provisioner exclusively owns the fixed shared App Paths lifecycle", async () => {
+  const hooks = await text("windows/nsis-hooks.nsh");
+  const provisioner = await text("src/collector_service/windows_provisioner.rs");
+  const exactPath = String.raw`Software\Microsoft\Windows\CurrentVersion\App Paths\batcave-monitor.exe`;
+
+  assert.doesNotMatch(hooks, /App Paths|RegCreateKeyExW|RegSetValueExW|NtDeleteKey/u);
+  assert.match(provisioner, new RegExp(exactPath.replaceAll("\\", "\\\\"), "u"));
+  for (const token of [
+    "RegCreateKeyExW",
+    "NtDeleteKey",
+    "KEY_WOW64_64KEY",
+    "APP_PATH_SECURITY_SDDL",
+    "preflight_app_path_registration",
+    "ensure_app_path_registration",
+    "remove_app_path_registration",
+  ]) {
+    assert.match(provisioner, new RegExp(token, "u"));
+  }
+
+  const install = between(provisioner, "pub(super) fn install()", "fn prepare_upgrade_transaction");
+  assertOrdered(
+    install,
+    "verify_monitor_image(&image)",
+    "preflight_app_path_registration(&monitor)",
+    "open_manager",
+    "ensure_app_path_registration(&monitor)",
+    "rollback_new_install",
+  );
+  const uninstall = between(
+    provisioner,
+    "fn uninstall_with_controller(",
+    "fn finish_uninstall_after_service_absent(",
+  );
+  assertOrdered(
+    uninstall,
+    "verify_monitor_image(controller)",
+    "preflight_app_path_registration(&monitor)",
+    "open_manager",
+    "wait_service_deleted(&manager)",
+    "remove_app_path_registration(app_path, monitor.path())",
+  );
+});
+
 test("NSIS disables and retires both shared Tauri shortcut surfaces", async () => {
   const hooks = await text("windows/nsis-hooks.nsh");
   const installerTemplate = await text("windows/installer-template.nsi");
@@ -311,6 +354,7 @@ test("Windows validation and release verify the generated NSIS contract", async 
     'npm run verify:windows-installer-generated -- "src-tauri/target/release/nsis/x64/installer.nsi"';
 
   assert.match(verifier, new RegExp(releaseInstaller.replaceAll("/", "\\/"), "u"));
+  assert.match(verifier, /generated NSIS must delegate App Paths ownership/u);
   assertOrdered(
     validation,
     "npm run tauri -- build",
@@ -465,13 +509,16 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
   );
   assertOrdered(
     prepare,
-    "resume_upgrade_transaction(staged, stable, service)?",
+    "verify_monitor_image(staged)?",
+    "preflight_app_path_registration(&monitor)?",
+    "resume_upgrade_transaction(staged, &monitor, stable, service)?",
     'trusted_file_digest(stable, "collector_service_stable_image")?',
     "ensure_service_generation_ready(service, stable, prior_digest)?",
     "retire_shortcuts_with_controller(staged)?",
     "ensure_uninstaller_compatibility_alias(staged)?",
     "settle_service_for_replacement(service)?",
   );
+  assert.equal(prepare.match(/preflight_app_path_registration\(&monitor\)/gmu)?.length, 2);
   assert.equal(
     prepare.match(/ensure_service_generation_ready\(service, stable, prior_digest\)/gmu)?.length,
     2,
@@ -485,11 +532,11 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
   );
   assert.match(
     resume,
-    /UpgradeResumeAction::CommitCandidate[\s\S]*commit_upgrade_candidate[\s\S]*retire_shortcuts_with_controller\(staged\)/u,
+    /UpgradeResumeAction::CommitCandidate[\s\S]*commit_upgrade_candidate[\s\S]*app_path_upgrade_gate\(staged, monitor\)/u,
   );
   assert.match(
     resume,
-    /UpgradeResumeAction::FinalizeVerified[\s\S]*retire_shortcuts_with_controller\(staged\)[\s\S]*rollback_upgrade[\s\S]*finalize_verified_upgrade/u,
+    /UpgradeResumeAction::FinalizeVerified[\s\S]*app_path_upgrade_gate\(staged, monitor\)[\s\S]*rollback_upgrade[\s\S]*finalize_verified_upgrade/u,
   );
 
   const commit = between(provisioner, "fn commit_upgrade_candidate", "fn rollback_upgrade");
@@ -513,15 +560,12 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
   assertOrdered(
     install,
     "start_service_and_wait(&service)?",
-    "retire_shortcuts_with_controller(&image)",
+    "app_path_upgrade_gate(&image, &monitor)",
     "fail_shortcut_retirement_with_upgrade_recovery",
     "finalize_upgrade_transaction(&image)?",
   );
-  assert.equal(
-    install.match(/retire_shortcuts_with_controller\(&image\)/gmu)?.length,
-    2,
-    "existing and fresh service paths must both repeat the final absence gate",
-  );
+  assert.equal(install.match(/app_path_upgrade_gate\(&image, &monitor\)/gmu)?.length, 1);
+  assert.equal(install.match(/retire_shortcuts_with_controller\(&image\)/gmu)?.length, 1);
   const freshInstall = install.slice(install.indexOf("create_service(&manager, image.path())?"));
   assertOrdered(
     freshInstall,

@@ -13,9 +13,9 @@ use crate::collector_service::etw_lease::{
     EtwLeasePhase, EtwLeaseV1, EtwSessionIdentityV1, ETW_LEASE_SCHEMA_VERSION,
 };
 use crate::collector_service::windows_provisioner::{
-    AcePolicyForProof, InstallResidueForProof, InstalledBoundariesForProof,
-    MachineRegistrationForProof, ProductRegistrationKeyForProof, ResidueFileForProof,
-    ResidueKindForProof, RuntimeLockObservation, SecurityPrincipalForProof,
+    AcePolicyForProof, AppPathRegistrationKeyForProof, InstallResidueForProof,
+    InstalledBoundariesForProof, MachineRegistrationForProof, ProductRegistrationKeyForProof,
+    ResidueFileForProof, ResidueKindForProof, RuntimeLockObservation, SecurityPrincipalForProof,
     ServiceDataResidueForProof, ServiceInstallResidueForProof, ServiceRegistryKeyForProof,
     ShortcutForProof, TerminatedServiceForProof, SERVICE_LIFECYCLE_LOCK_FILE_NAME,
 };
@@ -1293,6 +1293,7 @@ fn project_parent_helper_file(
 
 struct ProjectedMachineRegistration {
     machine_product_key: Option<LogicalPath>,
+    app_path_present: bool,
     public_desktop_shortcut: Option<SanitizedShortcutSnapshot>,
     common_start_menu_shortcut: Option<SanitizedShortcutSnapshot>,
 }
@@ -1311,6 +1312,7 @@ fn project_machine_registration_projection(
 ) -> Result<ProjectedMachineRegistration, String> {
     validate_registration_identity_set(raw)?;
     let machine_product_key = project_product_registration(&raw.machine_registration)?;
+    let app_path_present = project_app_path_registration(&raw.machine_registration)?;
     let public_shortcut = project_shortcut(
         &raw.machine_registration.public_desktop_shortcut,
         LogicalRoot::PublicDesktop,
@@ -1323,9 +1325,46 @@ fn project_machine_registration_projection(
     )?;
     Ok(ProjectedMachineRegistration {
         machine_product_key,
+        app_path_present,
         public_desktop_shortcut: public_shortcut,
         common_start_menu_shortcut: common_shortcut,
     })
+}
+
+fn project_app_path_registration(raw: &MachineRegistrationForProof) -> Result<bool, String> {
+    match &raw.app_path_key {
+        Observation::Absent => Ok(false),
+        Observation::Present(key) => {
+            validate_app_path_registration_key(key)?;
+            Ok(true)
+        }
+        Observation::Unknown(_) => {
+            Err("lifecycle_private_projection_observation_unknown".to_string())
+        }
+    }
+}
+
+fn validate_app_path_registration_key(key: &AppPathRegistrationKeyForProof) -> Result<(), String> {
+    if !key.final_key_path.eq_ignore_ascii_case(
+        r"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\batcave-monitor.exe",
+    ) || !absolute_path_eq(
+        &key.target,
+        r"C:\Program Files\BatCave Monitor\batcave-monitor.exe",
+    ) || key.value_names != [String::new()]
+        || !key.subkey_names.is_empty()
+        || key.default_value_type != 1
+        || key.last_write_time_100ns == 0
+        || !matches!(
+            key.owner,
+            SecurityPrincipalForProof::LocalSystem
+                | SecurityPrincipalForProof::Administrators
+                | SecurityPrincipalForProof::TrustedInstaller
+        )
+        || key.dacl_sha256.len() != 64
+    {
+        return Err("lifecycle_private_projection_app_path_invalid".to_string());
+    }
+    Ok(())
 }
 
 fn project_product_registration(
@@ -1607,11 +1646,11 @@ pub(super) fn validate_restoration_machine_authority(
         && residue.rollback_service_images.is_empty()
         && residue.atomic_temporary_files.is_empty()
         && residue.failure_marker.is_none();
-    let (installed, expect_runtime, expect_shortcuts) = match expectation {
-        RestorationAuthorityExpectation::AllowlistedStopped => (true, false, None),
-        RestorationAuthorityExpectation::BaselineRunning => (true, true, Some(true)),
-        RestorationAuthorityExpectation::FinalRunning => (true, true, Some(false)),
-        RestorationAuthorityExpectation::ProductAbsent => (false, false, Some(false)),
+    let (installed, expect_runtime, expect_shortcuts, expect_app_path) = match expectation {
+        RestorationAuthorityExpectation::AllowlistedStopped => (true, false, None, false),
+        RestorationAuthorityExpectation::BaselineRunning => (true, true, Some(true), false),
+        RestorationAuthorityExpectation::FinalRunning => (true, true, Some(false), true),
+        RestorationAuthorityExpectation::ProductAbsent => (false, false, Some(false), false),
     };
     let shortcuts_match = match expect_shortcuts {
         Some(expected) => {
@@ -1623,8 +1662,9 @@ pub(super) fn validate_restoration_machine_authority(
                 == registration.common_start_menu_shortcut.is_some()
         }
     };
-    let registration_matches =
-        registration.machine_product_key.is_some() == installed && shortcuts_match;
+    let registration_matches = registration.machine_product_key.is_some() == installed
+        && registration.app_path_present == expect_app_path
+        && shortcuts_match;
     let residue_matches =
         residue.service_registry_key.is_some() == installed && transaction_residue_absent;
     let runtime_matches = match expectation {
@@ -5060,6 +5100,15 @@ mod tests {
             .machine
             .clone();
         let final_raw = raw_machine(&final_machine);
+        let assert_final_rejected = |raw: ElevatedMachineSnapshot| {
+            assert!(compare_machine_projection(
+                &raw,
+                &final_machine,
+                &plan,
+                &parent_current_user(),
+            )
+            .is_err());
+        };
         assert!(matches!(
             final_raw.machine_registration.public_desktop_shortcut,
             Observation::Absent
@@ -5067,6 +5116,14 @@ mod tests {
         assert!(matches!(
             final_raw.machine_registration.common_start_menu_shortcut,
             Observation::Absent
+        ));
+        assert!(matches!(
+            raw.machine_registration.app_path_key,
+            Observation::Absent
+        ));
+        assert!(matches!(
+            final_raw.machine_registration.app_path_key,
+            Observation::Present(_)
         ));
         assert_eq!(
             compare_machine_projection(&final_raw, &final_machine, &plan, &parent_current_user(),),
@@ -5084,6 +5141,30 @@ mod tests {
             .product_key_64
             .clone();
         assert_rejected(unexpected_32_view);
+
+        let mut unknown_app_path = final_raw.clone();
+        unknown_app_path.machine_registration.app_path_key =
+            Observation::Unknown("app_path_unknown".to_string());
+        assert_final_rejected(unknown_app_path);
+
+        for mutation in 0..7 {
+            let mut hostile = final_raw.clone();
+            let Observation::Present(app_path) = &mut hostile.machine_registration.app_path_key
+            else {
+                panic!("App Paths key");
+            };
+            match mutation {
+                0 => app_path.final_key_path.push_str("\\spoof"),
+                1 => app_path.target = r"C:\Temp\batcave-monitor.exe".to_string(),
+                2 => app_path.value_names.push("Path".to_string()),
+                3 => app_path.subkey_names.push("child".to_string()),
+                4 => app_path.last_write_time_100ns = 0,
+                5 => app_path.dacl_sha256 = "not-a-digest".to_string(),
+                6 => app_path.owner = SecurityPrincipalForProof::InteractiveUsers,
+                _ => unreachable!(),
+            }
+            assert_final_rejected(hostile);
+        }
 
         for mutation in 0..7 {
             let mut hostile = raw.clone();
@@ -6937,6 +7018,9 @@ mod tests {
     }
 
     fn raw_machine_registration(machine: &SanitizedMachineSnapshot) -> MachineRegistrationForProof {
+        let app_path_present = machine.machine_product_key.is_some()
+            && machine.public_desktop_shortcut.is_none()
+            && machine.common_start_menu_shortcut.is_none();
         MachineRegistrationForProof {
             product_key_64: if machine.machine_product_key.is_some() {
                 Observation::Present(ProductRegistrationKeyForProof {
@@ -6954,6 +7038,20 @@ mod tests {
                 Observation::Absent
             },
             product_key_32: Observation::Absent,
+            app_path_key: if app_path_present {
+                Observation::Present(AppPathRegistrationKeyForProof {
+                    final_key_path: r"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\batcave-monitor.exe".to_string(),
+                    target: r"C:\Program Files\BatCave Monitor\batcave-monitor.exe".to_string(),
+                    value_names: vec![String::new()],
+                    subkey_names: Vec::new(),
+                    default_value_type: 1,
+                    last_write_time_100ns: 1,
+                    owner: SecurityPrincipalForProof::Administrators,
+                    dacl_sha256: "8".repeat(64),
+                })
+            } else {
+                Observation::Absent
+            },
             public_desktop_shortcut: machine
                 .public_desktop_shortcut
                 .as_ref()
