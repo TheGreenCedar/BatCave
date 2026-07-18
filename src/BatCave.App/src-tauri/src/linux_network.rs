@@ -12,7 +12,9 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
+use crate::network_attribution::{
+    NetworkAttributionSample, ObservedProcessGeneration, ProcessNetworkRates,
+};
 
 #[cfg(test)]
 const IPV4_SOCKET_FAMILY: u16 = 2;
@@ -95,9 +97,9 @@ impl LinuxNetworkAttribution {
     {
         let runtime_failure = match &mut self.state {
             LinuxNetworkAttributionState::Ready(ready) => match ready.monitor.sample() {
-                NetworkAttributionSample::Ready { rates_by_pid } => {
+                NetworkAttributionSample::Ready { rates_by_process } => {
                     ready.attempts = 0;
-                    return NetworkAttributionSample::Ready { rates_by_pid };
+                    return NetworkAttributionSample::Ready { rates_by_process };
                 }
                 NetworkAttributionSample::Failed(message) => Some((message, ready.attempts.max(1))),
                 sample => return sample,
@@ -318,7 +320,11 @@ impl LinuxNetworkAttributionMonitor {
             Some(completed) => {
                 debug_assert!(completed.interval_count > 0);
                 NetworkAttributionSample::Ready {
-                    rates_by_pid: completed.rates_by_pid,
+                    rates_by_process: completed
+                        .rates_by_pid
+                        .into_iter()
+                        .map(|(pid, rates)| (ObservedProcessGeneration::pid_only(pid), rates))
+                        .collect(),
                 }
             }
             None if shared.last_interval_at.is_none() => NetworkAttributionSample::Held(

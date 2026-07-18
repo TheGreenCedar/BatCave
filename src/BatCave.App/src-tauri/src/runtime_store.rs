@@ -1421,12 +1421,14 @@ impl RuntimeStore {
             }
         }
         if let Some(previous) = &self.previous_totals {
-            let network_rates_are_native = system
-                .quality
-                .as_ref()
-                .and_then(|quality| quality.network.as_ref())
-                .and_then(|quality| quality.source)
-                == Some(MetricSource::Procfs);
+            let network_rates_are_native = matches!(
+                system
+                    .quality
+                    .as_ref()
+                    .and_then(|quality| quality.network.as_ref())
+                    .and_then(|quality| quality.source),
+                Some(MetricSource::Procfs | MetricSource::InterfaceAggregate)
+            );
             if !network_rates_are_native {
                 system.network_received_bps = byte_rate(
                     system.network_received_total_bytes,

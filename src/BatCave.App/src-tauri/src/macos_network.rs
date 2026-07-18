@@ -12,7 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::network_attribution::{NetworkAttributionSample, ProcessNetworkRates};
+use crate::network_attribution::{
+    NetworkAttributionSample, ObservedProcessGeneration, ProcessNetworkRates,
+};
 
 // Minimal client for Apple's APSL-licensed XNU NStat wire protocol. BatCave does
 // not link a private framework or copy XNU implementation code. These message
@@ -96,7 +98,7 @@ struct SourceState {
 #[derive(Debug)]
 struct SharedSample {
     baseline_complete: bool,
-    interval_bytes_by_pid: HashMap<u32, ProcessNetworkRates>,
+    interval_bytes_by_process: HashMap<ObservedProcessGeneration, ProcessNetworkRates>,
     interval_started_at: Instant,
     failure: Option<String>,
     data_loss: Option<String>,
@@ -106,7 +108,7 @@ impl Default for SharedSample {
     fn default() -> Self {
         Self {
             baseline_complete: false,
-            interval_bytes_by_pid: HashMap::new(),
+            interval_bytes_by_process: HashMap::new(),
             interval_started_at: Instant::now(),
             failure: None,
             data_loss: None,
@@ -124,7 +126,7 @@ impl AttributionEngine {
     fn apply_update(
         &mut self,
         update: SourceUpdate,
-        interval: &mut HashMap<u32, ProcessNetworkRates>,
+        interval: &mut HashMap<ObservedProcessGeneration, ProcessNetworkRates>,
     ) -> Option<String> {
         let previous = self.sources.get(&update.source_ref).copied();
         let mut data_loss = update.previous_event_discarded.then(|| {
@@ -135,7 +137,12 @@ impl AttributionEngine {
         });
 
         if let Some(previous) = previous {
-            if update.received_bytes < previous.received_bytes
+            if update.pid != previous.pid || update.unique_pid != previous.unique_pid {
+                data_loss = Some(format!(
+                    "nstat_source_generation_changed:source_ref={}:previous_unique_pid={}:current_unique_pid={}",
+                    update.source_ref, previous.unique_pid, update.unique_pid
+                ));
+            } else if update.received_bytes < previous.received_bytes
                 || update.transmitted_bytes < previous.transmitted_bytes
             {
                 data_loss = Some(format!(
@@ -143,7 +150,12 @@ impl AttributionEngine {
                     update.source_ref, previous.unique_pid
                 ));
             } else {
-                let rates = interval.entry(previous.pid).or_default();
+                let rates = interval
+                    .entry(ObservedProcessGeneration::platform(
+                        previous.pid,
+                        previous.unique_pid,
+                    ))
+                    .or_default();
                 rates.received_bps = rates
                     .received_bps
                     .saturating_add(update.received_bytes - previous.received_bytes);
@@ -152,7 +164,12 @@ impl AttributionEngine {
                     .saturating_add(update.transmitted_bytes - previous.transmitted_bytes);
             }
         } else if self.baseline_complete {
-            let rates = interval.entry(update.pid).or_default();
+            let rates = interval
+                .entry(ObservedProcessGeneration::platform(
+                    update.pid,
+                    update.unique_pid,
+                ))
+                .or_default();
             rates.received_bps = rates.received_bps.saturating_add(update.received_bytes);
             rates.transmitted_bps = rates
                 .transmitted_bps
@@ -236,12 +253,12 @@ impl MacosNetworkAttribution {
             );
         }
         shared.interval_started_at = now;
-        let interval = std::mem::take(&mut shared.interval_bytes_by_pid);
-        let rates_by_pid = interval
+        let interval = std::mem::take(&mut shared.interval_bytes_by_process);
+        let rates_by_process = interval
             .into_iter()
-            .map(|(pid, bytes)| {
+            .map(|(identity, bytes)| {
                 (
-                    pid,
+                    identity,
                     ProcessNetworkRates {
                         received_bps: bytes_per_second(bytes.received_bps, elapsed),
                         transmitted_bps: bytes_per_second(bytes.transmitted_bps, elapsed),
@@ -252,11 +269,11 @@ impl MacosNetworkAttribution {
 
         if let Some(message) = shared.data_loss.take() {
             NetworkAttributionSample::Partial {
-                rates_by_pid,
+                rates_by_process,
                 message,
             }
         } else {
-            NetworkAttributionSample::Ready { rates_by_pid }
+            NetworkAttributionSample::Ready { rates_by_process }
         }
     }
 }
@@ -454,7 +471,7 @@ fn handle_datagram(
                                 .lock()
                                 .map_err(|_| "nstat_shared_lock_poisoned".to_string())?;
                             sample.baseline_complete = true;
-                            sample.interval_bytes_by_pid.clear();
+                            sample.interval_bytes_by_process.clear();
                             sample.interval_started_at = Instant::now();
                         }
                         *next_query_at = Instant::now() + POLL_INTERVAL;
@@ -510,7 +527,7 @@ fn commit_updates(
         .lock()
         .map_err(|_| "nstat_shared_lock_poisoned".to_string())?;
     for update in updates {
-        if let Some(message) = engine.apply_update(update, &mut sample.interval_bytes_by_pid) {
+        if let Some(message) = engine.apply_update(update, &mut sample.interval_bytes_by_process) {
             sample.data_loss = Some(message);
         }
     }
@@ -785,7 +802,7 @@ mod tests {
         engine.finish_baseline();
         engine.apply_update(update(1, 42, 1_400, 2_700), &mut interval);
         assert_eq!(
-            interval.get(&42),
+            interval.get(&ObservedProcessGeneration::platform(42, 42)),
             Some(&ProcessNetworkRates {
                 received_bps: 400,
                 transmitted_bps: 700,
@@ -804,7 +821,7 @@ mod tests {
         engine.apply_update(closing, &mut interval);
 
         assert_eq!(
-            interval.get(&51),
+            interval.get(&ObservedProcessGeneration::platform(51, 51)),
             Some(&ProcessNetworkRates {
                 received_bps: 900,
                 transmitted_bps: 300,
@@ -814,22 +831,18 @@ mod tests {
     }
 
     #[test]
-    fn ownership_change_bills_the_completed_delta_to_the_previous_pid() {
+    fn source_generation_change_does_not_bill_either_pid() {
         let mut engine = AttributionEngine::default();
         let mut interval = HashMap::new();
         engine.apply_update(update(3, 60, 100, 200), &mut interval);
         engine.finish_baseline();
 
-        engine.apply_update(update(3, 61, 150, 260), &mut interval);
+        let loss = engine.apply_update(update(3, 61, 150, 260), &mut interval);
 
-        assert_eq!(
-            interval.get(&60),
-            Some(&ProcessNetworkRates {
-                received_bps: 50,
-                transmitted_bps: 60,
-            })
-        );
-        assert!(!interval.contains_key(&61));
+        assert!(loss
+            .as_deref()
+            .is_some_and(|message| message.contains("source_generation_changed")));
+        assert!(interval.is_empty());
     }
 
     #[test]
@@ -928,11 +941,12 @@ mod tests {
         loop {
             thread::sleep(Duration::from_millis(100));
             match attribution.sample() {
-                NetworkAttributionSample::Ready { rates_by_pid }
-                | NetworkAttributionSample::Partial { rates_by_pid, .. }
-                    if rates_by_pid.get(&pid).is_some_and(|rates| {
-                        rates.received_bps > 0 && rates.transmitted_bps > 0
-                    }) =>
+                NetworkAttributionSample::Ready { rates_by_process }
+                | NetworkAttributionSample::Partial {
+                    rates_by_process, ..
+                } if rates_by_process.iter().any(|(identity, rates)| {
+                    identity.pid == pid && rates.received_bps > 0 && rates.transmitted_bps > 0
+                }) =>
                 {
                     break;
                 }
