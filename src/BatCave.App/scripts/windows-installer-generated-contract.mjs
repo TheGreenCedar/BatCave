@@ -15,6 +15,11 @@ function section(source, start, end) {
 
 assert.match(generated, /^Var NoShortcutMode$/mu);
 assert.match(generated, /!include ".*\\windows\\nsis-hooks\.nsh"/u);
+assert.doesNotMatch(
+  generated,
+  /Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\batcave-monitor\.exe/iu,
+  "generated NSIS must delegate App Paths ownership to the native provisioner",
+);
 assert.doesNotMatch(generated, /^!define MUI_FINISHPAGE_SHOWREADME(?:_|$)/gmu);
 assert.doesNotMatch(generated, /MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut/u);
 

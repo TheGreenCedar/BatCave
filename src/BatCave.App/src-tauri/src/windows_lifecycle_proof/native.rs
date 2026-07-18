@@ -4310,6 +4310,7 @@ pub(crate) fn capture_elevated_machine_snapshot(
         let reason = "lifecycle_registration_service_changed_during_capture".to_string();
         machine_registration.product_key_64 = Observation::Unknown(reason.clone());
         machine_registration.product_key_32 = Observation::Unknown(reason.clone());
+        machine_registration.app_path_key = Observation::Unknown(reason.clone());
         machine_registration.public_desktop_shortcut = Observation::Unknown(reason.clone());
         machine_registration.common_start_menu_shortcut = Observation::Unknown(reason);
     }

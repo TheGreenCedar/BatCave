@@ -21,6 +21,10 @@ const LEGACY_WINDOWS_CLI_NAME: &str = "batcave-monitor-cli.exe";
 const SERVICE_ACCOUNT: &str = "LocalSystem";
 const SERVICE_OWNER_MARKER: &str = "dev.batcave.monitor/service-v1";
 const SERVICE_FAILURE_VALUE: &str = "BatCaveLastFailure";
+const APP_PATH_REGISTRATION_PATH: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\App Paths\batcave-monitor.exe";
+const APP_PATH_REGISTRATION_NT_PATH: &str =
+    r"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\batcave-monitor.exe";
 pub(crate) const SERVICE_LIFECYCLE_LOCK_FILE_NAME: &str = "process-owner.v1.lock";
 const SERVICE_TYPE_OWN_PROCESS: u32 = 0x10;
 const ERROR_FILE_NOT_FOUND_CODE: u32 = 2;
@@ -340,6 +344,20 @@ pub(crate) struct ProductRegistrationKeyForProof {
 #[cfg(feature = "private-windows-lifecycle-proof")]
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct AppPathRegistrationKeyForProof {
+    pub(crate) final_key_path: String,
+    pub(crate) target: String,
+    pub(crate) value_names: Vec<String>,
+    pub(crate) subkey_names: Vec<String>,
+    pub(crate) default_value_type: u32,
+    pub(crate) last_write_time_100ns: u64,
+    pub(crate) owner: SecurityPrincipalForProof,
+    pub(crate) dacl_sha256: String,
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ShortcutForProof {
     pub(crate) path: String,
     pub(crate) target: String,
@@ -367,6 +385,8 @@ pub(crate) struct MachineRegistrationForProof {
         crate::windows_lifecycle_proof_contract::Observation<ProductRegistrationKeyForProof>,
     pub(crate) product_key_32:
         crate::windows_lifecycle_proof_contract::Observation<ProductRegistrationKeyForProof>,
+    pub(crate) app_path_key:
+        crate::windows_lifecycle_proof_contract::Observation<AppPathRegistrationKeyForProof>,
     pub(crate) public_desktop_shortcut:
         crate::windows_lifecycle_proof_contract::Observation<ShortcutForProof>,
     pub(crate) common_start_menu_shortcut:
@@ -641,6 +661,60 @@ struct SecurityPolicy {
     aces: Vec<AcePolicy>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AppPathRegistrationPolicy {
+    final_key_path: String,
+    target: String,
+    value_count: u32,
+    subkey_count: u32,
+    default_value_type: u32,
+    owner: PrincipalClass,
+    unprivileged_writer: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppPathRegistrationState {
+    Absent,
+    Exact,
+}
+
+fn validate_app_path_registration_state(
+    policy: Option<&AppPathRegistrationPolicy>,
+    expected_target: &Path,
+) -> Result<AppPathRegistrationState, String> {
+    match policy {
+        None => Ok(AppPathRegistrationState::Absent),
+        Some(policy) => {
+            validate_app_path_registration_policy(policy, expected_target)?;
+            Ok(AppPathRegistrationState::Exact)
+        }
+    }
+}
+
+fn validate_app_path_registration_policy(
+    policy: &AppPathRegistrationPolicy,
+    expected_target: &Path,
+) -> Result<(), String> {
+    if !policy
+        .final_key_path
+        .eq_ignore_ascii_case(APP_PATH_REGISTRATION_NT_PATH)
+        || !fixed_path_eq(Path::new(&policy.target), expected_target)
+        || policy.value_count != 1
+        || policy.subkey_count != 0
+        || policy.default_value_type != windows_sys::Win32::System::Registry::REG_SZ
+        || !matches!(
+            policy.owner,
+            PrincipalClass::LocalSystem
+                | PrincipalClass::Administrators
+                | PrincipalClass::TrustedInstaller
+        )
+        || policy.unprivileged_writer
+    {
+        return Err("collector_service_app_path_contract_invalid".to_string());
+    }
+    Ok(())
+}
+
 const FILE_GENERIC_READ_EXECUTE: u32 = 0x0012_00a9;
 const FILE_MODIFY: u32 = 0x0013_01bf;
 const FILE_ALL_ACCESS: u32 = 0x001f_01ff;
@@ -793,15 +867,14 @@ mod native {
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
     use windows_sys::core::GUID;
-    #[cfg(feature = "private-windows-lifecycle-proof")]
-    use windows_sys::Wdk::System::Registry::{KeyNameInformation, NtQueryKey};
+    use windows_sys::Wdk::System::Registry::{KeyNameInformation, NtDeleteKey, NtQueryKey};
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, GetLastError, LocalFree, SetLastError, ERROR_ALREADY_EXISTS,
             ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ALL_ASSIGNED,
             ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
             ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SERVICE_NOT_ACTIVE, ERROR_SHARING_VIOLATION,
-            ERROR_SUCCESS, HANDLE, LUID, WAIT_OBJECT_0,
+            ERROR_SUCCESS, FILETIME, HANDLE, LUID, WAIT_OBJECT_0,
         },
         Security::{
             AclSizeInformation, AdjustTokenPrivileges,
@@ -810,11 +883,11 @@ mod native {
                 ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
             },
             CreateWellKnownSid, EqualSid, GetAce, GetAclInformation, GetLengthSid,
-            GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
-            LookupAccountNameW, LookupPrivilegeValueW, TokenElevation, WinBuiltinAdministratorsSid,
-            WinInteractiveSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION,
-            CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE,
-            LUID_AND_ATTRIBUTES, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+            GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+            GetTokenInformation, LookupAccountNameW, LookupPrivilegeValueW, TokenElevation,
+            WinBuiltinAdministratorsSid, WinInteractiveSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE,
+            ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+            INHERIT_ONLY_ACE, LUID_AND_ATTRIBUTES, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
             PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE,
             SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SID_NAME_USE, TOKEN_ADJUST_PRIVILEGES,
             TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
@@ -832,8 +905,10 @@ mod native {
         },
         System::{
             Registry::{
-                RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
-                HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
+                RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetKeySecurity, RegOpenKeyExW,
+                RegQueryInfoKeyW, RegQueryValueExW, RegSetValueExW, HKEY_LOCAL_MACHINE,
+                KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY,
+                REG_CREATED_NEW_KEY, REG_OPTION_NON_VOLATILE, REG_SZ,
             },
             Services::{
                 ChangeServiceConfig2W, CloseServiceHandle, ControlService, CreateServiceW,
@@ -861,10 +936,7 @@ mod native {
     };
     #[cfg(feature = "private-windows-lifecycle-proof")]
     use windows_sys::Win32::{
-        Foundation::{
-            ERROR_LOCK_VIOLATION, ERROR_NO_MORE_ITEMS, FILETIME, PROPERTYKEY, WAIT_TIMEOUT,
-        },
-        Security::GetSecurityDescriptorOwner,
+        Foundation::{ERROR_LOCK_VIOLATION, ERROR_NO_MORE_ITEMS, PROPERTYKEY, WAIT_TIMEOUT},
         Storage::FileSystem::{SetFilePointerEx, FILE_BEGIN},
         System::{
             Com::{
@@ -872,10 +944,7 @@ mod native {
                 StructuredStorage::{PropVariantClear, PropVariantToStringAlloc, PROPVARIANT},
                 CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
             },
-            Registry::{
-                RegEnumKeyExW, RegEnumValueW, RegGetKeySecurity, RegQueryInfoKeyW,
-                KEY_ENUMERATE_SUB_KEYS, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
-            },
+            Registry::{RegEnumKeyExW, RegEnumValueW, KEY_WOW64_32KEY},
             Threading::{GetExitCodeProcess, TerminateProcess, PROCESS_TERMINATE},
             Variant::{VT_BSTR, VT_LPWSTR},
         },
@@ -898,6 +967,17 @@ mod native {
     const SERVICE_REGISTRY_PATH: &str = r"SYSTEM\CurrentControlSet\Services\BatCaveCollector";
     const PRODUCT_UNINSTALL_REGISTRY_PATH: &str =
         r"Software\Microsoft\Windows\CurrentVersion\Uninstall\BatCave Monitor";
+    const APP_PATH_SECURITY_SDDL: &str = "O:BAG:BAD:P(A;;KA;;;SY)(A;;KA;;;BA)(A;;KR;;;BU)";
+    const REGISTRY_MAX_TEXT_BYTES: u32 = 64 * 1024;
+    const REGISTRY_MAX_NAME_CHARS: u32 = 1024;
+    const REGISTRY_WRITE_MASK: u32 = 0x0000_0002
+        | 0x0000_0004
+        | 0x0000_0020
+        | DELETE
+        | WRITE_DAC
+        | WRITE_OWNER
+        | GENERIC_WRITE
+        | GENERIC_ALL;
     #[cfg(feature = "private-windows-lifecycle-proof")]
     const PRODUCT_REGISTRATION_PATH: &str = r"Software\batcave\BatCave Monitor";
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -922,18 +1002,9 @@ mod native {
     #[cfg(feature = "private-windows-lifecycle-proof")]
     const PROOF_SHARED_SHORTCUT_STRICT_WRITER_POLICY: bool = false;
     #[cfg(feature = "private-windows-lifecycle-proof")]
-    const PROOF_REGISTRY_MAX_TEXT_BYTES: u32 = 64 * 1024;
+    const PROOF_REGISTRY_MAX_TEXT_BYTES: u32 = REGISTRY_MAX_TEXT_BYTES;
     #[cfg(feature = "private-windows-lifecycle-proof")]
-    const PROOF_REGISTRY_MAX_NAME_CHARS: u32 = 1024;
-    #[cfg(feature = "private-windows-lifecycle-proof")]
-    const PRODUCT_REGISTRY_WRITE_MASK: u32 = 0x0000_0002
-        | 0x0000_0004
-        | 0x0000_0020
-        | DELETE
-        | WRITE_DAC
-        | WRITE_OWNER
-        | GENERIC_WRITE
-        | GENERIC_ALL;
+    const PROOF_REGISTRY_MAX_NAME_CHARS: u32 = REGISTRY_MAX_NAME_CHARS;
     #[cfg(feature = "private-windows-lifecycle-proof")]
     const CLSID_SHELL_LINK: GUID = GUID::from_u128(0x00021401_0000_0000_c000_000000000046);
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -1108,9 +1179,36 @@ mod native {
     struct OwnedRegistryKey(windows_sys::Win32::System::Registry::HKEY);
 
     impl OwnedRegistryKey {
-        #[cfg(feature = "private-windows-lifecycle-proof")]
         fn raw(&self) -> windows_sys::Win32::System::Registry::HKEY {
             self.0
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct AppPathRegistrySnapshot {
+        policy: AppPathRegistrationPolicy,
+        last_write_time_100ns: u64,
+        dacl_sha256: String,
+    }
+
+    struct PinnedAppPathRegistration {
+        key: OwnedRegistryKey,
+        snapshot: AppPathRegistrySnapshot,
+    }
+
+    enum AppPathPreflight {
+        Absent,
+        Exact(PinnedAppPathRegistration),
+    }
+
+    struct VerifiedMonitorImage {
+        path: PathBuf,
+        _image: OwnedHandle,
+    }
+
+    impl VerifiedMonitorImage {
+        fn path(&self) -> &Path {
+            &self.path
         }
     }
 
@@ -2067,9 +2165,229 @@ mod native {
         }
     }
 
+    fn verify_monitor_image(
+        controller: &VerifiedServiceImage,
+    ) -> Result<VerifiedMonitorImage, String> {
+        let path = controller
+            .install_directory()?
+            .join(MONITOR_EXECUTABLE_NAME);
+        let image = open_file(&path, "collector_service_app_path_monitor_open_failed")?;
+        if !fixed_path_eq(
+            &final_path(
+                &image,
+                "collector_service_app_path_monitor_final_path_failed",
+            )?,
+            &path,
+        ) {
+            return Err("collector_service_app_path_monitor_identity_invalid".to_string());
+        }
+        validate_no_untrusted_writer(image.raw(), &SecurityPrincipals::load_base()?, false, false)?;
+        Ok(VerifiedMonitorImage {
+            path,
+            _image: image,
+        })
+    }
+
+    fn preflight_app_path_registration(
+        monitor: &VerifiedMonitorImage,
+    ) -> Result<AppPathPreflight, String> {
+        let Some(key) = open_app_path_registration(
+            KEY_WOW64_64KEY,
+            KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL | DELETE,
+        )?
+        else {
+            require_app_path_absent()?;
+            if validate_app_path_registration_state(None, monitor.path())?
+                != AppPathRegistrationState::Absent
+            {
+                return Err("collector_service_app_path_contract_invalid".to_string());
+            }
+            return Ok(AppPathPreflight::Absent);
+        };
+        let snapshot = capture_app_path_registration(&key, monitor.path())?;
+        if capture_app_path_registration(&key, monitor.path())? != snapshot {
+            return Err("collector_service_app_path_changed".to_string());
+        }
+        let reopened = open_app_path_registration(
+            KEY_WOW64_64KEY,
+            KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL,
+        )?
+        .ok_or_else(|| "collector_service_app_path_disappeared".to_string())?;
+        if capture_app_path_registration(&reopened, monitor.path())? != snapshot {
+            return Err("collector_service_app_path_changed".to_string());
+        }
+        Ok(AppPathPreflight::Exact(PinnedAppPathRegistration {
+            key,
+            snapshot,
+        }))
+    }
+
+    fn ensure_app_path_registration(
+        monitor: &VerifiedMonitorImage,
+    ) -> Result<Option<PinnedAppPathRegistration>, String> {
+        match preflight_app_path_registration(monitor)? {
+            AppPathPreflight::Exact(exact) => {
+                revalidate_app_path_registration(&exact, monitor.path())?;
+                Ok(None)
+            }
+            AppPathPreflight::Absent => create_app_path_registration(monitor.path()).map(Some),
+        }
+    }
+
+    fn create_app_path_registration(
+        monitor_path: &Path,
+    ) -> Result<PinnedAppPathRegistration, String> {
+        require_app_path_absent()?;
+        let descriptor = OwnedSecurityDescriptor::from_sddl(APP_PATH_SECURITY_SDDL)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0.cast(),
+            bInheritHandle: 0,
+        };
+        let path = wide(APP_PATH_REGISTRATION_PATH);
+        let mut raw = ptr::null_mut();
+        let mut disposition = 0_u32;
+        let status = unsafe {
+            RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                path.as_ptr(),
+                0,
+                ptr::null_mut(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_QUERY_VALUE
+                    | KEY_SET_VALUE
+                    | KEY_ENUMERATE_SUB_KEYS
+                    | READ_CONTROL
+                    | DELETE
+                    | KEY_WOW64_64KEY,
+                &attributes,
+                &mut raw,
+                &mut disposition,
+            )
+        };
+        if status != ERROR_SUCCESS || raw.is_null() || disposition != REG_CREATED_NEW_KEY {
+            if !raw.is_null() {
+                unsafe { RegCloseKey(raw) };
+            }
+            return Err(format!(
+                "collector_service_app_path_create_failed:{status}:{disposition}"
+            ));
+        }
+        let key = OwnedRegistryKey(raw);
+        let snapshot = (|| {
+            let value = wide_path(monitor_path);
+            let status = unsafe {
+                RegSetValueExW(
+                    key.raw(),
+                    ptr::null(),
+                    0,
+                    REG_SZ,
+                    value.as_ptr().cast(),
+                    (value.len() * size_of::<u16>()) as u32,
+                )
+            };
+            if status != ERROR_SUCCESS {
+                return Err(format!("collector_service_app_path_write_failed:{status}"));
+            }
+            capture_app_path_registration(&key, monitor_path)
+        })();
+        let snapshot = match snapshot {
+            Ok(snapshot) => snapshot,
+            Err(primary) => return fail_created_app_path_registration(&key, primary),
+        };
+        let pinned = PinnedAppPathRegistration { key, snapshot };
+        if let Err(primary) = revalidate_app_path_registration(&pinned, monitor_path) {
+            return fail_created_app_path_registration(&pinned.key, primary);
+        }
+        Ok(pinned)
+    }
+
+    fn fail_created_app_path_registration(
+        key: &OwnedRegistryKey,
+        primary: String,
+    ) -> Result<PinnedAppPathRegistration, String> {
+        let status = unsafe { NtDeleteKey(key.raw().cast()) };
+        if status == 0 {
+            Err(primary)
+        } else {
+            Err(format!(
+                "{primary};collector_service_app_path_create_rollback_failed:{status:#010x}"
+            ))
+        }
+    }
+
+    fn remove_app_path_registration(
+        preflight: AppPathPreflight,
+        monitor_path: &Path,
+    ) -> Result<(), String> {
+        match preflight {
+            AppPathPreflight::Absent => require_app_path_absent(),
+            AppPathPreflight::Exact(exact) => {
+                delete_pinned_app_path_registration(&exact, monitor_path)?;
+                require_app_path_absent()
+            }
+        }
+    }
+
+    fn delete_pinned_app_path_registration(
+        exact: &PinnedAppPathRegistration,
+        monitor_path: &Path,
+    ) -> Result<(), String> {
+        revalidate_app_path_registration(exact, monitor_path)?;
+        let status = unsafe { NtDeleteKey(exact.key.raw().cast()) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "collector_service_app_path_delete_failed:{status:#010x}"
+            ))
+        }
+    }
+
+    fn revalidate_app_path_registration(
+        exact: &PinnedAppPathRegistration,
+        monitor_path: &Path,
+    ) -> Result<(), String> {
+        if capture_app_path_registration(&exact.key, monitor_path)? != exact.snapshot {
+            return Err("collector_service_app_path_changed".to_string());
+        }
+        let reopened = open_app_path_registration(
+            KEY_WOW64_64KEY,
+            KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL,
+        )?
+        .ok_or_else(|| "collector_service_app_path_disappeared".to_string())?;
+        if capture_app_path_registration(&reopened, monitor_path)? != exact.snapshot {
+            return Err("collector_service_app_path_changed".to_string());
+        }
+        Ok(())
+    }
+
+    fn app_path_upgrade_gate(
+        controller: &VerifiedServiceImage,
+        monitor: &VerifiedMonitorImage,
+    ) -> Result<(), String> {
+        let created = ensure_app_path_registration(monitor)?;
+        if let Err(primary) = retire_shortcuts_with_controller(controller) {
+            return match created {
+                Some(created) => {
+                    match delete_pinned_app_path_registration(&created, monitor.path()) {
+                        Ok(()) => Err(primary),
+                        Err(rollback) => Err(format!(
+                            "{primary};collector_service_app_path_rollback_failed:{rollback}"
+                        )),
+                    }
+                }
+                None => Err(primary),
+            };
+        }
+        Ok(())
+    }
+
     pub(super) fn prepare_upgrade() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
+        let monitor = verify_monitor_image(&image)?;
+        preflight_app_path_registration(&monitor)?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = open_service(&manager, SERVICE_ALL_ACCESS)?
             .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
@@ -2097,9 +2415,12 @@ mod native {
         stable: &Path,
         service: &OwnedScHandle,
     ) -> Result<(), String> {
+        let monitor = verify_monitor_image(staged)?;
+        preflight_app_path_registration(&monitor)?;
         validate_service_contract(service, stable)?;
         let _protected_root = open_protected_etw_lease_root()?;
-        let prepared = resume_upgrade_transaction(staged, stable, service)?;
+        let prepared = resume_upgrade_transaction(staged, &monitor, stable, service)?;
+        preflight_app_path_registration(&monitor)?;
         let prior_digest = trusted_file_digest(stable, "collector_service_stable_image")?;
         ensure_service_generation_ready(service, stable, prior_digest)?;
         retire_shortcuts_with_controller(staged)?;
@@ -2126,6 +2447,8 @@ mod native {
     pub(super) fn commit_upgrade_staged() -> Result<(), String> {
         require_elevated()?;
         let staged = verify_current_staged_binary_path()?;
+        let monitor = verify_monitor_image(&staged)?;
+        preflight_app_path_registration(&monitor)?;
         let stable = staged
             .path()
             .parent()
@@ -2142,10 +2465,20 @@ mod native {
         match action {
             UpgradeResumeAction::CommitCandidate | UpgradeResumeAction::ReusePreparedSameImage => {
                 commit_upgrade_candidate(&mut journal, &service, &stable, || {
-                    retire_shortcuts_with_controller(&staged)
+                    app_path_upgrade_gate(&staged, &monitor)
                 })
             }
-            UpgradeResumeAction::FinalizeVerified => Ok(()),
+            UpgradeResumeAction::FinalizeVerified => {
+                if let Err(error) = app_path_upgrade_gate(&staged, &monitor) {
+                    return match rollback_upgrade(&mut journal, &service, &stable) {
+                        Ok(()) => Err(error),
+                        Err(rollback) => Err(format!(
+                            "{error};collector_service_upgrade_rollback_failed:{rollback}"
+                        )),
+                    };
+                }
+                Ok(())
+            }
             UpgradeResumeAction::ReusePrepared | UpgradeResumeAction::RetryRollback => {
                 Err("collector_service_upgrade_candidate_not_installed".to_string())
             }
@@ -2155,13 +2488,15 @@ mod native {
     pub(super) fn install() -> Result<(), String> {
         require_elevated()?;
         let image = verify_current_binary_path()?;
+        let monitor = verify_monitor_image(&image)?;
+        preflight_app_path_registration(&monitor)?;
         let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
         if let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? {
             validate_service_contract(&service, image.path())?;
             let _protected_root = open_protected_etw_lease_root()?;
             start_service_and_wait(&service)?;
             validate_service_contract(&service, image.path())?;
-            if let Err(error) = retire_shortcuts_with_controller(&image) {
+            if let Err(error) = app_path_upgrade_gate(&image, &monitor) {
                 let install_directory = image.install_directory()?.to_path_buf();
                 drop(image);
                 return fail_shortcut_retirement_with_upgrade_recovery(error, &install_directory);
@@ -2174,6 +2509,7 @@ mod native {
         retire_upgrade_transaction_for_uninstall(image.path(), None)?;
         let service = create_service(&manager, image.path())?;
         let mut roots_created = RootCreationJournal::default();
+        let mut app_path_created = None;
         let install_result = (|| {
             configure_new_service(&service)?;
             set_owner_marker()?;
@@ -2181,6 +2517,7 @@ mod native {
             validate_service_contract(&service, image.path())?;
             start_service_and_wait(&service)?;
             validate_service_contract(&service, image.path())?;
+            app_path_created = ensure_app_path_registration(&monitor)?;
             retire_shortcuts_with_controller(&image)
         })();
         if let Err(error) = install_result {
@@ -2189,6 +2526,8 @@ mod native {
                 &manager,
                 roots_created.product,
                 roots_created.service,
+                app_path_created.as_ref(),
+                monitor.path(),
             ) {
                 return Err(format!(
                     "{error};collector_service_rollback_failed:{rollback}"
@@ -2257,6 +2596,7 @@ mod native {
 
     fn resume_upgrade_transaction(
         staged: &VerifiedServiceImage,
+        monitor: &VerifiedMonitorImage,
         stable: &Path,
         service: &OwnedScHandle,
     ) -> Result<bool, String> {
@@ -2294,7 +2634,7 @@ mod native {
             }
             UpgradeResumeAction::CommitCandidate => {
                 commit_upgrade_candidate(&mut journal, service, stable, || {
-                    retire_shortcuts_with_controller(staged)
+                    app_path_upgrade_gate(staged, monitor)
                 })?;
                 finalize_verified_upgrade(stable, staged.path(), &journal)?;
                 Ok(false)
@@ -2310,7 +2650,7 @@ mod native {
                     }
                     return Err(error);
                 }
-                if let Err(error) = retire_shortcuts_with_controller(staged) {
+                if let Err(error) = app_path_upgrade_gate(staged, monitor) {
                     return match rollback_upgrade(&mut journal, service, stable) {
                         Ok(()) => Err(error),
                         Err(rollback) => Err(format!(
@@ -2559,15 +2899,29 @@ mod native {
         stable: &Path,
         keep_staged_name: Option<&str>,
     ) -> Result<(), String> {
+        let monitor = verify_monitor_image(controller)?;
+        let app_path = preflight_app_path_registration(&monitor)?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = match open_service(&manager, SERVICE_ALL_ACCESS) {
             Ok(Some(service)) => service,
             Ok(None) => {
-                return finish_uninstall_after_service_absent(controller, stable, keep_staged_name)
+                return finish_uninstall_after_service_absent(
+                    controller,
+                    &monitor,
+                    app_path,
+                    stable,
+                    keep_staged_name,
+                )
             }
             Err(error) if service_open_is_delete_pending(&error) => {
                 wait_service_deleted(&manager)?;
-                return finish_uninstall_after_service_absent(controller, stable, keep_staged_name);
+                return finish_uninstall_after_service_absent(
+                    controller,
+                    &monitor,
+                    app_path,
+                    stable,
+                    keep_staged_name,
+                );
             }
             Err(error) => return Err(error),
         };
@@ -2586,6 +2940,7 @@ mod native {
         }
         drop(service);
         wait_service_deleted(&manager)?;
+        remove_app_path_registration(app_path, monitor.path())?;
         retire_upgrade_transaction_for_uninstall(stable, keep_staged_name)?;
         drop(_protected_root);
         cleanup_roots_if_owned(true, &principals)?;
@@ -2599,9 +2954,12 @@ mod native {
 
     fn finish_uninstall_after_service_absent(
         controller: &VerifiedServiceImage,
+        monitor: &VerifiedMonitorImage,
+        app_path: AppPathPreflight,
         stable: &Path,
         keep_staged_name: Option<&str>,
     ) -> Result<(), String> {
+        remove_app_path_registration(app_path, monitor.path())?;
         retire_upgrade_transaction_for_uninstall(stable, keep_staged_name)?;
         let roots = fixed_roots()?;
         match missing_service_cleanup(
@@ -2795,6 +3153,8 @@ mod native {
         manager: &OwnedScHandle,
         product_root_created: bool,
         service_root_created: bool,
+        app_path_created: Option<&PinnedAppPathRegistration>,
+        monitor_path: &Path,
     ) -> Result<(), String> {
         stop_service_and_wait(&service, false)?;
         let principals = if product_root_created || service_root_created {
@@ -2807,10 +3167,22 @@ mod native {
         }
         drop(service);
         wait_service_deleted(manager)?;
-        if let Some(principals) = principals.as_ref() {
-            cleanup_created_roots(product_root_created, service_root_created, principals)?;
+        let app_path_result = match app_path_created {
+            Some(created) => delete_pinned_app_path_registration(created, monitor_path),
+            None => Ok(()),
+        };
+        let roots_result = match principals.as_ref() {
+            Some(principals) => {
+                cleanup_created_roots(product_root_created, service_root_created, principals)
+            }
+            None => Ok(()),
+        };
+        match (app_path_result, roots_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(app_path), Ok(())) => Err(app_path),
+            (Ok(()), Err(roots)) => Err(roots),
+            (Err(app_path), Err(roots)) => Err(format!("{app_path};{roots}")),
         }
-        Ok(())
     }
 
     fn validate_service_contract(
@@ -3096,6 +3468,261 @@ mod native {
         }
     }
 
+    fn open_app_path_registration(
+        view: u32,
+        access: u32,
+    ) -> Result<Option<OwnedRegistryKey>, String> {
+        let path = wide(APP_PATH_REGISTRATION_PATH);
+        let mut key = ptr::null_mut();
+        let status = unsafe {
+            RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                path.as_ptr(),
+                0,
+                access | view,
+                &mut key,
+            )
+        };
+        if status == ERROR_SUCCESS {
+            Ok(Some(OwnedRegistryKey(key)))
+        } else if is_missing_path_error(status) {
+            Ok(None)
+        } else {
+            Err(format!("collector_service_app_path_open_failed:{status}"))
+        }
+    }
+
+    fn require_app_path_absent() -> Result<(), String> {
+        if open_app_path_registration(KEY_WOW64_64KEY, KEY_QUERY_VALUE)?.is_some()
+            || open_app_path_registration(KEY_WOW64_64KEY, KEY_QUERY_VALUE)?.is_some()
+        {
+            return Err("collector_service_app_path_appeared".to_string());
+        }
+        Ok(())
+    }
+
+    fn capture_app_path_registration(
+        key: &OwnedRegistryKey,
+        expected_target: &Path,
+    ) -> Result<AppPathRegistrySnapshot, String> {
+        let final_key_path = query_app_path_key_path(key.raw())?;
+        let mut subkey_count = 0_u32;
+        let mut maximum_subkey_name = 0_u32;
+        let mut value_count = 0_u32;
+        let mut maximum_value_name = 0_u32;
+        let mut maximum_value_bytes = 0_u32;
+        let mut security_descriptor_bytes = 0_u32;
+        let mut last_write = FILETIME::default();
+        let status = unsafe {
+            RegQueryInfoKeyW(
+                key.raw(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                &mut subkey_count,
+                &mut maximum_subkey_name,
+                ptr::null_mut(),
+                &mut value_count,
+                &mut maximum_value_name,
+                &mut maximum_value_bytes,
+                &mut security_descriptor_bytes,
+                &mut last_write,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(format!("collector_service_app_path_info_failed:{status}"));
+        }
+        if maximum_subkey_name > REGISTRY_MAX_NAME_CHARS
+            || maximum_value_name > REGISTRY_MAX_NAME_CHARS
+            || maximum_value_bytes > REGISTRY_MAX_TEXT_BYTES
+            || security_descriptor_bytes == 0
+            || security_descriptor_bytes > REGISTRY_MAX_TEXT_BYTES
+        {
+            return Err("collector_service_app_path_shape_invalid".to_string());
+        }
+        let (target, default_value_type) = read_app_path_default_value(key.raw())?;
+        let (owner, dacl_sha256, unprivileged_writer) =
+            capture_registry_security(key.raw(), &SecurityPrincipals::load_base()?)?;
+        let policy = AppPathRegistrationPolicy {
+            final_key_path,
+            target,
+            value_count,
+            subkey_count,
+            default_value_type,
+            owner,
+            unprivileged_writer,
+        };
+        if validate_app_path_registration_state(Some(&policy), expected_target)?
+            != AppPathRegistrationState::Exact
+        {
+            return Err("collector_service_app_path_contract_invalid".to_string());
+        }
+        Ok(AppPathRegistrySnapshot {
+            policy,
+            last_write_time_100ns: (u64::from(last_write.dwHighDateTime) << 32)
+                | u64::from(last_write.dwLowDateTime),
+            dacl_sha256,
+        })
+    }
+
+    fn read_app_path_default_value(
+        key: windows_sys::Win32::System::Registry::HKEY,
+    ) -> Result<(String, u32), String> {
+        let mut value_type = 0_u32;
+        let mut bytes = 0_u32;
+        let status = unsafe {
+            RegQueryValueExW(
+                key,
+                ptr::null(),
+                ptr::null_mut(),
+                &mut value_type,
+                ptr::null_mut(),
+                &mut bytes,
+            )
+        };
+        if status != ERROR_SUCCESS
+            || value_type != REG_SZ
+            || !(2..=REGISTRY_MAX_TEXT_BYTES).contains(&bytes)
+            || !bytes.is_multiple_of(2)
+        {
+            return Err(format!(
+                "collector_service_app_path_default_query_failed:{status}"
+            ));
+        }
+        let mut value = vec![0_u16; bytes as usize / size_of::<u16>()];
+        let status = unsafe {
+            RegQueryValueExW(
+                key,
+                ptr::null(),
+                ptr::null_mut(),
+                &mut value_type,
+                value.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if status != ERROR_SUCCESS
+            || value_type != REG_SZ
+            || bytes as usize != value.len() * size_of::<u16>()
+            || value.last() != Some(&0)
+            || value[..value.len().saturating_sub(1)].contains(&0)
+        {
+            return Err(format!(
+                "collector_service_app_path_default_read_failed:{status}"
+            ));
+        }
+        value.pop();
+        let target = String::from_utf16(&value)
+            .map_err(|_| "collector_service_app_path_default_invalid".to_string())?;
+        if target.is_empty() {
+            return Err("collector_service_app_path_default_invalid".to_string());
+        }
+        Ok((target, value_type))
+    }
+
+    fn query_app_path_key_path(
+        key: windows_sys::Win32::System::Registry::HKEY,
+    ) -> Result<String, String> {
+        let mut required = 0_u32;
+        unsafe {
+            NtQueryKey(
+                key.cast(),
+                KeyNameInformation,
+                ptr::null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        if !(6..=8 * 1024).contains(&required) {
+            return Err("collector_service_app_path_key_path_size_invalid".to_string());
+        }
+        let mut buffer = vec![0_u32; (required as usize).div_ceil(size_of::<u32>())];
+        let status = unsafe {
+            NtQueryKey(
+                key.cast(),
+                KeyNameInformation,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        };
+        if status != 0 {
+            return Err(format!(
+                "collector_service_app_path_key_path_query_failed:{status:#010x}"
+            ));
+        }
+        let bytes =
+            unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer.len() * 4) };
+        let name_bytes = u32::from_ne_bytes(bytes[..4].try_into().expect("four bytes")) as usize;
+        if name_bytes == 0 || name_bytes & 1 != 0 || name_bytes + 4 > required as usize {
+            return Err("collector_service_app_path_key_path_invalid".to_string());
+        }
+        let wide = bytes[4..4 + name_bytes]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16(&wide)
+            .map_err(|_| "collector_service_app_path_key_path_invalid".to_string())
+    }
+
+    fn capture_registry_security(
+        key: windows_sys::Win32::System::Registry::HKEY,
+        principals: &SecurityPrincipals,
+    ) -> Result<(PrincipalClass, String, bool), String> {
+        let mut required = 0_u32;
+        let information = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let status = unsafe { RegGetKeySecurity(key, information, ptr::null_mut(), &mut required) };
+        if status != ERROR_INSUFFICIENT_BUFFER
+            || required == 0
+            || required > REGISTRY_MAX_TEXT_BYTES
+        {
+            return Err(format!(
+                "collector_service_app_path_security_size_failed:{status}"
+            ));
+        }
+        let mut buffer = aligned_buffer(required as usize);
+        let descriptor = buffer.as_mut_ptr().cast();
+        let status = unsafe { RegGetKeySecurity(key, information, descriptor, &mut required) };
+        if status != ERROR_SUCCESS {
+            return Err(format!(
+                "collector_service_app_path_security_failed:{status}"
+            ));
+        }
+        let mut owner = ptr::null_mut();
+        let mut owner_defaulted = 0_i32;
+        if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted) } == 0
+            || owner.is_null()
+        {
+            return Err("collector_service_app_path_owner_invalid".to_string());
+        }
+        let owner = principals.classify(owner);
+        let mut present = 0_i32;
+        let mut defaulted = 0_i32;
+        let mut dacl = ptr::null_mut();
+        if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
+            == 0
+            || present == 0
+            || dacl.is_null()
+        {
+            return Err("collector_service_app_path_dacl_invalid".to_string());
+        }
+        let unprivileged_writer = read_aces(dacl, principals)?.iter().any(|ace| {
+            ace.allow
+                && !ace.inherit_only
+                && !matches!(
+                    ace.principal,
+                    PrincipalClass::LocalSystem
+                        | PrincipalClass::Administrators
+                        | PrincipalClass::TrustedInstaller
+                )
+                && ace.mask & REGISTRY_WRITE_MASK != 0
+        });
+        Ok((
+            owner,
+            dacl_sha256(dacl, "collector_service_app_path_dacl")?,
+            unprivileged_writer,
+        ))
+    }
+
     #[cfg(feature = "private-windows-lifecycle-proof")]
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct ProductRegistryCapture {
@@ -3126,6 +3753,22 @@ mod native {
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl From<AppPathRegistrySnapshot> for AppPathRegistrationKeyForProof {
+        fn from(value: AppPathRegistrySnapshot) -> Self {
+            Self {
+                final_key_path: value.policy.final_key_path,
+                target: value.policy.target,
+                value_names: vec![String::new()],
+                subkey_names: Vec::new(),
+                default_value_type: value.policy.default_value_type,
+                last_write_time_100ns: value.last_write_time_100ns,
+                owner: principal_for_proof(value.policy.owner),
+                dacl_sha256: value.dacl_sha256,
+            }
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
     pub(super) fn observe_machine_registration_for_proof() -> MachineRegistrationForProof {
         use crate::windows_lifecycle_proof_contract::Observation;
 
@@ -3137,9 +3780,11 @@ mod native {
             ),
             Observation::Unknown(reason) => Observation::Unknown(reason),
         };
+        let app_path_key = observe_app_path_registry_for_proof();
         MachineRegistrationForProof {
             product_key_64,
             product_key_32,
+            app_path_key,
             public_desktop_shortcut: observe_shortcut_for_proof(
                 &FOLDERID_PublicDesktop,
                 Path::new(PUBLIC_DESKTOP_PATH),
@@ -3151,6 +3796,56 @@ mod native {
                 PROOF_SHARED_SHORTCUT_STRICT_WRITER_POLICY,
             ),
         }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    fn observe_app_path_registry_for_proof(
+    ) -> crate::windows_lifecycle_proof_contract::Observation<AppPathRegistrationKeyForProof> {
+        use crate::windows_lifecycle_proof_contract::Observation;
+
+        let open = || {
+            open_app_path_registration(
+                KEY_WOW64_64KEY,
+                KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | READ_CONTROL,
+            )
+        };
+        let Some(key) = (match open() {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        }) else {
+            return match open() {
+                Ok(None) => Observation::Absent,
+                Ok(Some(_)) => {
+                    Observation::Unknown("collector_service_proof_app_path_appeared".to_string())
+                }
+                Err(reason) => Observation::Unknown(reason),
+            };
+        };
+        let first = match capture_app_path_registration(&key, Path::new(PROOF_MONITOR_PATH)) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let second = match capture_app_path_registration(&key, Path::new(PROOF_MONITOR_PATH)) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let reopened = match open() {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                return Observation::Unknown(
+                    "collector_service_proof_app_path_disappeared".to_string(),
+                )
+            }
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        let third = match capture_app_path_registration(&reopened, Path::new(PROOF_MONITOR_PATH)) {
+            Ok(value) => value,
+            Err(reason) => return Observation::Unknown(reason),
+        };
+        if first != second || first != third {
+            return Observation::Unknown("collector_service_proof_app_path_changed".to_string());
+        }
+        Observation::Present(first.into())
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -3507,7 +4202,7 @@ mod native {
                         | PrincipalClass::Administrators
                         | PrincipalClass::TrustedInstaller
                 )
-                && ace.mask & PRODUCT_REGISTRY_WRITE_MASK != 0
+                && ace.mask & REGISTRY_WRITE_MASK != 0
             {
                 return Err(
                     "collector_service_proof_product_registry_unprivileged_writer".to_string(),
@@ -4900,6 +5595,8 @@ mod native {
             )?;
         }
         let image = verify_service_image_at(&stable, &program_files)?;
+        let monitor = verify_monitor_image(&image)?;
+        preflight_app_path_registration(&monitor)?;
         if trusted_file_digest(image.path(), "collector_service_stable_image")?
             != expected_final_sha256
         {
@@ -4930,6 +5627,8 @@ mod native {
                     &manager,
                     roots_created.product,
                     roots_created.service,
+                    None,
+                    monitor.path(),
                 ) {
                     Ok(()) => Err(primary),
                     Err(rollback) => Err(format!(
@@ -4938,7 +5637,7 @@ mod native {
                 };
             }
         }
-        retire_shortcuts_with_controller(&image)?;
+        app_path_upgrade_gate(&image, &monitor)?;
         retire_legacy_cli(&image)?;
         retire_staged_upgrade_image(&image)
     }
@@ -7703,6 +8402,72 @@ mod tests {
             expected_image,
         )
         .is_err());
+    }
+
+    fn exact_app_path_policy() -> AppPathRegistrationPolicy {
+        AppPathRegistrationPolicy {
+            final_key_path: APP_PATH_REGISTRATION_NT_PATH.to_string(),
+            target: r"C:\Program Files\BatCave Monitor\batcave-monitor.exe".to_string(),
+            value_count: 1,
+            subkey_count: 0,
+            default_value_type: windows_sys::Win32::System::Registry::REG_SZ,
+            owner: PrincipalClass::Administrators,
+            unprivileged_writer: false,
+        }
+    }
+
+    #[test]
+    fn app_path_policy_accepts_only_absent_or_one_exact_shared_registration() {
+        let expected = Path::new(r"C:\Program Files\BatCave Monitor\batcave-monitor.exe");
+        assert_eq!(
+            validate_app_path_registration_state(None, expected),
+            Ok(AppPathRegistrationState::Absent)
+        );
+        assert_eq!(
+            validate_app_path_registration_state(Some(&exact_app_path_policy()), expected),
+            Ok(AppPathRegistrationState::Exact)
+        );
+    }
+
+    #[test]
+    fn app_path_policy_rejects_every_mutable_or_foreign_field() {
+        let expected = Path::new(r"C:\Program Files\BatCave Monitor\batcave-monitor.exe");
+        let invalid = [
+            AppPathRegistrationPolicy {
+                final_key_path: r"\REGISTRY\MACHINE\SOFTWARE\Elsewhere".to_string(),
+                ..exact_app_path_policy()
+            },
+            AppPathRegistrationPolicy {
+                target: r"C:\Temp\batcave-monitor.exe".to_string(),
+                ..exact_app_path_policy()
+            },
+            AppPathRegistrationPolicy {
+                value_count: 2,
+                ..exact_app_path_policy()
+            },
+            AppPathRegistrationPolicy {
+                subkey_count: 1,
+                ..exact_app_path_policy()
+            },
+            AppPathRegistrationPolicy {
+                default_value_type: 2,
+                ..exact_app_path_policy()
+            },
+            AppPathRegistrationPolicy {
+                owner: PrincipalClass::Other,
+                ..exact_app_path_policy()
+            },
+            AppPathRegistrationPolicy {
+                unprivileged_writer: true,
+                ..exact_app_path_policy()
+            },
+        ];
+        for policy in invalid {
+            assert_eq!(
+                validate_app_path_registration_state(Some(&policy), expected),
+                Err("collector_service_app_path_contract_invalid".to_string())
+            );
+        }
     }
 
     #[test]
