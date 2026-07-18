@@ -379,7 +379,8 @@ mod windows_impl {
                 CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW, TcpIpGuid,
                 TdhGetEventInformation, TdhGetProperty, TdhGetPropertySize, EVENT_RECORD,
                 EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP,
-                EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
+                EVENT_TRACE_FLAG_NETWORK_TCPIP, EVENT_TRACE_LOGFILEW,
+                EVENT_TRACE_PERSIST_ON_HYBRID_SHUTDOWN, EVENT_TRACE_PROPERTIES,
                 EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE, PROCESSTRACE_HANDLE,
                 PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
                 PROPERTY_DATA_DESCRIPTOR, TRACE_EVENT_INFO, WNODE_FLAG_TRACED_GUID,
@@ -970,7 +971,9 @@ mod windows_impl {
             properties.BufferSize = 64;
             properties.MinimumBuffers = 4;
             properties.MaximumBuffers = 32;
-            properties.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+            properties.LogFileMode = EVENT_TRACE_REAL_TIME_MODE
+                | EVENT_TRACE_SYSTEM_LOGGER_MODE
+                | EVENT_TRACE_PERSIST_ON_HYBRID_SHUTDOWN;
             properties.FlushTimer = 1;
             properties.EnableFlags = EVENT_TRACE_FLAG_NETWORK_TCPIP;
             properties.LoggerNameOffset = properties_size as u32;
@@ -1241,6 +1244,12 @@ mod windows_impl {
             let properties = trace_properties(&name, COLLECTOR_SERVICE_SESSION.logger_guid);
             let expected =
                 session_identity_from_properties(COLLECTOR_SERVICE_SESSION.name, &properties);
+            assert_eq!(
+                unsafe { (*(properties.as_ptr() as *const EVENT_TRACE_PROPERTIES)).LogFileMode },
+                EVENT_TRACE_REAL_TIME_MODE
+                    | EVENT_TRACE_SYSTEM_LOGGER_MODE
+                    | EVENT_TRACE_PERSIST_ON_HYBRID_SHUTDOWN
+            );
             assert_ne!(expected.provider_id, [0; 16]);
             assert_ne!(expected.session_flags, 0);
             assert_ne!(expected.configuration_digest, [0; 32]);
