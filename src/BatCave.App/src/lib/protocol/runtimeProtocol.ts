@@ -977,26 +977,20 @@ function validateQualityLimitation(
   limitationIndex: unknown,
   payload: Record<string, any>,
 ): string | null {
-  if (!qualityCodes.some((candidate) => candidate === quality)) return "quality code is unknown.";
   if (!validIndex(limitationIndex, payload.limitations.length))
     return "quality limitation index is invalid.";
+  const policy = RUNTIME_PROTOCOL_POLICY.quality_limitation_policies.find(
+    (candidate) => candidate.quality === quality,
+  );
+  if (!policy || !qualityCodes.some((candidate) => candidate === quality))
+    return "quality code is unknown.";
   const code =
     limitationIndex === null ? null : (payload.limitations[limitationIndex]?.code ?? null);
-  if ((quality === "held" || quality === "partial" || quality === "unavailable") && code === null)
-    return "quality requires a typed explanation.";
+  if (policy.requires_limitation && code === null) return "quality requires a typed explanation.";
   const valid =
-    quality === "native"
-      ? code === null
-      : quality === "estimated"
-        ? code !== "pending_baseline" && code !== "held_value" && code !== "group_partial_coverage"
-        : quality === "held"
-          ? code === "pending_baseline" || code === "held_value"
-          : quality === "partial"
-            ? code !== null &&
-              code !== "pending_baseline" &&
-              code !== "held_value" &&
-              code !== "numeric_range"
-            : code !== null && code !== "pending_baseline" && code !== "held_value";
+    code === null
+      ? !policy.requires_limitation
+      : policy.allowed_codes.some((candidate) => candidate === code);
   return valid ? null : "quality and limitation code contradict each other.";
 }
 

@@ -14,6 +14,83 @@ pub const QUALITY_CODES: [MetricQualityV3; 5] = [
     MetricQualityV3::Unavailable,
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QualityLimitationPolicy {
+    pub quality: MetricQualityV3,
+    pub requires_limitation: bool,
+    pub allowed_codes: &'static [LimitationCode],
+}
+
+const ESTIMATED_LIMITATIONS: &[LimitationCode] = &[
+    LimitationCode::UnsupportedMetric,
+    LimitationCode::AccessDenied,
+    LimitationCode::AuthorizationScope,
+    LimitationCode::PartialCoverage,
+    LimitationCode::CollectorFailure,
+    LimitationCode::DataLoss,
+    LimitationCode::MissingMetadata,
+    LimitationCode::NumericRange,
+];
+const HELD_LIMITATIONS: &[LimitationCode] =
+    &[LimitationCode::PendingBaseline, LimitationCode::HeldValue];
+const PARTIAL_LIMITATIONS: &[LimitationCode] = &[
+    LimitationCode::UnsupportedMetric,
+    LimitationCode::AccessDenied,
+    LimitationCode::AuthorizationScope,
+    LimitationCode::PartialCoverage,
+    LimitationCode::CollectorFailure,
+    LimitationCode::DataLoss,
+    LimitationCode::MissingMetadata,
+    LimitationCode::GroupPartialCoverage,
+];
+const UNAVAILABLE_LIMITATIONS: &[LimitationCode] = &[
+    LimitationCode::UnsupportedMetric,
+    LimitationCode::AccessDenied,
+    LimitationCode::AuthorizationScope,
+    LimitationCode::PartialCoverage,
+    LimitationCode::CollectorFailure,
+    LimitationCode::DataLoss,
+    LimitationCode::MissingMetadata,
+    LimitationCode::GroupPartialCoverage,
+    LimitationCode::NumericRange,
+];
+
+/// Canonical quality/limitation compatibility policy for both protocol validators.
+pub const QUALITY_LIMITATION_POLICIES: &[QualityLimitationPolicy] = &[
+    QualityLimitationPolicy {
+        quality: MetricQualityV3::Native,
+        requires_limitation: false,
+        allowed_codes: &[],
+    },
+    QualityLimitationPolicy {
+        quality: MetricQualityV3::Estimated,
+        requires_limitation: false,
+        allowed_codes: ESTIMATED_LIMITATIONS,
+    },
+    QualityLimitationPolicy {
+        quality: MetricQualityV3::Held,
+        requires_limitation: true,
+        allowed_codes: HELD_LIMITATIONS,
+    },
+    QualityLimitationPolicy {
+        quality: MetricQualityV3::Partial,
+        requires_limitation: true,
+        allowed_codes: PARTIAL_LIMITATIONS,
+    },
+    QualityLimitationPolicy {
+        quality: MetricQualityV3::Unavailable,
+        requires_limitation: true,
+        allowed_codes: UNAVAILABLE_LIMITATIONS,
+    },
+];
+
+pub fn quality_limitation_policy(quality: MetricQualityV3) -> &'static QualityLimitationPolicy {
+    QUALITY_LIMITATION_POLICIES
+        .iter()
+        .find(|policy| policy.quality == quality)
+        .expect("every protocol quality has limitation policy")
+}
+
 const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

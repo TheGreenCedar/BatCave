@@ -508,3 +508,7 @@ export function driverCandidateLabel(tag: KernelPoolTag): string {
 export function poolTagKey(tag: KernelPoolTag): string {
   return `${tag.tag}:${tag.kind}`;
 }
+
+export function poolTagBytesValue(tag: KernelPoolTag): string {
+  return displayAccountingMetricValue(tag.bytes, tag.quality?.bytes, formatBytes);
+}

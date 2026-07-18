@@ -218,12 +218,15 @@ export type KernelPoolKind = "paged" | "nonpaged";
 export interface KernelPoolTag {
   tag: string;
   kind: KernelPoolKind;
-  bytes: number;
-  allocations: number;
-  frees: number;
+  bytes: number | null;
+  allocations: number | null;
+  frees: number | null;
+  quality?: Partial<Record<KernelPoolTagMetric, MetricQualityInfo>>;
   driver_candidates: string[];
   driver_candidates_pending?: boolean;
 }
+
+export type KernelPoolTagMetric = "bytes" | "allocations" | "frees";
 
 export interface SystemMetricQuality {
   cpu?: MetricQualityInfo;

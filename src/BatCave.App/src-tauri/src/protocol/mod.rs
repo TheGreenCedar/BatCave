@@ -25,7 +25,10 @@ pub(crate) fn release_identity() -> RuntimeReleaseIdentityV3 {
 mod tests {
     use std::path::Path;
 
-    use super::catalog::{CatalogBuilder, MetricDefinition, QUALITY_CODES, SEMANTIC_DEFINITIONS};
+    use super::catalog::{
+        CatalogBuilder, MetricDefinition, QUALITY_CODES, QUALITY_LIMITATION_POLICIES,
+        SEMANTIC_DEFINITIONS,
+    };
     use super::types::*;
     use super::{encode::encode_snapshot_at, encode_snapshot, validate::validate_envelope};
     use crate::contracts::{
@@ -62,8 +65,19 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
+        let quality_limitation_policies = QUALITY_LIMITATION_POLICIES
+            .iter()
+            .map(|policy| {
+                serde_json::json!({
+                    "quality": policy.quality,
+                    "requires_limitation": policy.requires_limitation,
+                    "allowed_codes": policy.allowed_codes,
+                })
+            })
+            .collect::<Vec<_>>();
         serde_json::to_string_pretty(&serde_json::json!({
             "quality_codes": QUALITY_CODES,
+            "quality_limitation_policies": quality_limitation_policies,
             "semantic_definitions": semantic_definitions,
         }))
         .expect("serialize runtime protocol policy")
@@ -212,6 +226,32 @@ mod tests {
             covered_semantics, declared_semantics,
             "every wire semantic must have at least one policy definition"
         );
+    }
+
+    #[test]
+    fn quality_limitation_policy_covers_the_wire_catalog() {
+        assert_eq!(QUALITY_LIMITATION_POLICIES.len(), QUALITY_CODES.len());
+        for quality in QUALITY_CODES {
+            let matching = QUALITY_LIMITATION_POLICIES
+                .iter()
+                .filter(|policy| policy.quality == quality)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "quality policy must be unique");
+            let policy = matching[0];
+            assert_eq!(
+                policy.requires_limitation,
+                matches!(
+                    quality,
+                    MetricQualityV3::Held | MetricQualityV3::Partial | MetricQualityV3::Unavailable
+                )
+            );
+            for (index, code) in policy.allowed_codes.iter().enumerate() {
+                assert!(
+                    !policy.allowed_codes[..index].contains(code),
+                    "quality policy limitation codes must be unique"
+                );
+            }
+        }
     }
 
     fn quality(quality: MetricQuality, source: MetricSource) -> MetricQualityInfo {

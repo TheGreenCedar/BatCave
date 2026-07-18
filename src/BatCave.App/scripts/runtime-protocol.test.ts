@@ -32,6 +32,13 @@ test("generated semantic policy is complete, unique, and internally coherent", (
     "partial",
     "unavailable",
   ]);
+  assert.deepEqual(
+    RUNTIME_PROTOCOL_POLICY.quality_limitation_policies.map((policy) => policy.quality),
+    RUNTIME_PROTOCOL_POLICY.quality_codes,
+  );
+  for (const policy of RUNTIME_PROTOCOL_POLICY.quality_limitation_policies) {
+    assert.equal(new Set(policy.allowed_codes).size, policy.allowed_codes.length);
+  }
   assert.equal(RUNTIME_PROTOCOL_POLICY.semantic_definitions.length, 51);
   const keys = new Set<string>();
   const intervalUnits = new Set(["percent_one_core", "percent_system", "bytes_per_second"]);
@@ -171,6 +178,31 @@ test("nullable memory accounting keeps its value and quality instead of producin
   assert.equal(accounting.process_working_set_bytes, null);
   assert.equal(accounting.quality?.process_working_set_bytes?.quality, "unavailable");
   assert.equal(Number.isNaN(accounting.process_working_set_bytes), false);
+});
+
+test("nullable kernel pool tags keep their quality instead of producing NaN", () => {
+  const nullable = structuredClone(windows);
+  const wire = payload(nullable);
+  const tag = wire.system.kernel_pool_tags[0];
+  assert.ok(tag);
+  const bytes = tag.metrics.find(
+    (candidate) => wire.descriptors[candidate[0]].semantic === "kernel_pool_bytes",
+  );
+  assert.ok(bytes);
+  bytes[1] = null;
+  bytes[2] = wire.quality_codes.indexOf("unavailable");
+  bytes[3] = null;
+  bytes[4] = wire.limitations.findIndex((limitation) => limitation.code === "unsupported_metric");
+
+  const decoded = decodeProtocolEnvelope(nullable);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+  const adapted = adaptRuntimePayload(decoded.payload).system.memory_accounting
+    ?.kernel_pool_tags?.[0];
+  assert.ok(adapted);
+  assert.equal(adapted.bytes, null);
+  assert.equal(adapted.quality?.bytes?.quality, "unavailable");
+  assert.equal(Number.isNaN(adapted.bytes), false);
 });
 
 test("platform fixtures carry their privilege and collection limits", () => {

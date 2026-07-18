@@ -9,6 +9,64 @@ export const RUNTIME_PROTOCOL_POLICY = {
     "partial",
     "unavailable"
   ],
+  "quality_limitation_policies": [
+    {
+      "allowed_codes": [],
+      "quality": "native",
+      "requires_limitation": false
+    },
+    {
+      "allowed_codes": [
+        "unsupported_metric",
+        "access_denied",
+        "authorization_scope",
+        "partial_coverage",
+        "collector_failure",
+        "data_loss",
+        "missing_metadata",
+        "numeric_range"
+      ],
+      "quality": "estimated",
+      "requires_limitation": false
+    },
+    {
+      "allowed_codes": [
+        "pending_baseline",
+        "held_value"
+      ],
+      "quality": "held",
+      "requires_limitation": true
+    },
+    {
+      "allowed_codes": [
+        "unsupported_metric",
+        "access_denied",
+        "authorization_scope",
+        "partial_coverage",
+        "collector_failure",
+        "data_loss",
+        "missing_metadata",
+        "group_partial_coverage"
+      ],
+      "quality": "partial",
+      "requires_limitation": true
+    },
+    {
+      "allowed_codes": [
+        "unsupported_metric",
+        "access_denied",
+        "authorization_scope",
+        "partial_coverage",
+        "collector_failure",
+        "data_loss",
+        "missing_metadata",
+        "group_partial_coverage",
+        "numeric_range"
+      ],
+      "quality": "unavailable",
+      "requires_limitation": true
+    }
+  ],
   "semantic_definitions": [
     {
       "network_scope": {

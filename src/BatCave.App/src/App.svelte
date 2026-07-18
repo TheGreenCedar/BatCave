@@ -1384,7 +1384,9 @@
   }
 
   function topPoolTags(tags: KernelPoolTag[] | undefined): KernelPoolTag[] {
-    return [...(tags ?? [])].sort((left, right) => right.bytes - left.bytes).slice(0, 8);
+    return [...(tags ?? [])]
+      .sort((left, right) => (right.bytes ?? -1) - (left.bytes ?? -1))
+      .slice(0, 8);
   }
 
   function processNetworkLabel(process: ProcessSample): string {

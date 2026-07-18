@@ -13,6 +13,7 @@
     optionalBytes,
     poolKindLabel,
     poolTagKey,
+    poolTagBytesValue,
   } from "../../format";
   import type { DetailMode } from "../metrics/types";
   import type { ChartPalette } from "../../themes";
@@ -174,7 +175,7 @@
             {#each topKernelPoolTags as tag (poolTagKey(tag))}
               <div>
                 <span><b>{tag.tag}</b> {poolKindLabel(tag.kind)}</span>
-                <strong>{formatBytes(tag.bytes)}</strong>
+                <strong>{poolTagBytesValue(tag)}</strong>
                 <small>{driverCandidateLabel(tag)}</small>
               </div>
             {/each}

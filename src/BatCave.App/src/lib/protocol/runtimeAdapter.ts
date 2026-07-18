@@ -223,22 +223,8 @@ function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
             ...accountingQualityField("kernel_paged_pool_bytes", kernelPaged),
             ...accountingQualityField("kernel_nonpaged_pool_bytes", kernelNonpaged),
           },
-          kernel_pool_tags: payload.system.kernel_pool_tags.map(
-            (tag): KernelPoolTag => ({
-              tag: tag.tag,
-              kind: tag.kind,
-              bytes: requiredNumber(
-                measurement(tag.metrics, "kernel_pool_bytes", "system", payload).value,
-              ),
-              allocations: requiredNumber(
-                measurement(tag.metrics, "kernel_pool_allocations", "system", payload).value,
-              ),
-              frees: requiredNumber(
-                measurement(tag.metrics, "kernel_pool_frees", "system", payload).value,
-              ),
-              driver_candidates: [...tag.driver_candidates],
-              ...(tag.driver_candidates_pending ? { driver_candidates_pending: true } : {}),
-            }),
+          kernel_pool_tags: payload.system.kernel_pool_tags.map((tag) =>
+            adaptKernelPoolTag(tag, payload),
           ),
         } satisfies SystemMemoryAccounting)
       : undefined;
@@ -271,6 +257,29 @@ function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
       disk: worstQuality(diskReadTotal.quality, diskReadRate.quality),
       network: worstQuality(netReceiveTotal.quality, netReceiveRate.quality),
     },
+  };
+}
+
+function adaptKernelPoolTag(
+  tag: RuntimeSnapshotPayloadV3["system"]["kernel_pool_tags"][number],
+  payload: RuntimeSnapshotPayloadV3,
+): KernelPoolTag {
+  const bytes = measurement(tag.metrics, "kernel_pool_bytes", "system", payload);
+  const allocations = measurement(tag.metrics, "kernel_pool_allocations", "system", payload);
+  const frees = measurement(tag.metrics, "kernel_pool_frees", "system", payload);
+  return {
+    tag: tag.tag,
+    kind: tag.kind,
+    bytes: bytes.value,
+    allocations: allocations.value,
+    frees: frees.value,
+    quality: {
+      bytes: bytes.quality,
+      allocations: allocations.quality,
+      frees: frees.quality,
+    },
+    driver_candidates: [...tag.driver_candidates],
+    ...(tag.driver_candidates_pending ? { driver_candidates_pending: true } : {}),
   };
 }
 

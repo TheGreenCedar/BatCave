@@ -28,6 +28,7 @@ import {
   processFindingLabel,
   processPrivateMemoryValue,
   processTrustLabel,
+  poolTagBytesValue,
 } from "../src/lib/format.ts";
 import { nextMetricHistory, resourceHistoryWindowLabel } from "../src/lib/history.ts";
 import {
@@ -40,7 +41,30 @@ import {
   type ProcessColumn,
 } from "../src/lib/process.ts";
 import { makeEmptySnapshot } from "../src/lib/runtimeSnapshot.ts";
-import type { MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "../src/lib/types.ts";
+import type {
+  KernelPoolTag,
+  MetricQualityInfo,
+  ProcessSample,
+  RuntimeSnapshot,
+} from "../src/lib/types.ts";
+
+test("kernel pool tag presentation preserves unavailable and held quality", () => {
+  const tag: KernelPoolTag = {
+    tag: "Leak",
+    kind: "nonpaged",
+    bytes: null,
+    allocations: null,
+    frees: null,
+    quality: { bytes: { quality: "unavailable", source: "direct_api" } },
+    driver_candidates: [],
+  };
+  assert.equal(poolTagBytesValue(tag), "Unavailable");
+  tag.bytes = 1024;
+  tag.quality = { bytes: { quality: "held", source: "direct_api" } };
+  assert.equal(poolTagBytesValue(tag), "Held");
+  tag.quality = { bytes: { quality: "native", source: "direct_api" } };
+  assert.equal(poolTagBytesValue(tag), "1.0 KB");
+});
 
 test("native lifecycle diagnostics expose only deterministic public runtime truth", () => {
   const active = resourceSnapshot(null);
