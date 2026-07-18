@@ -136,30 +136,27 @@ test("combined install and cleanup failure preserves both errors", async () => {
 
 test("App keeps cleanup-failed handles owned and updater checks user-triggered", () => {
   const appSource = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+  const stableUpdateSource = readFileSync(
+    new URL("../src/lib/stableUpdate.ts", import.meta.url),
+    "utf8",
+  );
   const settingsSource = readFileSync(
     new URL("../src/lib/components/shell/SettingsDrawer.svelte", import.meta.url),
     "utf8",
-  );
-  const checkFunction = appSource.slice(
-    appSource.indexOf("async function checkForStableUpdate"),
-    appSource.indexOf("async function installStableUpdate"),
-  );
-  const installFunction = appSource.slice(
-    appSource.indexOf("async function installStableUpdate"),
-    appSource.indexOf("function setSortKey"),
   );
   const startup = appSource.slice(
     appSource.indexOf("onMount(() =>"),
     appSource.indexOf("async function checkForStableUpdate"),
   );
 
-  assert.doesNotMatch(checkFunction, /pendingUpdate = null/);
-  assert.doesNotMatch(installFunction, /pendingUpdate = null;[\s\S]*downloadInstallAndClose/);
-  assert.match(installFunction, /error instanceof UpdateResourceCleanupError/);
-  assert.match(installFunction, /else \{\s+pendingUpdate = null;/);
+  assert.match(appSource, /stableUpdateController\.check\([\s\S]*applyStableUpdateState/);
+  assert.match(appSource, /stableUpdateController\.install\(applyStableUpdateState\)/);
+  assert.match(stableUpdateSource, /const previous = this\.pending/);
+  assert.match(stableUpdateSource, /error instanceof UpdateResourceCleanupError/);
+  assert.match(stableUpdateSource, /else \{\s+this\.pending = null;/);
   assert.doesNotMatch(startup, /checkForStableUpdate/);
   assert.match(appSource, /onCheckForUpdates=\{\(\) => void checkForStableUpdate\(\)\}/);
-  assert.match(appSource, /Monitoring remains available offline/);
+  assert.match(stableUpdateSource, /Monitoring remains available offline/);
   assert.match(settingsSource, /updateStatus === "error"\s+\? "Retry"/);
   assert.match(settingsSource, /only when you ask/);
 });
