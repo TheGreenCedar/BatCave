@@ -21,7 +21,7 @@ The first pipe instance uses `FILE_FLAG_FIRST_PIPE_INSTANCE` to fail if another 
 
 ## Client verification
 
-The pipe access-control list is only the first gate. Before reading a request, the service derives the client process and session from the connected pipe, then verifies all of these facts:
+The pipe access-control list is only the first gate. The service performs one bounded raw read so Windows can bind pipe impersonation to that message, then derives and verifies the client process and session before decoding or authorizing any request bytes:
 
 1. The pipe process ID is stable before and after inspection.
 2. The process creation time is nonzero, so process-ID reuse changes the session binding.

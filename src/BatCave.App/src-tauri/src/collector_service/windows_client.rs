@@ -5,10 +5,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::{
-    Foundation::{
-        GetLastError, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY,
-        HANDLE,
-    },
+    Foundation::{GetLastError, ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE},
     Security::{CreateWellKnownSid, WinLocalSystemSid, TOKEN_QUERY},
     Storage::FileSystem::{
         CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES,
@@ -38,8 +35,8 @@ use super::{
     },
     transport_policy::DESKTOP_EXECUTABLE_NAME,
     windows_transport::{
-        executable_release, file_identity, last_error_message, process_image_path,
-        process_started_at, token_evidence, wide, OwnedHandle, PIPE_NAME,
+        executable_release, file_identity, is_disconnected_pipe_error, last_error_message,
+        process_image_path, process_started_at, token_evidence, wide, OwnedHandle, PIPE_NAME,
     },
 };
 
@@ -119,8 +116,8 @@ impl WindowsServiceTransport {
             }
             if ok == 0 {
                 match unsafe { GetLastError() } {
-                    ERROR_PIPE_BUSY | ERROR_NO_DATA => {}
-                    ERROR_BROKEN_PIPE => {
+                    ERROR_PIPE_BUSY => {}
+                    error if is_disconnected_pipe_error(error) => {
                         return Err(ClientFailure::new(
                             ClientFailureKind::Failed,
                             "collector_service_pipe_disconnected",
@@ -694,7 +691,9 @@ fn pipe_failure(context: &str) -> ClientFailure {
     ClientFailure::new(
         ClientFailureKind::Failed,
         match error {
-            ERROR_BROKEN_PIPE | ERROR_NO_DATA => "collector_service_pipe_disconnected".to_string(),
+            error if is_disconnected_pipe_error(error) => {
+                "collector_service_pipe_disconnected".to_string()
+            }
             _ => format!("{context}:{error}"),
         },
     )
