@@ -130,6 +130,30 @@ test("unsupported process values remain unavailable instead of becoming zero", (
   assert.equal(adapted.processes[0].quality?.memory?.quality, "partial");
 });
 
+test("nullable memory accounting keeps its value and quality instead of producing NaN", () => {
+  const nullable = structuredClone(windows);
+  const wire = payload(nullable);
+  const workingSet = wire.system.metrics.find(
+    (metric) => wire.descriptors[metric[0]].semantic === "process_working_set_memory",
+  );
+  assert.ok(workingSet);
+  workingSet[1] = null;
+  workingSet[2] = wire.quality_codes.indexOf("unavailable");
+  workingSet[3] = null;
+  workingSet[4] = wire.limitations.findIndex(
+    (limitation) => limitation.code === "unsupported_metric",
+  );
+
+  const decoded = decodeProtocolEnvelope(nullable);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+  const accounting = adaptRuntimePayload(decoded.payload).system.memory_accounting;
+  assert.ok(accounting);
+  assert.equal(accounting.process_working_set_bytes, null);
+  assert.equal(accounting.quality?.process_working_set_bytes?.quality, "unavailable");
+  assert.equal(Number.isNaN(accounting.process_working_set_bytes), false);
+});
+
 test("platform fixtures carry their privilege and collection limits", () => {
   const elevatedDecoded = decodeProtocolEnvelope(elevated);
   assert.equal(elevatedDecoded.kind, "snapshot");

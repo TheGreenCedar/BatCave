@@ -16,7 +16,7 @@
     formatRate,
     processMemoryTitle,
   } from "../../format";
-  import { residentMemoryValue } from "../../platformPresentation";
+  import { platformPresentation, residentMemoryValue } from "../../platformPresentation";
   import type { ProcessSample, ProcessViewRow, RuntimePlatform } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
@@ -33,6 +33,7 @@
     (row) =>
       row.kind === "group" || !row.is_grouped || !!expandedGroups[row.group_key],
   );
+  $: presentation = platformPresentation({ platform });
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
@@ -154,7 +155,7 @@
             <b title={process?.quality?.cpu?.message ?? ""}>{cpuLabel(row)}</b>
           </span>
           <span>
-            <em>Working set</em>
+            <em>{presentation.memoryLabel}</em>
             <b title={process ? processMemoryTitle(process) : ""}>{row.kind === "process" ? residentMemoryValue(row.detail.process, platform) : displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</b>
           </span>
           <span>

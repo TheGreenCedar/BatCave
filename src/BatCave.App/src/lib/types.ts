@@ -187,18 +187,31 @@ export interface SystemMetricsSnapshot {
 }
 
 export interface SystemMemoryAccounting {
-  process_working_set_bytes: number;
-  process_private_bytes: number;
-  denied_process_count: number;
-  partial_process_count: number;
-  commit_used_bytes?: number;
-  commit_limit_bytes?: number;
-  system_cache_bytes?: number;
-  kernel_total_bytes?: number;
-  kernel_paged_pool_bytes?: number;
-  kernel_nonpaged_pool_bytes?: number;
+  process_working_set_bytes: number | null;
+  process_private_bytes: number | null;
+  denied_process_count: number | null;
+  partial_process_count: number | null;
+  commit_used_bytes?: number | null;
+  commit_limit_bytes?: number | null;
+  system_cache_bytes?: number | null;
+  kernel_total_bytes?: number | null;
+  kernel_paged_pool_bytes?: number | null;
+  kernel_nonpaged_pool_bytes?: number | null;
+  quality?: Partial<Record<SystemMemoryAccountingMetric, MetricQualityInfo>>;
   kernel_pool_tags?: KernelPoolTag[];
 }
+
+export type SystemMemoryAccountingMetric =
+  | "process_working_set_bytes"
+  | "process_private_bytes"
+  | "denied_process_count"
+  | "partial_process_count"
+  | "commit_used_bytes"
+  | "commit_limit_bytes"
+  | "system_cache_bytes"
+  | "kernel_total_bytes"
+  | "kernel_paged_pool_bytes"
+  | "kernel_nonpaged_pool_bytes";
 
 export type KernelPoolKind = "paged" | "nonpaged";
 

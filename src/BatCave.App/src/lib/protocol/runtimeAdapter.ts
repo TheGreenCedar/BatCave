@@ -15,6 +15,7 @@ import type {
   ProcessSample,
   ProcessViewRow,
   RuntimeSnapshot,
+  SystemMemoryAccounting,
   SystemMetricsSnapshot,
 } from "../types.ts";
 import { groupAttentionLabel, processAttentionLabel } from "../process.ts";
@@ -169,41 +170,49 @@ function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
     "system",
     payload,
   );
+  const deniedProcessCount = optionalMeasurement(
+    metrics,
+    "denied_process_count",
+    "system",
+    payload,
+  );
+  const partialProcessCount = optionalMeasurement(
+    metrics,
+    "partial_process_count",
+    "system",
+    payload,
+  );
+  const commitUsed = optionalMeasurement(metrics, "commit_used", "system", payload);
+  const commitLimit = optionalMeasurement(metrics, "commit_limit", "system", payload);
+  const systemCache = optionalMeasurement(metrics, "system_cache", "system", payload);
+  const kernelTotal = optionalMeasurement(metrics, "kernel_memory", "system", payload);
+  const kernelPaged = optionalMeasurement(metrics, "kernel_paged_pool", "system", payload);
+  const kernelNonpaged = optionalMeasurement(metrics, "kernel_nonpaged_pool", "system", payload);
   const memoryAccounting =
     accountingWorking || accountingPrivate
-      ? {
-          process_working_set_bytes: requiredNumber(accountingWorking?.value ?? null),
-          process_private_bytes: requiredNumber(accountingPrivate?.value ?? null),
-          denied_process_count: requiredNumber(
-            optionalMeasurement(metrics, "denied_process_count", "system", payload)?.value ?? null,
-          ),
-          partial_process_count: requiredNumber(
-            optionalMeasurement(metrics, "partial_process_count", "system", payload)?.value ?? null,
-          ),
-          ...optionalNumberField(
-            "commit_used_bytes",
-            optionalMeasurement(metrics, "commit_used", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "commit_limit_bytes",
-            optionalMeasurement(metrics, "commit_limit", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "system_cache_bytes",
-            optionalMeasurement(metrics, "system_cache", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "kernel_total_bytes",
-            optionalMeasurement(metrics, "kernel_memory", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "kernel_paged_pool_bytes",
-            optionalMeasurement(metrics, "kernel_paged_pool", "system", payload)?.value,
-          ),
-          ...optionalNumberField(
-            "kernel_nonpaged_pool_bytes",
-            optionalMeasurement(metrics, "kernel_nonpaged_pool", "system", payload)?.value,
-          ),
+      ? ({
+          process_working_set_bytes: accountingWorking?.value ?? null,
+          process_private_bytes: accountingPrivate?.value ?? null,
+          denied_process_count: deniedProcessCount?.value ?? null,
+          partial_process_count: partialProcessCount?.value ?? null,
+          ...nullableAccountingField("commit_used_bytes", commitUsed),
+          ...nullableAccountingField("commit_limit_bytes", commitLimit),
+          ...nullableAccountingField("system_cache_bytes", systemCache),
+          ...nullableAccountingField("kernel_total_bytes", kernelTotal),
+          ...nullableAccountingField("kernel_paged_pool_bytes", kernelPaged),
+          ...nullableAccountingField("kernel_nonpaged_pool_bytes", kernelNonpaged),
+          quality: {
+            process_working_set_bytes: accountingWorking?.quality ?? unavailableAccountingQuality(),
+            process_private_bytes: accountingPrivate?.quality ?? unavailableAccountingQuality(),
+            denied_process_count: deniedProcessCount?.quality ?? unavailableAccountingQuality(),
+            partial_process_count: partialProcessCount?.quality ?? unavailableAccountingQuality(),
+            ...accountingQualityField("commit_used_bytes", commitUsed),
+            ...accountingQualityField("commit_limit_bytes", commitLimit),
+            ...accountingQualityField("system_cache_bytes", systemCache),
+            ...accountingQualityField("kernel_total_bytes", kernelTotal),
+            ...accountingQualityField("kernel_paged_pool_bytes", kernelPaged),
+            ...accountingQualityField("kernel_nonpaged_pool_bytes", kernelNonpaged),
+          },
           kernel_pool_tags: payload.system.kernel_pool_tags.map(
             (tag): KernelPoolTag => ({
               tag: tag.tag,
@@ -221,7 +230,7 @@ function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
               ...(tag.driver_candidates_pending ? { driver_candidates_pending: true } : {}),
             }),
           ),
-        }
+        } satisfies SystemMemoryAccounting)
       : undefined;
 
   return {
@@ -540,6 +549,28 @@ function optionalNumberField<Key extends string>(
   value: number | null | undefined,
 ): Partial<Record<Key, number>> {
   return value === null || value === undefined ? {} : ({ [key]: value } as Record<Key, number>);
+}
+
+function nullableAccountingField<Key extends keyof SystemMemoryAccounting>(
+  key: Key,
+  measurement: MeasurementView | undefined,
+): Partial<Pick<SystemMemoryAccounting, Key>> {
+  return measurement ? ({ [key]: measurement.value } as Pick<SystemMemoryAccounting, Key>) : {};
+}
+
+function accountingQualityField<Key extends keyof NonNullable<SystemMemoryAccounting["quality"]>>(
+  key: Key,
+  measurement: MeasurementView | undefined,
+): Partial<Record<Key, MetricQualityInfo>> {
+  return measurement ? ({ [key]: measurement.quality } as Record<Key, MetricQualityInfo>) : {};
+}
+
+function unavailableAccountingQuality(): MetricQualityInfo {
+  return {
+    quality: "unavailable",
+    source: "runtime",
+    message: "Metric was omitted from the protocol payload.",
+  };
 }
 
 function runtimeSource(value: string): RuntimeSnapshot["source"] {

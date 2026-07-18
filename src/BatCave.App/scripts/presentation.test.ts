@@ -915,6 +915,8 @@ test("group inspection actions expose exact selection state on desktop and mobil
 
   assert.match(desktop, /aria-pressed=\{groupActionSelected\}/);
   assert.match(mobile, /aria-pressed=\{actionSelected\}/);
+  assert.match(mobile, /presentation\.memoryLabel/);
+  assert.doesNotMatch(mobile, />Working set</);
 });
 
 test("sort helpers expose state and the next accessible action", () => {

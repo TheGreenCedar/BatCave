@@ -156,20 +156,27 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
   ];
   const accounting = snapshot.system.memory_accounting;
   if (accounting) {
-    for (const [semantic, value, unit] of [
-      ["process_working_set_memory", accounting.process_working_set_bytes, "bytes"],
-      ["process_private_memory", accounting.process_private_bytes, "bytes"],
-      ["denied_process_count", accounting.denied_process_count, "count"],
-      ["partial_process_count", accounting.partial_process_count, "count"],
-      ["commit_used", accounting.commit_used_bytes, "bytes"],
-      ["commit_limit", accounting.commit_limit_bytes, "bytes"],
-      ["system_cache", accounting.system_cache_bytes, "bytes"],
-      ["kernel_memory", accounting.kernel_total_bytes, "bytes"],
-      ["kernel_paged_pool", accounting.kernel_paged_pool_bytes, "bytes"],
-      ["kernel_nonpaged_pool", accounting.kernel_nonpaged_pool_bytes, "bytes"],
+    for (const [semantic, field, unit] of [
+      ["process_working_set_memory", "process_working_set_bytes", "bytes"],
+      ["process_private_memory", "process_private_bytes", "bytes"],
+      ["denied_process_count", "denied_process_count", "count"],
+      ["partial_process_count", "partial_process_count", "count"],
+      ["commit_used", "commit_used_bytes", "bytes"],
+      ["commit_limit", "commit_limit_bytes", "bytes"],
+      ["system_cache", "system_cache_bytes", "bytes"],
+      ["kernel_memory", "kernel_total_bytes", "bytes"],
+      ["kernel_paged_pool", "kernel_paged_pool_bytes", "bytes"],
+      ["kernel_nonpaged_pool", "kernel_nonpaged_pool_bytes", "bytes"],
     ] as const) {
       systemMetrics.push(
-        catalog.metric(semantic, "system", unit, value, systemQuality?.memory, sampled),
+        catalog.metric(
+          semantic,
+          "system",
+          unit,
+          accounting[field],
+          accounting.quality?.[field] ?? systemQuality?.memory,
+          sampled,
+        ),
       );
     }
   }
@@ -601,7 +608,7 @@ class FixtureCatalog {
     semantic: MetricSemantic,
     scope: MetricScope,
     unit: MetricUnit,
-    input: number | undefined,
+    input: number | null | undefined,
     quality: MetricQualityInfo | undefined,
     sampled: number | null,
   ): MetricObservation {
