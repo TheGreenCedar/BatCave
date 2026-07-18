@@ -33,6 +33,7 @@ impl ObservedProcessGeneration {
         }
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub const fn platform(pid: u32, platform_generation: u64) -> Self {
         Self {
             pid,
