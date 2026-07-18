@@ -80,6 +80,7 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
+  import { AcceptedRuntimeControls } from "./lib/runtimeControls";
   import {
     dispatchAutomaticRuntimeHydration,
     planAutomaticRuntimeFocusHydration,
@@ -136,10 +137,12 @@
 
   const historyPointOptions = [30, 72, 180, 360] as const;
   type HistoryPointLimit = (typeof historyPointOptions)[number];
+  type CommandErrorSurface = "global" | "settings" | "workload";
 
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
   const uiPreferencePersistence = new UiPreferencePersistenceSequence();
+  const acceptedRuntimeControls = new AcceptedRuntimeControls(makeDefaultRuntimeQuery(), 1000);
   const browserFixturePlatform = "macos" as const;
   const accessibilityFixtureState = resolveAccessibilityFixtureState(
     typeof window === "undefined" ? "" : window.location.search,
@@ -155,6 +158,7 @@
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
   let commandError = "";
+  let commandErrorSurface: CommandErrorSurface = "global";
   let protocolMismatch: ProtocolMismatchView | null = null;
   let copyStatus = "";
   let isPaused = false;
@@ -189,6 +193,8 @@
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
   let runtimeQueryRequestSeq = 0;
+  let runtimeCadenceRequestSeq = 0;
+  let pendingCadenceRequestSeq = 0;
   let searchDebounceId: number | undefined;
   let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
   let updateMessage = "Checks only when you ask.";
@@ -687,6 +693,7 @@
         }
       } catch (error) {
         if (uiPreferencePersistence.isLatest(save)) {
+          commandErrorSurface = "settings";
           commandError = runtimeCommandError(error, "Unable to save interface preferences.");
         }
       }
@@ -734,6 +741,7 @@
       applyNativeSnapshot(next);
     } catch (error) {
       isPaused = previousPaused;
+      commandErrorSurface = "global";
       commandError = runtimeCommandError(error, "Unable to change runtime pause state.");
     }
   }
@@ -754,6 +762,7 @@
       const next = await refreshRuntime(invoke);
       applyNativeSnapshot(next);
     } catch (error) {
+      commandErrorSurface = "global";
       commandError = runtimeCommandError(error, "Unable to refresh runtime.");
     }
   }
@@ -763,9 +772,22 @@
     pollIntervalMs = interval as (typeof pollIntervals)[number];
     if (runtimeMode() !== "native") return;
 
+    const requestSeq = (runtimeCadenceRequestSeq += 1);
+    pendingCadenceRequestSeq = requestSeq;
     try {
-      applyNativeSnapshot(await setRuntimeSampleInterval(invoke, interval));
+      const next = await setRuntimeSampleInterval(invoke, interval);
+      acceptedRuntimeControls.observe(next);
+      if (requestSeq !== runtimeCadenceRequestSeq) return;
+      pendingCadenceRequestSeq = 0;
+      applyNativeSnapshot(next);
     } catch (error) {
+      if (requestSeq !== runtimeCadenceRequestSeq) return;
+      pendingCadenceRequestSeq = 0;
+      const acceptedInterval = acceptedRuntimeControls.acceptedSampleIntervalMs();
+      if (pollIntervals.includes(acceptedInterval as (typeof pollIntervals)[number])) {
+        pollIntervalMs = acceptedInterval as (typeof pollIntervals)[number];
+      }
+      commandErrorSurface = "settings";
       commandError = runtimeCommandError(error, "Unable to change sampling cadence.");
     }
   }
@@ -898,6 +920,7 @@
     const requestSeq = (runtimeQueryRequestSeq += 1);
     try {
       const next = await setRuntimeProcessQuery(invoke, query, intent);
+      acceptedRuntimeControls.observe(next);
       if (requestSeq !== runtimeQueryRequestSeq) {
         return;
       }
@@ -907,8 +930,18 @@
       if (requestSeq !== runtimeQueryRequestSeq) {
         return;
       }
+      restoreRuntimeQueryControls(acceptedRuntimeControls.acceptedQuery());
+      commandErrorSurface = "workload";
       commandError = runtimeCommandError(error, "Unable to update runtime query.");
     }
+  }
+
+  function restoreRuntimeQueryControls(query: RuntimeQuery): void {
+    searchText = query.filter_text;
+    focusMode = query.focus_mode;
+    sortKey = sortKeyForColumn(query.sort_column);
+    sortDirection = query.sort_direction;
+    forceRankingRefresh = true;
   }
 
   function runtimeCommandError(error: unknown, fallback: string): string {
@@ -943,6 +976,7 @@
     pollState = "native";
     lastError = "";
     commandError = "";
+    commandErrorSurface = "global";
     protocolMismatch = null;
     copyStatus = "";
     hasNativeSnapshot = true;
@@ -954,6 +988,7 @@
       return;
     }
 
+    acceptedRuntimeControls.observe(next);
     const previous = snapshot;
     hydrateRuntimeControls(next);
     const previousWorkload = selectedWorkloadId
@@ -968,7 +1003,10 @@
       : [next.system.cpu_percent];
     const nextMemoryPercent = percentage(next.system.memory_used_bytes, next.system.memory_total_bytes);
     isPaused = next.settings.paused;
-    if (pollIntervals.includes(next.settings.sample_interval_ms as (typeof pollIntervals)[number])) {
+    if (
+      pendingCadenceRequestSeq === 0 &&
+      pollIntervals.includes(next.settings.sample_interval_ms as (typeof pollIntervals)[number])
+    ) {
       pollIntervalMs = next.settings.sample_interval_ms as (typeof pollIntervals)[number];
     }
     snapshot = next;
@@ -1767,6 +1805,9 @@
     onOpenSettings={() => (settingsOpen = true)}
     onOpenDiagnostics={() => (diagnosticsOpen = true)}
   />
+  {#if commandError && commandErrorSurface === "global"}
+    <p class="command-error global-command-error" role="alert">{commandError}</p>
+  {/if}
   <SystemSummary
     brief={resourceBrief}
     resources={resourceSummaries}
@@ -1797,7 +1838,7 @@
         {focusMode}
         {sortKey}
         {sortDirection}
-        {commandError}
+        commandError={commandErrorSurface === "workload" ? commandError : ""}
         {rankingUpdateAvailable}
         {focusOptions}
         {sortOptions}
@@ -1889,6 +1930,7 @@
     {pollIntervalMs}
     {historyPointOptions}
     {historyPointLimit}
+    commandError={commandErrorSurface === "settings" ? commandError : ""}
     adminAvailable={snapshot.environment.admin_mode_available}
     runtimeMutationsDisabled={protocolMismatch !== null}
     processStatus={processElevationLabel(snapshot.environment)}

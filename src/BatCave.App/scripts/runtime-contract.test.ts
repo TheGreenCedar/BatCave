@@ -29,6 +29,7 @@ import {
   qualityGuidance,
 } from "../src/lib/format.ts";
 import { hasNewRuntimeSample } from "../src/lib/runtimeSnapshot.ts";
+import { AcceptedRuntimeControls } from "../src/lib/runtimeControls.ts";
 import {
   dispatchAutomaticRuntimeHydration,
   planAutomaticRuntimeFocusHydration,
@@ -221,6 +222,29 @@ test("runtime mutation queue preserves invocation order and continues after fail
   releaseBounded();
   await held;
   assert.equal(await queued, 2);
+});
+
+test("failed optimistic controls restore the newest accepted publication", () => {
+  const initial = durablePreferenceSnapshot("cave", 72);
+  const controls = new AcceptedRuntimeControls(initial.settings.query, 1_000);
+  controls.observe(initial);
+
+  const accepted = structuredClone(initial);
+  accepted.publication_seq += 2;
+  accepted.settings.sample_interval_ms = 2_000;
+  accepted.settings.query.filter_text = "accepted";
+  accepted.settings.query.sort_column = "memory_bytes";
+  controls.observe(accepted);
+
+  const older = structuredClone(initial);
+  older.publication_seq += 1;
+  older.settings.sample_interval_ms = 500;
+  older.settings.query.filter_text = "stale";
+  controls.observe(older);
+
+  assert.equal(controls.acceptedSampleIntervalMs(), 2_000);
+  assert.equal(controls.acceptedQuery().filter_text, "accepted");
+  assert.equal(controls.acceptedQuery().sort_column, "memory_bytes");
 });
 
 test("automatic focus hydration keeps the published control until its query applies", () => {
