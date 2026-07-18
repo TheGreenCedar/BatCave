@@ -31,7 +31,7 @@ The macOS helper runs that sequence against a local `.app` copied into an isolat
 
 ```bash
 node scripts/capture-macos-current-user-persistence.mjs \
-  --app "src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/macos/BatCave Monitor.app" \
+  --app "src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/BatCave Monitor.app" \
   --source-sha "$(git rev-parse HEAD)" \
   --output artifacts/current-user-persistence/macos-app-bundle.json
 ```
@@ -40,7 +40,7 @@ Build the app with the same exact source identity first:
 
 ```bash
 BATCAVE_SOURCE_COMMIT_SHA="$(git rev-parse HEAD)" \
-  npm run tauri -- build --target universal-apple-darwin
+  npm run tauri -- build --target aarch64-apple-darwin
 ```
 
 Run the build command from `src/BatCave.App`. The capture helper refuses to overwrite an existing output file. It rejects linked app roots, linked executable paths, and source-to-copy drift before execution. Its app-bundle digest is a bytewise-sorted sequence of length-prefixed type, relative-path, mode, and payload fields. The helper records the copied tree that it executes and rehashes that tree before removal. This repository-local digest is not a DMG digest. The resulting packet therefore retains the `staged_application_bundle_only` limitation and cannot fill the `macos-dmg` index profile.
@@ -57,12 +57,12 @@ The DMG helper consumes the actual locally built package and records its artifac
 
 ```bash
 node scripts/capture-macos-dmg-current-user-persistence.mjs \
-  --dmg "src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/dmg/BatCave Monitor_0.2.0-rc.2_universal.dmg" \
+  --dmg "src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/BatCave Monitor_0.2.0-rc.4_aarch64.dmg" \
   --source-sha "$(git rev-parse HEAD)" \
   --output artifacts/current-user-persistence/macos-dmg.json
 ```
 
-Build the universal package first with `BATCAVE_SOURCE_COMMIT_SHA` set to that exact source SHA. The helper reads a stable regular source file, copies those bytes into a mode-`0400` file under a private mode-`0700` workspace rooted at `/private/tmp`, and hashes the copied artifact before and throughout the operation. While holding the atomic `/tmp/batcave-diskimages-proof.lock`, it verifies and mounts that copy read-only, requires one real app bundle, copies it with fixed `ditto` arguments, proves the canonical mounted and copied app-tree digests match, detaches, and rehashes the DMG. Every attempted DiskImages operation enters bounded cleanup that checks the original mount-point identity, the global native mount baseline and delta, and all newly observed DiskImages helper PIDs. Any cleanup or observation failure becomes retained-unsettled authority with its internal cause. Settled paths release the lock before lifecycle execution. If settlement remains unproven, the helper leaves the lock and private workspace in place for explicit recovery rather than releasing authority.
+Build the Apple Silicon package first with `BATCAVE_SOURCE_COMMIT_SHA` set to that exact source SHA. The helper reads a stable regular source file, copies those bytes into a mode-`0400` file under a private mode-`0700` workspace rooted at `/private/tmp`, and hashes the copied artifact before and throughout the operation. While holding the atomic `/tmp/batcave-diskimages-proof.lock`, it verifies and mounts that copy read-only, requires one real app bundle, copies it with fixed `ditto` arguments, proves the canonical mounted and copied app-tree digests match, detaches, and rehashes the DMG. Every attempted DiskImages operation enters bounded cleanup that checks the original mount-point identity, the global native mount baseline and delta, and all newly observed DiskImages helper PIDs. Any cleanup or observation failure becomes retained-unsettled authority with its internal cause. Settled paths release the lock before lifecycle execution. If settlement remains unproven, the helper leaves the lock and private workspace in place for explicit recovery rather than releasing authority.
 
 The lifecycle then uses the copied package application through the same fixed production-root probe as the app-bundle helper. The executable receives only its private fixed `HOME`, private fixed `TMPDIR`, and the proof sentinel; caller `DYLD_*`, `PATH`, temporary-directory, and data-root variables are not inherited. Input paths, mount paths, usernames, raw process output, corrupt bytes, environment values, and other host-local material never enter the packet. A path-based DMG mount still does not establish the immutable owned-byte transport required by [ADR 0006](decisions/0006-macos-dmg-owned-byte-transport.md); the packet keeps that limitation explicit. The local helper/mount settlement check does not claim authority over DiskImages remote-helper internals tracked by #114.
 

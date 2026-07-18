@@ -38,6 +38,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "verify-macos-bundle.sh must run on macOS." >&2
   exit 2
 fi
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "BatCave macOS bundle verification requires an Apple Silicon host." >&2
+  exit 2
+fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
@@ -46,7 +50,7 @@ tauri_config="$repo_root/src/BatCave.App/src-tauri/tauri.conf.json"
 expected_bundle_id="$(node -e 'const c=require(process.argv[1]); process.stdout.write(c.identifier)' "$tauri_config")"
 expected_app_name="$(node -e 'const c=require(process.argv[1]); process.stdout.write(`${c.productName}.app`)' "$tauri_config")"
 if [[ -z "$bundle_root" ]]; then
-  bundle_root="$repo_root/src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle"
+  bundle_root="$repo_root/src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle"
 fi
 
 shopt -s nullglob
@@ -100,10 +104,14 @@ verify_app() {
     return 1
   }
 
-  lipo "$executable" -verify_arch arm64 x86_64 || {
-    echo "Expected both arm64 and x86_64 slices in $executable." >&2
+  lipo "$executable" -verify_arch arm64 || {
+    echo "Expected an arm64 slice in $executable." >&2
     return 1
   }
+  if lipo "$executable" -verify_arch x86_64 >/dev/null 2>&1; then
+    echo "Unexpected Intel x86_64 slice in $executable." >&2
+    return 1
+  fi
   minimum_version="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")"
   [[ "$minimum_version" == "12.0" ]] || {
     echo "Expected LSMinimumSystemVersion 12.0, found $minimum_version." >&2
@@ -165,6 +173,10 @@ trap cleanup EXIT
 
 hdiutil attach -nobrowse -readonly -mountpoint "$mount_point" "$dmg" >/dev/null
 mounted=1
+if [[ -e "$mount_point/.VolumeIcon.icns" ]]; then
+  echo "DMG exposes the internal .VolumeIcon.icns file in its install window." >&2
+  exit 1
+fi
 mounted_apps=("$mount_point"/*.app)
 if [[ "${#mounted_apps[@]}" -ne 1 ]]; then
   echo "Expected exactly one app inside $dmg; found ${#mounted_apps[@]}." >&2
@@ -175,7 +187,7 @@ verify_app "${mounted_apps[0]}" mounted
 if [[ "$mode" == "release" ]]; then
   updater_archives=("$bundle_root"/macos/*.app.tar.gz)
   if [[ "${#updater_archives[@]}" -ne 1 ]]; then
-    echo "Expected exactly one universal .app.tar.gz updater archive; found ${#updater_archives[@]}." >&2
+    echo "Expected exactly one Apple Silicon .app.tar.gz updater archive; found ${#updater_archives[@]}." >&2
     exit 1
   fi
   [[ -s "${updater_archives[0]}.sig" ]] || {
@@ -214,7 +226,7 @@ if [[ "$mode" == "release" ]]; then
   xcrun stapler validate "$dmg"
 fi
 
-echo "Verified universal macOS $mode app and DMG:"
+echo "Verified Apple Silicon macOS $mode app and DMG:"
 echo "  $app"
 echo "  $dmg"
 if [[ -n "$updater_archive" ]]; then

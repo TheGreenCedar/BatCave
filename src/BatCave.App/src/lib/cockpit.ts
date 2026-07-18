@@ -37,7 +37,7 @@ export function buildResourceBrief(
   const hasSample = snapshot.sampled_at_ms !== null;
   const canShowValue =
     hasSample && quality?.quality !== "unavailable" && quality?.quality !== "held";
-  const stateLabel = resourceStateLabel(snapshot, quality, collectionState, hasSample);
+  const stateLabel = resourceStateLabel(quality, collectionState, hasSample);
   const valueLabel = canShowValue ? definition.valueLabel : unavailableValueLabel(quality);
   const headline = resourceHeadline(
     definition.semanticLabel,
@@ -185,7 +185,6 @@ function resourceQuality(
 }
 
 function resourceStateLabel(
-  snapshot: RuntimeSnapshot,
   quality: MetricQualityInfo | undefined,
   collectionState: CollectionState,
   hasSample: boolean,
@@ -196,7 +195,6 @@ function resourceStateLabel(
   if (quality?.quality === "unavailable") return "Unavailable";
   if (quality?.quality === "held") return "Waiting";
   if (quality?.quality === "partial") return "Partial";
-  if (snapshot.health.degraded || snapshot.warnings.length > 0) return "Degraded";
   if (quality?.quality === "estimated") return "Estimated";
   return "Current";
 }
@@ -223,9 +221,7 @@ function resourceConfidence(
     contributorQuality?.quality === "estimated" ||
     contributorQuality?.quality === "partial" ||
     contributorQuality?.quality === "held" ||
-    contributorQuality?.quality === "unavailable" ||
-    snapshot.health.degraded ||
-    snapshot.warnings.length > 0
+    contributorQuality?.quality === "unavailable"
   ) {
     return "Limited";
   }

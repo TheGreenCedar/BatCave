@@ -78,6 +78,7 @@ const sources = new Set([
   "sysinfo",
   "runtime",
   "etw",
+  "nstat",
   "procfs",
   "ebpf",
   "fixture",

@@ -295,9 +295,11 @@ export function processAttentionLabel(process: ProcessSample): string {
     }
   }
 
-  if (states.includes("unavailable")) return "Unavailable";
+  if (states.every((state) => state === "unavailable")) return "Unavailable";
   if (states.includes("held")) return "Pending";
-  if (states.includes("missing") || states.includes("partial")) return "Limited";
+  if (states.includes("missing") || states.includes("partial") || states.includes("unavailable")) {
+    return "Limited";
+  }
   if (process.access_state !== "full") return "access limited";
   if (states.includes("estimated")) return "steady · estimated";
   return "steady";

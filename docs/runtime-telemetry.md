@@ -25,7 +25,7 @@ Svelte cockpit
           -> ETW per-process network attribution
           -> Linux /proc and /sys telemetry
           -> Linux optional bpftrace/eBPF network attribution
-          -> macOS sysinfo, libproc, and deduplicated IOKit telemetry
+          -> macOS sysinfo, libproc, NStat, and deduplicated IOKit telemetry
           -> installed Windows collector service with standard-access fallback
           -> Rust benchmark CLI
 ```
@@ -79,7 +79,7 @@ macOS native telemetry:
 - Local libproc enrichment for resident memory, physical footprint, virtual memory, process read/write totals, thread count, and file-descriptor count when process access allows.
 - IOKit `IOBlockStorageDriver` byte counters aggregated once per physical registry entry. Disk-image paths are excluded; incomplete physical coverage is unavailable, and topology changes establish a new rate baseline. Process read/write I/O is never substituted for system disk telemetry.
 - The sysinfo interface aggregate includes `lo0`; protocol v3 labels its scope `all_interface_aggregate` rather than non-loopback.
-- Per-process network attribution and privileged collection are unavailable in this release. Rows remain visible with quality messages rather than fabricated zero rates.
+- Per-process TCP, UDP, and QUIC network attribution comes from one long-lived XNU NStat control socket. Absolute source counters are baselined and differenced on a dedicated reader thread, including final close updates for short-lived flows. The collector is qualified for NStat revision 9 on Darwin 21 through 25 and fails closed on an unknown layout or protocol error; it needs neither root nor a private entitlement. Privileged collection remains unavailable.
 
 Fallback behavior:
 
@@ -126,6 +126,7 @@ Examples:
 - Linux CPU, disk, and network retain independent last-good baselines. A failed read does not replace a baseline with zero, and the first recovered rate is derived only from valid counters.
 - Windows process network attribution reports the ETW failure reason when the kernel logger cannot start.
 - Linux per-process network attribution reports the eBPF prerequisite or capability failure when the host cannot attach probes.
+- macOS per-process network attribution is `held/nstat` during its initial baseline, `native/nstat` after a complete interval, `partial/nstat` on detected counter loss, and `unavailable/nstat` if the private protocol is unavailable or no longer matches its qualified layout.
 - Linux process `/proc` parsers remain manual after the bounded [`procfs` parity decision](decisions/0002-linux-procfs-parser-parity.md). Required malformed counters fail instead of becoming measured zero; a crate replacement requires native dual-reader parity first.
 - macOS physical-disk quality is `held/iokit` while a device identity baseline is pending, `native/iokit` for a complete stable device set, and `unavailable/iokit` when complete host coverage cannot be proven.
 - macOS libproc failures retain the sysinfo process row and classify exit, access denial, unsupported fields, and collector failures separately. Exit drops ordinary churn; independently successful fields remain publishable.
@@ -178,12 +179,12 @@ Run full Linux or macOS validation:
 bash scripts/validate-tauri.sh
 ```
 
-The macOS bundle path requires both Rust targets and produces one universal DMG:
+The macOS bundle path requires the Apple Silicon Rust target and produces one `arm64` DMG. Intel Macs are unsupported:
 
 ```bash
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
+rustup target add aarch64-apple-darwin
 cd src/BatCave.App
-npm run tauri -- build --target universal-apple-darwin
+npm run tauri -- build --target aarch64-apple-darwin
 ```
 
 Run a headless benchmark:
@@ -215,9 +216,9 @@ V4 baseline artifacts record `measurement_origin: owned_sampling_engine_refresh_
 ## Continuous Integration
 
 - Pull requests and `codex/**` pushes run Windows and Linux validation without bundles.
-- Pull requests and `codex/**` pushes also check and lint both Apple architectures and build the universal target without packaging.
+- Pull requests and `codex/**` pushes also check and lint Apple Silicon macOS and build the `aarch64-apple-darwin` target without packaging.
 - Pull requests run dependency review and fail on new moderate-or-higher advisories.
-- Pushes to `main` and manual bundle runs produce an offline-capable Windows NSIS installer, Linux deb/AppImage artifacts, and an ad-hoc-signed universal Mac `.app`/DMG retained for 14 days. The Windows artifact embeds the WebView2 Evergreen Standalone Installer, trading roughly 127 MB of package size for install-time network independence while retaining Evergreen servicing.
+- Pushes to `main` and manual bundle runs produce an offline-capable Windows NSIS installer, Linux deb/AppImage artifacts, and an ad-hoc-signed Apple Silicon Mac `.app`/DMG retained for 14 days. The Windows artifact embeds the WebView2 Evergreen Standalone Installer, trading roughly 127 MB of package size for install-time network independence while retaining Evergreen servicing.
 - Monday 09:00 UTC and manual advisory runs execute `npm audit --omit=dev --audit-level=moderate` and pinned `cargo-audit 0.22.2`. Rust vulnerabilities fail immediately; informational warnings must match the owned, expiring baseline documented in `docs/dependency-advisories.md`.
 
 ## Remaining Product Work

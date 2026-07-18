@@ -562,6 +562,7 @@ pub enum MetricSourceV3 {
     Sysinfo,
     Runtime,
     Etw,
+    Nstat,
     Procfs,
     Ebpf,
     Fixture,

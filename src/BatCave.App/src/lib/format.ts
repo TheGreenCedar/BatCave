@@ -196,8 +196,9 @@ export function processActivityLabel(
     process.quality?.network,
   ];
   if (activityQuality.some((quality) => quality?.quality === "held")) return "Pending";
-  if (activityQuality.some((quality) => quality?.quality === "unavailable")) return "Unavailable";
   if (activityQuality.some((quality) => quality === undefined)) return "Quality not reported";
+  if (activityQuality.every((quality) => quality?.quality === "unavailable")) return "Unavailable";
+  if (activityQuality.some((quality) => quality?.quality === "unavailable")) return "Partial";
   return "Normal";
 }
 
@@ -412,6 +413,8 @@ export function formatMetricSource(value: MetricSource): string {
       return "process aggregate";
     case "ebpf":
       return "eBPF";
+    case "nstat":
+      return "NStat";
     default:
       return value.replaceAll("_", " ");
   }

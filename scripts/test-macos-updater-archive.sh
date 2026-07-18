@@ -416,15 +416,13 @@ Path(path).write_bytes(plistlib.dumps({
 }))
 PY
 printf 'int main(void) { return 0; }\n' | clang -x c -arch arm64 -mmacosx-version-min=12.0 - -o "$workspace/fixture-arm64"
-printf 'int main(void) { return 0; }\n' | clang -x c -arch x86_64 -mmacosx-version-min=12.0 - -o "$workspace/fixture-x86_64"
-lipo -create "$workspace/fixture-arm64" "$workspace/fixture-x86_64" \
-  -output "$app/Contents/MacOS/batcave-fixture"
+cp "$workspace/fixture-arm64" "$app/Contents/MacOS/batcave-fixture"
 codesign --force --options runtime --sign - "$app"
 
 mkdir -p "$workspace/dmg-source"
 ditto "$app" "$workspace/dmg-source/$expected_app_name"
 hdiutil create -quiet -ov -format UDZO -srcfolder "$workspace/dmg-source" \
-  "$bundle_root/dmg/BatCave Monitor_${cargo_version}_universal.dmg"
+  "$bundle_root/dmg/BatCave Monitor_${cargo_version}_aarch64.dmg"
 
 archive_app() {
   local source_app="$1"
@@ -475,11 +473,11 @@ expect_bundle_rejected identity "Expected CFBundleIdentifier dev.batcave.monitor
 
 architecture_app="$workspace/Architecture Drift.app"
 ditto "$app" "$architecture_app"
-lipo "$architecture_app/Contents/MacOS/batcave-fixture" -thin arm64 \
-  -output "$workspace/thin-fixture"
-mv "$workspace/thin-fixture" "$architecture_app/Contents/MacOS/batcave-fixture"
+printf 'int main(void) { return 0; }\n' | clang -x c -arch x86_64 -mmacosx-version-min=12.0 - \
+  -o "$architecture_app/Contents/MacOS/batcave-fixture"
 codesign --force --options runtime --sign - "$architecture_app"
 archive_app "$architecture_app" "$workspace/architecture-drift.app.tar.gz"
-expect_bundle_rejected architecture "x86_64" "$workspace/architecture-drift.app.tar.gz"
+expect_bundle_rejected architecture "Expected an arm64 slice" \
+  "$workspace/architecture-drift.app.tar.gz"
 
 echo "Updater archive extraction, signature, identity, and architecture fixtures passed."

@@ -29,7 +29,7 @@ const CONSUMED_DESTINATION_REVALIDATION = deepFreeze({
   boundary: "consumed_destination_only",
   bundle_id_source: "compiled_tauri_identifier",
   version_source: "verified_release_version",
-  required_architectures: ["arm64", "x86_64"],
+  required_architectures: ["arm64"],
   required_gate_ids: [
     "bundle_id",
     "version",

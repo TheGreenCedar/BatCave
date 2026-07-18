@@ -139,7 +139,7 @@
         "profile_id": {
           "enum": [
             "debian-12-x86_64-glibc",
-            "macos-12-universal",
+            "macos-12-arm64",
             "ubuntu-22.04-x86_64-glibc",
             "windows-client-10-x86_64"
           ]
@@ -149,8 +149,8 @@
             "Linux AppImage package and updater payload",
             "Linux deb package",
             "Windows NSIS installer and updater payload",
-            "macOS universal DMG",
-            "macOS universal updater payload"
+            "macOS Apple Silicon DMG",
+            "macOS Apple Silicon updater payload"
           ]
         },
         "public_asset": { "$ref": "#/$defs/publicAsset" }

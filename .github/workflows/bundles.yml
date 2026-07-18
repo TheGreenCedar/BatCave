@@ -140,7 +140,7 @@ jobs:
           retention-days: 14
 
   macos:
-    name: macOS universal ad-hoc bundle
+    name: macOS Apple Silicon ad-hoc bundle
     if: github.event_name != 'workflow_dispatch' || inputs.capture_linux_persistence != true
     runs-on: macos-15
     steps:
@@ -159,7 +159,7 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -172,13 +172,13 @@ jobs:
         run: npm ci
         working-directory: src/BatCave.App
 
-      - name: Build ad-hoc signed universal DMG
+      - name: Build ad-hoc signed Apple Silicon DMG
         env:
           APPLE_SIGNING_IDENTITY: "-"
           CI: "true"
         run: bash scripts/validate-tauri.sh --bundle-only
 
-      - name: Verify universal app and DMG
+      - name: Verify Apple Silicon app and DMG
         run: bash scripts/verify-macos-bundle.sh --mode adhoc
 
       - name: Test updater archive guards
@@ -186,9 +186,9 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: batcave-macos-universal-dmg-${{ github.run_id }}
+          name: batcave-macos-arm64-dmg-${{ github.run_id }}
           path: |
-            src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            src/BatCave.App/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
           retention-days: 14

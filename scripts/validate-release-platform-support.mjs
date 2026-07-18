@@ -14,7 +14,7 @@ const FIXTURE_HOSTS = Object.freeze({
 });
 const PROFILE_IDS = Object.freeze([
   "debian-12-x86_64-glibc",
-  "macos-12-universal",
+  "macos-12-arm64",
   "ubuntu-22.04-x86_64-glibc",
   "windows-client-10-x86_64",
 ]);
@@ -40,24 +40,24 @@ const PROFILE_RULES = Object.freeze({
       },
     ],
   },
-  "macos-12-universal": {
+  "macos-12-arm64": {
     os: "macos",
     hostKind: "macos_release",
     minimum: "12.0",
-    hostArchitectures: ["arm64", "x86_64"],
+    hostArchitectures: ["arm64"],
     libcFamily: "not_applicable",
     packages: [
       {
         kind: "dmg",
-        architecture: "universal",
-        assetRole: "macOS universal DMG",
+        architecture: "arm64",
+        assetRole: "macOS Apple Silicon DMG",
         updaterTargets: [],
       },
       {
         kind: "macos_updater",
-        architecture: "universal",
-        assetRole: "macOS universal updater payload",
-        updaterTargets: ["darwin-aarch64", "darwin-x86_64"],
+        architecture: "arm64",
+        assetRole: "macOS Apple Silicon updater payload",
+        updaterTargets: ["darwin-aarch64"],
       },
     ],
   },

@@ -8,6 +8,8 @@ pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protoc
 pub(crate) const NONCE_HEX_LENGTH: usize = 64;
 pub(crate) const LOCATOR_HEX_LENGTH: usize = 32;
 pub(crate) const FIRST_SEQUENCE: u64 = 1;
+const INCOMPATIBLE_FIXTURE_PRODUCT_VERSION: &str = "0.2.0-rc.3";
+const ROLLBACK_FIXTURE_PRODUCT_VERSION: &str = "0.2.0-rc.2";
 pub(crate) const SUCCESS_PRIVATE_EVIDENCE_LEAVES: [&str; 28] = [
     "initial-state.private.json",
     "final-repair-state.private.json",
@@ -962,7 +964,7 @@ fn validate_incompatible_service_fixture(
         return Err("lifecycle_plan_incompatible_fixture_identity_invalid".to_string());
     }
     validate_sha256(&fixture.sha256, "incompatible_fixture")?;
-    if fixture.product_version != "0.2.0-rc.3"
+    if fixture.product_version != INCOMPATIBLE_FIXTURE_PRODUCT_VERSION
         || fixture.product_version == env!("CARGO_PKG_VERSION")
         || fixture.behavior != ServiceFixtureBehavior::IncompatibleRelease
     {
@@ -994,7 +996,7 @@ fn validate_rollback_service_fixture(
         return Err("lifecycle_plan_rollback_fixture_identity_invalid".to_string());
     }
     validate_sha256(&fixture.sha256, "rollback_fixture")?;
-    if fixture.product_version != env!("CARGO_PKG_VERSION")
+    if fixture.product_version != ROLLBACK_FIXTURE_PRODUCT_VERSION
         || fixture.behavior != ServiceFixtureBehavior::FailOnScmStart
     {
         return Err("lifecycle_plan_rollback_fixture_behavior_invalid".to_string());
@@ -1122,7 +1124,7 @@ mod tests {
         );
         assert_eq!(
             plan.rollback_failing_service_fixture.product_version,
-            env!("CARGO_PKG_VERSION")
+            ROLLBACK_FIXTURE_PRODUCT_VERSION
         );
         assert_eq!(plan_sha256().len(), 64);
     }
@@ -1199,6 +1201,14 @@ mod tests {
         let mut plan = parse_plan().expect("plan");
         plan.rollback_failing_service_fixture.behavior =
             ServiceFixtureBehavior::IncompatibleRelease;
+        assert_eq!(
+            validate_plan(&plan),
+            Err("lifecycle_plan_rollback_fixture_behavior_invalid".to_string())
+        );
+
+        let mut plan = parse_plan().expect("plan");
+        plan.rollback_failing_service_fixture.product_version =
+            env!("CARGO_PKG_VERSION").to_string();
         assert_eq!(
             validate_plan(&plan),
             Err("lifecycle_plan_rollback_fixture_behavior_invalid".to_string())

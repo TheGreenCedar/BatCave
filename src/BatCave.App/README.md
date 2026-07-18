@@ -15,7 +15,7 @@ Product screenshots and verification screenshots must come from the native Tauri
 - A current stable Rust toolchain
 - Windows with Microsoft Edge WebView2 Evergreen Runtime. The NSIS bundle embeds Microsoft's Evergreen Standalone Installer and does not need network access during installation.
 - Ubuntu/Debian plus the native Tauri packages
-- macOS 12 or newer plus Xcode Command Line Tools; universal builds require both Apple Rust targets
+- macOS 12 or newer on Apple Silicon plus Xcode Command Line Tools; Intel Macs are unsupported
 
 Install Linux native prerequisites from the repository root:
 
@@ -55,7 +55,7 @@ bash scripts/run-dev.sh --web-only
 The same shell entry points detect macOS automatically:
 
 ```bash
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
+rustup target add aarch64-apple-darwin
 bash scripts/run-dev.sh
 bash scripts/run-dev.sh --web-only
 ```
@@ -117,10 +117,10 @@ Build platform bundles from this app directory:
 
 ```powershell
 npm run tauri -- build
-npm run tauri -- build --target universal-apple-darwin  # macOS universal
+npm run tauri -- build --target aarch64-apple-darwin  # macOS Apple Silicon
 ```
 
-Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. `tauri.windows.conf.json` selects `offlineInstaller`, so the NSIS artifact embeds Microsoft's WebView2 Evergreen Standalone Installer. The trade-off is roughly 127 MB of additional package size in exchange for installation without network access and continued Evergreen runtime servicing. There is no online-bootstrapper artifact. Build hosts can still need network access to populate Tauri's WebView2 download cache. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts. The Mac universal `.app` and DMG land under `src-tauri/target/universal-apple-darwin/release/bundle`; local builds are not notarized and main-branch CI artifacts are ad-hoc signed.
+Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. `tauri.windows.conf.json` selects `offlineInstaller`, so the NSIS artifact embeds Microsoft's WebView2 Evergreen Standalone Installer. The trade-off is roughly 127 MB of additional package size in exchange for installation without network access and continued Evergreen runtime servicing. There is no online-bootstrapper artifact. Build hosts can still need network access to populate Tauri's WebView2 download cache. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts. The Apple Silicon Mac `.app` and DMG land under `src-tauri/target/aarch64-apple-darwin/release/bundle`; local builds are not notarized and main-branch CI artifacts are ad-hoc signed.
 
 ## Runtime Behavior
 
@@ -178,9 +178,9 @@ The child redirects stderr into the same owned pipe as protocol output, preservi
 
 `sysinfo` remains a fallback when native collectors cannot read the expected host files.
 
-macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, read/write I/O totals, thread count, and file-descriptor count when access allows. Host disk comes from deduplicated IOKit physical block-driver byte counters; disk-image registry paths are excluded, incomplete device coverage fails closed, and a device-set change waits for a fresh rate baseline. Process I/O is never substituted for host disk. The sysinfo network aggregate includes `lo0`. Per-process network attribution and privileged collection are unavailable on macOS in this release.
+macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, read/write I/O totals, thread count, and file-descriptor count when access allows. Host disk comes from deduplicated IOKit physical block-driver byte counters; disk-image registry paths are excluded, incomplete device coverage fails closed, and a device-set change waits for a fresh rate baseline. Process I/O is never substituted for host disk. The sysinfo network aggregate includes `lo0`. Per-process TCP, UDP, and QUIC rates come from one long-lived XNU NStat control socket. It needs neither root nor a private entitlement; BatCave baselines absolute source counters, retains final close updates, and fails closed when the private revision-9 wire layout is not qualified. Privileged collection remains unavailable.
 
-The canonical source/scope/privilege/package matrix is [docs/platform-capabilities.md](../../docs/platform-capabilities.md). Windows ARM64 and Linux ARM64 are unsupported: the repository does not validate their native collectors or publish packages for them. macOS ships one validated universal `x86_64` + `arm64` app.
+The canonical source/scope/privilege/package matrix is [docs/platform-capabilities.md](../../docs/platform-capabilities.md). Windows ARM64 and Linux ARM64 are unsupported: the repository does not validate their native collectors or publish packages for them. macOS ships one validated Apple Silicon `arm64` app; Intel Macs are unsupported.
 
 ## Benchmarking
 
@@ -204,7 +204,7 @@ Benchmarks build the current release CLI, use an isolated temporary data directo
 
 Strict mode is a configuration error without either a baseline or explicit p95 ceiling. A speed multiplier without a baseline is also a configuration error. Matching v4 baselines use `baseline median_live_command_p95_ms / candidate median_live_command_p95_ms` and require at least `0.90` by default. Older artifact formats are rejected instead of being compared across different measurement paths. Use `run-benchmark-gate` for release/local regression checks and its generated report artifact.
 
-CI validates Windows, Linux, both macOS architectures, and Linux package transport on pull requests. Pull requests restore Rust caches but never write them; pushes to `main` and manually dispatched validation runs seed reusable base-branch caches. The package lane keeps a separate release-profile cache and runs its live transport tests in release mode so they reuse the release dependency graph without caching workspace crates. Rust warning gates run before the longer test passes, and the Linux bundle-only transport tail runs in parallel with the main Linux job. Pushes to `main` and manual bundle runs retain Windows NSIS, Linux deb/AppImage, and ad-hoc-signed universal Mac artifacts for 14 days. The versioned release workflow validates the shared SemVer and produces checksums plus GitHub build provenance before an optional durable release; its Mac job additionally enforces Developer ID signing, notarization, stapling, universal slices, and DMG integrity. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
+CI validates Windows, Linux, Apple Silicon macOS, and Linux package transport on pull requests. Pull requests restore Rust caches but never write them; pushes to `main` and manually dispatched validation runs seed reusable base-branch caches. The package lane keeps a separate release-profile cache and runs its live transport tests in release mode so they reuse the release dependency graph without caching workspace crates. Rust warning gates run before the longer test passes, and the Linux bundle-only transport tail runs in parallel with the main Linux job. Pushes to `main` and manual bundle runs retain Windows NSIS, Linux deb/AppImage, and ad-hoc-signed Apple Silicon Mac artifacts for 14 days. The versioned release workflow validates the shared SemVer and produces checksums plus GitHub build provenance before an optional durable release; its Mac job additionally enforces Developer ID signing, notarization, stapling, the `arm64` slice, and DMG integrity. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
 
 ## Production Notes
 

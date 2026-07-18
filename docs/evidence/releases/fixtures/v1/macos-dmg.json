@@ -20,7 +20,7 @@
   },
   "platform": {
     "support_contract_version": 1,
-    "profile_id": "macos-12-universal",
+    "profile_id": "macos-12-arm64",
     "proof": {
       "declaration": "declared",
       "source": "pending",
@@ -34,17 +34,17 @@
     },
     "package": {
       "kind": "dmg",
-      "architecture": "universal",
-      "asset_name": "BatCave.Monitor_0.0.0-evidence.1_universal.dmg"
+      "architecture": "arm64",
+      "asset_name": "BatCave.Monitor_0.0.0-evidence.1_aarch64.dmg"
     }
   },
   "assets": [
     {
-      "name": "BatCave.Monitor_0.0.0-evidence.1_universal.dmg",
+      "name": "BatCave.Monitor_0.0.0-evidence.1_aarch64.dmg",
       "size_bytes": 1000003,
       "sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "api_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-      "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_universal.dmg",
+      "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_aarch64.dmg",
       "attestation": {
         "verified": true,
         "repository": "TheGreenCedar/BatCave",

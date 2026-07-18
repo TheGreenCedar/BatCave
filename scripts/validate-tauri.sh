@@ -114,21 +114,26 @@ fi
 
 if [[ "$skip_bundle" -eq 0 ]]; then
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    missing_targets=()
-    for target in aarch64-apple-darwin x86_64-apple-darwin; do
-      if ! rustup target list --installed | grep -qx "$target"; then
-        missing_targets+=("$target")
-      fi
-    done
-    if [[ "${#missing_targets[@]}" -gt 0 ]]; then
-      echo "Universal macOS bundling requires: rustup target add ${missing_targets[*]}" >&2
+    if [[ "$(uname -m)" != "arm64" ]]; then
+      echo "BatCave macOS bundles require an Apple Silicon host." >&2
+      exit 2
+    fi
+    target="aarch64-apple-darwin"
+    if ! rustup target list --installed | grep -qx "$target"; then
+      echo "Apple Silicon macOS bundling requires: rustup target add $target" >&2
       exit 2
     fi
 
     npm run build
-    npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json --no-bundle
-    bash "$repo_root/scripts/build-macos-universal-cli.sh" --lipo-only
-    npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json
+    npm run tauri -- build --target "$target" --config src-tauri/tauri.macos.ci.conf.json --no-bundle
+    bash "$repo_root/scripts/build-macos-arm64-cli.sh" --verify-only
+    npm run tauri -- build --target "$target" --config src-tauri/tauri.macos.ci.conf.json
+    dmg_candidates=(src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+    [[ "${#dmg_candidates[@]}" -eq 1 ]] || {
+      echo "Expected exactly one Apple Silicon DMG; found ${#dmg_candidates[@]}." >&2
+      exit 1
+    }
+    bash "$repo_root/scripts/remove-macos-dmg-volume-icon.sh" "${dmg_candidates[0]}"
     bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc
   else
     bash "$repo_root/scripts/build-linux-cli.sh"

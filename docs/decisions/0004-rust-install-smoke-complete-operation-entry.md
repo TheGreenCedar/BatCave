@@ -78,4 +78,4 @@ cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
 bash scripts/validate-tauri.sh --skip-bundle
 ```
 
-The normal release-contract and validation jobs already run the executor and Rust suites on Windows, Linux, and universal macOS. Passing them proves this source decision and the absence of a newly registered bridge; it does not prove public or native package execution.
+The normal release-contract and validation jobs already run the executor and Rust suites on Windows, Linux, and Apple Silicon macOS. Passing them proves this source decision and the absence of a newly registered bridge; it does not prove public or native package execution.

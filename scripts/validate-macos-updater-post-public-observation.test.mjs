@@ -38,6 +38,11 @@ function observation() {
 }
 
 test("accepts the exact staging-only non-evidence observation", () => {
+  assert.ok(
+    macosUpdaterPostPublicObservationContract.expectedLimitations.includes(
+      "arm64_updater_archive_staging_only",
+    ),
+  );
   assert.equal(
     validateMacosUpdaterPostPublicObservation(observation(), TAG, SOURCE_SHA).disposition,
     "observation_complete",

@@ -455,8 +455,8 @@ test("overview states cannot turn missing or retained samples into a reassuring 
     "live",
   );
   assert.equal(warning.valueLabel, "90%");
-  assert.equal(warning.stateLabel, "Degraded");
-  assert.equal(warning.confidence, "Limited");
+  assert.equal(warning.stateLabel, "Current");
+  assert.equal(warning.confidence, "High");
 
   const paused = buildResourceBrief(
     resourceSnapshot(null),
@@ -802,6 +802,33 @@ test("native high network activity is never described as normal", () => {
   );
 });
 
+test("one unavailable process metric keeps useful activity partial", () => {
+  const macos = process({
+    cpu_percent: 4,
+    memory_bytes: 128 * 1024 * 1024,
+    quality: {
+      cpu: { quality: "estimated", source: "sysinfo" },
+      memory: { quality: "native", source: "libproc" },
+      io: { quality: "native", source: "libproc" },
+      other_io: {
+        quality: "unavailable",
+        source: "libproc",
+        limitation_code: "unsupported_metric",
+      },
+      network: {
+        quality: "unavailable",
+        source: "libproc",
+        limitation_code: "unsupported_metric",
+      },
+      threads: { quality: "native", source: "libproc" },
+      handles: { quality: "native", source: "libproc" },
+    },
+  });
+
+  assert.equal(processActivityLabel(macos, 0, 0), "Partial");
+  assert.equal(processTrustLabel(macos), "Partial coverage");
+});
+
 test("group metric values require publishable coverage", () => {
   const native = { quality: "native" as const, source: "process_aggregate" as const };
   const held = { quality: "held" as const, source: "process_aggregate" as const };
@@ -923,6 +950,19 @@ test("compact workload controls expose the active sort direction", () => {
   assert.match(commandBar, /onclick=\{onToggleDirection\}/);
   assert.match(app, /function toggleSortDirection\(\): void/);
   assert.match(app, /onToggleDirection=\{toggleSortDirection\}/);
+});
+
+test("desktop workload table keeps network visible when attribution is unavailable", () => {
+  const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+  const table = readFileSync(
+    new URL("../src/lib/components/processes/ProcessTable.svelte", import.meta.url),
+    "utf8",
+  );
+
+  assert.doesNotMatch(app, /processNetworkAvailable/);
+  assert.doesNotMatch(app, /column\.key !== "network"/);
+  assert.match(table, /column\.key === "network"/);
+  assert.match(table, /networkCellLabel\(row\)/);
 });
 
 test("the frontend entrypoint uses one authoritative product stylesheet", () => {

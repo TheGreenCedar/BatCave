@@ -370,6 +370,7 @@ pub fn metric_source(source: MetricSource) -> MetricSourceV3 {
         MetricSource::Sysinfo => MetricSourceV3::Sysinfo,
         MetricSource::Runtime => MetricSourceV3::Runtime,
         MetricSource::Etw => MetricSourceV3::Etw,
+        MetricSource::Nstat => MetricSourceV3::Nstat,
         MetricSource::Procfs => MetricSourceV3::Procfs,
         MetricSource::Ebpf => MetricSourceV3::Ebpf,
         MetricSource::Fixture => MetricSourceV3::Fixture,

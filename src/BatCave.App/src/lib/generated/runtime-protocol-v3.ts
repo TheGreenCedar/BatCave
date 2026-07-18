@@ -79,7 +79,7 @@ export type MetricScope = "system" | "process" | "group";
 
 export type MetricUnit = "percent_one_core" | "percent_system" | "bytes" | "bytes_per_second" | "count";
 
-export type MetricSourceV3 = "unknown" | "direct_api" | "libproc" | "iokit" | "pdh" | "interface_aggregate" | "process_aggregate" | "sysinfo" | "runtime" | "etw" | "procfs" | "ebpf" | "fixture";
+export type MetricSourceV3 = "unknown" | "direct_api" | "libproc" | "iokit" | "pdh" | "interface_aggregate" | "process_aggregate" | "sysinfo" | "runtime" | "etw" | "nstat" | "procfs" | "ebpf" | "fixture";
 
 export type MetricQualityV3 = "native" | "estimated" | "held" | "partial" | "unavailable";
 

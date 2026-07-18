@@ -177,7 +177,7 @@ test("declares the exact stable and prerelease release matrices", () => {
       "BatCave.Monitor_0.3.0_amd64.deb",
       "BatCave.Monitor_0.3.0_amd64.AppImage",
       "BatCave.Monitor_0.3.0_amd64.AppImage.sig",
-      "BatCave.Monitor_0.3.0_universal.dmg",
+      "BatCave.Monitor_0.3.0_aarch64.dmg",
       "BatCave.Monitor.app.tar.gz",
       "BatCave.Monitor.app.tar.gz.sig",
       "latest.json",
@@ -297,7 +297,7 @@ const wrongVersionCases = [
   ["Windows NSIS installer and updater payload", "BatCave.Monitor_9.9.9_x64-setup.exe"],
   ["Linux deb package", "BatCave.Monitor_9.9.9_amd64.deb"],
   ["Linux AppImage package and updater payload", "BatCave.Monitor_9.9.9_amd64.AppImage"],
-  ["macOS universal DMG", "BatCave.Monitor_9.9.9_universal.dmg"],
+  ["macOS Apple Silicon DMG", "BatCave.Monitor_9.9.9_aarch64.dmg"],
   ["build provenance bundle", "BatCave-v9.9.9-provenance.json"],
 ];
 

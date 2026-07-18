@@ -166,7 +166,7 @@
         "profile_id": {
           "enum": [
             "debian-12-x86_64-glibc",
-            "macos-12-universal",
+            "macos-12-arm64",
             "ubuntu-22.04-x86_64-glibc",
             "windows-client-10-x86_64"
           ]
@@ -200,7 +200,7 @@
             "kind": {
               "enum": ["nsis", "deb", "appimage", "dmg", "macos_updater"]
             },
-            "architecture": { "enum": ["x86_64", "universal"] },
+            "architecture": { "enum": ["x86_64", "arm64"] },
             "asset_name": { "type": "string", "minLength": 1 }
           }
         }

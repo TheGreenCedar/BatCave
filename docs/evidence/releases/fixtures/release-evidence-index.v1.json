@@ -50,23 +50,23 @@
     {
       "packet_id": "macos-dmg-schema-fixture",
       "path": "docs/evidence/releases/fixtures/v1/macos-dmg.json",
-      "packet_sha256": "sha256:8c782ec8bc7eecc7e2a3435eefa4e4c94ba2ae16287198412dfd96fc0289df55",
-      "profile_id": "macos-12-universal",
-      "package_role": "macOS universal DMG",
+      "packet_sha256": "sha256:0a618188203c089c91e12e1b78d9d4bed229fcaa13a8c3110ee24f7647c60b51",
+      "profile_id": "macos-12-arm64",
+      "package_role": "macOS Apple Silicon DMG",
       "public_asset": {
-        "name": "BatCave.Monitor_0.0.0-evidence.1_universal.dmg",
+        "name": "BatCave.Monitor_0.0.0-evidence.1_aarch64.dmg",
         "size_bytes": 1000003,
         "sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
         "api_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_universal.dmg"
+        "public_url": "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/BatCave.Monitor_0.0.0-evidence.1_aarch64.dmg"
       }
     },
     {
       "packet_id": "macos-updater-schema-fixture",
       "path": "docs/evidence/releases/fixtures/v1/macos-updater.json",
-      "packet_sha256": "sha256:dfa58dc6bf37e2a7aa2bd56bb3982c1eaba19828c86418e8d9afb59d3cba86d3",
-      "profile_id": "macos-12-universal",
-      "package_role": "macOS universal updater payload",
+      "packet_sha256": "sha256:70d6177ecdc608ce714d8e0c7ce939fef90eb174d1729f6471a65207a89029f1",
+      "profile_id": "macos-12-arm64",
+      "package_role": "macOS Apple Silicon updater payload",
       "public_asset": {
         "name": "BatCave.Monitor.app.tar.gz",
         "size_bytes": 1000005,

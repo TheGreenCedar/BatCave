@@ -121,7 +121,13 @@ function runBundleOnlyFromCleanState(host) {
 
   writeTestExecutable(
     path.join(bin, "uname"),
-    "#!/bin/bash\nprintf '%s\\n' \"$BATCAVE_TEST_HOST\"\n",
+    `#!/bin/bash
+if [[ "\${1:-}" == "-m" ]]; then
+  printf 'arm64\\n'
+else
+  printf '%s\\n' "$BATCAVE_TEST_HOST"
+fi
+`,
   );
   writeTestExecutable(
     path.join(bin, "cargo"),
@@ -147,7 +153,7 @@ fi
     `#!/bin/bash
 set -euo pipefail
 [[ "$*" == "target list --installed" ]] || exit 72
-printf 'aarch64-apple-darwin\\nx86_64-apple-darwin\\n'
+printf 'aarch64-apple-darwin\\n'
 `,
   );
   writeTestExecutable(
@@ -159,7 +165,8 @@ printf 'verify-linux|%s\\n' "$*" >> "$BATCAVE_TEST_LOG"
 `,
   );
   for (const [name, label] of [
-    ["build-macos-universal-cli.sh", "build-macos"],
+    ["build-macos-arm64-cli.sh", "build-macos"],
+    ["remove-macos-dmg-volume-icon.sh", "remove-dmg-volume-icon"],
     ["verify-macos-bundle.sh", "verify-macos"],
   ]) {
     writeTestExecutable(
@@ -360,7 +367,7 @@ const PROFILE_DOCUMENTATION_ORDER = new Map([
   ["windows-client-10-x86_64", 0],
   ["ubuntu-22.04-x86_64-glibc", 1],
   ["debian-12-x86_64-glibc", 2],
-  ["macos-12-universal", 3],
+  ["macos-12-arm64", 3],
 ]);
 
 const PACKAGE_DOCUMENTATION_ORDER = new Map([
@@ -395,7 +402,7 @@ function documentedPackageKinds(profile) {
         case "appimage":
           return "AppImage";
         case "dmg":
-          return "universal DMG";
+          return "DMG";
         case "macos_updater":
           return "updater archive";
         default:
@@ -419,8 +426,8 @@ function supportProfileTableRow(profileId) {
       return `| \`${profile.id}\` | Ubuntu \`${profile.host.minimum}\`+ | \`${profile.host_architectures[0]}\`, ${profile.runtime.libc_family} | ${packages} | ${sourceProof} | ${nativeProof} |`;
     case "debian-12-x86_64-glibc":
       return `| \`${profile.id}\` | Debian \`${profile.host.minimum}\`+ | \`${profile.host_architectures[0]}\`, ${profile.runtime.libc_family} | ${packages} | ${sourceProof} | ${nativeProof} |`;
-    case "macos-12-universal":
-      return `| \`${profile.id}\` | macOS \`${profile.host.minimum}\`+ | \`${profile.host_architectures[0]}\` + \`${profile.host_architectures[1]}\` | ${packages} | ${sourceProof} | ${nativeProof} |`;
+    case "macos-12-arm64":
+      return `| \`${profile.id}\` | macOS \`${profile.host.minimum}\`+ | Apple Silicon \`${profile.host_architectures[0]}\` | ${packages} | ${sourceProof} | ${nativeProof} |`;
     default:
       assert.fail(`documentation mapping is missing ${profileId}`);
   }
@@ -465,7 +472,7 @@ function assertReleaseSupportDocumentationMatchesContract(documents) {
   const windows = PROFILES.get("windows-client-10-x86_64");
   const ubuntu = PROFILES.get("ubuntu-22.04-x86_64-glibc");
   const debian = PROFILES.get("debian-12-x86_64-glibc");
-  const macos = PROFILES.get("macos-12-universal");
+  const macos = PROFILES.get("macos-12-arm64");
   const linux = RELEASE_PLATFORM_SUPPORT_CONTRACT.linux_source_enforcement;
   assert.ok(
     readme.includes(
@@ -479,7 +486,7 @@ function assertReleaseSupportDocumentationMatchesContract(documents) {
   );
   assert.ok(
     readme.includes(
-      `macOS \`${macos.host.minimum}\`+ on universal \`${macos.host_architectures[0]}\` + \`${macos.host_architectures[1]}\` with a DMG and updater archive`,
+      `macOS \`${macos.host.minimum}\`+ on Apple Silicon \`${macos.host_architectures[0]}\` with a DMG and updater archive`,
     ),
   );
   assert.ok(
@@ -500,7 +507,7 @@ function assertReleaseSupportDocumentationMatchesContract(documents) {
   assertLinuxSupportFacts(releases);
   assert.ok(
     capabilities.includes(
-      "Windows Server, Windows ARM64, Linux ARM64, musl, unlisted Linux distributions, and unlisted package/host combinations are explicit non-claims.",
+      "Windows Server, Windows ARM64, Linux ARM64, macOS Intel `x86_64`, musl, unlisted Linux distributions, and unlisted package/host combinations are explicit non-claims.",
     ),
   );
 }
@@ -511,7 +518,7 @@ test("publishes the four closed version 1 support profiles", () => {
     [...PROFILES.keys()],
     [
       "debian-12-x86_64-glibc",
-      "macos-12-universal",
+      "macos-12-arm64",
       "ubuntu-22.04-x86_64-glibc",
       "windows-client-10-x86_64",
     ],
@@ -578,15 +585,34 @@ test("builds the Linux release CLI from a clean target before bundle and verific
   ]);
 });
 
-test("keeps the Linux CLI prebuild out of the macOS universal bundle path", () => {
+test("keeps the Linux CLI prebuild out of the macOS arm64 bundle path", () => {
   const { commands } = runBundleOnlyFromCleanState("Darwin");
   assert.deepEqual(commands, [
     "npm|run build",
-    "npm|run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json --no-bundle",
-    "build-macos|--lipo-only",
-    "npm|run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json",
+    "npm|run tauri -- build --target aarch64-apple-darwin --config src-tauri/tauri.macos.ci.conf.json --no-bundle",
+    "build-macos|--verify-only",
+    "npm|run tauri -- build --target aarch64-apple-darwin --config src-tauri/tauri.macos.ci.conf.json",
+    "remove-dmg-volume-icon|src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
     "verify-macos|--mode adhoc",
   ]);
+});
+
+test("removes the internal macOS volume icon before release signing", () => {
+  const workflow = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "release.yml"),
+    "utf8",
+  );
+  const sanitizer = 'bash scripts/remove-macos-dmg-volume-icon.sh "${dmgs[0]}"';
+  const signer = 'codesign --force --timestamp --sign "${APPLE_SIGNING_IDENTITY}" "${dmgs[0]}"';
+  const sanitizerIndex = workflow.indexOf(sanitizer);
+  const signerIndex = workflow.indexOf(signer);
+
+  assert.notEqual(sanitizerIndex, -1);
+  assert.notEqual(signerIndex, -1);
+  assert.ok(sanitizerIndex < signerIndex, "DMG cleanup must happen before release signing");
+
+  const verifier = fs.readFileSync(path.join(ROOT, "scripts", "verify-macos-bundle.sh"), "utf8");
+  assert.match(verifier, /\$mount_point\/\.VolumeIcon\.icns/u);
 });
 
 test("rejects runner, ABI, package, and runtime drift from the integrated #123 sources", () => {
@@ -807,13 +833,18 @@ function assertCanonicalTauriSources(sources) {
   assertActiveLine(sources.validateShell, 'bash "$repo_root/scripts/verify-linux-bundle.sh"');
 
   const macBuild =
-    "npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json";
+    'npm run tauri -- build --target "$target" --config src-tauri/tauri.macos.ci.conf.json';
+  assertActiveLine(sources.validateShell, 'target="aarch64-apple-darwin"');
   assertActiveLine(sources.validateShell, `${macBuild} --no-bundle`);
   assertActiveLine(
     sources.validateShell,
-    'bash "$repo_root/scripts/build-macos-universal-cli.sh" --lipo-only',
+    'bash "$repo_root/scripts/build-macos-arm64-cli.sh" --verify-only',
   );
   assertActiveLine(sources.validateShell, macBuild);
+  assertActiveLine(
+    sources.validateShell,
+    'bash "$repo_root/scripts/remove-macos-dmg-volume-icon.sh" "${dmg_candidates[0]}"',
+  );
   assertActiveLine(
     sources.validateShell,
     'bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc',
@@ -823,19 +854,19 @@ function assertCanonicalTauriSources(sources) {
   assertActiveLineCount(sources.readme, "npm run tauri -- build", 2);
   assertActiveLineCount(
     sources.readme,
-    "npm run tauri -- build --target universal-apple-darwin",
+    "npm run tauri -- build --target aarch64-apple-darwin",
     1,
   );
   assertActiveLineCount(sources.appReadme, "npm run tauri -- dev", 1);
   assertActiveLineCount(sources.appReadme, "npm run tauri -- build", 1);
   assertActiveLineCount(
     sources.appReadme,
-    "npm run tauri -- build --target universal-apple-darwin  # macOS universal",
+    "npm run tauri -- build --target aarch64-apple-darwin  # macOS Apple Silicon",
     1,
   );
   assertActiveLineCount(
     sources.runtimeDocs,
-    "npm run tauri -- build --target universal-apple-darwin",
+    "npm run tauri -- build --target aarch64-apple-darwin",
     1,
   );
 }
@@ -888,21 +919,25 @@ test("uses one canonical Tauri npm entry while preserving platform config resolu
     ["validateShell", 'bash "$repo_root/scripts/verify-linux-bundle.sh"'],
     [
       "validateShell",
-      "npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json --no-bundle",
+      'npm run tauri -- build --target "$target" --config src-tauri/tauri.macos.ci.conf.json --no-bundle',
     ],
-    ["validateShell", 'bash "$repo_root/scripts/build-macos-universal-cli.sh" --lipo-only'],
+    ["validateShell", 'bash "$repo_root/scripts/build-macos-arm64-cli.sh" --verify-only'],
     [
       "validateShell",
-      "npm run tauri -- build --target universal-apple-darwin --config src-tauri/tauri.macos.ci.conf.json",
+      'npm run tauri -- build --target "$target" --config src-tauri/tauri.macos.ci.conf.json',
+    ],
+    [
+      "validateShell",
+      'bash "$repo_root/scripts/remove-macos-dmg-volume-icon.sh" "${dmg_candidates[0]}"',
     ],
     ["validateShell", 'bash "$repo_root/scripts/verify-macos-bundle.sh" --mode adhoc'],
     ["readme", "npm run tauri -- dev"],
     ["readme", "npm run tauri -- build"],
-    ["readme", "npm run tauri -- build --target universal-apple-darwin"],
+    ["readme", "npm run tauri -- build --target aarch64-apple-darwin"],
     ["appReadme", "npm run tauri -- dev"],
     ["appReadme", "npm run tauri -- build"],
-    ["appReadme", "npm run tauri -- build --target universal-apple-darwin  # macOS universal"],
-    ["runtimeDocs", "npm run tauri -- build --target universal-apple-darwin"],
+    ["appReadme", "npm run tauri -- build --target aarch64-apple-darwin  # macOS Apple Silicon"],
+    ["runtimeDocs", "npm run tauri -- build --target aarch64-apple-darwin"],
   ];
   for (const [name, command] of criticalLines) {
     const mutated = { ...sources, [name]: withoutActiveLine(sources[name], command) };
@@ -918,8 +953,8 @@ const VALID_REAL_PLATFORMS = [
   ["Ubuntu newer AppImage", "ubuntu-22.04-x86_64-glibc", "ubuntu-24.10", "appimage"],
   ["Debian floor AppImage", "debian-12-x86_64-glibc", "debian-12", "appimage"],
   ["Debian newer deb", "debian-12-x86_64-glibc", "debian-13", "deb"],
-  ["macOS floor x86_64", "macos-12-universal", "macos-12.0", "dmg", "x86_64"],
-  ["macOS newer arm64", "macos-12-universal", "macos-15.5.1", "macos_updater", "arm64"],
+  ["macOS arm64 floor", "macos-12-arm64", "macos-12.0", "dmg", "arm64"],
+  ["macOS newer arm64", "macos-12-arm64", "macos-15.5.1", "macos_updater", "arm64"],
 ];
 
 for (const [name, profileId, host, packageKind, architecture] of VALID_REAL_PLATFORMS) {
@@ -929,12 +964,20 @@ for (const [name, profileId, host, packageKind, architecture] of VALID_REAL_PLAT
   });
 }
 
+test("rejects Intel macOS evidence", () => {
+  const value = platform("macos-12-arm64", "macos-15.5.1", "dmg", "x86_64");
+  assert.throws(
+    () => validateReleasePlatformSupport(value, "release_evidence"),
+    /architecture: is not supported/u,
+  );
+});
+
 for (const [profileId, packageKind] of [
   ["windows-client-10-x86_64", "nsis"],
   ["ubuntu-22.04-x86_64-glibc", "appimage"],
   ["debian-12-x86_64-glibc", "deb"],
-  ["macos-12-universal", "dmg"],
-  ["macos-12-universal", "macos_updater"],
+  ["macos-12-arm64", "dmg"],
+  ["macos-12-arm64", "macos_updater"],
 ]) {
   test(`accepts the reserved ${profileId} ${packageKind} schema fixture host`, () => {
     const value = fixturePlatform(profileId, packageKind);
@@ -1008,8 +1051,8 @@ const HOST_FAILURES = [
     "deb",
     /canonical major/u,
   ],
-  ["macOS below floor", "macos-12-universal", "macos-11.7.10", "dmg", /below supported floor/u],
-  ["macOS malformed version", "macos-12-universal", "macos-12", "dmg", /major.minor/u],
+  ["macOS below floor", "macos-12-arm64", "macos-11.7.10", "dmg", /below supported floor/u],
+  ["macOS malformed version", "macos-12-arm64", "macos-12", "dmg", /major.minor/u],
 ];
 
 for (const [name, profileId, host, packageKind, expected] of HOST_FAILURES) {

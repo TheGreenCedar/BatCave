@@ -35,8 +35,8 @@ const FIXTURES = [
 const PACKAGE_ROLES = {
   appimage: "Linux AppImage package and updater payload",
   deb: "Linux deb package",
-  dmg: "macOS universal DMG",
-  macos_updater: "macOS universal updater payload",
+  dmg: "macOS Apple Silicon DMG",
+  macos_updater: "macOS Apple Silicon updater payload",
   nsis: "Windows NSIS installer and updater payload",
 };
 const REAL_SIGNATURE_IDENTITIES = {
@@ -148,7 +148,7 @@ function releaseTemplate(name) {
   };
   packet.platform.os_version = {
     "debian-12-x86_64-glibc": "debian-12",
-    "macos-12-universal": "macos-12.0",
+    "macos-12-arm64": "macos-12.0",
     "ubuntu-22.04-x86_64-glibc": "ubuntu-22.04",
     "windows-client-10-x86_64": "windows-client-10.0.16299",
   }[packet.platform.profile_id];

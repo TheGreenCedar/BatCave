@@ -86,7 +86,7 @@ export const RELEASE_EVIDENCE_ROLE_TRUST = {
   "Linux deb package": [],
   "Linux AppImage package and updater payload": ["tauri_updater"],
   "Linux updater signature": [],
-  "macOS universal DMG": [
+  "macOS Apple Silicon DMG": [
     "apple_notarization",
     "apple_staple",
     "contained_app_developer_id",
@@ -94,7 +94,7 @@ export const RELEASE_EVIDENCE_ROLE_TRUST = {
     "contained_app_staple",
     "developer_id",
   ],
-  "macOS universal updater payload": [
+  "macOS Apple Silicon updater payload": [
     "contained_app_developer_id",
     "contained_app_notarization",
     "contained_app_staple",
@@ -499,7 +499,7 @@ function validateAsset(asset, index, release, packetKind) {
     fail(`${field}.signatures`, `${role.role} does not accept ${extraSignatures[0]}`);
   }
   if (
-    role.role === "macOS universal DMG" &&
+    role.role === "macOS Apple Silicon DMG" &&
     signatures.developer_id.identity !== signatures.contained_app_developer_id.identity
   ) {
     fail(`${field}.signatures`, "DMG and contained app must use the same Developer ID identity");
