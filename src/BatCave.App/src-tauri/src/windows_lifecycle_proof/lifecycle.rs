@@ -299,7 +299,6 @@ fn bounded_desktop_reason(reason: &str) -> String {
 
 pub(super) struct WorkerContext<'a> {
     pub(super) plan: &'a ProofPlan,
-    pub(super) repo_root: &'a Path,
     pub(super) baseline: &'a OwnedFile,
     pub(super) final_candidate: &'a OwnedFile,
     pub(super) incompatible_service_fixture: &'a OwnedFile,
@@ -463,7 +462,6 @@ fn execute_worker_inner(
 ) -> WorkerExecutionResult {
     let WorkerContext {
         plan,
-        repo_root: _,
         baseline,
         final_candidate,
         incompatible_service_fixture,
@@ -521,7 +519,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         let plan = self.plan;
         let final_candidate = self.final_candidate;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let initial = capture_elevated_machine_snapshot(controller_bindings);
@@ -540,7 +538,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::InitialState,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -597,7 +595,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let final_repair_state = execute_mutation(
@@ -639,7 +637,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::FinalRepair,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -648,7 +646,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
             DesktopPhase::FinalPrimary,
             plan,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
             false,
@@ -670,7 +668,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<InitialUninstall, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let installed_uninstaller =
@@ -728,7 +726,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::InitialUninstall,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -745,7 +743,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         let plan = self.plan;
         let baseline = self.baseline;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let baseline_copy = baseline
@@ -805,7 +803,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::BaselineInstall,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -818,7 +816,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
                 phase,
                 plan,
                 evidence,
-                &mut transport,
+                transport,
                 last_authenticated_checkpoint,
                 controller_bindings,
                 false,
@@ -844,7 +842,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let baseline_stop_service = open_installed_service(&plan.baseline).map_err(|failure| {
@@ -935,7 +933,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::BaselineRestart,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -948,7 +946,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         require_running_service(&baseline_restart_state, "baseline_crash_before").map_err(
@@ -1074,7 +1072,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::BaselineCrashRecovery,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -1088,7 +1086,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         let plan = self.plan;
         let rollback_failing_service_fixture = self.rollback_failing_service_fixture;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let rollback_fixture_copy = rollback_failing_service_fixture
@@ -1214,7 +1212,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::BaselineRollbackRecovery,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -1230,7 +1228,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let restored_legacy_cli =
@@ -1281,7 +1279,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::LegacyResidueSeeded,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -1295,7 +1293,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let final_upgrade_state = execute_mutation(
@@ -1336,7 +1334,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::FinalUpgrade,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -1349,7 +1347,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let final_stop_service =
@@ -1442,7 +1440,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::FinalRestart,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -1455,7 +1453,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<FinalCrashRecovery, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         require_running_service(&final_restart_state, "final_crash_before").map_err(|reason| {
@@ -1578,7 +1576,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::FinalCrashRecovery,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -1658,7 +1656,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let missing =
@@ -1699,7 +1697,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
                         DesktopPhase::FinalMissingService,
                         plan,
                         evidence,
-                        &mut transport,
+                        transport,
                         last_authenticated_checkpoint,
                         controller_bindings,
                         true,
@@ -1764,7 +1762,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
     ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
         let plan = self.plan;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let stopped =
@@ -1805,7 +1803,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
                         DesktopPhase::FinalStoppedService,
                         plan,
                         evidence,
-                        &mut transport,
+                        transport,
                         last_authenticated_checkpoint,
                         controller_bindings,
                         true,
@@ -1873,7 +1871,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         let plan = self.plan;
         let incompatible_service_fixture = self.incompatible_service_fixture;
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let incompatible_service_bytes = incompatible_service_fixture
@@ -1932,7 +1930,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
                         DesktopPhase::FinalIncompatibleService,
                         plan,
                         evidence,
-                        &mut transport,
+                        transport,
                         last_authenticated_checkpoint,
                         controller_bindings,
                         true,
@@ -1996,7 +1994,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         retained_final_service: OwnedFile,
     ) -> Result<FinalFallbackStates, WorkerExecutionFailure> {
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         retained_final_service.revalidate().map_err(|reason| {
@@ -2009,7 +2007,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::FinalFallbackStates,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;
@@ -2025,7 +2023,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         uninstaller_copy: &OwnedFile,
     ) -> WorkerExecutionResult {
         let evidence = self.evidence;
-        let mut transport = &mut self.transport;
+        let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
         let final_uninstall_state = execute_mutation(
@@ -2066,7 +2064,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         authenticated_checkpoint(
             LifecycleStage::FinalUninstall,
             evidence,
-            &mut transport,
+            transport,
             last_authenticated_checkpoint,
             controller_bindings,
         )?;

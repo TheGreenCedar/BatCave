@@ -2184,7 +2184,6 @@ fn run_worker(locator: &str) -> Result<i32, String> {
 
     let result = lifecycle::execute_worker(lifecycle::WorkerContext {
         plan: &plan,
-        repo_root: &repo_root,
         baseline: &baseline,
         final_candidate: &final_candidate,
         incompatible_service_fixture: &incompatible_service_fixture,
