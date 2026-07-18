@@ -120,6 +120,7 @@
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
     setRuntimeUiPreferences,
+    syncRuntimeAppearance,
     type RuntimeQueryWriteIntent,
   } from "./lib/tauriBridge";
   import type {
@@ -180,6 +181,7 @@
   let themePreference: ThemePreference = "system";
   let systemThemeName: ThemeName = "cave";
   let themeName: ThemeName = "cave";
+  let synchronizedThemeName: ThemeName | null = null;
   let historyPointLimit: HistoryPointLimit = 72;
   let history = emptyTrendState();
   let processHistory: ProcessTrendState = emptyProcessTrendState();
@@ -207,6 +209,12 @@
   let updateMessage = "Checks only when you ask.";
 
   $: themeName = resolveThemeName(themePreference, systemThemeName);
+  $: if (themeName !== synchronizedThemeName) {
+    synchronizedThemeName = themeName;
+    if (hasTauriRuntime()) {
+      void syncRuntimeAppearance(invoke, themeName, (message) => console.warn(message));
+    }
+  }
   $: activeTheme = chartPalettes[themeName];
   $: presentation = platformPresentation(snapshot.environment);
   $: memoryPercent = percentage(snapshot.system.memory_used_bytes, snapshot.system.memory_total_bytes);

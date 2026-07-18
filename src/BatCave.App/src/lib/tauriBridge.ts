@@ -169,6 +169,18 @@ export async function getRuntimeProcessIcons(
   }
 }
 
+export async function syncRuntimeAppearance(
+  invoke: RuntimeInvoke,
+  theme: "cave" | "aurora" | "ember" | "daylight",
+  onError?: (message: string) => void,
+): Promise<void> {
+  try {
+    await invoke("sync_app_appearance", { theme });
+  } catch (error) {
+    onError?.(commandErrorMessage(error, "Unable to synchronize the application icon."));
+  }
+}
+
 export function commandErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;

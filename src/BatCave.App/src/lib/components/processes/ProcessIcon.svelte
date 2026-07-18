@@ -20,14 +20,16 @@
   export let child = false;
   export let src: string | undefined = undefined;
 
-  const brandIconUrl = new URL("../../../../src-tauri/icons/64x64.png", import.meta.url).href;
 </script>
 
-<span class:child class:has-image={Boolean(src) || kind === "batcave"} class={`process-icon process-icon-${kind}`} aria-hidden="true">
-  {#if src}
+<span class:child class:has-image={Boolean(src) && kind !== "batcave"} class={`process-icon process-icon-${kind}`} aria-hidden="true">
+  {#if kind === "batcave"}
+    <svg viewBox="0 0 48 48">
+      <path fill="currentColor" d="m2 18 9-7 7 3 4-5 2 6 2-6 4 5 7-3 9 7-7 2-5 11-6-4-4 5-4-5-6 4-5-11-7-2Z" />
+      <path fill="currentColor" d="m11 11 7 3 4-5-1 12-10-1Z" opacity=".72" />
+    </svg>
+  {:else if src}
     <img src={src} alt="" />
-  {:else if kind === "batcave"}
-    <img src={brandIconUrl} alt="" />
   {:else if kind === "apple"}
     <AppleLogo size={22} weight="fill" />
   {:else if kind === "browser"}

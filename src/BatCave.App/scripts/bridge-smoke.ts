@@ -9,6 +9,7 @@ import {
   setRuntimeProcessQuery,
   setRuntimeSampleInterval,
   setRuntimeUiPreferences,
+  syncRuntimeAppearance,
   type RuntimeInvoke,
 } from "../src/lib/tauriBridge.ts";
 import { encodeFixtureSnapshot } from "../src/lib/protocol/fixtureProtocol.ts";
@@ -175,6 +176,7 @@ await setRuntimeProcessQuery(
   "runtime_only",
 );
 await setRuntimeUiPreferences(invoke, { theme: "ember", history_point_limit: 180 });
+await syncRuntimeAppearance(invoke, "ember");
 assert.deepEqual(await getRuntimeProcessIcons(invoke, ["C:\\Windows\\explorer.exe"]), {});
 
 assert.deepEqual(
@@ -211,6 +213,7 @@ assert.deepEqual(
       },
     ],
     ["set_ui_preferences", { preferences: { theme: "ember", history_point_limit: 180 } }],
+    ["sync_app_appearance", { theme: "ember" }],
     ["get_process_icons", { exes: ["C:\\Windows\\explorer.exe"] }],
   ],
 );

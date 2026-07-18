@@ -43,6 +43,7 @@
   width: 38px;
   height: 38px;
   flex: 0 0 auto;
+  color: var(--chart-cpu);
   object-fit: contain;
 }
 

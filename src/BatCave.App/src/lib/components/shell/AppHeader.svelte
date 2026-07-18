@@ -21,12 +21,14 @@
   export let onOpenSettings: () => void;
   export let onOpenDiagnostics: () => void;
 
-  const brandIconUrl = new URL("../../../../src-tauri/icons/64x64.png", import.meta.url).href;
 </script>
 
 <header class="app-header">
   <div class="brand-lockup">
-    <img class="brand-mark" src={brandIconUrl} alt="" />
+    <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="currentColor" d="m2 18 9-7 7 3 4-5 2 6 2-6 4 5 7-3 9 7-7 2-5 11-6-4-4 5-4-5-6 4-5-11-7-2Z" />
+      <path fill="currentColor" d="m11 11 7 3 4-5-1 12-10-1Z" opacity=".72" />
+    </svg>
     <div>
       <h1>BatCave</h1>
       <p>Local resource triage</p>

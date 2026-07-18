@@ -1,6 +1,7 @@
 #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
 compile_error!("BatCave supports macOS on Apple Silicon only.");
 
+mod app_icon;
 mod atomic_json;
 mod benchmark;
 mod cli_args;
@@ -54,7 +55,7 @@ use protocol::{
 };
 use runtime_store::RuntimeState;
 use std::collections::HashMap;
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 
 pub fn run_cli_from_env() -> Option<i32> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -194,6 +195,11 @@ fn get_process_icons(
         .collect()
 }
 
+#[tauri::command(async)]
+fn sync_app_appearance(app: AppHandle, theme: String) -> Result<(), String> {
+    app_icon::sync(&app, &theme)
+}
+
 fn validate_process_icon_request(
     exe: &str,
     mut has_process_exe: impl FnMut(&str) -> Result<bool, String>,
@@ -236,7 +242,8 @@ pub fn run() -> Result<(), String> {
             set_process_query,
             set_sample_interval,
             set_ui_preferences,
-            get_process_icons
+            get_process_icons,
+            sync_app_appearance
         ])
         .build(tauri::generate_context!())
         .map_err(|error| format!("desktop_runtime_build_failed:{error}"))?;
