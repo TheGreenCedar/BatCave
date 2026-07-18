@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
-import {
-  createSourceFile,
-  isImportDeclaration,
-  isStringLiteral,
-  ScriptKind,
-  ScriptTarget,
-} from "typescript";
 import { buildResourceBrief, resolveContributorProcess } from "../src/lib/cockpit.ts";
 import { nativeLifecycleDiagnosticLabels } from "../src/lib/diagnostics.ts";
 import {
@@ -993,19 +986,9 @@ test("desktop workload table keeps network visible when attribution is unavailab
 
 test("the frontend entrypoint uses one authoritative product stylesheet", () => {
   const entrypoint = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  const sourceFile = createSourceFile(
-    "main.ts",
-    entrypoint,
-    ScriptTarget.Latest,
-    true,
-    ScriptKind.TS,
-  );
-  const localStyleImports = sourceFile.statements
-    .filter(isImportDeclaration)
-    .map((statement) => statement.moduleSpecifier)
-    .filter(isStringLiteral)
-    .map((specifier) => specifier.text)
-    .filter((specifier) => specifier.startsWith("./styles/") && specifier.endsWith(".css"));
+  const localStyleImports = [
+    ...entrypoint.matchAll(/^import ["'](\.\/styles\/[^"']+\.css)["'];$/gmu),
+  ].map(([, specifier]) => specifier);
 
   assert.deepEqual(localStyleImports, [
     "./styles/tokens.css",

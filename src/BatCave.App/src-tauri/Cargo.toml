@@ -4,7 +4,7 @@ version = "0.2.0-rc.4"
 description = "Lightweight BatCave resource monitor"
 authors = ["BatCave"]
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.97.1"
 default-run = "batcave-monitor"
 
 [features]
@@ -48,24 +48,24 @@ tauri-build = { version = "2.6.3", features = [] }
 base64 = "0.22.1"
 flate2 = { version = "1.1.9", optional = true }
 minisign-verify = "0.2.5"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-sha2 = "0.10.9"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"], optional = true }
 sigstore-verify = { version = "0.11.0", default-features = false, features = ["rustls"], optional = true }
-snap = { version = "1.1.1", optional = true }
-sysinfo = "0.38.4"
+snap = { version = "1.1.2", optional = true }
+sysinfo = "0.39.6"
 tauri = { version = "2.11.5", features = [] }
-tauri-plugin-single-instance = "2.3.6"
+tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-updater = "2.10.1"
 tar = { version = "0.4.46", optional = true }
-tempfile = { version = "3.23.0", optional = true }
+tempfile = { version = "3.27.0", optional = true }
 unicode-casefold = { version = "0.2.0", optional = true }
 unicode-normalization = { version = "0.1.25", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 uiautomation = { version = "=0.25.0", default-features = false, features = ["control", "input"], optional = true }
-windows-sys = { version = "0.60.2", features = [
+windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_IpHelper",
@@ -97,12 +97,12 @@ windows-sys = { version = "0.60.2", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "0.2.186"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-icns = { version = "0.4", default-features = false, features = ["pngio"] }
+icns = { version = "0.4.0", default-features = false, features = ["pngio"] }
 
 [dev-dependencies]
 tauri = { version = "2.11.5", features = ["test"] }
-tempfile = "3.23.0"
+tempfile = "3.27.0"
 ts-rs = "12.0.1"

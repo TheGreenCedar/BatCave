@@ -973,7 +973,7 @@ fn digest_value(value: &str) -> Result<String, Failure> {
 }
 
 fn digest_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    encode_hex(Sha256::digest(bytes).as_ref())
 }
 
 fn sha256_file(path: &Path) -> Result<String, Failure> {
@@ -989,7 +989,17 @@ fn sha256_file(path: &Path) -> Result<String, Failure> {
         }
         hash.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(encode_hex(hash.finalize().as_ref()))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 struct Seal;

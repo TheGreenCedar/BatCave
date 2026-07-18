@@ -1615,10 +1615,9 @@ mod tests {
         ) -> Result<(), BackendError> {
             let mut state = self.state.lock().unwrap();
             state.calls.push(operation);
-            if state.faults.front().is_some_and(|fault| {
+            if let Some(fault) = state.faults.pop_front_if(|fault| {
                 fault.operation == operation && fault.write_effect == write_effect
             }) {
-                let fault = state.faults.pop_front().unwrap();
                 let error = io::Error::from(fault.kind);
                 return Err(match fault.write_effect {
                     PersistenceWriteEffect::NotCommitted => {
