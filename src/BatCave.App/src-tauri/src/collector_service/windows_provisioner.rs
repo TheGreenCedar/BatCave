@@ -880,7 +880,7 @@ mod native {
             AclSizeInformation, AdjustTokenPrivileges,
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
+                ConvertStringSidToSidW, GetSecurityInfo, SetNamedSecurityInfoW, SE_FILE_OBJECT,
             },
             CreateWellKnownSid, EqualSid, GetAce, GetAclInformation, GetLengthSid,
             GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
@@ -1796,13 +1796,33 @@ mod native {
         let bytes = serde_json::to_vec(journal).map_err(|error| {
             format!("collector_service_upgrade_journal_serialize_failed:{error}")
         })?;
-        crate::atomic_json::write_bytes_atomic(&path, &bytes).map_err(|error| {
+        let _restore_privilege = EnabledPrivilege::new("SeRestorePrivilege")?;
+        let principals = SecurityPrincipals::load_with_service()?;
+        crate::atomic_json::write_bytes_atomic_with_temp(&path, &bytes, |temp| {
+            let temp = wide_path(temp);
+            let status = unsafe {
+                SetNamedSecurityInfoW(
+                    temp.as_ptr(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION,
+                    principals.system.as_psid(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+            if status == ERROR_SUCCESS {
+                Ok(())
+            } else {
+                Err(std::io::Error::from_raw_os_error(status as i32))
+            }
+        })
+        .map_err(|error| {
             format!(
                 "collector_service_upgrade_journal_write_failed:{:?}:{}",
                 error.operation, error.error
             )
         })?;
-        let principals = SecurityPrincipals::load_with_service()?;
         verify_optional_leaf(&path, &principals)?
             .ok_or_else(|| "collector_service_upgrade_journal_missing".to_string())?;
         Ok(())
