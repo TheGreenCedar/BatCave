@@ -140,12 +140,30 @@ pub(crate) fn write_json_atomic<T: Serialize>(
 }
 
 pub(crate) fn write_bytes_atomic(path: &Path, payload: &[u8]) -> Result<(), AtomicWriteError> {
-    write_bytes_atomic_with_replacer(path, payload, replace_file)
+    write_bytes_atomic_with_temp(path, payload, |_| Ok(()))
 }
 
+pub(crate) fn write_bytes_atomic_with_temp(
+    path: &Path,
+    payload: &[u8],
+    prepare_temp: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), AtomicWriteError> {
+    write_bytes_atomic_with_temp_and_replacer(path, payload, prepare_temp, replace_file)
+}
+
+#[cfg(test)]
 fn write_bytes_atomic_with_replacer(
     path: &Path,
     payload: &[u8],
+    replacer: impl FnOnce(&Path, &Path) -> Result<(), AtomicWriteError>,
+) -> Result<(), AtomicWriteError> {
+    write_bytes_atomic_with_temp_and_replacer(path, payload, |_| Ok(()), replacer)
+}
+
+fn write_bytes_atomic_with_temp_and_replacer(
+    path: &Path,
+    payload: &[u8],
+    prepare_temp: impl FnOnce(&Path) -> io::Result<()>,
     replacer: impl FnOnce(&Path, &Path) -> Result<(), AtomicWriteError>,
 ) -> Result<(), AtomicWriteError> {
     let parent = path.parent().ok_or_else(|| {
@@ -168,6 +186,15 @@ fn write_bytes_atomic_with_replacer(
     }
 
     let (temp_path, mut temp_file) = create_temp_file(path)?;
+    if let Err(error) = prepare_temp(&temp_path) {
+        drop(temp_file);
+        let _ = fs::remove_file(&temp_path);
+        return Err(AtomicWriteError::new(
+            AtomicWriteOperation::SetPermissions,
+            temp_path,
+            error,
+        ));
+    }
     if let Err(error) = temp_file.write_all(payload) {
         drop(temp_file);
         let _ = fs::remove_file(&temp_path);
@@ -404,6 +431,33 @@ mod tests {
         let payload = fs::read_to_string(&path).expect("json file remains");
         assert_eq!(payload, r#"{"old":true}"#);
 
+        assert!(temp_files(&path).is_empty());
+        fs::remove_file(&path).expect("json cleanup");
+    }
+
+    #[test]
+    fn temp_preparation_failure_preserves_existing_json() {
+        let path = std::env::temp_dir().join(format!(
+            "batcave-atomic-json-prepare-{}-settings.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        remove_temp_files(&path);
+        fs::write(&path, r#"{"old":true}"#).expect("old json fixture writes");
+
+        let error = write_bytes_atomic_with_temp_and_replacer(
+            &path,
+            br#"{"new":true}"#,
+            |_temp| Err(io::Error::new(io::ErrorKind::PermissionDenied, "forced")),
+            |_temp, _target| panic!("failed preparation must not replace the target"),
+        )
+        .expect_err("preparation failure is surfaced");
+
+        assert_eq!(error.operation, AtomicWriteOperation::SetPermissions);
+        assert_eq!(
+            fs::read_to_string(&path).expect("old target remains"),
+            r#"{"old":true}"#
+        );
         assert!(temp_files(&path).is_empty());
         fs::remove_file(&path).expect("json cleanup");
     }
