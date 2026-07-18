@@ -11,14 +11,14 @@ use std::{
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA,
-        ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY,
+        ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, HANDLE, INVALID_HANDLE_VALUE,
     },
     Security::{
         Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, GetLengthSid,
         GetTokenInformation, IsValidSid, RevertToSelf, SetKernelObjectSecurity, TokenElevation,
         TokenSessionId, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER,
+        SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateFileW, GetFileInformationByHandle, GetFileVersionInfoSizeW, GetFileVersionInfoW,
@@ -321,7 +321,7 @@ pub(super) struct TokenEvidence {
 }
 
 pub(super) fn token_evidence(token: HANDLE) -> Result<TokenEvidence, String> {
-    let user = token_information(token, TokenUser)?;
+    let user = token_user_information(token)?;
     let token_user = unsafe { &*(user.as_ptr().cast::<TOKEN_USER>()) };
     if token_user.User.Sid.is_null() || unsafe { IsValidSid(token_user.User.Sid) } == 0 {
         return Err("collector_service_peer_token_sid_invalid".to_string());
@@ -333,11 +333,8 @@ pub(super) fn token_evidence(token: HANDLE) -> Result<TokenEvidence, String> {
     let sid = unsafe { std::slice::from_raw_parts(token_user.User.Sid.cast::<u8>(), sid_length) };
     let principal_identity = Sha256::digest(sid).into();
 
-    let session = token_information(token, TokenSessionId)?;
-    let session_id = unsafe { *(session.as_ptr().cast::<u32>()) };
-    let elevation = token_information(token, TokenElevation)?;
-    let elevated =
-        unsafe { (*(elevation.as_ptr().cast::<TOKEN_ELEVATION>())).TokenIsElevated != 0 };
+    let session_id = token_session_id(token)?;
+    let elevated = token_is_elevated(token)?;
     Ok(TokenEvidence {
         session_id,
         principal_identity,
@@ -382,34 +379,74 @@ impl Drop for RevertGuard {
     }
 }
 
-fn token_information(
-    token: HANDLE,
-    class: TOKEN_INFORMATION_CLASS,
-) -> Result<AlignedBuffer, String> {
-    let mut required = 0_u32;
-    let first =
-        unsafe { GetTokenInformation(token, class, std::ptr::null_mut(), 0, &mut required) };
-    if first != 0 || required == 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
-        return Err(last_error_message(
-            "collector_service_peer_token_query_size_failed",
-        ));
-    }
-    let mut buffer = AlignedBuffer::new(required as usize);
+fn token_user_information(token: HANDLE) -> Result<AlignedBuffer, String> {
+    const BUFFER_BYTES: usize = std::mem::size_of::<TOKEN_USER>() + SECURITY_MAX_SID_SIZE as usize;
+    let mut buffer = AlignedBuffer::new(BUFFER_BYTES);
+    let mut returned = 0_u32;
     if unsafe {
         GetTokenInformation(
             token,
-            class,
+            TokenUser,
             buffer.as_mut_ptr().cast(),
-            required,
-            &mut required,
+            BUFFER_BYTES as u32,
+            &mut returned,
         )
     } == 0
     {
         return Err(last_error_message(
-            "collector_service_peer_token_query_failed",
+            "collector_service_peer_token_user_query_failed",
         ));
     }
+    if returned == 0 || returned as usize > BUFFER_BYTES {
+        return Err("collector_service_peer_token_user_size_invalid".to_string());
+    }
     Ok(buffer)
+}
+
+fn token_session_id(token: HANDLE) -> Result<u32, String> {
+    let mut session_id = 0_u32;
+    let mut returned = 0_u32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenSessionId,
+            (&mut session_id as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(last_error_message(
+            "collector_service_peer_token_session_query_failed",
+        ));
+    }
+    if returned != std::mem::size_of::<u32>() as u32 {
+        return Err("collector_service_peer_token_session_size_invalid".to_string());
+    }
+    Ok(session_id)
+}
+
+fn token_is_elevated(token: HANDLE) -> Result<bool, String> {
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0_u32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(last_error_message(
+            "collector_service_peer_token_elevation_query_failed",
+        ));
+    }
+    if returned != std::mem::size_of::<TOKEN_ELEVATION>() as u32 {
+        return Err("collector_service_peer_token_elevation_size_invalid".to_string());
+    }
+    Ok(elevation.TokenIsElevated != 0)
 }
 
 struct AlignedBuffer(Vec<usize>);
@@ -856,6 +893,18 @@ mod tests {
     #[test]
     fn client_restricted_pipe_security_descriptor_is_accepted_by_windows() {
         PipeSecurity::new().expect("valid protected pipe security descriptor");
+    }
+
+    #[test]
+    fn current_process_token_exposes_the_complete_peer_evidence() {
+        let mut token = std::ptr::null_mut();
+        assert_ne!(
+            unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+            0
+        );
+        let token = OwnedHandle::new(token).expect("current process token handle");
+        let evidence = token_evidence(token.raw()).expect("current process token evidence");
+        assert_ne!(evidence.principal_identity, [0; 32]);
     }
 
     #[test]
