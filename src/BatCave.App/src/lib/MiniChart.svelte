@@ -14,11 +14,21 @@
   let resizeFrame = 0;
   let lastWidth = 0;
   let lastHeight = 0;
+  let appliedStroke = stroke;
+  let appliedFill = fill;
   const minChartHeight = 28;
 
   $: if (chart) {
     chart.setData(makeData(values));
     chart.setScale("y", { min, max });
+  }
+
+  $: if (chart && (stroke !== appliedStroke || fill !== appliedFill)) {
+    appliedStroke = stroke;
+    appliedFill = fill;
+    chart.series[1].stroke = () => stroke;
+    chart.series[1].fill = () => fill;
+    chart.redraw(false, false);
   }
 
   onMount(() => {
@@ -27,6 +37,8 @@
     }
 
     const bounds = host.getBoundingClientRect();
+    appliedStroke = stroke;
+    appliedFill = fill;
     chart = new uPlot(makeOptions(bounds.width, bounds.height), makeData(values), host);
     resizeObserver = new ResizeObserver(() => scheduleResize());
     resizeObserver.observe(host);
