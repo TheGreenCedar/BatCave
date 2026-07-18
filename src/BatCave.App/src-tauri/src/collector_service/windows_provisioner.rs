@@ -6619,6 +6619,7 @@ mod native {
         if status.dwProcessId == 0 {
             return Err("collector_service_process_pid_invalid".to_string());
         }
+        let _debug_privilege = EnabledPrivilege::new("SeDebugPrivilege")?;
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,

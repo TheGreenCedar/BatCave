@@ -525,6 +525,13 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
     "prepare failure must restart and revalidate the prior generation",
   );
 
+  const serviceProcessOpen = between(
+    provisioner,
+    "fn open_service_process",
+    "fn validate_running_service_image",
+  );
+  assertOrdered(serviceProcessOpen, 'EnabledPrivilege::new("SeDebugPrivilege")?', "OpenProcess(");
+
   const resume = between(provisioner, "fn resume_upgrade_transaction", "fn upgrade_resume_action");
   assert.match(
     resume,
