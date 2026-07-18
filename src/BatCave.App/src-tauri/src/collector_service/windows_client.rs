@@ -294,13 +294,16 @@ fn verify_service_peer(
     let peer_failure =
         |detail: String| classify_peer_verification_failure(pipe, process_id, detail);
 
-    let process =
-        OwnedHandle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) })
-            .ok_or_else(|| {
-                peer_failure(last_error_message(
-                    "collector_service_server_process_open_failed",
-                ))
-            })?;
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        let error = unsafe { GetLastError() };
+        return Err(peer_failure(format!(
+            "collector_service_server_process_open_failed:{error}"
+        )));
+    }
+    let process = OwnedHandle::new(process).ok_or_else(|| {
+        peer_failure("collector_service_server_process_handle_invalid".to_string())
+    })?;
     let process_started_at = process_started_at(process.raw()).map_err(peer_failure)?;
     let executable_path = process_image_path(process.raw()).map_err(peer_failure)?;
     let canonical_path = PathBuf::from(&executable_path)

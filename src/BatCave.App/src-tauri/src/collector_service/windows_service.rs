@@ -42,7 +42,9 @@ use super::{
     host::{new_instance_id, service_identity, CollectorSnapshotSource, SnapshotProvider},
     protocol::COLLECTOR_SERVICE_NAME,
     windows_provisioner,
-    windows_transport::{process_started_at, run_pipe_server, OwnedHandle},
+    windows_transport::{
+        allow_interactive_service_observation, process_started_at, run_pipe_server, OwnedHandle,
+    },
 };
 use crate::windows_network::{NetworkAttributionMonitor, NetworkAttributionSettlement};
 
@@ -178,6 +180,7 @@ fn run_service_body(
     status_handle: SERVICE_STATUS_HANDLE,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    allow_interactive_service_observation()?;
     // The root capability retains the verifier's no-delete handles for the
     // complete service/ETW lifetime.
     let protected_etw_root = windows_provisioner::open_protected_etw_lease_root()
