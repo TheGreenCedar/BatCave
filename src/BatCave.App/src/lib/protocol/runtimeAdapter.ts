@@ -32,6 +32,13 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
   const processRows = new Map<string, ProcessViewRow>();
   const groupRows = new Map<string, ProcessViewRow>();
   const processes: ProcessSample[] = [];
+  const limitedProcessIds = new Set(
+    payload.workloads.flatMap((workload) =>
+      workload.kind === "process" && workload.detail.access_state !== "full"
+        ? [workload.detail.stable_id]
+        : [],
+    ),
+  );
 
   for (const workload of payload.workloads) {
     if (workload.kind === "process") {
@@ -39,7 +46,10 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
       processRows.set(workload.detail.stable_id, row);
       processes.push(row.detail.process);
     } else {
-      groupRows.set(workload.detail.stable_id, adaptGroupRow(workload.detail, payload));
+      groupRows.set(
+        workload.detail.stable_id,
+        adaptGroupRow(workload.detail, payload, limitedProcessIds),
+      );
     }
   }
   const process_view_rows = payload.workloads.flatMap((workload) => {
@@ -339,6 +349,7 @@ function adaptProcessRow(
 function adaptGroupRow(
   detail: GroupDetailV3,
   payload: RuntimeSnapshotPayloadV3,
+  limitedProcessIds: ReadonlySet<string>,
 ): Extract<ProcessViewRow, { kind: "group" }> {
   const cpu = measurement(detail.metrics, "cpu_usage", "group", payload);
   const memory = measurement(detail.metrics, "resident_memory", "group", payload);
@@ -384,12 +395,7 @@ function adaptGroupRow(
     ...(detail.example_label ? { example_label: detail.example_label } : {}),
     attention_label: groupAttentionLabel(
       group,
-      detail.member_ids.some((memberId) => {
-        const member = payload.workloads.find(
-          (workload) => workload.kind === "process" && workload.detail.stable_id === memberId,
-        );
-        return member?.kind === "process" && member.detail.access_state !== "full";
-      }),
+      detail.member_ids.some((memberId) => limitedProcessIds.has(memberId)),
     ),
   };
 }
