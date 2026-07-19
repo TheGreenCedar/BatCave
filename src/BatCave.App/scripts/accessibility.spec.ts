@@ -18,9 +18,9 @@ async function openFixture(page: Page, state: FixtureState): Promise<void> {
   await expect(page.locator(`[data-accessibility-fixture="${state}"]`)).toBeVisible();
   await expect(page.getByRole("heading", { name: "BatCave", exact: true })).toBeVisible();
 
-  if (state === "overview" && (page.viewportSize()?.width ?? 0) >= 1280) {
-    await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Logical cores", exact: true })).toBeVisible();
+  if (state === "overview") {
+    await expect(page.getByRole("heading", { name: /running normally/i })).toBeVisible();
+    await expect(page.getByRole("region", { name: "System resources" })).toBeVisible();
   } else if (state === "process") {
     await expect(page.locator('[aria-label="Workload inspector"]')).toBeVisible();
   } else if (state === "group") {
@@ -36,12 +36,8 @@ async function openFixture(page: Page, state: FixtureState): Promise<void> {
       }),
     ).toBeVisible();
   } else if (state === "degraded") {
-    await expect(
-      page.getByRole("button", {
-        name: "App resource warning. Open diagnostics.",
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /Open diagnostics/ })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Monitor overhead is elevated" })).toBeVisible();
   }
 }
 
@@ -112,11 +108,34 @@ test("diagnostics exposes collector-service identity without a helper action", a
   await expect(page.getByRole("button", { name: /helper/i })).toHaveCount(0);
 });
 
+test("every theme family renders in both modes and System follows the OS", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await openFixture(page, "settings");
+  const shell = page.locator(".app-shell");
+  const families = ["Cave", "Aurora", "Ember", "Canopy"] as const;
+
+  for (const family of families) {
+    await page.getByRole("button", { name: `Use the ${family} theme family` }).click();
+    for (const mode of ["light", "dark"] as const) {
+      await page.getByRole("button", { name: `Use the ${mode} appearance` }).click();
+      await expect(shell).toHaveAttribute("data-theme", family.toLocaleLowerCase());
+      await expect(shell).toHaveAttribute("data-mode", mode);
+    }
+  }
+
+  await page.getByRole("button", { name: "Follow the system appearance" }).click();
+  await expect(shell).toHaveAttribute("data-theme", "canopy");
+  await expect(shell).toHaveAttribute("data-mode", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(shell).toHaveAttribute("data-theme", "canopy");
+  await expect(shell).toHaveAttribute("data-mode", "light");
+});
+
 for (const drawer of ["Settings", "Diagnostics"] as const) {
   test(`${drawer} dialog closes with Escape, contains focus, and restores its opener`, async ({
     page,
   }) => {
-    await openFixture(page, "overview");
+    await openFixture(page, drawer === "Settings" ? "overview" : "stale");
     const opener = page
       .getByRole("button", {
         name: drawer === "Settings" ? "Settings" : /Open diagnostics/,
@@ -151,9 +170,11 @@ test("compact resource detail closes with Escape and restores the selected workl
 }) => {
   await page.setViewportSize({ width: 760, height: 900 });
   await openFixture(page, "overview");
-  const opener = page.getByRole("button", { name: /Inspect .+, PID/ }).first();
+  const opener = page.locator(".overview-workload-list [data-workload-id]").first();
+  const workloadId = await opener.getAttribute("data-workload-id");
+  expect(workloadId).not.toBeNull();
   await opener.focus();
-  await opener.click();
+  await opener.evaluate((button) => (button as HTMLButtonElement).click());
 
   const dialog = page.getByRole("dialog", { name: "Resource detail" });
   await expect(dialog).toBeVisible();
@@ -171,7 +192,7 @@ test("compact resource detail closes with Escape and restores the selected workl
   await page.keyboard.press("Escape");
 
   await expect(dialog).not.toBeVisible();
-  await expect(opener).toBeFocused();
+  await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
 });
 
 test("compact workload detail restores its live workload control after expanding to desktop", async ({
@@ -179,10 +200,12 @@ test("compact workload detail restores its live workload control after expanding
 }) => {
   await page.setViewportSize({ width: 760, height: 900 });
   await openFixture(page, "overview");
-  const workloadControl = page.locator("[data-workload-id]:visible").first();
+  const workloadControl = page
+    .locator(".overview-workload-list [data-workload-id]:visible")
+    .first();
   const workloadId = await workloadControl.getAttribute("data-workload-id");
   expect(workloadId).not.toBeNull();
-  await workloadControl.click();
+  await workloadControl.evaluate((button) => (button as HTMLButtonElement).click());
   await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
 
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -212,14 +235,14 @@ test("compact system detail restores its resource control after expanding to des
 }) => {
   await page.setViewportSize({ width: 760, height: 900 });
   await openFixture(page, "overview");
-  const resourceControl = page.locator('.resource-rail [data-resource-mode="memory"]');
-  await resourceControl.click();
+  const resourceControl = page.locator('.overview-resource-card[data-resource-mode="memory"]');
+  await resourceControl.evaluate((button) => (button as HTMLButtonElement).click());
   await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
 
   await page.setViewportSize({ width: 1440, height: 900 });
 
   await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
-  await expectLogicalControlFocused(page, "data-resource-mode", "memory");
+  await expect(page.locator('[data-view="explore"]')).toBeFocused();
 });
 
 test("desktop system detail restores its resource control after collapsing to compact", async ({
@@ -227,89 +250,37 @@ test("desktop system detail restores its resource control after collapsing to co
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "overview");
-  const resourceControl = page.locator('.resource-rail [data-resource-mode="memory"]');
-  await resourceControl.click();
+  const resourceControl = page.locator('.overview-resource-card[data-resource-mode="memory"]');
+  await resourceControl.evaluate((button) => (button as HTMLButtonElement).click());
   await page.getByText("Memory accounting", { exact: true }).focus();
 
   await page.setViewportSize({ width: 760, height: 900 });
 
   await expect(page.getByRole("dialog", { name: "Resource detail" })).not.toBeVisible();
-  await expectLogicalControlFocused(page, "data-resource-mode", "memory");
+  await expect(page.locator('[data-view="explore"]')).toBeFocused();
 });
 
-test("live refresh holds the focused workload order until keyboard confirmation", async ({
-  page,
-}) => {
+test("Overview drill-down and Explore controls preserve the workload task", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "overview");
-  const workloadControl = page.locator("[data-workload-id]:visible").first();
+  const workloadControl = page
+    .locator(".overview-workload-list [data-workload-id]:visible")
+    .first();
   const workloadId = await workloadControl.getAttribute("data-workload-id");
   expect(workloadId).not.toBeNull();
-  const initialOrder = await page
-    .locator(".attention-table [data-workload-id]:visible")
-    .evaluateAll((controls) => controls.map((control) => control.getAttribute("data-workload-id")));
-  const workloadRow = workloadControl.locator("xpath=ancestor::tr");
-  const initialContent = await workloadRow.textContent();
-  await workloadControl.focus();
+  await workloadControl.evaluate((button) => (button as HTMLButtonElement).click());
 
-  await page
-    .getByRole("button", { name: "Refresh" })
-    .evaluate((button) => (button as HTMLButtonElement).click());
+  await expect(page.getByRole("heading", { name: "Explore your workloads" })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
+  await expect(
+    page.locator(`[data-workload-id="${workloadId}"][aria-pressed="true"]:visible`).first(),
+  ).toBeVisible();
 
-  const updateOrder = page.getByRole("button", { name: "Update workload order" });
-  await expect(updateOrder).toBeVisible();
-  await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
-  await expect.poll(() => workloadRow.textContent()).not.toBe(initialContent);
-  await expect
-    .poll(() =>
-      page
-        .locator(".attention-table [data-workload-id]:visible")
-        .evaluateAll(
-          (controls, length) =>
-            controls.slice(0, length).map((control) => control.getAttribute("data-workload-id")),
-          initialOrder.length,
-        ),
-    )
-    .toEqual(initialOrder);
-
-  await updateOrder.focus();
-  await expect(updateOrder).toBeFocused();
-  const firstRefreshContent = await workloadRow.textContent();
-
-  await page
-    .getByRole("button", { name: "Refresh" })
-    .evaluate((button) => (button as HTMLButtonElement).click());
-
-  await expect(updateOrder).toBeVisible();
-  await expect(updateOrder).toBeFocused();
-  await expect.poll(() => workloadRow.textContent()).not.toBe(firstRefreshContent);
-  await expect
-    .poll(() =>
-      page
-        .locator(".attention-table [data-workload-id]:visible")
-        .evaluateAll(
-          (controls, length) =>
-            controls.slice(0, length).map((control) => control.getAttribute("data-workload-id")),
-          initialOrder.length,
-        ),
-    )
-    .toEqual(initialOrder);
-
-  await page.keyboard.press("Enter");
-
-  await expect(updateOrder).not.toBeVisible();
-  await expect(page.getByRole("combobox", { name: "Process sort" })).toBeFocused();
-  await expect
-    .poll(() =>
-      page
-        .locator(".attention-table [data-workload-id]:visible")
-        .evaluateAll(
-          (controls, length) =>
-            controls.slice(0, length).map((control) => control.getAttribute("data-workload-id")),
-          initialOrder.length,
-        ),
-    )
-    .not.toEqual(initialOrder);
+  const search = page.getByRole("textbox", { name: "Search apps and processes" });
+  await search.fill("BatCave");
+  await expect(search).toHaveValue("BatCave");
+  await page.getByRole("button", { name: "I/O active", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Process sort" })).toBeVisible();
 });
 
 test("diagnostics stays horizontally contained and vertically reachable with dense text", async ({

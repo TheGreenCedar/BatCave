@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Copy } from "phosphor-svelte";
+  import Copy from "phosphor-svelte/lib/Copy";
   import MiniChart from "../../MiniChart.svelte";
   import {
     accessLabel,
@@ -98,6 +98,10 @@
     );
   }
 
+  function hasNotableFinding(process: ProcessSample): boolean {
+    return findingCopy(process) !== "No unusual activity is visible for this workload right now.";
+  }
+
   function accentTone(accent: string): "hot" | "heavy" | "io" | "normal" {
     if (accent === "Hot") return "hot";
     if (accent === "Heavy") return "heavy";
@@ -117,7 +121,6 @@
       <span class="identity-copy">
         <span class="identity-title-row">
           <strong title={selectedProcess.name}>{selectedProcess.name}</strong>
-          <small class="identity-chip">PID {selectedProcess.pid}</small>
         </span>
         <span class="identity-meta-row">
           {#if categoryLabel}<small class="identity-category">{categoryLabel}</small>{/if}
@@ -137,14 +140,17 @@
       </span>
     </div>
 
-    <div class="finding-card">
-      <span>Finding</span>
-      <h3>{findingCopy(selectedProcess)}</h3>
-      <p>
-        {selectedProcess.name} CPU (one core): {processCpuLabel(selectedProcess)}.
-        Telemetry coverage: {processTrustLabel(selectedProcess)}; missing fields stay explicitly unavailable.
-      </p>
-    </div>
+    <section class="current-activity" aria-labelledby="current-activity-title">
+      <div>
+        <span>Current activity</span>
+        <h3 id="current-activity-title">{accent}</h3>
+      </div>
+      <small>{selectedProcess.status}</small>
+    </section>
+
+    {#if hasNotableFinding(selectedProcess)}
+      <p class="insight-copy"><strong>Worth noting:</strong> {findingCopy(selectedProcess)}</p>
+    {/if}
 
     <section class="key-metrics" aria-labelledby="key-metrics-title">
       <h3 id="key-metrics-title">Key metrics</h3>
@@ -161,7 +167,7 @@
       <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
     </div>
 
-    <details class="technical-disclosure inspector-technical" open>
+    <details class="technical-disclosure inspector-technical">
       <summary>Technical details</summary>
       <dl class="key-value-grid technical-grid">
         <div><dt>Process ID</dt><dd>{selectedProcess.pid}</dd></div>
@@ -176,6 +182,7 @@
         <div><dt>{presentation.handlesLabel}</dt><dd>{displayProcessMetricValue(selectedProcess.handles, selectedProcess.quality?.handles, String)}</dd></div>
         <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>
         <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Quality not reported")}</dd></div>
+        <div><dt>Telemetry coverage</dt><dd>{processTrustLabel(selectedProcess)}</dd></div>
       </dl>
       <div class="technical-path">
         <span>Executable path</span>

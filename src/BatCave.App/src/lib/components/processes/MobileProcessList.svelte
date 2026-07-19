@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CaretRight } from "phosphor-svelte";
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
   import {
     processRowSecondaryLabel,
     processViewRowKey,

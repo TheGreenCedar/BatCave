@@ -1,5 +1,6 @@
 import type { RuntimeQueryInputV3, RuntimeUiPreferencesV3 } from "./generated/runtime-protocol-v3";
 import type { RuntimeSnapshot } from "./types";
+import type { ResolvedThemeName } from "./themes";
 import { adaptRuntimePayload } from "./protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope, type ProtocolMismatchView } from "./protocol/runtimeProtocol.ts";
 
@@ -171,7 +172,7 @@ export async function getRuntimeProcessIcons(
 
 export async function syncRuntimeAppearance(
   invoke: RuntimeInvoke,
-  theme: "cave" | "aurora" | "ember" | "daylight",
+  theme: ResolvedThemeName,
   onError?: (message: string) => void,
 ): Promise<void> {
   try {

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { check, type Update } from "@tauri-apps/plugin-updater";
+  import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import { onMount } from "svelte";
   import DetailPane from "./lib/components/context/DetailPane.svelte";
-  import ResourceRail from "./lib/components/metrics/ResourceRail.svelte";
-  import SystemSummary from "./lib/components/metrics/SystemSummary.svelte";
   import type { DetailMode, ResourceSummaryOption } from "./lib/components/metrics/types";
+  import Overview from "./lib/components/overview/Overview.svelte";
   import AttentionQueue from "./lib/components/processes/AttentionQueue.svelte";
   import AppHeader from "./lib/components/shell/AppHeader.svelte";
   import AppShell from "./lib/components/shell/AppShell.svelte";
@@ -23,7 +23,6 @@
   } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
   import {
-    installKindLabel,
     privilegedCollectionLabel,
     privilegedCollectionNote,
     processElevationLabel,
@@ -42,7 +41,7 @@
     processMemoryQuality,
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
-  import { resourceHistoryWindowLabel } from "./lib/history";
+  import { buildOverviewStatus, leadingOverviewRows } from "./lib/overview";
   import {
     platformPresentation,
     privateMemoryValue,
@@ -102,11 +101,18 @@
   import { runtimeSurfaceMode } from "./lib/runtimeMode";
   import {
     chartPalettes,
+    defaultThemePreference,
     parseThemePreference,
-    resolveThemeName,
-    themeOptions,
+    resolveThemePreference,
+    serializeResolvedTheme,
+    serializeThemePreference,
+    themeFamilyOptions,
+    themeModeOptions,
     themeStorageKey,
-    type ThemeName,
+    type ResolvedThemeMode,
+    type ResolvedThemeName,
+    type ThemeFamily,
+    type ThemeModePreference,
     type ThemePreference,
   } from "./lib/themes";
   import {
@@ -143,6 +149,7 @@
   const historyPointOptions = [30, 72, 180, 360] as const;
   type HistoryPointLimit = (typeof historyPointOptions)[number];
   type CommandErrorSurface = "global" | "settings" | "workload";
+  type AppView = "overview" | "explore";
 
   const pollIntervals = [500, 1000, 2000] as const;
   const historyStorageKey = "batcave.monitor.history-points";
@@ -162,6 +169,7 @@
   let snapshot: RuntimeSnapshot = makeEmptySnapshot();
   let selectedWorkloadId = "";
   let hasAutoSelectedWorkload = false;
+  let activeView: AppView = "overview";
   let detailSubject: "process" | "system" = "system";
   let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   let lastError = "";
@@ -178,10 +186,9 @@
   let sortKey: SortKey = "attention";
   let sortDirection: SortDirection = "desc";
   let detailMode: DetailMode = "cpu";
-  let themePreference: ThemePreference = "system";
-  let systemThemeName: ThemeName = "cave";
-  let themeName: ThemeName = "cave";
-  let synchronizedThemeName: ThemeName | null = null;
+  let themePreference: ThemePreference = defaultThemePreference;
+  let systemThemeMode: ResolvedThemeMode = "dark";
+  let synchronizedThemeName: ResolvedThemeName | null = null;
   let historyPointLimit: HistoryPointLimit = 72;
   let history = emptyTrendState();
   let processHistory: ProcessTrendState = emptyProcessTrendState();
@@ -208,14 +215,15 @@
   let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
   let updateMessage = "Checks only when you ask.";
 
-  $: themeName = resolveThemeName(themePreference, systemThemeName);
-  $: if (themeName !== synchronizedThemeName) {
-    synchronizedThemeName = themeName;
+  $: resolvedTheme = resolveThemePreference(themePreference, systemThemeMode);
+  $: resolvedThemeName = serializeResolvedTheme(resolvedTheme);
+  $: if (resolvedThemeName !== synchronizedThemeName) {
+    synchronizedThemeName = resolvedThemeName;
     if (hasTauriRuntime()) {
-      void syncRuntimeAppearance(invoke, themeName, (message) => console.warn(message));
+      void syncRuntimeAppearance(invoke, resolvedThemeName, (message) => console.warn(message));
     }
   }
-  $: activeTheme = chartPalettes[themeName];
+  $: activeTheme = chartPalettes[resolvedThemeName];
   $: presentation = platformPresentation(snapshot.environment);
   $: memoryPercent = percentage(snapshot.system.memory_used_bytes, snapshot.system.memory_total_bytes);
   $: swapPercent = percentage(
@@ -248,9 +256,11 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
-  $: visibleProcessColumns = processColumns.map((column) =>
-    column.key === "memory" ? { ...column, label: presentation.memoryLabel } : column,
-  );
+  $: visibleProcessColumns = processColumns
+    .filter((column) => column.key !== "attention")
+    .map((column) =>
+      column.key === "memory" ? { ...column, label: presentation.memoryLabel } : column,
+    );
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
@@ -277,9 +287,9 @@
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
   $: collectionState = pollState === "error" ? "stale" : isPaused ? "paused" : "live";
-  $: resourceBrief = buildResourceBrief(
+  $: overviewCpuBrief = buildResourceBrief(
     snapshot,
-    detailMode,
+    "cpu",
     {
       memoryPercent,
       diskRate: diskReadRate + diskWriteRate,
@@ -287,20 +297,16 @@
     },
     collectionState,
   );
-  $: leadingProcess = resolveContributorProcess(snapshot, resourceBrief.leadingProcessId);
-  $: leadingIdentity = leadingProcess ? processIdentity(leadingProcess) : null;
+  $: leadingCpuProcess = resolveContributorProcess(snapshot, overviewCpuBrief.leadingProcessId);
+  $: leadingCpuIdentity = leadingCpuProcess ? processIdentity(leadingCpuProcess) : null;
   $: limitationCount =
     uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warning_count;
-  $: sampledAtLabel = snapshot.sampled_at_ms ? ageLabel(snapshot.sampled_at_ms) : "no sample yet";
-  $: systemSupportingText = pollState === "error"
-    ? `Telemetry is unavailable; the last successful sample from ${sampledAtLabel} is retained.`
-    : isPaused
-      ? `Collection is paused; values and charts show the last sample from ${sampledAtLabel}.`
-      : limitationCount > 0
-        ? `${limitationCount} telemetry limitation${limitationCount === 1 ? "" : "s"}; unaffected values remain current.`
-        : snapshot.health.degraded
-          ? "BatCave resource use is above its budget; telemetry remains current."
-        : "Local telemetry is current. Select a resource or workload to inspect it.";
+  $: overviewStatus = buildOverviewStatus(
+    snapshot,
+    pollState === "starting" ? "starting" : collectionState,
+    limitationCount,
+  );
+  $: overviewRows = leadingOverviewRows(processViewRows, 5);
   $: healthTone = pollState === "error" ? "danger" : isPaused || snapshot.health.degraded ? "warning" : "healthy";
   $: healthLabel = pollState === "error"
     ? "Telemetry stale"
@@ -311,15 +317,6 @@
         : snapshot.health.degraded
           ? "App resource warning"
         : "Telemetry healthy";
-  $: railDiagnosticsLabel = pollState === "error"
-    ? "Stale"
-    : isPaused
-      ? "Paused"
-      : limitationCount > 0
-        ? `${limitationCount} limit${limitationCount === 1 ? "" : "s"}`
-        : snapshot.health.degraded
-          ? "Warning"
-          : "Healthy";
   $: liveStatus = rankingUpdateAvailable ? `${healthLabel}. A new workload ranking is available.` : healthLabel;
   $: detailTitle =
     detailMode === "cpu"
@@ -431,14 +428,6 @@
       fill: activeTheme.networkDownFill,
     },
   ];
-  $: activeResource =
-    resourceSummaries.find((resource) => resource.mode === detailMode) ?? resourceSummaries[0];
-  $: resourceWindowLabel = resourceHistoryWindowLabel(
-    activeResource?.values.length ?? 0,
-    snapshot.settings.sample_interval_ms,
-    systemQuality[detailMode],
-    snapshot.sampled_at_ms !== null,
-  );
 
   onMount(() => {
     let stopPolling: (() => void) | undefined;
@@ -448,7 +437,7 @@
     const savedTheme = window.localStorage.getItem(themeStorageKey);
     const savedHistoryPointLimit = Number(window.localStorage.getItem(historyStorageKey));
 
-    systemThemeName = systemThemeQuery.matches ? "daylight" : "cave";
+    systemThemeMode = systemThemeQuery.matches ? "light" : "dark";
     isCompactDetail = compactDetailQuery.matches;
 
     const savedThemePreference = parseThemePreference(savedTheme);
@@ -478,6 +467,9 @@
         prepareAccessibilityFixture(next, accessibilityFixtureState);
         ingest(next);
         applyAccessibilityFixtureSelection(next, accessibilityFixtureState);
+        activeView = ["process", "group", "compact"].includes(accessibilityFixtureState)
+          ? "explore"
+          : "overview";
       } else {
         ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
       }
@@ -505,7 +497,7 @@
     }
 
     const handleSystemThemeChange = (event: MediaQueryListEvent) => {
-      systemThemeName = event.matches ? "daylight" : "cave";
+      systemThemeMode = event.matches ? "light" : "dark";
     };
 
     const handleCompactDetailChange = (event: MediaQueryListEvent) => {
@@ -661,11 +653,20 @@
 
   function setTheme(preference: ThemePreference): void {
     themePreference = preference;
+    const serialized = serializeThemePreference(preference);
     if (runtimeMode() === "native" && runtimeMutationAllowed(protocolMismatch)) {
       persistUiPreferences(preference, historyPointLimit);
     } else {
-      window.localStorage.setItem(themeStorageKey, preference);
+      window.localStorage.setItem(themeStorageKey, serialized);
     }
+  }
+
+  function setThemeFamily(family: ThemeFamily): void {
+    setTheme({ ...themePreference, family });
+  }
+
+  function setThemeMode(mode: ThemeModePreference): void {
+    setTheme({ ...themePreference, mode });
   }
 
   function setHistoryPointLimit(limit: number): void {
@@ -686,16 +687,17 @@
     preference: ThemePreference,
     limit: HistoryPointLimit,
   ): void {
-    window.localStorage.setItem(themeStorageKey, preference);
+    const serializedTheme = serializeThemePreference(preference);
+    window.localStorage.setItem(themeStorageKey, serializedTheme);
     window.localStorage.setItem(historyStorageKey, String(limit));
     const save = uiPreferencePersistence.begin({
-      theme: preference,
+      theme: serializedTheme,
       history_point_limit: limit,
     });
     void (async () => {
       try {
         const next = await setRuntimeUiPreferences(invoke, {
-          theme: preference,
+          theme: serializedTheme,
           history_point_limit: limit,
         });
         if (!uiPreferencePersistence.isLatest(save)) return;
@@ -1046,7 +1048,7 @@
       parseThemePreference(next.settings.ui_preferences.theme) &&
       isHistoryPointLimit(next.settings.ui_preferences.history_point_limit)
     ) {
-      themePreference = next.settings.ui_preferences.theme as ThemePreference;
+      themePreference = parseThemePreference(next.settings.ui_preferences.theme) ?? defaultThemePreference;
       historyPointLimit = next.settings.ui_preferences.history_point_limit;
       clearMigratedUiPreferences(next);
     } else {
@@ -1083,6 +1085,7 @@
   }
 
   function selectProcess(selection: string): void {
+    activeView = "explore";
     selectedWorkloadId = selection;
     detailSubject = "process";
     copyStatus = "";
@@ -1162,6 +1165,7 @@
   }
 
   function selectDetailMode(mode: DetailMode): void {
+    activeView = "explore";
     detailMode = mode;
     detailSubject = "system";
     selectedWorkloadId = "";
@@ -1173,7 +1177,7 @@
     const candidates =
       detailSubject === "process" && selectedWorkloadId
         ? document.querySelectorAll<HTMLElement>("[data-workload-id]")
-        : document.querySelectorAll<HTMLElement>(".resource-rail [data-resource-mode]");
+        : document.querySelectorAll<HTMLElement>("[data-resource-mode]");
     const target = [...candidates].find((candidate) => {
       const matchesIdentity =
         detailSubject === "process" && selectedWorkloadId
@@ -1182,6 +1186,23 @@
       return matchesIdentity && candidate.getClientRects().length > 0;
     });
     target?.focus({ preventScroll: true });
+    if (!target) {
+      document
+        .querySelector<HTMLElement>(`[data-view="${activeView}"]`)
+        ?.focus({ preventScroll: true });
+    }
+  }
+
+  function navigateTo(view: AppView): void {
+    activeView = view;
+    if (view === "overview") {
+      compactDetailOpen = false;
+      applyPendingRankingIfReleased();
+    }
+  }
+
+  function openExplore(): void {
+    activeView = "explore";
   }
 
   function openCompactDetail(): void {
@@ -1194,6 +1215,7 @@
   function closeCompactDetail(): void {
     compactDetailOpen = false;
     applyPendingRankingIfReleased();
+    window.requestAnimationFrame(() => focusCurrentDetailControl());
   }
 
   function handleAppKeydown(event: KeyboardEvent): void {
@@ -1219,12 +1241,13 @@
       !(target instanceof HTMLButtonElement) &&
       !(target instanceof HTMLElement && target.isContentEditable)
     ) {
-      const search = document.querySelector<HTMLInputElement>("#process-search");
-      if (search) {
-        event.preventDefault();
-        search.focus();
-        search.select();
-      }
+      event.preventDefault();
+      activeView = "explore";
+      window.requestAnimationFrame(() => {
+        const search = document.querySelector<HTMLInputElement>("#process-search");
+        search?.focus();
+        search?.select();
+      });
     }
   }
 
@@ -1488,24 +1511,6 @@
     }
   }
 
-  function timeLabel(timestampMs: number): string {
-    if (timestampMs <= 0) {
-      return "--";
-    }
-
-    return new Intl.DateTimeFormat(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
-      second: "2-digit",
-    }).format(new Date(timestampMs));
-  }
-
-  function ageLabel(timestampMs: number): string {
-    const ageSeconds = Math.max(0, Math.round((Date.now() - timestampMs) / 1000));
-    if (ageSeconds < 2) return "just now";
-    if (ageSeconds < 60) return `${ageSeconds}s ago`;
-    return timeLabel(timestampMs);
-  }
 </script>
 
 <svelte:head>
@@ -1514,7 +1519,7 @@
 
 <svelte:window onkeydown={handleAppKeydown} />
 
-<AppShell {themeName} {accessibilityFixtureState}>
+<AppShell theme={resolvedTheme} {accessibilityFixtureState}>
   <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{liveStatus}</p>
   {#if protocolMismatch}
     <section class="protocol-mismatch" role="alert" aria-live="assertive">
@@ -1527,123 +1532,139 @@
     </section>
   {/if}
   <AppHeader
-    {searchText}
-    {isPaused}
+    {activeView}
     {pollState}
     {healthLabel}
     {healthTone}
-    mutationsDisabled={protocolMismatch !== null}
-    onSearch={setSearchText}
-    onPaused={() => void setPaused(!isPaused)}
-    onRefresh={() => void refreshNow()}
+    onNavigate={navigateTo}
     onOpenSettings={() => (settingsOpen = true)}
     onOpenDiagnostics={() => (diagnosticsOpen = true)}
   />
   {#if commandError && commandErrorSurface === "global"}
     <p class="command-error global-command-error" role="alert">{commandError}</p>
   {/if}
-  <SystemSummary
-    brief={resourceBrief}
-    resources={resourceSummaries}
-    activeMode={detailMode}
-    supportingText={systemSupportingText}
-    {sampledAtLabel}
-    windowLabel={resourceWindowLabel}
-    activeValues={activeResource?.values ?? []}
-    activeMax={activeResource?.max ?? 100}
-    activeStroke={activeResource?.stroke ?? activeTheme.cpuStroke}
-    activeFill={activeResource?.fill ?? activeTheme.cpuFill}
-    leadingIconKind={leadingIdentity?.icon ?? "process"}
-    leadingIconSrc={leadingProcess ? processIcons[leadingProcess.exe || leadingProcess.name] : undefined}
-    onSelect={selectDetailMode}
-  />
-  <section class="triage-workspace">
-    <ResourceRail
+  {#if activeView === "overview"}
+    <Overview
+      status={overviewStatus}
       resources={resourceSummaries}
-      activeMode={detailMode}
-      environmentLabel={`${presentation.platformName} · ${installKindLabel(snapshot.environment.install_kind)}`}
-      sourceLabel={pollState === "fixture" ? "Layout fixture" : sourceLabel}
-      diagnosticsLabel={railDiagnosticsLabel}
-      onSelect={selectDetailMode}
-      onOpenDiagnostics={() => (diagnosticsOpen = true)}
+      leadingRows={overviewRows}
+      {processIcons}
+      primaryCpuValue={snapshot.system.cpu_percent}
+      primaryCpuHistory={history.cpu}
+      primaryCpuStroke={activeTheme.cpuStroke}
+      primaryCpuFill={activeTheme.cpuFill}
+      leadingCpuName={overviewCpuBrief.leadingWorkload}
+      leadingCpuValue={overviewCpuBrief.contributorStatusLabel}
+      leadingCpuSelection={overviewCpuBrief.leadingProcessId}
+      leadingCpuIconKind={leadingCpuIdentity?.icon ?? "process"}
+      leadingCpuIconSrc={leadingCpuProcess
+        ? processIcons[leadingCpuProcess.exe || leadingCpuProcess.name]
+        : undefined}
+      onSelectResource={selectDetailMode}
+      onSelectWorkload={selectProcess}
+      onOpenExplore={openExplore}
     />
-    <main class="queue-workspace">
-      <ProcessCommandBar
-        {focusMode}
-        {sortKey}
-        {sortDirection}
-        commandError={commandErrorSurface === "workload" ? commandError : ""}
-        {rankingUpdateAvailable}
-        {focusOptions}
-        {sortOptions}
-        mutationsDisabled={protocolMismatch !== null}
-        onFocus={setFocusMode}
-        onSort={setSortKey}
-        onToggleDirection={toggleSortDirection}
-        onApplyRanking={applyPendingRanking}
-      />
-      <AttentionQueue
-        processRows={processViewRows}
-        totalProcessCount={snapshot.total_process_count || snapshot.system.process_count}
-        {focusMode}
-        {searchText}
-        columns={visibleProcessColumns}
-        {selectedWorkloadId}
-        {sortKey}
-        {sortDirection}
-        {processIcons}
-        {rankingUpdateAvailable}
-        platform={snapshot.environment.platform}
-        onSelect={selectProcess}
-        onToggleSort={toggleSortKey}
-        onInteractionChange={setQueueInteraction}
-        onExpandedChange={setExpandedGroupCount}
-      />
+  {:else}
+    <main class="explore-view" aria-labelledby="explore-heading">
+      <header class="explore-heading">
+        <h2 id="explore-heading">Explore your workloads</h2>
+        <p>Search live activity and inspect any app, process, or group.</p>
+      </header>
+      <div class="explore-toolbar">
+        <label class="explore-search" for="process-search">
+          <MagnifyingGlass size={19} weight="regular" aria-hidden="true" />
+          <input
+            id="process-search"
+            value={searchText}
+            oninput={(event) => setSearchText(event.currentTarget.value)}
+            aria-label="Search apps and processes"
+            placeholder="Search by name or process"
+            autocomplete="off"
+            disabled={protocolMismatch !== null}
+          />
+          <kbd>/</kbd>
+        </label>
+        <ProcessCommandBar
+          {focusMode}
+          {sortKey}
+          {sortDirection}
+          commandError={commandErrorSurface === "workload" ? commandError : ""}
+          {rankingUpdateAvailable}
+          {focusOptions}
+          {sortOptions}
+          mutationsDisabled={protocolMismatch !== null}
+          onFocus={setFocusMode}
+          onSort={setSortKey}
+          onToggleDirection={toggleSortDirection}
+          onApplyRanking={applyPendingRanking}
+        />
+      </div>
+      <section class="explore-workspace">
+        <div class="explore-queue">
+          <AttentionQueue
+            processRows={processViewRows}
+            totalProcessCount={snapshot.total_process_count || snapshot.system.process_count}
+            {focusMode}
+            {searchText}
+            columns={visibleProcessColumns}
+            {selectedWorkloadId}
+            {sortKey}
+            {sortDirection}
+            {processIcons}
+            {rankingUpdateAvailable}
+            platform={snapshot.environment.platform}
+            onSelect={selectProcess}
+            onToggleSort={toggleSortKey}
+            onInteractionChange={setQueueInteraction}
+            onExpandedChange={setExpandedGroupCount}
+          />
+        </div>
+        {#if !isCompactDetail || compactDetailOpen}
+          <DetailPane
+            subject={detailSubject}
+            compact={isCompactDetail}
+            onClose={closeCompactDetail}
+            onShowSystem={() => selectDetailMode(detailMode)}
+            {selectedWorkload}
+            {selectedWorkloadIconKind}
+            {selectedWorkloadIconSrc}
+            {processHistory}
+            {processRates}
+            {processReadRate}
+            {processWriteRate}
+            {processIcons}
+            {copyStatus}
+            {activeTheme}
+            {presentation}
+            {processNetworkLabel}
+            onCopy={() => void copySelectedWorkloadSummary()}
+            {detailMode}
+            {detailTitle}
+            {detailReadout}
+            {snapshot}
+            {history}
+            {systemQuality}
+            {memoryPercent}
+            {swapPercent}
+            {memoryAccounting}
+            {topKernelPoolTags}
+            {diskReadRate}
+            {diskWriteRate}
+            {networkDownRate}
+            {networkUpRate}
+            {diskScaleMax}
+            {networkScaleMax}
+            {coreLoads}
+            {corePeak}
+            {coreSpread}
+            {hotCoreCount}
+            {busyCoreCount}
+            {coreTone}
+          />
+        {/if}
+      </section>
     </main>
-    {#if !isCompactDetail || compactDetailOpen}
-      <DetailPane
-        subject={detailSubject}
-        compact={isCompactDetail}
-        onClose={closeCompactDetail}
-        onShowSystem={() => selectDetailMode(detailMode)}
-        {selectedWorkload}
-        {selectedWorkloadIconKind}
-        {selectedWorkloadIconSrc}
-        {processHistory}
-        {processRates}
-        {processReadRate}
-        {processWriteRate}
-        {processIcons}
-        {copyStatus}
-        {activeTheme}
-        {presentation}
-        {processNetworkLabel}
-        onCopy={() => void copySelectedWorkloadSummary()}
-        {detailMode}
-        {detailTitle}
-        {detailReadout}
-        {snapshot}
-        {history}
-        {systemQuality}
-        {memoryPercent}
-        {swapPercent}
-        {memoryAccounting}
-        {topKernelPoolTags}
-        {diskReadRate}
-        {diskWriteRate}
-        {networkDownRate}
-        {networkUpRate}
-        {diskScaleMax}
-        {networkScaleMax}
-        {coreLoads}
-        {corePeak}
-        {coreSpread}
-        {hotCoreCount}
-        {busyCoreCount}
-        {coreTone}
-      />
-    {/if}
-  </section>
+  {/if}
 
   <DiagnosticsDrawer
     {snapshot}
@@ -1658,12 +1679,14 @@
 
   <SettingsDrawer
     open={settingsOpen}
-    {themeOptions}
+    {themeFamilyOptions}
+    {themeModeOptions}
     {themePreference}
     {pollIntervals}
     {pollIntervalMs}
     {historyPointOptions}
     {historyPointLimit}
+    {isPaused}
     commandError={commandErrorSurface === "settings" ? commandError : ""}
     adminAvailable={snapshot.environment.admin_mode_available}
     runtimeMutationsDisabled={protocolMismatch !== null}
@@ -1673,9 +1696,16 @@
     dataDirectory={snapshot.environment.data_directory}
     {presentation}
     onClose={() => (settingsOpen = false)}
-    onTheme={setTheme}
+    onThemeFamily={setThemeFamily}
+    onThemeMode={setThemeMode}
     onPollInterval={(interval) => void setPollInterval(interval)}
     onHistoryLimit={setHistoryPointLimit}
+    onPaused={() => void setPaused(!isPaused)}
+    onRefresh={() => void refreshNow()}
+    onOpenDiagnostics={() => {
+      settingsOpen = false;
+      diagnosticsOpen = true;
+    }}
     {updateStatus}
     {updateMessage}
     onCheckForUpdates={() => void checkForStableUpdate()}

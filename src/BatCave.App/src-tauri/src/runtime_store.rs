@@ -3652,10 +3652,7 @@ fn migrate_runtime_settings(
 }
 
 fn valid_ui_preferences(preferences: &RuntimeUiPreferences) -> bool {
-    matches!(
-        preferences.theme.as_str(),
-        "system" | "cave" | "aurora" | "ember" | "daylight"
-    ) && matches!(preferences.history_point_limit, 30 | 72 | 180 | 360)
+    crate::runtime_ui_preferences::is_valid(preferences)
 }
 
 fn push_startup_persistence_failure(
@@ -6370,6 +6367,28 @@ mod tests {
     }
 
     #[test]
+    fn paired_user_preferences_load_without_a_settings_schema_change() {
+        let current = migrate_runtime_settings(serde_json::json!({
+            "query": {},
+            "ui_preferences": {
+                "theme": "canopy:system",
+                "history_point_limit": 180
+            }
+        }))
+        .expect("paired preferences remain valid settings");
+        let JsonMigration::Current(settings) = current else {
+            panic!("paired preferences do not require a settings migration");
+        };
+        assert_eq!(
+            settings.ui_preferences,
+            Some(RuntimeUiPreferences {
+                theme: "canopy:system".to_string(),
+                history_point_limit: 180,
+            })
+        );
+    }
+
+    #[test]
     fn process_icon_allowlist_requires_live_snapshot() {
         let mut store = RuntimeStore::new();
         let trusted = sample("10", "Trusted", 1.0);
@@ -7040,7 +7059,7 @@ mod tests {
         );
 
         store.set_ui_preferences(RuntimeUiPreferences {
-            theme: "ember".to_string(),
+            theme: "ember:dark".to_string(),
             history_point_limit: 180,
         });
         let persisted =
@@ -7049,7 +7068,7 @@ mod tests {
         assert_eq!(
             persisted.ui_preferences,
             Some(RuntimeUiPreferences {
-                theme: "ember".to_string(),
+                theme: "ember:dark".to_string(),
                 history_point_limit: 180,
             })
         );

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { X } from "phosphor-svelte";
+  import X from "phosphor-svelte/lib/X";
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
   import type { DetailMode } from "../metrics/types";
   import type { ProcessRates } from "../../process";

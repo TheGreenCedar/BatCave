@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import uPlot from "uplot";
+  import {
+    createChartMotion,
+    shouldSnapChartMotion,
+    type ChartMotion,
+  } from "./chartMotion";
 
   export let values: number[] = [];
   export let min = 0;
@@ -10,6 +15,8 @@
 
   let host: HTMLDivElement | undefined = undefined;
   let chart: uPlot | undefined;
+  let chartMotion: ChartMotion | undefined;
+  let reducedMotionQuery: MediaQueryList | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let resizeFrame = 0;
   let lastWidth = 0;
@@ -18,8 +25,8 @@
   let appliedFill = fill;
   const minChartHeight = 28;
 
-  $: if (chart) {
-    chart.setData(makeData(values));
+  $: if (chart && chartMotion) {
+    chartMotion.update(values, { snap: shouldSnapMotion() });
     chart.setScale("y", { min, max });
   }
 
@@ -39,20 +46,53 @@
     const bounds = host.getBoundingClientRect();
     appliedStroke = stroke;
     appliedFill = fill;
-    chart = new uPlot(makeOptions(bounds.width, bounds.height), makeData(values), host);
+    const initialValues = [...values];
+    chart = new uPlot(makeOptions(bounds.width, bounds.height), makeData(initialValues), host);
+    chartMotion = createChartMotion(
+      initialValues,
+      (nextValues) => chart?.setData(makeData(nextValues)),
+      {
+        now: () => performance.now(),
+        request: (callback) => window.requestAnimationFrame(callback),
+        cancel: (frame) => window.cancelAnimationFrame(frame),
+      },
+    );
+    reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    reducedMotionQuery.addEventListener("change", handleMotionPreferenceChange);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     resizeObserver = new ResizeObserver(() => scheduleResize());
     resizeObserver.observe(host);
     resize();
   });
 
   onDestroy(() => {
+    chartMotion?.destroy();
+    reducedMotionQuery?.removeEventListener("change", handleMotionPreferenceChange);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+
     if (resizeFrame !== 0) {
       window.cancelAnimationFrame(resizeFrame);
     }
 
     resizeObserver?.disconnect();
     chart?.destroy();
+    chart = undefined;
   });
+
+  function shouldSnapMotion(): boolean {
+    return shouldSnapChartMotion(
+      document.visibilityState,
+      reducedMotionQuery?.matches ?? false,
+    );
+  }
+
+  function handleMotionPreferenceChange(event: MediaQueryListEvent): void {
+    if (event.matches) chartMotion?.finish();
+  }
+
+  function handleVisibilityChange(): void {
+    if (document.visibilityState !== "visible") chartMotion?.finish();
+  }
 
   function scheduleResize(): void {
     if (resizeFrame !== 0) {

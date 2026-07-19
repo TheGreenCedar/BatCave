@@ -1,79 +1,68 @@
 <script lang="ts">
-  import {
-    ArrowClockwise,
-    CaretDown,
-    Circle,
-    GearSix,
-    MagnifyingGlass,
-    Pause,
-    Play,
-  } from "phosphor-svelte";
+  import Circle from "phosphor-svelte/lib/Circle";
+  import GearSix from "phosphor-svelte/lib/GearSix";
+  import brandIcon from "../../../../src-tauri/icons/64x64.png";
 
-  export let searchText = "";
-  export let isPaused = false;
+  type AppView = "overview" | "explore";
+
+  export let activeView: AppView = "overview";
   export let pollState: "starting" | "native" | "fixture" | "error" = "starting";
   export let healthLabel: string;
   export let healthTone: "healthy" | "warning" | "danger";
-  export let mutationsDisabled = false;
-  export let onSearch: (value: string) => void;
-  export let onPaused: () => void;
-  export let onRefresh: () => void;
+  export let onNavigate: (view: AppView) => void;
   export let onOpenSettings: () => void;
   export let onOpenDiagnostics: () => void;
-
 </script>
 
 <header class="app-header">
   <div class="brand-lockup">
-    <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
-      <path fill="currentColor" d="m2 18 9-7 7 3 4-5 2 6 2-6 4 5 7-3 9 7-7 2-5 11-6-4-4 5-4-5-6 4-5-11-7-2Z" />
-      <path fill="currentColor" d="m11 11 7 3 4-5-1 12-10-1Z" opacity=".72" />
-    </svg>
+    <img class="brand-mark" src={brandIcon} alt="" />
     <div>
       <h1>BatCave</h1>
-      <p>Local resource triage</p>
+      <p>Local resource monitor</p>
     </div>
   </div>
 
-  <label class="header-search" for="process-search">
-    <MagnifyingGlass size={19} weight="regular" aria-hidden="true" />
-    <input
-      id="process-search"
-      value={searchText}
-      oninput={(event) => onSearch(event.currentTarget.value)}
-      aria-label="Search apps and processes"
-      placeholder="Search apps and processes"
-      autocomplete="off"
-      disabled={mutationsDisabled}
-    />
-    <kbd>/</kbd>
-  </label>
-
-  <nav class="header-actions" aria-label="Telemetry controls">
-    <button class="header-action" class:resume={isPaused} type="button" disabled={mutationsDisabled} onclick={onPaused}>
-      {#if isPaused}<Play size={18} weight="fill" aria-hidden="true" />{:else}<Pause size={18} weight="fill" aria-hidden="true" />{/if}
-      <span>{isPaused ? "Resume" : "Pause"}</span>
-    </button>
-    <button class="header-action" type="button" onclick={onRefresh}>
-      <ArrowClockwise size={18} weight="bold" aria-hidden="true" />
-      <span>Refresh</span>
-    </button>
-    <button class="header-action" type="button" onclick={onOpenSettings}>
-      <GearSix size={19} weight="regular" aria-hidden="true" />
-      <span>Settings</span>
-    </button>
+  <nav class="view-navigation" aria-label="Primary navigation">
+    <button
+      type="button"
+      data-view="overview"
+      class:active={activeView === "overview"}
+      aria-current={activeView === "overview" ? "page" : undefined}
+      onclick={() => onNavigate("overview")}
+    >Overview</button>
+    <button
+      type="button"
+      data-view="explore"
+      class:active={activeView === "explore"}
+      aria-current={activeView === "explore" ? "page" : undefined}
+      onclick={() => onNavigate("explore")}
+    >Explore</button>
   </nav>
 
-  <button
-    class="health-chip"
-    class:warning={healthTone === "warning"}
-    class:danger={healthTone === "danger"}
-    type="button"
-    aria-label={`${healthLabel}. Open diagnostics.`}
-    onclick={onOpenDiagnostics}
-  >
-    <Circle size={10} weight="fill" aria-hidden="true" />
-    <span>{pollState === "fixture" ? "Fixture" : healthLabel}</span>
-    <CaretDown size={14} weight="bold" aria-hidden="true" />
-  </button>
+  <div class="header-status-actions">
+    {#if healthTone === "healthy" && pollState !== "fixture"}
+      <span class="monitoring-status" aria-label="Monitoring is active">
+        <Circle size={10} weight="fill" aria-hidden="true" />
+        Monitoring
+      </span>
+    {:else}
+      <button
+        class="health-chip"
+        class:warning={healthTone === "warning"}
+        class:danger={healthTone === "danger"}
+        type="button"
+        aria-label={`${pollState === "fixture" ? "Layout fixture" : healthLabel}. Open diagnostics.`}
+        onclick={onOpenDiagnostics}
+      >
+        <Circle size={10} weight="fill" aria-hidden="true" />
+        <span>{pollState === "fixture" ? "Layout fixture" : healthLabel}</span>
+      </button>
+    {/if}
+    <span class="header-divider" aria-hidden="true"></span>
+    <button class="settings-action" type="button" onclick={onOpenSettings}>
+      <GearSix size={20} weight="regular" aria-hidden="true" />
+      <span>Settings</span>
+    </button>
+  </div>
 </header>

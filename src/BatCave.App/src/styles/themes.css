@@ -21,7 +21,7 @@
   --warning-soft: rgba(255, 209, 102, 0.08);
   --warning-border: rgba(255, 209, 102, 0.42);
   --danger: #fb7185;
-  --danger-text: #ffd6d6;
+  --danger-text: #ffd6df;
   --danger-soft: rgba(251, 113, 133, 0.1);
   --danger-border: rgba(251, 113, 133, 0.48);
   --readout-bg: rgba(16, 19, 22, 0.78);
@@ -37,7 +37,91 @@
   --chart-network-up: #fb7185;
 }
 
-.app-shell[data-theme="aurora"] {
+.app-shell[data-mode="dark"] {
+  color-scheme: dark;
+  --surface-0: #111417;
+  --surface-1: #181c21;
+  --surface-2: #20262c;
+  --surface-3: #101419;
+  --border: #303741;
+  --border-soft: #29313a;
+  --text: #f4f7fb;
+  --text-soft: #c8d1de;
+  --text-muted: #a9b2c0;
+  --text-subtle: #8f9aaa;
+  --warning: #ffd166;
+  --warning-text: #ffe7a8;
+  --warning-soft: rgba(255, 209, 102, 0.08);
+  --warning-border: rgba(255, 209, 102, 0.42);
+  --danger: #fb7185;
+  --danger-text: #ffd6df;
+  --danger-soft: rgba(251, 113, 133, 0.1);
+  --danger-border: rgba(251, 113, 133, 0.48);
+  --readout-bg: rgba(16, 19, 22, 0.78);
+  --readout-text: #f4f7fb;
+  --readout-border: rgba(255, 255, 255, 0.14);
+  --shadow-color: rgba(0, 0, 0, 0.18);
+  --grid-line: rgba(255, 255, 255, 0.035);
+}
+
+.app-shell[data-mode="light"] {
+  color-scheme: light;
+  --surface-0: #faf8f4;
+  --surface-1: #fffdfa;
+  --surface-2: #f0ede8;
+  --surface-3: #ffffff;
+  --border: #d8d3cc;
+  --border-soft: #e7e2db;
+  --text: #14212b;
+  --text-soft: #344552;
+  --text-muted: #697681;
+  --text-subtle: #5a6874;
+  --warning: #a65306;
+  --warning-text: #74400a;
+  --warning-soft: rgba(166, 83, 6, 0.08);
+  --warning-border: rgba(166, 83, 6, 0.27);
+  --danger: #b91c3c;
+  --danger-text: #7f1d32;
+  --danger-soft: rgba(185, 28, 60, 0.075);
+  --danger-border: rgba(185, 28, 60, 0.25);
+  --readout-bg: rgba(255, 255, 255, 0.9);
+  --readout-text: #14212b;
+  --readout-border: rgba(20, 33, 43, 0.12);
+  --shadow-color: rgba(34, 43, 52, 0.1);
+  --grid-line: rgba(20, 33, 43, 0.055);
+}
+
+.app-shell[data-theme="cave"][data-mode="dark"] {
+  --accent: #72f1b8;
+  --accent-text: #101316;
+  --accent-soft: rgba(114, 241, 184, 0.1);
+  --accent-muted: rgba(114, 241, 184, 0.07);
+  --accent-border: rgba(114, 241, 184, 0.58);
+  --accent-ring: rgba(114, 241, 184, 0.38);
+  --chart-cpu: #4a9cff;
+  --chart-memory: #b26cff;
+  --chart-disk-read: #ffd166;
+  --chart-disk-write: #fca5a5;
+  --chart-network-down: #a78bfa;
+  --chart-network-up: #fb7185;
+}
+
+.app-shell[data-theme="cave"][data-mode="light"] {
+  --accent: #087f6b;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(8, 127, 107, 0.09);
+  --accent-muted: rgba(8, 127, 107, 0.055);
+  --accent-border: rgba(8, 127, 107, 0.38);
+  --accent-ring: rgba(8, 127, 107, 0.5);
+  --chart-cpu: #18a48d;
+  --chart-memory: #8b6ee8;
+  --chart-disk-read: #c77911;
+  --chart-disk-write: #e36b24;
+  --chart-network-down: #347fe2;
+  --chart-network-up: #087f6b;
+}
+
+.app-shell[data-theme="aurora"][data-mode="dark"] {
   --surface-0: #071922;
   --surface-1: #0d2230;
   --surface-2: #163344;
@@ -54,13 +138,6 @@
   --accent-muted: rgba(94, 234, 212, 0.07);
   --accent-border: rgba(94, 234, 212, 0.54);
   --accent-ring: rgba(94, 234, 212, 0.34);
-  --warning: #c4b5fd;
-  --warning-text: #e9ddff;
-  --warning-soft: rgba(196, 181, 253, 0.1);
-  --warning-border: rgba(196, 181, 253, 0.4);
-  --danger: #f0abfc;
-  --danger-soft: rgba(240, 171, 252, 0.1);
-  --danger-border: rgba(240, 171, 252, 0.42);
   --chart-cpu: #5eead4;
   --chart-memory: #93c5fd;
   --chart-disk-read: #c4b5fd;
@@ -69,7 +146,32 @@
   --chart-network-up: #bef264;
 }
 
-.app-shell[data-theme="ember"] {
+.app-shell[data-theme="aurora"][data-mode="light"] {
+  --surface-0: #f4fafb;
+  --surface-1: #fbffff;
+  --surface-2: #e8f3f5;
+  --surface-3: #ffffff;
+  --border: #c8dce1;
+  --border-soft: #dce9ec;
+  --text: #102731;
+  --text-soft: #31505d;
+  --text-muted: #607987;
+  --text-subtle: #506d7a;
+  --accent: #0f766e;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(15, 118, 110, 0.09);
+  --accent-muted: rgba(15, 118, 110, 0.055);
+  --accent-border: rgba(15, 118, 110, 0.35);
+  --accent-ring: rgba(15, 118, 110, 0.48);
+  --chart-cpu: #0f766e;
+  --chart-memory: #2563eb;
+  --chart-disk-read: #7c3aed;
+  --chart-disk-write: #a21caf;
+  --chart-network-down: #0891b2;
+  --chart-network-up: #4d7c0f;
+}
+
+.app-shell[data-theme="ember"][data-mode="dark"] {
   --surface-0: #171113;
   --surface-1: #201819;
   --surface-2: #2a2020;
@@ -86,13 +188,6 @@
   --accent-muted: rgba(251, 191, 36, 0.08);
   --accent-border: rgba(251, 191, 36, 0.5);
   --accent-ring: rgba(251, 191, 36, 0.3);
-  --warning: #fdba74;
-  --warning-text: #ffe0bb;
-  --warning-soft: rgba(253, 186, 116, 0.1);
-  --warning-border: rgba(253, 186, 116, 0.38);
-  --danger: #fb7185;
-  --danger-soft: rgba(251, 113, 133, 0.1);
-  --danger-border: rgba(251, 113, 133, 0.42);
   --chart-cpu: #fbbf24;
   --chart-memory: #fb7185;
   --chart-disk-read: #fdba74;
@@ -101,40 +196,77 @@
   --chart-network-up: #fde68a;
 }
 
-.app-shell[data-theme="daylight"] {
-  --surface-0: #f4f7f4;
-  --surface-1: #fffefb;
-  --surface-2: #e7ecec;
+.app-shell[data-theme="ember"][data-mode="light"] {
+  --surface-0: #fff8f1;
+  --surface-1: #fffdf9;
+  --surface-2: #f7e9dc;
   --surface-3: #ffffff;
-  --border: #cbd5df;
-  --border-soft: #d8e1e8;
-  --text: #171d25;
-  --text-soft: #344150;
-  --text-muted: #5e6b7c;
-  --text-subtle: #536170;
-  --accent: #047857;
+  --border: #e3cdbb;
+  --border-soft: #efe0d4;
+  --text: #2d1b14;
+  --text-soft: #5d4034;
+  --text-muted: #80675b;
+  --text-subtle: #72584d;
+  --accent: #b8430a;
   --accent-text: #ffffff;
-  --accent-soft: rgba(4, 120, 87, 0.09);
-  --accent-muted: rgba(4, 120, 87, 0.06);
-  --accent-border: rgba(4, 120, 87, 0.36);
-  --accent-ring: rgba(4, 120, 87, 0.58);
-  --warning: #b45309;
-  --warning-text: #6f3c02;
-  --warning-soft: rgba(180, 83, 9, 0.08);
-  --warning-border: rgba(180, 83, 9, 0.26);
-  --danger: #be123c;
-  --danger-text: #7f1d1d;
-  --danger-soft: rgba(190, 18, 60, 0.08);
-  --danger-border: rgba(190, 18, 60, 0.24);
-  --readout-bg: rgba(255, 255, 255, 0.9);
-  --readout-text: #171d25;
-  --readout-border: rgba(23, 29, 37, 0.12);
-  --shadow-color: rgba(32, 44, 58, 0.12);
-  --grid-line: rgba(23, 29, 37, 0.05);
-  --chart-cpu: #047857;
-  --chart-memory: #0369a1;
-  --chart-disk-read: #b45309;
-  --chart-disk-write: #be123c;
-  --chart-network-down: #6d28d9;
-  --chart-network-up: #0f766e;
+  --accent-soft: rgba(184, 67, 10, 0.09);
+  --accent-muted: rgba(184, 67, 10, 0.055);
+  --accent-border: rgba(184, 67, 10, 0.34);
+  --accent-ring: rgba(184, 67, 10, 0.47);
+  --chart-cpu: #c2410c;
+  --chart-memory: #be123c;
+  --chart-disk-read: #a65b08;
+  --chart-disk-write: #ea580c;
+  --chart-network-down: #b91c1c;
+  --chart-network-up: #8a5607;
+}
+
+.app-shell[data-theme="canopy"][data-mode="dark"] {
+  --surface-0: #0f1713;
+  --surface-1: #17221c;
+  --surface-2: #213029;
+  --surface-3: #0b120e;
+  --border: #35473d;
+  --border-soft: #2a3a32;
+  --text: #fffaf3;
+  --text-soft: #ddd7cc;
+  --text-muted: #b7b0a5;
+  --text-subtle: #9e978d;
+  --accent: #83d39c;
+  --accent-text: #0d1711;
+  --accent-soft: rgba(131, 211, 156, 0.11);
+  --accent-muted: rgba(131, 211, 156, 0.07);
+  --accent-border: rgba(131, 211, 156, 0.5);
+  --accent-ring: rgba(131, 211, 156, 0.34);
+  --chart-cpu: #86efac;
+  --chart-memory: #f3e8d1;
+  --chart-disk-read: #f0b44c;
+  --chart-disk-write: #ef5b5b;
+  --chart-network-down: #5eead4;
+  --chart-network-up: #b9dc73;
+}
+
+.app-shell[data-theme="canopy"][data-mode="light"] {
+  --surface-0: #fffaf2;
+  --surface-1: #fffdf8;
+  --surface-2: #f2ece2;
+  --surface-3: #ffffff;
+  --border: #d9d0c4;
+  --border-soft: #e8e0d5;
+  --text: #17231c;
+  --text-soft: #3b5145;
+  --text-muted: #68796f;
+  --text-subtle: #596c61;
+  --accent: #246c43;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(36, 108, 67, 0.09);
+  --accent-muted: rgba(36, 108, 67, 0.055);
+  --accent-border: rgba(36, 108, 67, 0.34);
+  --accent-ring: rgba(36, 108, 67, 0.48);
+  --chart-cpu: #287a4a;
+  --chart-memory: #9a6d5d;
+  --chart-disk-read: #9b6a0b;
+  --chart-disk-write: #c63e3e;
+  --chart-network-down: #0f766e;
+  --chart-network-up: #50751a;
 }

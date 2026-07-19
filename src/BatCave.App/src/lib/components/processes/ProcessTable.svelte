@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { ArrowDown, ArrowElbowDownRight, ArrowUp, CaretRight } from "phosphor-svelte";
+  import ArrowDown from "phosphor-svelte/lib/ArrowDown";
+  import ArrowElbowDownRight from "phosphor-svelte/lib/ArrowElbowDownRight";
+  import ArrowUp from "phosphor-svelte/lib/ArrowUp";
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
   import {
     sortAriaValue,
     sortButtonLabel,
