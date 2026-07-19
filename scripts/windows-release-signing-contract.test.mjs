@@ -32,6 +32,14 @@ test("pins the OIDC identity and every new signing tool input", () => {
   );
   assert.equal(contract.timestamp.protocol, "rfc3161");
   assert.equal(contract.timestamp.url, "http://timestamp.acs.microsoft.com/");
+  assert.deepEqual(contract.third_party_resigned_files, [
+    {
+      name: "Microsoft.AI.Foundry.Local.Core.dll",
+      source: "foundry-local-sdk 1.2.0",
+      source_sha256: "316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea",
+    },
+  ]);
+  assert.ok(!contract.upstream_files.includes("Microsoft.AI.Foundry.Local.Core.dll"));
 });
 
 test("keeps the local signing test profile isolated from production evidence", () => {
@@ -43,10 +51,11 @@ test("keeps the local signing test profile isolated from production evidence", (
   assert.match(testProfile, /byte-tampered signing test fixture/u);
   assert.match(testProfile, /Cert:\\CurrentUser\\My/u);
   assert.match(testProfile, /Remove-Item -LiteralPath "Cert:\\CurrentUser\\My/u);
+  assert.match(testProfile, /exact unsigned Foundry SDK payload/u);
   assert.doesNotMatch(testProfile, /timestamp\.acs\.microsoft\.com/u);
   assert.match(
     validationWorkflow,
-    /test-windows-signing-profile\.ps1[\s\S]*-SignToolPath \$env:BATCAVE_SIGNTOOL_PATH/u,
+    /test-windows-signing-profile\.ps1[\s\S]*-SignToolPath \$env:BATCAVE_SIGNTOOL_PATH[\s\S]*-ThirdPartyInputPath/u,
   );
   assert.match(candidateVerifier, /inventory\.profile !== "production"/u);
 });
@@ -57,6 +66,7 @@ test("keeps Artifact Signing release-only and preserves the required byte order"
   const normalConfig = json("src/BatCave.App/src-tauri/tauri.windows.conf.json");
   const signer = read("src/BatCave.App/src-tauri/windows/sign-artifact.ps1");
   const builder = read("scripts/build-signed-windows-release.ps1");
+  const inventoryWriter = read("scripts/write-windows-signature-inventory.ps1");
   const metadata = read("scripts/prepare-artifact-signing-metadata.ps1");
 
   assert.equal(normalConfig.bundle.windows.nsis.compression, "none");
@@ -73,14 +83,27 @@ test("keeps Artifact Signing release-only and preserves the required byte order"
   assert.doesNotMatch(metadata, /ClientSecretCredential|AZURE_CLIENT_SECRET/u);
 
   const build = builder.indexOf('"build", "--no-bundle"');
-  const sign = builder.indexOf("foreach ($file in $innerOwned)");
+  const sourceHash = builder.indexOf("Foundry Core source digest");
+  const sourceSignature = builder.indexOf("Foundry Core re-signing is allowed");
+  const sign = builder.indexOf("foreach ($file in @($innerOwned + $thirdPartyResigned))");
   const bundle = builder.indexOf('"bundle", "--config"');
   const updater = builder.indexOf('"signer", "sign", $installer');
   const inventory = builder.indexOf("-Phase final");
-  assert.ok(build >= 0 && build < sign && sign < bundle && bundle < updater && updater < inventory);
+  assert.ok(
+    build >= 0 &&
+      build < sourceHash &&
+      sourceHash < sourceSignature &&
+      sourceSignature < sign &&
+      sign < bundle &&
+      bundle < updater &&
+      updater < inventory,
+  );
   assert.match(signer, /\/tr "http:\/\/timestamp\.acs\.microsoft\.com\/" \/td SHA256/u);
   assert.match(signer, /Refusing to replace an existing unexpected signature/u);
   assert.doesNotMatch(signer, /\bexit\s+0\b/u);
+  assert.match(inventoryWriter, /return "third_party_resigned"/u);
+  assert.match(inventoryWriter, /original_sha256 = \$originalSha256/u);
+  assert.match(inventoryWriter, /has invalid Authenticode status/u);
   assert.match(builder, /Byte-tampered installer unexpectedly passed/u);
 });
 

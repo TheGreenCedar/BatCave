@@ -45,14 +45,17 @@
     "batcave-monitor.exe",
     "uninstall.exe"
   ],
-  "upstream_publishers": [
-    "^CN=Microsoft Corporation(?:,|$)",
-    "^CN=Microsoft Windows(?:,|$)"
-  ],
+  "upstream_publishers": ["^CN=Microsoft Corporation(?:,|$)", "^CN=Microsoft Windows(?:,|$)"],
   "upstream_files": [
-    "Microsoft.AI.Foundry.Local.Core.dll",
     "MicrosoftEdgeWebView2RuntimeInstaller.exe",
     "onnxruntime-genai.dll",
     "onnxruntime.dll"
+  ],
+  "third_party_resigned_files": [
+    {
+      "name": "Microsoft.AI.Foundry.Local.Core.dll",
+      "source": "foundry-local-sdk 1.2.0",
+      "source_sha256": "316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea"
+    }
   ]
 }

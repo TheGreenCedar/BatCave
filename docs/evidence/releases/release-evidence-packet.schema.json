@@ -272,13 +272,7 @@
     "authenticodeSignature": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "identity",
-        "verified",
-        "subject",
-        "rfc3161_timestamp_utc",
-        "files"
-      ],
+      "required": ["identity", "verified", "subject", "rfc3161_timestamp_utc", "files"],
       "properties": {
         "identity": {
           "anyOf": [
@@ -306,6 +300,7 @@
         "name",
         "sha256",
         "disposition",
+        "original_sha256",
         "subject",
         "certificate_sha256",
         "rfc3161_timestamp_utc",
@@ -315,7 +310,15 @@
         "name": { "type": "string", "minLength": 1 },
         "sha256": { "$ref": "#/$defs/digest" },
         "disposition": {
-          "enum": ["batcave_signed", "generated_signed", "upstream_preserved"]
+          "enum": [
+            "batcave_signed",
+            "generated_signed",
+            "third_party_resigned",
+            "upstream_preserved"
+          ]
+        },
+        "original_sha256": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }]
         },
         "subject": { "type": "string", "minLength": 1, "maxLength": 300 },
         "certificate_sha256": { "$ref": "#/$defs/digest" },

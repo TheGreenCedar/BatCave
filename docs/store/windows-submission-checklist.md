@@ -7,7 +7,7 @@ This prepares the existing per-machine NSIS installer for a Microsoft Store MSI/
 - Use the exact versioned GitHub Release URL produced by the Store preflight receipt. Never submit `releases/latest`, a redirecting download page, or mutable bytes.
 - Select **EXE**, **x64**, and installer parameters `/S`.
 - Confirm the installer is self-contained, retains the offline WebView2 runtime, requests elevation only through normal UAC, and returns `0` after a successful silent install.
-- Confirm the outer installer, generated uninstaller, BatCave executables, and installed upstream PE dependencies match the signed candidate inventory.
+- Confirm the outer installer, generated uninstaller, BatCave executables, preserved Microsoft-signed dependencies, and exact-hash BatCave-re-signed Foundry Core dependency match the signed candidate inventory.
 - Install and uninstall the exact candidate silently on a clean supported Windows machine before submission. Record Apps & Features, service, launch, update, and final residue observations.
 
 ## Listing

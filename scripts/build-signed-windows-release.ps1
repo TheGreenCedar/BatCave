@@ -30,6 +30,9 @@ $appRoot = Join-Path $repoRoot "src/BatCave.App"
 $tauriRoot = Join-Path $appRoot "src-tauri"
 $targetRoot = Join-Path $tauriRoot "target/release"
 $evidenceRoot = [System.IO.Path]::GetFullPath($EvidenceDirectory)
+$signingContract = Get-Content -LiteralPath (
+    Join-Path $repoRoot "scripts/windows-signing/artifact-signing-contract.v1.json"
+) -Raw | ConvertFrom-Json
 New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$WorkingDirectory) {
@@ -58,20 +61,41 @@ $innerOwned = @(
     (Join-Path $targetRoot "batcave-monitor-cli.exe"),
     (Join-Path $targetRoot "batcave-monitor.exe")
 )
+$nativeRoot = Join-Path $tauriRoot ".generated/foundry-native"
+$thirdPartyContracts = @($signingContract.third_party_resigned_files)
+if ($thirdPartyContracts.Count -ne 1 -or
+    $thirdPartyContracts[0].name -cne "Microsoft.AI.Foundry.Local.Core.dll") {
+    throw "The signed release requires exactly the pinned Foundry Core re-signing exception."
+}
+$thirdPartyResigned = @(
+    (Join-Path $nativeRoot $thirdPartyContracts[0].name)
+)
+$thirdPartySource = $thirdPartyResigned[0]
+if (-not (Test-Path -LiteralPath $thirdPartySource -PathType Leaf)) {
+    throw "Pinned third-party PE is missing: $thirdPartySource"
+}
+$thirdPartySourceHash = Get-FileHash -LiteralPath $thirdPartySource -Algorithm SHA256
+$thirdPartySourceDigest = $thirdPartySourceHash.Hash.ToLowerInvariant()
+if ($thirdPartySourceDigest -cne $thirdPartyContracts[0].source_sha256) {
+    throw "Foundry Core source digest does not match the pinned unsigned SDK input."
+}
+$thirdPartySourceSignature = Get-AuthenticodeSignature -LiteralPath $thirdPartySource
+if ($thirdPartySourceSignature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
+    throw "Foundry Core re-signing is allowed only for the exact unsigned SDK input."
+}
+
 $signer = Join-Path $tauriRoot "windows/sign-artifact.ps1"
-foreach ($file in $innerOwned) {
+foreach ($file in @($innerOwned + $thirdPartyResigned)) {
     & $signer -Path $file
     if ($LASTEXITCODE -ne 0) { throw "Inner PE signing failed for $file." }
 }
 
-$nativeRoot = Join-Path $tauriRoot ".generated/foundry-native"
 $upstream = @(
-    (Join-Path $nativeRoot "Microsoft.AI.Foundry.Local.Core.dll"),
     (Join-Path $nativeRoot "onnxruntime-genai.dll"),
     (Join-Path $nativeRoot "onnxruntime.dll")
 )
 $inventoryWriter = Join-Path $repoRoot "scripts/write-windows-signature-inventory.ps1"
-& $inventoryWriter -Phase inner -Path @($innerOwned + $upstream) `
+& $inventoryWriter -Phase inner -Path @($innerOwned + $thirdPartyResigned + $upstream) `
     -OutputPath (Join-Path $evidenceRoot "windows-signatures-inner.json")
 
 $uninstaller = Join-Path $evidenceRoot "uninstall.exe"
@@ -108,7 +132,8 @@ if ((Get-FileHash -LiteralPath $verifiedCopy -Algorithm SHA256).Hash -cne $insta
 Remove-Item -LiteralPath $verifiedCopy
 
 $generatedInstaller = Join-Path $targetRoot "nsis/x64/installer.nsi"
-& $inventoryWriter -Phase final -Path @($innerOwned + $upstream + @($uninstaller, $installer)) `
+& $inventoryWriter -Phase final `
+    -Path @($innerOwned + $thirdPartyResigned + $upstream + @($uninstaller, $installer)) `
     -GeneratedInstallerScript $generatedInstaller `
     -OutputPath (Join-Path $evidenceRoot "windows-signatures-final.json")
 

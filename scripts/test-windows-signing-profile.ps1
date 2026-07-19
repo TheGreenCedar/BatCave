@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$InputPath,
     [Parameter(Mandatory = $true)]
-    [string]$SignToolPath
+    [string]$SignToolPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ThirdPartyInputPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,10 +14,28 @@ Set-StrictMode -Version Latest
 if (-not $IsWindows) {
     throw "The deterministic Windows signing test profile runs only on Windows."
 }
-foreach ($required in @($InputPath, $SignToolPath)) {
+foreach ($required in @($InputPath, $SignToolPath, $ThirdPartyInputPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "The Windows signing test profile is missing a required file: $required"
     }
+}
+
+$contract = Get-Content -LiteralPath (
+    Join-Path $PSScriptRoot "windows-signing/artifact-signing-contract.v1.json"
+) -Raw | ConvertFrom-Json
+$thirdPartyContracts = @($contract.third_party_resigned_files)
+if ($thirdPartyContracts.Count -ne 1 -or
+    $thirdPartyContracts[0].name -cne [System.IO.Path]::GetFileName($ThirdPartyInputPath)) {
+    throw "The test profile requires the one declared third-party re-signing input."
+}
+$thirdPartySourceFileHash = Get-FileHash -LiteralPath $ThirdPartyInputPath -Algorithm SHA256
+$thirdPartySourceHash = $thirdPartySourceFileHash.Hash.ToLowerInvariant()
+if ($thirdPartySourceHash -cne $thirdPartyContracts[0].source_sha256) {
+    throw "The test profile received a different third-party source payload."
+}
+$thirdPartySourceSignature = Get-AuthenticodeSignature -LiteralPath $ThirdPartyInputPath
+if ($thirdPartySourceSignature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
+    throw "The third-party test source must be the exact unsigned Foundry SDK payload."
 }
 
 $subject = "CN=BatCave Artifact Signing Test"
@@ -25,12 +45,14 @@ if (Test-Path -LiteralPath $testRoot) {
 }
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $signedCopy = Join-Path $testRoot "batcave-signing-test.exe"
+$signedThirdPartyCopy = Join-Path $testRoot $thirdPartyContracts[0].name
 $tamperedCopy = Join-Path $testRoot "batcave-signing-test-tampered.exe"
 $certificate = $null
 $rootStore = $null
 
 try {
     Copy-Item -LiteralPath $InputPath -Destination $signedCopy
+    Copy-Item -LiteralPath $ThirdPartyInputPath -Destination $signedThirdPartyCopy
     $certificate = New-SelfSignedCertificate `
         -Type Custom `
         -Subject $subject `
@@ -53,15 +75,35 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "The local Windows signing test profile failed with status $LASTEXITCODE."
     }
+    & $SignToolPath sign /v /fd SHA256 /s My /sha1 $certificate.Thumbprint `
+        /d "BatCave third-party re-signing test profile" $signedThirdPartyCopy
+    if ($LASTEXITCODE -ne 0) {
+        throw "The third-party Windows re-signing test failed with status $LASTEXITCODE."
+    }
     $signature = Get-AuthenticodeSignature -LiteralPath $signedCopy
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
         $signature.SignerCertificate.Subject -cne $subject -or
         $null -ne $signature.TimeStamperCertificate) {
         throw "The local test signature did not retain its isolated test-only contract."
     }
+    $thirdPartySignature = Get-AuthenticodeSignature -LiteralPath $signedThirdPartyCopy
+    if ($thirdPartySignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+        $thirdPartySignature.SignerCertificate.Subject -cne $subject -or
+        $null -ne $thirdPartySignature.TimeStamperCertificate) {
+        throw "The third-party test signature did not retain its isolated test-only contract."
+    }
+    $signedThirdPartyFileHash = Get-FileHash -LiteralPath $signedThirdPartyCopy -Algorithm SHA256
+    $signedThirdPartyHash = $signedThirdPartyFileHash.Hash.ToLowerInvariant()
+    if ($signedThirdPartyHash -ceq $thirdPartySourceHash) {
+        throw "The third-party signing test did not change the exact unsigned source bytes."
+    }
     & $SignToolPath verify /pa /all /v $signedCopy *> $null
     if ($LASTEXITCODE -ne 0) {
         throw "The local test signature did not pass SignTool verification."
+    }
+    & $SignToolPath verify /pa /all /v $signedThirdPartyCopy *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "The third-party test signature did not pass SignTool verification."
     }
 
     Copy-Item -LiteralPath $signedCopy -Destination $tamperedCopy
@@ -83,7 +125,7 @@ try {
     if ($LASTEXITCODE -eq 0) {
         throw "The byte-tampered signing test fixture unexpectedly passed verification."
     }
-    Write-Host "The isolated test signing profile accepted exact bytes and rejected tampered bytes."
+    Write-Host "The isolated test profile re-signed only the pinned unsigned input and rejected tampered bytes."
 } finally {
     if ($null -ne $rootStore) {
         if ($null -ne $certificate) { $rootStore.Remove($certificate) }

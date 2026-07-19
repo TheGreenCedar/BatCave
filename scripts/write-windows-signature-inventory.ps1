@@ -85,6 +85,9 @@ function Get-Disposition([string]$Name) {
     if ($Name -cmatch '^BatCave\.Monitor_.+_x64-setup\.exe$') {
         return "generated_signed"
     }
+    if (@($contract.third_party_resigned_files.name) -ccontains $Name) {
+        return "third_party_resigned"
+    }
     if ($contract.upstream_files -ccontains $Name) {
         return "upstream_preserved"
     }
@@ -92,7 +95,7 @@ function Get-Disposition([string]$Name) {
 }
 
 function Test-ExpectedSubject([string]$Disposition, [string]$Subject) {
-    if ($Disposition -in @("batcave_signed", "generated_signed")) {
+    if ($Disposition -in @("batcave_signed", "generated_signed", "third_party_resigned")) {
         return $Subject -cmatch '^CN=Albert Najjar(?:,|$)'
     }
     foreach ($pattern in $contract.upstream_publishers) {
@@ -136,6 +139,21 @@ foreach ($candidate in ($allPaths | Sort-Object)) {
     if (-not (Test-ExpectedSubject $disposition $signature.SignerCertificate.Subject)) {
         throw "Packaged PE $name has unexpected publisher $($signature.SignerCertificate.Subject)."
     }
+    $originalSha256 = $null
+    if ($disposition -ceq "third_party_resigned") {
+        $sourceContracts = @(
+            $contract.third_party_resigned_files | Where-Object { $_.name -ceq $name }
+        )
+        if ($sourceContracts.Count -ne 1 -or
+            $sourceContracts[0].source_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw "Packaged re-signed PE $name does not have one exact source contract."
+        }
+        $originalSha256 = "sha256:$($sourceContracts[0].source_sha256)"
+        $signedDigest = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($signedDigest -ceq $sourceContracts[0].source_sha256) {
+            throw "Packaged re-signed PE $name still matches its unsigned source bytes."
+        }
+    }
 
     $verificationOutput = & $env:BATCAVE_SIGNTOOL_PATH verify /pa /all /v $candidate 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -156,6 +174,7 @@ foreach ($candidate in ($allPaths | Sort-Object)) {
         name = $name
         sha256 = "sha256:$((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant())"
         disposition = $disposition
+        original_sha256 = $originalSha256
         publisher_subject = $signature.SignerCertificate.Subject
         certificate_sha256 = "sha256:$(Get-CertificateSha256 $signature.SignerCertificate)"
         rfc3161_timestamp_utc = $timestamp

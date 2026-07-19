@@ -68,6 +68,7 @@ function authenticodeSignature(identity, packetKind, asset) {
         name: asset.name,
         sha256: asset.sha256,
         disposition: asset.name.endsWith("-setup.exe") ? "generated_signed" : "batcave_signed",
+        original_sha256: null,
         subject,
         certificate_sha256: certificate,
         rfc3161_timestamp_utc: "2000-01-01T00:00:00Z",
@@ -295,6 +296,38 @@ test("rejects a BatCave publisher relabeled as preserved upstream code", () => {
   const packet = releaseEvidence();
   packet.assets[0].signatures.authenticode.files[0].disposition = "upstream_preserved";
   assert.throws(() => validateReleaseEvidencePacket(packet), /trusted upstream publisher/u);
+});
+
+test("accepts only the pinned unsigned Foundry Core input as third-party re-signed code", () => {
+  const packet = releaseEvidence();
+  const signature = packet.assets[0].signatures.authenticode;
+  signature.files.push({
+    name: "Microsoft.AI.Foundry.Local.Core.dll",
+    sha256: `sha256:${"e".repeat(64)}`,
+    disposition: "third_party_resigned",
+    original_sha256: "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea",
+    subject: signature.subject,
+    certificate_sha256: signature.identity,
+    rfc3161_timestamp_utc: signature.rfc3161_timestamp_utc,
+    verified: true,
+  });
+  signature.files.sort((left, right) => left.name.localeCompare(right.name));
+  assert.equal(validateReleaseEvidencePacket(packet), packet);
+
+  const drifted = structuredClone(packet);
+  drifted.assets[0].signatures.authenticode.files.find(
+    ({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll",
+  ).original_sha256 = `sha256:${"f".repeat(64)}`;
+  assert.throws(() => validateReleaseEvidencePacket(drifted), /exact unsigned Foundry Core/u);
+
+  const unrelated = structuredClone(packet);
+  unrelated.assets[0].signatures.authenticode.files.find(
+    ({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll",
+  ).name = "unrelated.dll";
+  unrelated.assets[0].signatures.authenticode.files.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  assert.throws(() => validateReleaseEvidencePacket(unrelated), /exact unsigned Foundry Core/u);
 });
 
 test("records failed and blocked outcomes without declaring a release pass", () => {

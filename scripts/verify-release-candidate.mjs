@@ -14,6 +14,9 @@ import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
+const FOUNDRY_CORE_NAME = "Microsoft.AI.Foundry.Local.Core.dll";
+const FOUNDRY_CORE_SOURCE_SHA256 =
+  "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea";
 
 function exactObjectKeys(value, expected, owner) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -175,6 +178,7 @@ export function validateWindowsSigningInventory(inventory, tag, sourceSha, asset
     "name",
     "sha256",
     "disposition",
+    "original_sha256",
     "publisher_subject",
     "certificate_sha256",
     "rfc3161_timestamp_utc",
@@ -190,7 +194,6 @@ export function validateWindowsSigningInventory(inventory, tag, sourceSha, asset
     throw new Error("windows signing inventory contains duplicate file names");
   }
   const upstream = new Set([
-    "Microsoft.AI.Foundry.Local.Core.dll",
     "MicrosoftEdgeWebView2RuntimeInstaller.exe",
     "onnxruntime-genai.dll",
     "onnxruntime.dll",
@@ -204,6 +207,9 @@ export function validateWindowsSigningInventory(inventory, tag, sourceSha, asset
     if (!SHA256_DIGEST.test(record.timestamp_certificate_sha256)) {
       throw new Error(`windows signing inventory record ${record.name} has an invalid timestamper`);
     }
+    if (record.original_sha256 !== null && !SHA256_DIGEST.test(record.original_sha256)) {
+      throw new Error(`windows signing inventory record ${record.name} has an invalid source hash`);
+    }
     if (!UTC_TIMESTAMP.test(record.rfc3161_timestamp_utc)) {
       throw new Error(`windows signing inventory record ${record.name} has an invalid timestamp`);
     }
@@ -213,15 +219,26 @@ export function validateWindowsSigningInventory(inventory, tag, sourceSha, asset
     if (upstream.has(record.name)) {
       if (
         record.disposition !== "upstream_preserved" ||
+        record.original_sha256 !== null ||
         !/^CN=Microsoft (?:Corporation|Windows)(?:,|$)/u.test(record.publisher_subject)
       ) {
         throw new Error(`upstream PE ${record.name} does not retain a trusted Microsoft signature`);
       }
     } else {
-      if (
-        !["batcave_signed", "generated_signed"].includes(record.disposition) ||
-        !/^CN=Albert Najjar(?:,|$)/u.test(record.publisher_subject)
+      if (record.name === FOUNDRY_CORE_NAME) {
+        if (
+          record.disposition !== "third_party_resigned" ||
+          record.original_sha256 !== FOUNDRY_CORE_SOURCE_SHA256
+        ) {
+          throw new Error("Foundry Core must bind the exact unsigned SDK source before re-signing");
+        }
+      } else if (
+        record.original_sha256 !== null ||
+        !["batcave_signed", "generated_signed"].includes(record.disposition)
       ) {
+        throw new Error(`BatCave PE ${record.name} has an invalid signing disposition`);
+      }
+      if (!/^CN=Albert Najjar(?:,|$)/u.test(record.publisher_subject)) {
         throw new Error(`BatCave PE ${record.name} has the wrong publisher or disposition`);
       }
       batcaveCertificate ??= record.certificate_sha256;

@@ -34,6 +34,9 @@ const SIGNATURE_KINDS = new Set([
 ]);
 const TAURI_UPDATER_KEY_IDENTITY =
   "sha256:0dad0009cf5cc87a778f2e951cefaa0faaba637b95a22f6f3064f12cd4136545";
+const FOUNDRY_CORE_NAME = "Microsoft.AI.Foundry.Local.Core.dll";
+const FOUNDRY_CORE_SOURCE_SHA256 =
+  "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea";
 const CERTIFICATE_FINGERPRINT = /^sha256:[0-9a-f]{64}$/u;
 const DEVELOPER_ID = /^Developer ID Application: [^()]+ \([A-Z0-9]{10}\)$/u;
 const NOTARIZATION_SUBMISSION =
@@ -458,6 +461,7 @@ function validateAuthenticodeSignature(signature, asset, packetKind, field) {
       "name",
       "sha256",
       "disposition",
+      "original_sha256",
       "subject",
       "certificate_sha256",
       "rfc3161_timestamp_utc",
@@ -470,9 +474,20 @@ function validateAuthenticodeSignature(signature, asset, packetKind, field) {
     }
     string(record.sha256, `${recordField}.sha256`, { max: 71, pattern: SHA256_DIGEST });
     if (
-      !new Set(["batcave_signed", "generated_signed", "upstream_preserved"]).has(record.disposition)
+      !new Set([
+        "batcave_signed",
+        "generated_signed",
+        "third_party_resigned",
+        "upstream_preserved",
+      ]).has(record.disposition)
     ) {
       fail(`${recordField}.disposition`, "is not supported");
+    }
+    if (record.original_sha256 !== null) {
+      string(record.original_sha256, `${recordField}.original_sha256`, {
+        max: 71,
+        pattern: SHA256_DIGEST,
+      });
     }
     string(record.certificate_sha256, `${recordField}.certificate_sha256`, {
       max: 71,
@@ -483,14 +498,29 @@ function validateAuthenticodeSignature(signature, asset, packetKind, field) {
     if (record.verified !== true) fail(`${recordField}.verified`, "must be true");
     if (packetKind !== "schema_fixture") {
       if (record.disposition === "upstream_preserved") {
-        if (!/^CN=Microsoft (?:Corporation|Windows)(?:,|$)/u.test(record.subject)) {
+        if (
+          record.original_sha256 !== null ||
+          !/^CN=Microsoft (?:Corporation|Windows)(?:,|$)/u.test(record.subject)
+        ) {
           fail(`${recordField}.subject`, "must identify the trusted upstream publisher");
         }
-      } else if (
-        !/^CN=Albert Najjar(?:,|$)/u.test(record.subject) ||
-        record.certificate_sha256 !== identity
-      ) {
-        fail(recordField, "must use the declared BatCave publisher and certificate");
+      } else {
+        if (record.disposition === "third_party_resigned") {
+          if (
+            record.name !== FOUNDRY_CORE_NAME ||
+            record.original_sha256 !== FOUNDRY_CORE_SOURCE_SHA256
+          ) {
+            fail(recordField, "must bind the exact unsigned Foundry Core SDK source");
+          }
+        } else if (record.original_sha256 !== null) {
+          fail(recordField, "must not claim an unsigned third-party source");
+        }
+        if (
+          !/^CN=Albert Najjar(?:,|$)/u.test(record.subject) ||
+          record.certificate_sha256 !== identity
+        ) {
+          fail(recordField, "must use the declared BatCave publisher and certificate");
+        }
       }
     }
   }

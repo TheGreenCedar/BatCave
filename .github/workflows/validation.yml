@@ -119,7 +119,8 @@ jobs:
         run: |
           ./scripts/test-windows-signing-profile.ps1 `
             -InputPath "src/BatCave.App/src-tauri/target/debug/batcave-collector-service.exe" `
-            -SignToolPath $env:BATCAVE_SIGNTOOL_PATH
+            -SignToolPath $env:BATCAVE_SIGNTOOL_PATH `
+            -ThirdPartyInputPath "src/BatCave.App/src-tauri/.generated/foundry-native/Microsoft.AI.Foundry.Local.Core.dll"
 
       - name: Test private Windows lifecycle proof controller
         env:
