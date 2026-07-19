@@ -52,8 +52,9 @@ New-Item -ItemType Directory -Path $testRoot | Out-Null
 $signedCopy = Join-Path $testRoot "batcave-signing-test.exe"
 $signedThirdPartyCopy = Join-Path $testRoot $thirdPartyContracts[0].name
 $tamperedCopy = Join-Path $testRoot "batcave-signing-test-tampered.exe"
+$testCertificatePath = Join-Path $testRoot "batcave-signing-test.cer"
 $certificate = $null
-$rootStore = $null
+$rootCertificateInstalled = $false
 
 try {
     Write-TestCheckpoint "copying exact inputs"
@@ -71,12 +72,17 @@ try {
         -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
 
     Write-TestCheckpoint "trusting test certificate"
-    $rootStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-        [System.Security.Cryptography.X509Certificates.StoreName]::Root,
-        [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+    [System.IO.File]::WriteAllBytes(
+        $testCertificatePath,
+        $certificate.Export(
+            [System.Security.Cryptography.X509Certificates.X509ContentType]::Cert
+        )
     )
-    $rootStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    $rootStore.Add($certificate)
+    & certutil.exe -user -f -addstore Root $testCertificatePath *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "The signing test certificate could not be trusted with status $LASTEXITCODE."
+    }
+    $rootCertificateInstalled = $true
 
     Write-TestCheckpoint "signing BatCave input"
     & $SignToolPath sign /v /fd SHA256 /s My /sha1 $certificate.Thumbprint `
@@ -143,9 +149,11 @@ try {
     Write-Host "The isolated test profile re-signed only the pinned unsigned input and rejected tampered bytes."
 } finally {
     Write-TestCheckpoint "cleaning certificate and fixtures"
-    if ($null -ne $rootStore) {
-        if ($null -ne $certificate) { $rootStore.Remove($certificate) }
-        $rootStore.Dispose()
+    if ($rootCertificateInstalled -and $null -ne $certificate) {
+        & certutil.exe -user -delstore Root $certificate.Thumbprint *> $null
+        if ($LASTEXITCODE -ne 0) {
+            throw "The signing test certificate could not be removed with status $LASTEXITCODE."
+        }
     }
     if ($null -ne $certificate) {
         Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue

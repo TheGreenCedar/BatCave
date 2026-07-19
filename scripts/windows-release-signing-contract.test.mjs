@@ -51,6 +51,9 @@ test("keeps the local signing test profile isolated from production evidence", (
   assert.match(testProfile, /byte-tampered signing test fixture/u);
   assert.match(testProfile, /Cert:\\CurrentUser\\My/u);
   assert.match(testProfile, /Remove-Item -LiteralPath "Cert:\\CurrentUser\\My/u);
+  assert.match(testProfile, /certutil\.exe -user -f -addstore Root/u);
+  assert.match(testProfile, /certutil\.exe -user -delstore Root/u);
+  assert.doesNotMatch(testProfile, /X509Store/u);
   assert.match(testProfile, /exact unsigned Foundry SDK payload/u);
   assert.doesNotMatch(testProfile, /timestamp\.acs\.microsoft\.com/u);
   assert.match(
