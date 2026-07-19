@@ -131,6 +131,25 @@ test("every theme family renders in both modes and System follows the OS", async
   await expect(shell).toHaveAttribute("data-mode", "light");
 });
 
+test("enhanced explanations are an explicit local opt-in with a deterministic fallback", async ({
+  page,
+}) => {
+  await openFixture(page, "settings");
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  const toggle = dialog.getByRole("switch", { name: "Use locally generated explanations" });
+  await expect(toggle).not.toBeChecked();
+  await expect(
+    dialog.getByText("Off by default. Deterministic explanations always remain available."),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText(/paths, process IDs, diagnostics, and other workloads are excluded/i),
+  ).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Overview" }).click();
+  await expect(page.locator(".narrative-origin")).toHaveCount(0);
+});
+
 test("matched icon provenance is consistent across Overview, Explore, compact cards, and inspectors", async ({
   page,
 }) => {

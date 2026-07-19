@@ -69,6 +69,97 @@ dmg="${dmgs[0]}"
 reference_team_identifier=""
 reference_authority=""
 
+verify_foundation_models_sidecar() {
+  local candidate="$1"
+  local expected_team_identifier="$2"
+  local expected_authority="$3"
+  local sidecar="$candidate/Contents/MacOS/batcave-foundation-models"
+  local minimum_version
+  local load_commands
+  local signature_details
+  local team_identifier
+  local authority
+  local entitlements
+  local status_json
+
+  [[ -x "$sidecar" ]] || {
+    echo "Missing executable Foundation Models sidecar: $sidecar" >&2
+    return 1
+  }
+  lipo "$sidecar" -verify_arch arm64 || {
+    echo "Expected an arm64 slice in $sidecar." >&2
+    return 1
+  }
+  if lipo "$sidecar" -verify_arch x86_64 >/dev/null 2>&1; then
+    echo "Unexpected Intel x86_64 slice in $sidecar." >&2
+    return 1
+  fi
+  minimum_version="$(vtool -show-build "$sidecar" | awk '$1 == "minos" { print $2; exit }')"
+  [[ "$minimum_version" == "12.0" ]] || {
+    echo "Expected Foundation Models sidecar deployment target 12.0, found $minimum_version." >&2
+    return 1
+  }
+
+  load_commands="$(otool -l "$sidecar")"
+  if awk '
+    $1 == "cmd" { command = $2 }
+    $1 == "name" && $2 ~ /FoundationModels\.framework/ && command == "LC_LOAD_WEAK_DYLIB" { weak = 1 }
+    END { exit weak ? 0 : 1 }
+  ' <<<"$load_commands"; then
+    :
+  elif [[ "$mode" == "release" ]]; then
+    echo "FoundationModels.framework is not weak-linked in release sidecar $sidecar." >&2
+    return 1
+  else
+    status_json="$(printf '%s\n' '{"version":1,"operation":"status"}' | "$sidecar")"
+    node -e '
+      const response = JSON.parse(process.argv[1]);
+      if (response.version !== 1 || response.availability !== "unsupported" || response.result !== undefined) process.exit(1);
+    ' "$status_json" || {
+      echo "An ad-hoc sidecar without FoundationModels must report unsupported." >&2
+      return 1
+    }
+  fi
+  if awk '
+    $1 == "cmd" { command = $2 }
+    $1 == "name" && $2 ~ /FoundationModels\.framework/ && command == "LC_LOAD_DYLIB" { strong = 1 }
+    END { exit strong ? 0 : 1 }
+  ' <<<"$load_commands"; then
+    echo "FoundationModels.framework is strongly linked in $sidecar." >&2
+    return 1
+  fi
+
+  codesign --verify --strict --verbose=2 "$sidecar"
+  signature_details="$(codesign -dv --verbose=4 "$sidecar" 2>&1)"
+  grep -q 'flags=.*runtime' <<<"$signature_details" || {
+    echo "Hardened runtime is not enabled for $sidecar." >&2
+    return 1
+  }
+  if [[ "$mode" == "adhoc" ]]; then
+    grep -q 'Signature=adhoc' <<<"$signature_details" || {
+      echo "Expected an ad-hoc signature for $sidecar." >&2
+      return 1
+    }
+  else
+    team_identifier="$(sed -n 's/^TeamIdentifier=//p' <<<"$signature_details" | head -n 1)"
+    authority="$(sed -n 's/^Authority=//p' <<<"$signature_details" | head -n 1)"
+    [[ "$team_identifier" == "$expected_team_identifier" ]] || {
+      echo "Expected sidecar TeamIdentifier $expected_team_identifier, found $team_identifier." >&2
+      return 1
+    }
+    [[ "$authority" == "$expected_authority" ]] || {
+      echo "Expected sidecar signing authority $expected_authority, found $authority." >&2
+      return 1
+    }
+  fi
+
+  entitlements="$(codesign -d --entitlements :- "$sidecar" 2>/dev/null || true)"
+  if grep -Eq 'com\.apple\.security\.network\.(client|server)' <<<"$entitlements"; then
+    echo "Foundation Models sidecar must not carry network entitlements." >&2
+    return 1
+  fi
+}
+
 verify_app() {
   local candidate="$1"
   local role="$2"
@@ -154,6 +245,8 @@ verify_app() {
       }
     fi
   fi
+
+  verify_foundation_models_sidecar "$candidate" "$team_identifier" "$authority"
 }
 
 verify_app "$app" direct

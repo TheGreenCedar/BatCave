@@ -51,6 +51,8 @@
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
   export let platform: "windows" | "linux" | "macos" | "fixture" = "fixture";
   export let processNetworkLabel: (process: ProcessSample) => string;
+  export let insightNarrative: string | null = null;
+  export let insightNarrativeGenerated = false;
   export let onCopy: () => void;
 
   $: selectedProcess = detail.process;
@@ -160,7 +162,12 @@
     </section>
 
     {#if hasNotableFinding(selectedProcess)}
-      <p class="insight-copy"><strong>Worth noting:</strong> {findingCopy(selectedProcess)}</p>
+      <div class="insight-block">
+        <p class="insight-copy"><strong>Worth noting:</strong> {insightNarrative ?? findingCopy(selectedProcess)}</p>
+        {#if insightNarrativeGenerated}
+          <small class="narrative-origin">Locally generated explanation</small>
+        {/if}
+      </div>
     {/if}
 
     <section class="key-metrics" aria-labelledby="key-metrics-title">

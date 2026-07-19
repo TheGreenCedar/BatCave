@@ -1,6 +1,9 @@
 {
   "bundle": {
     "targets": ["nsis"],
+    "resources": {
+      ".generated/foundry-native/*.dll": "foundry-native/"
+    },
     "icon": ["icons/icon.ico"],
     "windows": {
       "nsis": {

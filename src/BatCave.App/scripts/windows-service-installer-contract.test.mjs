@@ -43,7 +43,9 @@ function assertExactLine(source, line, count = 1) {
 test("Windows bundle packages the collector service beside the asInvoker desktop", async () => {
   const config = JSON.parse(await text("tauri.windows.conf.json"));
   assert.equal(config.build, undefined);
-  assert.equal(config.bundle.resources, undefined);
+  assert.deepEqual(config.bundle.resources, {
+    ".generated/foundry-native/*.dll": "foundry-native/",
+  });
   assert.equal(config.bundle.windows.nsis.compression, "none");
   assert.equal(config.bundle.windows.nsis.installMode, "perMachine");
   assert.equal(config.bundle.windows.nsis.installerHooks, "windows/nsis-hooks.nsh");

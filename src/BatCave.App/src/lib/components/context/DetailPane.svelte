@@ -43,6 +43,8 @@
   export let activeTheme: ChartPalette;
   export let presentation: PlatformPresentation;
   export let processNetworkLabel: (process: ProcessSample) => string;
+  export let insightNarrative: string | null = null;
+  export let insightNarrativeGenerated = false;
   export let onCopy: () => void;
   export let detailMode: DetailMode;
   export let detailTitle: string;
@@ -169,6 +171,8 @@
           {presentation}
           platform={snapshot.environment.platform}
           {processNetworkLabel}
+          {insightNarrative}
+          {insightNarrativeGenerated}
           {onCopy}
         />
       {:else if selectedWorkload?.kind === "group"}

@@ -40,8 +40,20 @@
     metricQualityLabel,
     metricQualityShortLabel,
     processMemoryQuality,
+    processFindingLabel,
   } from "./lib/format";
   import { makeFixtureSnapshot } from "./lib/fixtures";
+  import {
+    NarrativeController,
+    buildNarrativeFactPacket,
+    defaultNarrativeCapability,
+    isNarrativeRelevant,
+    makeNarrativeInvocation,
+    narrativeCapabilityExplanation,
+    narrativeRelevanceKey,
+    type AcceptedNarrative,
+    type NarrativeFactPacket,
+  } from "./lib/narratives";
   import { buildOverviewStatus, leadingOverviewRows } from "./lib/overview";
   import {
     platformPresentation,
@@ -126,6 +138,13 @@
   } from "./lib/themes";
   import {
     commandErrorMessage,
+    cancelLocalNarrativeGeneration,
+    cancelNarrativeModelDownload,
+    downloadNarrativeModel,
+    generateLocalNarrative,
+    getNarrativeCapability,
+    getNarrativeFactDigest,
+    getNarrativePreferences,
     getRuntimeProcessIcons,
     ProtocolMismatchError,
     readNativeSnapshot,
@@ -135,6 +154,7 @@
     setRuntimeProcessQuery,
     setRuntimeSampleInterval,
     setRuntimeUiPreferences,
+    setEnhancedNarratives,
     syncRuntimeAppearance,
     type RuntimeQueryWriteIntent,
   } from "./lib/tauriBridge";
@@ -167,6 +187,12 @@
   const stableUpdateController = new StableUpdateController<Update>(() =>
     check({ timeout: 15_000 }),
   );
+  const narrativeController = new NarrativeController(async (invocation, signal) => {
+    if (signal.aborted) throw new Error("narrative_cancelled");
+    const result = await generateLocalNarrative(invoke, invocation.request, invocation.facts);
+    if (signal.aborted || !result) throw new Error("narrative_unavailable");
+    return result;
+  });
   const browserFixturePlatform = "macos" as const;
   const accessibilityFixtureState = resolveAccessibilityFixtureState(
     typeof window === "undefined" ? "" : window.location.search,
@@ -224,6 +250,16 @@
   let searchDebounceId: number | undefined;
   let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
   let updateMessage = "Checks only when you ask.";
+  let enhancedNarratives = false;
+  let narrativeCapability = defaultNarrativeCapability;
+  let narrativeSettingsStatus = "";
+  let narrativeModelAction: "idle" | "downloading" | "cancelling" = "idle";
+  let overviewNarrative: AcceptedNarrative | null = null;
+  let workloadNarrative: AcceptedNarrative | null = null;
+  let narrativeInitialRequestDone = false;
+  let narrativeCapabilityPollId: number | undefined;
+  let narrativeEpoch = 0;
+  let narrativeCancellation: Promise<void> = Promise.resolve();
 
   $: resolvedTheme = resolveThemePreference(themePreference, systemThemeMode);
   $: resolvedThemeName = serializeResolvedTheme(resolvedTheme);
@@ -316,6 +352,11 @@
     processIcons,
     leadingCpuProcess ? processIconKey(leadingCpuProcess) : undefined,
   );
+  $: overviewContributorCopy = overviewNarrative?.text ?? overviewCpuBrief.contributorStatusLabel;
+  $: selectedWorkloadInsight =
+    selectedProcess && processHasNotableFinding(selectedProcess)
+      ? workloadNarrative?.text ?? deterministicProcessFinding(selectedProcess)
+      : null;
   $: limitationCount =
     uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warning_count;
   $: overviewStatus = buildOverviewStatus(
@@ -496,6 +537,8 @@
       ingest(makeEmptySnapshot(lastError));
     }
 
+    void hydrateNarrativeState();
+
     if (!accessibilityFixtureState) {
       stopPolling = startRuntimePolling({
         initialDelayMs: 120,
@@ -554,6 +597,11 @@
       if (detailFocusFrame !== undefined) {
         window.cancelAnimationFrame(detailFocusFrame);
       }
+      if (narrativeCapabilityPollId !== undefined) {
+        window.clearTimeout(narrativeCapabilityPollId);
+      }
+      narrativeController.dispose();
+      if (hasTauriRuntime()) void cancelLocalNarrativeGeneration(invoke).catch(() => {});
     };
   });
 
@@ -675,6 +723,394 @@
 
   function runtimeMode() {
     return runtimeSurfaceMode(hasTauriRuntime(), import.meta.env.DEV);
+  }
+
+  async function hydrateNarrativeState(): Promise<void> {
+    if (runtimeMode() !== "native") return;
+    try {
+      const [preferences, capability] = await Promise.all([
+        getNarrativePreferences(invoke),
+        getNarrativeCapability(invoke),
+      ]);
+      enhancedNarratives = preferences.enhanced_narratives;
+      narrativeCapability = capability;
+      narrativeSettingsStatus = "";
+      window.queueMicrotask(maybeRequestInitialNarrative);
+    } catch (error) {
+      enhancedNarratives = false;
+      narrativeSettingsStatus = commandErrorMessage(
+        error,
+        "Enhanced explanations are unavailable. Deterministic explanations remain active.",
+      );
+    }
+  }
+
+  async function refreshNarrativeCapability(): Promise<void> {
+    if (runtimeMode() !== "native") return;
+    try {
+      narrativeCapability = await getNarrativeCapability(invoke);
+    } catch {
+      // Capability refresh is optional; the last known state and deterministic copy remain valid.
+    }
+  }
+
+  async function setEnhancedNarrativePreference(enabled: boolean): Promise<void> {
+    cancelNarrativeWork();
+    enhancedNarratives = enabled;
+    narrativeSettingsStatus = "";
+    if (runtimeMode() !== "native") {
+      if (enabled) {
+        narrativeSettingsStatus =
+          "Enhanced explanations require the native app. Deterministic explanations remain active.";
+      }
+      return;
+    }
+    try {
+      const persisted = await setEnhancedNarratives(invoke, enabled);
+      enhancedNarratives = persisted.enhanced_narratives;
+      if (enhancedNarratives) void requestCurrentSurfaceNarrative();
+    } catch (error) {
+      enhancedNarratives = !enabled;
+      narrativeSettingsStatus = commandErrorMessage(
+        error,
+        "Unable to save enhanced explanation preferences.",
+      );
+    }
+  }
+
+  async function startNarrativeModelDownload(): Promise<void> {
+    if (runtimeMode() !== "native" || narrativeModelAction !== "idle") return;
+    narrativeModelAction = "downloading";
+    narrativeSettingsStatus = "Downloading the local model…";
+    scheduleNarrativeCapabilityPoll();
+    try {
+      narrativeCapability = await downloadNarrativeModel(invoke);
+      if (narrativeCapability.download_state === "downloading") {
+        narrativeSettingsStatus = "Downloading the local model…";
+        scheduleNarrativeCapabilityPoll();
+      } else {
+        narrativeModelAction = "idle";
+        stopNarrativeCapabilityPoll();
+        narrativeSettingsStatus = narrativeCapability.availability === "available"
+          ? "The local model is ready."
+          : narrativeCapabilityExplanation(narrativeCapability);
+      }
+    } catch (error) {
+      narrativeModelAction = "idle";
+      stopNarrativeCapabilityPoll();
+      narrativeSettingsStatus = commandErrorMessage(error, "The local model download failed.");
+    }
+  }
+
+  async function stopNarrativeModelDownload(): Promise<void> {
+    if (runtimeMode() !== "native" || narrativeModelAction !== "downloading") return;
+    narrativeModelAction = "cancelling";
+    narrativeSettingsStatus = "Cancelling the download…";
+    try {
+      narrativeCapability = await cancelNarrativeModelDownload(invoke);
+      if (narrativeCapability.download_state === "downloading") {
+        narrativeSettingsStatus = "Cancelling the download…";
+        scheduleNarrativeCapabilityPoll();
+      } else {
+        narrativeModelAction = "idle";
+        stopNarrativeCapabilityPoll();
+        narrativeSettingsStatus = narrativeCapability.availability === "available"
+          ? "The local model is ready."
+          : "Local model download cancelled.";
+      }
+    } catch (error) {
+      narrativeSettingsStatus = commandErrorMessage(error, "Unable to cancel the download.");
+      if (narrativeCapability.download_state === "downloading") {
+        narrativeModelAction = "downloading";
+        scheduleNarrativeCapabilityPoll();
+      } else {
+        narrativeModelAction = "idle";
+        stopNarrativeCapabilityPoll();
+      }
+    }
+  }
+
+  function scheduleNarrativeCapabilityPoll(): void {
+    stopNarrativeCapabilityPoll();
+    narrativeCapabilityPollId = window.setTimeout(async () => {
+      narrativeCapabilityPollId = undefined;
+      if (narrativeModelAction === "idle") return;
+      const wasCancelling = narrativeModelAction === "cancelling";
+      await refreshNarrativeCapability();
+      if (narrativeCapability.download_state === "downloading") {
+        narrativeSettingsStatus = wasCancelling
+          ? "Cancelling the download…"
+          : "Downloading the local model…";
+        scheduleNarrativeCapabilityPoll();
+      } else {
+        narrativeModelAction = "idle";
+        narrativeSettingsStatus = narrativeCapability.availability === "available"
+          ? "The local model is ready."
+          : wasCancelling
+            ? "Local model download cancelled."
+            : narrativeCapabilityExplanation(narrativeCapability);
+      }
+    }, 750);
+  }
+
+  function stopNarrativeCapabilityPoll(): void {
+    if (narrativeCapabilityPollId !== undefined) {
+      window.clearTimeout(narrativeCapabilityPollId);
+      narrativeCapabilityPollId = undefined;
+    }
+  }
+
+  function cancelNarrativeWork(): void {
+    narrativeEpoch += 1;
+    narrativeController.cancel();
+    overviewNarrative = null;
+    workloadNarrative = null;
+    if (runtimeMode() === "native") {
+      narrativeCancellation = narrativeCancellation
+        .then(() => cancelLocalNarrativeGeneration(invoke))
+        .catch(() => {});
+    }
+  }
+
+  async function requestCurrentSurfaceNarrative(): Promise<void> {
+    if (!enhancedNarratives || narrativeCapability.availability !== "available") return;
+    if (activeView === "overview") {
+      await requestOverviewNarrative();
+    } else if (detailSubject === "process") {
+      await requestWorkloadNarrative();
+    }
+  }
+
+  function maybeRequestInitialNarrative(): void {
+    if (
+      narrativeInitialRequestDone ||
+      !enhancedNarratives ||
+      narrativeCapability.availability !== "available"
+    ) {
+      return;
+    }
+    const hasNarrativeSubject = activeView === "overview"
+      ? currentOverviewNarrativeContext() !== null
+      : detailSubject === "process" && currentWorkloadNarrativeContext() !== null;
+    if (!hasNarrativeSubject) return;
+    narrativeInitialRequestDone = true;
+    void requestCurrentSurfaceNarrative();
+  }
+
+  async function requestOverviewNarrative(): Promise<void> {
+    await narrativeCancellation;
+    const epoch = narrativeEpoch;
+    const context = currentOverviewNarrativeContext();
+    if (!context || runtimeMode() !== "native") return;
+    const relevanceKey = narrativeRelevanceKey(context.facts);
+    const publicationSeq = snapshot.publication_seq;
+    let factDigest = "";
+    try {
+      factDigest = await getNarrativeFactDigest(invoke, context.facts);
+    } catch {
+      return;
+    }
+    const currentBeforeGeneration = currentOverviewNarrativeContext();
+    if (
+      !currentBeforeGeneration ||
+      epoch !== narrativeEpoch ||
+      narrativeRelevanceKey(currentBeforeGeneration.facts) !== relevanceKey ||
+      currentBeforeGeneration.subjectStableId !== context.subjectStableId
+    ) {
+      return;
+    }
+    const invocation = makeNarrativeInvocation(
+      "overview_contributor",
+      publicationSeq,
+      context.facts,
+      context.subjectStableId,
+      factDigest,
+    );
+    const result = await narrativeController.request(invocation);
+    const current = currentOverviewNarrativeContext();
+    if (
+      result &&
+      epoch === narrativeEpoch &&
+      activeView === "overview" &&
+      current &&
+      isNarrativeRelevant(
+        result,
+        current.facts,
+        "overview_contributor",
+        current.subjectStableId,
+      )
+    ) {
+      overviewNarrative = result;
+    }
+  }
+
+  async function requestWorkloadNarrative(): Promise<void> {
+    await narrativeCancellation;
+    const epoch = narrativeEpoch;
+    const context = currentWorkloadNarrativeContext();
+    if (!context || runtimeMode() !== "native") return;
+    const relevanceKey = narrativeRelevanceKey(context.facts);
+    const publicationSeq = snapshot.publication_seq;
+    let factDigest = "";
+    try {
+      factDigest = await getNarrativeFactDigest(invoke, context.facts);
+    } catch {
+      return;
+    }
+    const currentBeforeGeneration = currentWorkloadNarrativeContext();
+    if (
+      !currentBeforeGeneration ||
+      epoch !== narrativeEpoch ||
+      narrativeRelevanceKey(currentBeforeGeneration.facts) !== relevanceKey ||
+      currentBeforeGeneration.subjectStableId !== context.subjectStableId
+    ) {
+      return;
+    }
+    const invocation = makeNarrativeInvocation(
+      "workload_insight",
+      publicationSeq,
+      context.facts,
+      context.subjectStableId,
+      factDigest,
+    );
+    const result = await narrativeController.request(invocation);
+    const current = currentWorkloadNarrativeContext();
+    if (
+      result &&
+      epoch === narrativeEpoch &&
+      activeView === "explore" &&
+      current &&
+      isNarrativeRelevant(result, current.facts, "workload_insight", current.subjectStableId)
+    ) {
+      workloadNarrative = result;
+    }
+  }
+
+  function currentOverviewNarrativeContext(): {
+    facts: NarrativeFactPacket;
+    subjectStableId: string;
+  } | null {
+    if (!leadingCpuProcess || !overviewCpuBrief.leadingProcessId) return null;
+    return {
+      facts: processNarrativeFacts(leadingCpuProcess, "cpu", "top_contributor"),
+      subjectStableId: overviewCpuBrief.leadingProcessId,
+    };
+  }
+
+  function currentWorkloadNarrativeContext(): {
+    facts: NarrativeFactPacket;
+    subjectStableId: string;
+  } | null {
+    if (
+      selectedWorkload?.kind !== "process" ||
+      !processHasNotableFinding(selectedWorkload.process)
+    ) {
+      return null;
+    }
+    return {
+      facts: processNarrativeFacts(
+        selectedWorkload.process,
+        leadingNarrativeResource(selectedWorkload.process),
+        "notable",
+      ),
+      subjectStableId: selectedWorkload.workload_id,
+    };
+  }
+
+  function processNarrativeFacts(
+    process: ProcessSample,
+    leadingResource: NarrativeFactPacket["leading_resource"],
+    rankingState: NarrativeFactPacket["ranking_state"],
+  ): NarrativeFactPacket {
+    return buildNarrativeFactPacket({
+      displayName: process.name,
+      category: processIdentity(process).group,
+      cpuPercent: process.cpu_percent,
+      memoryBytes: process.memory_bytes,
+      ioBytesPerSecond: processIoRate(process, processRates),
+      networkBytesPerSecond:
+        (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
+      leadingResource,
+      rankingState,
+      measurementLimitations: processMeasurementLimitations(process),
+    });
+  }
+
+  function processMeasurementLimitations(
+    process: ProcessSample,
+  ): NarrativeFactPacket["measurement_limitations"] {
+    const limitations: NarrativeFactPacket["measurement_limitations"] = [];
+    for (const kind of ["cpu", "memory", "io", "network"] as const) {
+      const quality = process.quality?.[kind]?.quality;
+      if (quality === "native") continue;
+      if (quality === "estimated") limitations.push({ kind, quality: "estimated" });
+      else if (quality === "partial") limitations.push({ kind, quality: "limited" });
+      else if (quality === "held") limitations.push({ kind, quality: "stale" });
+      else limitations.push({ kind, quality: "unavailable" });
+    }
+    return limitations;
+  }
+
+  function leadingNarrativeResource(
+    process: ProcessSample,
+  ): NarrativeFactPacket["leading_resource"] {
+    const values = [
+      ["cpu", process.cpu_percent / 30],
+      ["memory", process.memory_bytes / (900 * 1024 ** 2)],
+      ["io", processIoRate(process, processRates) / (500 * 1024)],
+      [
+        "network",
+        ((process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0)) /
+          (1024 ** 2),
+      ],
+    ] as const;
+    const leading = values.reduce((best, candidate) =>
+      candidate[1] > best[1] ? candidate : best,
+    );
+    return leading[1] > 0 ? leading[0] : undefined;
+  }
+
+  function deterministicProcessFinding(process: ProcessSample): string {
+    return processFindingLabel(
+      process,
+      processIoRate(process, processRates),
+      (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
+      presentation.memoryLabel,
+    );
+  }
+
+  function processHasNotableFinding(process: ProcessSample): boolean {
+    return deterministicProcessFinding(process) !==
+      "No unusual activity is visible for this workload right now.";
+  }
+
+  function dropStaleNarratives(): void {
+    const overviewCurrent = currentOverviewNarrativeContext();
+    if (
+      overviewNarrative &&
+      (!overviewCurrent ||
+        !isNarrativeRelevant(
+          overviewNarrative,
+          overviewCurrent.facts,
+          "overview_contributor",
+          overviewCurrent.subjectStableId,
+        ))
+    ) {
+      overviewNarrative = null;
+    }
+    const workloadCurrent = currentWorkloadNarrativeContext();
+    if (
+      workloadNarrative &&
+      (!workloadCurrent ||
+        !isNarrativeRelevant(
+          workloadNarrative,
+          workloadCurrent.facts,
+          "workload_insight",
+          workloadCurrent.subjectStableId,
+        ))
+    ) {
+      workloadNarrative = null;
+    }
   }
 
   function isHistoryPointLimit(value: number): value is HistoryPointLimit {
@@ -1016,6 +1452,7 @@
     }
     snapshot = next;
     updateProcessRows(next.process_view_rows);
+    window.queueMicrotask(maybeRequestInitialNarrative);
     if (!selectedWorkloadId && !hasAutoSelectedWorkload) {
       const firstWorkload = next.process_view_rows.find(
         (row) => row.kind === "group" || !row.is_grouped,
@@ -1046,6 +1483,7 @@
     }
 
     history = nextSystemHistory(history, next, historyPointLimit);
+    dropStaleNarratives();
   }
 
   function hydrateRuntimeControls(next: RuntimeSnapshot): void {
@@ -1115,6 +1553,7 @@
   }
 
   function selectProcess(selection: string): void {
+    cancelNarrativeWork();
     activeView = "explore";
     selectedWorkloadId = selection;
     detailSubject = "process";
@@ -1124,6 +1563,7 @@
     if (workload) {
       resetWorkloadHistory(workload);
     }
+    window.queueMicrotask(() => void requestWorkloadNarrative());
   }
 
   async function hydrateProcessIcons(
@@ -1193,6 +1633,7 @@
   }
 
   function selectDetailMode(mode: DetailMode): void {
+    cancelNarrativeWork();
     activeView = "explore";
     detailMode = mode;
     detailSubject = "system";
@@ -1222,14 +1663,17 @@
   }
 
   function navigateTo(view: AppView): void {
+    cancelNarrativeWork();
     activeView = view;
     if (view === "overview") {
       compactDetailOpen = false;
       applyPendingRankingIfReleased();
     }
+    void requestCurrentSurfaceNarrative();
   }
 
   function openExplore(): void {
+    cancelNarrativeWork();
     activeView = "explore";
   }
 
@@ -1565,7 +2009,10 @@
     {healthLabel}
     {healthTone}
     onNavigate={navigateTo}
-    onOpenSettings={() => (settingsOpen = true)}
+    onOpenSettings={() => {
+      settingsOpen = true;
+      void refreshNarrativeCapability();
+    }}
     onOpenDiagnostics={() => (diagnosticsOpen = true)}
   />
   {#if commandError && commandErrorSurface === "global"}
@@ -1582,7 +2029,8 @@
       primaryCpuStroke={activeTheme.cpuStroke}
       primaryCpuFill={activeTheme.cpuFill}
       leadingCpuName={overviewCpuBrief.leadingWorkload}
-      leadingCpuValue={overviewCpuBrief.contributorStatusLabel}
+      leadingCpuValue={overviewContributorCopy}
+      leadingCpuNarrativeGenerated={overviewNarrative !== null}
       leadingCpuSelection={overviewCpuBrief.leadingProcessId}
       leadingCpuIconKind={leadingCpuIdentity?.icon ?? "process"}
       leadingCpuIconSrc={leadingCpuIcon.src}
@@ -1665,6 +2113,8 @@
             {activeTheme}
             {presentation}
             {processNetworkLabel}
+            insightNarrative={selectedWorkloadInsight}
+            insightNarrativeGenerated={workloadNarrative !== null}
             onCopy={() => void copySelectedWorkloadSummary()}
             {detailMode}
             {detailTitle}
@@ -1723,9 +2173,16 @@
     adminNote={privilegedCollectionNote(snapshot.admin_mode)}
     dataDirectory={snapshot.environment.data_directory}
     {presentation}
+    {enhancedNarratives}
+    {narrativeCapability}
+    {narrativeSettingsStatus}
+    {narrativeModelAction}
     onClose={() => (settingsOpen = false)}
     onThemeFamily={setThemeFamily}
     onThemeMode={setThemeMode}
+    onEnhancedNarratives={(enabled) => void setEnhancedNarrativePreference(enabled)}
+    onDownloadNarrativeModel={() => void startNarrativeModelDownload()}
+    onCancelNarrativeModelDownload={() => void stopNarrativeModelDownload()}
     onPollInterval={(interval) => void setPollInterval(interval)}
     onHistoryLimit={setHistoryPointLimit}
     onPaused={() => void setPaused(!isPaused)}

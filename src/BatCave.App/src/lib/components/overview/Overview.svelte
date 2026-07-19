@@ -31,6 +31,7 @@
   export let primaryCpuFill = "rgba(42, 168, 143, 0.12)";
   export let leadingCpuName: string | null = null;
   export let leadingCpuValue: string | null = null;
+  export let leadingCpuNarrativeGenerated = false;
   export let leadingCpuIconKind: ProcessIconKind = "process";
   export let leadingCpuIconSrc: string | undefined = undefined;
   export let leadingCpuIconMatched = false;
@@ -128,6 +129,9 @@
           <span>
             <strong>{leadingCpuName}</strong>
             <small>{leadingCpuValue ?? "Current contribution available in Explore"}</small>
+            {#if leadingCpuNarrativeGenerated}
+              <small class="narrative-origin">Locally generated explanation</small>
+            {/if}
           </span>
         </button>
       {:else}

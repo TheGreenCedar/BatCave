@@ -1,6 +1,7 @@
 # Generated outputs
 artifacts/
 out/
+src/BatCave.App/src-tauri/.generated/
 [Ll]og/
 [Ll]ogs/
 *.log
