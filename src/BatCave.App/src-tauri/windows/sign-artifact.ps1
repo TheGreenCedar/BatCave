@@ -33,7 +33,7 @@ if ($existing.Status -eq [System.Management.Automation.SignatureStatus]::Valid -
     $existing.SignerCertificate.Subject -cmatch '^CN=Albert Najjar(?:,|$)' -and
     $null -ne $existing.TimeStamperCertificate) {
     Write-Host "Retained existing verified BatCave signature on $([System.IO.Path]::GetFileName($target))."
-    exit 0
+    return
 }
 if ($existing.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
     throw "Refusing to replace an existing unexpected signature on $target ($($existing.Status))."

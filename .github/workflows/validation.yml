@@ -110,6 +110,17 @@ jobs:
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle
 
+      - name: Prepare digest-pinned Windows signing test tools
+        shell: pwsh
+        run: ./scripts/install-artifact-signing-tools.ps1 -Destination "${{ runner.temp }}\artifact-signing-test-tools"
+
+      - name: Exercise the isolated Windows signing test profile
+        shell: pwsh
+        run: |
+          ./scripts/test-windows-signing-profile.ps1 `
+            -InputPath "src/BatCave.App/src-tauri/target/debug/batcave-collector-service.exe" `
+            -SignToolPath $env:BATCAVE_SIGNTOOL_PATH
+
       - name: Test private Windows lifecycle proof controller
         env:
           BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}

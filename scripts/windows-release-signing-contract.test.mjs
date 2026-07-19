@@ -37,12 +37,17 @@ test("pins the OIDC identity and every new signing tool input", () => {
 test("keeps the local signing test profile isolated from production evidence", () => {
   const testProfile = read("scripts/test-windows-signing-profile.ps1");
   const candidateVerifier = read("scripts/verify-release-candidate.mjs");
+  const validationWorkflow = read(".github/workflows/validation.yml");
   assert.match(testProfile, /CN=BatCave Artifact Signing Test/u);
   assert.match(testProfile, /New-SelfSignedCertificate/u);
   assert.match(testProfile, /byte-tampered signing test fixture/u);
   assert.match(testProfile, /Cert:\\CurrentUser\\My/u);
   assert.match(testProfile, /Remove-Item -LiteralPath "Cert:\\CurrentUser\\My/u);
   assert.doesNotMatch(testProfile, /timestamp\.acs\.microsoft\.com/u);
+  assert.match(
+    validationWorkflow,
+    /test-windows-signing-profile\.ps1[\s\S]*-SignToolPath \$env:BATCAVE_SIGNTOOL_PATH/u,
+  );
   assert.match(candidateVerifier, /inventory\.profile !== "production"/u);
 });
 
@@ -75,6 +80,7 @@ test("keeps Artifact Signing release-only and preserves the required byte order"
   assert.ok(build >= 0 && build < sign && sign < bundle && bundle < updater && updater < inventory);
   assert.match(signer, /\/tr "http:\/\/timestamp\.acs\.microsoft\.com\/" \/td SHA256/u);
   assert.match(signer, /Refusing to replace an existing unexpected signature/u);
+  assert.doesNotMatch(signer, /\bexit\s+0\b/u);
   assert.match(builder, /Byte-tampered installer unexpectedly passed/u);
 });
 
