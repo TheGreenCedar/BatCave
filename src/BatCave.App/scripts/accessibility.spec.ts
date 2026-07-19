@@ -131,6 +131,64 @@ test("every theme family renders in both modes and System follows the OS", async
   await expect(shell).toHaveAttribute("data-mode", "light");
 });
 
+test("matched icon provenance is consistent across Overview, Explore, compact cards, and inspectors", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openFixture(page, "overview");
+
+  const overviewMatch = page.locator(".overview-workload-list .process-icon.matched").first();
+  await expect(overviewMatch).toBeVisible();
+  await expect(overviewMatch).toHaveAttribute("title", "Icon matched from a related process");
+  await expect(page.locator('.process-icon:not(.matched)[title*="matched"]')).toHaveCount(0);
+  await expect(
+    page.locator(".overview-workload-list .process-icon.has-image:not(.matched)").first(),
+  ).toBeVisible();
+  await expect(page.locator(".process-icon-batcave:not(.matched)").first()).toBeVisible();
+
+  const workloadButton = overviewMatch.locator("..");
+  const workloadId = await workloadButton.getAttribute("data-workload-id");
+  expect(workloadId).not.toBeNull();
+  await workloadButton.click();
+
+  const selectedDesktopRow = page.locator(
+    `[data-workload-id="${workloadId}"] .process-icon.matched:visible`,
+  );
+  await expect(selectedDesktopRow).toBeVisible();
+  await expect(page.locator(".process-inspector .process-icon.matched")).toBeVisible();
+
+  await page.setViewportSize({ width: 760, height: 900 });
+  await expect(
+    page.locator(`[data-workload-id="${workloadId}"] .process-icon.matched:visible`),
+  ).toBeVisible();
+});
+
+test("the neutral matched marker remains distinct in every family and mode", async ({ page }) => {
+  await openFixture(page, "settings");
+  const marker = page.locator(".process-icon.matched").first();
+  const families = ["Cave", "Aurora", "Ember", "Canopy"] as const;
+
+  for (const family of families) {
+    await page.getByRole("button", { name: `Use the ${family} theme family` }).click();
+    for (const mode of ["light", "dark"] as const) {
+      await page.getByRole("button", { name: `Use the ${mode} appearance` }).click();
+      const markerStyle = await marker.evaluate((element) => {
+        const style = getComputedStyle(element, "::after");
+        return {
+          background: style.backgroundColor,
+          border: style.borderBottomColor,
+          height: Number.parseFloat(style.height),
+          width: Number.parseFloat(style.width),
+        };
+      });
+      expect(markerStyle.width).toBeGreaterThanOrEqual(6);
+      expect(markerStyle.width).toBeLessThanOrEqual(8);
+      expect(markerStyle.height).toBe(markerStyle.width);
+      expect(markerStyle.background).not.toBe(markerStyle.border);
+    }
+  }
+});
+
 for (const drawer of ["Settings", "Diagnostics"] as const) {
   test(`${drawer} dialog closes with Escape, contains focus, and restores its opener`, async ({
     page,

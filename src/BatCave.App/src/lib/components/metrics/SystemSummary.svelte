@@ -17,6 +17,7 @@
   export let activeFill = "rgba(74, 156, 255, 0.14)";
   export let leadingIconKind: ProcessIconKind = "process";
   export let leadingIconSrc: string | undefined = undefined;
+  export let leadingIconMatched = false;
   export let onSelect: (mode: DetailMode) => void;
 
   function resourceValue(resource: ResourceSummaryOption): string {
@@ -40,7 +41,11 @@
       <small>{windowLabel}</small>
     </div>
     <div class="leading-workload">
-      <ProcessIcon kind={leadingIconKind} src={leadingIconSrc} />
+      <ProcessIcon
+        kind={leadingIconKind}
+        src={leadingIconSrc}
+        matched={leadingIconMatched}
+      />
       <span>
         <small>Compatible process attribution</small>
         <strong>{brief.leadingWorkload ?? "Not available"}</strong>

@@ -7,6 +7,11 @@
   import { formatBytes, formatPercent, formatRate } from "../../format";
   import type { OverviewStatus } from "../../overview";
   import {
+    resolvedProcessIcon,
+    type ResolvedProcessIcon,
+    type ResolvedProcessIconCatalog,
+  } from "../../processIcons";
+  import {
     processRowSecondaryLabel,
     processViewRowKey,
     processViewRowMetrics,
@@ -19,7 +24,7 @@
   export let status: OverviewStatus;
   export let resources: ResourceSummaryOption[] = [];
   export let leadingRows: ProcessViewRow[] = [];
-  export let processIcons: Record<string, string> = {};
+  export let processIcons: ResolvedProcessIconCatalog = {};
   export let primaryCpuValue = 0;
   export let primaryCpuHistory: number[] = [];
   export let primaryCpuStroke = "#2aa88f";
@@ -28,6 +33,7 @@
   export let leadingCpuValue: string | null = null;
   export let leadingCpuIconKind: ProcessIconKind = "process";
   export let leadingCpuIconSrc: string | undefined = undefined;
+  export let leadingCpuIconMatched = false;
   export let leadingCpuSelection: string | null = null;
   export let onSelectResource: (mode: DetailMode) => void;
   export let onSelectWorkload: (selection: string) => void;
@@ -44,12 +50,12 @@
     return !["Measured", "Aggregate", "Native", "Current"].includes(resource.shortStatusLabel);
   }
 
-  function iconSrc(row: ProcessViewRow): string | undefined {
+  function rowIcon(row: ProcessViewRow): ResolvedProcessIcon {
     if (row.kind === "group") {
-      return row.icon_source ? processIcons[row.icon_source] : undefined;
+      return resolvedProcessIcon(processIcons, row.icon_source);
     }
     const process = row.detail.process;
-    return processIcons[process.exe || process.name];
+    return resolvedProcessIcon(processIcons, process.exe || process.name);
   }
 
   function iconKind(row: ProcessViewRow): ProcessIconKind {
@@ -114,7 +120,11 @@
           onclick={() =>
             leadingCpuSelection ? onSelectWorkload(leadingCpuSelection) : onOpenExplore()}
         >
-          <ProcessIcon kind={leadingCpuIconKind} src={leadingCpuIconSrc} />
+          <ProcessIcon
+            kind={leadingCpuIconKind}
+            src={leadingCpuIconSrc}
+            matched={leadingCpuIconMatched}
+          />
           <span>
             <strong>{leadingCpuName}</strong>
             <small>{leadingCpuValue ?? "Current contribution available in Explore"}</small>
@@ -173,13 +183,18 @@
     <div class="overview-workload-list">
       {#each leadingRows as row (processViewRowKey(row))}
         {@const metrics = processViewRowMetrics(row)}
+        {@const resolvedIcon = rowIcon(row)}
         <button
           type="button"
           data-workload-id={processViewRowKey(row)}
           aria-label={`Open ${rowLabel(row)} in Explore`}
           onclick={() => onSelectWorkload(processViewRowKey(row))}
         >
-          <ProcessIcon kind={iconKind(row)} src={iconSrc(row)} />
+          <ProcessIcon
+            kind={iconKind(row)}
+            src={resolvedIcon.src}
+            matched={resolvedIcon.origin === "name_match"}
+          />
           <span class="overview-workload-name">
             <strong>{rowLabel(row)}</strong>
             {#if secondaryLabel(row)}<small>{secondaryLabel(row)}</small>{/if}

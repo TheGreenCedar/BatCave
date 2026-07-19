@@ -1026,8 +1026,10 @@
 
 .process-icon {
   --process-icon-color: var(--chart-cpu);
+  --process-icon-match-size: 7px;
   width: 26px;
   height: 26px;
+  position: relative;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -1036,6 +1038,24 @@
   border-radius: 7px;
   color: var(--process-icon-color);
   background: color-mix(in srgb, var(--process-icon-color) 11%, var(--surface-2));
+}
+
+.process-icon.matched {
+  overflow: visible;
+}
+
+.process-icon.matched::after {
+  width: var(--process-icon-match-size);
+  height: var(--process-icon-match-size);
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--surface-3);
+  border-radius: 50%;
+  background: var(--text-muted);
+  content: "";
+  pointer-events: none;
 }
 
 .process-icon img {

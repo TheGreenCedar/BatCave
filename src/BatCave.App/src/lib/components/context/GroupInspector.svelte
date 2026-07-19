@@ -23,6 +23,7 @@
   export let activeTheme: ChartPalette;
   export let iconKind: ProcessIconKind = "process";
   export let iconSrc: string | undefined = undefined;
+  export let iconMatched = false;
   export let onCopy: () => void;
 
   $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
@@ -54,7 +55,9 @@
 
 <section class="process-inspector" aria-label="Workload group inspector">
   <div class="process-identity redesigned-identity">
-    <span class="identity-icon"><ProcessIcon kind={iconKind} src={iconSrc} /></span>
+    <span class="identity-icon">
+      <ProcessIcon kind={iconKind} src={iconSrc} matched={iconMatched} />
+    </span>
     <span class="identity-copy">
       <span class="identity-title-row">
         <strong title={detail.label}>{detail.label}</strong>

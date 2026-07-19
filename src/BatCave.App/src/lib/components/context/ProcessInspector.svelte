@@ -25,6 +25,10 @@
     processOtherIoRate,
     type ProcessRates,
   } from "../../process";
+  import {
+    resolvedProcessIcon,
+    type ResolvedProcessIconCatalog,
+  } from "../../processIcons";
   import type { ChartPalette } from "../../themes";
   import type { ProcessDetail, ProcessSample } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
@@ -41,7 +45,7 @@
   export let processRates: Record<string, ProcessRates> = {};
   export let processReadRate = 0;
   export let processWriteRate = 0;
-  export let processIcons: Record<string, string> = {};
+  export let processIcons: ResolvedProcessIconCatalog = {};
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
@@ -113,11 +117,18 @@
 <section class="process-inspector" aria-label="Workload inspector">
   {#if selectedProcess}
     {@const identity = processIdentity(selectedProcess)}
-    {@const iconSrc = processIcons[selectedProcess.exe || selectedProcess.name]}
+    {@const resolvedIcon = resolvedProcessIcon(processIcons, selectedProcess.exe || selectedProcess.name)}
     {@const accent = processActivityLabel(selectedProcess, processReadWriteIoRate(), processNetworkRate(selectedProcess))}
     {@const categoryLabel = identity.group === "Processes" ? null : identity.group}
     <div class="process-identity redesigned-identity">
-      <span class="identity-icon"><ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} /></span>
+      <span class="identity-icon">
+        <ProcessIcon
+          kind={identity.icon}
+          child={identity.isChild}
+          src={resolvedIcon.src}
+          matched={resolvedIcon.origin === "name_match"}
+        />
+      </span>
       <span class="identity-copy">
         <span class="identity-title-row">
           <strong title={selectedProcess.name}>{selectedProcess.name}</strong>

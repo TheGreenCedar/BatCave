@@ -3,6 +3,7 @@
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import { onMount } from "svelte";
+  import fixtureProcessIcon from "../src-tauri/icons/64x64.png";
   import DetailPane from "./lib/components/context/DetailPane.svelte";
   import type { DetailMode, ResourceSummaryOption } from "./lib/components/metrics/types";
   import Overview from "./lib/components/overview/Overview.svelte";
@@ -70,6 +71,14 @@
     type ProcessRates,
     type SortKey,
   } from "./lib/process";
+  import {
+    buildResolvedProcessIconCatalog,
+    processIconFamily,
+    processIconKey,
+    resolvedProcessIcon,
+    type ResolvedProcessIcon,
+    type ResolvedProcessIconCatalog,
+  } from "./lib/processIcons";
   import {
     hasNewRuntimeSample,
     makeDefaultRuntimeQuery,
@@ -193,7 +202,8 @@
   let history = emptyTrendState();
   let processHistory: ProcessTrendState = emptyProcessTrendState();
   let processRates: Record<string, ProcessRates> = {};
-  let processIcons: Record<string, string> = {};
+  let nativeProcessIcons: Record<string, string> = {};
+  let processIcons: ResolvedProcessIconCatalog = {};
   let requestedProcessIcons = new Set<string>();
   let resourceSummaries: ResourceSummaryOption[] = [];
   let displayProcessRows: ProcessViewRow[] = [];
@@ -231,6 +241,7 @@
     snapshot.system.swap_total_bytes ?? 0,
   );
   $: processViewRows = displayProcessRows;
+  $: processIcons = buildResolvedProcessIconCatalog(snapshot.processes, nativeProcessIcons);
   $: filteredProcesses = processViewRows.flatMap((row) =>
     row.kind === "process" ? [row.detail.process] : [],
   );
@@ -243,12 +254,14 @@
     selectedWorkload?.kind === "process" ? selectedWorkload.process : null;
   $: selectedWorkloadIconKind =
     ((selectedRow?.icon_kind ?? "process") as import("./lib/process").ProcessIconKind);
-  $: selectedWorkloadIconSrc =
+  $: selectedWorkloadIcon =
     selectedRow?.kind === "group" && selectedRow.icon_source
-      ? processIcons[selectedRow.icon_source]
+      ? resolvedProcessIcon(processIcons, selectedRow.icon_source)
       : selectedProcess
-        ? processIcons[selectedProcess.exe || selectedProcess.name]
-        : undefined;
+        ? resolvedProcessIcon(processIcons, selectedProcess.exe || selectedProcess.name)
+        : ({ origin: "fallback" } satisfies ResolvedProcessIcon);
+  $: selectedWorkloadIconSrc = selectedWorkloadIcon.src;
+  $: selectedWorkloadIconMatched = selectedWorkloadIcon.origin === "name_match";
   $: sourceLabel =
     snapshot.source === "batcave_runtime" ||
     snapshot.source === "tauri_runtime" ||
@@ -299,6 +312,10 @@
   );
   $: leadingCpuProcess = resolveContributorProcess(snapshot, overviewCpuBrief.leadingProcessId);
   $: leadingCpuIdentity = leadingCpuProcess ? processIdentity(leadingCpuProcess) : null;
+  $: leadingCpuIcon = resolvedProcessIcon(
+    processIcons,
+    leadingCpuProcess ? processIconKey(leadingCpuProcess) : undefined,
+  );
   $: limitationCount =
     uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warning_count;
   $: overviewStatus = buildOverviewStatus(
@@ -608,6 +625,15 @@
         },
       };
     }
+
+    seedAccessibilityProcessIcon(next);
+  }
+
+  function seedAccessibilityProcessIcon(next: RuntimeSnapshot): void {
+    const donor = next.processes.find(
+      (process) => processIconFamily(process.name) === "fixtureworker",
+    );
+    if (donor) nativeProcessIcons = { [processIconKey(donor)]: fixtureProcessIcon };
   }
 
   function applyAccessibilityFixtureSelection(
@@ -620,7 +646,11 @@
 
     if (state === "process" || state === "compact") {
       const processRow = next.process_view_rows.find(
-        (row) => row.kind === "process" && !row.is_grouped,
+        (row) =>
+          row.kind === "process" &&
+          !row.is_grouped &&
+          processIconFamily(row.detail.process.name) === "fixtureworker" &&
+          !nativeProcessIcons[processIconKey(row.detail.process)],
       );
       if (processRow) {
         selectedWorkloadId = processViewRowKey(processRow);
@@ -1119,7 +1149,7 @@
     ).slice(0, 120);
     const pending = iconCandidates.filter((process) => {
       const key = processIconKey(process);
-      if (!process.exe || processIcons[key] || requestedProcessIcons.has(key)) {
+      if (!process.exe || nativeProcessIcons[key] || requestedProcessIcons.has(key)) {
         return false;
       }
       requestedProcessIcons.add(key);
@@ -1137,18 +1167,16 @@
       const key = processIconKey(process);
       const icon = icons[process.exe];
       if (icon) {
-        processIcons = { ...processIcons, [key]: icon };
+        nativeProcessIcons = { ...nativeProcessIcons, [key]: icon };
       } else if (iconError === "process_icon_untrusted_exe") {
         requestedProcessIcons.delete(key);
       }
     }
-    const cached = Object.entries(processIcons);
-    if (cached.length > 256) processIcons = Object.fromEntries(cached.slice(-256));
+    const cached = Object.entries(nativeProcessIcons);
+    if (cached.length > 256) {
+      nativeProcessIcons = Object.fromEntries(cached.slice(-256));
+    }
     requestedProcessIcons = new Set(iconCandidates.map(processIconKey));
-  }
-
-  function processIconKey(process: ProcessSample): string {
-    return process.exe || process.name;
   }
 
   function uniqueIconCandidates(processes: ProcessSample[]): ProcessSample[] {
@@ -1557,9 +1585,8 @@
       leadingCpuValue={overviewCpuBrief.contributorStatusLabel}
       leadingCpuSelection={overviewCpuBrief.leadingProcessId}
       leadingCpuIconKind={leadingCpuIdentity?.icon ?? "process"}
-      leadingCpuIconSrc={leadingCpuProcess
-        ? processIcons[leadingCpuProcess.exe || leadingCpuProcess.name]
-        : undefined}
+      leadingCpuIconSrc={leadingCpuIcon.src}
+      leadingCpuIconMatched={leadingCpuIcon.origin === "name_match"}
       onSelectResource={selectDetailMode}
       onSelectWorkload={selectProcess}
       onOpenExplore={openExplore}
@@ -1628,6 +1655,7 @@
             {selectedWorkload}
             {selectedWorkloadIconKind}
             {selectedWorkloadIconSrc}
+            {selectedWorkloadIconMatched}
             {processHistory}
             {processRates}
             {processReadRate}

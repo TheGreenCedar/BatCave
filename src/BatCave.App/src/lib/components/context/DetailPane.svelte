@@ -5,6 +5,7 @@
   import type { ProcessRates } from "../../process";
   import type { ProcessIconKind } from "../../process";
   import type { PlatformPresentation } from "../../platformPresentation";
+  import type { ResolvedProcessIconCatalog } from "../../processIcons";
   import type { ChartPalette } from "../../themes";
   import type {
     KernelPoolTag,
@@ -26,6 +27,7 @@
   export let selectedWorkload: WorkloadDetail | null;
   export let selectedWorkloadIconKind: ProcessIconKind = "process";
   export let selectedWorkloadIconSrc: string | undefined = undefined;
+  export let selectedWorkloadIconMatched = false;
   export let processHistory: {
     cpu: number[];
     memory: number[];
@@ -36,7 +38,7 @@
   export let processRates: Record<string, ProcessRates>;
   export let processReadRate = 0;
   export let processWriteRate = 0;
-  export let processIcons: Record<string, string> = {};
+  export let processIcons: ResolvedProcessIconCatalog = {};
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
   export let presentation: PlatformPresentation;
@@ -177,6 +179,7 @@
           {activeTheme}
           iconKind={selectedWorkloadIconKind}
           iconSrc={selectedWorkloadIconSrc}
+          iconMatched={selectedWorkloadIconMatched}
           {onCopy}
         />
       {:else}

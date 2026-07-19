@@ -18,9 +18,17 @@
   export let kind: ProcessIconKind = "process";
   export let child = false;
   export let src: string | undefined = undefined;
+  export let matched = false;
 </script>
 
-<span class:child class:has-image={Boolean(src) && kind !== "batcave"} class={`process-icon process-icon-${kind}`} aria-hidden="true">
+<span
+  class:child
+  class:has-image={Boolean(src) && kind !== "batcave"}
+  class:matched
+  class={`process-icon process-icon-${kind}`}
+  title={matched ? "Icon matched from a related process" : undefined}
+  aria-hidden="true"
+>
   {#if kind === "batcave"}
     <img src={brandIcon} alt="" />
   {:else if src}
