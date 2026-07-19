@@ -53,6 +53,7 @@ test("keeps the local signing test profile isolated from production evidence", (
   assert.match(testProfile, /Remove-Item -LiteralPath "Cert:\\CurrentUser\\My/u);
   assert.match(testProfile, /SignatureStatus\]::NotTrusted/u);
   assert.match(testProfile, /SignatureStatus\]::HashMismatch/u);
+  assert.match(testProfile, /\$global:LASTEXITCODE = 0/u);
   assert.doesNotMatch(testProfile, /-addstore Root/u);
   assert.doesNotMatch(testProfile, /-delstore Root/u);
   assert.doesNotMatch(testProfile, /X509Store/u);

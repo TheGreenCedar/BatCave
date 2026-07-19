@@ -110,10 +110,12 @@ try {
     if ($LASTEXITCODE -eq 0) {
         throw "The isolated BatCave test signature unexpectedly passed trusted verification."
     }
+    $global:LASTEXITCODE = 0
     & $SignToolPath verify /pa /all /v $signedThirdPartyCopy *> $null
     if ($LASTEXITCODE -eq 0) {
         throw "The isolated third-party test signature unexpectedly passed trusted verification."
     }
+    $global:LASTEXITCODE = 0
 
     Write-TestCheckpoint "tampering signed fixture"
     Copy-Item -LiteralPath $signedCopy -Destination $tamperedCopy
@@ -140,6 +142,7 @@ try {
     if ($LASTEXITCODE -eq 0) {
         throw "The byte-tampered signing test fixture unexpectedly passed verification."
     }
+    $global:LASTEXITCODE = 0
     Write-Host "The isolated test profile re-signed only the pinned unsigned input and rejected tampered bytes."
 } finally {
     Write-TestCheckpoint "cleaning certificate and fixtures"
