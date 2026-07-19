@@ -115,6 +115,7 @@ jobs:
         run: ./scripts/install-artifact-signing-tools.ps1 -Destination "${{ runner.temp }}\artifact-signing-test-tools"
 
       - name: Exercise the isolated Windows signing test profile
+        timeout-minutes: 5
         shell: pwsh
         run: |
           ./scripts/test-windows-signing-profile.ps1 `

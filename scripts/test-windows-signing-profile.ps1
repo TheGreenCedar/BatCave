@@ -11,6 +11,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Write-TestCheckpoint {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    Write-Host "[signing-test] $Name"
+}
+
 if (-not $IsWindows) {
     throw "The deterministic Windows signing test profile runs only on Windows."
 }
@@ -51,8 +56,10 @@ $certificate = $null
 $rootStore = $null
 
 try {
+    Write-TestCheckpoint "copying exact inputs"
     Copy-Item -LiteralPath $InputPath -Destination $signedCopy
     Copy-Item -LiteralPath $ThirdPartyInputPath -Destination $signedThirdPartyCopy
+    Write-TestCheckpoint "creating test certificate"
     $certificate = New-SelfSignedCertificate `
         -Type Custom `
         -Subject $subject `
@@ -63,6 +70,7 @@ try {
         -CertStoreLocation "Cert:\CurrentUser\My" `
         -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
 
+    Write-TestCheckpoint "trusting test certificate"
     $rootStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
         [System.Security.Cryptography.X509Certificates.StoreName]::Root,
         [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
@@ -70,16 +78,19 @@ try {
     $rootStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
     $rootStore.Add($certificate)
 
+    Write-TestCheckpoint "signing BatCave input"
     & $SignToolPath sign /v /fd SHA256 /s My /sha1 $certificate.Thumbprint `
         /d "BatCave signing test profile" $signedCopy
     if ($LASTEXITCODE -ne 0) {
         throw "The local Windows signing test profile failed with status $LASTEXITCODE."
     }
+    Write-TestCheckpoint "signing pinned third-party input"
     & $SignToolPath sign /v /fd SHA256 /s My /sha1 $certificate.Thumbprint `
         /d "BatCave third-party re-signing test profile" $signedThirdPartyCopy
     if ($LASTEXITCODE -ne 0) {
         throw "The third-party Windows re-signing test failed with status $LASTEXITCODE."
     }
+    Write-TestCheckpoint "checking PowerShell signature state"
     $signature = Get-AuthenticodeSignature -LiteralPath $signedCopy
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
         $signature.SignerCertificate.Subject -cne $subject -or
@@ -97,15 +108,18 @@ try {
     if ($signedThirdPartyHash -ceq $thirdPartySourceHash) {
         throw "The third-party signing test did not change the exact unsigned source bytes."
     }
+    Write-TestCheckpoint "verifying BatCave signature with SignTool"
     & $SignToolPath verify /pa /all /v $signedCopy *> $null
     if ($LASTEXITCODE -ne 0) {
         throw "The local test signature did not pass SignTool verification."
     }
+    Write-TestCheckpoint "verifying third-party signature with SignTool"
     & $SignToolPath verify /pa /all /v $signedThirdPartyCopy *> $null
     if ($LASTEXITCODE -ne 0) {
         throw "The third-party test signature did not pass SignTool verification."
     }
 
+    Write-TestCheckpoint "tampering signed fixture"
     Copy-Item -LiteralPath $signedCopy -Destination $tamperedCopy
     $stream = [System.IO.File]::Open(
         $tamperedCopy,
@@ -121,12 +135,14 @@ try {
     } finally {
         $stream.Dispose()
     }
+    Write-TestCheckpoint "verifying tampered fixture rejection"
     & $SignToolPath verify /pa /all /v $tamperedCopy *> $null
     if ($LASTEXITCODE -eq 0) {
         throw "The byte-tampered signing test fixture unexpectedly passed verification."
     }
     Write-Host "The isolated test profile re-signed only the pinned unsigned input and rejected tampered bytes."
 } finally {
+    Write-TestCheckpoint "cleaning certificate and fixtures"
     if ($null -ne $rootStore) {
         if ($null -ne $certificate) { $rootStore.Remove($certificate) }
         $rootStore.Dispose()
@@ -138,4 +154,5 @@ try {
     if (Test-Path -LiteralPath $testRoot) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force
     }
+    Write-TestCheckpoint "cleanup complete"
 }
