@@ -6717,7 +6717,7 @@ mod native {
         error_control: u32,
         image_path: PathBuf,
         account: String,
-        delayed_auto_start: u32,
+        delayed_auto_start: i32,
         service_sid_type: u32,
         required_privileges: Vec<String>,
         dacl_sha256: String,
