@@ -54,6 +54,30 @@ const SYNTHETIC_SIGNATURE_IDENTITIES = {
   tauri_updater: "synthetic updater key fingerprint fixture",
 };
 
+function authenticodeSignature(identity, packetKind, asset) {
+  const fixture = packetKind === "schema_fixture";
+  const subject = fixture ? "synthetic Authenticode subject fixture" : "CN=Albert Najjar";
+  const certificate = fixture ? `sha256:${"1".repeat(64)}` : identity;
+  return {
+    identity,
+    verified: true,
+    subject,
+    rfc3161_timestamp_utc: "2000-01-01T00:00:00Z",
+    files: [
+      {
+        name: asset.name,
+        sha256: asset.sha256,
+        disposition: asset.name.endsWith("-setup.exe") ? "generated_signed" : "batcave_signed",
+        original_sha256: null,
+        subject,
+        certificate_sha256: certificate,
+        rfc3161_timestamp_utc: "2000-01-01T00:00:00Z",
+        verified: true,
+      },
+    ],
+  };
+}
+
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
@@ -87,6 +111,13 @@ function releaseEvidence(name = FIXTURES[0][0], tag = "v9.9.9-rc.1") {
   for (const [kind, signature] of Object.entries(packet.assets[0].signatures)) {
     signature.identity = REAL_SIGNATURE_IDENTITIES[kind];
   }
+  if (packet.assets[0].signatures.authenticode) {
+    packet.assets[0].signatures.authenticode = authenticodeSignature(
+      REAL_SIGNATURE_IDENTITIES.authenticode,
+      packet.packet_kind,
+      packet.assets[0],
+    );
+  }
   return packet;
 }
 
@@ -98,12 +129,6 @@ function addRoleAsset(packet, role) {
     packet.packet_kind === "schema_fixture"
       ? SYNTHETIC_SIGNATURE_IDENTITIES
       : REAL_SIGNATURE_IDENTITIES;
-  const signatures = Object.fromEntries(
-    RELEASE_EVIDENCE_ROLE_TRUST[role].map((kind) => [
-      kind,
-      { identity: identities[kind], verified: true },
-    ]),
-  );
   const digit = String((packet.assets.length % 8) + 2);
   const asset = {
     name: declaration.name,
@@ -112,8 +137,16 @@ function addRoleAsset(packet, role) {
     api_digest: `sha256:${digit.repeat(64)}`,
     public_url: `https://github.com/TheGreenCedar/BatCave/releases/download/${packet.release.tag}/${encodeURIComponent(declaration.name)}`,
     attestation: structuredClone(packet.assets[0].attestation),
-    signatures,
+    signatures: {},
   };
+  asset.signatures = Object.fromEntries(
+    RELEASE_EVIDENCE_ROLE_TRUST[role].map((kind) => [
+      kind,
+      kind === "authenticode"
+        ? authenticodeSignature(identities[kind], packet.packet_kind, asset)
+        : { identity: identities[kind], verified: true },
+    ]),
+  );
   packet.assets.push(asset);
   packet.assets.sort((left, right) =>
     left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
@@ -206,8 +239,11 @@ test("rejects Apple notarization proof on the Windows GUI role", () => {
       verified: true,
     },
     authenticode: {
-      identity: SYNTHETIC_SIGNATURE_IDENTITIES.authenticode,
-      verified: true,
+      ...authenticodeSignature(
+        SYNTHETIC_SIGNATURE_IDENTITIES.authenticode,
+        packet.packet_kind,
+        gui,
+      ),
     },
   };
   assert.throws(
@@ -254,6 +290,44 @@ test("rejects an arbitrary real signer identity and updater key", () => {
   const updaterPacket = releaseEvidence("linux-appimage.json");
   updaterPacket.assets[0].signatures.tauri_updater.identity = `sha256:${"f".repeat(64)}`;
   assert.throws(() => validateReleaseEvidencePacket(updaterPacket), /embedded updater key/u);
+});
+
+test("rejects a BatCave publisher relabeled as preserved upstream code", () => {
+  const packet = releaseEvidence();
+  packet.assets[0].signatures.authenticode.files[0].disposition = "upstream_preserved";
+  assert.throws(() => validateReleaseEvidencePacket(packet), /trusted upstream publisher/u);
+});
+
+test("accepts only the pinned unsigned Foundry Core input as third-party re-signed code", () => {
+  const packet = releaseEvidence();
+  const signature = packet.assets[0].signatures.authenticode;
+  signature.files.push({
+    name: "Microsoft.AI.Foundry.Local.Core.dll",
+    sha256: `sha256:${"e".repeat(64)}`,
+    disposition: "third_party_resigned",
+    original_sha256: "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea",
+    subject: signature.subject,
+    certificate_sha256: signature.identity,
+    rfc3161_timestamp_utc: signature.rfc3161_timestamp_utc,
+    verified: true,
+  });
+  signature.files.sort((left, right) => left.name.localeCompare(right.name));
+  assert.equal(validateReleaseEvidencePacket(packet), packet);
+
+  const drifted = structuredClone(packet);
+  drifted.assets[0].signatures.authenticode.files.find(
+    ({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll",
+  ).original_sha256 = `sha256:${"f".repeat(64)}`;
+  assert.throws(() => validateReleaseEvidencePacket(drifted), /exact unsigned Foundry Core/u);
+
+  const unrelated = structuredClone(packet);
+  unrelated.assets[0].signatures.authenticode.files.find(
+    ({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll",
+  ).name = "unrelated.dll";
+  unrelated.assets[0].signatures.authenticode.files.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  assert.throws(() => validateReleaseEvidencePacket(unrelated), /exact unsigned Foundry Core/u);
 });
 
 test("records failed and blocked outcomes without declaring a release pass", () => {
@@ -422,6 +496,7 @@ const FIELD_FAILURES = [
       packet.assets[0].name = "batcave-monitor.exe";
       packet.assets[0].public_url =
         "https://github.com/TheGreenCedar/BatCave/releases/download/v0.0.0-evidence.1/batcave-monitor.exe";
+      packet.assets[0].signatures.authenticode.files[0].name = "batcave-monitor.exe";
       delete packet.assets[0].signatures.tauri_updater;
       packet.platform.package.asset_name = "batcave-monitor.exe";
     },
@@ -437,8 +512,11 @@ const FIELD_FAILURES = [
     (packet) => {
       packet.assets[0].signatures = {
         authenticode: {
-          identity: "synthetic Authenticode signer fixture",
-          verified: true,
+          ...authenticodeSignature(
+            "synthetic Authenticode signer fixture",
+            packet.packet_kind,
+            packet.assets[0],
+          ),
         },
         ...packet.assets[0].signatures,
       };

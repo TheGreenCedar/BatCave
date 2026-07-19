@@ -166,6 +166,15 @@ function toRealPacket(packet, tag) {
     encodeURIComponent(assetName);
   for (const [kind, signature] of Object.entries(packet.assets[0].signatures)) {
     signature.identity = REAL_SIGNATURE_IDENTITIES[kind];
+    if (kind === "authenticode") {
+      signature.subject = "CN=Albert Najjar";
+      for (const file of signature.files) {
+        file.name = assetName;
+        file.sha256 = packet.assets[0].sha256;
+        file.subject = signature.subject;
+        file.certificate_sha256 = signature.identity;
+      }
+    }
   }
   for (const checks of Object.values(packet.checks)) {
     for (const check of Object.values(checks)) {

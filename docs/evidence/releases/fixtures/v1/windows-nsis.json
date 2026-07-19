@@ -55,7 +55,21 @@
       "signatures": {
         "authenticode": {
           "identity": "synthetic Authenticode signer fixture",
-          "verified": true
+          "verified": true,
+          "subject": "synthetic Authenticode subject fixture",
+          "rfc3161_timestamp_utc": "2000-01-01T00:00:00Z",
+          "files": [
+            {
+              "name": "BatCave.Monitor_0.0.0-evidence.1_x64-setup.exe",
+              "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "disposition": "generated_signed",
+              "original_sha256": null,
+              "subject": "synthetic Authenticode subject fixture",
+              "certificate_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "rfc3161_timestamp_utc": "2000-01-01T00:00:00Z",
+              "verified": true
+            }
+          ]
         },
         "tauri_updater": {
           "identity": "synthetic updater key fingerprint fixture",

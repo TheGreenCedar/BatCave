@@ -34,6 +34,9 @@ const SIGNATURE_KINDS = new Set([
 ]);
 const TAURI_UPDATER_KEY_IDENTITY =
   "sha256:0dad0009cf5cc87a778f2e951cefaa0faaba637b95a22f6f3064f12cd4136545";
+const FOUNDRY_CORE_NAME = "Microsoft.AI.Foundry.Local.Core.dll";
+const FOUNDRY_CORE_SOURCE_SHA256 =
+  "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea";
 const CERTIFICATE_FINGERPRINT = /^sha256:[0-9a-f]{64}$/u;
 const DEVELOPER_ID = /^Developer ID Application: [^()]+ \([A-Z0-9]{10}\)$/u;
 const NOTARIZATION_SUBMISSION =
@@ -308,16 +311,20 @@ function assetUrl(tag, name) {
   return `https://github.com/${RELEASE_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
 }
 
-function validateObservedAtUtc(observedAtUtc) {
-  const observed = string(observedAtUtc, "packet.observed_at_utc", {
+function validateUtcTimestamp(value, field) {
+  const observed = string(value, field, {
     max: 20,
     pattern: UTC_TIMESTAMP,
   });
   const date = new Date(observed);
   if (Number.isNaN(date.valueOf()) || date.toISOString() !== observed.replace(/Z$/u, ".000Z")) {
-    fail("packet.observed_at_utc", "must be a real UTC time");
+    fail(field, "must be a real UTC time");
   }
   return observed;
+}
+
+function validateObservedAtUtc(observedAtUtc) {
+  return validateUtcTimestamp(observedAtUtc, "packet.observed_at_utc");
 }
 
 function validateRelease(release) {
@@ -422,6 +429,116 @@ function validateSignatureIdentity(kind, identity, packetKind, field) {
   }
 }
 
+function validateAuthenticodeSignature(signature, asset, packetKind, field) {
+  exactKeys(signature, field, [
+    "identity",
+    "verified",
+    "subject",
+    "rfc3161_timestamp_utc",
+    "files",
+  ]);
+  const identity = string(signature.identity, `${field}.identity`, { max: 180 });
+  validateSignatureIdentity("authenticode", identity, packetKind, `${field}.identity`);
+  if (signature.verified !== true) fail(`${field}.verified`, "must be true");
+  const subject = string(signature.subject, `${field}.subject`, { max: 300 });
+  if (packetKind === "schema_fixture") {
+    if (subject !== "synthetic Authenticode subject fixture") {
+      fail(`${field}.subject`, "must use the synthetic Authenticode subject fixture");
+    }
+  } else if (!/^CN=Albert Najjar(?:,|$)/u.test(subject)) {
+    fail(`${field}.subject`, "must identify the BatCave publisher");
+  }
+  validateUtcTimestamp(signature.rfc3161_timestamp_utc, `${field}.rfc3161_timestamp_utc`);
+  if (!Array.isArray(signature.files) || signature.files.length === 0) {
+    fail(`${field}.files`, "must contain per-file Authenticode evidence");
+  }
+  const names = signature.files.map((record) => record?.name);
+  sorted(names, `${field}.files`);
+  if (new Set(names).size !== names.length) fail(`${field}.files`, "contains duplicate file names");
+  for (const [index, record] of signature.files.entries()) {
+    const recordField = `${field}.files[${index}]`;
+    exactKeys(record, recordField, [
+      "name",
+      "sha256",
+      "disposition",
+      "original_sha256",
+      "subject",
+      "certificate_sha256",
+      "rfc3161_timestamp_utc",
+      "verified",
+    ]);
+    try {
+      requireSafeReleaseAssetName(record.name);
+    } catch (error) {
+      fail(`${recordField}.name`, error.message);
+    }
+    string(record.sha256, `${recordField}.sha256`, { max: 71, pattern: SHA256_DIGEST });
+    if (
+      !new Set([
+        "batcave_signed",
+        "generated_signed",
+        "third_party_resigned",
+        "upstream_preserved",
+      ]).has(record.disposition)
+    ) {
+      fail(`${recordField}.disposition`, "is not supported");
+    }
+    if (record.original_sha256 !== null) {
+      string(record.original_sha256, `${recordField}.original_sha256`, {
+        max: 71,
+        pattern: SHA256_DIGEST,
+      });
+    }
+    string(record.certificate_sha256, `${recordField}.certificate_sha256`, {
+      max: 71,
+      pattern: SHA256_DIGEST,
+    });
+    string(record.subject, `${recordField}.subject`, { max: 300 });
+    validateUtcTimestamp(record.rfc3161_timestamp_utc, `${recordField}.rfc3161_timestamp_utc`);
+    if (record.verified !== true) fail(`${recordField}.verified`, "must be true");
+    if (packetKind !== "schema_fixture") {
+      if (record.disposition === "upstream_preserved") {
+        if (
+          record.original_sha256 !== null ||
+          !/^CN=Microsoft (?:Corporation|Windows)(?:,|$)/u.test(record.subject)
+        ) {
+          fail(`${recordField}.subject`, "must identify the trusted upstream publisher");
+        }
+      } else {
+        if (record.disposition === "third_party_resigned") {
+          if (
+            record.name !== FOUNDRY_CORE_NAME ||
+            record.original_sha256 !== FOUNDRY_CORE_SOURCE_SHA256
+          ) {
+            fail(recordField, "must bind the exact unsigned Foundry Core SDK source");
+          }
+        } else if (record.original_sha256 !== null) {
+          fail(recordField, "must not claim an unsigned third-party source");
+        }
+        if (
+          !/^CN=Albert Najjar(?:,|$)/u.test(record.subject) ||
+          record.certificate_sha256 !== identity
+        ) {
+          fail(recordField, "must use the declared BatCave publisher and certificate");
+        }
+      }
+    }
+  }
+  const selected = signature.files.find((record) => record.name === asset.name);
+  if (!selected || selected.sha256 !== asset.sha256) {
+    fail(`${field}.files`, "must include the exact selected asset bytes");
+  }
+  if (
+    selected.subject !== subject ||
+    selected.rfc3161_timestamp_utc !== signature.rfc3161_timestamp_utc
+  ) {
+    fail(field, "selected asset must match the declared publisher and timestamp");
+  }
+  if (packetKind !== "schema_fixture" && selected.certificate_sha256 !== identity) {
+    fail(field, "selected asset certificate must match the Authenticode identity");
+  }
+}
+
 function validateAsset(asset, index, release, packetKind) {
   const field = `packet.assets[${index}]`;
   exactKeys(asset, field, [
@@ -478,6 +595,15 @@ function validateAsset(asset, index, release, packetKind) {
   for (const kind of kinds) {
     if (!SIGNATURE_KINDS.has(kind))
       fail(`${field}.signatures.${kind}`, "is not a supported signature kind");
+    if (kind === "authenticode") {
+      validateAuthenticodeSignature(
+        signatures[kind],
+        asset,
+        packetKind,
+        `${field}.signatures.${kind}`,
+      );
+      continue;
+    }
     exactKeys(signatures[kind], `${field}.signatures.${kind}`, ["identity", "verified"]);
     const identity = string(signatures[kind].identity, `${field}.signatures.${kind}.identity`, {
       max: 180,

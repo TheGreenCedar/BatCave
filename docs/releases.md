@@ -82,7 +82,23 @@ Published Apple Silicon macOS updater archives run a separate [protected post-pu
 
 After the platform lanes produce sanitized packets for one exact public release, assemble `docs/evidence/releases/<tag>/index.json` and run `node scripts/validate-release-evidence-index.mjs` against it. The index binds packet file digests, release/workflow identity, support profiles, package roles, and selected public assets; it deliberately has no passing or accepted disposition. Its successful validation proves only that the review input is internally consistent. The release still requires live public verification, native platform evidence, updater proof, and the independent #76 release decision.
 
-Windows artifacts remain unsigned until the code-signing issue is resolved. Do not promote an unsigned prerelease to the stable channel.
+## Windows signing and Store preparation
+
+Ordinary local and pull-request builds remain unsigned. The protected versioned-release workflow is the only path that enables `BATCAVE_WINDOWS_SIGNING_PROFILE=production`. It authenticates to Azure with GitHub OIDC from the repository's `release` environment, and the federated identity must be granted only **Artifact Signing Certificate Profile Signer** on the selected certificate profile. The workflow uses no long-lived Azure client secret.
+
+Configure these protected environment inputs only after the production account, identity, and certificate profile have been reviewed:
+
+- Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`.
+- Variables: `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, and `ARTIFACT_SIGNING_CERTIFICATE_PROFILE`.
+- Existing Tauri updater secrets: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+The repository pins `Azure/login`, the Artifact Signing SignTool integration, and the Windows SDK SignTool package to immutable commits, versions, and package digests. Signing follows one fixed byte order: build the app, CLI, service, and packaged dependencies; sign BatCave-owned inner PE files; verify both BatCave and preserved upstream signatures; build NSIS from those bytes; sign the generated uninstaller and outer installer through Tauri's custom signer; then create and verify the Tauri updater signature from the finalized Authenticode bytes. Checksums, attestations, `latest.json`, Store preflight, and the release inventory are generated only after that sequence.
+
+`scripts/test-windows-signing-profile.ps1` supplies a test-only Windows proof when production Azure credentials are unavailable. It creates a short-lived current-user code-signing certificate, signs a private copy of a caller-supplied PE, and separately proves that only the exact pinned unsigned Foundry Core SDK payload can enter the third-party re-signing path. It proves exact-byte verification and tamper rejection, then removes the certificate and bytes. It has no timestamp, cannot produce a production inventory, and is never accepted by the release candidate verifier.
+
+The production verifier requires the publisher `Albert Najjar`, one Artifact Signing leaf certificate for BatCave-owned files, RFC3161 timestamps, successful `Get-AuthenticodeSignature` and `signtool verify /pa /all /v` checks, and intact Microsoft signatures on packaged upstream PE files. Foundry Local SDK 1.2.0 is one narrow exception: `Microsoft.AI.Foundry.Local.Core.dll` is unsigned upstream, so BatCave accepts only its pinned pre-sign SHA-256 `316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea`, verifies that those exact bytes are unsigned, and signs them with BatCave's certificate before bundling. The two ONNX Runtime DLLs retain their Microsoft signatures. Evidence records Core as `third_party_resigned` with its original hash; it never describes those bytes as an upstream-preserved signature. Every other unsigned, unexpected, post-signing-modified, or byte-tampered PE still fails the release.
+
+The [Store source checklist](store/windows-submission-checklist.md) retains the existing per-machine x64 NSIS package, offline WebView2 runtime, `/S` silent install, and publisher-managed updates. Its preflight binds the exact signed installer to an immutable versioned GitHub Release URL. This source work does not reserve a Partner Center name, create an Azure account, prove a production certificate, publish a release, or submit a Store listing. Those remain explicit external and native gates. Existing public Windows preview artifacts are unsigned; do not promote them to stable or describe them as production-signed.
 
 ## macOS signing and notarization
 

@@ -78,7 +78,7 @@
     {
       "packet_id": "windows-nsis-schema-fixture",
       "path": "docs/evidence/releases/fixtures/v1/windows-nsis.json",
-      "packet_sha256": "sha256:1390fca0a8d409a9bea0632048063a5196e034cbcc97bc54bee022fa40509700",
+      "packet_sha256": "sha256:3899403ce72af2e6e75bc5f3fba933fee3aa055b6901323c85cedeff17be3e44",
       "profile_id": "windows-client-10-x86_64",
       "package_role": "Windows NSIS installer and updater payload",
       "public_asset": {

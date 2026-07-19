@@ -47,6 +47,93 @@ function candidateFixture(tag = stableTag) {
   return { tag, source_sha: sourceSha, prerelease, assets: contractAssets(tag) };
 }
 
+function windowsSigningFixture(tag = stableTag) {
+  const contract = expectedReleaseAssetRoles(tag);
+  const assetByName = new Map(contractAssets(tag).map((asset) => [asset.name, asset]));
+  const installer = contract.roles.find(
+    ({ role }) => role === "Windows NSIS installer and updater payload",
+  ).name;
+  const certificate = `sha256:${"b".repeat(64)}`;
+  const upstream = new Set([
+    "MicrosoftEdgeWebView2RuntimeInstaller.exe",
+    "onnxruntime-genai.dll",
+    "onnxruntime.dll",
+  ]);
+  const files = [
+    "Microsoft.AI.Foundry.Local.Core.dll",
+    "MicrosoftEdgeWebView2RuntimeInstaller.exe",
+    "batcave-collector-service.exe",
+    "batcave-monitor-cli.exe",
+    "batcave-monitor.exe",
+    "onnxruntime-genai.dll",
+    "onnxruntime.dll",
+    "uninstall.exe",
+    installer,
+  ]
+    .sort((left, right) => left.localeCompare(right))
+    .map((name) => ({
+      name,
+      sha256: assetByName.get(name)?.digest ?? digest(`signed ${name}`),
+      disposition:
+        name === "Microsoft.AI.Foundry.Local.Core.dll"
+          ? "third_party_resigned"
+          : upstream.has(name)
+            ? "upstream_preserved"
+            : name === installer || name === "uninstall.exe"
+              ? "generated_signed"
+              : "batcave_signed",
+      original_sha256:
+        name === "Microsoft.AI.Foundry.Local.Core.dll"
+          ? "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea"
+          : null,
+      publisher_subject: upstream.has(name) ? "CN=Microsoft Corporation" : "CN=Albert Najjar",
+      certificate_sha256: upstream.has(name) ? `sha256:${"c".repeat(64)}` : certificate,
+      rfc3161_timestamp_utc: "2026-07-19T18:00:00Z",
+      timestamp_certificate_sha256: `sha256:${"d".repeat(64)}`,
+      authenticode_status: "valid",
+      signtool_policy: "pa_all",
+    }));
+  return {
+    schema_version: 1,
+    profile: "production",
+    phase: "final",
+    source_sha: sourceSha,
+    publisher: { display_name: "Albert Najjar", required_subject: "CN=Albert Najjar" },
+    timestamp: {
+      protocol: "rfc3161",
+      url: "http://timestamp.acs.microsoft.com/",
+      digest: "SHA256",
+    },
+    files,
+  };
+}
+
+function windowsStoreFixture(tag = stableTag) {
+  const signing = windowsSigningFixture(tag);
+  const installer = signing.files.find(({ name }) => name.endsWith("_x64-setup.exe"));
+  return {
+    schema_version: 1,
+    qualification: "source_preflight",
+    source_sha: sourceSha,
+    tag,
+    package: {
+      name: installer.name,
+      sha256: installer.sha256,
+      url: `https://github.com/TheGreenCedar/BatCave/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(installer.name)}`,
+      type: "exe",
+      architecture: "x64",
+      silent_parameters: "/S",
+      offline_installer: true,
+      authenticode: {
+        publisher_subject: installer.publisher_subject,
+        certificate_sha256: installer.certificate_sha256,
+        rfc3161_timestamp_utc: installer.rfc3161_timestamp_utc,
+      },
+    },
+    limitation: "native_clean_machine_silent_install_pending",
+  };
+}
+
 test("accepts an explicitly approved main-tip candidate", () => {
   assert.deepEqual(
     verifyReleaseCandidateIdentity({
@@ -351,6 +438,59 @@ test("builds a deterministic exact name, size, and digest inventory", () => {
 
     fs.writeFileSync(path.join(root, provenance.name), assetContents(provenance.name));
     assert.deepEqual(buildReleaseInventory(stableTag, sourceSha, false, root), candidateFixture());
+    const signing = windowsSigningFixture();
+    const store = windowsStoreFixture();
+    const signedInventory = buildReleaseInventory(
+      stableTag,
+      sourceSha,
+      false,
+      root,
+      signing,
+      store,
+    );
+    assert.deepEqual(signedInventory.windows_signing, signing);
+    assert.deepEqual(signedInventory.windows_store_preflight, store);
+
+    const unsignedPe = structuredClone(signing);
+    unsignedPe.files.find(({ name }) => name === "batcave-monitor.exe").authenticode_status =
+      "not_signed";
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, unsignedPe, store),
+      /not fully verified/u,
+    );
+    const changedFoundrySource = structuredClone(signing);
+    changedFoundrySource.files.find(
+      ({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll",
+    ).original_sha256 = `sha256:${"f".repeat(64)}`;
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, changedFoundrySource, store),
+      /exact unsigned SDK source/u,
+    );
+    const falselyPreservedFoundry = structuredClone(signing);
+    falselyPreservedFoundry.files.find(
+      ({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll",
+    ).disposition = "upstream_preserved";
+    assert.throws(
+      () =>
+        buildReleaseInventory(stableTag, sourceSha, false, root, falselyPreservedFoundry, store),
+      /exact unsigned SDK source/u,
+    );
+    const unrelatedException = structuredClone(signing);
+    const unrelated = unrelatedException.files.find(({ name }) => name === "batcave-monitor.exe");
+    unrelated.disposition = "third_party_resigned";
+    unrelated.original_sha256 =
+      "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea";
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, unrelatedException, store),
+      /invalid signing disposition/u,
+    );
+    const mutableUrl = structuredClone(store);
+    mutableUrl.package.url =
+      "https://github.com/TheGreenCedar/BatCave/releases/latest/download/setup.exe";
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, signing, mutableUrl),
+      /immutable versioned release URL/u,
+    );
 
     fs.writeFileSync(path.join(root, "unexpected.bin"), "unexpected");
     assert.throws(

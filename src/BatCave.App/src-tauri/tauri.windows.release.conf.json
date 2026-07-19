@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File windows/sign-artifact.ps1 -Path %1"
+    }
+  }
+}
