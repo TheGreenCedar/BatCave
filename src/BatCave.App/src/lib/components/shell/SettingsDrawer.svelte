@@ -4,7 +4,12 @@
   import Play from "phosphor-svelte/lib/Play";
   import X from "phosphor-svelte/lib/X";
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
-  import { formatInterval } from "../../format";
+  import { formatBytes, formatInterval } from "../../format";
+  import {
+    defaultNarrativeCapability,
+    narrativeCapabilityExplanation,
+    type NarrativeCapability,
+  } from "../../narratives";
   import { platformPresentation, type PlatformPresentation } from "../../platformPresentation";
   import type {
     ThemeFamily,
@@ -40,9 +45,16 @@
     | "installing"
     | "error" = "idle";
   export let updateMessage = "Checks only when you ask.";
+  export let enhancedNarratives = false;
+  export let narrativeCapability: NarrativeCapability = defaultNarrativeCapability;
+  export let narrativeSettingsStatus = "";
+  export let narrativeModelAction: "idle" | "downloading" | "cancelling" = "idle";
   export let onClose: () => void = () => {};
   export let onThemeFamily: (family: ThemeFamily) => void;
   export let onThemeMode: (mode: ThemeModePreference) => void;
+  export let onEnhancedNarratives: (enabled: boolean) => void = () => {};
+  export let onDownloadNarrativeModel: () => void = () => {};
+  export let onCancelNarrativeModelDownload: () => void = () => {};
   export let onPollInterval: (interval: number) => void;
   export let onHistoryLimit: (limit: number) => void;
   export let onPaused: () => void = () => {};
@@ -99,6 +111,20 @@
 
     onResetHistory();
     resetConfirm = false;
+  }
+
+  function narrativeProviderLabel(capability: NarrativeCapability): string {
+    if (capability.provider === "apple_foundation") return "Apple Intelligence on this Mac";
+    if (capability.provider === "foundry_local") return "Foundry Local";
+    return "Local model unavailable";
+  }
+
+  function narrativeDownloadProgress(capability: NarrativeCapability): number {
+    if (!capability.download_size_bytes) return 0;
+    return Math.min(
+      100,
+      Math.max(0, ((capability.downloaded_bytes ?? 0) / capability.download_size_bytes) * 100),
+    );
   }
 </script>
 
@@ -163,6 +189,63 @@
             >{option.label}</button>
           {/each}
         </div>
+      </section>
+
+      <section class="settings-section narrative-settings">
+        <div class="settings-section-heading">
+          <h3>Enhanced explanations</h3>
+          <p>Optionally rewrites two short explanations with a model running on this machine.</p>
+        </div>
+        <label class="setting-row narrative-toggle">
+          <span>
+            <strong>Use locally generated explanations</strong>
+            <small>Off by default. Deterministic explanations always remain available.</small>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            checked={enhancedNarratives}
+            onchange={(event) => onEnhancedNarratives(event.currentTarget.checked)}
+          />
+        </label>
+        <p class="setting-note">
+          Turning this on never downloads a model. Only rounded workload facts are shared with the local provider; paths, process IDs, diagnostics, and other workloads are excluded.
+        </p>
+        <div class="narrative-provider-card">
+          <div>
+            <strong>{narrativeProviderLabel(narrativeCapability)}</strong>
+            <span>{narrativeCapabilityExplanation(narrativeCapability)}</span>
+          </div>
+          {#if narrativeCapability.model_name || narrativeCapability.download_size_bytes}
+            <dl>
+              {#if narrativeCapability.model_name}<div><dt>Model</dt><dd>{narrativeCapability.model_name}</dd></div>{/if}
+              {#if narrativeCapability.download_size_bytes !== undefined}<div><dt>Download</dt><dd>{formatBytes(narrativeCapability.download_size_bytes)}</dd></div>{/if}
+              {#if narrativeCapability.license_name}
+                <div>
+                  <dt>License</dt>
+                  <dd title={narrativeCapability.license_url}>{narrativeCapability.license_name}</dd>
+                </div>
+              {/if}
+            </dl>
+          {/if}
+          {#if narrativeModelAction === "cancelling"}
+            <button type="button" disabled>Cancelling…</button>
+          {:else if narrativeModelAction === "downloading" || narrativeCapability.download_state === "downloading"}
+            <progress
+              aria-label="Local model download progress"
+              max="100"
+              value={narrativeDownloadProgress(narrativeCapability)}
+            ></progress>
+            <button type="button" disabled={!narrativeCapability.can_cancel_download} onclick={onCancelNarrativeModelDownload}>Cancel download</button>
+          {:else if narrativeCapability.can_download}
+            <button type="button" onclick={onDownloadNarrativeModel}>Download local model</button>
+          {/if}
+        </div>
+        {#if narrativeSettingsStatus}
+          <p class="setting-note narrative-settings-status" role="status" aria-live="polite">
+            {narrativeSettingsStatus}
+          </p>
+        {/if}
       </section>
 
       <section class="settings-section">

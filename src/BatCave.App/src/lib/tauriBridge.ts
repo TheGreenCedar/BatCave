@@ -1,6 +1,15 @@
 import type { RuntimeQueryInputV3, RuntimeUiPreferencesV3 } from "./generated/runtime-protocol-v3";
 import type { RuntimeSnapshot } from "./types";
 import type { ResolvedThemeName } from "./themes";
+import {
+  defaultNarrativeCapability,
+  type NarrativeAvailability,
+  type NarrativeCapability,
+  type NarrativeFactPacket,
+  type NarrativePreferences,
+  type NarrativeRequest,
+  type NarrativeResult,
+} from "./narratives.ts";
 import { adaptRuntimePayload } from "./protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope, type ProtocolMismatchView } from "./protocol/runtimeProtocol.ts";
 
@@ -182,6 +191,58 @@ export async function syncRuntimeAppearance(
   }
 }
 
+export async function getNarrativePreferences(
+  invoke: RuntimeInvoke,
+): Promise<NarrativePreferences> {
+  return decodeNarrativePreferences(await invoke<unknown>("get_narrative_preferences"));
+}
+
+export async function setEnhancedNarratives(
+  invoke: RuntimeInvoke,
+  enabled: boolean,
+): Promise<NarrativePreferences> {
+  return decodeNarrativePreferences(await invoke<unknown>("set_enhanced_narratives", { enabled }));
+}
+
+export async function getNarrativeCapability(invoke: RuntimeInvoke): Promise<NarrativeCapability> {
+  return decodeNarrativeCapability(await invoke<unknown>("get_narrative_capability"));
+}
+
+export async function getNarrativeFactDigest(
+  invoke: RuntimeInvoke,
+  facts: NarrativeFactPacket,
+): Promise<string> {
+  const value = await invoke<unknown>("get_narrative_fact_digest", { facts });
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) {
+    throw new Error("Narrative fact digest was not recognized.");
+  }
+  return value;
+}
+
+export async function generateLocalNarrative(
+  invoke: RuntimeInvoke,
+  request: NarrativeRequest,
+  facts: NarrativeFactPacket,
+): Promise<NarrativeResult | null> {
+  const value = await invoke<unknown>("generate_narrative", { request, facts });
+  if (!isRecord(value) || !isNarrativeAvailability(value.availability)) return null;
+  return decodeNarrativeResult(value.result);
+}
+
+export async function cancelLocalNarrativeGeneration(invoke: RuntimeInvoke): Promise<void> {
+  await invoke("cancel_narrative_generation");
+}
+
+export async function downloadNarrativeModel(invoke: RuntimeInvoke): Promise<NarrativeCapability> {
+  return decodeNarrativeCapability(await invoke<unknown>("download_narrative_model"));
+}
+
+export async function cancelNarrativeModelDownload(
+  invoke: RuntimeInvoke,
+): Promise<NarrativeCapability> {
+  return decodeNarrativeCapability(await invoke<unknown>("cancel_narrative_model_download"));
+}
+
 export function commandErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
@@ -203,4 +264,76 @@ export function commandErrorMessage(error: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+function decodeNarrativePreferences(value: unknown): NarrativePreferences {
+  if (!isRecord(value) || typeof value.enhanced_narratives !== "boolean") {
+    throw new Error("Narrative preferences were not recognized.");
+  }
+  return { enhanced_narratives: value.enhanced_narratives };
+}
+
+function decodeNarrativeCapability(value: unknown): NarrativeCapability {
+  if (
+    !isRecord(value) ||
+    !isNarrativeAvailability(value.availability) ||
+    (value.provider !== "apple_foundation" && value.provider !== "foundry_local") ||
+    !isNarrativeDownloadState(value.download_state) ||
+    typeof value.can_download !== "boolean" ||
+    typeof value.can_cancel_download !== "boolean"
+  ) {
+    return defaultNarrativeCapability;
+  }
+  return {
+    provider: value.provider,
+    availability: value.availability,
+    download_state: value.download_state,
+    can_download: value.can_download,
+    can_cancel_download: value.can_cancel_download,
+    ...(typeof value.model_id === "string" ? { model_id: value.model_id } : {}),
+    ...(typeof value.model_name === "string" ? { model_name: value.model_name } : {}),
+    ...(typeof value.download_size_bytes === "number"
+      ? { download_size_bytes: Math.max(0, value.download_size_bytes) }
+      : {}),
+    ...(typeof value.downloaded_bytes === "number"
+      ? { downloaded_bytes: Math.max(0, value.downloaded_bytes) }
+      : {}),
+    ...(typeof value.license_name === "string" ? { license_name: value.license_name } : {}),
+    ...(typeof value.license_url === "string" ? { license_url: value.license_url } : {}),
+    ...(typeof value.detail_code === "string" ? { detail_code: value.detail_code } : {}),
+  };
+}
+
+function decodeNarrativeResult(value: unknown): NarrativeResult | null {
+  if (
+    !isRecord(value) ||
+    (value.provider !== "apple_foundation" && value.provider !== "foundry_local") ||
+    typeof value.publication_seq !== "number" ||
+    typeof value.fact_digest !== "string" ||
+    typeof value.text !== "string"
+  ) {
+    return null;
+  }
+  return {
+    provider: value.provider,
+    publication_seq: value.publication_seq,
+    fact_digest: value.fact_digest,
+    text: value.text,
+  };
+}
+
+function isNarrativeAvailability(value: unknown): value is NarrativeAvailability {
+  return ["available", "unsupported", "model_not_ready", "runtime_missing", "busy"].includes(
+    String(value),
+  );
+}
+
+function isNarrativeDownloadState(value: unknown): value is NarrativeCapability["download_state"] {
+  return ["not_required", "not_downloaded", "downloading", "ready", "failed"].includes(
+    String(value),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

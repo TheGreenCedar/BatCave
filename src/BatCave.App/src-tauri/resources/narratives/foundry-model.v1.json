@@ -1,0 +1,15 @@
+{
+  "schema_version": "batcave_foundry_model_v1",
+  "sdk_crate": "foundry-local-sdk",
+  "sdk_version": "1.2.0",
+  "alias": "qwen2.5-0.5b",
+  "model_id": "qwen2.5-0.5b-instruct-generic-cpu:4",
+  "model_name": "qwen2.5-0.5b-instruct-generic-cpu",
+  "model_version": 4,
+  "publisher": "Microsoft",
+  "runtime": "CPUExecutionProvider",
+  "download_size_mb": 822,
+  "license": "Apache-2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/main/LICENSE",
+  "catalog_uri": "azureml://registries/azureml/models/qwen2.5-0.5b-instruct-generic-cpu/versions/4"
+}

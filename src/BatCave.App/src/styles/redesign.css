@@ -1922,6 +1922,72 @@ dialog.detail-pane::backdrop {
   font-size: var(--text-sm);
 }
 
+.narrative-toggle > span {
+  display: grid;
+  gap: 3px;
+}
+
+.narrative-toggle small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+
+.narrative-toggle input {
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.narrative-provider-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 13px;
+  background: var(--surface-2);
+}
+
+.narrative-provider-card > div {
+  display: grid;
+  gap: 4px;
+}
+
+.narrative-provider-card span,
+.narrative-provider-card dt,
+.narrative-provider-card dd {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.narrative-provider-card dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.narrative-provider-card dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.narrative-provider-card dd {
+  margin: 0;
+  color: var(--text-soft);
+  text-align: right;
+}
+
+.narrative-provider-card progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.narrative-provider-card button {
+  justify-self: start;
+}
+
 .privileged-card {
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-md);
@@ -3537,6 +3603,29 @@ button:disabled {
 
 .insight-copy strong {
   color: var(--text);
+}
+
+.insight-block {
+  display: grid;
+  justify-items: start;
+}
+
+.narrative-origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+.narrative-origin::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  content: "";
 }
 
 .theme-family-grid {

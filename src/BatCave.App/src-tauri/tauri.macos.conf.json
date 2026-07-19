@@ -3,6 +3,7 @@
   "bundle": {
     "targets": ["app", "dmg"],
     "icon": ["icons/icon.icns"],
+    "externalBin": ["target/foundation-models-sidecar/batcave-foundation-models"],
     "macOS": {
       "minimumSystemVersion": "12.0",
       "hardenedRuntime": true,

@@ -23,6 +23,7 @@ mod macos_network;
 mod macos_process;
 #[cfg(target_os = "macos")]
 mod macos_system;
+mod narratives;
 #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 mod network_attribution;
 mod persistence;
@@ -50,6 +51,10 @@ mod windows_process;
 mod windows_system;
 
 use contracts::{ProcessFocusMode, RuntimeQuery, SortColumn, SortDirection};
+use narratives::{
+    NarrativeFactPacket, NarrativeGenerationResponse, NarrativeModelStatus, NarrativePreferences,
+    NarrativeRequest, NarrativeState,
+};
 use protocol::{
     ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, RuntimeUiPreferencesV3,
     SortColumnV3, SortDirectionV3,
@@ -183,6 +188,71 @@ fn sync_app_appearance(app: AppHandle, theme: String) -> Result<(), String> {
     app_icon::sync(&app, &theme)
 }
 
+#[tauri::command(async)]
+fn get_narrative_preferences(
+    state: tauri::State<'_, NarrativeState>,
+) -> Result<NarrativePreferences, String> {
+    Ok(state.preferences())
+}
+
+#[tauri::command(async)]
+fn set_enhanced_narratives(
+    state: tauri::State<'_, NarrativeState>,
+    enabled: bool,
+) -> Result<NarrativePreferences, String> {
+    state.set_enhanced_narratives(enabled)
+}
+
+#[tauri::command(async)]
+fn get_narrative_capability(
+    state: tauri::State<'_, NarrativeState>,
+) -> Result<NarrativeModelStatus, String> {
+    Ok(state.capability())
+}
+
+#[tauri::command(async)]
+fn get_narrative_fact_digest(
+    state: tauri::State<'_, NarrativeState>,
+    facts: NarrativeFactPacket,
+) -> Result<String, String> {
+    state.fact_digest(&facts)
+}
+
+#[tauri::command]
+async fn generate_narrative(
+    state: tauri::State<'_, NarrativeState>,
+    request: NarrativeRequest,
+    facts: NarrativeFactPacket,
+) -> Result<NarrativeGenerationResponse, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.generate(request, facts))
+        .await
+        .map_err(|_| "narrative_generation_task_failed".to_string())?
+}
+
+#[tauri::command(async)]
+fn cancel_narrative_generation(state: tauri::State<'_, NarrativeState>) -> Result<(), String> {
+    state.cancel_generation();
+    Ok(())
+}
+
+#[tauri::command]
+async fn download_narrative_model(
+    state: tauri::State<'_, NarrativeState>,
+) -> Result<NarrativeModelStatus, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.download_model())
+        .await
+        .map_err(|_| "narrative_model_download_task_failed".to_string())
+}
+
+#[tauri::command(async)]
+fn cancel_narrative_model_download(
+    state: tauri::State<'_, NarrativeState>,
+) -> Result<NarrativeModelStatus, String> {
+    Ok(state.cancel_model_download())
+}
+
 fn validate_process_icon_request(
     exe: &str,
     mut has_process_exe: impl FnMut(&str) -> Result<bool, String>,
@@ -215,6 +285,10 @@ pub fn run() -> Result<(), String> {
             if !app.manage(state) {
                 return Err(std::io::Error::other("runtime_state_already_managed").into());
             }
+            let narrative_resource_dir = app.path().resource_dir().ok();
+            if !app.manage(NarrativeState::new(narrative_resource_dir)) {
+                return Err(std::io::Error::other("narrative_state_already_managed").into());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -226,12 +300,21 @@ pub fn run() -> Result<(), String> {
             set_sample_interval,
             set_ui_preferences,
             get_process_icons,
-            sync_app_appearance
+            sync_app_appearance,
+            get_narrative_preferences,
+            set_enhanced_narratives,
+            get_narrative_capability,
+            get_narrative_fact_digest,
+            generate_narrative,
+            cancel_narrative_generation,
+            download_narrative_model,
+            cancel_narrative_model_download
         ])
         .build(tauri::generate_context!())
         .map_err(|error| format!("desktop_runtime_build_failed:{error}"))?;
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
+            app_handle.state::<NarrativeState>().shutdown();
             if let Err(error) = app_handle.state::<RuntimeState>().shutdown() {
                 eprintln!("runtime_shutdown_failed:{error}");
             }
