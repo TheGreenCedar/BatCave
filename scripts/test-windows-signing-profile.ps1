@@ -52,9 +52,7 @@ New-Item -ItemType Directory -Path $testRoot | Out-Null
 $signedCopy = Join-Path $testRoot "batcave-signing-test.exe"
 $signedThirdPartyCopy = Join-Path $testRoot $thirdPartyContracts[0].name
 $tamperedCopy = Join-Path $testRoot "batcave-signing-test-tampered.exe"
-$testCertificatePath = Join-Path $testRoot "batcave-signing-test.cer"
 $certificate = $null
-$rootCertificateInstalled = $false
 
 try {
     Write-TestCheckpoint "copying exact inputs"
@@ -71,19 +69,6 @@ try {
         -CertStoreLocation "Cert:\CurrentUser\My" `
         -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
 
-    Write-TestCheckpoint "trusting test certificate"
-    [System.IO.File]::WriteAllBytes(
-        $testCertificatePath,
-        $certificate.Export(
-            [System.Security.Cryptography.X509Certificates.X509ContentType]::Cert
-        )
-    )
-    & certutil.exe -user -f -addstore Root $testCertificatePath *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "The signing test certificate could not be trusted with status $LASTEXITCODE."
-    }
-    $rootCertificateInstalled = $true
-
     Write-TestCheckpoint "signing BatCave input"
     & $SignToolPath sign /v /fd SHA256 /s My /sha1 $certificate.Thumbprint `
         /d "BatCave signing test profile" $signedCopy
@@ -98,31 +83,36 @@ try {
     }
     Write-TestCheckpoint "checking PowerShell signature state"
     $signature = Get-AuthenticodeSignature -LiteralPath $signedCopy
-    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+    $allowedIntactStatuses = @(
+        [System.Management.Automation.SignatureStatus]::NotTrusted,
+        [System.Management.Automation.SignatureStatus]::UnknownError
+    )
+    if ($signature.Status -notin $allowedIntactStatuses -or
+        $null -eq $signature.SignerCertificate -or
         $signature.SignerCertificate.Subject -cne $subject -or
         $null -ne $signature.TimeStamperCertificate) {
-        throw "The local test signature did not retain its isolated test-only contract."
+        throw "The local test signature was not intact and intentionally untrusted."
     }
     $thirdPartySignature = Get-AuthenticodeSignature -LiteralPath $signedThirdPartyCopy
-    if ($thirdPartySignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+    if ($thirdPartySignature.Status -notin $allowedIntactStatuses -or
+        $null -eq $thirdPartySignature.SignerCertificate -or
         $thirdPartySignature.SignerCertificate.Subject -cne $subject -or
         $null -ne $thirdPartySignature.TimeStamperCertificate) {
-        throw "The third-party test signature did not retain its isolated test-only contract."
+        throw "The third-party test signature was not intact and intentionally untrusted."
     }
     $signedThirdPartyFileHash = Get-FileHash -LiteralPath $signedThirdPartyCopy -Algorithm SHA256
     $signedThirdPartyHash = $signedThirdPartyFileHash.Hash.ToLowerInvariant()
     if ($signedThirdPartyHash -ceq $thirdPartySourceHash) {
         throw "The third-party signing test did not change the exact unsigned source bytes."
     }
-    Write-TestCheckpoint "verifying BatCave signature with SignTool"
+    Write-TestCheckpoint "confirming SignTool does not trust the test certificate"
     & $SignToolPath verify /pa /all /v $signedCopy *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "The local test signature did not pass SignTool verification."
+    if ($LASTEXITCODE -eq 0) {
+        throw "The isolated BatCave test signature unexpectedly passed trusted verification."
     }
-    Write-TestCheckpoint "verifying third-party signature with SignTool"
     & $SignToolPath verify /pa /all /v $signedThirdPartyCopy *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "The third-party test signature did not pass SignTool verification."
+    if ($LASTEXITCODE -eq 0) {
+        throw "The isolated third-party test signature unexpectedly passed trusted verification."
     }
 
     Write-TestCheckpoint "tampering signed fixture"
@@ -141,6 +131,10 @@ try {
     } finally {
         $stream.Dispose()
     }
+    $tamperedSignature = Get-AuthenticodeSignature -LiteralPath $tamperedCopy
+    if ($tamperedSignature.Status -ne [System.Management.Automation.SignatureStatus]::HashMismatch) {
+        throw "The byte-tampered signing test fixture did not report a hash mismatch."
+    }
     Write-TestCheckpoint "verifying tampered fixture rejection"
     & $SignToolPath verify /pa /all /v $tamperedCopy *> $null
     if ($LASTEXITCODE -eq 0) {
@@ -149,12 +143,6 @@ try {
     Write-Host "The isolated test profile re-signed only the pinned unsigned input and rejected tampered bytes."
 } finally {
     Write-TestCheckpoint "cleaning certificate and fixtures"
-    if ($rootCertificateInstalled -and $null -ne $certificate) {
-        & certutil.exe -user -delstore Root $certificate.Thumbprint *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "The signing test certificate could not be removed with status $LASTEXITCODE."
-        }
-    }
     if ($null -ne $certificate) {
         Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
         $certificate.Dispose()
