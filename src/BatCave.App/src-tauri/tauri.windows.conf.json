@@ -4,6 +4,7 @@
     "icon": ["icons/icon.ico"],
     "windows": {
       "nsis": {
+        "compression": "none",
         "installMode": "perMachine",
         "installerHooks": "windows/nsis-hooks.nsh",
         "template": "windows/installer-template.nsi"

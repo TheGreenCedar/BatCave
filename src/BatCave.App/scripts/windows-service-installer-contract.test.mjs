@@ -44,6 +44,7 @@ test("Windows bundle packages the collector service beside the asInvoker desktop
   const config = JSON.parse(await text("tauri.windows.conf.json"));
   assert.equal(config.build, undefined);
   assert.equal(config.bundle.resources, undefined);
+  assert.equal(config.bundle.windows.nsis.compression, "none");
   assert.equal(config.bundle.windows.nsis.installMode, "perMachine");
   assert.equal(config.bundle.windows.nsis.installerHooks, "windows/nsis-hooks.nsh");
   assert.equal(config.bundle.windows.nsis.template, "windows/installer-template.nsi");
