@@ -1407,7 +1407,6 @@
     copyStatus = "";
     hasNativeSnapshot = true;
     ingest(next);
-    window.queueMicrotask(maybeRequestInitialNarrative);
   }
 
   function ingest(next: RuntimeSnapshot): void {
@@ -1434,6 +1433,7 @@
     }
     snapshot = next;
     updateProcessRows(next.process_view_rows);
+    window.queueMicrotask(maybeRequestInitialNarrative);
     if (!selectedWorkloadId && !hasAutoSelectedWorkload) {
       const firstWorkload = next.process_view_rows.find(
         (row) => row.kind === "group" || !row.is_grouped,
