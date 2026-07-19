@@ -17,6 +17,10 @@ const nativeTest = fs.readFileSync(
   path.join(ROOT, "scripts", "test-foundation-models-sidecar.sh"),
   "utf8",
 );
+const updaterArchiveTest = fs.readFileSync(
+  path.join(ROOT, "scripts", "test-macos-updater-archive.sh"),
+  "utf8",
+);
 
 test("Swift provider weak-links guarded Foundation Models APIs", () => {
   assert.match(swift, /import FoundationModels/u);
@@ -59,4 +63,10 @@ test("bundle and native checks pin architecture, weak linkage, and nested signin
   assert.match(nativeTest, /FOUNDATION_MODELS_AVAILABILITY=/u);
   assert.match(nativeTest, /BATCAVE_FOUNDATION_MODELS_UNAVAILABLE/u);
   assert.match(nativeTest, /availability !== "unsupported"/u);
+});
+
+test("macOS updater fixtures preserve the nested sidecar contract", () => {
+  assert.match(updaterArchiveTest, /Contents\/MacOS\/batcave-foundation-models/u);
+  assert.match(updaterArchiveTest, /availability\\":\\"unsupported/u);
+  assert.match(updaterArchiveTest, /codesign --force --options runtime --sign - "\$sidecar"/u);
 });
