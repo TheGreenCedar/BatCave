@@ -417,7 +417,7 @@ fn validate_catalog_model(model: &foundry_local_sdk::Model) -> Result<(), ()> {
     if info.id != MODEL_ID
         || info.version != MODEL_VERSION
         || info.file_size_mb != Some(822)
-        || info.license.as_deref() != Some(MODEL_LICENSE)
+        || !license_matches(info.license.as_deref())
         || info
             .runtime
             .as_ref()
@@ -426,6 +426,10 @@ fn validate_catalog_model(model: &foundry_local_sdk::Model) -> Result<(), ()> {
         return Err(());
     }
     Ok(())
+}
+
+fn license_matches(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.eq_ignore_ascii_case(MODEL_LICENSE))
 }
 
 fn narrative_messages(
@@ -496,5 +500,13 @@ mod tests {
         assert_eq!(status.availability, NarrativeAvailability::RuntimeMissing);
         assert!(!status.can_download);
         assert!(!Path::new("missing").exists());
+    }
+
+    #[test]
+    fn catalog_license_matching_accepts_spdx_case_only() {
+        assert!(license_matches(Some("apache-2.0")));
+        assert!(license_matches(Some("Apache-2.0")));
+        assert!(!license_matches(Some("MIT")));
+        assert!(!license_matches(None));
     }
 }
