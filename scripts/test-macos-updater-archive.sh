@@ -417,6 +417,16 @@ Path(path).write_bytes(plistlib.dumps({
 PY
 printf 'int main(void) { return 0; }\n' | clang -x c -arch arm64 -mmacosx-version-min=12.0 - -o "$workspace/fixture-arm64"
 cp "$workspace/fixture-arm64" "$app/Contents/MacOS/batcave-fixture"
+sidecar="$app/Contents/MacOS/batcave-foundation-models"
+clang -x c -arch arm64 -mmacosx-version-min=12.0 - -o "$sidecar" <<'C'
+#include <stdio.h>
+
+int main(void) {
+  fputs("{\"version\":1,\"availability\":\"unsupported\"}\n", stdout);
+  return 0;
+}
+C
+codesign --force --options runtime --sign - "$sidecar"
 codesign --force --options runtime --sign - "$app"
 
 mkdir -p "$workspace/dmg-source"
