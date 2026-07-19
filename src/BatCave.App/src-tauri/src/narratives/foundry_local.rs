@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     NarrativeAvailability, NarrativeFactPacket, NarrativeModelDownloadState, NarrativeModelStatus,
-    NarrativeProvider, NarrativeProviderBackend, NarrativeProviderRequest, NarrativeSurface,
-    ProviderGeneration,
+    NarrativeProvider, NarrativeProviderBackend, NarrativeProviderRequest, NarrativeResourceKind,
+    NarrativeSurface, ProviderGeneration,
 };
 use crate::{
     atomic_json::write_bytes_atomic,
