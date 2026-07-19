@@ -45,8 +45,7 @@ test("Foundry runtime and model stay exact and explicitly staged", async () => {
     download_size_mb: 822,
     license: "Apache-2.0",
     license_url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/main/LICENSE",
-    catalog_uri:
-      "azureml://registries/azureml/models/qwen2.5-0.5b-instruct-generic-cpu/versions/4",
+    catalog_uri: "azureml://registries/azureml/models/qwen2.5-0.5b-instruct-generic-cpu/versions/4",
   });
 });
 

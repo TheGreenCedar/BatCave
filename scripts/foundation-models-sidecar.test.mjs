@@ -54,6 +54,8 @@ test("bundle and native checks pin architecture, weak linkage, and nested signin
   }
   assert.match(verifier, /codesign --verify/u);
   assert.match(verifier, /TeamIdentifier/u);
+  assert.match(verifier, /without FoundationModels must report unsupported/u);
+  assert.match(verifier, /not weak-linked in release sidecar/u);
   assert.match(nativeTest, /FOUNDATION_MODELS_AVAILABILITY=/u);
   assert.match(nativeTest, /BATCAVE_FOUNDATION_MODELS_UNAVAILABLE/u);
   assert.match(nativeTest, /availability !== "unsupported"/u);

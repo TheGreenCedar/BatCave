@@ -80,6 +80,7 @@ verify_foundation_models_sidecar() {
   local team_identifier
   local authority
   local entitlements
+  local status_json
 
   [[ -x "$sidecar" ]] || {
     echo "Missing executable Foundation Models sidecar: $sidecar" >&2
@@ -100,14 +101,25 @@ verify_foundation_models_sidecar() {
   }
 
   load_commands="$(otool -l "$sidecar")"
-  awk '
+  if awk '
     $1 == "cmd" { command = $2 }
     $1 == "name" && $2 ~ /FoundationModels\.framework/ && command == "LC_LOAD_WEAK_DYLIB" { weak = 1 }
     END { exit weak ? 0 : 1 }
-  ' <<<"$load_commands" || {
-    echo "FoundationModels.framework is not weak-linked in $sidecar." >&2
+  ' <<<"$load_commands"; then
+    :
+  elif [[ "$mode" == "release" ]]; then
+    echo "FoundationModels.framework is not weak-linked in release sidecar $sidecar." >&2
     return 1
-  }
+  else
+    status_json="$(printf '%s\n' '{"version":1,"operation":"status"}' | "$sidecar")"
+    node -e '
+      const response = JSON.parse(process.argv[1]);
+      if (response.version !== 1 || response.availability !== "unsupported" || response.result !== undefined) process.exit(1);
+    ' "$status_json" || {
+      echo "An ad-hoc sidecar without FoundationModels must report unsupported." >&2
+      return 1
+    }
+  fi
   if awk '
     $1 == "cmd" { command = $2 }
     $1 == "name" && $2 ~ /FoundationModels\.framework/ && command == "LC_LOAD_DYLIB" { strong = 1 }
