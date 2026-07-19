@@ -652,12 +652,25 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
 test("native lifecycle proof binds legacy repair, same-version retry, and App Paths evidence", async () => {
   const plan = JSON.parse(await text("src/windows_lifecycle_proof_plan.v1.json"));
   const lifecycle = await text("src/windows_lifecycle_proof/lifecycle.rs");
+  const native = await text("src/windows_lifecycle_proof/native.rs");
   const evidence = await text("src/windows_lifecycle_proof/evidence.rs");
 
   assert.equal(plan.allowlisted_start.state, "legacy_stopped_1066_1");
   assert.equal(plan.allowlisted_start.product_version, "0.2.0-rc.2");
   assert.equal(plan.allowlisted_start.win32_exit_code, 1066);
   assert.equal(plan.allowlisted_start.service_specific_exit_code, 1);
+  assert.match(native, /const DISPLAY_VERSION_VALUE: &str = "DisplayVersion"/u);
+  assert.match(native, /read_registry_string\(key\.raw\(\), DISPLAY_VERSION_VALUE\)/u);
+  assert.match(
+    native,
+    /validate_allowlisted_product_version\(\s*&registry\.display_version,\s*&plan\.allowlisted_start\.product_version,/u,
+  );
+  const sanitizedRegistry = between(
+    evidence,
+    "struct SanitizedRegistrySnapshot",
+    "struct SanitizedProcessSnapshot",
+  );
+  assert.doesNotMatch(sanitizedRegistry, /display_version/u);
 
   const repair = between(lifecycle, "fn repair_final(", "fn uninstall_repaired_final(");
   assertOrdered(

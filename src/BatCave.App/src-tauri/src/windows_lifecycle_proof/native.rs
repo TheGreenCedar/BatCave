@@ -2,9 +2,10 @@ use super::evidence::PreparedSanitizedExport;
 use crate::collector_service::etw_lease::{EtwLeaseV1, ReadOnlyEtwLeaseObservation};
 use crate::collector_service::windows_provisioner::RuntimeLockObservation;
 use crate::windows_lifecycle_proof_contract::{
-    Candidate, DesktopCollectorRuntimeObservation, DesktopFileObservation, DesktopPhase,
-    DesktopProcessObservation, DesktopServiceProcessObservation, EvidenceReceipt,
-    EvidenceRootIdentity, LifecycleStage, Observation, ProofPlan, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
+    validate_allowlisted_product_version, Candidate, DesktopCollectorRuntimeObservation,
+    DesktopFileObservation, DesktopPhase, DesktopProcessObservation,
+    DesktopServiceProcessObservation, EvidenceReceipt, EvidenceRootIdentity, LifecycleStage,
+    Observation, ProofPlan, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
 };
 use crate::windows_network::{EtwSessionProofSnapshot, NetworkAttributionMonitor};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -120,6 +121,7 @@ const UNINSTALLER_PATH: &str = r"C:\Program Files\BatCave Monitor\uninstall.exe"
 const LEGACY_CLI_PATH: &str = r"C:\Program Files\BatCave Monitor\batcave-monitor-cli.exe";
 const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\BatCave Monitor";
 const INSTALL_LOCATION_VALUE: &str = "InstallLocation";
+const DISPLAY_VERSION_VALUE: &str = "DisplayVersion";
 const EVIDENCE_ROOT_PREFIX: &str = r"C:\ProgramData\BatCaveLifecycleProof-v1-";
 const PARENT_EXPORT_DIRECTORY: &str = r"artifacts\windows-lifecycle-proof";
 const PARENT_EXPORT_LEAF: &str = "windows-lifecycle-proof.sanitized.json";
@@ -213,6 +215,7 @@ pub(crate) enum RegistryView {
 pub(crate) struct RegistrySnapshot {
     pub(crate) view: RegistryView,
     pub(crate) install_location: String,
+    pub(crate) display_version: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -4509,6 +4512,10 @@ pub(crate) fn require_allowlisted_parent_preflight(
     if !is_fixed_install_location(&registry.install_location) {
         return Err("lifecycle_start_install_location_invalid".to_string());
     }
+    validate_allowlisted_product_version(
+        &registry.display_version,
+        &plan.allowlisted_start.product_version,
+    )?;
     let processes = require_present(&snapshot.product_processes, "product_processes")?;
     if !processes.is_empty() {
         return Err("lifecycle_product_process_running".to_string());
@@ -5354,15 +5361,22 @@ fn observe_uninstall_registry() -> Observation<RegistrySnapshot> {
         (KEY_WOW64_32KEY, RegistryView::Registry32),
     ] {
         match open_registry_key(HKEY_LOCAL_MACHINE, UNINSTALL_KEY, KEY_READ | view) {
-            Ok(Some(key)) => match read_registry_string(key.raw(), INSTALL_LOCATION_VALUE) {
-                Ok(value) => {
-                    return Observation::Present(RegistrySnapshot {
-                        view: label,
-                        install_location: value,
-                    })
-                }
-                Err(reason) => return Observation::Unknown(reason),
-            },
+            Ok(Some(key)) => {
+                let install_location = match read_registry_string(key.raw(), INSTALL_LOCATION_VALUE)
+                {
+                    Ok(value) => value,
+                    Err(reason) => return Observation::Unknown(reason),
+                };
+                let display_version = match read_registry_string(key.raw(), DISPLAY_VERSION_VALUE) {
+                    Ok(value) => value,
+                    Err(reason) => return Observation::Unknown(reason),
+                };
+                return Observation::Present(RegistrySnapshot {
+                    view: label,
+                    install_location,
+                    display_version,
+                });
+            }
             Ok(None) => {}
             Err(reason) => return Observation::Unknown(reason),
         }

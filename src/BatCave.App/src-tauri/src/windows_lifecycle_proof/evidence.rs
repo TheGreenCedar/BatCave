@@ -6956,6 +6956,7 @@ mod tests {
                             RegistryView::Registry64
                         },
                         install_location: raw_path(&registry.install_location),
+                        display_version: "sanitized_projection_omitted".to_string(),
                     }
                 }),
                 product_processes: raw_observation(&machine.product_processes, |processes| {

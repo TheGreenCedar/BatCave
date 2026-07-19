@@ -897,6 +897,17 @@ pub(crate) fn parse_plan() -> Result<ProofPlan, String> {
     Ok(plan)
 }
 
+pub(crate) fn validate_allowlisted_product_version(
+    observed: &str,
+    expected: &str,
+) -> Result<(), String> {
+    if observed == expected {
+        Ok(())
+    } else {
+        Err("lifecycle_start_product_version_not_allowlisted".to_string())
+    }
+}
+
 pub(crate) fn plan_sha256() -> String {
     hex_digest(EMBEDDED_PLAN.as_bytes())
 }
@@ -1130,6 +1141,20 @@ mod tests {
             ROLLBACK_FIXTURE_PRODUCT_VERSION
         );
         assert_eq!(plan_sha256().len(), 64);
+    }
+
+    #[test]
+    fn allowlisted_product_version_requires_an_exact_registry_match() {
+        assert_eq!(
+            validate_allowlisted_product_version("0.2.0-rc.2", "0.2.0-rc.2"),
+            Ok(())
+        );
+        for observed in ["0.2.0-rc.3", "0.2.0-RC.2", "0.2.0-rc.2 ", ""] {
+            assert_eq!(
+                validate_allowlisted_product_version(observed, "0.2.0-rc.2"),
+                Err("lifecycle_start_product_version_not_allowlisted".to_string())
+            );
+        }
     }
 
     #[test]

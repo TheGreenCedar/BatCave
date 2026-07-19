@@ -689,6 +689,7 @@ mod tests {
                 uninstall_registry: Observation::Present(super::super::native::RegistrySnapshot {
                     view: RegistryView::Registry64,
                     install_location: r"C:\Program Files\BatCave Monitor".to_string(),
+                    display_version: "0.2.0-rc.2".to_string(),
                 }),
                 product_processes: Observation::Present(Vec::new()),
             },

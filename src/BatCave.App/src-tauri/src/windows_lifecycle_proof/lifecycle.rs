@@ -1339,9 +1339,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
                 )
             },
         )
-        .map_err(|(failure, settled)| {
-            (Some(LifecycleStage::FinalUpgrade), failure, settled)
-        })?;
+        .map_err(|(failure, settled)| (Some(LifecycleStage::FinalUpgrade), failure, settled))?;
         write_machine_packet(
             evidence,
             "final-upgrade-state.private.json",
