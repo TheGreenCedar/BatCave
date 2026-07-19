@@ -253,25 +253,23 @@ impl NarrativeProviderBackend for UnsupportedProvider {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn platform_provider(resource_dir: Option<&Path>) -> Arc<dyn NarrativeProviderBackend> {
-    #[cfg(target_os = "macos")]
-    {
-        return apple_foundation::provider(resource_dir);
-    }
+    apple_foundation::provider(resource_dir)
+}
 
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    {
-        return foundry_local::provider(resource_dir);
-    }
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn platform_provider(resource_dir: Option<&Path>) -> Arc<dyn NarrativeProviderBackend> {
+    foundry_local::provider(resource_dir)
+}
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        let _ = resource_dir;
-        Arc::new(UnsupportedProvider {
-            provider: NarrativeProvider::FoundryLocal,
-            availability: NarrativeAvailability::RuntimeMissing,
-        })
-    }
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn platform_provider(resource_dir: Option<&Path>) -> Arc<dyn NarrativeProviderBackend> {
+    let _ = resource_dir;
+    Arc::new(UnsupportedProvider {
+        provider: NarrativeProvider::FoundryLocal,
+        availability: NarrativeAvailability::RuntimeMissing,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -712,10 +710,8 @@ impl Drop for NarrativeCoordinator {
                 active.cancelled.store(true, Ordering::SeqCst);
             }
         }
-        if let Ok(active) = self.download_cancel.get_mut() {
-            if let Some(cancelled) = active {
-                cancelled.store(true, Ordering::SeqCst);
-            }
+        if let Ok(Some(cancelled)) = self.download_cancel.get_mut() {
+            cancelled.store(true, Ordering::SeqCst);
         }
         self.provider.shutdown();
     }
