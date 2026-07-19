@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CaretRight } from "phosphor-svelte";
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
   import {
     processRowSecondaryLabel,
     processViewRowKey,
@@ -17,12 +17,17 @@
     processMemoryTitle,
   } from "../../format";
   import { platformPresentation, residentMemoryValue } from "../../platformPresentation";
+  import {
+    resolvedProcessIcon,
+    type ResolvedProcessIcon,
+    type ResolvedProcessIconCatalog,
+  } from "../../processIcons";
   import type { ProcessSample, ProcessViewRow, RuntimePlatform } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
   export let processRows: ProcessViewRow[] = [];
   export let selectedWorkloadId = "";
-  export let processIcons: Record<string, string> = {};
+  export let processIcons: ResolvedProcessIconCatalog = {};
   export let expandedGroups: Record<string, boolean> = {};
   export let onSelect: (pid: string) => void = () => {};
   export let onToggleGroup: (key: string) => void = () => {};
@@ -43,8 +48,11 @@
     return row.kind === "process" ? row.detail.process : undefined;
   }
 
-  function iconSrc(process: ProcessSample | undefined): string | undefined {
-    return process ? processIcons[process.exe || process.name] : undefined;
+  function rowIcon(row: ProcessViewRow, process: ProcessSample | undefined): ResolvedProcessIcon {
+    return resolvedProcessIcon(
+      processIcons,
+      row.kind === "group" ? row.icon_source : process ? process.exe || process.name : undefined,
+    );
   }
 
   function iconKind(row: ProcessViewRow): ProcessIconKind {
@@ -117,6 +125,7 @@
 >
   {#each cardRows as row (processViewRowKey(row))}
     {@const process = processForRow(row)}
+    {@const resolvedIcon = rowIcon(row, process)}
     {@const metrics = processViewRowMetrics(row)}
     {@const highlighted = workloadSelectionHighlightsRow(processRows, row, selectedWorkloadId)}
     {@const actionSelected = workloadSelectionMatchesRow(row, selectedWorkloadId)}
@@ -140,7 +149,8 @@
             <ProcessIcon
               kind={iconKind(row)}
               child={row.kind === "process" && row.is_grouped}
-              src={row.kind === "group" && row.icon_source ? processIcons[row.icon_source] : iconSrc(process)}
+              src={resolvedIcon.src}
+              matched={resolvedIcon.origin === "name_match"}
             />
             <span>
               <strong>{row.kind === "group" ? row.detail.label : process?.name}</strong>

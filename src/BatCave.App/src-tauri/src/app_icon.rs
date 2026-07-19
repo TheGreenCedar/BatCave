@@ -4,11 +4,23 @@ use tauri::{image::Image, AppHandle, Theme};
 use tauri::Manager;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AppTheme {
+enum AppThemeFamily {
     Cave,
     Aurora,
     Ember,
-    Daylight,
+    Canopy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppThemeMode {
+    Light,
+    Dark,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AppTheme {
+    family: AppThemeFamily,
+    mode: AppThemeMode,
 }
 
 #[derive(Clone, Copy)]
@@ -19,39 +31,77 @@ struct IconPalette {
 
 impl AppTheme {
     fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "cave" => Ok(Self::Cave),
-            "aurora" => Ok(Self::Aurora),
-            "ember" => Ok(Self::Ember),
-            "daylight" => Ok(Self::Daylight),
-            _ => Err("app_appearance_theme_invalid".to_string()),
-        }
+        let legacy = match value {
+            "cave" => Some((AppThemeFamily::Cave, AppThemeMode::Dark)),
+            "aurora" => Some((AppThemeFamily::Aurora, AppThemeMode::Dark)),
+            "ember" => Some((AppThemeFamily::Ember, AppThemeMode::Dark)),
+            "daylight" => Some((AppThemeFamily::Cave, AppThemeMode::Light)),
+            _ => None,
+        };
+        let (family, mode) = match legacy {
+            Some(theme) => theme,
+            None => {
+                let (family, mode) = value
+                    .split_once(':')
+                    .ok_or_else(|| "app_appearance_theme_invalid".to_string())?;
+                let family = match family {
+                    "cave" => AppThemeFamily::Cave,
+                    "aurora" => AppThemeFamily::Aurora,
+                    "ember" => AppThemeFamily::Ember,
+                    "canopy" => AppThemeFamily::Canopy,
+                    _ => return Err("app_appearance_theme_invalid".to_string()),
+                };
+                let mode = match mode {
+                    "light" => AppThemeMode::Light,
+                    "dark" => AppThemeMode::Dark,
+                    _ => return Err("app_appearance_theme_invalid".to_string()),
+                };
+                (family, mode)
+            }
+        };
+        Ok(Self { family, mode })
     }
 
     fn window_theme(self) -> Theme {
-        match self {
-            Self::Daylight => Theme::Light,
-            Self::Cave | Self::Aurora | Self::Ember => Theme::Dark,
+        match self.mode {
+            AppThemeMode::Light => Theme::Light,
+            AppThemeMode::Dark => Theme::Dark,
         }
     }
 
     fn palette(self) -> IconPalette {
-        match self {
-            Self::Cave => IconPalette {
+        match (self.family, self.mode) {
+            (AppThemeFamily::Cave, AppThemeMode::Dark) => IconPalette {
                 background: [0x11, 0x14, 0x17],
                 mark: [0x4a, 0x9c, 0xff],
             },
-            Self::Aurora => IconPalette {
+            (AppThemeFamily::Cave, AppThemeMode::Light) => IconPalette {
+                background: [0xf4, 0xf7, 0xf4],
+                mark: [0x04, 0x78, 0x57],
+            },
+            (AppThemeFamily::Aurora, AppThemeMode::Dark) => IconPalette {
                 background: [0x07, 0x19, 0x22],
                 mark: [0x5e, 0xea, 0xd4],
             },
-            Self::Ember => IconPalette {
+            (AppThemeFamily::Aurora, AppThemeMode::Light) => IconPalette {
+                background: [0xf2, 0xf8, 0xfa],
+                mark: [0x0f, 0x76, 0x6e],
+            },
+            (AppThemeFamily::Ember, AppThemeMode::Dark) => IconPalette {
                 background: [0x17, 0x11, 0x13],
                 mark: [0xfb, 0xbf, 0x24],
             },
-            Self::Daylight => IconPalette {
-                background: [0xf4, 0xf7, 0xf4],
-                mark: [0x04, 0x78, 0x57],
+            (AppThemeFamily::Ember, AppThemeMode::Light) => IconPalette {
+                background: [0xff, 0xf8, 0xf0],
+                mark: [0xc2, 0x41, 0x0c],
+            },
+            (AppThemeFamily::Canopy, AppThemeMode::Dark) => IconPalette {
+                background: [0x11, 0x18, 0x12],
+                mark: [0x86, 0xef, 0xac],
+            },
+            (AppThemeFamily::Canopy, AppThemeMode::Light) => IconPalette {
+                background: [0xf4, 0xf7, 0xef],
+                mark: [0x4d, 0x7c, 0x0f],
             },
         }
     }
@@ -200,31 +250,72 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_preferences_that_have_not_been_resolved() {
-        assert_eq!(
-            AppTheme::parse("system"),
-            Err("app_appearance_theme_invalid".to_string())
-        );
+    fn parses_every_resolved_family_and_mode() {
+        for family in ["cave", "aurora", "ember", "canopy"] {
+            for mode in ["light", "dark"] {
+                assert!(AppTheme::parse(&format!("{family}:{mode}")).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn maps_legacy_resolved_themes() {
+        assert_eq!(AppTheme::parse("cave"), AppTheme::parse("cave:dark"));
+        assert_eq!(AppTheme::parse("aurora"), AppTheme::parse("aurora:dark"));
+        assert_eq!(AppTheme::parse("ember"), AppTheme::parse("ember:dark"));
+        assert_eq!(AppTheme::parse("daylight"), AppTheme::parse("cave:light"));
+    }
+
+    #[test]
+    fn rejects_unresolved_and_invalid_theme_values() {
+        for value in [
+            "system",
+            "cave:system",
+            "canopy",
+            "daylight:light",
+            "cave:dark:light",
+            "Cave:dark",
+        ] {
+            assert_eq!(
+                AppTheme::parse(value),
+                Err("app_appearance_theme_invalid".to_string()),
+                "{value}"
+            );
+        }
     }
 
     #[test]
     fn maps_light_and_dark_native_appearance() {
-        assert_eq!(AppTheme::Daylight.window_theme(), Theme::Light);
-        assert_eq!(AppTheme::Cave.window_theme(), Theme::Dark);
-        assert_eq!(AppTheme::Aurora.window_theme(), Theme::Dark);
-        assert_eq!(AppTheme::Ember.window_theme(), Theme::Dark);
+        assert_eq!(
+            AppTheme::parse("ember:light")
+                .expect("resolved theme parses")
+                .window_theme(),
+            Theme::Light
+        );
+        assert_eq!(
+            AppTheme::parse("canopy:dark")
+                .expect("resolved theme parses")
+                .window_theme(),
+            Theme::Dark
+        );
     }
 
     #[test]
     fn recolors_the_mark_and_background_for_each_resolved_theme() {
         let source = Image::new(&[30, 42, 210, 255, 20, 22, 24, 255], 2, 1);
-        let ember = themed_icon(&source, AppTheme::Ember);
-        let daylight = themed_icon(&source, AppTheme::Daylight);
+        let ember = themed_icon(
+            &source,
+            AppTheme::parse("ember:dark").expect("resolved theme parses"),
+        );
+        let cave_light = themed_icon(
+            &source,
+            AppTheme::parse("cave:light").expect("resolved theme parses"),
+        );
 
         assert!(ember.rgba()[0] > ember.rgba()[1]);
         assert!(ember.rgba()[1] > ember.rgba()[2]);
-        assert!(daylight.rgba()[1] > daylight.rgba()[0]);
-        assert!(daylight.rgba()[4] > ember.rgba()[4]);
+        assert!(cave_light.rgba()[1] > cave_light.rgba()[0]);
+        assert!(cave_light.rgba()[4] > ember.rgba()[4]);
         assert_eq!(ember.width(), source.width());
         assert_eq!(ember.height(), source.height());
     }
@@ -232,14 +323,20 @@ mod tests {
     #[test]
     fn preserves_transparent_pixels() {
         let source = Image::new(&[12, 34, 56, 0], 1, 1);
-        let themed = themed_icon(&source, AppTheme::Daylight);
+        let themed = themed_icon(
+            &source,
+            AppTheme::parse("canopy:light").expect("resolved theme parses"),
+        );
         assert_eq!(themed.rgba(), source.rgba());
     }
 
     #[test]
     fn masks_the_opaque_source_square_to_the_app_icon_shape() {
         let source = Image::new_owned(vec![255; 64 * 64 * 4], 64, 64);
-        let themed = themed_icon(&source, AppTheme::Daylight);
+        let themed = themed_icon(
+            &source,
+            AppTheme::parse("cave:light").expect("resolved theme parses"),
+        );
         let alpha = |x: usize, y: usize| themed.rgba()[(y * 64 + x) * 4 + 3];
 
         assert_eq!(alpha(0, 0), 0);

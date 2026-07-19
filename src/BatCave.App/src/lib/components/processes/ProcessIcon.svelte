@@ -1,33 +1,36 @@
 <script lang="ts">
-  import {
-    AppWindow,
-    AppleLogo,
-    ArrowsClockwise,
-    Browser,
-    ChatCircle,
-    Code,
-    Cube,
-    Database,
-    DesktopTower,
-    FilmStrip,
-    GraphicsCard,
-    TerminalWindow,
-    WindowsLogo,
-  } from "phosphor-svelte";
+  import AppWindow from "phosphor-svelte/lib/AppWindow";
+  import AppleLogo from "phosphor-svelte/lib/AppleLogo";
+  import ArrowsClockwise from "phosphor-svelte/lib/ArrowsClockwise";
+  import Browser from "phosphor-svelte/lib/Browser";
+  import ChatCircle from "phosphor-svelte/lib/ChatCircle";
+  import Code from "phosphor-svelte/lib/Code";
+  import Cube from "phosphor-svelte/lib/Cube";
+  import Database from "phosphor-svelte/lib/Database";
+  import DesktopTower from "phosphor-svelte/lib/DesktopTower";
+  import FilmStrip from "phosphor-svelte/lib/FilmStrip";
+  import GraphicsCard from "phosphor-svelte/lib/GraphicsCard";
+  import TerminalWindow from "phosphor-svelte/lib/TerminalWindow";
+  import WindowsLogo from "phosphor-svelte/lib/WindowsLogo";
+  import brandIcon from "../../../../src-tauri/icons/64x64.png";
   import type { ProcessIconKind } from "../../process";
 
   export let kind: ProcessIconKind = "process";
   export let child = false;
   export let src: string | undefined = undefined;
-
+  export let matched = false;
 </script>
 
-<span class:child class:has-image={Boolean(src) && kind !== "batcave"} class={`process-icon process-icon-${kind}`} aria-hidden="true">
+<span
+  class:child
+  class:has-image={Boolean(src) && kind !== "batcave"}
+  class:matched
+  class={`process-icon process-icon-${kind}`}
+  title={matched ? "Icon matched from a related process" : undefined}
+  aria-hidden="true"
+>
   {#if kind === "batcave"}
-    <svg viewBox="0 0 48 48">
-      <path fill="currentColor" d="m2 18 9-7 7 3 4-5 2 6 2-6 4 5 7-3 9 7-7 2-5 11-6-4-4 5-4-5-6 4-5-11-7-2Z" />
-      <path fill="currentColor" d="m11 11 7 3 4-5-1 12-10-1Z" opacity=".72" />
-    </svg>
+    <img src={brandIcon} alt="" />
   {:else if src}
     <img src={src} alt="" />
   {:else if kind === "apple"}

@@ -31,6 +31,7 @@ mod process_icons;
 mod protocol;
 mod runtime_provenance;
 mod runtime_store;
+mod runtime_ui_preferences;
 mod telemetry;
 #[cfg(test)]
 mod updater_hostile_fixtures;
@@ -48,7 +49,7 @@ mod windows_process;
 #[cfg(any(windows, test))]
 mod windows_system;
 
-use contracts::{ProcessFocusMode, RuntimeQuery, RuntimeUiPreferences, SortColumn, SortDirection};
+use contracts::{ProcessFocusMode, RuntimeQuery, SortColumn, SortDirection};
 use protocol::{
     ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, RuntimeUiPreferencesV3,
     SortColumnV3, SortDirectionV3,
@@ -157,26 +158,8 @@ fn set_ui_preferences(
     state: tauri::State<'_, RuntimeState>,
     preferences: RuntimeUiPreferencesV3,
 ) -> Result<ProtocolEnvelope, String> {
-    let preferences = runtime_ui_preferences(preferences)?;
+    let preferences = runtime_ui_preferences::parse(preferences)?;
     protocol::encode_snapshot(state.set_ui_preferences(preferences)?)
-}
-
-fn runtime_ui_preferences(
-    preferences: RuntimeUiPreferencesV3,
-) -> Result<RuntimeUiPreferences, String> {
-    if !matches!(
-        preferences.theme.as_str(),
-        "system" | "cave" | "aurora" | "ember" | "daylight"
-    ) {
-        return Err("runtime_ui_theme_invalid".to_string());
-    }
-    if !matches!(preferences.history_point_limit, 30 | 72 | 180 | 360) {
-        return Err("runtime_history_point_limit_invalid".to_string());
-    }
-    Ok(RuntimeUiPreferences {
-        theme: preferences.theme,
-        history_point_limit: preferences.history_point_limit,
-    })
 }
 
 #[tauri::command(async)]
@@ -314,31 +297,5 @@ mod tests {
         assert!(query_should_persist(None));
         assert!(query_should_persist(Some(true)));
         assert!(!query_should_persist(Some(false)));
-    }
-
-    #[test]
-    fn ui_preferences_validate_at_the_command_boundary() {
-        let preferences = runtime_ui_preferences(RuntimeUiPreferencesV3 {
-            theme: "ember".to_string(),
-            history_point_limit: 180,
-        })
-        .expect("supported preferences convert");
-        assert_eq!(preferences.theme, "ember");
-        assert_eq!(preferences.history_point_limit, 180);
-
-        assert_eq!(
-            runtime_ui_preferences(RuntimeUiPreferencesV3 {
-                theme: "remote-theme".to_string(),
-                history_point_limit: 180,
-            }),
-            Err("runtime_ui_theme_invalid".to_string())
-        );
-        assert_eq!(
-            runtime_ui_preferences(RuntimeUiPreferencesV3 {
-                theme: "cave".to_string(),
-                history_point_limit: 10_000,
-            }),
-            Err("runtime_history_point_limit_invalid".to_string())
-        );
     }
 }

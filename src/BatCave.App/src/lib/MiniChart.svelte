@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import uPlot from "uplot";
+  import {
+    chartFrameData,
+    createChartMotion,
+    shouldSnapChartMotion,
+    type ChartMotionFrame,
+    type ChartMotion,
+  } from "./chartMotion";
 
   export let values: number[] = [];
   export let min = 0;
@@ -10,16 +17,19 @@
 
   let host: HTMLDivElement | undefined = undefined;
   let chart: uPlot | undefined;
+  let chartMotion: ChartMotion | undefined;
+  let reducedMotionQuery: MediaQueryList | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let resizeFrame = 0;
   let lastWidth = 0;
   let lastHeight = 0;
   let appliedStroke = stroke;
   let appliedFill = fill;
+  let appliedWindowLength = values.length;
   const minChartHeight = 28;
 
-  $: if (chart) {
-    chart.setData(makeData(values));
+  $: if (chart && chartMotion) {
+    chartMotion.update(values, { snap: shouldSnapMotion() });
     chart.setScale("y", { min, max });
   }
 
@@ -39,20 +49,54 @@
     const bounds = host.getBoundingClientRect();
     appliedStroke = stroke;
     appliedFill = fill;
-    chart = new uPlot(makeOptions(bounds.width, bounds.height), makeData(values), host);
+    const initialValues = [...values];
+    appliedWindowLength = initialValues.length;
+    chart = new uPlot(makeOptions(bounds.width, bounds.height), makeData(initialValues), host);
+    chartMotion = createChartMotion(
+      initialValues,
+      renderFrame,
+      {
+        now: () => performance.now(),
+        request: (callback) => window.requestAnimationFrame(callback),
+        cancel: (frame) => window.cancelAnimationFrame(frame),
+      },
+    );
+    reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    reducedMotionQuery.addEventListener("change", handleMotionPreferenceChange);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     resizeObserver = new ResizeObserver(() => scheduleResize());
     resizeObserver.observe(host);
     resize();
   });
 
   onDestroy(() => {
+    chartMotion?.destroy();
+    reducedMotionQuery?.removeEventListener("change", handleMotionPreferenceChange);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+
     if (resizeFrame !== 0) {
       window.cancelAnimationFrame(resizeFrame);
     }
 
     resizeObserver?.disconnect();
     chart?.destroy();
+    chart = undefined;
   });
+
+  function shouldSnapMotion(): boolean {
+    return shouldSnapChartMotion(
+      document.visibilityState,
+      reducedMotionQuery?.matches ?? false,
+    );
+  }
+
+  function handleMotionPreferenceChange(event: MediaQueryListEvent): void {
+    if (event.matches) chartMotion?.finish();
+  }
+
+  function handleVisibilityChange(): void {
+    if (document.visibilityState !== "visible") chartMotion?.finish();
+  }
 
   function scheduleResize(): void {
     if (resizeFrame !== 0) {
@@ -85,10 +129,24 @@
   }
 
   function makeData(series: number[]): uPlot.AlignedData {
-    const points = series.length > 1 ? series : [0, 0];
-    const x = points.map((_, index) => index);
-    const y = series.length > 1 ? points : [0, points[0] ?? 0];
-    return [x, y];
+    return chartFrameData({ values: series, offset: 0, windowLength: series.length });
+  }
+
+  function renderFrame(frame: ChartMotionFrame): void {
+    const currentChart = chart;
+    if (!currentChart) return;
+
+    const data = chartFrameData(frame);
+    if (frame.windowLength === appliedWindowLength) {
+      currentChart.setData(data, false);
+      return;
+    }
+
+    appliedWindowLength = frame.windowLength;
+    currentChart.batch(() => {
+      currentChart.setData(data, false);
+      currentChart.setScale("x", { min: 0, max: Math.max(1, frame.windowLength - 1) });
+    });
   }
 
   function makeOptions(width: number, height: number): uPlot.Options {

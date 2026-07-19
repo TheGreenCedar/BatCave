@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Copy } from "phosphor-svelte";
+  import Copy from "phosphor-svelte/lib/Copy";
   import MiniChart from "../../MiniChart.svelte";
   import {
     displayGroupMetricValue,
@@ -23,6 +23,7 @@
   export let activeTheme: ChartPalette;
   export let iconKind: ProcessIconKind = "process";
   export let iconSrc: string | undefined = undefined;
+  export let iconMatched = false;
   export let onCopy: () => void;
 
   $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
@@ -47,11 +48,16 @@
     );
   }
 
+  function hasNotableActivity(): boolean {
+    return groupFindingLabel(detail) !== "No unusual aggregate activity is visible for this group right now.";
+  }
 </script>
 
 <section class="process-inspector" aria-label="Workload group inspector">
   <div class="process-identity redesigned-identity">
-    <span class="identity-icon"><ProcessIcon kind={iconKind} src={iconSrc} /></span>
+    <span class="identity-icon">
+      <ProcessIcon kind={iconKind} src={iconSrc} matched={iconMatched} />
+    </span>
     <span class="identity-copy">
       <span class="identity-title-row">
         <strong title={detail.label}>{detail.label}</strong>
@@ -75,14 +81,16 @@
     </span>
   </div>
 
-  <div class="finding-card">
-    <span>Group finding</span>
-    <h3>{groupFindingLabel(detail)}</h3>
-    <p>
-      Values below aggregate {processCountLabel(detail.process_count)}. Coverage stays explicit when
-      one or more processes cannot contribute a metric.
-    </p>
-  </div>
+  <section class="current-activity" aria-labelledby="group-current-activity-title">
+    <div>
+      <span>Current activity</span>
+      <h3 id="group-current-activity-title">Aggregate of {processCountLabel(detail.process_count)}</h3>
+    </div>
+  </section>
+
+  {#if hasNotableActivity()}
+    <p class="insight-copy"><strong>Worth noting:</strong> {groupFindingLabel(detail)}</p>
+  {/if}
 
   <section class="key-metrics" aria-labelledby="group-key-metrics-title">
     <h3 id="group-key-metrics-title">Aggregate metrics</h3>
@@ -104,8 +112,8 @@
     />
   </div>
 
-  <details class="technical-disclosure inspector-technical" open>
-    <summary>Coverage and quality</summary>
+  <details class="technical-disclosure inspector-technical">
+    <summary>Technical details</summary>
     <dl class="key-value-grid technical-grid">
       <div><dt>Processes</dt><dd>{detail.process_count}</dd></div>
       <div><dt>Total threads</dt><dd>{displayGroupMetricValue(detail.threads, detail.quality.threads, detail.coverage.threads, String)}</dd></div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { windowProcessViewRows, type ProcessColumn, type SortKey } from "../../process";
+  import type { ResolvedProcessIconCatalog } from "../../processIcons";
   import type { ProcessFocusMode, ProcessViewRow, RuntimePlatform, SortDirection } from "../../types";
   import MobileProcessList from "./MobileProcessList.svelte";
   import ProcessTable from "./ProcessTable.svelte";
@@ -12,7 +13,7 @@
   export let selectedWorkloadId = "";
   export let sortKey: SortKey = "attention";
   export let sortDirection: SortDirection;
-  export let processIcons: Record<string, string> = {};
+  export let processIcons: ResolvedProcessIconCatalog = {};
   export let rankingUpdateAvailable = false;
   export let platform: RuntimePlatform = "fixture";
   export let onSelect: (pid: string) => void;

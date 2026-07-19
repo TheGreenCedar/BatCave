@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Copy } from "phosphor-svelte";
+  import Copy from "phosphor-svelte/lib/Copy";
   import MiniChart from "../../MiniChart.svelte";
   import {
     accessLabel,
@@ -25,6 +25,10 @@
     processOtherIoRate,
     type ProcessRates,
   } from "../../process";
+  import {
+    resolvedProcessIcon,
+    type ResolvedProcessIconCatalog,
+  } from "../../processIcons";
   import type { ChartPalette } from "../../themes";
   import type { ProcessDetail, ProcessSample } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
@@ -41,7 +45,7 @@
   export let processRates: Record<string, ProcessRates> = {};
   export let processReadRate = 0;
   export let processWriteRate = 0;
-  export let processIcons: Record<string, string> = {};
+  export let processIcons: ResolvedProcessIconCatalog = {};
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
@@ -98,6 +102,10 @@
     );
   }
 
+  function hasNotableFinding(process: ProcessSample): boolean {
+    return findingCopy(process) !== "No unusual activity is visible for this workload right now.";
+  }
+
   function accentTone(accent: string): "hot" | "heavy" | "io" | "normal" {
     if (accent === "Hot") return "hot";
     if (accent === "Heavy") return "heavy";
@@ -109,15 +117,21 @@
 <section class="process-inspector" aria-label="Workload inspector">
   {#if selectedProcess}
     {@const identity = processIdentity(selectedProcess)}
-    {@const iconSrc = processIcons[selectedProcess.exe || selectedProcess.name]}
+    {@const resolvedIcon = resolvedProcessIcon(processIcons, selectedProcess.exe || selectedProcess.name)}
     {@const accent = processActivityLabel(selectedProcess, processReadWriteIoRate(), processNetworkRate(selectedProcess))}
     {@const categoryLabel = identity.group === "Processes" ? null : identity.group}
     <div class="process-identity redesigned-identity">
-      <span class="identity-icon"><ProcessIcon kind={identity.icon} child={identity.isChild} src={iconSrc} /></span>
+      <span class="identity-icon">
+        <ProcessIcon
+          kind={identity.icon}
+          child={identity.isChild}
+          src={resolvedIcon.src}
+          matched={resolvedIcon.origin === "name_match"}
+        />
+      </span>
       <span class="identity-copy">
         <span class="identity-title-row">
           <strong title={selectedProcess.name}>{selectedProcess.name}</strong>
-          <small class="identity-chip">PID {selectedProcess.pid}</small>
         </span>
         <span class="identity-meta-row">
           {#if categoryLabel}<small class="identity-category">{categoryLabel}</small>{/if}
@@ -137,14 +151,17 @@
       </span>
     </div>
 
-    <div class="finding-card">
-      <span>Finding</span>
-      <h3>{findingCopy(selectedProcess)}</h3>
-      <p>
-        {selectedProcess.name} CPU (one core): {processCpuLabel(selectedProcess)}.
-        Telemetry coverage: {processTrustLabel(selectedProcess)}; missing fields stay explicitly unavailable.
-      </p>
-    </div>
+    <section class="current-activity" aria-labelledby="current-activity-title">
+      <div>
+        <span>Current activity</span>
+        <h3 id="current-activity-title">{accent}</h3>
+      </div>
+      <small>{selectedProcess.status}</small>
+    </section>
+
+    {#if hasNotableFinding(selectedProcess)}
+      <p class="insight-copy"><strong>Worth noting:</strong> {findingCopy(selectedProcess)}</p>
+    {/if}
 
     <section class="key-metrics" aria-labelledby="key-metrics-title">
       <h3 id="key-metrics-title">Key metrics</h3>
@@ -161,7 +178,7 @@
       <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
     </div>
 
-    <details class="technical-disclosure inspector-technical" open>
+    <details class="technical-disclosure inspector-technical">
       <summary>Technical details</summary>
       <dl class="key-value-grid technical-grid">
         <div><dt>Process ID</dt><dd>{selectedProcess.pid}</dd></div>
@@ -176,6 +193,7 @@
         <div><dt>{presentation.handlesLabel}</dt><dd>{displayProcessMetricValue(selectedProcess.handles, selectedProcess.quality?.handles, String)}</dd></div>
         <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>
         <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Quality not reported")}</dd></div>
+        <div><dt>Telemetry coverage</dt><dd>{processTrustLabel(selectedProcess)}</dd></div>
       </dl>
       <div class="technical-path">
         <span>Executable path</span>

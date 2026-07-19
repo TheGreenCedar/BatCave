@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { ArrowDown, ArrowElbowDownRight, ArrowUp, CaretRight } from "phosphor-svelte";
+  import ArrowDown from "phosphor-svelte/lib/ArrowDown";
+  import ArrowElbowDownRight from "phosphor-svelte/lib/ArrowElbowDownRight";
+  import ArrowUp from "phosphor-svelte/lib/ArrowUp";
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
   import {
     sortAriaValue,
     sortButtonLabel,
@@ -21,6 +24,11 @@
     processMemoryTitle,
   } from "../../format";
   import { residentMemoryValue } from "../../platformPresentation";
+  import {
+    resolvedProcessIcon,
+    type ResolvedProcessIcon,
+    type ResolvedProcessIconCatalog,
+  } from "../../processIcons";
   import type { ProcessSample, ProcessViewRow, RuntimePlatform, SortDirection } from "../../types";
   import ProcessIcon from "./ProcessIcon.svelte";
 
@@ -29,7 +37,7 @@
   export let selectedWorkloadId = "";
   export let sortKey: SortKey;
   export let sortDirection: SortDirection;
-  export let processIcons: Record<string, string> = {};
+  export let processIcons: ResolvedProcessIconCatalog = {};
   export let expandedGroups: Record<string, boolean> = {};
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
@@ -41,8 +49,8 @@
     return `${count} ${count === 1 ? "process" : "processes"}`;
   }
 
-  function iconSrc(process: ProcessSample | undefined): string | undefined {
-    return process ? processIcons[process.exe || process.name] : undefined;
+  function processIcon(process: ProcessSample | undefined): ResolvedProcessIcon {
+    return resolvedProcessIcon(processIcons, process ? process.exe || process.name : undefined);
   }
 
   function iconKind(row: ProcessViewRow): ProcessIconKind {
@@ -154,6 +162,7 @@
       {#each processRows as row (processViewRowKey(row))}
         {@const metrics = processViewRowMetrics(row)}
         {#if row.kind === "group"}
+          {@const resolvedIcon = resolvedProcessIcon(processIcons, row.icon_source)}
           {@const groupHighlighted = workloadSelectionHighlightsRow(processRows, row, selectedWorkloadId)}
           {@const groupActionSelected = workloadSelectionMatchesRow(row, selectedWorkloadId)}
           {@const expanded = !!expandedGroups[row.detail.group_key]}
@@ -184,7 +193,8 @@
                     >
                       <ProcessIcon
                         kind={iconKind(row)}
-                        src={row.icon_source ? processIcons[row.icon_source] : undefined}
+                        src={resolvedIcon.src}
+                        matched={resolvedIcon.origin === "name_match"}
                       />
                       <span class="process-name-stack">
                         <span>{row.detail.label}</span>
@@ -210,6 +220,7 @@
           </tr>
         {:else if !row.is_grouped || expandedGroups[row.group_key]}
           {@const process = row.detail.process}
+          {@const resolvedIcon = processIcon(process)}
           {@const selectionKey = row.detail.workload_id}
           {@const secondaryLabel = processRowSecondaryLabel(row)}
           <tr class:selected={selectionKey === selectedWorkloadId} class:child-row={row.is_grouped}>
@@ -229,7 +240,11 @@
                       data-workload-id={selectionKey}
                       onclick={() => onSelect(selectionKey)}
                     >
-                      <ProcessIcon kind={iconKind(row)} src={iconSrc(process)} />
+                      <ProcessIcon
+                        kind={iconKind(row)}
+                        src={resolvedIcon.src}
+                        matched={resolvedIcon.origin === "name_match"}
+                      />
                       <span class="process-name-stack">
                         <span>{process.name}</span>
                         {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}

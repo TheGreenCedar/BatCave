@@ -669,25 +669,43 @@ test("typed groups keep Other I/O separate and unavailable", () => {
 });
 
 test("all theme text and focus colors meet contrast floors", () => {
-  const blocks = [
-    themeCss.match(/\.app-shell,\s*:root\s*\{([^}]*)\}/s)?.[1],
-    ...[...themeCss.matchAll(/\.app-shell\[data-theme="[^"]+"\]\s*\{([^}]*)\}/gs)].map(
-      (match) => match[1],
-    ),
-  ];
+  const base = cssVariables(themeCss.match(/\.app-shell,\s*:root\s*\{([^}]*)\}/s)?.[1] ?? "");
+  const families = ["cave", "aurora", "ember", "canopy"] as const;
+  const modes = ["light", "dark"] as const;
+  let checked = 0;
 
-  assert.equal(blocks.length, 4);
-  for (const block of blocks) {
-    assert.ok(block);
-    const variables = Object.fromEntries(
-      [...block.matchAll(/--([\w-]+):\s*(#[\da-f]{6})/gi)].map((match) => [match[1], match[2]]),
+  for (const mode of modes) {
+    const modeVariables = cssVariables(
+      themeCss.match(
+        new RegExp(`\\.app-shell\\[data-mode="${mode}"\\]\\s*\\{([^}]*)\\}`, "s"),
+      )?.[1] ?? "",
     );
-    for (const surface of ["surface-0", "surface-1", "surface-2", "surface-3"]) {
-      assert.ok(contrast(variables["text-subtle"], variables[surface]) >= 4.5);
-      assert.ok(contrast(variables.accent, variables[surface]) >= 3);
+    for (const family of families) {
+      const familyVariables = cssVariables(
+        themeCss.match(
+          new RegExp(
+            `\\.app-shell\\[data-theme="${family}"\\]\\[data-mode="${mode}"\\]\\s*\\{([^}]*)\\}`,
+            "s",
+          ),
+        )?.[1] ?? "",
+      );
+      const variables = { ...base, ...modeVariables, ...familyVariables };
+      for (const surface of ["surface-0", "surface-1", "surface-2", "surface-3"]) {
+        assert.ok(contrast(variables["text-subtle"], variables[surface]) >= 4.5);
+        assert.ok(contrast(variables.accent, variables[surface]) >= 3);
+      }
+      checked += 1;
     }
   }
+
+  assert.equal(checked, 8);
 });
+
+function cssVariables(block: string): Record<string, string> {
+  return Object.fromEntries(
+    [...block.matchAll(/--([\w-]+):\s*(#[\da-f]{6})/gi)].map((match) => [match[1], match[2]]),
+  );
+}
 
 function contrast(left: string, right: string): number {
   const [lighter, darker] = [luminance(left), luminance(right)].sort((a, b) => b - a);

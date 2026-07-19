@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Pulse, CaretUp } from "phosphor-svelte";
+  import CaretUp from "phosphor-svelte/lib/CaretUp";
+  import Pulse from "phosphor-svelte/lib/Pulse";
   import MiniChart from "../../MiniChart.svelte";
   import type { DetailMode, ResourceSummaryOption } from "./types";
 

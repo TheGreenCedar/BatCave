@@ -1,13 +1,14 @@
 <script lang="ts">
-  import type { ThemeName } from "../../themes";
+  import type { ResolvedTheme } from "../../themes";
 
-  export let themeName: ThemeName;
+  export let theme: ResolvedTheme;
   export let accessibilityFixtureState: string | null = null;
 </script>
 
 <div
   class="app-shell"
-  data-theme={themeName}
+  data-theme={theme.family}
+  data-mode={theme.mode}
   data-accessibility-fixture={accessibilityFixtureState || undefined}
 >
   <slot />

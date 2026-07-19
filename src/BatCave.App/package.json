@@ -12,7 +12,11 @@
     "format:check": "oxfmt --check src scripts vite.config.ts playwright.config.ts",
     "smoke:bridge": "node scripts/bridge-smoke.ts",
     "test:process-order": "node --test scripts/process-order.test.ts",
+    "test:process-icons": "node --test src/lib/processIcons.test.ts",
     "test:presentation": "node --test scripts/presentation.test.ts",
+    "test:overview": "node --test scripts/overview.test.ts",
+    "test:themes": "node --test scripts/theme-preferences.test.ts",
+    "test:chart-motion": "node --test src/lib/chartMotion.test.ts",
     "test:runtime-contract": "node --test scripts/runtime-contract.test.ts",
     "test:browser-fixture": "node --test scripts/browser-fixture.test.ts",
     "test:accessibility-fixtures": "node --test scripts/accessibility-fixtures.test.ts",
@@ -25,7 +29,7 @@
     "verify:windows-installer-generated": "node scripts/windows-installer-generated-contract.mjs",
     "benchmark:protocol-payload": "node scripts/protocol-payload-guardrail.ts",
     "verify": "npm run check && npm run format:check",
-    "check": "npm run test:process-order && npm run test:presentation && npm run test:runtime-contract && npm run test:browser-fixture && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:update-lifecycle && npm run test:app-lifecycles && npm run test:windows-service-installer && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
+    "check": "npm run test:process-order && npm run test:process-icons && npm run test:presentation && npm run test:overview && npm run test:themes && npm run test:chart-motion && npm run test:runtime-contract && npm run test:browser-fixture && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:update-lifecycle && npm run test:app-lifecycles && npm run test:windows-service-installer && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
     "tauri": "tauri"
   },
   "dependencies": {

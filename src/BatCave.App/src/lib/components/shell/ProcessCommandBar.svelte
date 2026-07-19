@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { ArrowClockwise, ArrowDown, ArrowUp } from "phosphor-svelte";
+  import ArrowClockwise from "phosphor-svelte/lib/ArrowClockwise";
+  import ArrowDown from "phosphor-svelte/lib/ArrowDown";
+  import ArrowUp from "phosphor-svelte/lib/ArrowUp";
   import { sortDirectionButtonLabel, type FocusMode, type SortKey } from "../../process";
   import type { SortDirection } from "../../types";
   import SortSelect from "../ui/SortSelect.svelte";
