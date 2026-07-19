@@ -516,7 +516,7 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
     "ensure_service_generation_ready(service, stable, prior_digest)?",
     "retire_shortcuts_with_controller(staged)?",
     "ensure_uninstaller_compatibility_alias(staged)?",
-    "settle_service_for_replacement(service)?",
+    "settle_service_for_candidate_replacement(service)?",
   );
   assert.equal(prepare.match(/preflight_app_path_registration\(&monitor\)/gmu)?.length, 2);
   assert.equal(
@@ -524,6 +524,72 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
     2,
     "prepare failure must restart and revalidate the prior generation",
   );
+  const prepareRecovery = prepare.slice(prepare.indexOf("if let Err(error)"));
+  assertOrdered(
+    prepareRecovery,
+    "ensure_service_generation_ready(service, stable, prior_digest)",
+    "collector_service_upgrade_restart_failed",
+  );
+
+  const candidateSettlement = between(
+    provisioner,
+    "fn settle_service_for_candidate_replacement",
+    "pub(super) fn stopped_service_can_be_replaced",
+  );
+  assertOrdered(
+    candidateSettlement,
+    "prepare_service_stop(service)?",
+    "require_service_lifecycle_active()?",
+    "ReplacementStopGuard::capture(service, &status)?",
+    "stop_candidate_service_and_wait(service, &status, &guard.process)?",
+    "stopped.status.dwCurrentState != SERVICE_STOPPED",
+    "guard.prove_settled(service)?",
+    "is_exact_legacy_replacement_stop(",
+    "validate_clean_stopped_status(&stopped.status)",
+  );
+  assert.equal(
+    provisioner.match(/settle_service_for_candidate_replacement\(service\)\?/gmu)?.length,
+    1,
+    "the legacy exception must remain confined to staged forward preparation",
+  );
+
+  const replacementGuard = between(
+    provisioner,
+    "struct ReplacementStopGuard",
+    "fn prepare_service_stop",
+  );
+  assertOrdered(
+    replacementGuard,
+    "open_service_process(status)?",
+    "service_process_image_path(&process)?",
+    "process_started_at(process.raw())",
+    "capture_replacement_service_contract(service, &process_path)?",
+    "PinnedReplacementInstalledImage::open(&process_path)?",
+    "query_service_status(service)?",
+    "WaitForSingleObject(process.raw(), 0) } != WAIT_TIMEOUT",
+    "WaitForSingleObject(self.process.raw(), 0) } != WAIT_OBJECT_0",
+    "capture_replacement_service_contract(service, &self.process_path)?",
+    "self.installed_image.revalidate()",
+  );
+
+  const strictStop = between(
+    provisioner,
+    "fn stop_service_and_wait(",
+    "fn settle_service_for_replacement",
+  );
+  assert.doesNotMatch(strictStop, /is_exact_legacy_replacement_stop/u);
+  const ordinaryReplacement = between(
+    provisioner,
+    "fn settle_service_for_replacement",
+    "fn settle_service_for_candidate_replacement",
+  );
+  assert.doesNotMatch(ordinaryReplacement, /is_exact_legacy_replacement_stop/u);
+  const prepareLegacy = between(
+    provisioner,
+    "pub(super) fn prepare_upgrade()",
+    "pub(super) fn prepare_upgrade_staged()",
+  );
+  assert.doesNotMatch(prepareLegacy, /candidate_replacement|is_exact_legacy_replacement_stop/u);
 
   const serviceProcessOpen = between(
     provisioner,
@@ -581,6 +647,45 @@ test("shortcut authority and lifecycle recovery gates are transactionally ordere
     "retire_shortcuts_with_controller(&image)",
     "rollback_new_install",
   );
+});
+
+test("native lifecycle proof binds legacy repair, same-version retry, and App Paths evidence", async () => {
+  const plan = JSON.parse(await text("src/windows_lifecycle_proof_plan.v1.json"));
+  const lifecycle = await text("src/windows_lifecycle_proof/lifecycle.rs");
+  const evidence = await text("src/windows_lifecycle_proof/evidence.rs");
+
+  assert.equal(plan.allowlisted_start.state, "legacy_stopped_1066_1");
+  assert.equal(plan.allowlisted_start.product_version, "0.2.0-rc.2");
+  assert.equal(plan.allowlisted_start.win32_exit_code, 1066);
+  assert.equal(plan.allowlisted_start.service_specific_exit_code, 1);
+
+  const repair = between(lifecycle, "fn repair_final(", "fn uninstall_repaired_final(");
+  assertOrdered(
+    repair,
+    '"final_repair"',
+    '"lifecycle_final_repair_failed"',
+    "require_elevated_installed_candidate(",
+  );
+
+  const upgrade = between(lifecycle, "fn upgrade_final(", "fn restart_final(");
+  assert.equal(
+    upgrade.match(/final_copy,/gmu)?.length,
+    2,
+    "the same retained final installer must drive upgrade and same-version retry",
+  );
+  assertOrdered(
+    upgrade,
+    '"final_upgrade"',
+    "&first_final_upgrade_state",
+    '"final_same_version_retry"',
+    '"lifecycle_final_same_version_retry_failed"',
+    '"final-upgrade-state.private.json"',
+  );
+
+  assert.match(evidence, /app_path_key/u);
+  assert.match(evidence, /validate_app_path_registration_key/u);
+  assert.match(evidence, /CurrentVersion\\App Paths\\batcave-monitor\.exe/u);
+  assert.match(evidence, /registration\.app_path_present == expect_app_path/u);
 });
 
 test("legacy Windows CLI cleanup stays exact and native", async () => {

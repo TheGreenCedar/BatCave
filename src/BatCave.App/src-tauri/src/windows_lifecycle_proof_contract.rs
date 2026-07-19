@@ -10,6 +10,7 @@ pub(crate) const LOCATOR_HEX_LENGTH: usize = 32;
 pub(crate) const FIRST_SEQUENCE: u64 = 1;
 const INCOMPATIBLE_FIXTURE_PRODUCT_VERSION: &str = "0.2.0-rc.3";
 const ROLLBACK_FIXTURE_PRODUCT_VERSION: &str = "0.2.0-rc.2";
+const ALLOWLISTED_START_PRODUCT_VERSION: &str = "0.2.0-rc.2";
 pub(crate) const SUCCESS_PRIVATE_EVIDENCE_LEAVES: [&str; 28] = [
     "initial-state.private.json",
     "final-repair-state.private.json",
@@ -89,6 +90,7 @@ pub(crate) enum ServiceFixtureBehavior {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AllowlistedStart {
     pub state: StartState,
+    pub product_version: String,
     pub monitor_sha256: String,
     pub service_sha256: String,
     pub uninstaller_sha256: String,
@@ -936,7 +938,8 @@ pub(crate) fn validate_plan(plan: &ProofPlan) -> Result<(), String> {
     ] {
         validate_sha256(value, field)?;
     }
-    if plan.allowlisted_start.win32_exit_code != 1066
+    if plan.allowlisted_start.product_version != ALLOWLISTED_START_PRODUCT_VERSION
+        || plan.allowlisted_start.win32_exit_code != 1066
         || plan.allowlisted_start.service_specific_exit_code != 1
     {
         return Err("lifecycle_plan_start_exit_codes_invalid".to_string());

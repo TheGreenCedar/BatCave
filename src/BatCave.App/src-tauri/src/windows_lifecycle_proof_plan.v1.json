@@ -40,6 +40,7 @@
   },
   "allowlisted_start": {
     "state": "legacy_stopped_1066_1",
+    "product_version": "0.2.0-rc.2",
     "monitor_sha256": "de3eee8f3c4172bc8017c2365f2b49b62615146415dae4fdf7da5d2d66ff3a1f",
     "service_sha256": "95102bc1e759e985cc1c17b113753e4d7348d8ce18620b73e24c5d6d41c58f49",
     "uninstaller_sha256": "82b5f1b80f7fe695b31696b04d00d03e21b100e17bc45181b3b7c0710a6b5f05",
