@@ -68,9 +68,9 @@ test("validation accepts one bounded qualitative sentence", () => {
   const invocation = fixtureInvocation();
   const accepted = validateNarrativeResult(
     invocation,
-    resultFor(invocation, "Code Helper is the top CPU contributor right now."),
+    resultFor(invocation, "Code Helper (Renderer) is the top CPU contributor right now."),
   );
-  assert.equal(accepted?.text, "Code Helper is the top CPU contributor right now.");
+  assert.equal(accepted?.text, "Code Helper (Renderer) is the top CPU contributor right now.");
 });
 
 test("validation rejects stale, malformed, multi-sentence, long, and invented numeric output", () => {
@@ -108,6 +108,23 @@ test("validation rejects stale, malformed, multi-sentence, long, and invented nu
   assert.equal(
     validateNarrativeResult(
       invocation,
+      resultFor(
+        invocation,
+        "Code Helper uses a powerful CPU to perform development tasks efficiently.",
+      ),
+    ),
+    null,
+  );
+  assert.equal(
+    validateNarrativeResult(
+      invocation,
+      resultFor(invocation, "code Helper is the main CPU contributor right now."),
+    ),
+    null,
+  );
+  assert.equal(
+    validateNarrativeResult(
+      invocation,
       resultFor(invocation, "Code Helper is showing notable memory activity."),
     ),
     null,
@@ -122,7 +139,7 @@ test("qualitative results survive metric refreshes but not semantic changes", ()
   const invocation = fixtureInvocation();
   const accepted = validateNarrativeResult(
     invocation,
-    resultFor(invocation, "Code Helper is the top CPU contributor right now."),
+    resultFor(invocation, "Code Helper (Renderer) is the top CPU contributor right now."),
   );
   assert.ok(accepted);
 
@@ -173,11 +190,11 @@ test("controller caches exact facts and never runs more than one generation", as
 
   const pending = controller.request(invocation);
   assert.equal(await controller.request(fixtureInvocation(22)), null);
-  resolveGeneration?.(resultFor(invocation, "Code Helper is the CPU leader right now."));
-  assert.equal((await pending)?.text, "Code Helper is the CPU leader right now.");
+  resolveGeneration?.(resultFor(invocation, "Code Helper (Renderer) is the CPU leader right now."));
+  assert.equal((await pending)?.text, "Code Helper (Renderer) is the CPU leader right now.");
   assert.equal(
     (await controller.request(invocation))?.text,
-    "Code Helper is the CPU leader right now.",
+    "Code Helper (Renderer) is the CPU leader right now.",
   );
   assert.equal(calls, 1);
 });
@@ -188,7 +205,7 @@ test("controller rate limits changing samples for one subject", async () => {
   const controller = new NarrativeController(
     async (invocation) => {
       calls += 1;
-      return resultFor(invocation, "Code Helper is the CPU leader right now.");
+      return resultFor(invocation, "Code Helper (Renderer) is the CPU leader right now.");
     },
     { now: () => now, minimumIntervalMs: 30_000 },
   );
@@ -210,7 +227,7 @@ test("cancel and teardown discard an in-flight result", async () => {
   );
   const pending = controller.request(invocation);
   controller.dispose();
-  finish?.(resultFor(invocation, "Code Helper is the CPU leader right now."));
+  finish?.(resultFor(invocation, "Code Helper (Renderer) is the CPU leader right now."));
   assert.equal(await pending, null);
   assert.equal(await controller.request(invocation), null);
 });

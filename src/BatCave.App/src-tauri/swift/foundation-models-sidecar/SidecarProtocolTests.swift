@@ -5,6 +5,7 @@ struct SidecarProtocolTests {
     static func main() throws {
         try decodesStatusRequest()
         try decodesBoundedGenerationRequest()
+        try extractsGroundingValues()
         rejectsInvalidRequests()
         normalizesOneBoundedSentence()
         try encodesBoundedResponse()
@@ -50,6 +51,16 @@ struct SidecarProtocolTests {
         } catch {
             // Expected.
         }
+    }
+
+    private static func extractsGroundingValues() throws {
+        let facts = JSONValue.object([
+            "display_name": .string("Code Helper"),
+            "leading_resource": .string("cpu"),
+        ])
+        let grounding = try groundingValues(facts)
+        precondition(grounding.displayName == "Code Helper")
+        precondition(grounding.resource == "CPU")
     }
 
     private static func normalizesOneBoundedSentence() {

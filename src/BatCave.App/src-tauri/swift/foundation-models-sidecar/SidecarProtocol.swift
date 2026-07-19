@@ -163,6 +163,24 @@ func canonicalFacts(_ facts: JSONValue) throws -> String {
     return value
 }
 
+func groundingValues(_ facts: JSONValue) throws -> (displayName: String, resource: String) {
+    guard case .object(let object) = facts,
+          case .string(let displayName) = object["display_name"],
+          case .string(let leadingResource) = object["leading_resource"]
+    else {
+        throw SidecarProtocolError.invalidRequest
+    }
+    let resource: String
+    switch leadingResource {
+    case "cpu": resource = "CPU"
+    case "memory": resource = "memory"
+    case "io": resource = "disk"
+    case "network": resource = "network"
+    default: throw SidecarProtocolError.invalidRequest
+    }
+    return (displayName, resource)
+}
+
 func normalizeOneSentence(_ generated: String) -> String? {
     let collapsed = generated
         .split(whereSeparator: { $0.isWhitespace })
@@ -255,6 +273,10 @@ func handleRequest(_ request: SidecarRequest) async -> SidecarResponse {
 private func generate(_ request: GenerationRequest, facts: JSONValue) async -> SidecarResponse {
     do {
         let factsJSON = try canonicalFacts(facts)
+        let grounding = try groundingValues(facts)
+        let preferred = request.surface == "overview_contributor"
+            ? "\(grounding.displayName) is the leading \(grounding.resource) contributor right now."
+            : "\(grounding.displayName) is showing notable \(grounding.resource) activity right now."
         let model = SystemLanguageModel.default
         guard providerAvailability(model.availability) == .available else {
             return SidecarResponse(
@@ -264,12 +286,13 @@ private func generate(_ request: GenerationRequest, facts: JSONValue) async -> S
         }
         let session = LanguageModelSession(
             model: model,
-            instructions: "Write one short monitoring sentence using only the supplied trusted facts. The sentence must include the exact supplied display_name and leading_resource words. Never state a number or infer a cause, recommendation, path, process ID, or identity that is absent from those facts."
+            instructions: "Write one short monitoring sentence using only the supplied trusted facts. The sentence must include the exact supplied display_name and leading_resource words. Never state a metric number; preserve any number that is part of the exact display_name. Never infer a cause, recommendation, path, process ID, or identity that is absent from those facts."
         )
         let prompt = """
             Monitoring surface: \(request.surface)
             Trusted fact packet JSON: \(factsJSON)
-            Return exactly one sentence, no heading or list, and do not state any numbers. Include the exact display_name and leading_resource from the packet.
+            Preferred sentence shape: \(preferred)
+            Return that sentence or a shorter equivalent using the exact display_name and resource word. Do not add any other subject, cause, advice, heading, list, or metric number.
             """
         let options = GenerationOptions(sampling: .greedy, maximumResponseTokens: 64)
         let generated = try await session.respond(

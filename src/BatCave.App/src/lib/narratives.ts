@@ -379,7 +379,74 @@ const genericNameTokens = new Set([
   "worker",
 ]);
 
+const allowedNarrativeWords = new Set([
+  "a",
+  "active",
+  "activity",
+  "an",
+  "and",
+  "appears",
+  "as",
+  "at",
+  "attention",
+  "category",
+  "contributor",
+  "contributes",
+  "contributing",
+  "current",
+  "currently",
+  "dominant",
+  "driver",
+  "driving",
+  "elevated",
+  "for",
+  "from",
+  "has",
+  "heavy",
+  "highest",
+  "in",
+  "is",
+  "its",
+  "largest",
+  "leader",
+  "leading",
+  "load",
+  "main",
+  "monitoring",
+  "more",
+  "most",
+  "normal",
+  "notable",
+  "now",
+  "of",
+  "on",
+  "other",
+  "pressure",
+  "primary",
+  "remains",
+  "resource",
+  "resources",
+  "right",
+  "showing",
+  "shows",
+  "source",
+  "steady",
+  "surface",
+  "than",
+  "the",
+  "this",
+  "to",
+  "top",
+  "usage",
+  "use",
+  "uses",
+  "using",
+  "with",
+  "workload",
+]);
+
 function hasRequiredGrounding(text: string, facts: NarrativeFactPacket): boolean {
+  if (!text.includes(facts.display_name)) return false;
   const textTokens = normalizedWords(text);
   const nameTokens = normalizedWords(facts.display_name).filter(
     (token) => token.length >= 3 && !genericNameTokens.has(token) && !/^\d+$/u.test(token),
@@ -394,10 +461,25 @@ function hasRequiredGrounding(text: string, facts: NarrativeFactPacket): boolean
     io: ["disk", "storage", "io"],
     network: ["network"],
   };
-  return (
-    facts.leading_resource === undefined ||
-    resourceAliases[facts.leading_resource].some((alias) => textTokens.includes(alias))
-  );
+  if (
+    facts.leading_resource !== undefined &&
+    !resourceAliases[facts.leading_resource].some((alias) => textTokens.includes(alias))
+  ) {
+    return false;
+  }
+
+  const allowed = new Set(allowedNarrativeWords);
+  for (const token of normalizedWords(`${facts.display_name} ${facts.category}`)) {
+    allowed.add(token);
+  }
+  for (const aliases of Object.values(resourceAliases)) {
+    for (const alias of aliases) allowed.add(alias);
+  }
+  for (const limitation of facts.measurement_limitations) {
+    allowed.add(limitation.kind);
+    allowed.add(limitation.quality);
+  }
+  return textTokens.every((token) => allowed.has(token));
 }
 
 function normalizedWords(value: string): string[] {

@@ -886,6 +886,9 @@ fn has_required_grounding(text: &str, facts: &NarrativeFactPacket) -> bool {
         "utility",
         "worker",
     ];
+    if !text.contains(&facts.display_name) {
+        return false;
+    }
     let text_tokens = normalized_words(text).into_iter().collect::<HashSet<_>>();
     let has_name = normalized_words(&facts.display_name)
         .into_iter()
@@ -904,9 +907,95 @@ fn has_required_grounding(text: &str, facts: &NarrativeFactPacket) -> bool {
         Some(NarrativeResourceKind::Memory) => &["memory", "ram"],
         Some(NarrativeResourceKind::Io) => &["disk", "storage", "io"],
         Some(NarrativeResourceKind::Network) => &["network"],
-        None => return true,
+        None => &[],
     };
-    aliases.iter().any(|alias| text_tokens.contains(*alias))
+    if !aliases.is_empty() && !aliases.iter().any(|alias| text_tokens.contains(*alias)) {
+        return false;
+    }
+
+    let mut allowed = [
+        "a",
+        "active",
+        "activity",
+        "an",
+        "and",
+        "appears",
+        "as",
+        "at",
+        "attention",
+        "category",
+        "contributor",
+        "contributes",
+        "contributing",
+        "current",
+        "currently",
+        "dominant",
+        "driver",
+        "driving",
+        "elevated",
+        "for",
+        "from",
+        "has",
+        "heavy",
+        "highest",
+        "in",
+        "is",
+        "its",
+        "largest",
+        "leader",
+        "leading",
+        "load",
+        "main",
+        "monitoring",
+        "more",
+        "most",
+        "normal",
+        "notable",
+        "now",
+        "of",
+        "on",
+        "other",
+        "pressure",
+        "primary",
+        "remains",
+        "resource",
+        "resources",
+        "right",
+        "showing",
+        "shows",
+        "source",
+        "steady",
+        "surface",
+        "than",
+        "the",
+        "this",
+        "to",
+        "top",
+        "usage",
+        "use",
+        "uses",
+        "using",
+        "with",
+        "workload",
+        "cpu",
+        "processor",
+        "memory",
+        "ram",
+        "disk",
+        "storage",
+        "io",
+        "network",
+        "estimated",
+        "limited",
+        "stale",
+        "unavailable",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<HashSet<_>>();
+    allowed.extend(normalized_words(&facts.display_name));
+    allowed.extend(normalized_words(&facts.category));
+    text_tokens.is_subset(&allowed)
 }
 
 fn normalized_words(value: &str) -> Vec<String> {
@@ -1243,6 +1332,17 @@ mod tests {
         );
         assert_eq!(
             validate_generated_text("Safari is the main source of memory activity.", &facts),
+            Err("narrative_result_ungrounded".to_string())
+        );
+        assert_eq!(
+            validate_generated_text(
+                "Safari uses a powerful CPU to perform browsing tasks efficiently.",
+                &facts
+            ),
+            Err("narrative_result_ungrounded".to_string())
+        );
+        assert_eq!(
+            validate_generated_text("safari is the main CPU contributor right now.", &facts),
             Err("narrative_result_ungrounded".to_string())
         );
         assert_eq!(
