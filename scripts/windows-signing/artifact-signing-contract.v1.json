@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "profile": "azure_artifact_signing",
+  "publisher": {
+    "display_name": "Albert Najjar",
+    "subject": "CN=Albert Najjar"
+  },
+  "oidc": {
+    "repository": "TheGreenCedar/BatCave",
+    "environment": "release",
+    "federated_subject": "repo:TheGreenCedar/BatCave:environment:release",
+    "required_role": "Artifact Signing Certificate Profile Signer",
+    "azure_login": {
+      "repository": "Azure/login",
+      "version": "v3.0.0",
+      "commit": "532459ea530d8321f2fb9bb10d1e0bcf23869a43"
+    }
+  },
+  "client_packages": [
+    {
+      "id": "Microsoft.ArtifactSigning.Client",
+      "version": "1.0.128",
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg",
+      "sha256": "74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b"
+    },
+    {
+      "id": "Microsoft.Windows.SDK.BuildTools",
+      "version": "10.0.26100.8249",
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.buildtools/10.0.26100.8249/microsoft.windows.sdk.buildtools.10.0.26100.8249.nupkg",
+      "sha256": "1628c77d21ed187c4db998b37b18e267a7f092ae755589e21110c14260b14960"
+    }
+  ],
+  "paths": {
+    "artifact_signing_dlib": "Microsoft.ArtifactSigning.Client/bin/x64/Azure.CodeSigning.Dlib.dll",
+    "signtool": "Microsoft.Windows.SDK.BuildTools/bin/10.0.26100.0/x64/signtool.exe"
+  },
+  "timestamp": {
+    "protocol": "rfc3161",
+    "url": "http://timestamp.acs.microsoft.com/",
+    "digest": "SHA256"
+  },
+  "batcave_owned_files": [
+    "batcave-collector-service.exe",
+    "batcave-monitor-cli.exe",
+    "batcave-monitor.exe",
+    "uninstall.exe"
+  ],
+  "upstream_publishers": [
+    "^CN=Microsoft Corporation(?:,|$)",
+    "^CN=Microsoft Windows(?:,|$)"
+  ],
+  "upstream_files": [
+    "Microsoft.AI.Foundry.Local.Core.dll",
+    "MicrosoftEdgeWebView2RuntimeInstaller.exe",
+    "onnxruntime-genai.dll",
+    "onnxruntime.dll"
+  ]
+}

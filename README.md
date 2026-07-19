@@ -72,7 +72,7 @@ cd ..\..
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1
 ```
 
-The Windows installer includes the WebView2 Evergreen runtime for offline installation. Public Windows artifacts remain unsigned while the Authenticode release gate is unresolved.
+The Windows installer includes the WebView2 Evergreen runtime for offline installation. Existing public Windows preview artifacts are unsigned. The protected release workflow has an Azure Artifact Signing contract, but no artifact should be described as signed until its production certificate evidence and exact public bytes have passed the release gates.
 
 ## Build and verify
 
@@ -114,6 +114,7 @@ The native collectors, runtime store, desktop UI, packaging, updater, and cross-
 - [Runtime telemetry](docs/runtime-telemetry.md) — collectors, quality states, runtime shaping, and benchmarks
 - [Platform capabilities](docs/platform-capabilities.md) — supported sources, scopes, permissions, packages, and architectures
 - [Release channels and verification](docs/releases.md) — versioning, signing, provenance, publication, and updater behavior
+- [Microsoft Store EXE preparation](docs/store/windows-submission-checklist.md) — source preflight and the later native submission gate
 
 ## Contributing
 

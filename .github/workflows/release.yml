@@ -100,13 +100,16 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
-        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
+        run: node --test scripts/verify-release-version.test.mjs scripts/build-update-manifest.test.mjs scripts/verify-linux-bundle.test.mjs scripts/verify-release-candidate.test.mjs scripts/verify-release-controls.test.mjs scripts/verify-public-release.test.mjs scripts/linux-post-public-smoke.test.mjs scripts/validate-macos-updater-post-public-observation.test.mjs scripts/validate-release-platform-support.test.mjs scripts/validate-release-evidence-packet.test.mjs scripts/validate-release-evidence-index.test.mjs scripts/windows-release-signing-contract.test.mjs scripts/capture-linux-current-user-persistence.test.mjs scripts/capture-macos-current-user-persistence.test.mjs scripts/capture-macos-dmg-current-user-persistence.test.mjs scripts/validate-current-user-persistence-evidence.test.mjs
 
   windows:
     name: Build Windows release
     needs: prepare
     runs-on: windows-latest
     environment: release
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -147,16 +150,54 @@ jobs:
         shell: pwsh
         run: ./scripts/validate-tauri.ps1 -SkipBundle
 
-      - name: Bundle signed Windows updater
-        working-directory: src/BatCave.App
+      - name: Authenticate to Azure Artifact Signing with GitHub OIDC
+        uses: Azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare digest-pinned Artifact Signing tools
+        shell: pwsh
+        run: ./scripts/install-artifact-signing-tools.ps1 -Destination "${{ runner.temp }}\artifact-signing-tools"
+
+      - name: Bind the release certificate profile
+        shell: pwsh
         env:
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+        run: |
+          ./scripts/prepare-artifact-signing-metadata.ps1 `
+            -OutputPath "${{ runner.temp }}\artifact-signing-metadata.json" `
+            -Endpoint $env:ARTIFACT_SIGNING_ENDPOINT `
+            -AccountName $env:ARTIFACT_SIGNING_ACCOUNT `
+            -CertificateProfileName $env:ARTIFACT_SIGNING_CERTIFICATE_PROFILE `
+            -CorrelationId "${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}"
+
+      - name: Build, Authenticode-sign, and updater-sign Windows
+        shell: pwsh
+        env:
+          BATCAVE_WINDOWS_SIGNING_PROFILE: production
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json
+        run: ./scripts/build-signed-windows-release.ps1 -EvidenceDirectory "${{ runner.temp }}\windows-signing-evidence"
 
       - name: Verify generated release NSIS shortcut contract
         working-directory: src/BatCave.App
         run: npm run verify:windows-installer-generated -- "src-tauri/target/release/nsis/x64/installer.nsi"
+
+      - name: Prepare Microsoft Store source preflight
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem -LiteralPath src/BatCave.App/src-tauri/target/release/bundle/nsis -Filter *.exe)
+          if ($installer.Count -ne 1) { throw "Expected exactly one NSIS installer." }
+          node scripts/validate-windows-store-preflight.mjs `
+            docs/store/windows-listing.v1.json `
+            "${{ needs.prepare.outputs.tag }}" `
+            $installer[0].FullName `
+            "${{ runner.temp }}\windows-signing-evidence\windows-signatures-final.json" `
+            "${{ runner.temp }}\windows-signing-evidence\windows-store-preflight.json"
 
       - name: Collect Windows distributables
         shell: pwsh
@@ -171,6 +212,14 @@ jobs:
         with:
           name: batcave-release-windows-${{ needs.prepare.outputs.tag }}
           path: dist/windows/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Retain Windows signing and Store preflight evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: batcave-windows-signing-evidence-${{ needs.prepare.outputs.tag }}
+          path: ${{ runner.temp }}/windows-signing-evidence/*.json
           if-no-files-found: error
           retention-days: 30
 
@@ -431,6 +480,12 @@ jobs:
           path: release-input
           merge-multiple: false
 
+      - name: Retrieve Windows signing evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: batcave-windows-signing-evidence-${{ needs.prepare.outputs.tag }}
+          path: windows-signing-evidence
+
       - name: Stage release assets without silent collisions
         run: node scripts/verify-release-candidate.mjs stage release-input dist
 
@@ -458,7 +513,7 @@ jobs:
         run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/BatCave-${{ needs.prepare.outputs.tag }}-provenance.json"
 
       - name: Verify complete release inventory
-        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json"
+        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json" windows-signing-evidence/windows-signatures-final.json windows-signing-evidence/windows-store-preflight.json
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -495,7 +550,7 @@ jobs:
             printf '%s' "${tag_sha}"
           }
 
-          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
+          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}" windows-signing-evidence/windows-signatures-final.json windows-signing-evidence/windows-store-preflight.json
           tag_sha="$(remote_tag_source)"
           [[ -z "${tag_sha}" ]] || { echo "Release tag ${RELEASE_TAG} appeared during the build." >&2; exit 1; }
 
@@ -522,7 +577,7 @@ jobs:
           readback="${RUNNER_TEMP}/release-published-readback.json"
           latest_readback="${RUNNER_TEMP}/release-latest-readback.json"
           latest_error="${RUNNER_TEMP}/release-latest-error.txt"
-          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
+          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}" windows-signing-evidence/windows-signatures-final.json windows-signing-evidence/windows-store-preflight.json
 
           remote_tag_sha="$(git ls-remote origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')"
           if [[ -z "${remote_tag_sha}" ]]; then

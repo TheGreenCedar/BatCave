@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "product_name": "BatCave Monitor",
+  "reserved_name": "BatCave Monitor",
+  "publisher": "Albert Najjar",
+  "distribution": {
+    "type": "exe",
+    "architecture": "x64",
+    "install_scope": "per_machine",
+    "offline_installer": true,
+    "silent_parameters": "/S",
+    "success_exit_codes": [0],
+    "update_delivery": "publisher_managed",
+    "versioned_url_template": "https://github.com/TheGreenCedar/BatCave/releases/download/{tag}/BatCave.Monitor_{version}_x64-setup.exe"
+  },
+  "listing": {
+    "category": "Utilities & tools",
+    "short_description": "See what is putting pressure on your computer and which workloads are responsible.",
+    "description": "BatCave Monitor is a local resource monitor for technical users. It shows CPU, memory, disk, and network pressure, ranks the workloads behind it, and explains when a measurement is estimated or unavailable. Detailed process evidence stays available in Explore without crowding the overview. BatCave keeps monitoring data on your computer and has no analytics, telemetry upload, account, or remote logging.",
+    "features": [
+      "Plain-language system pressure overview",
+      "Stable live workload ranking and inspection",
+      "CPU, memory, disk, and network trends",
+      "Transparent measurement quality and limitations",
+      "Local-only data and optional local explanations"
+    ],
+    "keywords": [
+      "performance",
+      "process monitor",
+      "resource monitor",
+      "system monitor",
+      "task manager"
+    ],
+    "support_url": "https://github.com/TheGreenCedar/BatCave/issues",
+    "privacy_policy_url": "https://github.com/TheGreenCedar/BatCave/blob/main/docs/privacy.md",
+    "license_url": "https://github.com/TheGreenCedar/BatCave/blob/main/LICENSE"
+  }
+}

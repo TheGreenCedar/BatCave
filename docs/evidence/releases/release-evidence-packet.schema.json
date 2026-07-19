@@ -270,19 +270,61 @@
       }
     },
     "authenticodeSignature": {
-      "allOf": [
-        { "$ref": "#/$defs/signature" },
-        {
-          "properties": {
-            "identity": {
-              "anyOf": [
-                { "const": "synthetic Authenticode signer fixture" },
-                { "pattern": "^sha256:[0-9a-f]{64}$" }
-              ]
-            }
-          }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "verified",
+        "subject",
+        "rfc3161_timestamp_utc",
+        "files"
+      ],
+      "properties": {
+        "identity": {
+          "anyOf": [
+            { "const": "synthetic Authenticode signer fixture" },
+            { "pattern": "^sha256:[0-9a-f]{64}$" }
+          ]
+        },
+        "verified": { "const": true },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "rfc3161_timestamp_utc": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/authenticodeFile" }
         }
-      ]
+      }
+    },
+    "authenticodeFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "sha256",
+        "disposition",
+        "subject",
+        "certificate_sha256",
+        "rfc3161_timestamp_utc",
+        "verified"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "disposition": {
+          "enum": ["batcave_signed", "generated_signed", "upstream_preserved"]
+        },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "certificate_sha256": { "$ref": "#/$defs/digest" },
+        "rfc3161_timestamp_utc": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "verified": { "const": true }
+      }
     },
     "developerIdSignature": {
       "allOf": [
