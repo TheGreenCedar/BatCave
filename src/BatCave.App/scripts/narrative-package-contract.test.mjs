@@ -29,6 +29,7 @@ test("Foundry runtime and model stay exact and explicitly staged", async () => {
   assert.match(build, /fn stage_foundry_native_libraries/u);
   assert.match(build, /fn verified_foundry_native_dir/u);
   assert.doesNotMatch(build, /newest_foundry_native_dir|max_by_key|SystemTime/u);
+  assert.match(build, /candidates\.into_iter\(\)\.find/u);
   for (const library of [
     "Microsoft.AI.Foundry.Local.Core.dll",
     "onnxruntime.dll",

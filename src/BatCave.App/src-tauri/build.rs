@@ -82,7 +82,7 @@ fn stage_foundry_native_libraries(target_os: &str) {
         .expect("OUT_DIR must be nested under Cargo's build directory");
     let source = verified_foundry_native_dir(build_root, expected_files).unwrap_or_else(|| {
         panic!(
-            "foundry-local-sdk 1.2.0 native libraries were not found under {}",
+            "exact foundry-local-sdk 1.2.0 native library bytes were not found under {}",
             build_root.display()
         )
     });
@@ -131,18 +131,11 @@ fn verified_foundry_native_dir(
         })
         .collect::<Vec<_>>();
     candidates.sort();
-    for candidate in &candidates {
-        for (file_name, expected_sha256) in expected_files {
-            let input = candidate.join(file_name);
-            assert_eq!(
-                sha256_file(&input),
-                *expected_sha256,
-                "Foundry native library does not match the pinned 1.2.0 artifact: {}",
-                input.display()
-            );
-        }
-    }
-    candidates.into_iter().next()
+    candidates.into_iter().find(|candidate| {
+        expected_files.iter().all(|(file_name, expected_sha256)| {
+            sha256_file(&candidate.join(file_name)) == *expected_sha256
+        })
+    })
 }
 
 fn sha256_file(path: &Path) -> String {
