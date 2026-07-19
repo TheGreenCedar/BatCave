@@ -11,6 +11,7 @@ async function tauriText(path) {
 
 test("Foundry runtime and model stay exact and explicitly staged", async () => {
   const cargo = await tauriText("Cargo.toml");
+  const lock = await tauriText("Cargo.lock");
   const build = await tauriText("build.rs");
   const model = JSON.parse(await tauriText("resources/narratives/foundry-model.v1.json"));
   assert.match(
@@ -20,6 +21,10 @@ test("Foundry runtime and model stay exact and explicitly staged", async () => {
   assert.match(
     cargo,
     /\[target\.'cfg\(any\(target_os = "windows", target_os = "linux"\)\)'\.build-dependencies\][\s\S]*foundry-local-sdk = "=1\.2\.0"/u,
+  );
+  assert.match(
+    lock,
+    /\[\[package\]\]\nname = "foundry-local-sdk"\nversion = "1\.2\.0"\nsource = "registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index"\nchecksum = "d298b00f76e2f53a0e3a9e6615b8fbfec2515f1bf55c094e25bc2cc9f0ffa93a"/u,
   );
   assert.match(build, /fn stage_foundry_native_libraries/u);
   assert.match(build, /fn verified_foundry_native_dir/u);
