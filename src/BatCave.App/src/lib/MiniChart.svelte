@@ -2,8 +2,10 @@
   import { onDestroy, onMount } from "svelte";
   import uPlot from "uplot";
   import {
+    chartFrameData,
     createChartMotion,
     shouldSnapChartMotion,
+    type ChartMotionFrame,
     type ChartMotion,
   } from "./chartMotion";
 
@@ -23,6 +25,7 @@
   let lastHeight = 0;
   let appliedStroke = stroke;
   let appliedFill = fill;
+  let appliedWindowLength = values.length;
   const minChartHeight = 28;
 
   $: if (chart && chartMotion) {
@@ -47,10 +50,11 @@
     appliedStroke = stroke;
     appliedFill = fill;
     const initialValues = [...values];
+    appliedWindowLength = initialValues.length;
     chart = new uPlot(makeOptions(bounds.width, bounds.height), makeData(initialValues), host);
     chartMotion = createChartMotion(
       initialValues,
-      (nextValues) => chart?.setData(makeData(nextValues)),
+      renderFrame,
       {
         now: () => performance.now(),
         request: (callback) => window.requestAnimationFrame(callback),
@@ -125,10 +129,24 @@
   }
 
   function makeData(series: number[]): uPlot.AlignedData {
-    const points = series.length > 1 ? series : [0, 0];
-    const x = points.map((_, index) => index);
-    const y = series.length > 1 ? points : [0, points[0] ?? 0];
-    return [x, y];
+    return chartFrameData({ values: series, offset: 0, windowLength: series.length });
+  }
+
+  function renderFrame(frame: ChartMotionFrame): void {
+    const currentChart = chart;
+    if (!currentChart) return;
+
+    const data = chartFrameData(frame);
+    if (frame.windowLength === appliedWindowLength) {
+      currentChart.setData(data, false);
+      return;
+    }
+
+    appliedWindowLength = frame.windowLength;
+    currentChart.batch(() => {
+      currentChart.setData(data, false);
+      currentChart.setScale("x", { min: 0, max: Math.max(1, frame.windowLength - 1) });
+    });
   }
 
   function makeOptions(width: number, height: number): uPlot.Options {
