@@ -264,12 +264,12 @@ private func generate(_ request: GenerationRequest, facts: JSONValue) async -> S
         }
         let session = LanguageModelSession(
             model: model,
-            instructions: "Write one short monitoring sentence using only the supplied trusted facts. Never infer a cause, recommendation, path, process ID, or identity that is absent from those facts."
+            instructions: "Write one short monitoring sentence using only the supplied trusted facts. The sentence must include the exact supplied display_name and leading_resource words. Never state a number or infer a cause, recommendation, path, process ID, or identity that is absent from those facts."
         )
         let prompt = """
             Monitoring surface: \(request.surface)
             Trusted fact packet JSON: \(factsJSON)
-            Return exactly one sentence, no heading or list.
+            Return exactly one sentence, no heading or list, and do not state any numbers. Include the exact display_name and leading_resource from the packet.
             """
         let options = GenerationOptions(sampling: .greedy, maximumResponseTokens: 64)
         let generated = try await session.respond(
@@ -302,7 +302,7 @@ private func generate(_ request: GenerationRequest, facts: JSONValue) async -> S
 private func narrativeSchema() throws -> GenerationSchema {
     let sentence = DynamicGenerationSchema.Property(
         name: "sentence",
-        description: "Exactly one plain sentence of at most 180 characters. State only facts from the supplied packet; do not speculate or give advice.",
+        description: "Exactly one plain sentence of at most 180 characters. State only qualitative facts from the supplied packet; do not state numbers, speculate, or give advice.",
         schema: DynamicGenerationSchema(type: String.self)
     )
     let root = DynamicGenerationSchema(

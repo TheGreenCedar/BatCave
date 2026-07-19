@@ -47,9 +47,10 @@
     NarrativeController,
     buildNarrativeFactPacket,
     defaultNarrativeCapability,
+    isNarrativeRelevant,
     makeNarrativeInvocation,
     narrativeCapabilityExplanation,
-    narrativeFactDigest,
+    narrativeRelevanceKey,
     type AcceptedNarrative,
     type NarrativeFactPacket,
   } from "./lib/narratives";
@@ -255,8 +256,6 @@
   let narrativeModelAction: "idle" | "downloading" | "cancelling" = "idle";
   let overviewNarrative: AcceptedNarrative | null = null;
   let workloadNarrative: AcceptedNarrative | null = null;
-  let overviewNarrativeFactKey = "";
-  let workloadNarrativeFactKey = "";
   let narrativeInitialRequestDone = false;
   let narrativeCapabilityPollId: number | undefined;
   let narrativeEpoch = 0;
@@ -847,8 +846,6 @@
     narrativeController.cancel();
     overviewNarrative = null;
     workloadNarrative = null;
-    overviewNarrativeFactKey = "";
-    workloadNarrativeFactKey = "";
     if (runtimeMode() === "native") {
       narrativeCancellation = narrativeCancellation
         .then(() => cancelLocalNarrativeGeneration(invoke))
@@ -886,7 +883,7 @@
     const epoch = narrativeEpoch;
     const context = currentOverviewNarrativeContext();
     if (!context || runtimeMode() !== "native") return;
-    const factKey = narrativeFactDigest(context.facts);
+    const relevanceKey = narrativeRelevanceKey(context.facts);
     const publicationSeq = snapshot.publication_seq;
     let factDigest = "";
     try {
@@ -898,7 +895,7 @@
     if (
       !currentBeforeGeneration ||
       epoch !== narrativeEpoch ||
-      narrativeFactDigest(currentBeforeGeneration.facts) !== factKey ||
+      narrativeRelevanceKey(currentBeforeGeneration.facts) !== relevanceKey ||
       currentBeforeGeneration.subjectStableId !== context.subjectStableId
     ) {
       return;
@@ -917,11 +914,14 @@
       epoch === narrativeEpoch &&
       activeView === "overview" &&
       current &&
-      narrativeFactDigest(current.facts) === factKey &&
-      current.subjectStableId === result.subject_stable_id
+      isNarrativeRelevant(
+        result,
+        current.facts,
+        "overview_contributor",
+        current.subjectStableId,
+      )
     ) {
       overviewNarrative = result;
-      overviewNarrativeFactKey = factKey;
     }
   }
 
@@ -930,7 +930,7 @@
     const epoch = narrativeEpoch;
     const context = currentWorkloadNarrativeContext();
     if (!context || runtimeMode() !== "native") return;
-    const factKey = narrativeFactDigest(context.facts);
+    const relevanceKey = narrativeRelevanceKey(context.facts);
     const publicationSeq = snapshot.publication_seq;
     let factDigest = "";
     try {
@@ -942,7 +942,7 @@
     if (
       !currentBeforeGeneration ||
       epoch !== narrativeEpoch ||
-      narrativeFactDigest(currentBeforeGeneration.facts) !== factKey ||
+      narrativeRelevanceKey(currentBeforeGeneration.facts) !== relevanceKey ||
       currentBeforeGeneration.subjectStableId !== context.subjectStableId
     ) {
       return;
@@ -961,11 +961,9 @@
       epoch === narrativeEpoch &&
       activeView === "explore" &&
       current &&
-      narrativeFactDigest(current.facts) === factKey &&
-      current.subjectStableId === result.subject_stable_id
+      isNarrativeRelevant(result, current.facts, "workload_insight", current.subjectStableId)
     ) {
       workloadNarrative = result;
-      workloadNarrativeFactKey = factKey;
     }
   }
 
@@ -1071,18 +1069,28 @@
     const overviewCurrent = currentOverviewNarrativeContext();
     if (
       overviewNarrative &&
-      (!overviewCurrent || narrativeFactDigest(overviewCurrent.facts) !== overviewNarrativeFactKey)
+      (!overviewCurrent ||
+        !isNarrativeRelevant(
+          overviewNarrative,
+          overviewCurrent.facts,
+          "overview_contributor",
+          overviewCurrent.subjectStableId,
+        ))
     ) {
       overviewNarrative = null;
-      overviewNarrativeFactKey = "";
     }
     const workloadCurrent = currentWorkloadNarrativeContext();
     if (
       workloadNarrative &&
-      (!workloadCurrent || narrativeFactDigest(workloadCurrent.facts) !== workloadNarrativeFactKey)
+      (!workloadCurrent ||
+        !isNarrativeRelevant(
+          workloadNarrative,
+          workloadCurrent.facts,
+          "workload_insight",
+          workloadCurrent.subjectStableId,
+        ))
     ) {
       workloadNarrative = null;
-      workloadNarrativeFactKey = "";
     }
   }
 

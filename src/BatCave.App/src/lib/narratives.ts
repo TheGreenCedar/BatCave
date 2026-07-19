@@ -121,7 +121,26 @@ export function buildNarrativeFactPacket(
 }
 
 export function narrativeFactDigest(facts: NarrativeFactPacket): string {
-  const serialized = JSON.stringify(facts);
+  return hashNarrativeValue(facts);
+}
+
+/**
+ * Generated copy is deliberately qualitative, so it remains relevant while live
+ * metric values move. A change to identity, interpretation, or measurement
+ * quality invalidates it; a routine sample refresh does not.
+ */
+export function narrativeRelevanceKey(facts: NarrativeFactPacket): string {
+  return hashNarrativeValue({
+    display_name: facts.display_name,
+    category: facts.category,
+    leading_resource: facts.leading_resource ?? null,
+    ranking_state: facts.ranking_state,
+    measurement_limitations: facts.measurement_limitations,
+  });
+}
+
+function hashNarrativeValue(value: unknown): string {
+  const serialized = JSON.stringify(value);
   let hash = 0xcbf29ce484222325n;
   for (let index = 0; index < serialized.length; index += 1) {
     hash ^= BigInt(serialized.charCodeAt(index));
@@ -169,6 +188,7 @@ export function narrativeCapabilityExplanation(capability: NarrativeCapability):
 export interface AcceptedNarrative extends NarrativeResult {
   surface: NarrativeSurface;
   subject_stable_id?: string;
+  relevance_key: string;
 }
 
 export function validateNarrativeResult(
@@ -190,7 +210,8 @@ export function validateNarrativeResult(
     /[\r\n\t<>]/u.test(text) ||
     /^(?:[-*#]|\d+[.)])\s/u.test(text) ||
     sentenceBoundaryCount(text) > 1 ||
-    hasUnsupportedNumericClaim(text, invocation.facts)
+    hasUnsupportedNumericClaim(text, invocation.facts) ||
+    !hasRequiredGrounding(text, invocation.facts)
   ) {
     return null;
   }
@@ -199,10 +220,24 @@ export function validateNarrativeResult(
     ...value,
     text,
     surface: invocation.request.surface,
+    relevance_key: narrativeRelevanceKey(invocation.facts),
     ...(invocation.request.subject_stable_id
       ? { subject_stable_id: invocation.request.subject_stable_id }
       : {}),
   };
+}
+
+export function isNarrativeRelevant(
+  narrative: AcceptedNarrative,
+  facts: NarrativeFactPacket,
+  surface: NarrativeSurface,
+  subjectStableId?: string,
+): boolean {
+  return (
+    narrative.surface === surface &&
+    narrative.subject_stable_id === subjectStableId &&
+    narrative.relevance_key === narrativeRelevanceKey(facts)
+  );
 }
 
 export type NarrativeGenerator = (
@@ -324,12 +359,54 @@ function sentenceBoundaryCount(text: string): number {
 
 function hasUnsupportedNumericClaim(text: string, facts: NarrativeFactPacket): boolean {
   const allowed = new Set(
-    JSON.stringify(facts)
+    `${facts.display_name}\n${facts.category}`
       .match(/\d+(?:[.,]\d+)?/gu)
       ?.map(normalizeNumericToken) ?? [],
   );
   const claims = text.match(/\d+(?:[.,]\d+)?/gu) ?? [];
   return claims.some((claim) => !allowed.has(normalizeNumericToken(claim)));
+}
+
+const genericNameTokens = new Set([
+  "app",
+  "application",
+  "gpu",
+  "helper",
+  "process",
+  "renderer",
+  "service",
+  "utility",
+  "worker",
+]);
+
+function hasRequiredGrounding(text: string, facts: NarrativeFactPacket): boolean {
+  const textTokens = normalizedWords(text);
+  const nameTokens = normalizedWords(facts.display_name).filter(
+    (token) => token.length >= 3 && !genericNameTokens.has(token) && !/^\d+$/u.test(token),
+  );
+  if (nameTokens.length === 0 || !nameTokens.some((token) => textTokens.includes(token))) {
+    return false;
+  }
+
+  const resourceAliases: Record<NarrativeMetricFact["kind"], readonly string[]> = {
+    cpu: ["cpu", "processor"],
+    memory: ["memory", "ram"],
+    io: ["disk", "storage", "io"],
+    network: ["network"],
+  };
+  return (
+    facts.leading_resource === undefined ||
+    resourceAliases[facts.leading_resource].some((alias) => textTokens.includes(alias))
+  );
+}
+
+function normalizedWords(value: string): string[] {
+  return (
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase("en-US")
+      .match(/[\p{L}\p{N}]+/gu) ?? []
+  );
 }
 
 function normalizeNumericToken(value: string): string {

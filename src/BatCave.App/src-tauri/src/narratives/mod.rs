@@ -828,12 +828,15 @@ fn validate_generated_text(text: &str, facts: &NarrativeFactPacket) -> Result<()
     if sentence_boundary_count(trimmed) > 1 {
         return Err("narrative_result_not_one_sentence".to_string());
     }
-    let allowed_numbers = fact_numbers(facts);
+    let allowed_numbers = fact_label_numbers(facts);
     if numeric_tokens(trimmed)
         .into_iter()
         .any(|number| !allowed_numbers.contains(&number))
     {
         return Err("narrative_result_new_numeric_claim".to_string());
+    }
+    if !has_required_grounding(trimmed, facts) {
+        return Err("narrative_result_ungrounded".to_string());
     }
     Ok(())
 }
@@ -864,24 +867,54 @@ fn sentence_boundary_count(value: &str) -> usize {
         .count()
 }
 
-fn fact_numbers(facts: &NarrativeFactPacket) -> HashSet<String> {
-    let mut numbers = facts
-        .metrics
-        .iter()
-        .flat_map(|metric| {
-            let value = metric.rounded_value;
-            let compact = if value.fract() == 0.0 {
-                format!("{value:.0}")
-            } else {
-                format!("{value}")
-            };
-            let fixed_one = format!("{value:.1}");
-            [compact, fixed_one]
-        })
-        .collect::<HashSet<_>>();
+fn fact_label_numbers(facts: &NarrativeFactPacket) -> HashSet<String> {
+    let mut numbers = HashSet::new();
     numbers.extend(numeric_tokens(&facts.display_name));
     numbers.extend(numeric_tokens(&facts.category));
     numbers
+}
+
+fn has_required_grounding(text: &str, facts: &NarrativeFactPacket) -> bool {
+    const GENERIC_NAME_TOKENS: &[&str] = &[
+        "app",
+        "application",
+        "gpu",
+        "helper",
+        "process",
+        "renderer",
+        "service",
+        "utility",
+        "worker",
+    ];
+    let text_tokens = normalized_words(text).into_iter().collect::<HashSet<_>>();
+    let has_name = normalized_words(&facts.display_name)
+        .into_iter()
+        .any(|token| {
+            token.chars().count() >= 3
+                && !token.chars().all(|character| character.is_ascii_digit())
+                && !GENERIC_NAME_TOKENS.contains(&token.as_str())
+                && text_tokens.contains(&token)
+        });
+    if !has_name {
+        return false;
+    }
+
+    let aliases: &[&str] = match facts.leading_resource {
+        Some(NarrativeResourceKind::Cpu) => &["cpu", "processor"],
+        Some(NarrativeResourceKind::Memory) => &["memory", "ram"],
+        Some(NarrativeResourceKind::Io) => &["disk", "storage", "io"],
+        Some(NarrativeResourceKind::Network) => &["network"],
+        None => return true,
+    };
+    aliases.iter().any(|alias| text_tokens.contains(*alias))
+}
+
+fn normalized_words(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 fn numeric_tokens(value: &str) -> Vec<String> {
@@ -1099,7 +1132,7 @@ mod tests {
     fn generation_validates_digest_caches_and_rate_limits_provider_calls() {
         let directory = tempfile::tempdir().expect("tempdir");
         let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
-            "Web browsing is the main source of current CPU activity.".to_string(),
+            "Safari is the main source of current CPU activity.".to_string(),
         )));
         let state = state(provider.clone(), directory.path());
         let facts = facts();
@@ -1130,7 +1163,7 @@ mod tests {
     fn stale_publications_and_digest_mismatches_are_rejected() {
         let directory = tempfile::tempdir().expect("tempdir");
         let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
-            "Web browsing is the main contributor.".to_string(),
+            "Safari is the main CPU contributor.".to_string(),
         )));
         let state = state(provider, directory.path());
         let facts = facts();
@@ -1188,15 +1221,29 @@ mod tests {
     }
 
     #[test]
-    fn generated_copy_is_one_short_sentence_without_new_numeric_claims() {
+    fn generated_copy_is_one_short_sentence_without_metric_numbers() {
         let facts = facts();
         assert!(
             validate_generated_text("Safari is the main source of CPU activity.", &facts).is_ok()
         );
-        assert!(validate_generated_text("Safari uses 5% CPU.", &facts).is_ok());
+        assert_eq!(
+            validate_generated_text("Safari uses 5% CPU.", &facts),
+            Err("narrative_result_new_numeric_claim".to_string())
+        );
         assert_eq!(
             validate_generated_text("Safari uses 7% CPU.", &facts),
             Err("narrative_result_new_numeric_claim".to_string())
+        );
+        assert_eq!(
+            validate_generated_text(
+                "The surface area of a large project depends on its components and resources.",
+                &facts
+            ),
+            Err("narrative_result_ungrounded".to_string())
+        );
+        assert_eq!(
+            validate_generated_text("Safari is the main source of memory activity.", &facts),
+            Err("narrative_result_ungrounded".to_string())
         );
         assert_eq!(
             validate_generated_text("Safari is active. No action is needed.", &facts),

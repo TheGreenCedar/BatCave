@@ -441,11 +441,19 @@ fn narrative_messages(
         NarrativeSurface::WorkloadInsight => "workload insight",
     };
     let system = ChatCompletionRequestSystemMessage::from(
-        "Write exactly one plain-language sentence of at most 180 characters. Use only the supplied facts. Do not add causes, advice, numbers, names, paths, IDs, or claims. Return the sentence only.",
+        "Write exactly one plain-language sentence of at most 180 characters. Use only the supplied facts. Include the exact required workload name and required resource word. Do not add causes, advice, numbers, paths, IDs, or claims. Return the sentence only.",
     );
     let facts_json = serde_json::to_string(facts)?;
+    let required_resource = match facts.leading_resource {
+        Some(NarrativeResourceKind::Cpu) => "CPU",
+        Some(NarrativeResourceKind::Memory) => "memory",
+        Some(NarrativeResourceKind::Io) => "disk",
+        Some(NarrativeResourceKind::Network) => "network",
+        None => "activity",
+    };
     let user = ChatCompletionRequestUserMessage::from(format!(
-        "Surface: {surface}\nAllowed facts: {facts_json}"
+        "Surface: {surface}\nRequired workload: {}\nRequired resource: {required_resource}\nAllowed facts: {facts_json}",
+        facts.display_name
     ));
     Ok(vec![system.into(), user.into()])
 }
